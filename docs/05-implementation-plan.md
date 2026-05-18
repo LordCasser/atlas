@@ -22,8 +22,8 @@ Atlas MVP 使用 **vertical slices + language fixtures** 推进，而不是先�
 
 | Milestone | 名称 | 目标 |
 |---|---|---|
-| M0 | Foundations | IR、IDs、schema、grammar spike、AST dump |
-| M1 | Store & CLI skeleton | `.atlas` DB、migrations、基础 CLI |
+| M0 | Foundations | IR、IDs、schema、grammar spike、AST dump | ✅ 2026-05-18 |
+| M1 | Store & CLI skeleton | `.atlas` DB、migrations、基础 CLI | 🚧 Store done |
 | M2 | Query Extraction | tree-sitter query engine + MVP adapters |
 | M3 | Resolution | scope/import/include/name resolution |
 | M4 | GraphSnapshot | 内存图与图查询 |
