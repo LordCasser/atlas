@@ -31,6 +31,26 @@
   (reference_declarator
     (function_declarator (field_identifier) @definition.method)))
 
+;; Class method declarations (field_declaration with function_declarator)
+(field_declaration
+  (function_declarator (field_identifier) @definition.method))
+
+;; Class method declarations with reference_declarator wrapper
+(field_declaration
+  (reference_declarator
+    (function_declarator (field_identifier) @definition.method)))
+
+;; Class method declarations with qualified return type
+(field_declaration
+  (qualified_identifier)
+  (function_declarator (field_identifier) @definition.method))
+
+;; Class method declarations with qualified return type and reference_declarator
+(field_declaration
+  (qualified_identifier)
+  (reference_declarator
+    (function_declarator (field_identifier) @definition.method)))
+
 ;; Class declarations
 (class_specifier (type_identifier) @definition.class)
 
