@@ -26,8 +26,8 @@ Atlas MVP 使用 **vertical slices + language fixtures** 推进，而不是先�
 | M1 | Store & CLI skeleton | `.atlas` DB、migrations、基础 CLI (init/status/doctor/index) | ✅ 2026-05-18 |
 | M2 | Query Extraction | tree-sitter query engine + TS/Python LanguageAdapters | ✅ 2026-05-18 |
 | M3 | Extraction Pipeline | QueryEngine + extract_file() + insert_file_facts() end-to-end | ✅ 2026-05-18 |
-| M4 | Resolution | scope/import/include/name resolution | 🚧 Next |
-| M5 | GraphSnapshot | 内存图与图查询 |
+| M4 | Resolution | scope/import/include/name resolution (6-stage pipeline) | ✅ 2026-05-18 |
+| M5 | GraphSnapshot | 内存图与图查询 | 🚧 Next |
 | M6 | Search & Context | FTS/hybrid search/context/explore |
 | M7 | MCP MVP | MCP tools 可供 Agent 使用 |
 | M8 | Incremental Sync | 增量同步和 snapshot refresh |
