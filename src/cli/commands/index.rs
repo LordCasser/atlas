@@ -40,7 +40,7 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     println!("  Total references:   {}", stats.total_refs);
     println!("  Resolved:           {}", stats.resolved);
     println!("  Unresolved:         {}", stats.unresolved);
-    println!("  Edges promoted:     {}", stats.edges_promoted);
+    println!("  Edges created:     {}", stats.edges_created);
     if !stats.by_strategy.is_empty() {
         println!("  By strategy:");
         for (strat, count) in &stats.by_strategy {

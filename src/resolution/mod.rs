@@ -85,12 +85,13 @@ impl ReferenceResolver {
                             .entry(target.strategy.as_str().to_string())
                             .or_default() += 1;
 
-                        // Promote calls → instantiates if target is a class/struct
-                        if let Some(promoted) = self.promote_edge(&reference, &target, &ctx) {
-                            if let Err(e) = self.store.insert_edges(&[promoted]) {
-                                eprintln!("Warning: failed to insert promoted edge: {}", e);
+                        // Create structural edges from this resolution
+                        let edges = self.create_edges(reference, &target, &ctx);
+                        if !edges.is_empty() {
+                            if let Err(e) = self.store.insert_edges(&edges) {
+                                eprintln!("Warning: failed to insert edges: {}", e);
                             } else {
-                                stats.edges_promoted += 1;
+                                stats.edges_created += edges.len();
                             }
                         }
                     }
@@ -202,43 +203,82 @@ impl ReferenceResolver {
         None
     }
 
-    /// Promote edges: calls → instantiates if the target is a class/struct.
-    fn promote_edge(
+    /// Create structural edges from a resolved reference.
+    ///
+    /// Produces:
+    /// - `Calls` when a call reference resolves to a function/method/constructor
+    /// - `Instantiates` when a call reference resolves to a class/struct
+    /// - `Implements` when a call reference resolves to an interface/trait
+    /// - `References` for non-call references
+    fn create_edges(
         &self,
         reference: &ReferenceUse,
         target: &ResolvedTarget,
         ctx: &ResolutionContext,
-    ) -> Option<RawEdge> {
-        // Only promote Call references
-        if reference.kind != ReferenceKind::Call {
-            return None;
-        }
+    ) -> Vec<RawEdge> {
+        let mut edges = Vec::new();
 
-        let target_sym = ctx.symbols_by_id.get(&target.symbol_id)?;
-
-        let promoted_kind = match target_sym.kind {
-            SymbolKind::Class | SymbolKind::Struct => EdgeKind::Instantiates,
-            SymbolKind::Interface | SymbolKind::Trait => EdgeKind::Implements,
-            _ => return None, // No promotion needed
+        let target_sym = match ctx.symbols_by_id.get(&target.symbol_id) {
+            Some(s) => s,
+            None => return edges,
         };
 
-        // Source symbol: must exist to create a valid edge
-        let source = reference.source_symbol?;
+        // Source is the enclosing function/class that contains the reference
+        let source = match reference.source_symbol {
+            Some(s) => s,
+            None => return edges,
+        };
 
-        Some(RawEdge {
+        let edge_kind = if reference.kind == ReferenceKind::Call {
+            match target_sym.kind {
+                SymbolKind::Class | SymbolKind::Struct => EdgeKind::Instantiates,
+                SymbolKind::Interface | SymbolKind::Trait => EdgeKind::Implements,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor => EdgeKind::Calls,
+                _ => return edges, // Non-callable target — no structural edge
+            }
+        } else {
+            EdgeKind::References
+        };
+
+        let edge = RawEdge {
             id: EdgeId::generate(
                 &source,
                 &target.symbol_id,
-                promoted_kind.as_str(),
+                edge_kind.as_str(),
                 Some(&reference.id),
                 target.provenance.as_str(),
             ),
             source,
             target: target.symbol_id,
-            kind: promoted_kind,
+            kind: edge_kind,
             confidence: target.confidence,
             provenance: target.provenance,
-        })
+        };
+
+        edges.push(edge);
+
+        // Also create Contains edges from container symbols during resolution
+        if let Some(container) = target_sym.container {
+            if let Some(_container_sym) = ctx.symbols_by_id.get(&container) {
+                let contains_edge = RawEdge {
+                    id: EdgeId::generate(
+                        &container,
+                        &target.symbol_id,
+                        EdgeKind::Contains.as_str(),
+                        None::<&ReferenceId>,
+                        Provenance::TreeSitter.as_str(),
+                    ),
+                    source: container,
+                    target: target.symbol_id,
+                    kind: EdgeKind::Contains,
+                    confidence: Confidence::certain(),
+                    provenance: Provenance::TreeSitter,
+                };
+                edges.push(contains_edge);
+            }
+        }
+
+        edges
     }
 }
 
@@ -249,5 +289,5 @@ pub struct ResolutionStats {
     pub resolved: usize,
     pub unresolved: usize,
     pub by_strategy: HashMap<String, usize>,
-    pub edges_promoted: usize,
+    pub edges_created: usize,
 }
