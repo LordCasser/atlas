@@ -128,3 +128,17 @@ pub mod python;
 // pub mod arkts;
 // #[cfg(feature = "cangjie")]
 // pub mod cangjie;
+
+/// Create a LanguageAdapter for the given language.
+/// Returns `None` if the language's adapter is not compiled in (feature-gated).
+pub fn create_adapter(lang: Language) -> Option<Box<dyn LanguageAdapter>> {
+    match lang {
+        #[cfg(feature = "typescript")]
+        Language::TypeScript | Language::JavaScript => {
+            Some(Box::new(typescript::TypeScriptAdapter))
+        }
+        #[cfg(feature = "python")]
+        Language::Python => Some(Box::new(python::PythonAdapter)),
+        _ => None,
+    }
+}

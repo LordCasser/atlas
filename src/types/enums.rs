@@ -76,6 +76,19 @@ impl Language {
             .and_then(Self::from_extension)
     }
 
+    /// All file extensions (without dot) for the 8 MVP languages.
+    pub fn all_extensions() -> Vec<&'static str> {
+        vec![
+            "ts", "mts", "cts", "tsx", "js", "mjs", "cjs", "jsx",
+            "py", "pyi",
+            "java",
+            "c", "h",
+            "cpp", "cc", "cxx", "hpp", "hh", "hxx",
+            "ets",
+            "cj", "cangjie",
+        ]
+    }
+
     /// File patterns / globs used by this language (for file discovery).
     pub fn globs(self) -> &'static [&'static str] {
         match self {

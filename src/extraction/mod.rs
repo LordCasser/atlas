@@ -16,4 +16,4 @@ pub mod languages;
 pub use engine::{QueryCapture, QueryResults, run_queries, run_queries_text};
 pub use extract::extract_file;
 pub use grammar::LanguageRegistry;
-pub use languages::LanguageAdapter;
+pub use languages::{create_adapter, LanguageAdapter};
