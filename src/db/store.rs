@@ -211,11 +211,20 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    /// FTS5 search by name.
+    /// FTS5 search by name (default limit 50).
     pub fn search_symbols(&self, query: &str) -> anyhow::Result<Vec<SymbolDef>> {
+        self.search_symbols_with_limit(query, 50)
+    }
+
+    /// FTS5 search by name with custom limit.
+    pub fn search_symbols_with_limit(&self, query: &str, limit: usize) -> anyhow::Result<Vec<SymbolDef>> {
         let conn = self.conn.lock().unwrap();
-        // Escape FTS5 special characters in query
         let safe_query = sanitize_fts5_query(query);
+        if safe_query.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Append * for prefix matching (matches "User" → "UserManager")
+        let match_query = format!("{}*", safe_query);
         let sql = format!(
             r#"SELECT s.symbol_id, s.file_id, s.kind, s.name, s.qualified_name,
                       s.symbol_path_json, s.language,
@@ -229,11 +238,23 @@ impl Store {
                JOIN symbols_fts fts ON s.rowid = fts.rowid
                WHERE symbols_fts MATCH ?1
                ORDER BY rank
-               LIMIT 50"#
+               LIMIT {}"#,
+            limit
         );
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![safe_query], row_to_symbol)?;
+        let rows = stmt.query_map(params![match_query], row_to_symbol)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    // -----------------------------------------------------------------------
+    // Counts
+    // -----------------------------------------------------------------------
+
+    /// Total number of symbols in the database.
+    pub fn count_symbols(&self) -> anyhow::Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))?;
+        Ok(n as usize)
     }
 
     // -----------------------------------------------------------------------

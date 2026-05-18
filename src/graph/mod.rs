@@ -57,6 +57,27 @@ impl GraphEngine {
         self.snapshot.edge_count
     }
 
+    /// Total degree (in + out) for a symbol. 0 if not found.
+    pub fn degree(&self, id: &SymbolId) -> usize {
+        self
+            .snapshot
+            .id_to_idx
+            .get(id)
+            .map(|&ix| {
+                let node = &self.snapshot.nodes[ix];
+                node.outgoing.len() + node.incoming.len()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Resolve a slice of NodeIx indices to SymbolIds.
+    pub fn resolve_node_ids(&self, indices: &[NodeIx]) -> Vec<SymbolId> {
+        indices
+            .iter()
+            .filter_map(|&ix| self.snapshot.nodes.get(ix).map(|n| n.symbol_id))
+            .collect()
+    }
+
     // ── neighbors ────────────────────────────────────────────────────────
 
     /// Direct neighbors of a symbol, optionally filtered by edge kinds.
