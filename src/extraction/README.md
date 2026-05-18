@@ -8,13 +8,68 @@ Source code extraction powered by tree-sitter queries.
 Source File
     |
     v
-LanguageAdapter::parse()
+LanguageAdapter::language()  ──► tree_sitter::Language
+    |                              + queries/*.scm
+    v
+QueryEngine::run_queries_text()  ──► QueryResults(captures)
     |
     v
-FileFacts { symbols, scopes, references, imports, ..., raw_edges }
+extract_and_normalize()  ──► LanguageAdapter::normalize_*()
+    |
+    v
+FileFacts { symbols, scopes, references, imports, raw_edges, callsites }
+    |
+    v
+Store::insert_file_facts()  ──► SQLite (7 tables)
 ```
 
 Extraction is **purely syntactic** — it runs tree-sitter queries on source files and produces `FileFacts`. Resolution and semantic edges happen later in `atlas-resolve`.
+
+## Modules
+
+| File | Purpose |
+|------|---------|
+| `mod.rs` | Module exports (`LanguageRegistry`, `LanguageAdapter`, `QueryEngine`, `extract_file`) |
+| `grammar.rs` | `LanguageRegistry` — maps Language → grammar + adapter |
+| `languages/mod.rs` | `LanguageAdapter` trait definition |
+| `languages/typescript.rs` | TypeScript adapter implementation |
+| `languages/python.rs` | Python adapter implementation |
+| `engine.rs` | `QueryEngine` — runs tree-sitter queries against source text |
+| `extract.rs` | `extract_file()` — orchestrator: parse → query → normalize → FileFacts |
+
+## QueryEngine (`engine.rs`)
+
+```rust
+pub struct QueryEngine;
+
+impl QueryEngine {
+    pub fn new() -> Self;
+    pub fn run_queries(&self, tree: &Tree, source: &[u8],
+                        queries: &[(&str, &str)]) -> anyhow::Result<HashMap<&str, Vec<QueryCapture>>>;
+    pub fn run_queries_text(&self, source: &str, language: tree_sitter::Language,
+                             queries: &[(&str, &str)]) -> anyhow::Result<HashMap<&str, Vec<QueryCapture>>>;
+}
+```
+
+Each query returns `Vec<QueryCapture>` containing capture name + node byte range + text. Uses `StreamingIterator` (tree-sitter 0.24 API).
+
+## extract_file() Pipeline (`extract.rs`)
+
+```rust
+pub fn extract_file(
+    registry: &LanguageRegistry,
+    file_path: &Path,
+    source: &str,
+) -> anyhow::Result<FileFacts>
+```
+
+Steps:
+1. Detect language + look up adapter
+2. Compute `FileId` via `blake3(path)`
+3. Parse source → tree-sitter `Tree`
+4. Run 4 queries (definitions, references, imports, scopes) via `collect_captures()`
+5. Call `extract_and_normalize()` — maps captures through adapter's `normalize_*()` methods
+6. Assemble `FileFacts` (structural edges like Contains/Calls deferred to resolver)
 
 ## LanguageAdapter Trait (`languages/mod.rs`)
 
@@ -79,9 +134,9 @@ impl LanguageRegistry {
 
 | Language | Feature Flag | Crate | Adapter Status |
 |----------|-------------|-------|----------------|
-| TypeScript | `typescript` | `tree-sitter-typescript` | Not implemented |
-| JavaScript | `javascript` | `tree-sitter-typescript` | Not implemented |
-| Python | `python` | `tree-sitter-python` | Not implemented |
+| TypeScript | `typescript` | `tree-sitter-typescript` | ✅ Implemented |
+| JavaScript | `javascript` | `tree-sitter-typescript` | ✅ Implemented |
+| Python | `python` | `tree-sitter-python` | ✅ Implemented |
 | Java | `java` | `tree-sitter-java` | Not implemented |
 | C | `c` | `tree-sitter-c` | Not implemented |
 | C++ | `cpp` | `tree-sitter-cpp` | Not implemented |
