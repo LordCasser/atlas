@@ -221,10 +221,7 @@ impl LanguageAdapter for JavaAdapter {
         let text = node_text(node, source)?;
 
         let lang = self.language();
-        let source_sym = find_enclosing_method_id(node, source, file_id, lang)
-            .unwrap_or_else(|| {
-                SymbolId::generate(&file_id, "dataflow", "class_scope", "source", None::<&str>)
-            });
+        let source_sym = find_enclosing_method_id(node, source, file_id, lang)?;
 
         let target = SymbolId::generate(
             &file_id,
@@ -321,7 +318,8 @@ fn qualified_name_from_node_java(
     source: &str,
 ) -> String {
     let mut parts = vec![name.to_string()];
-    let mut current = node;
+    // Start from parent to avoid re-adding the immediate container's name
+    let mut current = node.parent().unwrap_or(node);
 
     while let Some(parent) = current.parent() {
         match parent.kind() {
