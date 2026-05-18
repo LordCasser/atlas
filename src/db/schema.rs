@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS imports (
 CREATE TABLE IF NOT EXISTS edges (
     edge_id      BLOB PRIMARY KEY NOT NULL,
     source       BLOB NOT NULL REFERENCES symbols(symbol_id) ON DELETE CASCADE,
-    target       BLOB NOT NULL REFERENCES symbols(symbol_id) ON DELETE CASCADE,
+    target       BLOB,
     kind         TEXT NOT NULL,
     confidence   REAL NOT NULL DEFAULT 0.5,
     provenance   TEXT NOT NULL DEFAULT 'tree_sitter'

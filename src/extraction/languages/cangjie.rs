@@ -211,10 +211,7 @@ impl LanguageAdapter for CangjieAdapter {
         let text = node_text(node, source)?;
 
         let lang = self.language();
-        let source_sym = find_enclosing_function_id_cj(node, source, file_id, lang)
-            .unwrap_or_else(|| {
-                SymbolId::generate(&file_id, "dataflow", "file_scope", "source", None::<&str>)
-            });
+        let source_sym = find_enclosing_function_id_cj(node, source, file_id, lang)?;
 
         let target = SymbolId::generate(
             &file_id,

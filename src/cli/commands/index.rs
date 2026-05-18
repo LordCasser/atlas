@@ -100,7 +100,7 @@ fn walk_and_index(root: &Path, store: &Store, _registry: &LanguageRegistry) -> a
                     }
                     Err(e) => {
                         eprintln!(
-                            "  Warning: {} — {}",
+                            "  Warning: {} — {:#}",
                             path.strip_prefix(root).unwrap_or(&path).display(),
                             e
                         );

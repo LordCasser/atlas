@@ -262,13 +262,11 @@ impl LanguageAdapter for TypeScriptAdapter {
         let kind = EdgeKind::from_str(kind_str).unwrap_or(EdgeKind::Assigns);
         let text = node_text(node, source)?;
 
-        // Find the enclosing function/method to use as the dataflow source
+        // Find the enclosing function/method to use as the dataflow source.
+        // Skip dataflow edges that are not inside a function — the source
+        // SymbolId must match an existing symbol in the database.
         let lang = self.language();
-        let source_sym = find_enclosing_function_id(node, source, file_id, lang)
-            .unwrap_or_else(|| {
-                // Fallback: generate a file-scoped synthetic source
-                SymbolId::generate(&file_id, "dataflow", "file_scope", "source", None::<&str>)
-            });
+        let source_sym = find_enclosing_function_id(node, source, file_id, lang)?;
 
         let target = SymbolId::generate(
             &file_id,
