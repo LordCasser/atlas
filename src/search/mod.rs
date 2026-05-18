@@ -57,6 +57,7 @@ impl SearchEngine {
         }
 
         let total_symbols = self.store.count_symbols()?;
+        let matching_symbols = raw_results.len() as usize;
 
         // Compute global max degree for normalization
         let max_degree = raw_results
@@ -70,7 +71,7 @@ impl SearchEngine {
             let name_sim = compute_name_similarity(query, &sym.name);
             let path_match = sym.qualified_name.to_lowercase().contains(&query.to_lowercase());
             let degree = self.graph.degree(&sym.id);
-            let idf = scoring::idf_weight(total_symbols, 1);
+            let idf = scoring::idf_weight(total_symbols, matching_symbols);
 
             let score = SearchScore::new(
                 idf.clamp(0.0, 1.0),

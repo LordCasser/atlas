@@ -1,37 +1,6 @@
-//! Levenshtein distance for fuzzy matching.
+//! Levenshtein distance for fuzzy matching — re-exported from types.
 
-/// Calculate Levenshtein edit distance between two strings.
-pub fn levenshtein(a: &str, b: &str) -> usize {
-    let a_len = a.chars().count();
-    let b_len = b.chars().count();
-
-    if a_len == 0 {
-        return b_len;
-    }
-    if b_len == 0 {
-        return a_len;
-    }
-
-    let mut matrix = vec![vec![0; b_len + 1]; a_len + 1];
-
-    for (i, row) in matrix.iter_mut().enumerate() {
-        row[0] = i;
-    }
-    for j in 0..=b_len {
-        matrix[0][j] = j;
-    }
-
-    for (i, a_char) in a.chars().enumerate() {
-        for (j, b_char) in b.chars().enumerate() {
-            let cost = if a_char == b_char { 0 } else { 1 };
-            matrix[i + 1][j + 1] = (matrix[i][j + 1] + 1)
-                .min(matrix[i + 1][j] + 1)
-                .min(matrix[i][j] + cost);
-        }
-    }
-
-    matrix[a_len][b_len]
-}
+pub use crate::types::levenshtein;
 
 #[cfg(test)]
 mod tests {

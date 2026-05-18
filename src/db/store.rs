@@ -786,9 +786,8 @@ fn write_scopes(conn: &Connection, scopes: &[ScopeDef]) -> anyhow::Result<()> {
         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"#,
     )?;
     for sc in scopes {
-        let path_json = serde_json::to_string(&sc.scope_path)?;
         stmt.execute(params![
-            sc.id, sc.file_id, sc.kind.as_str(), sc.name, path_json, sc.parent_id,
+            sc.id, sc.file_id, sc.kind.as_str(), sc.name, sc.scope_path, sc.parent_id,
             sc.range.start_byte, sc.range.end_byte, sc.range.start_line,
             sc.range.start_column, sc.range.end_line, sc.range.end_column,
         ])?;

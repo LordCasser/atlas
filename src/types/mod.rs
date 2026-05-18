@@ -29,3 +29,37 @@ pub use structs::{
     ArgumentFact, Callsite, DiagnosticLevel, ExtractDiagnostic, FileFacts, FileInfo, ImportDef,
     RawEdge, ReferenceUse, ResolvedTarget, ScopeDef, SymbolDef, TextRange,
 };
+
+// --- Utilities ---
+
+/// Levenshtein edit distance between two strings (character-level).
+/// Canonical implementation used by both search and resolution modules.
+pub fn levenshtein(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let n = a_chars.len();
+    let m = b_chars.len();
+
+    if n == 0 {
+        return m;
+    }
+    if m == 0 {
+        return n;
+    }
+
+    let mut prev: Vec<usize> = (0..=m).collect();
+    let mut curr = vec![0usize; m + 1];
+
+    for i in 1..=n {
+        curr[0] = i;
+        for j in 1..=m {
+            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1)
+                .min(curr[j - 1] + 1)
+                .min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    prev[m]
+}

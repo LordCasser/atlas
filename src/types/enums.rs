@@ -95,7 +95,7 @@ impl Language {
 // SymbolKind — what kind of symbol a definition is
 // ---------------------------------------------------------------------------
 
-/// 20 symbol definition kinds.
+/// 21 symbol definition kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SymbolKind {
@@ -474,6 +474,7 @@ pub enum ResolutionStrategy {
     NameOnly,
     FuzzyMatch,
     Heuristic,
+    ImportResolved,
     Builtin,
 }
 
@@ -484,6 +485,7 @@ impl ResolutionStrategy {
             Self::NameOnly => "name_only",
             Self::FuzzyMatch => "fuzzy_match",
             Self::Heuristic => "heuristic",
+            Self::ImportResolved => "import_resolved",
             Self::Builtin => "builtin",
         }
     }
@@ -494,6 +496,7 @@ impl ResolutionStrategy {
             "name_only" => Some(Self::NameOnly),
             "fuzzy_match" => Some(Self::FuzzyMatch),
             "heuristic" => Some(Self::Heuristic),
+            "import_resolved" => Some(Self::ImportResolved),
             "builtin" => Some(Self::Builtin),
             _ => None,
         }

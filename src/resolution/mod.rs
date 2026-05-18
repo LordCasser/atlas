@@ -179,7 +179,7 @@ impl ReferenceResolver {
                     return Some(ResolvedTarget {
                         symbol_id: matched.symbol_id,
                         confidence: Confidence::new(0.8),
-                        strategy: ResolutionStrategy::FuzzyMatch,
+                        strategy: ResolutionStrategy::ImportResolved,
                         provenance: Provenance::Heuristic,
                     });
                 }
@@ -224,8 +224,8 @@ impl ReferenceResolver {
             _ => return None, // No promotion needed
         };
 
-        // Source symbol: try the reference's source_symbol, fallback to scope owner
-        let source = reference.source_symbol.unwrap_or_default();
+        // Source symbol: must exist to create a valid edge
+        let source = reference.source_symbol?;
 
         Some(RawEdge {
             id: EdgeId::generate(

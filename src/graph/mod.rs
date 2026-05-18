@@ -2,8 +2,6 @@
 //! call graph analysis, import analysis, impact radius, shortest path.
 
 pub mod snapshot;
-pub mod traversal;
-pub mod queries;
 
 use std::sync::Arc;
 
@@ -100,15 +98,18 @@ impl GraphEngine {
         sub
     }
 
+    /// Kinds of edges that represent "calls" — includes promoted constructor/interface edges.
+    const CALL_EDGES: &[EdgeKind] = &[EdgeKind::Calls, EdgeKind::Instantiates, EdgeKind::Implements];
+
     // ── callers / callees / callgraph ────────────────────────────────────
 
-    /// Find direct callers (incoming Calls edges).
+    /// Find direct callers (incoming Calls + promoted Instantiates/Implements edges).
     pub fn callers(&self, id: &SymbolId) -> CallGraphView {
         let config = TraversalConfig {
             direction: TraversalDirection::Incoming,
             max_depth: 1,
             limit: 200,
-            edge_kind_filter: Some(vec![EdgeKind::Calls]),
+            edge_kind_filter: Some(Self::CALL_EDGES.to_vec()),
         };
         let sub = self.neighbors(id, config);
         CallGraphView {
@@ -117,13 +118,13 @@ impl GraphEngine {
         }
     }
 
-    /// Find direct callees (outgoing Calls edges).
+    /// Find direct callees (outgoing Calls + promoted Instantiates/Implements edges).
     pub fn callees(&self, id: &SymbolId) -> CallGraphView {
         let config = TraversalConfig {
             direction: TraversalDirection::Outgoing,
             max_depth: 1,
             limit: 200,
-            edge_kind_filter: Some(vec![EdgeKind::Calls]),
+            edge_kind_filter: Some(Self::CALL_EDGES.to_vec()),
         };
         let sub = self.neighbors(id, config);
         CallGraphView {
@@ -141,7 +142,7 @@ impl GraphEngine {
             direction: TraversalDirection::Both,
             max_depth: depth,
             limit: 500,
-            edge_kind_filter: Some(vec![EdgeKind::Calls]),
+            edge_kind_filter: Some(Self::CALL_EDGES.to_vec()),
         };
         let visited = self.snapshot.bfs(&[start], &config);
         Subgraph {

@@ -160,6 +160,43 @@ impl LanguageAdapter for PythonAdapter {
         })
     }
 
+    fn normalize_scope(
+        &self,
+        capture_name: &str,
+        node: tree_sitter::Node,
+        _source: &str,
+        file_id: FileId,
+        _file_path: &Path,
+    ) -> Option<ScopeDef> {
+        let kind = match capture_name {
+            "scope.file" => ScopeKind::File,
+            "scope.function" => ScopeKind::Function,
+            "scope.class" => ScopeKind::Class,
+            "scope.block" => ScopeKind::Block,
+            _ => return None,
+        };
+        let range = node_range(node);
+        let name = format!("{:?}#{}", kind, range.start_byte);
+        let scope_path = name.clone();
+
+        let scope_id = ScopeId::generate(
+            &file_id,
+            None::<&ScopeId>,
+            kind.as_str(),
+            range.start_byte,
+        );
+
+        Some(ScopeDef {
+            id: scope_id,
+            file_id,
+            kind,
+            name,
+            scope_path,
+            parent_id: None,
+            range,
+        })
+    }
+
     fn detect_package(&self, _source: &str, file_path: &Path) -> Option<String> {
         // For Python, look for setup.py, pyproject.toml, or __init__.py
         let mut current = file_path.parent()?;
