@@ -438,6 +438,34 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Load ALL symbols (for GraphSnapshot construction).
+    pub fn get_all_symbols(&self) -> anyhow::Result<Vec<SymbolDef>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
+                    language,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column,
+                    name_start_byte, name_end_byte, name_start_line, name_start_column,
+                    name_end_line, name_end_column,
+                    signature, visibility, exported, static_, async_,
+                    container_id, scope_id, package_name, namespace_path_json
+             FROM symbols",
+        )?;
+        let rows = stmt.query_map([], row_to_symbol)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Load ALL edges (for GraphSnapshot construction).
+    pub fn get_all_edges(&self) -> anyhow::Result<Vec<RawEdge>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT edge_id, source, target, kind, confidence, provenance FROM edges",
+        )?;
+        let rows = stmt.query_map([], row_to_edge)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     // -----------------------------------------------------------------------
     // FileFacts — convenience batch insert
     // -----------------------------------------------------------------------

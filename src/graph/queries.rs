@@ -1,15 +1,6 @@
-//! High-level graph queries: call graph, type hierarchy, impact radius.
+//! High-level graph queries: call graph, type hierarchy, import analysis.
+//!
+//! The `GraphEngine` in `mod.rs` provides the primary query API.
+//! This module holds domain-specific subgraph types.
 
-use crate::types::SymbolDef;
-
-pub struct CallGraph {
-    pub callers: Vec<SymbolDef>,
-    pub callees: Vec<SymbolDef>,
-}
-
-pub struct TypeHierarchy {
-    pub ancestors: Vec<SymbolDef>,
-    pub descendants: Vec<SymbolDef>,
-}
-
-// TODO: M4 — implement high-level graph queries
+pub use super::snapshot::{CallGraphView, GraphPath, Subgraph};

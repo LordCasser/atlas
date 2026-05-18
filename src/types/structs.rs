@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 /// A range in source text, stored as both byte offsets (machine) and
 /// line/column (human).  Both representations are always valid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct TextRange {
     /// 0-based absolute byte offset of the first character (start).
     pub start_byte: u32,

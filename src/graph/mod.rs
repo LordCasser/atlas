@@ -1,18 +1,372 @@
-//! Graph layer: traversal, call graphs, impact analysis.
+//! Graph layer: in-memory GraphSnapshot with BFS/DFS traversal,
+//! call graph analysis, import analysis, impact radius, shortest path.
 
+pub mod snapshot;
 pub mod traversal;
 pub mod queries;
 
-use crate::db::Store;
 use std::sync::Arc;
 
-/// High-level graph query engine.
+use crate::types::ids::SymbolId;
+use crate::types::EdgeKind;
+
+pub use snapshot::{
+    CallGraphView, GraphPath, GraphSnapshot, NodeIx, NodeSummary, Subgraph, TraversalConfig,
+    TraversalDirection,
+};
+
+use crate::db::Store;
+
+/// High-level graph query engine backed by an immutable `GraphSnapshot`.
+///
+/// All queries are O(1) lookups or bounded BFS/DFS traversals — no SQLite round-trips.
 pub struct GraphEngine {
-    store: Arc<Store>,
+    snapshot: Arc<GraphSnapshot>,
 }
 
 impl GraphEngine {
-    pub fn new(store: Arc<Store>) -> Self {
-        Self { store }
+    /// Build a GraphEngine by loading the full graph from the Store.
+    ///
+    /// `confidence_threshold` filters out low-confidence edges (0.0 = keep all).
+    pub fn from_store(store: &Store, confidence_threshold: f32) -> anyhow::Result<Self> {
+        let snapshot = GraphSnapshot::from_store(store, confidence_threshold)?;
+        Ok(Self {
+            snapshot: Arc::new(snapshot),
+        })
+    }
+
+    /// Build from an already-constructed snapshot (for testing).
+    pub fn from_snapshot(snapshot: GraphSnapshot) -> Self {
+        Self {
+            snapshot: Arc::new(snapshot),
+        }
+    }
+
+    /// Access the underlying snapshot.
+    pub fn snapshot(&self) -> &GraphSnapshot {
+        &self.snapshot
+    }
+
+    // ── basic lookups ────────────────────────────────────────────────────
+
+    pub fn node_count(&self) -> usize {
+        self.snapshot.node_count()
+    }
+
+    pub fn edge_count(&self) -> usize {
+        self.snapshot.edge_count
+    }
+
+    // ── neighbors ────────────────────────────────────────────────────────
+
+    /// Direct neighbors of a symbol, optionally filtered by edge kinds.
+    pub fn neighbors(
+        &self,
+        id: &SymbolId,
+        config: TraversalConfig,
+    ) -> Subgraph {
+        let Some(&node_ix) = self.snapshot.id_to_idx.get(id) else {
+            return Subgraph::default();
+        };
+        let pairs = self.snapshot.neighbors(
+            node_ix,
+            config.direction,
+            config.edge_kind_filter.as_deref(),
+        );
+        let mut sub = Subgraph::default();
+        sub.node_indices = pairs.iter().map(|(nix, _)| *nix).collect();
+        sub.edge_indices = pairs.iter().map(|(_, eix)| *eix).collect();
+        sub
+    }
+
+    // ── callers / callees / callgraph ────────────────────────────────────
+
+    /// Find direct callers (incoming Calls edges).
+    pub fn callers(&self, id: &SymbolId) -> CallGraphView {
+        let config = TraversalConfig {
+            direction: TraversalDirection::Incoming,
+            max_depth: 1,
+            limit: 200,
+            edge_kind_filter: Some(vec![EdgeKind::Calls]),
+        };
+        let sub = self.neighbors(id, config);
+        CallGraphView {
+            callers: sub.node_indices,
+            callees: vec![],
+        }
+    }
+
+    /// Find direct callees (outgoing Calls edges).
+    pub fn callees(&self, id: &SymbolId) -> CallGraphView {
+        let config = TraversalConfig {
+            direction: TraversalDirection::Outgoing,
+            max_depth: 1,
+            limit: 200,
+            edge_kind_filter: Some(vec![EdgeKind::Calls]),
+        };
+        let sub = self.neighbors(id, config);
+        CallGraphView {
+            callers: vec![],
+            callees: sub.node_indices,
+        }
+    }
+
+    /// Full call graph around a symbol (both directions, configurable depth).
+    pub fn callgraph(&self, id: &SymbolId, depth: usize) -> Subgraph {
+        let Some(&start) = self.snapshot.id_to_idx.get(id) else {
+            return Subgraph::default();
+        };
+        let config = TraversalConfig {
+            direction: TraversalDirection::Both,
+            max_depth: depth,
+            limit: 500,
+            edge_kind_filter: Some(vec![EdgeKind::Calls]),
+        };
+        let visited = self.snapshot.bfs(&[start], &config);
+        Subgraph {
+            node_indices: visited.iter().map(|(nix, _)| *nix).collect(),
+            edge_indices: vec![], // edges would require full revisit
+        }
+    }
+
+    // ── import dependencies ──────────────────────────────────────────────
+
+    /// Find all imports (incoming Imports edges → who imports this file/module).
+    pub fn importers(&self, file_id: &crate::types::ids::FileId) -> Vec<SymbolId> {
+        let node_ixs = self.snapshot.nodes_by_file(file_id);
+        let mut importers = std::collections::HashSet::new();
+        for &nix in node_ixs {
+            for &eix in &self.snapshot.nodes[nix].incoming {
+                let edge = self.snapshot.edge(eix);
+                if edge.kind == EdgeKind::Imports {
+                    importers.insert(edge.source);
+                }
+            }
+        }
+        importers.into_iter().collect()
+    }
+
+    /// Find all exports (outgoing Exports edges).
+    pub fn dependencies(&self, file_id: &crate::types::ids::FileId) -> Vec<crate::types::ids::FileId> {
+        let node_ixs = self.snapshot.nodes_by_file(file_id);
+        let mut deps = std::collections::HashSet::new();
+        for &nix in node_ixs {
+            for &eix in &self.snapshot.nodes[nix].outgoing {
+                let edge = self.snapshot.edge(eix);
+                if edge.kind == EdgeKind::Imports || edge.kind == EdgeKind::Includes {
+                    if let Some(dep_node) = self.snapshot.node_by_id(&edge.target) {
+                        deps.insert(dep_node.file_id);
+                    }
+                }
+            }
+        }
+        deps.into_iter().collect()
+    }
+
+    // ── impact analysis ──────────────────────────────────────────────────
+
+    /// Impact radius: BFS outward (follows Calls + Contains + Imports) up to `depth`.
+    pub fn impact(&self, id: &SymbolId, depth: usize) -> Subgraph {
+        let Some(&start) = self.snapshot.id_to_idx.get(id) else {
+            return Subgraph::default();
+        };
+        let config = TraversalConfig {
+            direction: TraversalDirection::Outgoing,
+            max_depth: depth,
+            limit: 1000,
+            edge_kind_filter: Some(vec![
+                EdgeKind::Calls,
+                EdgeKind::Contains,
+                EdgeKind::Imports,
+                EdgeKind::References,
+            ]),
+        };
+        let visited = self.snapshot.bfs(&[start], &config);
+        Subgraph {
+            node_indices: visited.iter().map(|(nix, _)| *nix).collect(),
+            edge_indices: vec![],
+        }
+    }
+
+    /// Impact radius including container children.
+    /// Expands the starting set by adding all symbols whose `container` is the target,
+    /// then runs outward BFS.
+    pub fn impact_with_children(&self, id: &SymbolId, depth: usize) -> Subgraph {
+        let Some(&start) = self.snapshot.id_to_idx.get(id) else {
+            return Subgraph::default();
+        };
+        // Collect children: all nodes whose container == target
+        let mut starts: Vec<NodeIx> = vec![start];
+        for (ix, node) in self.snapshot.nodes.iter().enumerate() {
+            if node.container.as_ref() == Some(id) {
+                starts.push(ix);
+            }
+        }
+        let config = TraversalConfig {
+            direction: TraversalDirection::Outgoing,
+            max_depth: depth,
+            limit: 1000,
+            edge_kind_filter: Some(vec![
+                EdgeKind::Calls,
+                EdgeKind::Contains,
+                EdgeKind::Imports,
+                EdgeKind::References,
+            ]),
+        };
+        let visited = self.snapshot.bfs(&starts, &config);
+        Subgraph {
+            node_indices: visited.iter().map(|(nix, _)| *nix).collect(),
+            edge_indices: vec![],
+        }
+    }
+
+    // ── shortest path ────────────────────────────────────────────────────
+
+    /// Find the shortest path between two symbols (follows all edge kinds).
+    pub fn shortest_path(&self, from: &SymbolId, to: &SymbolId, max_depth: usize) -> Option<GraphPath> {
+        let from_ix = self.snapshot.id_to_idx.get(from)?;
+        let to_ix = self.snapshot.id_to_idx.get(to)?;
+        let path = self.snapshot.shortest_path(*from_ix, *to_ix, max_depth)?;
+        Some(GraphPath {
+            node_indices: path,
+            edge_indices: vec![],
+        })
+    }
+
+    // ── usages ───────────────────────────────────────────────────────────
+
+    /// Find all references that point to this symbol.
+    /// NOTE: returns reference target indices; actual `ReferenceUse` data is in the Store.
+    pub fn usage_symbols(&self, id: &SymbolId) -> Vec<SymbolId> {
+        let Some(&target_ix) = self.snapshot.id_to_idx.get(id) else {
+            return vec![];
+        };
+        let mut users = Vec::new();
+        for &eix in &self.snapshot.nodes[target_ix].incoming {
+            let edge = self.snapshot.edge(eix);
+            users.push(edge.source);
+        }
+        users
+    }
+
+    // ── file-level ───────────────────────────────────────────────────────
+
+    /// Get all symbols defined in a file.
+    pub fn file_symbols(&self, file_id: &crate::types::ids::FileId) -> Vec<SymbolId> {
+        self.snapshot
+            .nodes_by_file(file_id)
+            .iter()
+            .map(|&ix| self.snapshot.nodes[ix].symbol_id)
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{
+        Confidence, Language, Provenance,
+        SymbolKind, Visibility,
+    };
+    use crate::types::ids::{FileId, SymbolId};
+
+    fn make_file_id(name: &str) -> FileId {
+        FileId::generate(name)
+    }
+
+    fn make_symbol(file_id: FileId, name: &str, qname: &str, kind: SymbolKind) -> crate::types::SymbolDef {
+        let id = SymbolId::generate(&file_id, "typescript", qname, kind.as_str(), None);
+        crate::types::SymbolDef {
+            id,
+            kind,
+            name: name.to_string(),
+            qualified_name: qname.to_string(),
+            symbol_path: vec![],
+            file_id,
+            language: Language::TypeScript,
+            range: Default::default(),
+            name_range: Default::default(),
+            signature: None,
+            visibility: Some(Visibility::Public),
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+        }
+    }
+
+    fn make_edge(source: SymbolId, target: SymbolId, kind: EdgeKind) -> crate::types::RawEdge {
+        use crate::types::ids::EdgeId;
+        let id = EdgeId::generate(&source, &target, kind.as_str(), None, Provenance::TreeSitter.as_str());
+        crate::types::RawEdge {
+            id,
+            source,
+            target,
+            kind,
+            confidence: Confidence::certain(),
+            provenance: Provenance::TreeSitter,
+        }
+    }
+
+    fn test_snapshot() -> GraphSnapshot {
+        let fid = make_file_id("test.ts");
+        let a = make_symbol(fid, "main", "main", SymbolKind::Function);
+        let b = make_symbol(fid, "helper", "helper", SymbolKind::Function);
+        let c = make_symbol(fid, "log", "log", SymbolKind::Function);
+        let e1 = make_edge(a.id, b.id, EdgeKind::Calls);
+        let e2 = make_edge(b.id, c.id, EdgeKind::Calls);
+        GraphSnapshot::from_parts(
+            vec![a, b, c],
+            vec![e1, e2],
+            0.0,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_engine_callers_callees() {
+        let engine = GraphEngine::from_snapshot(test_snapshot());
+
+        // b's caller is main (a)
+        let fid = make_file_id("test.ts");
+        let b = make_symbol(fid, "helper", "helper", SymbolKind::Function);
+        let callers = engine.callers(&b.id);
+        assert_eq!(callers.callers.len(), 1);
+
+        // main's callee is helper (b)
+        let a = make_symbol(fid, "main", "main", SymbolKind::Function);
+        let callees = engine.callees(&a.id);
+        assert_eq!(callees.callees.len(), 1);
+    }
+
+    #[test]
+    fn test_engine_callgraph() {
+        let engine = GraphEngine::from_snapshot(test_snapshot());
+        let fid = make_file_id("test.ts");
+        let b = make_symbol(fid, "helper", "helper", SymbolKind::Function);
+        let cg = engine.callgraph(&b.id, 2);
+        assert!(cg.node_indices.len() >= 3); // self + upstream + downstream
+    }
+
+    #[test]
+    fn test_engine_shortest_path() {
+        let engine = GraphEngine::from_snapshot(test_snapshot());
+        let fid = make_file_id("test.ts");
+        let a = make_symbol(fid, "main", "main", SymbolKind::Function);
+        let c = make_symbol(fid, "log", "log", SymbolKind::Function);
+        let path = engine.shortest_path(&a.id, &c.id, 5);
+        assert!(path.is_some());
+    }
+
+    #[test]
+    fn test_engine_usage_symbols() {
+        let engine = GraphEngine::from_snapshot(test_snapshot());
+        let fid = make_file_id("test.ts");
+        let c = make_symbol(fid, "log", "log", SymbolKind::Function);
+        let users = engine.usage_symbols(&c.id);
+        assert_eq!(users.len(), 1); // only helper calls log
     }
 }
