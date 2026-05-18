@@ -175,7 +175,15 @@ impl LanguageAdapter for TypeScriptAdapter {
     ) -> Option<ScopeDef> {
         let kind = match capture_name {
             "scope.file" => ScopeKind::File,
+            "scope.function" => ScopeKind::Function,
+            "scope.method" => ScopeKind::Method,
+            "scope.class" => ScopeKind::Class,
+            "scope.interface" => ScopeKind::Interface,
+            "scope.enum" => ScopeKind::Enum,
+            "scope.namespace" => ScopeKind::Namespace,
             "scope.block" => ScopeKind::Block,
+            "scope.conditional" => ScopeKind::Conditional,
+            "scope.loop" => ScopeKind::Loop,
             _ => return None,
         };
         let range = node_range(node);

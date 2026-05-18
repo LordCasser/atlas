@@ -40,20 +40,6 @@ hex = "0.4"
 
 # Error handling
 anyhow = "1"
-thiserror = "2"
-
-# Parallelism
-rayon = "1.10"
-
-# Caching
-lru = "0.12"
-dashmap = "6"
-
-# Glob matching
-glob = "0.3"
-
-# Regex
-regex = "1"
 
 # Logging
 tracing = "0.1"

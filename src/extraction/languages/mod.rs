@@ -138,17 +138,20 @@ pub mod typescript;
 #[cfg(feature = "python")]
 pub mod python;
 
-// Future:
-// #[cfg(feature = "java")]
-// pub mod java;
-// #[cfg(feature = "c")]
-// pub mod c;
-// #[cfg(feature = "cpp")]
-// pub mod cpp;
-// #[cfg(feature = "arkts")]
-// pub mod arkts;
-// #[cfg(feature = "cangjie")]
-// pub mod cangjie;
+#[cfg(feature = "arkts")]
+pub mod arkts;
+
+#[cfg(feature = "java")]
+pub mod java;
+
+#[cfg(feature = "c")]
+pub mod c;
+
+#[cfg(feature = "cpp")]
+pub mod cpp;
+
+#[cfg(feature = "cangjie")]
+pub mod cangjie;
 
 /// Create a LanguageAdapter for the given language.
 /// Returns `None` if the language's adapter is not compiled in (feature-gated).
@@ -160,6 +163,16 @@ pub fn create_adapter(lang: Language) -> Option<Box<dyn LanguageAdapter>> {
         }
         #[cfg(feature = "python")]
         Language::Python => Some(Box::new(python::PythonAdapter)),
+        #[cfg(feature = "arkts")]
+        Language::ArkTS => Some(Box::new(arkts::ArkTsAdapter)),
+        #[cfg(feature = "java")]
+        Language::Java => Some(Box::new(java::JavaAdapter)),
+        #[cfg(feature = "c")]
+        Language::C => Some(Box::new(c::CAdapter)),
+        #[cfg(feature = "cpp")]
+        Language::Cpp => Some(Box::new(cpp::CppAdapter)),
+        #[cfg(feature = "cangjie")]
+        Language::Cangjie => Some(Box::new(cangjie::CangjieAdapter)),
         _ => None,
     }
 }

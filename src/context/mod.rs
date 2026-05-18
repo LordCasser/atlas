@@ -5,9 +5,6 @@
 //!   - "What does the call chain for X look like?"
 //!   - "Which files import/depend on X?"
 
-pub mod formatter;
-pub mod search;
-
 use crate::db::Store;
 use crate::graph::GraphEngine;
 use crate::types::{FileId, SymbolDef, SymbolId};

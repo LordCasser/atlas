@@ -11,13 +11,11 @@
 
 (block) @scope.block
 
-; if/for/while/with/try blocks as child scopes
-(if_statement) @scope.block
+; Conditional scopes
+(if_statement) @scope.conditional
+(try_statement) @scope.conditional
+(with_statement) @scope.conditional
 
-(for_statement) @scope.block
-
-(while_statement) @scope.block
-
-(with_statement) @scope.block
-
-(try_statement) @scope.block
+; Loop scopes
+(for_statement) @scope.loop
+(while_statement) @scope.loop

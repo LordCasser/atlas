@@ -33,6 +33,8 @@ Atlas MVP 使用 **vertical slices + language fixtures** 推进，而不是先�
 | M8 | Incremental Sync | git status + mtime detection, re-extract→re-resolve pipeline | ✅ 2026-05-18 |
 | M9 | Dataflow-lite | Parameter/Returns/Assigns edges extraction | ✅ 2026-05-18 |
 | AR | Architecture Review & Fixes | 修复 12 个 critical/high 问题 (C1-C4, H1-H8) | ✅ 2026-05-18 |
+| AR2 | Remaining Medium Issues | 移除未使用的依赖, 删除死模块, 添加 project_metadata, 扩展 scopes.scm | ✅ 2026-05-18 |
+| AR3 | Language Adapters (Java/C/C++/ArkTS/Cangjie) | 为所有 8 种 MVP 语言实现 LanguageAdapter | ✅ 2026-05-18 |
 
 ---
 

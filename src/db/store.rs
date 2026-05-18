@@ -539,6 +539,41 @@ impl Store {
     }
 
     // -----------------------------------------------------------------------
+    // Project metadata (key-value)
+    // -----------------------------------------------------------------------
+
+    /// Set a project metadata key-value pair.
+    pub fn set_metadata(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO project_metadata (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Get a project metadata value by key.
+    pub fn get_metadata(&self, key: &str) -> anyhow::Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT value FROM project_metadata WHERE key = ?1")?;
+        let mut rows = stmt.query(params![key])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row.get(0)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Get the schema version from the database.
+    pub fn schema_version(&self) -> anyhow::Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT MAX(version) FROM schema_versions"
+        )?;
+        let version: Option<i64> = stmt.query_row([], |row| row.get(0))?;
+        Ok(version.unwrap_or(0))
+    }
+
+    // -----------------------------------------------------------------------
     // Stats
     // -----------------------------------------------------------------------
 

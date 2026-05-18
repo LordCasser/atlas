@@ -56,6 +56,15 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     println!("  Symbols:  {}", db_stats.total_symbols);
     println!("  Edges:    {}", db_stats.total_edges);
 
+    // Record indexing timestamp for incremental sync
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string();
+    store.set_metadata("last_index_time", &now)?;
+    store.set_metadata("last_index_root", &root.display().to_string())?;
+
     Ok(())
 }
 

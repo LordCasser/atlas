@@ -176,6 +176,8 @@ impl LanguageAdapter for PythonAdapter {
             "scope.function" => ScopeKind::Function,
             "scope.class" => ScopeKind::Class,
             "scope.block" => ScopeKind::Block,
+            "scope.conditional" => ScopeKind::Conditional,
+            "scope.loop" => ScopeKind::Loop,
             _ => return None,
         };
         let range = node_range(node);

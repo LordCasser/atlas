@@ -10,15 +10,15 @@
 //! - `imports`    — import statements
 //! - `edges`      — semantic edges with confidence/provenance
 //! - `callsites`  — call expressions
+//! - `project_metadata` — key-value project configuration
 //! - `symbols_fts`— FTS5 index on symbol names
 //! - `schema_versions` — migration tracking
 
 /// Current schema version. Increment on every schema change.
-pub const CURRENT_SCHEMA_VERSION: i64 = 1;
+pub const CURRENT_SCHEMA_VERSION: i64 = 2;
 
 /// Minimum readable schema version (for backward compatibility).
 pub const MIN_READABLE_VERSION: i64 = 1;
-
 /// Complete DDL for a fresh database.
 pub const SCHEMA_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -153,6 +153,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     content_rowid='rowid'
 );
 
+-- Project-level metadata (key-value store for configuration, thresholds, timestamps)
+CREATE TABLE IF NOT EXISTS project_metadata (
+    key   TEXT PRIMARY KEY NOT NULL,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Schema version tracking
 CREATE TABLE IF NOT EXISTS schema_versions (
     version     INTEGER PRIMARY KEY,
@@ -255,6 +262,7 @@ mod tests {
         assert!(tables.contains(&"edges".to_string()));
         assert!(tables.contains(&"callsites".to_string()));
         assert!(tables.contains(&"symbols_fts".to_string()));
+        assert!(tables.contains(&"project_metadata".to_string()));
         assert!(tables.contains(&"schema_versions".to_string()));
     }
 }
