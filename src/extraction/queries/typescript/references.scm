@@ -22,5 +22,6 @@
 (member_expression
   property: (property_identifier) @reference.field)
 
-; Simple identifier references (catch-all for variable uses)
-(identifier) @reference.usage
+; Note: no catch-all @reference.usage — avoids capturing local variables,
+; loop counters, params, and identifiers already matched by specific patterns.
+; Simple identifier reads can be added later via a refined query.

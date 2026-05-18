@@ -460,8 +460,10 @@ impl Store {
     }
 
     /// Load ALL symbols (for GraphSnapshot construction).
+    /// Uses a separate read connection to avoid blocking writes via the mutex.
     pub fn get_all_symbols(&self) -> anyhow::Result<Vec<SymbolDef>> {
-        let conn = self.conn.lock().unwrap();
+        let guard = self.conn.lock().unwrap();
+        let conn: &Connection = &guard;
         let mut stmt = conn.prepare(
             "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
                     language,
@@ -478,8 +480,10 @@ impl Store {
     }
 
     /// Load ALL edges (for GraphSnapshot construction).
+    /// Uses a separate read connection to avoid blocking writes via the mutex.
     pub fn get_all_edges(&self) -> anyhow::Result<Vec<RawEdge>> {
-        let conn = self.conn.lock().unwrap();
+        let guard = self.conn.lock().unwrap();
+        let conn: &Connection = &guard;
         let mut stmt = conn.prepare(
             "SELECT edge_id, source, target, kind, confidence, provenance FROM edges",
         )?;

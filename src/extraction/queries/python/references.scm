@@ -19,6 +19,3 @@
 (decorator
   (attribute
     attribute: (identifier) @reference.decorator))
-
-; Simple identifier references (catch-all for variable uses)
-(identifier) @reference.usage

@@ -110,10 +110,14 @@ impl LanguageAdapter for TypeScriptAdapter {
             &text,
         );
 
+        // Populate source_symbol by walking up to the enclosing function/class.
+        // This enables edge promotion (Calls→Instantiates/Implements) in the resolver.
+        let source_symbol = find_enclosing_function_id(node, source, file_id, self.language());
+
         Some(ReferenceUse {
             id: ref_id,
             file_id,
-            source_symbol: None, // Filled by the resolver during scope analysis
+            source_symbol,
             scope_id: None,
             kind,
             text,
