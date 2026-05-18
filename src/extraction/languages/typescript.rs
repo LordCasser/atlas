@@ -232,11 +232,63 @@ impl LanguageAdapter for TypeScriptAdapter {
         }
         frameworks
     }
+
+    fn dataflow_query(&self) -> &str {
+        include_str!("../queries/typescript/dataflow.scm")
+    }
+
+    fn normalize_dataflow(
+        &self,
+        capture_name: &str,
+        node: tree_sitter::Node,
+        source: &str,
+        file_id: FileId,
+        _file_path: &Path,
+    ) -> Option<RawEdge> {
+        let kind_str = ts_dataflow_kind(capture_name)?;
+        let kind = EdgeKind::from_str(kind_str).unwrap_or(EdgeKind::Assigns);
+        let text = node_text(node, source)?;
+        let _ = node_range(node);
+        let target = SymbolId::generate(
+            &file_id,
+            "dataflow",
+            &text,
+            kind_str,
+            None::<&str>,
+        );
+        let edge_id = EdgeId::generate(
+            &SymbolId::default(),
+            &target,
+            kind_str,
+            None::<&ReferenceId>,
+            Provenance::TreeSitter.as_str(),
+        );
+        Some(RawEdge {
+            id: edge_id,
+            source: SymbolId::default(), // Filled by resolver
+            target,
+            kind,
+            confidence: Confidence::certain(),
+            provenance: Provenance::TreeSitter,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Map dataflow capture name to EdgeKind string.
+fn ts_dataflow_kind(capture_name: &str) -> Option<&'static str> {
+    match capture_name {
+        "dataflow.parameter" => Some("parameter"),
+        "dataflow.return" => Some("returns"),
+        "dataflow.assign" => Some("assigns"),
+        "dataflow.field_write" => Some("field_write"),
+        "dataflow.field_read" => Some("field_read"),
+        _ => None,
+    }
+}
 
 /// Extract text content from a tree-sitter node.
 fn node_text(node: tree_sitter::Node, source: &str) -> Option<String> {

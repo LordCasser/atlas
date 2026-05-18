@@ -46,6 +46,14 @@ pub trait LanguageAdapter: Send + Sync {
     /// S-expression query for scopes (containment regions).
     fn scope_query(&self) -> &str;
 
+    /// S-expression query for dataflow (parameters, returns, assignments).
+    /// Default returns empty — dataflow is optional.
+    fn dataflow_query(&self) -> &str {
+        ""
+    }
+
+    // -------------------------------------------------------------------
+    // Normalization: raw capture → Atlas IR
     // -------------------------------------------------------------------
     // Normalization: raw capture → Atlas IR
     // -------------------------------------------------------------------
@@ -91,6 +99,19 @@ pub trait LanguageAdapter: Send + Sync {
         _file_id: FileId,
         _file_path: &Path,
     ) -> Option<ScopeDef> {
+        None
+    }
+
+    /// Convert a dataflow query capture into a `RawEdge` (Parameter, Returns, Assigns,
+    /// FieldRead, FieldWrite), or `None`. Default returns `None`.
+    fn normalize_dataflow(
+        &self,
+        _capture_name: &str,
+        _node: tree_sitter::Node,
+        _source: &str,
+        _file_id: FileId,
+        _file_path: &Path,
+    ) -> Option<RawEdge> {
         None
     }
 

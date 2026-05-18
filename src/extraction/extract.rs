@@ -89,7 +89,21 @@ pub fn extract_file(
         },
     )?;
 
-    // 6. (reserved for callsite extraction in future milestone)
+    // 6. Extract and normalize dataflow edges (parameter, returns, assignments, field access)
+    let dataflow_query = adapter.dataflow_query();
+    let raw_edges = if dataflow_query.trim().is_empty() {
+        Vec::new()
+    } else {
+        extract_and_normalize(
+            adapter, &ts_lang, dataflow_query, root, source, source_bytes,
+            file_id, file_path, &mut diagnostics,
+            |adapter, name, node, src, fid, fp| {
+                adapter.normalize_dataflow(&name, node, src, fid, fp)
+            },
+        )?
+    };
+
+    // 7. (reserved for callsite extraction in future milestone)
 
     // Determine parse status
     let status = if diagnostics.iter().any(|d| d.level == DiagnosticLevel::Error) {
@@ -113,7 +127,7 @@ pub fn extract_file(
         references,
         imports,
         exports: Vec::new(),
-        raw_edges: Vec::new(),   // Edges built by resolver/graph-builder
+        raw_edges,   // Dataflow edges extracted inline; structural edges still by resolver
         callsites: Vec::new(),   // Callsites derived from call references later
         diagnostics,
     })
@@ -232,5 +246,33 @@ mod tests {
         let facts = extract_file(&adapter, file_id, &file_path, source, "abc").unwrap();
         assert_eq!(facts.file.language, Language::Python);
         assert!(!facts.symbols.is_empty(), "Should have symbols");
+    }
+
+    #[test]
+    fn test_extract_ts_dataflow() {
+        let source = "function add(a: number, b: number) {\n  let result = a + b;\n  return result;\n}\n";
+        let file_id = FileId::generate("test.ts");
+        let adapter = TypeScriptAdapter;
+        let file_path = PathBuf::from("test.ts");
+
+        let facts = extract_file(&adapter, file_id, &file_path, source, "abc").unwrap();
+        assert!(!facts.raw_edges.is_empty(), "Should have dataflow edges");
+        // Check for at least one parameter edge
+        let has_param = facts.raw_edges.iter().any(|e| e.kind.as_str() == "parameter");
+        assert!(has_param, "Expected parameter edges, got: {:?}", facts.raw_edges.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_extract_python_dataflow() {
+        let source = "def add(a, b):\n    c = a + b\n    return c\n";
+        let file_id = FileId::generate("test.py");
+        let adapter = PythonAdapter;
+        let file_path = PathBuf::from("test.py");
+
+        let facts = extract_file(&adapter, file_id, &file_path, source, "abc").unwrap();
+        assert!(!facts.raw_edges.is_empty(), "Should have dataflow edges");
+        // Check for at least one parameter edge
+        let has_param = facts.raw_edges.iter().any(|e| e.kind.as_str() == "parameter");
+        assert!(has_param, "Expected parameter edges, got: {:?}", facts.raw_edges.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>());
     }
 }
