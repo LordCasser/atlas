@@ -168,62 +168,7 @@ impl Store {
         if symbols.is_empty() {
             return Ok(());
         }
-        self.with_transaction(|tx| {
-            let mut stmt = tx.prepare(
-                r#"INSERT OR REPLACE INTO symbols
-                   (symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
-                    language,
-                    range_start_byte, range_end_byte, range_start_line, range_start_column,
-                    range_end_line, range_end_column,
-                    name_start_byte, name_end_byte, name_start_line, name_start_column,
-                    name_end_line, name_end_column,
-                    signature, visibility, exported, static_, async_,
-                    container_id, scope_id, package_name, namespace_path_json)
-                VALUES (
-                    ?1,?2,?3,?4,?5,?6,?7,
-                    ?8,?9,?10,?11,?12,?13,
-                    ?14,?15,?16,?17,?18,?19,
-                    ?20,?21,?22,?23,?24,
-                    ?25,?26,?27,?28
-                )"#,
-            )?;
-
-            for s in symbols {
-                let path_json = serde_json::to_string(&s.symbol_path)?;
-                let ns_json = serde_json::to_string(&s.namespace_path)?;
-                stmt.execute(params![
-                    s.id,
-                    s.file_id,
-                    s.kind.as_str(),
-                    s.name,
-                    s.qualified_name,
-                    path_json,
-                    s.language.as_str(),
-                    s.range.start_byte,
-                    s.range.end_byte,
-                    s.range.start_line,
-                    s.range.start_column,
-                    s.range.end_line,
-                    s.range.end_column,
-                    s.name_range.start_byte,
-                    s.name_range.end_byte,
-                    s.name_range.start_line,
-                    s.name_range.start_column,
-                    s.name_range.end_line,
-                    s.name_range.end_column,
-                    s.signature,
-                    s.visibility.map(|v| v.as_str()),
-                    s.exported as i32,
-                    s.static_ as i32,
-                    s.async_ as i32,
-                    s.container,
-                    s.scope_id,
-                    s.package_name,
-                    ns_json,
-                ])?;
-            }
-            Ok(())
-        })
+        self.with_transaction(|tx| write_symbols(tx, symbols))
     }
 
     /// Find a symbol by ID.
@@ -300,56 +245,7 @@ impl Store {
         if refs.is_empty() {
             return Ok(());
         }
-        self.with_transaction(|tx| {
-            let mut stmt = tx.prepare(
-                r#"INSERT OR REPLACE INTO references_v2
-                   (reference_id, file_id, source_symbol, scope_id, kind,
-                    text, name, receiver, arity,
-                    range_start_byte, range_end_byte, range_start_line,
-                    range_start_column, range_end_line, range_end_column,
-                    resolved_symbol_id, resolved_confidence, resolved_strategy,
-                    resolved_provenance)
-                VALUES (
-                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,
-                    ?10,?11,?12,?13,?14,?15,
-                    ?16,?17,?18,?19
-                )"#,
-            )?;
-
-            for r in refs {
-                let (rsym, rconf, rstrat, rprov) = match &r.resolved {
-                    Some(rt) => (
-                        Some(rt.symbol_id.clone()),
-                        Some(rt.confidence.as_f32()),
-                        Some(rt.strategy.as_str()),
-                        Some(rt.provenance.as_str()),
-                    ),
-                    None => (None, None, None, None),
-                };
-                stmt.execute(params![
-                    r.id,
-                    r.file_id,
-                    r.source_symbol,
-                    r.scope_id,
-                    r.kind.as_str(),
-                    r.text,
-                    r.name,
-                    r.receiver,
-                    r.arity,
-                    r.range.start_byte,
-                    r.range.end_byte,
-                    r.range.start_line,
-                    r.range.start_column,
-                    r.range.end_line,
-                    r.range.end_column,
-                    rsym,
-                    rconf,
-                    rstrat,
-                    rprov,
-                ])?;
-            }
-            Ok(())
-        })
+        self.with_transaction(|tx| write_references(tx, refs))
     }
 
     /// Find all references belonging to a file.
@@ -407,33 +303,7 @@ impl Store {
         if scopes.is_empty() {
             return Ok(());
         }
-        self.with_transaction(|tx| {
-            let mut stmt = tx.prepare(
-                r#"INSERT OR REPLACE INTO scopes
-                   (scope_id, file_id, kind, name, scope_path,
-                    range_start_byte, range_end_byte, range_start_line,
-                    range_start_column, range_end_line, range_end_column,
-                    parent_id)
-                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"#,
-            )?;
-            for s in scopes {
-                stmt.execute(params![
-                    s.id,
-                    s.file_id,
-                    s.kind.as_str(),
-                    s.name,
-                    s.scope_path,
-                    s.range.start_byte,
-                    s.range.end_byte,
-                    s.range.start_line,
-                    s.range.start_column,
-                    s.range.end_line,
-                    s.range.end_column,
-                    s.parent_id,
-                ])?;
-            }
-            Ok(())
-        })
+        self.with_transaction(|tx| write_scopes(tx, scopes))
     }
 
     // -----------------------------------------------------------------------
@@ -445,66 +315,23 @@ impl Store {
         if imports.is_empty() {
             return Ok(());
         }
-        self.with_transaction(|tx| {
-            let mut stmt = tx.prepare(
-                r#"INSERT OR REPLACE INTO imports
-                   (import_id, file_id, kind, module, imported_name,
-                    local_name, is_wildcard, is_relative,
-                    range_start_byte, range_end_byte, range_start_line,
-                    range_start_column, range_end_line, range_end_column,
-                    alias)
-                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"#,
-            )?;
-            for imp in imports {
-                stmt.execute(params![
-                    imp.id,
-                    imp.file_id,
-                    imp.kind.as_str(),
-                    imp.module,
-                    imp.imported_name,
-                    imp.local_name,
-                    imp.is_wildcard as i32,
-                    imp.is_relative as i32,
-                    imp.range.start_byte,
-                    imp.range.end_byte,
-                    imp.range.start_line,
-                    imp.range.start_column,
-                    imp.range.end_line,
-                    imp.range.end_column,
-                    imp.alias,
-                ])?;
-            }
-            Ok(())
-        })
+        self.with_transaction(|tx| write_imports(tx, imports))
     }
 
-    // -----------------------------------------------------------------------
-    // Edges
-    // -----------------------------------------------------------------------
-
-    /// Batch-insert edges.
+    /// Batch-insert edges inside a transaction.
     pub fn insert_edges(&self, edges: &[RawEdge]) -> anyhow::Result<()> {
         if edges.is_empty() {
             return Ok(());
         }
-        self.with_transaction(|tx| {
-            let mut stmt = tx.prepare(
-                r#"INSERT OR REPLACE INTO edges
-                   (edge_id, source, target, kind, confidence, provenance)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
-            )?;
-            for e in edges {
-                stmt.execute(params![
-                    e.id,
-                    e.source,
-                    e.target,
-                    e.kind.as_str(),
-                    e.confidence.as_f32(),
-                    e.provenance.as_str(),
-                ])?;
-            }
-            Ok(())
-        })
+        self.with_transaction(|tx| write_edges(tx, edges))
+    }
+
+    /// Batch-insert callsites inside a transaction.
+    pub fn insert_callsites(&self, callsites: &[Callsite]) -> anyhow::Result<()> {
+        if callsites.is_empty() {
+            return Ok(());
+        }
+        self.with_transaction(|tx| write_callsites(tx, callsites))
     }
 
     /// Find edges originating from a symbol.
@@ -530,41 +357,50 @@ impl Store {
     }
 
     // -----------------------------------------------------------------------
-    // Callsites
+    // FileFacts — convenience batch insert
     // -----------------------------------------------------------------------
 
-    /// Batch-insert callsites.
-    pub fn insert_callsites(&self, callsites: &[Callsite]) -> anyhow::Result<()> {
-        if callsites.is_empty() {
-            return Ok(());
+    /// Insert all components of a `FileFacts` in a single transaction.
+    /// This is the primary write path from extraction.
+    pub fn insert_file_facts(&self, facts: &FileFacts) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+
+        // File info
+        tx.execute(
+            r#"INSERT OR REPLACE INTO files
+               (file_id, path, language, content_hash, status, index_time)
+               VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))"#,
+            params![
+                facts.file.file_id,
+                facts.file.path,
+                facts.file.language.as_str(),
+                facts.file.content_hash,
+                facts.file.status.as_str(),
+            ],
+        )?;
+
+        if !facts.symbols.is_empty() {
+            write_symbols(&tx, &facts.symbols)?;
         }
-        self.with_transaction(|tx| {
-            let mut stmt = tx.prepare(
-                r#"INSERT OR REPLACE INTO callsites
-                   (callsite_id, reference_id, caller, callee, receiver, args_json,
-                    range_start_byte, range_end_byte, range_start_line,
-                    range_start_column, range_end_line, range_end_column)
-                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"#,
-            )?;
-            for cs in callsites {
-                let args_json = serde_json::to_string(&cs.args)?;
-                stmt.execute(params![
-                    cs.id,
-                    cs.reference_id,
-                    cs.caller,
-                    cs.callee,
-                    cs.receiver,
-                    args_json,
-                    cs.range.start_byte,
-                    cs.range.end_byte,
-                    cs.range.start_line,
-                    cs.range.start_column,
-                    cs.range.end_line,
-                    cs.range.end_column,
-                ])?;
-            }
-            Ok(())
-        })
+        if !facts.scopes.is_empty() {
+            write_scopes(&tx, &facts.scopes)?;
+        }
+        if !facts.references.is_empty() {
+            write_references(&tx, &facts.references)?;
+        }
+        if !facts.imports.is_empty() {
+            write_imports(&tx, &facts.imports)?;
+        }
+        if !facts.raw_edges.is_empty() {
+            write_edges(&tx, &facts.raw_edges)?;
+        }
+        if !facts.callsites.is_empty() {
+            write_callsites(&tx, &facts.callsites)?;
+        }
+
+        tx.commit()?;
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -829,6 +665,146 @@ fn sanitize_fts5_query(raw: &str) -> String {
 // Tests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Private write helpers (take `&Connection` to enable single-transaction bulk writes)
+// ---------------------------------------------------------------------------
+
+fn write_symbols(conn: &Connection, symbols: &[SymbolDef]) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(
+        r#"INSERT OR REPLACE INTO symbols
+           (symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
+            language,
+            range_start_byte, range_end_byte, range_start_line, range_start_column,
+            range_end_line, range_end_column,
+            name_start_byte, name_end_byte, name_start_line, name_start_column,
+            name_end_line, name_end_column,
+            signature, visibility, exported, static_, async_,
+            container_id, scope_id, package_name, namespace_path_json)
+        VALUES (
+            ?1,?2,?3,?4,?5,?6,?7,
+            ?8,?9,?10,?11,?12,?13,
+            ?14,?15,?16,?17,?18,?19,
+            ?20,?21,?22,?23,?24,
+            ?25,?26,?27,?28
+        )"#,
+    )?;
+    for s in symbols {
+        let path_json = serde_json::to_string(&s.symbol_path)?;
+        let ns_json = serde_json::to_string(&s.namespace_path)?;
+        stmt.execute(params![
+            s.id, s.file_id, s.kind.as_str(), s.name, s.qualified_name, path_json,
+            s.language.as_str(),
+            s.range.start_byte, s.range.end_byte, s.range.start_line, s.range.start_column,
+            s.range.end_line, s.range.end_column,
+            s.name_range.start_byte, s.name_range.end_byte, s.name_range.start_line,
+            s.name_range.start_column, s.name_range.end_line, s.name_range.end_column,
+            s.signature, s.visibility.map(|v| v.as_str()),
+            s.exported as i32, s.static_ as i32, s.async_ as i32,
+            s.container, s.scope_id, s.package_name, ns_json,
+        ])?;
+    }
+    Ok(())
+}
+
+fn write_scopes(conn: &Connection, scopes: &[ScopeDef]) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(
+        r#"INSERT OR REPLACE INTO scopes
+           (scope_id, file_id, kind, name, scope_path_json, parent_id,
+            range_start_byte, range_end_byte, range_start_line, range_start_column,
+            range_end_line, range_end_column)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"#,
+    )?;
+    for sc in scopes {
+        let path_json = serde_json::to_string(&sc.scope_path)?;
+        stmt.execute(params![
+            sc.id, sc.file_id, sc.kind.as_str(), sc.name, path_json, sc.parent_id,
+            sc.range.start_byte, sc.range.end_byte, sc.range.start_line,
+            sc.range.start_column, sc.range.end_line, sc.range.end_column,
+        ])?;
+    }
+    Ok(())
+}
+
+fn write_references(conn: &Connection, refs: &[ReferenceUse]) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(
+        r#"INSERT OR REPLACE INTO references_v2
+            (reference_id, file_id, source_symbol, scope_id, kind, text, name,
+            receiver, arity,
+            range_start_byte, range_end_byte, range_start_line, range_start_column,
+            range_end_line, range_end_column,
+            resolved_symbol_id, resolved_confidence, resolved_strategy, resolved_provenance)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)"#,
+    )?;
+    for r in refs {
+        stmt.execute(params![
+            r.id, r.file_id, r.source_symbol, r.scope_id, r.kind.as_str(),
+            r.text, r.name, r.receiver, r.arity,
+            r.range.start_byte, r.range.end_byte, r.range.start_line,
+            r.range.start_column, r.range.end_line, r.range.end_column,
+            r.resolved.as_ref().map(|rt| &rt.symbol_id),
+            r.resolved.as_ref().map(|rt| rt.confidence.as_f32()),
+            r.resolved.as_ref().map(|rt| rt.strategy.as_str()),
+            r.resolved.as_ref().map(|rt| rt.provenance.as_str()),
+        ])?;
+    }
+    Ok(())
+}
+
+fn write_imports(conn: &Connection, imports: &[ImportDef]) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(
+        r#"INSERT OR REPLACE INTO imports
+           (import_id, file_id, kind, module, imported_name, local_name, alias,
+            is_wildcard, is_relative,
+            range_start_byte, range_end_byte, range_start_line, range_start_column,
+            range_end_line, range_end_column)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"#,
+    )?;
+    for imp in imports {
+        stmt.execute(params![
+            imp.id, imp.file_id, imp.kind.as_str(), imp.module, imp.imported_name,
+            imp.local_name, imp.alias, imp.is_wildcard as i32, imp.is_relative as i32,
+            imp.range.start_byte, imp.range.end_byte, imp.range.start_line,
+            imp.range.start_column, imp.range.end_line, imp.range.end_column,
+        ])?;
+    }
+    Ok(())
+}
+
+fn write_edges(conn: &Connection, edges: &[RawEdge]) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(
+        r#"INSERT OR REPLACE INTO edges
+           (edge_id, source, target, kind, confidence, provenance)
+        VALUES (?1,?2,?3,?4,?5,?6)"#,
+    )?;
+    for e in edges {
+        stmt.execute(params![
+            e.id, e.source, e.target, e.kind.as_str(),
+            e.confidence.as_f32(),
+            e.provenance.as_str(),
+        ])?;
+    }
+    Ok(())
+}
+
+fn write_callsites(conn: &Connection, callsites: &[Callsite]) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(
+        r#"INSERT OR REPLACE INTO callsites
+           (callsite_id, reference_id, caller, callee, receiver, args_json,
+            range_start_byte, range_end_byte, range_start_line, range_start_column,
+            range_end_line, range_end_column)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"#,
+    )?;
+    for cs in callsites {
+        let args_json = serde_json::to_string(&cs.args)?;
+        stmt.execute(params![
+            cs.id, cs.reference_id, cs.caller, cs.callee, cs.receiver, args_json,
+            cs.range.start_byte, cs.range.end_byte, cs.range.start_line,
+            cs.range.start_column, cs.range.end_line, cs.range.end_column,
+        ])?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1029,7 +1005,7 @@ mod tests {
             ..Default::default()
         };
 
-        store.store_file_facts(&facts).unwrap();
+        store.insert_file_facts(&facts).unwrap();
 
         let stats = store.get_stats().unwrap();
         assert_eq!(stats.total_files, 1);
@@ -1053,7 +1029,7 @@ mod tests {
             symbols: vec![sym],
             ..Default::default()
         };
-        store.store_file_facts(&facts).unwrap();
+        store.insert_file_facts(&facts).unwrap();
         assert_eq!(store.get_stats().unwrap().total_symbols, 1);
 
         store.delete_file_data(&file_id).unwrap();

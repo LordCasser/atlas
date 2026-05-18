@@ -20,11 +20,6 @@
     name: (dotted_name) @import.name
     alias: (identifier) @import.alias))
 
-; Wildcard imports
-(import_from_statement
-  module_name: (dotted_name) @import.module
-  name: (wildcard_import) @import.wildcard)
-
 ; Relative imports
 (import_from_statement
   module_name: (relative_import) @import.module

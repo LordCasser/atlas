@@ -10,9 +10,9 @@
 //! - References are preserved after resolution (via `resolved: Option<...>`).
 //! - All semantic edges carry `Confidence` and `Provenance`.
 
-mod ids;
-mod enums;
-mod structs;
+pub mod ids;
+pub mod enums;
+pub mod structs;
 
 // --- IDs ---
 pub use ids::{CallsiteId, EdgeId, FileId, ImportId, ReferenceId, ScopeId, SymbolId};

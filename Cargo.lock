@@ -102,6 +102,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "streaming-iterator",
  "tempfile",
  "thiserror",
  "tokio",
