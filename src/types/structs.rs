@@ -157,7 +157,8 @@ pub struct ReferenceUse {
     pub file_id: FileId,
 
     /// The symbol that contains this reference (source scope).
-    pub source_symbol: SymbolId,
+    /// Not always known at extraction time; filled by the resolver.
+    pub source_symbol: Option<SymbolId>,
 
     /// Scope containing the reference.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -514,7 +515,7 @@ mod tests {
         ReferenceUse {
             id,
             file_id,
-            source_symbol: source,
+            source_symbol: Some(source),
             scope_id: None,
             kind: ReferenceKind::Call,
             text,

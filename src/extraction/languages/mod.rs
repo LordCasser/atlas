@@ -81,6 +81,19 @@ pub trait LanguageAdapter: Send + Sync {
         file_path: &Path,
     ) -> Option<ImportDef>;
 
+    /// Convert a query capture into a `ScopeDef`, or `None`.
+    /// Default implementation returns `None` — scopes are optional for MVP extraction.
+    fn normalize_scope(
+        &self,
+        _capture_name: &str,
+        _node: tree_sitter::Node,
+        _source: &str,
+        _file_id: FileId,
+        _file_path: &Path,
+    ) -> Option<ScopeDef> {
+        None
+    }
+
     // -------------------------------------------------------------------
     // Optional hooks
     // -------------------------------------------------------------------
@@ -96,21 +109,22 @@ pub trait LanguageAdapter: Send + Sync {
     }
 }
 
-// Marker: this module intentionally has NO default per-language implementations.
-// Language adapters live in `atlas-languages/` crate or `extraction/languages/<lang>.rs`.
+// Language-specific adapters — feature-gated per language.
 
-// Language-specific adapters will be added in subsequent milestones:
-// #[cfg(feature = "typescript")]
-// mod typescript;
-// #[cfg(feature = "python")]
-// mod python;
+#[cfg(feature = "typescript")]
+pub mod typescript;
+
+#[cfg(feature = "python")]
+pub mod python;
+
+// Future:
 // #[cfg(feature = "java")]
-// mod java;
+// pub mod java;
 // #[cfg(feature = "c")]
-// mod c;
+// pub mod c;
 // #[cfg(feature = "cpp")]
-// mod cpp;
+// pub mod cpp;
 // #[cfg(feature = "arkts")]
-// mod arkts;
+// pub mod arkts;
 // #[cfg(feature = "cangjie")]
-// mod cangjie;
+// pub mod cangjie;

@@ -112,7 +112,7 @@ impl LanguageAdapter for PythonAdapter {
         Some(ReferenceUse {
             id: ref_id,
             file_id,
-            source_symbol: SymbolId::default(),
+            source_symbol: None, // Filled by the resolver during scope analysis
             scope_id: None,
             kind,
             text,

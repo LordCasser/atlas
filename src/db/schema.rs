@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS scopes (
 CREATE TABLE IF NOT EXISTS references_v2 (
     reference_id         BLOB PRIMARY KEY NOT NULL,
     file_id              BLOB NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
-    source_symbol        BLOB NOT NULL REFERENCES symbols(symbol_id),
+    source_symbol        BLOB,
     scope_id             BLOB,
     kind                 TEXT NOT NULL,
     text                 TEXT NOT NULL,
@@ -123,8 +123,8 @@ CREATE TABLE IF NOT EXISTS imports (
 
 CREATE TABLE IF NOT EXISTS edges (
     edge_id      BLOB PRIMARY KEY NOT NULL,
-    source       BLOB NOT NULL REFERENCES symbols(symbol_id),
-    target       BLOB NOT NULL REFERENCES symbols(symbol_id),
+    source       BLOB NOT NULL REFERENCES symbols(symbol_id) ON DELETE CASCADE,
+    target       BLOB NOT NULL REFERENCES symbols(symbol_id) ON DELETE CASCADE,
     kind         TEXT NOT NULL,
     confidence   REAL NOT NULL DEFAULT 0.5,
     provenance   TEXT NOT NULL DEFAULT 'tree_sitter'
@@ -133,8 +133,8 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE TABLE IF NOT EXISTS callsites (
     callsite_id          BLOB PRIMARY KEY NOT NULL,
     reference_id         BLOB,
-    caller               BLOB NOT NULL REFERENCES symbols(symbol_id),
-    callee               BLOB,
+    caller               BLOB NOT NULL REFERENCES symbols(symbol_id) ON DELETE CASCADE,
+    callee               BLOB REFERENCES symbols(symbol_id) ON DELETE SET NULL,
     receiver             TEXT,
     args_json            TEXT NOT NULL DEFAULT '[]',
     range_start_byte     INTEGER NOT NULL,

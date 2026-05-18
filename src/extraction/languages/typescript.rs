@@ -113,7 +113,7 @@ impl LanguageAdapter for TypeScriptAdapter {
         Some(ReferenceUse {
             id: ref_id,
             file_id,
-            source_symbol: SymbolId::default(), // Will be filled by extraction engine
+            source_symbol: None, // Filled by the resolver during scope analysis
             scope_id: None,
             kind,
             text,

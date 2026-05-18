@@ -80,18 +80,16 @@ pub fn extract_file(
         },
     )?;
 
-    // 5. Scopes — capture but don't normalize (trait doesn't have normalize_scope yet)
-    let scopes = Vec::new();
+    // 5. Extract and normalize scopes
+    let scopes = extract_and_normalize(
+        adapter, &ts_lang, adapter.scope_query(), root, source, source_bytes,
+        file_id, file_path, &mut diagnostics,
+        |adapter, name, node, src, fid, fp| {
+            adapter.normalize_scope(&name, node, src, fid, fp)
+        },
+    )?;
 
-    // 6. Run scope query to collect diagnostics at least
-    let scope_query = adapter.scope_query();
-    if !scope_query.trim().is_empty() {
-        let scope_captures = collect_captures(&ts_lang, scope_query, root, source_bytes)?;
-        for (name, node) in &scope_captures {
-            // Scopes aren't normalized yet; record capture for future use
-            let _ = (name, node);
-        }
-    }
+    // 6. (reserved for callsite extraction in future milestone)
 
     // Determine parse status
     let status = if diagnostics.iter().any(|d| d.level == DiagnosticLevel::Error) {

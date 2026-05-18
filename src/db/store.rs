@@ -436,66 +436,6 @@ impl Store {
         })
     }
 
-    /// Convenience: store an entire FileFacts result in one transaction.
-    pub fn store_file_facts(&self, facts: &FileFacts) -> anyhow::Result<()> {
-        self.with_transaction(|tx| {
-            // Upsert file
-            tx.execute(
-                r#"INSERT OR REPLACE INTO files
-                   (file_id, path, language, content_hash, status, index_time)
-                VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))"#,
-                params![
-                    facts.file.file_id,
-                    facts.file.path,
-                    facts.file.language.as_str(),
-                    facts.file.content_hash,
-                    facts.file.status.as_str(),
-                ],
-            )?;
-
-            // Symbols
-            if !facts.symbols.is_empty() {
-                let mut stmt = tx.prepare(
-                    r#"INSERT OR REPLACE INTO symbols
-                       (symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
-                        language,
-                        range_start_byte, range_end_byte, range_start_line, range_start_column,
-                        range_end_line, range_end_column,
-                        name_start_byte, name_end_byte, name_start_line, name_start_column,
-                        name_end_line, name_end_column,
-                        signature, visibility, exported, static_, async_,
-                        container_id, scope_id, package_name, namespace_path_json)
-                    VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)"#,
-                )?;
-                for s in &facts.symbols {
-                    let path_json = serde_json::to_string(&s.symbol_path)?;
-                    let ns_json = serde_json::to_string(&s.namespace_path)?;
-                    stmt.execute(params![
-                        s.id, s.file_id, s.kind.as_str(), s.name, s.qualified_name,
-                        path_json, s.language.as_str(),
-                        s.range.start_byte, s.range.end_byte, s.range.start_line,
-                        s.range.start_column, s.range.end_line, s.range.end_column,
-                        s.name_range.start_byte, s.name_range.end_byte,
-                        s.name_range.start_line, s.name_range.start_column,
-                        s.name_range.end_line, s.name_range.end_column,
-                        s.signature, s.visibility.map(|v| v.as_str()),
-                        s.exported as i32, s.static_ as i32, s.async_ as i32,
-                        s.container, s.scope_id, s.package_name, ns_json,
-                    ])?;
-                }
-            }
-            Ok(())
-        })?;
-
-        // These can be separate transactions for simplicity
-        self.insert_scopes(&facts.scopes)?;
-        self.insert_references(&facts.references)?;
-        self.insert_imports(&facts.imports)?;
-        self.insert_edges(&facts.raw_edges)?;
-        self.insert_callsites(&facts.callsites)?;
-
-        Ok(())
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -916,7 +856,7 @@ mod tests {
         let r = ReferenceUse {
             id: ref_id.clone(),
             file_id: file.file_id,
-            source_symbol: sym.id,
+            source_symbol: Some(sym.id),
             scope_id: None,
             kind: ReferenceKind::Call,
             text: "target".into(),
@@ -961,7 +901,7 @@ mod tests {
         let r = ReferenceUse {
             id: ref_id.clone(),
             file_id: file.file_id,
-            source_symbol: src.id,
+            source_symbol: Some(src.id),
             scope_id: None,
             kind: ReferenceKind::Call,
             text: "callee".into(),
@@ -988,7 +928,7 @@ mod tests {
     }
 
     #[test]
-    fn test_store_file_facts() {
+    fn test_insert_file_facts() {
         let store = test_store();
         let file_id = FileId::generate("src/example.py");
 

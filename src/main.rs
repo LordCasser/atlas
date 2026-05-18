@@ -8,21 +8,30 @@ fn main() -> anyhow::Result<()> {
     {
         let cli = Cli::parse();
         match cli.command {
+            Commands::Init { project } => {
+                atlas::cli::commands::init::run(&project)?;
+            }
+            Commands::Status { project } => {
+                atlas::cli::commands::status::run(&project)?;
+            }
+            Commands::Doctor { project } => {
+                atlas::cli::commands::doctor::run(&project)?;
+            }
             Commands::Index { project } => {
-                println!("Indexing project: {}", project);
-                // TODO: Phase 13
+                atlas::cli::commands::index::run(&project)?;
             }
             Commands::Sync { project } => {
-                println!("Syncing project: {}", project);
-                // TODO: Phase 13
+                atlas::cli::commands::sync::run(&project)?;
             }
-            Commands::Search { query, project, limit } => {
-                println!("Searching '{}' in {} (limit: {})", query, project, limit);
-                // TODO: Phase 13
+            Commands::Search {
+                query,
+                project,
+                limit,
+            } => {
+                atlas::cli::commands::search::run(&query, &project, limit)?;
             }
             Commands::Mcp { project } => {
-                println!("Starting MCP server for: {}", project);
-                // TODO: Phase 13
+                atlas::cli::commands::mcp::run(&project)?;
             }
         }
     }
