@@ -279,4 +279,277 @@ mod tests {
         let has_param = facts.raw_edges.iter().any(|e| e.kind.as_str() == "parameter");
         assert!(has_param, "Expected parameter edges, got: {:?}", facts.raw_edges.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>());
     }
+
+    #[test]
+    fn test_extract_and_insert_ts() {
+        use crate::db::Store;
+        let source = "function add(a: number, b: number) {\n  return a + b;\n}\nadd(1, 2);\n";
+        let file_id = FileId::generate("test.ts");
+        let adapter = TypeScriptAdapter;
+        let file_path = PathBuf::from("test.ts");
+
+        let facts = extract_file(&adapter, file_id, &file_path, source, "abc").unwrap();
+        println!("Symbols: {}", facts.symbols.len());
+        for s in &facts.symbols {
+            let sid = s.id.to_hex();
+            println!("  sym: {} ({}) qname={} id={}", s.name, s.kind.as_str(), s.qualified_name, &sid[..8]);
+        }
+        println!("References: {}", facts.references.len());
+        println!("Dataflow edges: {}", facts.raw_edges.len());
+        for e in &facts.raw_edges {
+            let src = e.source.to_hex();
+            let tgt = e.target.to_hex();
+            println!("  edge: {} -> {} ({})", &src[..8], &tgt[..8], e.kind.as_str());
+        }
+
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        let result = store.insert_file_facts(&facts);
+        assert!(result.is_ok(), "Insert failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_extract_and_insert_ts_class() {
+        use crate::db::Store;
+        let source = r#"export class Calculator {
+  add(a: number, b: number): number {
+    return a + b;
+  }
+}
+const calc = new Calculator();
+calc.add(1, 2);
+"#;
+        let file_id = FileId::generate("test.ts");
+        let adapter = TypeScriptAdapter;
+        let file_path = PathBuf::from("test.ts");
+
+        let facts = extract_file(&adapter, file_id, &file_path, source, "abc").unwrap();
+        assert!(!facts.symbols.is_empty());
+        assert!(!facts.raw_edges.is_empty());
+
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        let result = store.insert_file_facts(&facts);
+        assert!(result.is_ok(), "Insert failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_extract_and_insert_java() {
+        use crate::db::Store;
+        let source = r#"import java.util.List;
+
+public class UserService {
+    private List<String> users;
+
+    public String findById(String id) {
+        return users.get(0);
+    }
+
+    public void save(String item) {
+        users.add(item);
+    }
+}
+"#;
+        let file_id = FileId::generate("test.java");
+        let adapter = crate::extraction::create_adapter(Language::Java).unwrap();
+        let file_path = PathBuf::from("test.java");
+
+        let facts = extract_file(adapter.as_ref(), file_id, &file_path, source, "abc").unwrap();
+        println!("Java Symbols: {}", facts.symbols.len());
+        for s in &facts.symbols {
+            let sid = s.id.to_hex();
+            println!("  sym: {} ({}) qname={} id={}", s.name, s.kind.as_str(), s.qualified_name, &sid[..8]);
+        }
+        println!("References: {}", facts.references.len());
+        println!("Imports: {}", facts.imports.len());
+        println!("Scopes: {}", facts.scopes.len());
+        println!("Dataflow edges: {}", facts.raw_edges.len());
+        for e in &facts.raw_edges {
+            let src = e.source.to_hex();
+            let tgt = e.target.to_hex();
+            println!("  edge: {} -> {} ({})", &src[..8], &tgt[..8], e.kind.as_str());
+        }
+
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        let result = store.insert_file_facts(&facts);
+        assert!(result.is_ok(), "Insert failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_extract_and_insert_c() {
+        use crate::db::Store;
+        let source = r#"#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct {
+    char* name;
+    char* email;
+} User;
+
+User* user_create(const char* name, const char* email) {
+    User* u = (User*)malloc(sizeof(User));
+    u->name = strdup(name);
+    u->email = strdup(email);
+    return u;
+}
+
+void user_free(User* u) {
+    free(u->name);
+    free(u->email);
+    free(u);
+}
+
+char* user_greet(const User* u) {
+    char* buf = (char*)malloc(256);
+    snprintf(buf, 256, "Hello, %s!", u->name);
+    return buf;
+}
+"#;
+        let file_id = FileId::generate("test.c");
+        let adapter = crate::extraction::create_adapter(Language::C).unwrap();
+        let file_path = PathBuf::from("test.c");
+
+        let facts = extract_file(adapter.as_ref(), file_id, &file_path, source, "abc").unwrap();
+        println!("C Symbols: {}", facts.symbols.len());
+        for s in &facts.symbols {
+            let sid = s.id.to_hex();
+            println!("  sym: {} ({}) qname={} id={}", s.name, s.kind.as_str(), s.qualified_name, &sid[..8]);
+        }
+        println!("Dataflow edges: {}", facts.raw_edges.len());
+        for e in &facts.raw_edges {
+            let src = e.source.to_hex();
+            let tgt = e.target.to_hex();
+            println!("  edge: {} -> {} ({})", &src[..8], &tgt[..8], e.kind.as_str());
+        }
+
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        let result = store.insert_file_facts(&facts);
+        assert!(result.is_ok(), "Insert failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_extract_and_insert_cpp() {
+        use crate::db::Store;
+        let source = r#"#include <iostream>
+#include <string>
+#include <map>
+
+class UserService {
+public:
+    std::string findById(const std::string& id) {
+        auto it = users_.find(id);
+        return it != users_.end() ? it->second : "";
+    }
+
+    void save(const std::string& key, const std::string& value) {
+        users_[key] = value;
+    }
+
+private:
+    std::map<std::string, std::string> users_;
+};
+"#;
+        let file_id = FileId::generate("test.cpp");
+        let adapter = crate::extraction::create_adapter(Language::Cpp).unwrap();
+        let file_path = PathBuf::from("test.cpp");
+
+        let facts = extract_file(adapter.as_ref(), file_id, &file_path, source, "abc").unwrap();
+        println!("C++ Symbols: {}", facts.symbols.len());
+        for s in &facts.symbols {
+            let sid = s.id.to_hex();
+            println!("  sym: {} ({}) qname={} id={}", s.name, s.kind.as_str(), s.qualified_name, &sid[..8]);
+        }
+        println!("Dataflow edges: {}", facts.raw_edges.len());
+        for e in &facts.raw_edges {
+            let src = e.source.to_hex();
+            let tgt = e.target.to_hex();
+            println!("  edge: {} -> {} ({})", &src[..8], &tgt[..8], e.kind.as_str());
+        }
+
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        let result = store.insert_file_facts(&facts);
+        assert!(result.is_ok(), "Insert failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_extract_cpp_e2e_fixture() {
+        use crate::db::Store;
+        let source = r#"#include <iostream>
+#include <string>
+#include <map>
+#include <memory>
+
+class IRepository {
+public:
+    virtual ~IRepository() = default;
+    virtual std::string findById(const std::string& id) = 0;
+    virtual void save(const std::string& key, const std::string& value) = 0;
+};
+
+class User {
+public:
+    User(std::string name, std::string email)
+        : name_(std::move(name)), email_(std::move(email)) {}
+
+    std::string greet() const {
+        return "Hello, " + name_ + "!";
+    }
+
+    const std::string& getName() const { return name_; }
+    const std::string& getEmail() const { return email_; }
+
+private:
+    std::string name_;
+    std::string email_;
+};
+
+class UserService : public IRepository {
+public:
+    std::string findById(const std::string& id) override {
+        auto it = users_.find(id);
+        return it != users_.end() ? it->second : "";
+    }
+
+    void save(const std::string& key, const std::string& value) override {
+        users_[key] = value;
+    }
+
+private:
+    std::map<std::string, std::string> users_;
+};
+
+int main() {
+    auto svc = std::make_unique<UserService>();
+    User user("John", "john@example.com");
+    svc->save(user.getEmail(), user.getName());
+    std::cout << user.greet() << std::endl;
+    return 0;
+}
+"#;
+        let file_id = FileId::generate("test.cpp");
+        let adapter = crate::extraction::create_adapter(Language::Cpp).unwrap();
+        let file_path = PathBuf::from("test.cpp");
+
+        let facts = extract_file(adapter.as_ref(), file_id, &file_path, source, "abc").unwrap();
+        println!("C++ E2E Symbols: {}", facts.symbols.len());
+        for s in &facts.symbols {
+            let sid = s.id.to_hex();
+            println!("  sym: {} ({}) qname={} id={}", s.name, s.kind.as_str(), s.qualified_name, &sid[..8]);
+        }
+        println!("Dataflow edges: {}", facts.raw_edges.len());
+        for e in &facts.raw_edges {
+            let src = e.source.to_hex();
+            let tgt = e.target.to_hex();
+            println!("  edge: {} -> {} ({})", &src[..8], &tgt[..8], e.kind.as_str());
+        }
+
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        let result = store.insert_file_facts(&facts);
+        assert!(result.is_ok(), "Insert failed: {:?}", result.err());
+    }
 }
