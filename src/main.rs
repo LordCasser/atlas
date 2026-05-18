@@ -30,6 +30,7 @@ fn main() -> anyhow::Result<()> {
             } => {
                 atlas::cli::commands::search::run(&query, &project, limit)?;
             }
+            #[cfg(feature = "mcp")]
             Commands::Mcp { project } => {
                 atlas::cli::commands::mcp::run(&project)?;
             }

@@ -73,6 +73,7 @@ pub struct EdgeSummary {
 ///
 /// Immutable after construction. All queries use index-based lookups for O(1)
 /// complexity.
+#[derive(Clone)]
 pub struct GraphSnapshot {
     pub nodes: Vec<NodeSummary>,
     pub edges: Vec<EdgeSummary>,

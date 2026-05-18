@@ -56,6 +56,7 @@ pub enum Commands {
         limit: usize,
     },
     /// Start MCP server
+    #[cfg(feature = "mcp")]
     Mcp {
         #[arg(short, long, default_value = ".")]
         project: String,

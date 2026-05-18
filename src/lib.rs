@@ -10,6 +10,7 @@ pub mod graph;
 pub mod context;
 pub mod search;
 pub mod sync;
+#[cfg(feature = "mcp")]
 pub mod mcp;
 #[cfg(feature = "cli")]
 pub mod cli;
