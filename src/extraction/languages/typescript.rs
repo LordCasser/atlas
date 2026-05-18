@@ -58,6 +58,7 @@ impl LanguageAdapter for TypeScriptAdapter {
 
         let qualified_name = qualified_name_from_node("", &name, node, source);
         let lang = self.language();
+        let exported = is_exported_in_tree(node);
 
         let symbol_id = SymbolId::generate(
             &file_id,
@@ -79,7 +80,7 @@ impl LanguageAdapter for TypeScriptAdapter {
             name_range,
             signature: None,
             visibility: None,
-            exported: false,
+            exported,
             static_: false,
             async_: false,
             container: None,
@@ -368,6 +369,23 @@ fn qualified_name_from_node(
     } else {
         format!("{}.{}", prefix_str, parts.join("."))
     }
+}
+
+/// Check whether a TS/JS node is inside an `export` statement.
+fn is_exported_in_tree(node: tree_sitter::Node) -> bool {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        let kind = parent.kind();
+        if kind == "export_statement" || kind.contains("export") {
+            return true;
+        }
+        // Stop at the top-level declaration container
+        if kind == "program" || kind == "statement_block" {
+            break;
+        }
+        current = parent;
+    }
+    false
 }
 
 /// Walk up the tree from `node` to find the enclosing function/method declaration,

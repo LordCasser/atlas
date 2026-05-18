@@ -57,6 +57,7 @@ impl LanguageAdapter for PythonAdapter {
 
         let qualified_name = qualified_name_from_node_py("", &name, node, source);
         let lang = self.language();
+        let exported = is_exported_in_tree_py(node, &name);
 
         let symbol_id = SymbolId::generate(
             &file_id,
@@ -78,7 +79,7 @@ impl LanguageAdapter for PythonAdapter {
             name_range,
             signature: None,
             visibility: None,
-            exported: false,
+            exported,
             static_: false,
             async_: false,
             container: None,
@@ -381,6 +382,25 @@ fn extract_toml_project_name(content: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Check if a Python definition is exported (module-level, no leading underscore).
+fn is_exported_in_tree_py(node: tree_sitter::Node, name: &str) -> bool {
+    if name.starts_with('_') {
+        return false;
+    }
+    // Walk up to check if we're at the module (file) scope
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        match parent.kind() {
+            "module" => return true,      // Top-level definition
+            "class_definition" => return true, // Class member (public by convention)
+            "function_definition" | "lambda" => return false, // Nested in function → not exported
+            _ => {}
+        }
+        current = parent;
+    }
+    false
 }
 
 /// Walk up the tree from `node` to find the enclosing function definition,

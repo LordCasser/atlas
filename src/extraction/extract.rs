@@ -103,7 +103,11 @@ pub fn extract_file(
         )?
     };
 
-    // 7. (reserved for callsite extraction in future milestone)
+    // 7. Collect exported symbol IDs
+    let exports: Vec<_> = symbols.iter()
+        .filter(|s| s.exported)
+        .map(|s| s.id)
+        .collect();
 
     // Determine parse status
     let status = if diagnostics.iter().any(|d| d.level == DiagnosticLevel::Error) {
@@ -126,7 +130,7 @@ pub fn extract_file(
         scopes,
         references,
         imports,
-        exports: Vec::new(),
+        exports,
         raw_edges,   // Dataflow edges extracted inline; structural edges still by resolver
         callsites: Vec::new(),   // Callsites derived from call references later
         diagnostics,
