@@ -356,6 +356,88 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Find all imports for a file.
+    pub fn find_imports_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<ImportDef>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT import_id, file_id, kind, module, imported_name, local_name,
+                    is_wildcard, is_relative, alias,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column
+             FROM imports WHERE file_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![file_id], |row| {
+            Ok(ImportDef {
+                id: row.get(0)?,
+                file_id: row.get(1)?,
+                kind: ImportKind::from_str(row.get::<_, String>(2)?.as_str()).unwrap_or_default(),
+                module: row.get(3)?,
+                imported_name: row.get(4)?,
+                local_name: row.get(5)?,
+                is_wildcard: row.get(6)?,
+                is_relative: row.get(7)?,
+                alias: row.get(8)?,
+                range: TextRange {
+                    start_byte: row.get(9)?,
+                    end_byte: row.get(10)?,
+                    start_line: row.get(11)?,
+                    start_column: row.get(12)?,
+                    end_line: row.get(13)?,
+                    end_column: row.get(14)?,
+                },
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find all scopes for a file.
+    pub fn find_scopes_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<ScopeDef>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT scope_id, file_id, kind, name, scope_path, parent_id,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column
+             FROM scopes WHERE file_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![file_id], |row| {
+            Ok(ScopeDef {
+                id: row.get(0)?,
+                file_id: row.get(1)?,
+                kind: ScopeKind::from_str(row.get::<_, String>(2)?.as_str()).unwrap_or_default(),
+                name: row.get(3)?,
+                scope_path: row.get(4)?,
+                parent_id: row.get(5)?,
+                range: TextRange {
+                    start_byte: row.get(6)?,
+                    end_byte: row.get(7)?,
+                    start_line: row.get(8)?,
+                    start_column: row.get(9)?,
+                    end_line: row.get(10)?,
+                    end_column: row.get(11)?,
+                },
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find symbols by qualified name (exact match, index lookup).
+    pub fn find_symbols_by_qname(&self, qname: &str) -> anyhow::Result<Vec<SymbolDef>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
+                    language,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column,
+                    name_start_byte, name_end_byte, name_start_line, name_start_column,
+                    name_end_line, name_end_column,
+                    signature, visibility, exported, static_, async_,
+                    container_id, scope_id, package_name, namespace_path_json
+             FROM symbols WHERE qualified_name = ?1",
+        )?;
+        let rows = stmt.query_map(params![qname], row_to_symbol)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     // -----------------------------------------------------------------------
     // FileFacts — convenience batch insert
     // -----------------------------------------------------------------------

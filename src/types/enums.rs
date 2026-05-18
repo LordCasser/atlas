@@ -327,10 +327,11 @@ impl ReferenceKind {
 // ---------------------------------------------------------------------------
 
 /// 5 import kinds matching common language patterns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ImportKind {
     Include,
+    #[default]
     Import,
     FromImport,
     Package,
@@ -365,7 +366,7 @@ impl ImportKind {
 // ---------------------------------------------------------------------------
 
 /// 13 scope kinds defining containment hierarchy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ScopeKind {
     File,
@@ -376,6 +377,7 @@ pub enum ScopeKind {
     Enum,
     Function,
     Method,
+    #[default]
     Block,
     Loop,
     Conditional,
