@@ -57,7 +57,8 @@ impl LanguageRegistry {
             Language::TypeScript | Language::JavaScript => {
                 let ts_lang: tree_sitter::Language =
                     tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
-                self.register(ts_lang, Language::TypeScript);
+                self.register(ts_lang.clone(), Language::TypeScript);
+                self.register(ts_lang, Language::JavaScript);
             }
             #[cfg(feature = "python")]
             Language::Python => {
@@ -158,6 +159,24 @@ mod tests {
     fn test_load_typescript() {
         let registry = LanguageRegistry::new(&[Language::TypeScript]).unwrap();
         assert!(registry.has(Language::TypeScript));
+    }
+
+    #[cfg(feature = "typescript")]
+    #[test]
+    fn test_load_javascript() {
+        // JavaScript uses TypeScript grammar — must be loadable independently
+        let registry = LanguageRegistry::new(&[Language::JavaScript]).unwrap();
+        assert!(registry.has(Language::JavaScript));
+        assert!(registry.has(Language::TypeScript));
+    }
+
+    #[cfg(feature = "typescript")]
+    #[test]
+    fn test_load_typescript_javascript_both() {
+        let registry =
+            LanguageRegistry::new(&[Language::TypeScript, Language::JavaScript]).unwrap();
+        assert!(registry.has(Language::TypeScript));
+        assert!(registry.has(Language::JavaScript));
     }
 
     #[cfg(feature = "python")]

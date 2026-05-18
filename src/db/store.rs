@@ -709,7 +709,7 @@ fn write_symbols(conn: &Connection, symbols: &[SymbolDef]) -> anyhow::Result<()>
 fn write_scopes(conn: &Connection, scopes: &[ScopeDef]) -> anyhow::Result<()> {
     let mut stmt = conn.prepare(
         r#"INSERT OR REPLACE INTO scopes
-           (scope_id, file_id, kind, name, scope_path_json, parent_id,
+            (scope_id, file_id, kind, name, scope_path, parent_id,
             range_start_byte, range_end_byte, range_start_line, range_start_column,
             range_end_line, range_end_column)
         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"#,
