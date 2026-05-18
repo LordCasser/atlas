@@ -62,6 +62,9 @@ impl ToolRouter {
             _ => format!("Unknown tool: {}", name),
         };
 
+        // Detect error: valid JSON results start with '{', error messages are plain text.
+        let is_error = !result.trim_start().starts_with('{');
+
         // Wrap long results with truncation warning
         let text = truncate(&result, 8000);
         let mut content = vec![ContentBlock::text(text)];
@@ -72,7 +75,7 @@ impl ToolRouter {
             )));
         }
 
-        CallToolResult { content, is_error: None }
+        CallToolResult { content, is_error: Some(is_error) }
     }
 
     // -------------------------------------------------------------------

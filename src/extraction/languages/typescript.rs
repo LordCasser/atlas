@@ -248,7 +248,15 @@ impl LanguageAdapter for TypeScriptAdapter {
         let kind_str = ts_dataflow_kind(capture_name)?;
         let kind = EdgeKind::from_str(kind_str).unwrap_or(EdgeKind::Assigns);
         let text = node_text(node, source)?;
-        let _ = node_range(node);
+
+        // Find the enclosing function/method to use as the dataflow source
+        let lang = self.language();
+        let source_sym = find_enclosing_function_id(node, source, file_id, lang)
+            .unwrap_or_else(|| {
+                // Fallback: generate a file-scoped synthetic source
+                SymbolId::generate(&file_id, "dataflow", "file_scope", "source", None::<&str>)
+            });
+
         let target = SymbolId::generate(
             &file_id,
             "dataflow",
@@ -257,7 +265,7 @@ impl LanguageAdapter for TypeScriptAdapter {
             None::<&str>,
         );
         let edge_id = EdgeId::generate(
-            &SymbolId::default(),
+            &source_sym,
             &target,
             kind_str,
             None::<&ReferenceId>,
@@ -265,7 +273,7 @@ impl LanguageAdapter for TypeScriptAdapter {
         );
         Some(RawEdge {
             id: edge_id,
-            source: SymbolId::default(), // Filled by resolver
+            source: source_sym,
             target,
             kind,
             confidence: Confidence::certain(),
@@ -348,6 +356,72 @@ fn qualified_name_from_node(
     } else {
         format!("{}.{}", prefix_str, parts.join("."))
     }
+}
+
+/// Walk up the tree from `node` to find the enclosing function/method declaration,
+/// and compute its deterministic SymbolId using the same logic as `normalize_definition`.
+fn find_enclosing_function_id(
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+    lang: Language,
+) -> Option<SymbolId> {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        let parent_kind = parent.kind();
+        // Match function-like declarations
+        let (name_node, kind) = match parent_kind {
+            "function_declaration" => {
+                (parent.child_by_field_name("name"), SymbolKind::Function)
+            }
+            "method_definition" => {
+                (parent.child_by_field_name("name"), SymbolKind::Method)
+            }
+            "arrow_function" => {
+                // Arrow functions don't have a "name" field — walk up to find the
+                // enclosing variable declarator for the name.
+                let mut n = parent;
+                let arrow_name = loop {
+                    if let Some(p) = n.parent() {
+                        match p.kind() {
+                            "variable_declarator" => {
+                                break p.child_by_field_name("name");
+                            }
+                            "assignment_expression" => {
+                                break p.child_by_field_name("left")
+                                    .and_then(|left| left.child_by_field_name("property"));
+                            }
+                            _ => {
+                                n = p;
+                                continue;
+                            }
+                        }
+                    } else {
+                        break None;
+                    }
+                };
+                (arrow_name, SymbolKind::Function)
+            }
+            _ => {
+                current = parent;
+                continue;
+            }
+        };
+
+        let fn_name = name_node
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .unwrap_or("anonymous");
+        let qualified_name = qualified_name_from_node("", fn_name, parent, source);
+
+        return Some(SymbolId::generate(
+            &file_id,
+            lang.as_str(),
+            &qualified_name,
+            kind.as_str(),
+            None::<&str>,
+        ));
+    }
+    None
 }
 
 /// Map capture name to SymbolKind.

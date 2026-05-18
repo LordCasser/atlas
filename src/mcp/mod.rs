@@ -55,13 +55,19 @@ impl McpServer {
         let mut reader = BufReader::new(stdin);
         let mut stdout = tokio::io::stdout();
 
-        // Build the tool router with shared graph engine
+        // Build the tool router with fresh graph engine per request.
+        // This ensures that after sync/index operations, MCP tools see the latest data.
         let store = self.store;
-        let graph = Arc::new(GraphEngine::from_store(&store, 0.3)?);
-        let search = SearchEngine::new(Arc::clone(&store), Arc::clone(&graph));
-        let context = ContextBuilder::new(Arc::clone(&store), Arc::clone(&graph));
-        let snapshot = graph.snapshot().clone();
-        let graph_fn = move || GraphEngine::from_snapshot(snapshot.clone());
+        let search = SearchEngine::new(Arc::clone(&store), Arc::new(
+            GraphEngine::from_store(&store, 0.3)?,
+        ));
+        let context = ContextBuilder::new(Arc::clone(&store), Arc::new(
+            GraphEngine::from_store(&store, 0.3)?,
+        ));
+        // graph_fn rebuilds from store on every call to avoid staleness
+        let store_for_graph = Arc::clone(&store);
+        let graph_fn = move || GraphEngine::from_store(&store_for_graph, 0.3)
+            .expect("Failed to reload graph snapshot from store");
         let router = ToolRouter::new(Arc::clone(&store), search, context, graph_fn);
 
         loop {

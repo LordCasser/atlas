@@ -15,20 +15,20 @@ pub enum WatchEvent {
 
 /// File system watcher that emits `WatchEvent`s on a channel.
 pub struct FileWatcher {
-    _watcher: Option<notify::INotifyWatcher>,
+    _watcher: Option<notify::RecommendedWatcher>,
 }
 
 impl FileWatcher {
     /// Start watching `root` for file changes.
     /// Events are delivered via the returned `std::sync::mpsc::Receiver`.
     pub fn start(root: &std::path::Path) -> Result<(Self, std::sync::mpsc::Receiver<WatchEvent>)> {
-        use notify::{Config, Event, EventKind, RecursiveMode, Watcher};
+        use notify::{Event, EventKind, RecursiveMode, Watcher};
 
         let (tx, rx) = std::sync::mpsc::channel();
 
         let root = root.to_path_buf();
-        let mut watcher = notify::INotifyWatcher::new(
-            move |event: Result<Event, notify::Error>| {
+        let mut watcher = notify::recommended_watcher(
+            move |event: std::result::Result<Event, notify::Error>| {
                 if let Ok(event) = event {
                     let kind = match event.kind {
                         EventKind::Create(_) => WatchEvent::Created,
@@ -41,7 +41,6 @@ impl FileWatcher {
                     }
                 }
             },
-            Config::default(),
         )?;
 
         watcher.watch(&root, RecursiveMode::Recursive)?;

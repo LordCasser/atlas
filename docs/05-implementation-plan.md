@@ -27,11 +27,12 @@ Atlas MVP 使用 **vertical slices + language fixtures** 推进，而不是先�
 | M2 | Query Extraction | tree-sitter query engine + TS/Python LanguageAdapters | ✅ 2026-05-18 |
 | M3 | Extraction Pipeline | QueryEngine + extract_file() + insert_file_facts() end-to-end | ✅ 2026-05-18 |
 | M4 | Resolution | scope/import/include/name resolution (6-stage pipeline) | ✅ 2026-05-18 |
-| M5 | GraphSnapshot | 内存图与图查询 | 🚧 Next |
-| M6 | Search & Context | FTS/hybrid search/context/explore |
-| M7 | MCP MVP | MCP tools 可供 Agent 使用 |
-| M8 | Incremental Sync | 增量同步和 snapshot refresh |
-| M9 | Dataflow-lite Foundation | callsite/argument/return/assignment 基础 |
+| M5 | GraphSnapshot | 内存图与图查询 (BFS, shortest_path, callgraph) | ✅ 2026-05-18 |
+| M6 | Search & Context | FTS5+fuzzy hybrid search, ContextView markdown | ✅ 2026-05-18 |
+| M7 | MCP Server | JSON-RPC 2.0 MCP server (12 tools) | ✅ 2026-05-18 |
+| M8 | Incremental Sync | git status + mtime detection, re-extract→re-resolve pipeline | ✅ 2026-05-18 |
+| M9 | Dataflow-lite | Parameter/Returns/Assigns edges extraction | ✅ 2026-05-18 |
+| AR | Architecture Review & Fixes | 修复 12 个 critical/high 问题 (C1-C4, H1-H8) | ✅ 2026-05-18 |
 
 ---
 
@@ -479,3 +480,47 @@ reads/writes optional
 ```
 
 这样能最快得到可被 Agent 使用的闭环。
+
+---
+
+## 14. Architecture Review & Critical Fixes (AR)
+
+> 2026-05-18: 全面架构审查后修复了 4 个 critical + 4 个 high 问题。
+
+### C1: Dataflow edges 使用 `SymbolId::default()` 作为 source (FIXED)
+- 在 `normalize_dataflow` 中 walk tree up 找到 enclosing function
+- TypeScript: `find_enclosing_function_id()` 查找 `function_declaration` / `method_definition` / `arrow_function`
+- Python: `find_enclosing_function_id_py()` 查找 `function_definition` / `lambda`
+- 使用与 `normalize_definition` 完全相同的 SymbolId 生成逻辑
+- Fallback: 如无可识别的 enclosing function，使用 file-scoped synthetic source
+
+### C2: BuiltinFilter 创建 `ResolvedTarget` 带 `SymbolId::default()` (FIXED)
+- 改为直接返回 `None`（skip resolution），不再写入无效 SymbolId 到 DB
+- Builtin 引用保留为 unresolved，不产生 ghost edges
+
+### C3: `atlas index` CLI 是空壳 (FIXED)
+- 实现完整管线: file walk → language detect → create_adapter → extract_file → insert_file_facts → resolve_all
+- 显示逐文件进度和最终 resolution stats
+
+### C4: `atlas search` CLI 是空壳 (FIXED)
+- 接入 SearchEngine: store → graph → search → display
+- 显示 name/kind/score/qname/file
+
+### H5: `atlas mcp` DB path 双重 `.join(".atlas")` (FIXED)
+- `Store::open` 内部会 `.join(".atlas")`，移除 CLI 层的重复 join
+- 同时修复 `--project` 参数未被使用的问题
+
+### H6: MCP error handling — 所有结果 `is_error: None` (FIXED)
+- 通过检测 result 是否以 `{` 开头判断 JSON vs 错误文本
+- JSON 结果: `is_error: Some(false)`, 文本结果: `is_error: Some(true)`
+
+### H2: MCP GraphSnapshot 过期 (FIXED)
+- `graph_fn` 改为每次调用时 `GraphEngine::from_store()` 而非 clone 启动时的 snapshot
+- 确保 index/sync 后 MCP tools 能获取最新数据
+
+### 已知遗留问题 (未修复)
+- H1: 仅 2/8 MVP 语言有 adapter (Java/C/C++/ArkTS/Cangjie 需单独实现)
+- H3: TS `reference.usage` 过度捕获
+- H4: `Mutex<Connection>` 读写瓶颈 (需拆分为 StoreWriter/StoreReader)
+- H7: TS edge promotion 因 `source_symbol` 为 `None` 而从不触发
+

@@ -111,13 +111,11 @@ impl ReferenceResolver {
         ctx: &ResolutionContext,
     ) -> Option<ResolvedTarget> {
         // ---- Strategy 1: Built-in / external filter ----
+        // Builtins are filtered out entirely — there is no real symbol in the DB
+        // to resolve against, and creating a ResolvedTarget with SymbolId::default()
+        // would produce edges with invalid ghost targets.
         if BuiltinFilter::is_builtin(&reference.name, ctx.file.language) {
-            return Some(ResolvedTarget {
-                symbol_id: SymbolId::default(),
-                confidence: Confidence::certain(),
-                strategy: ResolutionStrategy::Builtin,
-                provenance: Provenance::Heuristic,
-            });
+            return None;
         }
 
         // ---- Strategy 2: Scope-local exact match ----
