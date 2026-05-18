@@ -1,8 +1,13 @@
 ;; C definitions query
 ;; Captures: function, struct, enum, typedef, macro, variable
 
-;; Function definitions
-(function_definition (identifier) @definition.function)
+;; Function definitions (identifier is nested in function_declarator, which may be in pointer_declarator)
+(function_definition
+  (function_declarator (identifier) @definition.function))
+
+(function_definition
+  (pointer_declarator
+    (function_declarator (identifier) @definition.function)))
 
 ;; Struct declarations
 (struct_specifier (type_identifier) @definition.class)

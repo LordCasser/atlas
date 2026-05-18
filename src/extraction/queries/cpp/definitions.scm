@@ -1,8 +1,35 @@
 ;; C++ definitions query
 ;; Captures: function, method, class, struct, namespace, enum, template, variable
 
-;; Function definitions
+;; Function definitions (identifier may be nested in declarator chain)
 (function_definition (identifier) @definition.function)
+
+(function_definition
+  (pointer_declarator
+    (function_declarator (identifier) @definition.function)))
+
+(function_definition
+  (function_declarator (identifier) @definition.function))
+
+;; Method definitions inside class (field_identifier in function_declarator)
+(function_definition
+  (function_declarator (field_identifier) @definition.method))
+
+;; Method definitions with reference_declarator wrapper (e.g. const std::string& getName())
+(function_definition
+  (reference_declarator
+    (function_declarator (field_identifier) @definition.method)))
+
+;; Method definitions with qualified return type
+(function_definition
+  (qualified_identifier)
+  (function_declarator (field_identifier) @definition.method))
+
+;; Method definitions with qualified return type and reference_declarator
+(function_definition
+  (qualified_identifier)
+  (reference_declarator
+    (function_declarator (field_identifier) @definition.method)))
 
 ;; Class declarations
 (class_specifier (type_identifier) @definition.class)
@@ -15,9 +42,6 @@
 
 ;; Enum declarations
 (enum_specifier (type_identifier) @definition.enum)
-
-;; Method definitions (outside class body)
-(function_definition (field_identifier) @definition.method)
 
 ;; Variable declarations
 (declaration (identifier) @definition.variable)
