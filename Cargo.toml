@@ -1,0 +1,108 @@
+[package]
+name = "atlas"
+version = "0.1.0"
+edition = "2024"
+description = "Local-first semantic knowledge graph builder for codebases"
+license = "MIT"
+
+[dependencies]
+# Core
+tree-sitter = "0.24"
+
+# Language grammars (optional, feature-gated)
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-python = { version = "0.23", optional = true }
+tree-sitter-go = { version = "0.23", optional = true }
+tree-sitter-rust = { version = "0.23", optional = true }
+tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-c = { version = "0.23", optional = true }
+tree-sitter-cpp = { version = "0.23", optional = true }
+tree-sitter-c-sharp = { version = "0.23", optional = true }
+tree-sitter-php = { version = "0.23", optional = true }
+tree-sitter-ruby = { version = "0.23", optional = true }
+tree-sitter-swift = { version = "0.7", optional = true }
+tree-sitter-kotlin = { version = "0.3", optional = true }
+
+# HarmonyOS: Cangjie language (git dependency — crate has its own Cargo.toml + Rust bindings)
+# ArkTS (.ets) uses TypeScript grammar, no separate crate needed
+tree-sitter-cangjie = { git = "https://gitcode.com/Cangjie-SIG/tree-sitter-cangjie.git", optional = true }
+
+# Database
+rusqlite = { version = "0.39", features = ["bundled"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Hashing
+blake3 = "1"
+hex = "0.4"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Parallelism
+rayon = "1.10"
+
+# Caching
+lru = "0.12"
+dashmap = "6"
+
+# Glob matching
+glob = "0.3"
+
+# Regex
+regex = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# CLI
+clap = { version = "4", features = ["derive"], optional = true }
+
+# Async runtime (MCP server only)
+tokio = { version = "1", features = ["io-std", "macros", "rt-multi-thread"], optional = true }
+
+# File watching
+notify = { version = "7", optional = true }
+
+[features]
+default = ["typescript", "javascript", "python", "cli"]
+
+# MVP language features (8 languages)
+typescript = ["dep:tree-sitter-typescript"]
+javascript = ["dep:tree-sitter-typescript"]  # TS grammar includes JS
+python = ["dep:tree-sitter-python"]
+java = ["dep:tree-sitter-java"]
+c = ["dep:tree-sitter-c"]
+cpp = ["dep:tree-sitter-cpp"]
+arkts = ["typescript"]  # ArkTS uses TypeScript grammar
+cangjie = ["dep:tree-sitter-cangjie"]
+
+# Future languages (not in MVP default, opt-in only)
+go = ["dep:tree-sitter-go"]
+rust = ["dep:tree-sitter-rust"]
+csharp = ["dep:tree-sitter-c-sharp"]
+php = ["dep:tree-sitter-php"]
+ruby = ["dep:tree-sitter-ruby"]
+swift = ["dep:tree-sitter-swift"]
+kotlin = ["dep:tree-sitter-kotlin"]
+
+# Application features
+cli = ["dep:clap"]
+mcp = ["dep:tokio"]
+sync = ["dep:notify"]
+
+# Convenience
+all-languages = [
+    "typescript", "javascript", "python", "java",
+    "c", "cpp", "arkts", "cangjie",
+]
+future-languages = [
+    "go", "rust", "csharp", "php", "ruby", "swift", "kotlin",
+]
+
+[dev-dependencies]
+tempfile = "3"

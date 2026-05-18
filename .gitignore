@@ -1,0 +1,5 @@
+/target
+.atlas/
+*.db
+*.db-wal
+*.db-shm
