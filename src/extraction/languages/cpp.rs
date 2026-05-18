@@ -206,10 +206,7 @@ impl LanguageAdapter for CppAdapter {
         let text = node_text(node, source)?;
 
         let lang = self.language();
-        let source_sym = find_enclosing_function_id_cpp(node, source, file_id, lang)
-            .unwrap_or_else(|| {
-                SymbolId::generate(&file_id, "dataflow", "file_scope", "source", None::<&str>)
-            });
+        let source_sym = find_enclosing_function_id_cpp(node, source, file_id, lang)?;
 
         let target = SymbolId::generate(
             &file_id,
@@ -259,7 +256,8 @@ fn node_range(node: tree_sitter::Node) -> TextRange {
 
 fn qualified_name_from_node_cpp(name: &str, node: tree_sitter::Node, source: &str) -> String {
     let mut parts = vec![name.to_string()];
-    let mut current = node;
+    // Start from parent to avoid re-adding the immediate container's name
+    let mut current = node.parent().unwrap_or(node);
 
     while let Some(parent) = current.parent() {
         match parent.kind() {
@@ -296,10 +294,10 @@ fn find_enclosing_function_id_cpp(
     while let Some(parent) = current.parent() {
         if parent.kind() == "function_definition" {
             // C++ functions: name could be identifier or field_identifier (for methods)
-            let fn_name = if let Some(declarator) = parent.child_by_field_name("declarator") {
-                extract_function_name_from_declarator(declarator, source)
+            let (fn_name, fn_name_node) = if let Some(declarator) = parent.child_by_field_name("declarator") {
+                extract_function_name_node_from_declarator(declarator, source)
             } else {
-                "anonymous".to_string()
+                ("anonymous".to_string(), None)
             };
 
             let kind = if parent
@@ -312,7 +310,12 @@ fn find_enclosing_function_id_cpp(
                 SymbolKind::Function
             };
 
-            let qualified_name = qualified_name_from_node_cpp(&fn_name, parent, source);
+            // Use the identifier node for qualified_name, same as normalize_definition
+            let qualified_name = if let Some(name_node) = fn_name_node {
+                qualified_name_from_node_cpp(&fn_name, name_node, source)
+            } else {
+                qualified_name_from_node_cpp(&fn_name, parent, source)
+            };
 
             return Some(SymbolId::generate(
                 &file_id,
@@ -329,22 +332,53 @@ fn find_enclosing_function_id_cpp(
 
 /// Extract the function name from a C++ declarator (handles qualified names).
 fn extract_function_name_from_declarator(node: tree_sitter::Node, source: &str) -> String {
+    extract_function_name_node_from_declarator(node, source).0
+}
+
+/// Extract the function name and the identifier node from a C++ declarator.
+fn extract_function_name_node_from_declarator<'a>(
+    node: tree_sitter::Node<'a>,
+    source: &'a str,
+) -> (String, Option<tree_sitter::Node<'a>>) {
     match node.kind() {
         "identifier" | "field_identifier" => {
-            node.utf8_text(source.as_bytes()).unwrap_or("anonymous").to_string()
+            let name = node.utf8_text(source.as_bytes()).unwrap_or("anonymous").to_string();
+            (name, Some(node))
         }
-        "function_declarator" | "pointer_declarator" => {
+        "function_declarator" | "pointer_declarator" | "reference_declarator" | "abstract_reference_declarator" => {
             if let Some(child) = node.child_by_field_name("declarator") {
-                extract_function_name_from_declarator(child, source)
+                extract_function_name_node_from_declarator(child, source)
             } else {
-                "anonymous".to_string()
+                // reference_declarator might contain function_declarator or identifier as children
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.kind() == "identifier" || child.kind() == "field_identifier" {
+                        let name = child.utf8_text(source.as_bytes()).unwrap_or("anonymous").to_string();
+                        return (name, Some(child));
+                    }
+                    // Recursively check children (e.g., function_declarator inside reference_declarator)
+                    let (name, id_node) = extract_function_name_node_from_declarator(child, source);
+                    if id_node.is_some() {
+                        return (name, id_node);
+                    }
+                }
+                ("anonymous".to_string(), None)
             }
         }
         "qualified_identifier" => {
-            // e.g. MyClass::method
-            node.utf8_text(source.as_bytes()).unwrap_or("anonymous").to_string()
+            // For qualified_identifier (e.g. MyClass::method), get the rightmost identifier
+            let name = node.utf8_text(source.as_bytes()).unwrap_or("anonymous").to_string();
+            // Find the rightmost child that is an identifier
+            let mut cursor = node.walk();
+            let mut last_id = None;
+            for child in node.children(&mut cursor) {
+                if child.kind() == "identifier" || child.kind() == "field_identifier" {
+                    last_id = Some(child);
+                }
+            }
+            (name, last_id)
         }
-        _ => "anonymous".to_string(),
+        _ => ("anonymous".to_string(), None),
     }
 }
 

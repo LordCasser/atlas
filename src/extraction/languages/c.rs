@@ -207,10 +207,7 @@ impl LanguageAdapter for CAdapter {
         let text = node_text(node, source)?;
 
         let lang = self.language();
-        let source_sym = find_enclosing_function_id_c(node, source, file_id, lang)
-            .unwrap_or_else(|| {
-                SymbolId::generate(&file_id, "dataflow", "file_scope", "source", None::<&str>)
-            });
+        let source_sym = find_enclosing_function_id_c(node, source, file_id, lang)?;
 
         let target = SymbolId::generate(
             &file_id,
@@ -267,7 +264,8 @@ fn qualified_name_from_node_c(
     source: &str,
 ) -> String {
     let mut parts = vec![name.to_string()];
-    let mut current = node;
+    // Start from parent to avoid re-adding the immediate container's name
+    let mut current = node.parent().unwrap_or(node);
 
     while let Some(parent) = current.parent() {
         match parent.kind() {
@@ -298,7 +296,7 @@ fn find_enclosing_function_id_c(
     while let Some(parent) = current.parent() {
         if parent.kind() == "function_definition" {
             // C functions: name is the declarator's identifier
-            let fn_name = parent
+            let fn_name_node = parent
                 .child_by_field_name("declarator")
                 .and_then(|d| {
                     // Walk through pointer_declarator if present
@@ -315,11 +313,11 @@ fn find_enclosing_function_id_c(
                             _ => return None,
                         }
                     }
-                })
-                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                .unwrap_or("anonymous");
+                })?;
 
-            let qualified_name = qualified_name_from_node_c(fn_name, parent, source);
+            // Pass the identifier node to qualified_name_from_node_c, same as normalize_definition
+            let fn_name = fn_name_node.utf8_text(source.as_bytes()).unwrap_or("anonymous");
+            let qualified_name = qualified_name_from_node_c(fn_name, fn_name_node, source);
 
             return Some(SymbolId::generate(
                 &file_id,
