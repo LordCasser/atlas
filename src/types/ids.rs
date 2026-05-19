@@ -21,11 +21,13 @@ macro_rules! define_id {
 
         impl $name {
             /// Generate a new ID by hashing the given input bytes with blake3.
+            #[allow(dead_code)]
             fn from_hash(input: &[u8]) -> Self {
                 Self(blake3::hash(input).into())
             }
 
             /// Chain multiple byte slices with null separators and hash.
+            #[allow(dead_code)]
             fn from_parts(parts: &[&[u8]]) -> Self {
                 let mut hasher = Hasher::new();
                 for (i, part) in parts.iter().enumerate() {

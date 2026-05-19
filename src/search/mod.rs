@@ -1,9 +1,11 @@
-//! Search engine: FTS5 full-text, fuzzy matching, multi-signal scoring.
+//! Search engine: FTS5 full-text, LIKE fallback, fuzzy matching, multi-signal scoring.
 //!
 //! The `SearchEngine` combines:
 //!   - FTS5 full-text index (from `symbols_fts` virtual table)
+//!   - LIKE-based substring fallback (when FTS5 returns nothing)
+//!   - Fuzzy name matching (Levenshtein fallback, 3-char prefix FTS5)
+//!   - CamelCase/snake_case normalization ("getUser" ↔ "get_user")
 //!   - Graph degree signals (calls + references → centrality)
-//!   - Fuzzy name matching (Levenshtein fallback)
 //!   - Multi-signal relevance scoring (BM25 + degree + kind bonus)
 
 pub mod fts;
@@ -16,6 +18,43 @@ use crate::types::{FileId, Language, SymbolDef, SymbolKind};
 use std::sync::Arc;
 
 use self::scoring::SearchScore;
+
+/// Search filter options.
+#[derive(Debug, Clone, Default)]
+pub struct SearchOptions {
+    /// Filter results to this language only.
+    pub language: Option<Language>,
+    /// Filter results where file path contains this substring.
+    pub file_path_pattern: Option<String>,
+    /// Filter results to this symbol kind only.
+    pub kind_filter: Option<SymbolKind>,
+    /// Minimum confidence threshold for fuzzy matches (0.0..1.0).
+    pub min_confidence: Option<f64>,
+}
+
+impl SearchOptions {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn with_language(mut self, lang: Language) -> Self {
+        self.language = Some(lang);
+        self
+    }
+
+    pub fn with_file_path(mut self, path: impl Into<String>) -> Self {
+        self.file_path_pattern = Some(path.into());
+        self
+    }
+
+    pub fn with_kind(mut self, kind: SymbolKind) -> Self {
+        self.kind_filter = Some(kind);
+        self
+    }
+
+    pub fn with_confidence(mut self, c: f64) -> Self {
+        self.min_confidence = Some(c);
+        self
+    }
+}
 
 /// A single search result with cumulative score.
 #[derive(Debug, Clone)]
@@ -45,21 +84,56 @@ impl SearchEngine {
     // Public API
     // ------------------------------------------------------------------
 
-    /// Full-text + fuzzy search for symbols, ranked by multi-signal score.
-    pub fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<SearchResult>> {
+    /// Full-text + LIKE fallback + fuzzy search, with optional filters.
+    pub fn search(
+        &self,
+        query: &str,
+        limit: usize,
+        options: &SearchOptions,
+    ) -> anyhow::Result<Vec<SearchResult>> {
         if query.trim().is_empty() {
             return Ok(Vec::new());
         }
 
-        let raw_results = self.store.search_symbols_with_limit(query, limit.max(20))?;
+        let total_symbols = self.store.count_symbols()?;
+
+        // Stage 1: FTS5
+        let mut raw_results = self.store.search_symbols_with_limit(query, limit.max(20))?;
+
+        // Stage 2: LIKE fallback if FTS5 returns nothing
+        let from_like = if raw_results.is_empty() && query.len() >= 2 {
+            raw_results = self.store.search_symbols_by_name_like(
+                query,
+                options.language.as_ref(),
+                limit.max(20),
+            )?;
+            true
+        } else {
+            false
+        };
+
+        // Stage 3: Fuzzy prefix fallback if still nothing
+        let from_fuzzy = if raw_results.is_empty() && query.len() >= 2 {
+            // Use first 3 chars as FTS5 prefix for candidate pool
+            let prefix: String = query.chars().take(3).collect();
+            raw_results = self.store.search_symbols_with_limit(&prefix, limit.max(50))?;
+            // Apply language filter at DB level isn't possible here, do it post-hoc
+            if let Some(ref lang) = options.language {
+                raw_results.retain(|s| s.language == *lang);
+            }
+            true
+        } else {
+            false
+        };
+
         if raw_results.is_empty() {
             return Ok(Vec::new());
         }
 
-        let total_symbols = self.store.count_symbols()?;
-        let matching_symbols = raw_results.len() as usize;
+        // Normalize query for camelCase/snake_case matching
+        let query_norm = normalize_name_for_search(query);
 
-        // Compute global max degree for normalization
+        let matching_symbols = raw_results.len();
         let max_degree = raw_results
             .iter()
             .map(|s| self.graph.degree(&s.id))
@@ -68,7 +142,7 @@ impl SearchEngine {
 
         let mut results: Vec<SearchResult> = Vec::with_capacity(raw_results.len());
         for sym in raw_results {
-            let name_sim = compute_name_similarity(query, &sym.name);
+            let name_sim = compute_name_similarity(query, &sym.name, &query_norm);
             let path_match = sym.qualified_name.to_lowercase().contains(&query.to_lowercase());
             let degree = self.graph.degree(&sym.id);
             let idf = scoring::idf_weight(total_symbols, matching_symbols);
@@ -82,19 +156,48 @@ impl SearchEngine {
                 path_match,
             );
 
+            // Determine matched field for display
+            let matched_field = if from_like {
+                "name".to_string()
+            } else if from_fuzzy {
+                "fuzzy".to_string()
+            } else {
+                String::new()
+            };
+
             results.push(SearchResult {
                 symbol: sym,
                 score,
-                matched_field: String::new(),
+                matched_field,
                 snippet: None,
             });
         }
 
         // Sort by total score descending
-        results.sort_by(|a, b| b.score.total.partial_cmp(&a.score.total).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score.total.partial_cmp(&a.score.total).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(limit);
+
+        // Apply post-filters
+        if let Some(ref path_pat) = options.file_path_pattern {
+            let pat = path_pat.to_lowercase();
+            results.retain(|r| r.symbol.file_id.to_hex().to_lowercase().contains(&pat));
+        }
+        if let Some(kind) = options.kind_filter {
+            results.retain(|r| r.symbol.kind == kind);
+        }
+        if let Some(min_c) = options.min_confidence {
+            results.retain(|r| r.score.total >= min_c);
+        }
         results.truncate(limit);
 
         Ok(results)
+    }
+
+    /// Convenience: search without options (backward-compatible).
+    pub fn search_simple(&self, query: &str, limit: usize) -> anyhow::Result<Vec<SearchResult>> {
+        self.search(query, limit, &SearchOptions::default())
     }
 
     /// Search for symbols of a specific kind.
@@ -104,10 +207,7 @@ impl SearchEngine {
         kind: SymbolKind,
         limit: usize,
     ) -> anyhow::Result<Vec<SearchResult>> {
-        let mut results = self.search(query, limit * 2)?;
-        results.retain(|r| r.symbol.kind == kind);
-        results.truncate(limit);
-        Ok(results)
+        self.search(query, limit, &SearchOptions::new().with_kind(kind))
     }
 
     /// Search for symbols within a specific file.
@@ -117,31 +217,82 @@ impl SearchEngine {
         file_id: &FileId,
         limit: usize,
     ) -> anyhow::Result<Vec<SearchResult>> {
-        let mut results = self.search(query, limit * 2)?;
-        results.retain(|r| r.symbol.file_id == *file_id);
-        results.truncate(limit);
-        Ok(results)
+        let hex = file_id.to_hex();
+        self.search(
+            query,
+            limit,
+            &SearchOptions::new().with_file_path(&hex[..16]),
+        )
     }
 
     /// Fuzzy name search — useful for typo-tolerant symbol lookup.
-    pub fn fuzzy_search(&self, name: &str, language: Option<Language>, limit: usize) -> anyhow::Result<Vec<(SymbolDef, f64)>> {
-        // Broader FTS5 search to get candidates
-        // Use first 3 chars as FTS5 prefix for candidate pool, then score by full name
-        let prefix: String = name.chars().take(3).collect();
-        let candidates = self.store.search_symbols_with_limit(&prefix, limit.max(50))?;
-        let mut scored: Vec<(SymbolDef, f64)> = candidates
+    pub fn fuzzy_search(
+        &self,
+        name: &str,
+        language: Option<Language>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(SymbolDef, f64)>> {
+        let options = SearchOptions {
+            language,
+            ..Default::default()
+        };
+        let results = self.search(name, limit, &options)?;
+        Ok(results
             .into_iter()
-            .filter(|s| language.map_or(true, |l| s.language == l))
-            .map(|s| {
-                let sim = compute_name_similarity(name, &s.name);
-                (s, sim)
-            })
-            .collect();
-
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(limit);
-        Ok(scored)
+            .map(|r| (r.symbol, r.score.name_score))
+            .collect())
     }
+}
+
+// ------------------------------------------------------------------
+// CamelCase / snake_case normalization
+// ------------------------------------------------------------------
+
+/// Split a camelCase or PascalCase name into words.
+fn split_camel_case(s: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut prev_upper = false;
+    for ch in s.chars() {
+        if ch == '_' {
+            if !current.is_empty() {
+                words.push(current.to_lowercase());
+                current.clear();
+            }
+            prev_upper = false;
+        } else if ch.is_uppercase() {
+            if !current.is_empty() && !prev_upper {
+                words.push(current.to_lowercase());
+                current.clear();
+            }
+            current.push(ch);
+            prev_upper = true;
+        } else {
+            if prev_upper && current.len() > 1 {
+                // Handle "XMLParser" → "XML", "Parser"
+                let last = current.pop().unwrap();
+                words.push(current.to_lowercase());
+                current.clear();
+                current.push(last);
+            }
+            current.push(ch);
+            prev_upper = false;
+        }
+    }
+    if !current.is_empty() {
+        words.push(current.to_lowercase());
+    }
+    words
+}
+
+/// Normalize a name for search matching: convert to snake_case word list.
+fn normalize_name_for_search(name: &str) -> Vec<String> {
+    split_camel_case(name)
+}
+
+/// Join normalized words back into a snake_case string.
+fn to_snake_case(words: &[String]) -> String {
+    words.join("_")
 }
 
 // ------------------------------------------------------------------
@@ -149,18 +300,46 @@ impl SearchEngine {
 // ------------------------------------------------------------------
 
 /// Compute name similarity between query and candidate name.
-/// Exact → 1.0; case-insensitive → 0.9; Levenshtein ratio → 0.0..0.7.
-fn compute_name_similarity(query: &str, name: &str) -> f64 {
+///
+/// Strategies (in order):
+///   1. Exact match → 1.0
+///   2. Case-insensitive match → 0.9
+///   3. CamelCase/snake_case normalization match → 0.85
+///   4. Levenshtein on normalized forms → 0.0..0.7
+fn compute_name_similarity(query: &str, name: &str, query_norm: &[String]) -> f64 {
     if query == name {
         return 1.0;
     }
     if query.eq_ignore_ascii_case(name) {
         return 0.9;
     }
-    let dist = crate::search::fuzzy::levenshtein(&query.to_lowercase(), &name.to_lowercase());
-    let max_len = query.len().max(name.len()).max(1);
+
+    // CamelCase/snake_case normalization
+    let name_norm = normalize_name_for_search(name);
+    let query_snake = to_snake_case(query_norm);
+    let name_snake = to_snake_case(&name_norm);
+    if query_snake == name_snake {
+        return 0.85;
+    }
+    if query_snake.eq_ignore_ascii_case(&name_snake) {
+        return 0.8;
+    }
+
+    // Word-level matching: if any normalized word matches, boost slightly
+    let word_match = query_norm.iter().any(|w| {
+        !w.is_empty() && name_norm.iter().any(|nw| nw == w)
+    });
+    if word_match {
+        // Partial word match — scale by how many words overlap
+        let overlap = query_norm.iter().filter(|w| name_norm.contains(w)).count();
+        let total = query_norm.len().max(name_norm.len()).max(1);
+        return 0.5 + (overlap as f64 / total as f64) * 0.25;
+    }
+
+    // Levenshtein fallback on snake_case forms
+    let dist = crate::search::fuzzy::levenshtein(&query_snake, &name_snake);
+    let max_len = query_snake.len().max(name_snake.len()).max(1);
     let ratio = 1.0 - (dist as f64 / max_len as f64);
-    // Scale fuzzy ratio: 0.7 is max for non-exact fuzzy matches
     ratio * 0.7
 }
 
@@ -199,6 +378,7 @@ mod tests {
             mk_sym(fid, "deleteUser", "UserManager.deleteUser", SymbolKind::Method),
             mk_sym(fid, "UserRouter", "UserRouter", SymbolKind::Class),
             mk_sym(fid, "findUser", "UserRouter.findUser", SymbolKind::Method),
+            mk_sym(fid, "get_user_name", "UserManager.get_user_name", SymbolKind::Method),
         ];
         store.insert_symbols(&syms).unwrap();
     }
@@ -233,9 +413,8 @@ mod tests {
         seed_symbols(&store);
         let engine = test_engine(store);
 
-        let results = engine.search("User", 10).unwrap();
+        let results = engine.search_simple("User", 10).unwrap();
         assert!(!results.is_empty());
-        // "UserManager" and "UserRouter" should rank high
         let top_name = &results[0].symbol.name;
         assert!(top_name.contains("User"));
     }
@@ -244,7 +423,7 @@ mod tests {
     fn test_search_empty() {
         let store = test_store();
         let engine = test_engine(store);
-        let results = engine.search("", 10).unwrap();
+        let results = engine.search_simple("", 10).unwrap();
         assert!(results.is_empty());
     }
 
@@ -268,5 +447,66 @@ mod tests {
 
         let results = engine.fuzzy_search("UserMnger", None, 10).unwrap();
         assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_camel_case_split() {
+        assert_eq!(split_camel_case("getUser"), vec!["get", "user"]);
+        assert_eq!(split_camel_case("UserManager"), vec!["user", "manager"]);
+        assert_eq!(split_camel_case("get_user_name"), vec!["get", "user", "name"]);
+        assert_eq!(split_camel_case("XMLParser"), vec!["xml", "parser"]);
+        assert_eq!(split_camel_case("simple"), vec!["simple"]);
+    }
+
+    #[test]
+    fn test_normalize_name_for_search() {
+        let norm = normalize_name_for_search("getUser");
+        assert_eq!(to_snake_case(&norm), "get_user");
+
+        let norm = normalize_name_for_search("get_user_name");
+        assert_eq!(to_snake_case(&norm), "get_user_name");
+
+        let norm = normalize_name_for_search("UserManager");
+        assert_eq!(to_snake_case(&norm), "user_manager");
+    }
+
+    #[test]
+    fn test_camel_case_similarity() {
+        // "getUser" should match "get_user"
+        let query_norm = normalize_name_for_search("getUser");
+        let sim = compute_name_similarity("getUser", "get_user", &query_norm);
+        assert!(sim > 0.8, "Expected high similarity, got {}", sim);
+
+        // "UserManager" should match "user_manager"
+        let query_norm = normalize_name_for_search("UserManager");
+        let sim = compute_name_similarity("UserManager", "user_manager", &query_norm);
+        assert!(sim > 0.8, "Expected high similarity, got {}", sim);
+    }
+
+    #[test]
+    fn test_like_fallback_search() {
+        let store = test_store();
+        seed_symbols(&store);
+        let engine = test_engine(store);
+
+        // "anager" won't match FTS5 prefix, but LIKE should find "UserManager"
+        let results = engine.search_simple("anager", 10).unwrap();
+        assert!(!results.is_empty(), "LIKE fallback should find 'UserManager'");
+    }
+
+    #[test]
+    fn test_language_filter() {
+        let store = test_store();
+        seed_symbols(&store);
+        let engine = test_engine(store);
+
+        let results = engine.search(
+            "User",
+            10,
+            &SearchOptions::new().with_language(Language::TypeScript),
+        ).unwrap();
+        for r in &results {
+            assert_eq!(r.symbol.language, Language::TypeScript);
+        }
     }
 }

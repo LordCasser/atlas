@@ -272,6 +272,60 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// LIKE-based name search (fallback when FTS5 returns nothing).
+    pub fn search_symbols_by_name_like(
+        &self,
+        pattern: &str,
+        language: Option<&Language>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<SymbolDef>> {
+        let conn = self.conn.lock().unwrap();
+        let like_pattern = format!("%{}%", pattern.replace('%', "").replace('_', ""));
+        if like_pattern.len() <= 2 {  // Just "%%"
+            return Ok(Vec::new());
+        }
+        let sql = if language.is_some() {
+            format!(
+                r#"SELECT s.symbol_id, s.file_id, s.kind, s.name, s.qualified_name,
+                          s.symbol_path_json, s.language,
+                          s.range_start_byte, s.range_end_byte, s.range_start_line,
+                          s.range_start_column, s.range_end_line, s.range_end_column,
+                          s.name_start_byte, s.name_end_byte, s.name_start_line,
+                          s.name_start_column, s.name_end_line, s.name_end_column,
+                          s.signature, s.visibility, s.exported, s.static_, s.async_,
+                          s.container_id, s.scope_id, s.package_name, s.namespace_path_json
+                   FROM symbols s
+                   WHERE (s.name LIKE ?1 OR s.qualified_name LIKE ?2)
+                     AND s.language = ?3
+                   LIMIT {}"#,
+                limit
+            )
+        } else {
+            format!(
+                r#"SELECT s.symbol_id, s.file_id, s.kind, s.name, s.qualified_name,
+                          s.symbol_path_json, s.language,
+                          s.range_start_byte, s.range_end_byte, s.range_start_line,
+                          s.range_start_column, s.range_end_line, s.range_end_column,
+                          s.name_start_byte, s.name_end_byte, s.name_start_line,
+                          s.name_start_column, s.name_end_line, s.name_end_column,
+                          s.signature, s.visibility, s.exported, s.static_, s.async_,
+                          s.container_id, s.scope_id, s.package_name, s.namespace_path_json
+                   FROM symbols s
+                   WHERE s.name LIKE ?1 OR s.qualified_name LIKE ?2
+                   LIMIT {}"#,
+                limit
+            )
+        };
+        let mut stmt = conn.prepare(&sql)?;
+        let lang_str = language.map(|l| l.as_str().to_string()).unwrap_or_default();
+        let rows = if language.is_some() {
+            stmt.query_map(params![like_pattern, like_pattern, lang_str], row_to_symbol)?
+        } else {
+            stmt.query_map(params![like_pattern, like_pattern], row_to_symbol)?
+        };
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     // -----------------------------------------------------------------------
     // Counts
     // -----------------------------------------------------------------------

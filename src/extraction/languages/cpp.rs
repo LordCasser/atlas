@@ -313,11 +313,6 @@ fn find_enclosing_function_id_cpp(
     None
 }
 
-/// Extract the function name from a C++ declarator (handles qualified names).
-fn extract_function_name_from_declarator(node: tree_sitter::Node, source: &str) -> String {
-    extract_function_name_node_from_declarator(node, source).0
-}
-
 /// Extract the function name and the identifier node from a C++ declarator.
 fn extract_function_name_node_from_declarator<'a>(
     node: tree_sitter::Node<'a>,

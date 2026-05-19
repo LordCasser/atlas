@@ -365,7 +365,7 @@ main();
 
     #[test]
     fn test_cross_file_callers_callees_graph() {
-        use crate::graph::{GraphEngine, GraphSnapshot};
+        use crate::graph::GraphEngine;
         use crate::extraction::extract_file;
         use crate::extraction::languages::typescript::TypeScriptAdapter;
 

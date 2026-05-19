@@ -16,7 +16,9 @@
 //! 4. Assign container for class/struct members
 
 use crate::types::{ScopeDef, SymbolDef, SymbolKind, TextRange};
-use crate::types::ids::{FileId, ScopeId, SymbolId};
+use crate::types::ids::{ScopeId, SymbolId};
+#[cfg(test)]
+use crate::types::ids::FileId;
 
 /// Reconstruct the scope tree and symbol containment from extracted facts.
 pub fn build_scope_tree(

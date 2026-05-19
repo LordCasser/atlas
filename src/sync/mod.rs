@@ -13,7 +13,6 @@ use crate::extraction::LanguageRegistry;
 use crate::graph::{GraphEngine, GraphSnapshot};
 use crate::resolution::ReferenceResolver;
 use anyhow::{Context, Result};
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -33,16 +32,16 @@ impl SyncEngine {
     }
 
     /// Perform a full incremental sync:
-    /// 1. Detect changed files (git status → mtime fallback)
+    /// 1. Detect changed files (git status → content-hash fallback)
     /// 2. Delete stale data for removed/changed files
     /// 3. Re-extract changed/added files
     /// 4. Re-resolve all unresolved references
-    /// 5. Reload GraphSnapshot
+    /// 5. Persist file hashes for next sync
     pub fn sync(&self) -> Result<SyncStats> {
         let start = Instant::now();
 
-        // 1. Detect changes
-        let changed = self.detect_changes()?;
+        // 1. Detect changes (with hash store persistence)
+        let (changed, hash_store) = self.detect_changes_with_hash()?;
         let mut stats = SyncStats {
             files_changed: changed.total(),
             ..Default::default()
@@ -54,9 +53,14 @@ impl SyncEngine {
         }
 
         // 2. Delete stale data for deleted and modified files
+        // CRITICAL: FileId must be generated from project-relative paths,
+        // matching the path used during extraction (reindex_file).
         for path in &changed.deleted {
+            let relative = path
+                .strip_prefix(&self.project_root)
+                .unwrap_or(path);
             let file_id = crate::types::ids::FileId::generate(
-                &path.to_string_lossy(),
+                &relative.to_string_lossy(),
             );
             self.store.delete_file_data(&file_id)?;
             stats.files_removed += 1;
@@ -96,7 +100,11 @@ impl SyncEngine {
         let res_stats = resolver.resolve_all()?;
         stats.new_edges = res_stats.resolved;
 
-        // 5. Reload graph (caller should do this after sync)
+        // 5. Persist file hashes for the next incremental sync
+        let atlas_dir = self.project_root.join(".atlas");
+        std::fs::create_dir_all(&atlas_dir).ok();
+        hash_store.save(&atlas_dir)?;
+
         stats.duration = start.elapsed();
         Ok(stats)
     }
@@ -106,31 +114,29 @@ impl SyncEngine {
         GraphEngine::from_store(&self.store, confidence_threshold)
     }
 
-    /// Detect changed files: tries git status first, falls back to mtime.
+    /// Detect changed files: tries git status first, falls back to content-hash comparison.
+    /// Returns changes only (backward-compatible wrapper).
     pub fn detect_changes(&self) -> Result<detector::ChangedFiles> {
-        // Try git first
+        self.detect_changes_with_hash().map(|(changes, _)| changes)
+    }
+
+    /// Detect changed files: tries git status first, falls back to content-hash comparison.
+    /// Returns changes + the hash store for persistence after sync completes.
+    pub fn detect_changes_with_hash(
+        &self,
+    ) -> Result<(detector::ChangedFiles, detector::FileHashStore)> {
+        let atlas_dir = self.project_root.join(".atlas");
+        std::fs::create_dir_all(&atlas_dir).ok();
+
+        // Try git first (primary strategy — fastest and most reliable)
         if let Some(changes) = detector::detect_git_changes(&self.project_root) {
-            return Ok(changes);
+            return Ok((changes, detector::FileHashStore::default()));
         }
 
-        // Fallback: mtime comparison
-        let store = self.store.clone();
-        let store2 = store.clone();
-        let indexed_files_set = std::thread::scope(|_s| -> Result<HashSet<PathBuf>> {
-            let files = store2.list_files().unwrap_or_default();
-            let mut set = HashSet::new();
-            for f in &files {
-                set.insert(self.project_root.join(&f.path));
-            }
-            Ok(set)
-        })?;
-
-        let timestamp_file = self
-            .project_root
-            .join(".atlas")
-            .join("last_sync_timestamp");
-
-        detector::detect_mtime_changes(&self.project_root, &indexed_files_set, &timestamp_file)
+        // Fallback: content-hash comparison using .atlas/file_hashes.json
+        let mut hash_store = detector::FileHashStore::load(&atlas_dir)?;
+        let changes = detector::detect_hash_changes(&self.project_root, &mut hash_store)?;
+        Ok((changes, hash_store))
     }
 
     // --- internal ---

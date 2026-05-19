@@ -153,7 +153,7 @@ impl ToolRouter {
                 None => return (format!("Unknown symbol kind: {}", k_str), true),
             }
         } else {
-            self.search.search(query, limit)
+            self.search.search_simple(query, limit)
         };
 
         match results {

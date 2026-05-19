@@ -16,7 +16,7 @@ pub fn run(query: &str, project: &str, limit: usize) -> anyhow::Result<()> {
     let graph = Arc::new(graph);
     let search = SearchEngine::new(Arc::clone(&store), Arc::clone(&graph));
 
-    let results = search.search(query, limit)?;
+    let results = search.search_simple(query, limit)?;
     if results.is_empty() {
         println!("No results found for '{}'", query);
         return Ok(());
