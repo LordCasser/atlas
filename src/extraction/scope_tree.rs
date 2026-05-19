@@ -15,7 +15,7 @@
 //!    into the sorted scope list
 //! 4. Assign container for class/struct members
 
-use crate::types::{ScopeDef, ScopeKind, SymbolDef, SymbolKind, TextRange};
+use crate::types::{ScopeDef, SymbolDef, SymbolKind, TextRange};
 use crate::types::ids::{FileId, ScopeId, SymbolId};
 
 /// Reconstruct the scope tree and symbol containment from extracted facts.
@@ -36,7 +36,7 @@ pub fn build_scope_tree(
 
     // ── 2. Build parent links via stack ──
     // The stack holds (scope_index, scope_id).
-    let mut stack: Vec<(usize, crate::types::ids::ScopeId)> = Vec::new();
+    let mut stack: Vec<(usize, ScopeId)> = Vec::new();
 
     for i in 0..scopes.len() {
         let scope_start = scopes[i].range.start_byte;
@@ -72,10 +72,10 @@ pub fn build_scope_tree(
 }
 
 /// Find the innermost scope that contains the given byte range.
-fn find_containing_scope(range: TextRange, scopes: &[ScopeDef]) -> Option<crate::types::ids::ScopeId> {
+fn find_containing_scope(range: TextRange, scopes: &[ScopeDef]) -> Option<ScopeId> {
     // Scopes are sorted by start_byte. Walk backward from the end to find
     // the innermost (tightest) containing scope.
-    let mut best: Option<(u32, crate::types::ids::ScopeId)> = None;
+    let mut best: Option<(u32, ScopeId)> = None;
     for scope in scopes.iter() {
         if scope.range.start_byte <= range.start_byte && scope.range.end_byte >= range.end_byte {
             let tightness = scope.range.end_byte - scope.range.start_byte;
@@ -94,11 +94,11 @@ fn find_containing_scope(range: TextRange, scopes: &[ScopeDef]) -> Option<crate:
 }
 
 /// Assign container SymbolId for class/struct/interface member symbols.
-fn assign_containers(symbols: &mut [SymbolDef], scopes: &[ScopeDef]) {
+fn assign_containers(symbols: &mut [SymbolDef], _scopes: &[ScopeDef]) {
     // Build a map of scope_id → SymbolId for class-like scopes
     let class_scopes: std::collections::HashMap<
-        crate::types::ids::ScopeId,
-        crate::types::ids::SymbolId,
+        ScopeId,
+        SymbolId,
     > = symbols
         .iter()
         .filter(|s| {

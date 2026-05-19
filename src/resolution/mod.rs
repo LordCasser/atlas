@@ -248,8 +248,8 @@ impl ReferenceResolver {
             EdgeKind::References
         };
 
-        let edge = RawEdge {
-            id: EdgeId::generate(
+        let mut edge = RawEdge::new(
+            EdgeId::generate(
                 &source,
                 &target.symbol_id,
                 edge_kind.as_str(),
@@ -257,31 +257,35 @@ impl ReferenceResolver {
                 target.provenance.as_str(),
             ),
             source,
-            target: target.symbol_id,
-            kind: edge_kind,
-            confidence: target.confidence,
-            provenance: target.provenance,
-        };
+            target.symbol_id,
+            edge_kind,
+            target.confidence,
+            target.provenance,
+        );
+        edge.ref_id = Some(reference.id);
+        edge.resolved_by = Some(target.strategy);
 
         edges.push(edge);
 
         // Also create Contains edges from container symbols during resolution
         if let Some(container) = target_sym.container {
             if self.store.find_symbol_by_id(&container)?.is_some() {
-                let contains_edge = RawEdge {
-                    id: EdgeId::generate(
+                let mut contains_edge = RawEdge::new(
+                    EdgeId::generate(
                         &container,
                         &target.symbol_id,
                         EdgeKind::Contains.as_str(),
-                        None::<&ReferenceId>,
+                        Some(&reference.id),
                         Provenance::TreeSitter.as_str(),
                     ),
-                    source: container,
-                    target: target.symbol_id,
-                    kind: EdgeKind::Contains,
-                    confidence: Confidence::certain(),
-                    provenance: Provenance::TreeSitter,
-                };
+                    container,
+                    target.symbol_id,
+                    EdgeKind::Contains,
+                    Confidence::certain(),
+                    Provenance::TreeSitter,
+                );
+                contains_edge.ref_id = Some(reference.id);
+                contains_edge.resolved_by = Some(target.strategy);
                 edges.push(contains_edge);
             }
         }

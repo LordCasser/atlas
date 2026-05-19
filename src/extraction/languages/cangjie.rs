@@ -227,14 +227,14 @@ impl LanguageAdapter for CangjieAdapter {
             None::<&ReferenceId>,
             Provenance::TreeSitter.as_str(),
         );
-        Some(RawEdge {
-            id: edge_id,
-            source: source_sym,
+        Some(RawEdge::new(
+            edge_id,
+            source_sym,
             target,
             kind,
-            confidence: Confidence::certain(),
-            provenance: Provenance::TreeSitter,
-        })
+            Confidence::certain(),
+            Provenance::TreeSitter,
+        ))
     }
 }
 

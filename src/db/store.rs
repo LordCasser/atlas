@@ -62,10 +62,36 @@ impl Store {
         })
     }
 
-    /// Initialize the schema (idempotent).
+    /// Initialize the schema (idempotent, with forward migrations).
     pub fn init_schema(&self) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch(SCHEMA_DDL)?;
+
+        // Run forward migrations for each version
+        let current_version: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_versions",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if current_version < 3 {
+            // v2→v3: add ref_id, location, metadata, resolved_by to edges
+            for col in &[
+                "ALTER TABLE edges ADD COLUMN ref_id BLOB",
+                "ALTER TABLE edges ADD COLUMN location_0 INTEGER",
+                "ALTER TABLE edges ADD COLUMN location_1 INTEGER",
+                "ALTER TABLE edges ADD COLUMN location_2 INTEGER",
+                "ALTER TABLE edges ADD COLUMN location_3 INTEGER",
+                "ALTER TABLE edges ADD COLUMN location_4 INTEGER",
+                "ALTER TABLE edges ADD COLUMN location_5 INTEGER",
+                "ALTER TABLE edges ADD COLUMN metadata TEXT",
+                "ALTER TABLE edges ADD COLUMN resolved_by TEXT",
+            ] {
+                let _ = conn.execute(col, []);
+            }
+        }
 
         // Record current version if not already present
         conn.execute(
@@ -359,7 +385,9 @@ impl Store {
     pub fn find_edges_by_source(&self, source: &SymbolId) -> anyhow::Result<Vec<RawEdge>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT edge_id, source, target, kind, confidence, provenance
+            "SELECT edge_id, source, target, kind, confidence, provenance,
+                    ref_id, location_0, location_1, location_2, location_3, location_4, location_5,
+                    metadata, resolved_by
              FROM edges WHERE source = ?1",
         )?;
         let rows = stmt.query_map(params![source], row_to_edge)?;
@@ -370,7 +398,9 @@ impl Store {
     pub fn find_edges_by_target(&self, target: &SymbolId) -> anyhow::Result<Vec<RawEdge>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT edge_id, source, target, kind, confidence, provenance
+            "SELECT edge_id, source, target, kind, confidence, provenance,
+                    ref_id, location_0, location_1, location_2, location_3, location_4, location_5,
+                    metadata, resolved_by
              FROM edges WHERE target = ?1",
         )?;
         let rows = stmt.query_map(params![target], row_to_edge)?;
@@ -485,7 +515,9 @@ impl Store {
         let guard = self.conn.lock().unwrap();
         let conn: &Connection = &guard;
         let mut stmt = conn.prepare(
-            "SELECT edge_id, source, target, kind, confidence, provenance FROM edges",
+            "SELECT edge_id, source, target, kind, confidence, provenance,
+                    ref_id, location_0, location_1, location_2, location_3, location_4, location_5,
+                    metadata, resolved_by FROM edges",
         )?;
         let rows = stmt.query_map([], row_to_edge)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -743,6 +775,24 @@ fn row_to_reference(row: &rusqlite::Row) -> rusqlite::Result<ReferenceUse> {
 }
 
 fn row_to_edge(row: &rusqlite::Row) -> rusqlite::Result<RawEdge> {
+    let ref_id: Option<ReferenceId> = row.get(6)?;
+    let location: Option<TextRange> = {
+        let sb: Option<u32> = row.get(7)?;
+        sb.map(|start_byte| TextRange {
+            start_byte,
+            end_byte: row.get::<_, u32>(8).unwrap_or(0),
+            start_line: row.get::<_, u32>(9).unwrap_or(0),
+            start_column: row.get::<_, u32>(10).unwrap_or(0),
+            end_line: row.get::<_, u32>(11).unwrap_or(0),
+            end_column: row.get::<_, u32>(12).unwrap_or(0),
+        })
+    };
+    let metadata: Option<String> = row.get(13)?;
+    let resolved_by_str: Option<String> = row.get(14)?;
+    let resolved_by = resolved_by_str
+        .as_deref()
+        .and_then(|s| ResolutionStrategy::from_str(s));
+
     Ok(RawEdge {
         id: row.get(0)?,
         source: row.get(1)?,
@@ -751,6 +801,10 @@ fn row_to_edge(row: &rusqlite::Row) -> rusqlite::Result<RawEdge> {
         confidence: Confidence::new(row.get(4)?),
         provenance: Provenance::from_str(row.get::<_, String>(5)?.as_str())
             .unwrap_or_default(),
+        ref_id,
+        location,
+        metadata,
+        resolved_by,
     })
 }
 
@@ -882,14 +936,31 @@ fn write_imports(conn: &Connection, imports: &[ImportDef]) -> anyhow::Result<()>
 fn write_edges(conn: &Connection, edges: &[RawEdge]) -> anyhow::Result<()> {
     let mut stmt = conn.prepare(
         r#"INSERT OR REPLACE INTO edges
-           (edge_id, source, target, kind, confidence, provenance)
-        VALUES (?1,?2,?3,?4,?5,?6)"#,
+           (edge_id, source, target, kind, confidence, provenance,
+            ref_id, location_0, location_1, location_2, location_3, location_4, location_5,
+            metadata, resolved_by)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"#,
     )?;
     for e in edges {
+        let (loc_0, loc_1, loc_2, loc_3, loc_4, loc_5) = match &e.location {
+            Some(loc) => (
+                Some(loc.start_byte),
+                Some(loc.end_byte),
+                Some(loc.start_line),
+                Some(loc.start_column),
+                Some(loc.end_line),
+                Some(loc.end_column),
+            ),
+            None => (None, None, None, None, None, None),
+        };
         stmt.execute(params![
             e.id, e.source, e.target, e.kind.as_str(),
             e.confidence.as_f32(),
             e.provenance.as_str(),
+            e.ref_id,
+            loc_0, loc_1, loc_2, loc_3, loc_4, loc_5,
+            e.metadata,
+            e.resolved_by.as_ref().map(|s| s.as_str()),
         ])?;
     }
     Ok(())

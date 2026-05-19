@@ -15,7 +15,7 @@
 //! - `schema_versions` — migration tracking
 
 /// Current schema version. Increment on every schema change.
-pub const CURRENT_SCHEMA_VERSION: i64 = 2;
+pub const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 /// Minimum readable schema version (for backward compatibility).
 pub const MIN_READABLE_VERSION: i64 = 1;
@@ -127,7 +127,16 @@ CREATE TABLE IF NOT EXISTS edges (
     target       BLOB,
     kind         TEXT NOT NULL,
     confidence   REAL NOT NULL DEFAULT 0.5,
-    provenance   TEXT NOT NULL DEFAULT 'tree_sitter'
+    provenance   TEXT NOT NULL DEFAULT 'tree_sitter',
+    ref_id       BLOB,
+    location_0   INTEGER,
+    location_1   INTEGER,
+    location_2   INTEGER,
+    location_3   INTEGER,
+    location_4   INTEGER,
+    location_5   INTEGER,
+    metadata     TEXT,
+    resolved_by  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS callsites (

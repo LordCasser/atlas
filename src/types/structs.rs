@@ -345,6 +345,36 @@ pub struct RawEdge {
 
     /// How this edge was derived.
     pub provenance: Provenance,
+
+    /// Reference that produced this edge (for structural edges from resolution).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ref_id: Option<ReferenceId>,
+
+    /// Source range where the edge originates (call site, reference location).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<TextRange>,
+
+    /// Extensible metadata as JSON (e.g., argument mapping).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<String>,
+
+    /// Resolution strategy that produced this edge (for structural edges).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_by: Option<ResolutionStrategy>,
+}
+
+impl RawEdge {
+    /// Create a RawEdge with the new extensibility fields set to None.
+    /// Preferred over struct literal for forward compatibility.
+    pub fn new(id: EdgeId, source: SymbolId, target: SymbolId, kind: EdgeKind, confidence: Confidence, provenance: Provenance) -> Self {
+        Self {
+            id, source, target, kind, confidence, provenance,
+            ref_id: None,
+            location: None,
+            metadata: None,
+            resolved_by: None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -637,23 +667,23 @@ mod tests {
         let a = sample_symbol(fid, "A", "A", SymbolKind::Class);
         let b = sample_symbol(fid, "run", "A.run", SymbolKind::Method);
         let edge_id1 = EdgeId::generate(&a.id, &b.id, "contains", None, "tree_sitter");
-        let e1 = RawEdge {
-            id: edge_id1.clone(),
-            source: a.id,
-            target: b.id,
-            kind: EdgeKind::Contains,
-            confidence: Confidence::certain(),
-            provenance: Provenance::TreeSitter,
-        };
+        let e1 = RawEdge::new(
+            edge_id1.clone(),
+            a.id,
+            b.id,
+            EdgeKind::Contains,
+            Confidence::certain(),
+            Provenance::TreeSitter,
+        );
         let edge_id2 = EdgeId::generate(&a.id, &b.id, "contains", None, "tree_sitter");
-        let e2 = RawEdge {
-            id: edge_id2,
-            source: a.id,
-            target: b.id,
-            kind: EdgeKind::Contains,
-            confidence: Confidence::certain(),
-            provenance: Provenance::TreeSitter,
-        };
+        let e2 = RawEdge::new(
+            edge_id2,
+            a.id,
+            b.id,
+            EdgeKind::Contains,
+            Confidence::certain(),
+            Provenance::TreeSitter,
+        );
         assert_eq!(e1.id, e2.id);
     }
 }

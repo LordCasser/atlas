@@ -490,14 +490,14 @@ mod tests {
     fn make_edge(source: SymbolId, target: SymbolId, kind: EdgeKind) -> RawEdge {
         use crate::types::ids::EdgeId;
         let id = EdgeId::generate(&source, &target, kind.as_str(), None, Provenance::TreeSitter.as_str());
-        RawEdge {
+        RawEdge::new(
             id,
             source,
             target,
             kind,
-            confidence: Confidence::certain(),
-            provenance: Provenance::TreeSitter,
-        }
+            Confidence::certain(),
+            Provenance::TreeSitter,
+        )
     }
 
     #[test]

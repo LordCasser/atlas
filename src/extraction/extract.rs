@@ -11,10 +11,10 @@ use std::path::Path;
 use tree_sitter::{Parser, Query, QueryCursor};
 
 use crate::types::{
-    DiagnosticLevel, ExtractDiagnostic, FileFacts, FileInfo,
-    ParseStatus,
+    Callsite, DiagnosticLevel, ExtractDiagnostic, FileFacts, FileInfo,
+    ParseStatus, ReferenceKind,
 };
-use crate::types::ids::FileId;
+use crate::types::ids::{CallsiteId, FileId};
 
 use super::languages::LanguageAdapter;
 
@@ -106,7 +106,26 @@ pub fn extract_file(
     // 7. Build scope tree and assign containers
     super::build_scope_tree(&mut scopes, &mut symbols);
 
-    // 8. Collect exported symbol IDs
+    // 8. Derive callsites from Call references
+    let callsites: Vec<Callsite> = references
+        .iter()
+        .filter(|r| r.kind == ReferenceKind::Call && r.source_symbol.is_some())
+        .map(|r| {
+            let caller = r.source_symbol.unwrap(); // safe: filter ensures Some
+            let cs_id = CallsiteId::generate(&r.id, Some(&caller), r.range.start_byte);
+            Callsite {
+                id: cs_id,
+                reference_id: Some(r.id),
+                caller,
+                callee: None,      // resolved later by the resolution pipeline
+                receiver: r.receiver.clone(),
+                args: Vec::new(),  // arguments filled later by dataflow resolution
+                range: r.range,
+            }
+        })
+        .collect();
+
+    // 9. Collect exported symbol IDs
     let exports: Vec<_> = symbols.iter()
         .filter(|s| s.exported)
         .map(|s| s.id)
@@ -135,7 +154,7 @@ pub fn extract_file(
         imports,
         exports,
         raw_edges,   // Dataflow edges extracted inline; structural edges still by resolver
-        callsites: Vec::new(),   // Callsites derived from call references later
+        callsites,   // Derived from Call references (resolved later)
         diagnostics,
     })
 }
