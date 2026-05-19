@@ -9,8 +9,12 @@
   (pointer_declarator
     (function_declarator (identifier) @definition.function)))
 
-;; Struct declarations
-(struct_specifier (type_identifier) @definition.class)
+;; Struct definitions (require body to exclude forward declarations and type references)
+;; Without the body check, every `struct Foo *ptr` and `struct Foo;` would be
+;; falsely captured as a definition, inflating the class symbol count by ~5.5x.
+(struct_specifier
+  (type_identifier) @definition.class
+  (field_declaration_list))
 
 ;; Enum declarations
 (enum_specifier (type_identifier) @definition.enum)
