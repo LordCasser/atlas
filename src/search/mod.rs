@@ -227,6 +227,9 @@ impl SearchEngine {
                     .unwrap_or(false)
             });
         }
+        if let Some(ref lang_filter) = options.language {
+            results.retain(|r| r.symbol.language == *lang_filter);
+        }
         if let Some(min_c) = options.min_confidence {
             results.retain(|r| r.score.total >= min_c);
         }

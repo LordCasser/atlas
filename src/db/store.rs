@@ -491,6 +491,47 @@ impl Store {
         Ok(())
     }
 
+    /// Batch-update resolved targets for multiple references in a single transaction.
+    ///
+    /// This is significantly faster than calling `update_reference_resolution` per-reference
+    /// because it amortizes the transaction overhead.
+    pub fn batch_update_resolutions(
+        &self,
+        resolutions: &[(ReferenceId, ResolvedTarget)],
+    ) -> anyhow::Result<()> {
+        if resolutions.is_empty() {
+            return Ok(());
+        }
+        self.with_transaction(|tx| {
+            let mut stmt = tx.prepare(
+                "UPDATE references_v2 SET
+                    resolved_symbol_id = ?2,
+                    resolved_confidence = ?3,
+                    resolved_strategy = ?4,
+                    resolved_provenance = ?5
+                 WHERE reference_id = ?1",
+            )?;
+            for (ref_id, target) in resolutions {
+                stmt.execute(params![
+                    ref_id,
+                    target.symbol_id,
+                    target.confidence.as_f32(),
+                    target.strategy.as_str(),
+                    target.provenance.as_str(),
+                ])?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Batch-insert edges inside a transaction (re-export with explicit name).
+    ///
+    /// This is the same as `insert_edges` but named for clarity in the
+    /// resolution pipeline where we accumulate edges and flush them in batches.
+    pub fn batch_insert_edges(&self, edges: &[RawEdge]) -> anyhow::Result<()> {
+        self.insert_edges(edges)
+    }
+
     // -----------------------------------------------------------------------
     // Scopes
     // -----------------------------------------------------------------------

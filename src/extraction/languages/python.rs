@@ -50,46 +50,23 @@ impl LanguageAdapter for PythonAdapter {
         file_id: FileId,
         _file_path: &Path,
     ) -> Option<SymbolDef> {
+        use super::shared::SymbolDefBuilder;
+
         let kind = py_definition_kind(capture_name, node)?;
         let name = node_text(node, source)?;
         let range = node_range(node);
-        let name_range = node_range(node);
 
         let qualified_name = qualified_name_from_node_py("", &name, node, source);
         let lang = self.language();
         let exported = is_exported_in_tree_py(node, &name);
-
-        // Extract signature for functions/methods/constructors
         let signature = py_extract_signature(capture_name, node, source);
 
-        let symbol_id = SymbolId::generate(
-            &file_id,
-            lang.as_str(),
-            &qualified_name,
-            kind.as_str(),
-            None::<&str>,
-        );
-
-        Some(SymbolDef {
-            id: symbol_id,
-            kind,
-            name,
-            qualified_name,
-            symbol_path: vec![],
-            file_id,
-            language: lang,
-            range,
-            name_range,
-            signature,
-            visibility: None,
-            exported,
-            static_: false,
-            async_: false,
-            container: None,
-            scope_id: None,
-            package_name: None,
-            namespace_path: vec![],
-        })
+        Some(
+            SymbolDefBuilder::new(file_id, lang, kind, name, qualified_name, range)
+                .signature(signature)
+                .exported(exported)
+                .build(),
+        )
     }
 
     fn normalize_reference(

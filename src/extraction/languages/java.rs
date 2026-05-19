@@ -56,42 +56,21 @@ impl LanguageAdapter for JavaAdapter {
         file_id: FileId,
         _file_path: &Path,
     ) -> Option<SymbolDef> {
+        use super::shared::SymbolDefBuilder;
+
         let kind = java_definition_kind(capture_name)?;
         let name = node_text(node, source)?;
         let range = node_range(node);
-        let name_range = node_range(node);
 
         let qualified_name = qualified_name_from_node_java("", &name, node, source);
         let lang = self.language();
+        let signature = java_extract_signature(capture_name, node, source);
 
-        let symbol_id = SymbolId::generate(
-            &file_id,
-            lang.as_str(),
-            &qualified_name,
-            kind.as_str(),
-            None::<&str>,
-        );
-
-        Some(SymbolDef {
-            id: symbol_id,
-            kind,
-            name,
-            qualified_name,
-            symbol_path: vec![],
-            file_id,
-            language: lang,
-            range,
-            name_range,
-            signature: None,
-            visibility: None,
-            exported: false,
-            static_: false,
-            async_: false,
-            container: None,
-            scope_id: None,
-            package_name: None,
-            namespace_path: vec![],
-        })
+        Some(
+            SymbolDefBuilder::new(file_id, lang, kind, name, qualified_name, range)
+                .signature(signature)
+                .build(),
+        )
     }
 
     fn normalize_reference(
@@ -427,6 +406,26 @@ fn java_dataflow_kind(capture_name: &str) -> Option<&'static str> {
         "dataflow.assign" => Some("assigns"),
         "dataflow.field_write" => Some("field_write"),
         "dataflow.field_read" => Some("field_read"),
+        _ => None,
+    }
+}
+
+/// Extract method/constructor signature (formal parameters) from the AST.
+///
+/// The `node` is the identifier captured by `@definition.method` or
+/// `@definition.constructor`. Its parent is `method_declaration` or
+/// `constructor_declaration`, which has a `formal_parameters` child.
+fn java_extract_signature(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+) -> Option<String> {
+    match capture_name {
+        "definition.method" | "definition.constructor" => {
+            let parent = node.parent()?;
+            let params = parent.child_by_field_name("parameters")?;
+            Some(node_text(params, source)?)
+        }
         _ => None,
     }
 }

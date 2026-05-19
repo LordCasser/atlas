@@ -56,42 +56,16 @@ impl LanguageAdapter for CangjieAdapter {
         file_id: FileId,
         _file_path: &Path,
     ) -> Option<SymbolDef> {
+        use super::shared::SymbolDefBuilder;
+
         let kind = cj_definition_kind(capture_name)?;
         let name = node_text(node, source)?;
         let range = node_range(node);
-        let name_range = node_range(node);
 
         let qualified_name = qualified_name_from_node_cj("", &name, node, source);
         let lang = self.language();
 
-        let symbol_id = SymbolId::generate(
-            &file_id,
-            lang.as_str(),
-            &qualified_name,
-            kind.as_str(),
-            None::<&str>,
-        );
-
-        Some(SymbolDef {
-            id: symbol_id,
-            kind,
-            name,
-            qualified_name,
-            symbol_path: vec![],
-            file_id,
-            language: lang,
-            range,
-            name_range,
-            signature: None,
-            visibility: None,
-            exported: false,
-            static_: false,
-            async_: false,
-            container: None,
-            scope_id: None,
-            package_name: None,
-            namespace_path: vec![],
-        })
+        Some(SymbolDefBuilder::new(file_id, lang, kind, name, qualified_name, range).build())
     }
 
     fn normalize_reference(

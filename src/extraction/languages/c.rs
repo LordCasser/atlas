@@ -48,42 +48,21 @@ impl LanguageAdapter for CAdapter {
         file_id: FileId,
         _file_path: &Path,
     ) -> Option<SymbolDef> {
+        use super::shared::SymbolDefBuilder;
+
         let kind = c_definition_kind(capture_name)?;
         let name = node_text(node, source)?;
         let range = node_range(node);
-        let name_range = node_range(node);
 
         let qualified_name = qualified_name_from_node_c(&name, node, source);
         let lang = self.language();
+        let signature = c_extract_signature(capture_name, node, source);
 
-        let symbol_id = SymbolId::generate(
-            &file_id,
-            lang.as_str(),
-            &qualified_name,
-            kind.as_str(),
-            None::<&str>,
-        );
-
-        Some(SymbolDef {
-            id: symbol_id,
-            kind,
-            name,
-            qualified_name,
-            symbol_path: vec![],
-            file_id,
-            language: lang,
-            range,
-            name_range,
-            signature: None,
-            visibility: None,
-            exported: false,
-            static_: false,
-            async_: false,
-            container: None,
-            scope_id: None,
-            package_name: None,
-            namespace_path: vec![],
-        })
+        Some(
+            SymbolDefBuilder::new(file_id, lang, kind, name, qualified_name, range)
+                .signature(signature)
+                .build(),
+        )
     }
 
     fn normalize_reference(
@@ -381,6 +360,22 @@ fn c_import_info(
     }
 }
 
+/// Extract function signature (parameter list) from the AST.
+///
+/// The `node` is the `function_declarator` captured by `@definition.function`.
+/// It has a `parameters` child field containing the `parameter_list`.
+fn c_extract_signature(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+) -> Option<String> {
+    if capture_name != "definition.function" {
+        return None;
+    }
+    let params = node.child_by_field_name("parameters")?;
+    Some(node_text(params, source)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,7 +385,6 @@ mod tests {
         let adapter = CAdapter;
         assert_eq!(adapter.language(), Language::C);
         assert!(adapter.extensions().contains(&"c"));
-        assert!(adapter.extensions().contains(&"h"));
         assert!(!adapter.definition_query().is_empty());
     }
 

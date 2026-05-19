@@ -23,8 +23,15 @@ pub struct DiscoveryConfig {
 ///
 /// Returns relative file paths (relative to `root`).
 pub fn discover_files(root: &Path, config: &DiscoveryConfig) -> anyhow::Result<Vec<PathBuf>> {
-    let files = if is_git_repo(root) {
-        discover_via_git(root)?
+    let raw_files = if is_git_repo(root) {
+        let git_files = discover_via_git(root)?;
+        // When git ls-files returns nothing (e.g. all files gitignored),
+        // fall back to filesystem walk so non-tracked directories work.
+        if git_files.is_empty() {
+            discover_via_walk(root)?
+        } else {
+            git_files
+        }
     } else {
         discover_via_walk(root)?
     };
@@ -33,7 +40,7 @@ pub fn discover_files(root: &Path, config: &DiscoveryConfig) -> anyhow::Result<V
     let atlasignore_patterns = load_atlasignore(root);
 
     // Filter by language support + .atlasignore + include/exclude config
-    let filtered: Vec<PathBuf> = files
+    let filtered: Vec<PathBuf> = raw_files
         .into_iter()
         .filter(|p| matches_language(p))
         .filter(|p| !matches_any_glob(p, &atlasignore_patterns))

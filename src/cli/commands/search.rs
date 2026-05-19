@@ -3,7 +3,7 @@
 use crate::db::Store;
 use crate::search::SearchEngine;
 use crate::search::SearchOptions;
-use crate::types::SymbolKind;
+use crate::types::{Language, SymbolKind};
 use anyhow::Context;
 use serde::Serialize;
 use std::sync::Arc;
@@ -13,6 +13,7 @@ pub fn run(
     project: &str,
     limit: usize,
     kind: Option<&str>,
+    language: Option<&str>,
     json: bool,
 ) -> anyhow::Result<()> {
     let root = std::path::Path::new(project);
@@ -37,6 +38,16 @@ pub fn run(
                 kind_str,
                 valid_kinds().join(", ")
             );
+        }
+    }
+    if let Some(lang_str) = language {
+        match Language::from_str(lang_str) {
+            Some(lang) => {
+                options.language = Some(lang);
+            }
+            None => {
+                anyhow::bail!("Unknown language '{}'", lang_str);
+            }
         }
     }
 

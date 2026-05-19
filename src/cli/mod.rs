@@ -40,6 +40,12 @@ pub enum Commands {
         /// Project root directory
         #[arg(short, long, default_value = ".")]
         project: String,
+        /// Only include files matching this glob pattern (e.g. "src/**/*.rs")
+        #[arg(long)]
+        include: Option<String>,
+        /// Exclude files matching this glob pattern (e.g. "**/*.test.ts")
+        #[arg(long)]
+        exclude: Option<String>,
     },
     /// Incremental sync
     Sync {
@@ -57,6 +63,9 @@ pub enum Commands {
         /// Filter by symbol kind (e.g. class, function, method, variable)
         #[arg(short, long)]
         kind: Option<String>,
+        /// Filter by language (e.g. python, typescript, java)
+        #[arg(short = 'L', long)]
+        language: Option<String>,
         /// Output results as JSON
         #[arg(long)]
         json: bool,

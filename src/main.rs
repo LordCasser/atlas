@@ -17,8 +17,12 @@ fn main() -> anyhow::Result<()> {
             Commands::Doctor { project } => {
                 atlas::cli::commands::doctor::run(&project)?;
             }
-            Commands::Index { project } => {
-                atlas::cli::commands::index::run(&project)?;
+            Commands::Index {
+                project,
+                include,
+                exclude,
+            } => {
+                atlas::cli::commands::index::run(&project, include.as_deref(), exclude.as_deref())?;
             }
             Commands::Sync { project } => {
                 atlas::cli::commands::sync::run(&project)?;
@@ -28,10 +32,11 @@ fn main() -> anyhow::Result<()> {
                 project,
                 limit,
                 kind,
+                language,
                 json,
             } => {
                 atlas::cli::commands::search::run(
-                    &query, &project, limit, kind.as_deref(), json,
+                    &query, &project, limit, kind.as_deref(), language.as_deref(), json,
                 )?;
             }
             Commands::Context { query, project } => {

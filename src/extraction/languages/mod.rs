@@ -15,6 +15,8 @@
 use crate::types::*;
 use std::path::Path;
 
+pub mod shared;
+
 // ── Shared helpers (used by all language adapters) ──────────────────────
 
 /// Extract the UTF-8 text of a tree-sitter node from the source string.

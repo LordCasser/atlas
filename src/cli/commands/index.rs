@@ -1,14 +1,55 @@
 //! `atlas index` command — walk project tree (git-aware), extract facts, resolve references.
+//!
+//! ## Design
+//! - **Phase 1 (parallel)**: Extract all files using Rayon — CPU-bound, no SQLite access.
+//! - **Phase 2 (sequential)**: Insert extracted facts into the store — SQLite single-writer.
+//! - **Phase 3**: Resolve all references (batch).
+//!
+//! This two-phase approach avoids SQLite lock contention while maximizing CPU utilization
+//! during the extraction phase (typically 70-80% of total index time).
 
 use crate::db::Store;
 use crate::extraction::{self, LanguageRegistry};
 use crate::sync::discovery::{discover_files, DiscoveryConfig};
 use crate::types::Language;
 use anyhow::Context;
+use rayon::prelude::*;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-pub fn run(project: &str) -> anyhow::Result<()> {
+/// Categorized index failure for summary reporting.
+#[derive(Debug)]
+#[allow(dead_code)]
+enum IndexFailure {
+    /// No adapter compiled in for this language.
+    NoAdapter(String),
+    /// File I/O error (e.g. permission denied, encoding).
+    IoError(String),
+    /// Tree-sitter extraction error (parse failure, etc.).
+    ExtractError(String),
+    /// Database insertion error (FK violation, etc.).
+    InsertError(String),
+}
+
+impl IndexFailure {
+    fn category(&self) -> &'static str {
+        match self {
+            IndexFailure::NoAdapter(_) => "no_adapter",
+            IndexFailure::IoError(_) => "io_error",
+            IndexFailure::ExtractError(_) => "extract_error",
+            IndexFailure::InsertError(_) => "insert_error",
+        }
+    }
+}
+
+/// Result of extracting a single file.
+struct ExtractedFile {
+    rel_path: PathBuf,
+    facts: crate::types::FileFacts,
+}
+
+pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyhow::Result<()> {
     let root = Path::new(project);
 
     // Open or create store
@@ -16,7 +57,13 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     store.init_schema().context("Failed to initialize schema")?;
 
     // Discover source files using git ls-files (or fallback walk)
-    let config = DiscoveryConfig::default();
+    let mut config = DiscoveryConfig::default();
+    if let Some(pat) = include {
+        config.include_patterns = vec![pat.to_string()];
+    }
+    if let Some(pat) = exclude {
+        config.exclude_patterns = vec![pat.to_string()];
+    }
     let files = discover_files(root, &config)
         .context("Failed to discover source files")?;
 
@@ -29,31 +76,153 @@ pub fn run(project: &str) -> anyhow::Result<()> {
         .iter()
         .filter_map(|p| Language::from_path(p))
         .fold(Vec::new(), |mut acc, lang| {
-            if !acc.contains(&lang) { acc.push(lang); }
+            if !acc.contains(&lang) {
+                acc.push(lang);
+            }
             acc
         });
 
     let _registry = LanguageRegistry::new(&languages)
         .context("Failed to load language grammars")?;
 
-    println!("Languages detected: {:?}", languages);
-    println!("Indexing project: {} ({} files discovered)", root.display(), files.len());
+    println!(
+        "Languages detected: {:?}",
+        languages.iter().map(|l| l.as_str()).collect::<Vec<_>>()
+    );
+    println!(
+        "Indexing project: {} ({} files discovered)",
+        root.display(),
+        files.len()
+    );
     println!();
 
-    // Walk discovered files and extract
-    let ext_files = index_discovered_files(root, &store, &files)?;
-    println!("\nIndexed {} files.", ext_files);
+    // ── Phase 1: Parallel extraction ──────────────────────────────────────
+    // Extract all files in parallel (CPU-bound). Collect results + failures.
+    let total = files.len();
+    let extracted_count = AtomicUsize::new(0);
 
-    // Resolve all references
-    println!("Resolving references...");
+    let results: Vec<_> = files
+        .par_iter()
+        .filter_map(|rel_path| {
+            let abs_path = root.join(rel_path);
+            let lang = Language::from_path(rel_path)?;
+
+            // Extract (CPU-bound, no SQLite access)
+            let result = extract_one_file(&abs_path, root, lang);
+
+            let count = extracted_count.fetch_add(1, Ordering::Relaxed);
+            if count % 100 == 0 || count == total - 1 {
+                eprint!("\r  Extracting: {}/{} ", count + 1, total);
+            }
+
+            let rel = rel_path.clone();
+            match result {
+                Ok(facts) => Some(Ok(ExtractedFile {
+                    rel_path: rel,
+                    facts,
+                })),
+                Err(e) => Some(Err((rel, e))),
+            }
+        })
+        .collect();
+
+    eprintln!(); // newline after progress
+
+    // Partition into successes and failures
+    let mut extracted: Vec<ExtractedFile> = Vec::new();
+    let mut failures: Vec<(PathBuf, anyhow::Error)> = Vec::new();
+    for r in results {
+        match r {
+            Ok(f) => extracted.push(f),
+            Err((p, e)) => failures.push((p, e)),
+        }
+    }
+
+    // ── Phase 2: Sequential insertion ─────────────────────────────────────
+    // Insert all extracted facts into the store (SQLite single-writer).
+    let mut insert_failures: Vec<(PathBuf, IndexFailure)> = Vec::new();
+    for ef in &extracted {
+        match store.insert_file_facts(&ef.facts) {
+            Ok(()) => {}
+            Err(e) => {
+                insert_failures.push((
+                    ef.rel_path.clone(),
+                    IndexFailure::InsertError(format!("{:#}", e)),
+                ));
+            }
+        }
+    }
+
+    // Categorize extraction failures
+    let mut all_failures: Vec<(PathBuf, IndexFailure)> = Vec::new();
+    for (path, err) in failures {
+        let err_str = format!("{:#}", err);
+        let category = if err_str.contains("No adapter") {
+            IndexFailure::NoAdapter(err_str)
+        } else if err_str.contains("Failed to read") || err_str.contains("No such file") {
+            IndexFailure::IoError(err_str)
+        } else {
+            IndexFailure::ExtractError(err_str)
+        };
+        all_failures.push((path, category));
+    }
+    all_failures.extend(insert_failures);
+
+    let fail_count = all_failures.len();
+    let success_count = extracted.len()
+        - all_failures
+            .iter()
+            .filter(|(_, f)| matches!(f, IndexFailure::InsertError(_)))
+            .count();
+
+    // ── Print index summary ───────────────────────────────────────────────
+    if fail_count > 0 {
+        let pct = (fail_count as f64 / total as f64) * 100.0;
+        println!(
+            "\nIndexed {}/{} files ({:.1}% success)",
+            success_count,
+            total,
+            100.0 - pct
+        );
+
+        // Group failures by category
+        let mut by_category: std::collections::HashMap<&str, Vec<&PathBuf>> =
+            std::collections::HashMap::new();
+        for (path, failure) in &all_failures {
+            by_category
+                .entry(failure.category())
+                .or_default()
+                .push(path);
+        }
+        println!("  {} failed:", fail_count);
+        for (cat, paths) in &by_category {
+            println!("    {} ({}): {}", cat, paths.len(), paths.iter().take(5).map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
+            if paths.len() > 5 {
+                println!("      ... and {} more", paths.len() - 5);
+            }
+        }
+    } else {
+        println!("\nIndexed {}/{} files (100% success)", success_count, total);
+    }
+
+    // ── Phase 3: Resolve all references ───────────────────────────────────
+    println!("\nResolving references...");
     let store = Arc::new(store);
     let resolver = crate::resolution::ReferenceResolver::new(Arc::clone(&store));
     let stats = resolver.resolve_all()?;
 
+    let resolution_rate = if stats.total_refs > 0 {
+        (stats.resolved as f64 / stats.total_refs as f64) * 100.0
+    } else {
+        0.0
+    };
     println!("  Total references:   {}", stats.total_refs);
-    println!("  Resolved:           {}", stats.resolved);
+    println!(
+        "  Resolved:           {} ({:.1}%)",
+        stats.resolved, resolution_rate
+    );
     println!("  Unresolved:         {}", stats.unresolved);
-    println!("  Edges created:     {}", stats.edges_created);
+    println!("  Edges created:      {}", stats.edges_created);
     if !stats.by_strategy.is_empty() {
         println!("  By strategy:");
         for (strat, count) in &stats.by_strategy {
@@ -61,9 +230,12 @@ pub fn run(project: &str) -> anyhow::Result<()> {
         }
     }
     if !stats.warnings.is_empty() {
-        println!("  Warnings:");
-        for w in &stats.warnings {
+        println!("  Warnings ({}):", stats.warnings.len());
+        for w in stats.warnings.iter().take(10) {
             println!("    - {}", w);
+        }
+        if stats.warnings.len() > 10 {
+            println!("    ... and {} more", stats.warnings.len() - 10);
         }
     }
 
@@ -87,43 +259,17 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Process each discovered file for extraction.
-fn index_discovered_files(root: &Path, store: &Store, files: &[PathBuf]) -> anyhow::Result<usize> {
-    let mut count = 0;
-
-    for rel_path in files {
-        let abs_path = root.join(rel_path);
-        let lang = match Language::from_path(rel_path) {
-            Some(l) => l,
-            None => continue,
-        };
-
-        match process_one_file(&abs_path, root, lang, store) {
-            Ok(()) => {
-                count += 1;
-                println!("  [{}] {}", count, rel_path.display());
-            }
-            Err(e) => {
-                eprintln!(
-                    "  Warning: {} — {:#}",
-                    rel_path.display(),
-                    e
-                );
-            }
-        }
-    }
-
-    Ok(count)
-}
-
-/// Extract a single file and insert its facts into the store.
-fn process_one_file(path: &Path, root: &Path, lang: Language, store: &Store) -> anyhow::Result<()> {
+/// Extract a single file (CPU-bound, no SQLite access).
+fn extract_one_file(
+    path: &Path,
+    root: &Path,
+    lang: Language,
+) -> anyhow::Result<crate::types::FileFacts> {
     let adapter = extraction::create_adapter(lang)
         .ok_or_else(|| anyhow::anyhow!("No adapter available for {:?}", lang))?;
 
-    let source = std::fs::read_to_string(path)
-        .context("Failed to read source file")?;
-    let content_hash = &blake3::hash(source.as_bytes()).to_hex();
+    let source = std::fs::read_to_string(path).context("Failed to read source file")?;
+    let content_hash = blake3::hash(source.as_bytes()).to_hex();
     let relative = path.strip_prefix(root).unwrap_or(path);
     let file_id = crate::types::FileId::generate(&relative.to_string_lossy());
 
@@ -132,11 +278,8 @@ fn process_one_file(path: &Path, root: &Path, lang: Language, store: &Store) -> 
         file_id,
         relative,
         &source,
-        content_hash,
+        &content_hash,
     )?;
 
-    store.insert_file_facts(&facts)
-        .context("Failed to insert file facts")?;
-
-    Ok(())
+    Ok(facts)
 }

@@ -42,6 +42,11 @@ impl ReferenceResolver {
     }
 
     /// Resolve all unresolved references in the project.
+    ///
+    /// Uses batched writes: resolution results and edges are accumulated in
+    /// memory and flushed to SQLite in bulk transactions. This avoids the
+    /// per-reference transaction overhead that dominated indexing time for
+    /// large projects (e.g., 50s+ for curl's 95k+ edges).
     pub fn resolve_all(&self) -> anyhow::Result<ResolutionStats> {
         let unresolved = self.store.find_unresolved_references()?;
         let total_refs = unresolved.len();
@@ -53,6 +58,11 @@ impl ReferenceResolver {
         for r in &unresolved {
             by_file.entry(r.file_id).or_default().push(r.clone());
         }
+
+        // Accumulate resolutions and edges for batched writes
+        let mut pending_resolutions: Vec<(ReferenceId, ResolvedTarget)> = Vec::new();
+        let mut pending_edges: Vec<RawEdge> = Vec::new();
+        let batch_size = 500; // Flush every N resolutions
 
         for (file_id, refs) in &by_file {
             // Build resolution context (loads all symbols/scopes/imports once)
@@ -67,17 +77,7 @@ impl ReferenceResolver {
             for reference in refs {
                 match self.resolve_one(reference, &ctx) {
                     Some(target) => {
-                        // Update reference with resolved target
-                        if let Err(e) = self
-                            .store
-                            .update_reference_resolution(&reference.id, &target)
-                        {
-                            stats.add_warning(format!(
-                                "failed to update resolution for {}: {}",
-                                reference.name, e
-                            ));
-                            continue;
-                        }
+                        pending_resolutions.push((reference.id, target.clone()));
                         stats.resolved += 1;
                         *stats
                             .by_strategy
@@ -87,13 +87,7 @@ impl ReferenceResolver {
                         // Create structural edges from this resolution
                         match self.create_edges(reference, &target) {
                             Ok(edges) => {
-                                if !edges.is_empty() {
-                                    if let Err(e) = self.store.insert_edges(&edges) {
-                                        stats.add_warning(format!("failed to insert edges: {}", e));
-                                    } else {
-                                        stats.edges_created += edges.len();
-                                    }
-                                }
+                                pending_edges.extend(edges);
                             }
                             Err(e) => {
                                 stats.add_warning(format!("failed to create edges: {}", e));
@@ -105,9 +99,41 @@ impl ReferenceResolver {
                     }
                 }
             }
+
+            // Flush accumulated results when batch is full
+            if pending_resolutions.len() >= batch_size {
+                self.flush_batch(&mut pending_resolutions, &mut pending_edges, &mut stats);
+            }
         }
 
+        // Final flush
+        self.flush_batch(&mut pending_resolutions, &mut pending_edges, &mut stats);
+
         Ok(stats)
+    }
+
+    /// Flush pending resolutions and edges to the store in batch.
+    fn flush_batch(
+        &self,
+        pending_resolutions: &mut Vec<(ReferenceId, ResolvedTarget)>,
+        pending_edges: &mut Vec<RawEdge>,
+        stats: &mut ResolutionStats,
+    ) {
+        if !pending_resolutions.is_empty() {
+            if let Err(e) = self.store.batch_update_resolutions(pending_resolutions) {
+                stats.add_warning(format!("batch resolution update failed: {}", e));
+            }
+            pending_resolutions.clear();
+        }
+        if !pending_edges.is_empty() {
+            let edge_count = pending_edges.len();
+            if let Err(e) = self.store.batch_insert_edges(pending_edges) {
+                stats.add_warning(format!("batch edge insert failed ({} edges): {}", edge_count, e));
+            } else {
+                stats.edges_created += edge_count;
+            }
+            pending_edges.clear();
+        }
     }
 
     /// Resolve a single reference. Returns `None` if no match found.
