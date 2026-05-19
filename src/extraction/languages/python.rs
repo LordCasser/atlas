@@ -330,7 +330,11 @@ fn qualified_name_from_node_py(
             "class_definition" => {
                 if let Some(child) = parent.child_by_field_name("name") {
                     if let Ok(class_name) = child.utf8_text(source.as_bytes()) {
-                        parts.push(class_name.to_string());
+                        // Skip if the class name equals the current segment's name
+                        // to avoid double-counting when starting from the name child.
+                        if class_name != name {
+                            parts.push(class_name.to_string());
+                        }
                     }
                 }
             }
@@ -398,29 +402,12 @@ fn find_enclosing_function_id_py(
                 (parent.child_by_field_name("name"), SymbolKind::Function)
             }
             "lambda" => {
-                // Lambdas are anonymous — walk up to find a named context
-                let mut n = parent;
-                let lambda_name = loop {
-                    if let Some(p) = n.parent() {
-                        match p.kind() {
-                            "assignment" => {
-                                if let Some(left) = p.child_by_field_name("left") {
-                                    break Some(left);
-                                }
-                                n = p;
-                                continue;
-                            }
-                            "function_definition" => break p.child_by_field_name("name"),
-                            _ => {
-                                n = p;
-                                continue;
-                            }
-                        }
-                    } else {
-                        break None;
-                    }
-                };
-                (lambda_name, SymbolKind::Function)
+                // Lambdas are anonymous — skip and continue walking up to
+                // the enclosing named function/class. This avoids creating
+                // SymbolIds that don't exist in the symbols table (which
+                // would cause FOREIGN KEY violations on edges/callsites).
+                current = parent;
+                continue;
             }
             "class_definition" => {
                 // If we hit a class before a function, we're at class scope (method)
