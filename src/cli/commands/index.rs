@@ -60,6 +60,12 @@ pub fn run(project: &str) -> anyhow::Result<()> {
             println!("    {}: {}", strat, count);
         }
     }
+    if !stats.warnings.is_empty() {
+        println!("  Warnings:");
+        for w in &stats.warnings {
+            println!("    - {}", w);
+        }
+    }
 
     // Show final stats
     let db_stats = store.get_stats()?;

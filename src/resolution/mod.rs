@@ -59,8 +59,7 @@ impl ReferenceResolver {
             let ctx = match ResolutionContext::build(&self.store, *file_id) {
                 Ok(c) => c,
                 Err(e) => {
-                    // Log but continue with other files
-                    eprintln!("Warning: failed to build context for file: {}", e);
+                    stats.add_warning(format!("failed to build context: {}", e));
                     continue;
                 }
             };
@@ -73,10 +72,10 @@ impl ReferenceResolver {
                             .store
                             .update_reference_resolution(&reference.id, &target)
                         {
-                            eprintln!(
-                                "Warning: failed to update resolution for {}: {}",
+                            stats.add_warning(format!(
+                                "failed to update resolution for {}: {}",
                                 reference.name, e
-                            );
+                            ));
                             continue;
                         }
                         stats.resolved += 1;
@@ -90,14 +89,14 @@ impl ReferenceResolver {
                             Ok(edges) => {
                                 if !edges.is_empty() {
                                     if let Err(e) = self.store.insert_edges(&edges) {
-                                        eprintln!("Warning: failed to insert edges: {}", e);
+                                        stats.add_warning(format!("failed to insert edges: {}", e));
                                     } else {
                                         stats.edges_created += edges.len();
                                     }
                                 }
                             }
                             Err(e) => {
-                                eprintln!("Warning: failed to create edges: {}", e);
+                                stats.add_warning(format!("failed to create edges: {}", e));
                             }
                         }
                     }
@@ -309,6 +308,16 @@ pub struct ResolutionStats {
     pub unresolved: usize,
     pub by_strategy: HashMap<String, usize>,
     pub edges_created: usize,
+    /// Non-fatal warnings collected during resolution (context build failures,
+    /// edge insertion errors, etc.).
+    pub warnings: Vec<String>,
+}
+
+impl ResolutionStats {
+    /// Record a non-fatal warning.
+    fn add_warning(&mut self, msg: String) {
+        self.warnings.push(msg);
+    }
 }
 
 #[cfg(test)]

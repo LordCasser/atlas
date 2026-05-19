@@ -8,21 +8,83 @@ use crate::db::schema::{CURRENT_SCHEMA_VERSION, SCHEMA_DDL};
 
 use crate::types::*;
 use rusqlite::{params, Connection, Transaction};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 // ---------------------------------------------------------------------------
-// Store
+// StoreReader — read-only query interface
+// ---------------------------------------------------------------------------
+
+/// Read-only query interface backed by a shared SQLite connection.
+///
+/// All methods take `&self` and perform only SELECT queries.
+/// For mutations, use `Store` which derefs to `StoreReader`.
+pub struct StoreReader {
+    pub(crate) conn: Mutex<Connection>,
+}
+
+impl StoreReader {
+    /// Lock the underlying SQLite connection for read access.
+    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap()
+    }
+
+    /// Find a symbol by its deterministic SymbolId.
+    pub fn find_symbol_by_id(&self, id: &SymbolId) -> anyhow::Result<Option<SymbolDef>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
+                    language,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column,
+                    name_start_byte, name_end_byte, name_start_line, name_start_column,
+                    name_end_line, name_end_column,
+                    signature, visibility, exported, static_, async_,
+                    container_id, scope_id, package_name, namespace_path_json
+             FROM symbols WHERE symbol_id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], row_to_symbol)?;
+        match rows.next() {
+            Some(Ok(s)) => Ok(Some(s)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Store — read/write persistence layer
 // ---------------------------------------------------------------------------
 
 /// Thread-safe SQLite persistence layer.
+///
+/// Derefs to `StoreReader` for all read operations. Write operations
+/// are defined directly on `Store`.
 pub struct Store {
-    conn: Mutex<Connection>,
+    reader: StoreReader,
     #[allow(dead_code)]
     db_path: PathBuf,
 }
 
+impl Deref for Store {
+    type Target = StoreReader;
+
+    fn deref(&self) -> &Self::Target {
+        &self.reader
+    }
+}
+
 impl Store {
+    // -----------------------------------------------------------------------
+    // Internal helpers
+    // -----------------------------------------------------------------------
+
+    /// Lock the underlying SQLite connection for read or write access.
+    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.reader.conn.lock().unwrap()
+    }
+
     // -----------------------------------------------------------------------
     // Lifecycle
     // -----------------------------------------------------------------------
@@ -47,7 +109,9 @@ impl Store {
         )?;
 
         Ok(Self {
-            conn: Mutex::new(conn),
+            reader: StoreReader {
+                conn: Mutex::new(conn),
+            },
             db_path,
         })
     }
@@ -57,14 +121,16 @@ impl Store {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            reader: StoreReader {
+                conn: Mutex::new(conn),
+            },
             db_path: PathBuf::from(":memory:"),
         })
     }
 
     /// Initialize the schema (idempotent, with forward migrations).
     pub fn init_schema(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         conn.execute_batch(SCHEMA_DDL)?;
 
         // Run forward migrations for each version
@@ -124,7 +190,7 @@ impl Store {
     where
         F: FnOnce(&Transaction) -> anyhow::Result<T>,
     {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let tx = conn.unchecked_transaction()?;
         let result = f(&tx)?;
         tx.commit()?;
@@ -137,7 +203,7 @@ impl Store {
 
     /// Insert or update a file record.
     pub fn upsert_file(&self, file: &FileInfo) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         conn.execute(
             r#"INSERT OR REPLACE INTO files
                (file_id, path, language, content_hash, status, index_time)
@@ -155,14 +221,14 @@ impl Store {
 
     /// Delete all data associated with a file (FOREIGN KEY CASCADE handles most).
     pub fn delete_file_data(&self, file_id: &FileId) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         conn.execute("DELETE FROM files WHERE file_id = ?1", params![file_id])?;
         Ok(())
     }
 
     /// Get file info by ID.
     pub fn get_file(&self, file_id: &FileId) -> anyhow::Result<Option<FileInfo>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT file_id, path, language, content_hash, status
              FROM files WHERE file_id = ?1",
@@ -177,7 +243,7 @@ impl Store {
 
     /// List all indexed files.
     pub fn list_files(&self) -> anyhow::Result<Vec<FileInfo>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT file_id, path, language, content_hash, status FROM files ORDER BY path",
         )?;
@@ -197,31 +263,9 @@ impl Store {
         self.with_transaction(|tx| write_symbols(tx, symbols))
     }
 
-    /// Find a symbol by ID.
-    pub fn find_symbol_by_id(&self, id: &SymbolId) -> anyhow::Result<Option<SymbolDef>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
-                    language,
-                    range_start_byte, range_end_byte, range_start_line, range_start_column,
-                    range_end_line, range_end_column,
-                    name_start_byte, name_end_byte, name_start_line, name_start_column,
-                    name_end_line, name_end_column,
-                    signature, visibility, exported, static_, async_,
-                    container_id, scope_id, package_name, namespace_path_json
-             FROM symbols WHERE symbol_id = ?1",
-        )?;
-        let mut rows = stmt.query_map(params![id], row_to_symbol)?;
-        match rows.next() {
-            Some(Ok(s)) => Ok(Some(s)),
-            Some(Err(e)) => Err(e.into()),
-            None => Ok(None),
-        }
-    }
-
     /// Find all symbols in a file.
     pub fn find_symbols_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<SymbolDef>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
                     language,
@@ -244,7 +288,7 @@ impl Store {
 
     /// FTS5 search by name with custom limit.
     pub fn search_symbols_with_limit(&self, query: &str, limit: usize) -> anyhow::Result<Vec<SymbolDef>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let safe_query = sanitize_fts5_query(query);
         if safe_query.is_empty() {
             return Ok(Vec::new());
@@ -279,7 +323,7 @@ impl Store {
         language: Option<&Language>,
         limit: usize,
     ) -> anyhow::Result<Vec<SymbolDef>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let like_pattern = format!("%{}%", pattern.replace('%', "").replace('_', ""));
         if like_pattern.len() <= 2 {  // Just "%%"
             return Ok(Vec::new());
@@ -332,7 +376,7 @@ impl Store {
 
     /// Total number of symbols in the database.
     pub fn count_symbols(&self) -> anyhow::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))?;
         Ok(n as usize)
     }
@@ -351,7 +395,7 @@ impl Store {
 
     /// Find all references belonging to a file.
     pub fn find_references_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<ReferenceUse>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let mut stmt = conn.prepare(REFERENCE_SELECT_WHERE)?;
         let rows = stmt.query_map(params![file_id], row_to_reference)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -359,7 +403,7 @@ impl Store {
 
     /// Find unresolved references (no resolved target).
     pub fn find_unresolved_references(&self) -> anyhow::Result<Vec<ReferenceUse>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let mut stmt = conn.prepare(
             &format!(
                 "{} WHERE resolved_symbol_id IS NULL",
@@ -376,7 +420,7 @@ impl Store {
         reference_id: &ReferenceId,
         target: &ResolvedTarget,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         conn.execute(
             "UPDATE references_v2 SET
                 resolved_symbol_id = ?2,
@@ -437,7 +481,7 @@ impl Store {
 
     /// Find edges originating from a symbol.
     pub fn find_edges_by_source(&self, source: &SymbolId) -> anyhow::Result<Vec<RawEdge>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT edge_id, source, target, kind, confidence, provenance,
                     ref_id, location_0, location_1, location_2, location_3, location_4, location_5,
@@ -450,7 +494,7 @@ impl Store {
 
     /// Find edges targeting a symbol.
     pub fn find_edges_by_target(&self, target: &SymbolId) -> anyhow::Result<Vec<RawEdge>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT edge_id, source, target, kind, confidence, provenance,
                     ref_id, location_0, location_1, location_2, location_3, location_4, location_5,
@@ -463,7 +507,7 @@ impl Store {
 
     /// Find all imports for a file.
     pub fn find_imports_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<ImportDef>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT import_id, file_id, kind, module, imported_name, local_name,
                     is_wildcard, is_relative, alias,
@@ -497,7 +541,7 @@ impl Store {
 
     /// Find all scopes for a file.
     pub fn find_scopes_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<ScopeDef>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT scope_id, file_id, kind, name, scope_path, parent_id,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
@@ -527,7 +571,7 @@ impl Store {
 
     /// Find symbols by qualified name (exact match, index lookup).
     pub fn find_symbols_by_qname(&self, qname: &str) -> anyhow::Result<Vec<SymbolDef>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
                     language,
@@ -546,7 +590,7 @@ impl Store {
     /// Load ALL symbols (for GraphSnapshot construction).
     /// Uses a separate read connection to avoid blocking writes via the mutex.
     pub fn get_all_symbols(&self) -> anyhow::Result<Vec<SymbolDef>> {
-        let guard = self.conn.lock().unwrap();
+        let guard = self.lock();
         let conn: &Connection = &guard;
         let mut stmt = conn.prepare(
             "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
@@ -566,7 +610,7 @@ impl Store {
     /// Load ALL edges (for GraphSnapshot construction).
     /// Uses a separate read connection to avoid blocking writes via the mutex.
     pub fn get_all_edges(&self) -> anyhow::Result<Vec<RawEdge>> {
-        let guard = self.conn.lock().unwrap();
+        let guard = self.lock();
         let conn: &Connection = &guard;
         let mut stmt = conn.prepare(
             "SELECT edge_id, source, target, kind, confidence, provenance,
@@ -584,7 +628,7 @@ impl Store {
     /// Insert all components of a `FileFacts` in a single transaction.
     /// This is the primary write path from extraction.
     pub fn insert_file_facts(&self, facts: &FileFacts) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let tx = conn.unchecked_transaction()?;
 
         // File info
@@ -630,7 +674,7 @@ impl Store {
 
     /// Set a project metadata key-value pair.
     pub fn set_metadata(&self, key: &str, value: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         conn.execute(
             "INSERT OR REPLACE INTO project_metadata (key, value) VALUES (?1, ?2)",
             params![key, value],
@@ -640,7 +684,7 @@ impl Store {
 
     /// Get a project metadata value by key.
     pub fn get_metadata(&self, key: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let mut stmt = conn.prepare("SELECT value FROM project_metadata WHERE key = ?1")?;
         let mut rows = stmt.query(params![key])?;
         match rows.next()? {
@@ -651,7 +695,7 @@ impl Store {
 
     /// Get the schema version from the database.
     pub fn schema_version(&self) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT MAX(version) FROM schema_versions"
         )?;
@@ -665,7 +709,7 @@ impl Store {
 
     /// Collection metrics about the indexed codebase.
     pub fn get_stats(&self) -> anyhow::Result<StoreStats> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock();
         let total_files: i64 =
             conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
         let total_symbols: i64 =
