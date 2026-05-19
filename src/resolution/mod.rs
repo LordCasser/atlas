@@ -215,6 +215,9 @@ impl ReferenceResolver {
     /// - `Calls` when a call reference resolves to a function/method/constructor
     /// - `Instantiates` when a call reference resolves to a class/struct
     /// - `Implements` when a call reference resolves to an interface/trait
+    /// - `Extends` when an inheritance reference resolves to a class
+    /// - `Implements` when an implementation reference resolves to an interface/trait
+    /// - `References` for non-call references
     /// - `References` for non-call references
     ///
     /// Uses `self.store` to look up the target symbol (supports cross-file targets).
@@ -244,6 +247,10 @@ impl ReferenceResolver {
                 SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor => EdgeKind::Calls,
                 _ => return Ok(edges), // Non-callable target — no structural edge
             }
+        } else if reference.kind == ReferenceKind::Inheritance {
+            EdgeKind::Extends
+        } else if reference.kind == ReferenceKind::Implementation {
+            EdgeKind::Implements
         } else {
             EdgeKind::References
         };

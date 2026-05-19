@@ -96,14 +96,21 @@ fn find_containing_scope(range: TextRange, scopes: &[ScopeDef]) -> Option<ScopeI
 }
 
 /// Assign container SymbolId for class/struct/interface member symbols.
-fn assign_containers(symbols: &mut [SymbolDef], _scopes: &[ScopeDef]) {
-    // Build a map of scope_id → SymbolId for class-like scopes
-    let class_scopes: std::collections::HashMap<
-        ScopeId,
-        SymbolId,
-    > = symbols
-        .iter()
-        .filter(|s| {
+fn assign_containers(symbols: &mut [SymbolDef], scopes: &[ScopeDef]) {
+    // Build a map from class-like scope_id → class_symbol_id.
+    // We find the class symbol that lies within each class-like scope's byte range.
+    let mut class_scope_to_symbol: std::collections::HashMap<ScopeId, SymbolId> =
+        std::collections::HashMap::new();
+
+    for scope in scopes.iter() {
+        if !matches!(
+            scope.kind.as_str(),
+            "class" | "struct" | "interface" | "enum" | "trait"
+        ) {
+            continue;
+        }
+        // Find the class/struct/interface symbol contained within this scope
+        if let Some(class_sym) = symbols.iter().find(|s| {
             matches!(
                 s.kind,
                 SymbolKind::Class
@@ -111,9 +118,17 @@ fn assign_containers(symbols: &mut [SymbolDef], _scopes: &[ScopeDef]) {
                     | SymbolKind::Interface
                     | SymbolKind::Trait
                     | SymbolKind::Enum
-            )
-        })
-        .filter_map(|s| s.scope_id.map(|sid| (sid, s.id)))
+            ) && s.name_range.start_byte >= scope.range.start_byte
+                && s.name_range.end_byte <= scope.range.end_byte
+        }) {
+            class_scope_to_symbol.insert(scope.id, class_sym.id);
+        }
+    }
+
+    // Build scope parent lookup for walking up the chain
+    let scope_parents: std::collections::HashMap<ScopeId, ScopeId> = scopes
+        .iter()
+        .filter_map(|s| s.parent_id.map(|pid| (s.id, pid)))
         .collect();
 
     for sym in symbols.iter_mut() {
@@ -132,12 +147,15 @@ fn assign_containers(symbols: &mut [SymbolDef], _scopes: &[ScopeDef]) {
         if sym.container.is_some() {
             continue;
         }
-        // Find the class-like scope that contains this symbol
-        if let Some(scope_id) = sym.scope_id {
-            // Check if the direct parent scope is a class-like scope
-            if let Some(class_sym_id) = class_scopes.get(&scope_id) {
+        // Walk up the scope chain from the symbol's scope to find
+        // the nearest class-like ancestor scope
+        let mut current_scope = sym.scope_id;
+        while let Some(sid) = current_scope {
+            if let Some(class_sym_id) = class_scope_to_symbol.get(&sid) {
                 sym.container = Some(*class_sym_id);
+                break;
             }
+            current_scope = scope_parents.get(&sid).copied();
         }
     }
 }

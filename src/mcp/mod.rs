@@ -26,6 +26,10 @@ pub mod transport;
 pub mod tools;
 pub mod protocol;
 
+// Re-export for integration tests and diagnostics
+pub use tools::make_all_tools;
+pub use protocol::Tool;
+
 /// The MCP server orchestrator.
 pub struct McpServer {
     store: Arc<Store>,

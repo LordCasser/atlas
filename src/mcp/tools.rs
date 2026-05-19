@@ -476,7 +476,7 @@ impl ToolRouter {
 // Tool registration
 // -------------------------------------------------------------------
 
-fn make_all_tools() -> Vec<Tool> {
+pub fn make_all_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "atlas_status".into(),
