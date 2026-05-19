@@ -12,7 +12,7 @@
 |------|-------|-----------|
 | 实现语言 | Rust (单二进制) | TypeScript/Node.js |
 | 文件大小 | 7.3MB (arm64) | N/A (npm package) |
-| 多语言支持 | **Python + TypeScript/JavaScript + Java + C/C++** (feature-gated) | **15种语言** (tree-sitter wasm运行时加载) |
+| 多语言支持 | **Python + TypeScript/JavaScript + Java + C/C++ + ArkTS + Cangjie** (feature-gated)  Cangjie ⚠️ ABI 不兼容 | **15种语言** (tree-sitter wasm运行时加载) 不支持 Cangjie |
 | 搜索架构 | SQLite FTS5 三级降级 (FTS5 → LIKE → Levenshtein) | FTS5 + LIKE + Levenshtein 三级降级 |
 | 索引存储 | SQLite (单文件) | SQLite (单文件) |
 | CLI版本 | v0.1.0 | v0.7.8 |
@@ -208,7 +208,39 @@ Atlas 的 Java adapter **signature 均为 null** — Python 的签名提取 (com
 
 ---
 
-## 七、性能总结
+## 七、Cangjie 测试 ⚠️ 环境限制
+
+### 测试项目
+
+**cjvs** (v0.3.9) — 仓颉编译器版本切换工具，24 个 `.cj` 源文件。
+
+### 对比结果
+
+| 指标 | Atlas | CodeGraph |
+|------|-------|-----------|
+| 文件索引 | **0/24 (ABI 不兼容)** | **N/A — 不支持 .cj 文件** |
+| 根因 | tree-sitter-cangjie ABI 15 > tree-sitter 0.24.7 max 14 | Cangjie 不在 CodeGraph 15 种语言中 |
+
+### 详细分析
+
+**Atlas Cangjie adapter** (413 行代码，5 个查询文件) 编译正常、`atlas doctor` 报告 `[OK] Cangjie`，但运行时 tree-sitter 报错：
+```
+Failed to set tree-sitter language: Incompatible language version 15.
+Expected minimum 13, maximum 14
+```
+
+`tree-sitter-cangjie` (git dependency, commit `ff447b5`) 的 `parser.c` 定义了 `#define LANGUAGE_VERSION 15`，但 Atlas 使用的 `tree-sitter` Rust crate 0.24.7 最大支持 ABI 14。其他适配器（Python 0.23, TypeScript 0.23 等）均使用 ABI 14，唯独 cangjie 提前跳到了 15。
+
+**CodeGraph** 不支持 `.cj` 文件 — Cangjie 不在其支持的 15 种语言中（c-cpp, csharp, dart, go, java, javascript, kotlin, pascal, php, python, ruby, rust, scala, swift, typescript）。
+
+### 修复方案
+
+- **短期**: 锁定 tree-sitter-cangjie 到 ABI 14 的旧 commit，或 fork 降级
+- **长期**: tree-sitter Rust crate 升级到 0.25+（预计支持 ABI 15+）
+
+---
+
+## 八、性能总结
 
 | 项目 | Atlas | Codegraph | 差距 |
 |------|-------|-----------|------|
@@ -216,10 +248,11 @@ Atlas 的 Java adapter **signature 均为 null** — Python 的签名提取 (com
 | TypeScript (1,926 files) | **47.15s** | **9.3s** | **5.1x** |
 | C (1,024 files) | **81s** | **4.8s** | **17x** |
 | Java (143 files) | **5.5s** | **0.87s** | **6.3x** |
+| Cangjie (24 files) | ❌ ABI 不兼容 | ❌ 不支持 | N/A |
 
 ---
 
-## 八、结论与建议 (更新版)
+## 九、结论与建议 (更新版)
 
 ### 已修复/改进的问题
 
@@ -236,6 +269,8 @@ Atlas 的 Java adapter **signature 均为 null** — Python 的签名提取 (com
 | 9 | C/C++ feature 未编译 | **可用** — `--features "c,cpp"` 编译 | 手动编译 |
 | 10 | C struct 定义过宽 (前向声明+引用误标为定义) | **已修复** — 添加 `(field_declaration_list)` AND 条件 | `addfc0c` |
 | 11 | Java 支持 | **已测试** — 143 files 100% 索引，feature-gated | — |
+| 12 | Cangjie 支持 | **已测试** — adapter 存在但 tree-sitter ABI 不兼容 | 本次 |
+| 13 | 索引失败无错误详情 | **已改进** — 显示第一个失败的具体错误消息 | 本次 |
 
 ### 剩余问题
 
@@ -245,6 +280,7 @@ Atlas 的 Java adapter **signature 均为 null** — Python 的签名提取 (com
 4. **📊 符号统计粒度**: Atlas 比 Codegraph 更粗 (无拆分的 enum_member, import 独立存储不合并统计)。
 5. **🔧 Java signature 缺失**: Atlas Java adapter 未提取签名信息，Python 的签名提取尚未推广到 Java。
 6. **🔧 Java 索引时间差距 (5.5s vs 0.87s, 6.3x)**: 虽远小于 C 的 17x 差距，但仍有优化空间。
+7. **⚠️ Cangjie ABI 不兼容**: tree-sitter-cangjie 使用 ABI 15，Atlas 的 tree-sitter 0.24.7 最大支持 ABI 14。CodeGraph 不支持 Cangjie。需升级 tree-sitter core 或锁定 cangjie grammar 版本。
 
 ### Codegraph 相对优势(仍存在)
 

@@ -201,6 +201,16 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
                 println!("      ... and {} more", paths.len() - 5);
             }
         }
+        // Print the first failure's error message for debugging
+        if let Some((path, failure)) = all_failures.first() {
+            let err_msg = match failure {
+                IndexFailure::NoAdapter(m) => m.clone(),
+                IndexFailure::IoError(m) => m.clone(),
+                IndexFailure::ExtractError(m) => m.clone(),
+                IndexFailure::InsertError(m) => m.clone(),
+            };
+            println!("\n  First error ({}):\n    {}", path.display(), err_msg.lines().next().unwrap_or(&err_msg));
+        }
     } else {
         println!("\nIndexed {}/{} files (100% success)", success_count, total);
     }
