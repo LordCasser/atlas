@@ -61,7 +61,7 @@ streaming-iterator = "0.1.9"
 [features]
 default = ["typescript", "javascript", "python", "cli"]
 
-# MVP language features (8 languages)
+# MVP language features (7 languages)
 typescript = ["dep:tree-sitter-typescript"]
 javascript = ["dep:tree-sitter-typescript"]  # TS grammar includes JS
 python = ["dep:tree-sitter-python"]
@@ -88,7 +88,7 @@ sync = ["dep:notify"]
 # Convenience
 all-languages = [
     "typescript", "javascript", "python", "java",
-    "c", "cpp", "arkts", "cangjie",
+    "c", "cpp", "arkts",
 ]
 future-languages = [
     "go", "rust", "csharp", "php", "ruby", "swift", "kotlin",
