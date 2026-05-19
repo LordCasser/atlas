@@ -12,8 +12,8 @@
 |------|-------|-----------|
 | 实现语言 | Rust (单二进制) | TypeScript/Node.js |
 | 文件大小 | 7.3MB (arm64) | N/A (npm package) |
-| 多语言支持 | **Python + TypeScript/JavaScript** | **15种语言** (tree-sitter wasm运行时加载) |
-| 搜索架构 | SQLite FTS5 精确匹配 | embedding 语义搜索 |
+| 多语言支持 | **Python + TypeScript/JavaScript + Java + C/C++** (feature-gated) | **15种语言** (tree-sitter wasm运行时加载) |
+| 搜索架构 | SQLite FTS5 三级降级 (FTS5 → LIKE → Levenshtein) | FTS5 + LIKE + Levenshtein 三级降级 |
 | 索引存储 | SQLite (单文件) | SQLite (单文件) |
 | CLI版本 | v0.1.0 | v0.7.8 |
 
@@ -48,7 +48,7 @@ Codegraph 提取了更多细粒度节点 (import 48个、variable 30个)，Atlas
 
 | 特性 | Atlas | Codegraph |
 |------|-------|-----------|
-| 搜索引擎 | SQLite FTS5 | embedding语义 |
+| 搜索引擎 | SQLite FTS5 (BM25 + 图度 + 名称相似度 + kind/路径加成) | SQLite FTS5 (BM25 + 三级降级 + kind/路径加成) |
 | 评分范围 | 0 ~ 1.06 | 0 ~ 114 |
 | Kind过滤器 | 无 | `-k class/function/variable` |
 | 输出格式 | 纯文本表格 | JSON (含startLine/endLine/signature) |
@@ -153,17 +153,58 @@ Codegraph 提取了更多细粒度节点 (import 48个、variable 30个)，Atlas
 
 ---
 
-## 六、Java 中等规模对比 (apktool, 152 files)
+## 六、Java 中等规模对比 (apktool, 143 .java files)
 
-> Atlas 需 `--features "java"` 重新编译后测试。
+> Atlas 需 `--features "java"` 重新编译。Codegraph 额外支持 Kotlin (9 files)，总计 152 files。
 
-| 指标 | Atlas | Codegraph |
+### 索引结果
+
+| 指标 | Atlas | Codegraph | 差异 |
+|------|-------|-----------|------|
+| 文件索引 | 143/143 (100%) | 152/152 (143 java + 9 kotlin, 100%) | Codegraph 额外支持 Kotlin |
+| 符号/节点 | **2,987** | **3,186** | Codegraph +6.7% |
+| 边 | **15,280** | 7,247 | Atlas **2.1x** |
+| 索引时间 | **5.5s** | **0.87s** | Codegraph **6.3x 快** |
+| 数据库大小 | **16.4 MB** | 7.3 MB | Atlas 2.2x 大 |
+
+### Symbol Kind 分布
+
+| Kind | Atlas | Codegraph | 说明 |
+|------|-------|-----------|------|
+| method | 1,168 | 1,265 | 接近 |
+| variable | 955 | — | Atlas 独立捕获变量 |
+| field | 700 | 698 | 完全一致 |
+| **class** | **152** | **152** | **完全一致** |
+| enum | 6 | 6 | 完全一致 |
+| interface | 6 | 6 | 完全一致 |
+| import | — | 890 | Atlas 独立表存储 import |
+| enum_member | — | 17 | Codegraph 展开枚举成员 |
+| file | — | 152 | 每个文件一个节点 |
+
+### 搜索对比
+
+| 场景 | Atlas | Codegraph |
 |------|-------|-----------|
-| 文件索引 | 未重测 (feature 启用后可运行) | 152 (100%) |
-| 节点 | N/A | 3,186 (152 class, 1,265 method, 698 field) |
-| 边 | N/A | 7,247 |
-| 索引时间 | N/A | 883ms |
-| 数据库大小 | N/A | 7.7MB |
+| `ApkDecoder` (class) | #1 score=1.064, file_path:line, snippet | #1 score=13918%, 带签名 |
+| `Decoder --kind class` | 2 结果 (正确过滤) | 2 结果 (正确过滤) |
+| `ApkDecodr` (typo) | Levenshtein → ApkDecoder (0.820) | FTS5 prefix → ApkDecoder (2350%) |
+| `targetSdkVersion` | 2 变量结果 (path:line+snippet) | 1 方法结果 (带签名) |
+| `--json` 输出 | 含 snippet/score/path:line | 含 startLine/endLine/signature |
+
+### Atlas 特有功能
+
+- `atlas context` 命令显示 getSdkInfo 有 16 个 callers + 完整源码摘录
+- `atlas files` 浏览所有 143 个 Java 文件 (含语言标注)
+- `atlas status` 按符号类型分组统计 (method/class/field/variable)
+
+### 签名提取对比
+
+Codegraph 的 Java adapter 提取了类型签名：
+- 构造器: `(File apkFile, Config config)`
+- 方法: `void (File outDir)`, `SdkInfo ()`
+- 字段: `ExtFile mApkFile`
+
+Atlas 的 Java adapter **signature 均为 null** — Python 的签名提取 (commit `fa8f2cf`) 尚未推广到 Java。这是已知的阶段性差距。`
 
 ---
 
@@ -174,7 +215,7 @@ Codegraph 提取了更多细粒度节点 (import 48个、variable 30个)，Atlas
 | Python (11 files) | 318ms | ~170ms | ~1.9x |
 | TypeScript (1,926 files) | **47.15s** | **9.3s** | **5.1x** |
 | C (1,024 files) | **81s** | **4.8s** | **17x** |
-| Java (152 files) | 未重测 | 883ms | — |
+| Java (143 files) | **5.5s** | **0.87s** | **6.3x** |
 
 ---
 
@@ -193,15 +234,17 @@ Codegraph 提取了更多细粒度节点 (import 48个、variable 30个)，Atlas
 | 7 | 搜索降级链在 kind filter 下断裂 | **已修复** — kind filter 推入 SQL 层 | `fa8f2cf` |
 | 8 | 搜索/context 无源码片段 | **已添加** — snippet + 源码摘录 | `fa8f2cf` |
 | 9 | C/C++ feature 未编译 | **可用** — `--features "c,cpp"` 编译 | 手动编译 |
+| 10 | C struct 定义过宽 (前向声明+引用误标为定义) | **已修复** — 添加 `(field_declaration_list)` AND 条件 | `addfc0c` |
+| 11 | Java 支持 | **已测试** — 143 files 100% 索引，feature-gated | — |
 
 ### 剩余问题
 
 1. **⏱ 大规模索引性能**: C 项目 Atlas 81s vs Codegraph 4.8s (17x)。主要瓶颈在引用解析阶段。
 2. **🗄 数据库体积**: C 项目 161MB vs 25MB (6.3x)。架构性差异，但可优化。
-3. **🎯 C 的 `class` 定义过宽**: `struct_specifier` 捕获了所有类型引用而非仅定义。
-4. **🔧 Java 支持**: 需 feature 编译后测试。
-5. **📏 搜索缺少 FTS5原生 rank 和 snippet()**: 当前 `fts_score` 由 IDF 重新推导，未捕获 SQLite 的 BM25 rank。
-6. **📊 符号统计粒度**: Atlas 比 Codegraph 更粗 (无拆分的 enum_member, import 独立存储不合并统计)。
+3. **📏 搜索缺少 FTS5原生 rank 和 snippet()**: 当前 `fts_score` 由 IDF 重新推导，未捕获 SQLite 的 BM25 rank。
+4. **📊 符号统计粒度**: Atlas 比 Codegraph 更粗 (无拆分的 enum_member, import 独立存储不合并统计)。
+5. **🔧 Java signature 缺失**: Atlas Java adapter 未提取签名信息，Python 的签名提取尚未推广到 Java。
+6. **🔧 Java 索引时间差距 (5.5s vs 0.87s, 6.3x)**: 虽远小于 C 的 17x 差距，但仍有优化空间。
 
 ### Codegraph 相对优势(仍存在)
 
