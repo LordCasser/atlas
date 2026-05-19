@@ -284,11 +284,21 @@ impl Store {
 
     /// FTS5 search by name (default limit 50).
     pub fn search_symbols(&self, query: &str) -> anyhow::Result<Vec<SymbolDef>> {
-        self.search_symbols_with_limit(query, 50)
+        self.search_symbols_with_limit(query, 50, None)
     }
 
-    /// FTS5 search by name with custom limit.
-    pub fn search_symbols_with_limit(&self, query: &str, limit: usize) -> anyhow::Result<Vec<SymbolDef>> {
+    /// FTS5 search by name with custom limit and optional kind filter.
+    ///
+    /// When `kind_filter` is provided, the filter is applied at the SQL level
+    /// (`WHERE s.kind = ?`) so that the search pipeline's fallback logic
+    /// (FTS5 → LIKE → Levenshtein) correctly triggers when a stage returns
+    /// zero results after filtering.
+    pub fn search_symbols_with_limit(
+        &self,
+        query: &str,
+        limit: usize,
+        kind_filter: Option<&SymbolKind>,
+    ) -> anyhow::Result<Vec<SymbolDef>> {
         let conn = self.lock();
         let safe_query = sanitize_fts5_query(query);
         if safe_query.is_empty() {
@@ -296,6 +306,84 @@ impl Store {
         }
         // Append * for prefix matching (matches "User" → "UserManager")
         let match_query = format!("{}*", safe_query);
+        let sql = if kind_filter.is_some() {
+            format!(
+                r#"SELECT s.symbol_id, s.file_id, s.kind, s.name, s.qualified_name,
+                          s.symbol_path_json, s.language,
+                          s.range_start_byte, s.range_end_byte, s.range_start_line,
+                          s.range_start_column, s.range_end_line, s.range_end_column,
+                          s.name_start_byte, s.name_end_byte, s.name_start_line,
+                          s.name_start_column, s.name_end_line, s.name_end_column,
+                          s.signature, s.visibility, s.exported, s.static_, s.async_,
+                          s.container_id, s.scope_id, s.package_name, s.namespace_path_json
+                   FROM symbols s
+                   JOIN symbols_fts fts ON s.rowid = fts.rowid
+                   WHERE symbols_fts MATCH ?1 AND s.kind = ?2
+                   ORDER BY rank
+                   LIMIT {}"#,
+                limit
+            )
+        } else {
+            format!(
+                r#"SELECT s.symbol_id, s.file_id, s.kind, s.name, s.qualified_name,
+                          s.symbol_path_json, s.language,
+                          s.range_start_byte, s.range_end_byte, s.range_start_line,
+                          s.range_start_column, s.range_end_line, s.range_end_column,
+                          s.name_start_byte, s.name_end_byte, s.name_start_line,
+                          s.name_start_column, s.name_end_line, s.name_end_column,
+                          s.signature, s.visibility, s.exported, s.static_, s.async_,
+                          s.container_id, s.scope_id, s.package_name, s.namespace_path_json
+                   FROM symbols s
+                   JOIN symbols_fts fts ON s.rowid = fts.rowid
+                   WHERE symbols_fts MATCH ?1
+                   ORDER BY rank
+                   LIMIT {}"#,
+                limit
+            )
+        };
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = if let Some(kind) = kind_filter {
+            let kind_str = kind.as_str();
+            stmt.query_map(params![match_query, kind_str], row_to_symbol)?
+        } else {
+            stmt.query_map(params![match_query], row_to_symbol)?
+        };
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// LIKE-based name search (fallback when FTS5 returns nothing).
+    ///
+    /// Optional `kind_filter` is applied at the SQL level so that the
+    /// search pipeline's fallback logic works correctly with kind filters.
+    pub fn search_symbols_by_name_like(
+        &self,
+        pattern: &str,
+        language: Option<&Language>,
+        limit: usize,
+        kind_filter: Option<&SymbolKind>,
+    ) -> anyhow::Result<Vec<SymbolDef>> {
+        let conn = self.lock();
+        let like_pattern = format!("%{}%", pattern.replace('%', "").replace('_', ""));
+        if like_pattern.len() <= 2 {  // Just "%%"
+            return Ok(Vec::new());
+        }
+
+        // Build WHERE clause dynamically based on filters
+        let mut where_clauses = vec![
+            "(s.name LIKE ?1 OR s.qualified_name LIKE ?2)".to_string(),
+        ];
+        let mut param_idx = 3; // ?1 and ?2 are LIKE patterns
+
+        if language.is_some() {
+            where_clauses.push(format!("s.language = ?{}", param_idx));
+            param_idx += 1;
+        }
+        if kind_filter.is_some() {
+            where_clauses.push(format!("s.kind = ?{}", param_idx));
+        }
+
+        let where_sql = where_clauses.join(" AND ");
+
         let sql = format!(
             r#"SELECT s.symbol_id, s.file_id, s.kind, s.name, s.qualified_name,
                       s.symbol_path_json, s.language,
@@ -306,67 +394,30 @@ impl Store {
                       s.signature, s.visibility, s.exported, s.static_, s.async_,
                       s.container_id, s.scope_id, s.package_name, s.namespace_path_json
                FROM symbols s
-               JOIN symbols_fts fts ON s.rowid = fts.rowid
-               WHERE symbols_fts MATCH ?1
-               ORDER BY rank
+               WHERE {}
                LIMIT {}"#,
-            limit
+            where_sql, limit
         );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![match_query], row_to_symbol)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-    }
 
-    /// LIKE-based name search (fallback when FTS5 returns nothing).
-    pub fn search_symbols_by_name_like(
-        &self,
-        pattern: &str,
-        language: Option<&Language>,
-        limit: usize,
-    ) -> anyhow::Result<Vec<SymbolDef>> {
-        let conn = self.lock();
-        let like_pattern = format!("%{}%", pattern.replace('%', "").replace('_', ""));
-        if like_pattern.len() <= 2 {  // Just "%%"
-            return Ok(Vec::new());
-        }
-        let sql = if language.is_some() {
-            format!(
-                r#"SELECT s.symbol_id, s.file_id, s.kind, s.name, s.qualified_name,
-                          s.symbol_path_json, s.language,
-                          s.range_start_byte, s.range_end_byte, s.range_start_line,
-                          s.range_start_column, s.range_end_line, s.range_end_column,
-                          s.name_start_byte, s.name_end_byte, s.name_start_line,
-                          s.name_start_column, s.name_end_line, s.name_end_column,
-                          s.signature, s.visibility, s.exported, s.static_, s.async_,
-                          s.container_id, s.scope_id, s.package_name, s.namespace_path_json
-                   FROM symbols s
-                   WHERE (s.name LIKE ?1 OR s.qualified_name LIKE ?2)
-                     AND s.language = ?3
-                   LIMIT {}"#,
-                limit
-            )
-        } else {
-            format!(
-                r#"SELECT s.symbol_id, s.file_id, s.kind, s.name, s.qualified_name,
-                          s.symbol_path_json, s.language,
-                          s.range_start_byte, s.range_end_byte, s.range_start_line,
-                          s.range_start_column, s.range_end_line, s.range_end_column,
-                          s.name_start_byte, s.name_end_byte, s.name_start_line,
-                          s.name_start_column, s.name_end_line, s.name_end_column,
-                          s.signature, s.visibility, s.exported, s.static_, s.async_,
-                          s.container_id, s.scope_id, s.package_name, s.namespace_path_json
-                   FROM symbols s
-                   WHERE s.name LIKE ?1 OR s.qualified_name LIKE ?2
-                   LIMIT {}"#,
-                limit
-            )
-        };
         let mut stmt = conn.prepare(&sql)?;
+
+        // Build params dynamically
         let lang_str = language.map(|l| l.as_str().to_string()).unwrap_or_default();
-        let rows = if language.is_some() {
-            stmt.query_map(params![like_pattern, like_pattern, lang_str], row_to_symbol)?
-        } else {
-            stmt.query_map(params![like_pattern, like_pattern], row_to_symbol)?
+        let kind_str = kind_filter.map(|k| k.as_str().to_string()).unwrap_or_default();
+
+        let rows = match (language.is_some(), kind_filter.is_some()) {
+            (true, true) => {
+                stmt.query_map(params![like_pattern, like_pattern, lang_str, kind_str], row_to_symbol)?
+            }
+            (true, false) => {
+                stmt.query_map(params![like_pattern, like_pattern, lang_str], row_to_symbol)?
+            }
+            (false, true) => {
+                stmt.query_map(params![like_pattern, like_pattern, kind_str], row_to_symbol)?
+            }
+            (false, false) => {
+                stmt.query_map(params![like_pattern, like_pattern], row_to_symbol)?
+            }
         };
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }

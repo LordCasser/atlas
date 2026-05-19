@@ -98,8 +98,12 @@ impl SearchEngine {
 
         let total_symbols = self.store.count_symbols()?;
 
-        // Stage 1: FTS5
-        let mut raw_results = self.store.search_symbols_with_limit(query, limit.max(20))?;
+        // Stage 1: FTS5 (kind filter pushed to SQL for correct fallback behavior)
+        let mut raw_results = self.store.search_symbols_with_limit(
+            query,
+            limit.max(20),
+            options.kind_filter.as_ref(),
+        )?;
 
         // Stage 2: LIKE fallback if FTS5 returns nothing
         let from_like = if raw_results.is_empty() && query.len() >= 2 {
@@ -107,6 +111,7 @@ impl SearchEngine {
                 query,
                 options.language.as_ref(),
                 limit.max(20),
+                options.kind_filter.as_ref(),
             )?;
             true
         } else {
@@ -122,6 +127,12 @@ impl SearchEngine {
             let max_dist = (query.len() as f64 * 0.4).ceil() as usize; // allow ~40% edit distance
             let mut candidates: Vec<(SymbolDef, usize)> = Vec::new();
             for sym in &all_symbols {
+                // Apply kind filter at scan level for consistent behavior
+                if let Some(kind) = options.kind_filter {
+                    if sym.kind != kind {
+                        continue;
+                    }
+                }
                 let name_lower = sym.name.to_lowercase();
                 let name_snake = to_snake_case(&normalize_name_for_search(&sym.name));
                 // Check both original and snake_case normalized forms
@@ -206,7 +217,7 @@ impl SearchEngine {
         });
         results.truncate(limit);
 
-        // Apply post-filters
+        // Apply post-filters (kind filter is applied at SQL/query level for correct fallback)
         if let Some(ref path_pat) = options.file_path_pattern {
             let pat = path_pat.to_lowercase();
             results.retain(|r| {
@@ -215,9 +226,6 @@ impl SearchEngine {
                     .map(|p| p.to_lowercase().contains(&pat))
                     .unwrap_or(false)
             });
-        }
-        if let Some(kind) = options.kind_filter {
-            results.retain(|r| r.symbol.kind == kind);
         }
         if let Some(min_c) = options.min_confidence {
             results.retain(|r| r.score.total >= min_c);
@@ -348,6 +356,14 @@ fn compute_name_similarity(query: &str, name: &str, query_norm: &[String]) -> f6
     }
     if query.eq_ignore_ascii_case(name) {
         return 0.9;
+    }
+
+    // Prefix match: name starts with query (e.g., "Browser" → "BrowserSpider")
+    // This is a strong signal that the user is looking for this symbol.
+    let query_lower = query.to_lowercase();
+    let name_lower = name.to_lowercase();
+    if name_lower.starts_with(&query_lower) && query.len() >= 2 {
+        return 0.92;
     }
 
     // CamelCase/snake_case normalization
