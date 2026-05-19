@@ -90,18 +90,11 @@ impl LanguageAdapter for CangjieAdapter {
             kind,
         );
 
-        // Walk up to find enclosing function for edge promotion
-        let lang = self.language();
-        let source_symbol = if matches!(kind, ReferenceKind::Call | ReferenceKind::Instantiation | ReferenceKind::FieldAccess) {
-            find_enclosing_function_id_cj(node, source, file_id, lang)
-        } else {
-            None
-        };
-
+        // source_symbol is resolved by SemanticBinder after extraction.
         Some(ReferenceUse {
             id: ref_id,
             file_id,
-            source_symbol,
+            source_symbol: None,
             scope_id: None,
             kind,
             text,
@@ -184,10 +177,17 @@ impl LanguageAdapter for CangjieAdapter {
         let kind_str = cj_dataflow_kind(capture_name)?;
         let kind = EdgeKind::from_str(kind_str).unwrap_or(EdgeKind::Assigns);
         let text = node_text(node, source)?;
+        let range = node_range(node);
 
-        let lang = self.language();
-        let source_sym = find_enclosing_function_id_cj(node, source, file_id, lang)?;
-
+        // Use a placeholder source; SemanticBinder::resolve_edge_sources()
+        // will rewrite it via the location field after extraction.
+        let placeholder = SymbolId::generate(
+            &file_id,
+            "placeholder",
+            "",
+            "placeholder",
+            None::<&str>,
+        );
         let target = SymbolId::generate(
             &file_id,
             "dataflow",
@@ -196,71 +196,28 @@ impl LanguageAdapter for CangjieAdapter {
             None::<&str>,
         );
         let edge_id = EdgeId::generate(
-            &source_sym,
+            &placeholder,
             &target,
             kind_str,
             None::<&ReferenceId>,
             Provenance::TreeSitter.as_str(),
         );
-        Some(RawEdge::new(
+        let mut edge = RawEdge::new(
             edge_id,
-            source_sym,
+            placeholder,
             target,
             kind,
             Confidence::certain(),
             Provenance::TreeSitter,
-        ))
+        );
+        edge.location = Some(range);
+        Some(edge)
     }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Walk up the tree from `node` to find the enclosing function definition,
-/// and compute its deterministic SymbolId.
-fn find_enclosing_function_id_cj(
-    node: tree_sitter::Node,
-    source: &str,
-    file_id: FileId,
-    lang: Language,
-) -> Option<SymbolId> {
-    let mut current = node;
-    while let Some(parent) = current.parent() {
-        let parent_kind = parent.kind();
-        let fn_node = match parent_kind {
-            "functionDefinition" => {
-                // Get funcName child (aliased from identifier)
-                parent.child_by_field_name("funcName")
-                    .or_else(|| parent.child_by_field_name("name"))
-            }
-            "classDefinition" => {
-                // If we hit a class before a function, use it as source (method context)
-                parent.child_by_field_name("className")
-                    .or_else(|| parent.child_by_field_name("name"))
-            }
-            _ => {
-                current = parent;
-                continue;
-            }
-        };
-
-        let fn_name = fn_node
-            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-            .unwrap_or("anonymous");
-        let kind = if parent_kind == "functionDefinition" { SymbolKind::Function } else { SymbolKind::Class };
-        let qualified_name = qualified_name_from_node_cj("", fn_name, parent, source);
-
-        return Some(SymbolId::generate(
-            &file_id,
-            lang.as_str(),
-            &qualified_name,
-            kind.as_str(),
-            None::<&str>,
-        ));
-    }
-    None
-}
 
 /// Build a qualified name using `::` separators (Cangjie convention).
 fn qualified_name_from_node_cj(

@@ -1,10 +1,11 @@
 //! Symbol registry for extraction-time source ownership.
 //!
 //! This module is the single source of truth for mapping references/dataflow
-//! captures back to the symbol that contains them.  Language adapters may still
-//! provide a best-effort `source_symbol`, but the extraction pipeline validates
-//! and rewrites those IDs through this registry so edges/callsites never point
-//! at symbols that were not actually produced by the definitions query.
+//! captures back to the symbol that contains them.  Language adapters set
+//! `source_symbol: None` in `normalize_reference()`; the extraction pipeline
+//! validates and rewrites those IDs through this registry so edges/callsites
+//! never point at symbols that were not actually produced by the definitions
+//! query.
 
 use std::collections::{HashMap, HashSet};
 

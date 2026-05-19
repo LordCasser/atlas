@@ -91,13 +91,11 @@ impl LanguageAdapter for PythonAdapter {
             kind,
         );
 
-        // Populate source_symbol by walking up to the enclosing function.
-        let source_symbol = find_enclosing_function_id_py(node, source, file_id, self.language());
-
+        // source_symbol is resolved by SemanticBinder after extraction.
         Some(ReferenceUse {
             id: ref_id,
             file_id,
-            source_symbol,
+            source_symbol: None,
             scope_id: None,
             kind,
             text,
@@ -249,12 +247,17 @@ impl LanguageAdapter for PythonAdapter {
         let kind_str = py_dataflow_kind(capture_name)?;
         let kind = EdgeKind::from_str(kind_str).unwrap_or(EdgeKind::Assigns);
         let text = node_text(node, source)?;
+        let range = node_range(node);
 
-        // Find the enclosing function to use as the dataflow source.
-        // Skip dataflow edges that are not inside a function.
-        let lang = self.language();
-        let source_sym = find_enclosing_function_id_py(node, source, file_id, lang)?;
-
+        // Use a placeholder source; SemanticBinder::resolve_edge_sources()
+        // will rewrite it via the location field after extraction.
+        let placeholder = SymbolId::generate(
+            &file_id,
+            "placeholder",
+            "",
+            "placeholder",
+            None::<&str>,
+        );
         let target = SymbolId::generate(
             &file_id,
             "dataflow",
@@ -263,20 +266,22 @@ impl LanguageAdapter for PythonAdapter {
             None::<&str>,
         );
         let edge_id = EdgeId::generate(
-            &source_sym,
+            &placeholder,
             &target,
             kind_str,
             None::<&ReferenceId>,
             Provenance::TreeSitter.as_str(),
         );
-        Some(RawEdge::new(
+        let mut edge = RawEdge::new(
             edge_id,
-            source_sym,
+            placeholder,
             target,
             kind,
             Confidence::certain(),
             Provenance::TreeSitter,
-        ))
+        );
+        edge.location = Some(range);
+        Some(edge)
     }
 }
 
@@ -365,55 +370,6 @@ fn is_exported_in_tree_py(node: tree_sitter::Node, name: &str) -> bool {
         current = parent;
     }
     false
-}
-
-/// Walk up the tree from `node` to find the enclosing function definition,
-/// and compute its deterministic SymbolId.
-fn find_enclosing_function_id_py(
-    node: tree_sitter::Node,
-    source: &str,
-    file_id: FileId,
-    lang: Language,
-) -> Option<SymbolId> {
-    let mut current = node;
-    while let Some(parent) = current.parent() {
-        let parent_kind = parent.kind();
-        let (name_node, kind) = match parent_kind {
-            "function_definition" => {
-                (parent.child_by_field_name("name"), SymbolKind::Function)
-            }
-            "lambda" => {
-                // Lambdas are anonymous — skip and continue walking up to
-                // the enclosing named function/class. This avoids creating
-                // SymbolIds that don't exist in the symbols table (which
-                // would cause FOREIGN KEY violations on edges/callsites).
-                current = parent;
-                continue;
-            }
-            "class_definition" => {
-                // If we hit a class before a function, we're at class scope (method)
-                (parent.child_by_field_name("name"), SymbolKind::Class)
-            }
-            _ => {
-                current = parent;
-                continue;
-            }
-        };
-
-        let fn_name = name_node
-            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-            .unwrap_or("anonymous");
-        let qualified_name = qualified_name_from_node_py("", fn_name, parent, source);
-
-        return Some(SymbolId::generate(
-            &file_id,
-            lang.as_str(),
-            &qualified_name,
-            kind.as_str(),
-            None::<&str>,
-        ));
-    }
-    None
 }
 
 /// Map capture name to SymbolKind.

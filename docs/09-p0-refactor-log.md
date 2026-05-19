@@ -77,6 +77,33 @@ so no ID regeneration is needed when binding scope.
 
 No code change needed for step 2 — it was already correct.
 
+### 6. Adapter source_symbol reduction
+
+**Problem**: Language adapters manually walked the tree-sitter AST to find enclosing
+functions (`find_enclosing_*`), duplicating the work that `SemanticBinder::bind_source()`
+already does more accurately via the scope tree.
+
+**Solution**:
+- All 6 adapters' `normalize_reference()` now set `source_symbol: None`
+- All 6 adapters' `normalize_dataflow()` use a placeholder `SymbolId` + `location` field;
+  `SemanticBinder::resolve_edge_sources()` rewrites the source via `location`
+- All `find_enclosing_*` helper functions deleted (YAGNI):
+  - `find_enclosing_function_id` (TypeScript) — ~60 lines
+  - `find_enclosing_function_id_py` (Python) — ~50 lines
+  - `find_enclosing_method_id` (Java) — ~50 lines
+  - `find_enclosing_function_id_c` (C) — ~45 lines
+  - `find_enclosing_function_id_cpp` (C++) — ~90 lines (incl. helpers)
+  - `find_enclosing_function_id_cj` (Cangjie) — ~40 lines
+
+**Files changed**:
+- `src/extraction/languages/typescript.rs`
+- `src/extraction/languages/python.rs`
+- `src/extraction/languages/java.rs`
+- `src/extraction/languages/c.rs`
+- `src/extraction/languages/cpp.rs`
+- `src/extraction/languages/cangjie.rs`
+- `src/extraction/symbol_registry.rs` — doc comment update
+
 ## Architectural Invariants (Preserved)
 
 1. References are **never deleted** — they persist with or without resolved targets
@@ -87,9 +114,7 @@ No code change needed for step 2 — it was already correct.
 
 ## Remaining P0 Work
 
-- **Adapter source_symbol reduction**: Remove `find_enclosing_*` calls from adapter
-  `normalize_reference()`, set `source_symbol: None`. SemanticBinder is now the
-  single authority. Mark helper functions as deprecated.
+None — all P0 items complete.
 
 ## Data Flow (Post-P0)
 

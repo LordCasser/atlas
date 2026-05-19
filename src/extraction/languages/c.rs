@@ -87,14 +87,11 @@ impl LanguageAdapter for CAdapter {
             kind,
         );
 
-        // Compute source_symbol from enclosing function
-        let lang = self.language();
-        let source_symbol = find_enclosing_function_id_c(node, source, file_id, lang);
-
+        // source_symbol is resolved by SemanticBinder after extraction.
         Some(ReferenceUse {
             id: ref_id,
             file_id,
-            source_symbol,
+            source_symbol: None,
             scope_id: None,
             kind,
             text,
@@ -185,10 +182,17 @@ impl LanguageAdapter for CAdapter {
         let kind_str = c_dataflow_kind(capture_name)?;
         let kind = EdgeKind::from_str(kind_str).unwrap_or(EdgeKind::Assigns);
         let text = node_text(node, source)?;
+        let range = node_range(node);
 
-        let lang = self.language();
-        let source_sym = find_enclosing_function_id_c(node, source, file_id, lang)?;
-
+        // Use a placeholder source; SemanticBinder::resolve_edge_sources()
+        // will rewrite it via the location field after extraction.
+        let placeholder = SymbolId::generate(
+            &file_id,
+            "placeholder",
+            "",
+            "placeholder",
+            None::<&str>,
+        );
         let target = SymbolId::generate(
             &file_id,
             "dataflow",
@@ -197,20 +201,22 @@ impl LanguageAdapter for CAdapter {
             None::<&str>,
         );
         let edge_id = EdgeId::generate(
-            &source_sym,
+            &placeholder,
             &target,
             kind_str,
             None::<&ReferenceId>,
             Provenance::TreeSitter.as_str(),
         );
-        Some(RawEdge::new(
+        let mut edge = RawEdge::new(
             edge_id,
-            source_sym,
+            placeholder,
             target,
             kind,
             Confidence::certain(),
             Provenance::TreeSitter,
-        ))
+        );
+        edge.location = Some(range);
+        Some(edge)
     }
 }
 
@@ -244,53 +250,6 @@ fn qualified_name_from_node_c(
 
     parts.reverse();
     parts.join(".")
-}
-
-/// Walk up the tree to find the enclosing function and compute its SymbolId.
-fn find_enclosing_function_id_c(
-    node: tree_sitter::Node,
-    source: &str,
-    file_id: FileId,
-    lang: Language,
-) -> Option<SymbolId> {
-    let mut current = node;
-    while let Some(parent) = current.parent() {
-        if parent.kind() == "function_definition" {
-            // C functions: name is the declarator's identifier
-            let fn_name_node = parent
-                .child_by_field_name("declarator")
-                .and_then(|d| {
-                    // Walk through pointer_declarator if present
-                    let mut n = d;
-                    loop {
-                        match n.kind() {
-                            "pointer_declarator" => {
-                                n = n.child_by_field_name("declarator")?;
-                            }
-                            "function_declarator" => {
-                                n = n.child_by_field_name("declarator")?;
-                            }
-                            "identifier" => return Some(n),
-                            _ => return None,
-                        }
-                    }
-                })?;
-
-            // Pass the identifier node to qualified_name_from_node_c, same as normalize_definition
-            let fn_name = fn_name_node.utf8_text(source.as_bytes()).unwrap_or("anonymous");
-            let qualified_name = qualified_name_from_node_c(fn_name, fn_name_node, source);
-
-            return Some(SymbolId::generate(
-                &file_id,
-                lang.as_str(),
-                &qualified_name,
-                SymbolKind::Function.as_str(),
-                None::<&str>,
-            ));
-        }
-        current = parent;
-    }
-    None
 }
 
 /// Map capture name to SymbolKind.

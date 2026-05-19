@@ -86,12 +86,10 @@ impl LanguageAdapter for JavaAdapter {
         let name = text.clone();
         let range = node_range(node);
 
-        // Find enclosing function for source_symbol
-        let source_symbol = find_enclosing_method_id(node, source, file_id, self.language());
-
+        // source_symbol is resolved by SemanticBinder after extraction.
         let ref_id = ReferenceId::generate(
             &file_id,
-            source_symbol.as_ref(),
+            None::<&SymbolId>,
             range.start_byte,
             range.end_byte,
             &text,
@@ -101,7 +99,7 @@ impl LanguageAdapter for JavaAdapter {
         Some(ReferenceUse {
             id: ref_id,
             file_id,
-            source_symbol,
+            source_symbol: None,
             scope_id: None,
             kind,
             text,
@@ -199,10 +197,17 @@ impl LanguageAdapter for JavaAdapter {
         let kind_str = java_dataflow_kind(capture_name)?;
         let kind = EdgeKind::from_str(kind_str).unwrap_or(EdgeKind::Assigns);
         let text = node_text(node, source)?;
+        let range = node_range(node);
 
-        let lang = self.language();
-        let source_sym = find_enclosing_method_id(node, source, file_id, lang)?;
-
+        // Use a placeholder source; SemanticBinder::resolve_edge_sources()
+        // will rewrite it via the location field after extraction.
+        let placeholder = SymbolId::generate(
+            &file_id,
+            "placeholder",
+            "",
+            "placeholder",
+            None::<&str>,
+        );
         let target = SymbolId::generate(
             &file_id,
             "dataflow",
@@ -211,20 +216,22 @@ impl LanguageAdapter for JavaAdapter {
             None::<&str>,
         );
         let edge_id = EdgeId::generate(
-            &source_sym,
+            &placeholder,
             &target,
             kind_str,
             None::<&ReferenceId>,
             Provenance::TreeSitter.as_str(),
         );
-        Some(RawEdge::new(
+        let mut edge = RawEdge::new(
             edge_id,
-            source_sym,
+            placeholder,
             target,
             kind,
             Confidence::certain(),
             Provenance::TreeSitter,
-        ))
+        );
+        edge.location = Some(range);
+        Some(edge)
     }
 
     fn detect_package(&self, _source: &str, file_path: &Path) -> Option<String> {
@@ -302,54 +309,6 @@ fn qualified_name_from_node_java(
     } else {
         format!("{}.{}", prefix, parts.join("."))
     }
-}
-
-/// Walk up the tree to find the enclosing method/constructor and compute its SymbolId.
-fn find_enclosing_method_id(
-    node: tree_sitter::Node,
-    source: &str,
-    file_id: FileId,
-    lang: Language,
-) -> Option<SymbolId> {
-    let mut current = node;
-    while let Some(parent) = current.parent() {
-        let parent_kind = parent.kind();
-        match parent_kind {
-            "method_declaration" | "constructor_declaration" => {
-                let name_node = parent.child_by_field_name("name");
-                let fn_name = name_node
-                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                    .unwrap_or("anonymous");
-                let qualified_name = qualified_name_from_node_java("", fn_name, parent, source);
-                return Some(SymbolId::generate(
-                    &file_id,
-                    lang.as_str(),
-                    &qualified_name,
-                    SymbolKind::Method.as_str(),
-                    None::<&str>,
-                ));
-            }
-            "class_declaration" | "interface_declaration" => {
-                // If we hit a class before a method, we're at class scope
-                let name_node = parent.child_by_field_name("name");
-                let class_name = name_node
-                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                    .unwrap_or("anonymous");
-                let qualified_name = qualified_name_from_node_java("", class_name, parent, source);
-                return Some(SymbolId::generate(
-                    &file_id,
-                    lang.as_str(),
-                    &qualified_name,
-                    SymbolKind::Class.as_str(),
-                    None::<&str>,
-                ));
-            }
-            _ => {
-                current = parent;
-            }
-        }
-    }
-    None
 }
 
 /// Map capture name to SymbolKind.
