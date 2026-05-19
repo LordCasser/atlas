@@ -139,7 +139,7 @@ The `mcp` subcommand starts a persistent MCP server process that the LLM agent q
 | C | `.c`, `.h` | `c` | tree-sitter-c |
 | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` | `cpp` | tree-sitter-cpp |
 | ArkTS | `.ets` | `arkts` | tree-sitter-typescript (delegated) |
-| Cangjie | `.cj` | `cangjie` | tree-sitter-cangjie (git dep) |
+| Cangjie ⚠️ | `.cj` | `cangjie` | tree-sitter-cangjie (git dep) — see [Limitations](#limitations) |
 
 Default features: `typescript`, `javascript`, `python`, `cli`. Enable additional languages with `--features`:
 
@@ -249,7 +249,11 @@ Test coverage:
 ## Known Limitations
 
 - **ArkTS**: delegates to TypeScript grammar; some ArkTS-specific syntax may not parse
-- **Cangjie**: grammar is external git dependency; may need updates for newer language versions
+- **Cangjie ⚠️**: three-level issue prevents indexing despite functional adapter code:
+  1. tree-sitter-cangjie grammar ABI 15 pre-dates Atlas tree-sitter 0.24.7 (max ABI 14)
+  2. grammar.js has been rewritten (using modern node types like `functionDefinition`, `classDefinition`, `postfixExpression`) but parser.c was stale — regeneration with tree-sitter CLI 0.24.7 resolved ABI + naming but revealed:
+  3. Atlas `.scm` queries reference node types (e.g. `typeAnnotation`) that don't exist in the current grammar, requiring query-level fixes
+  - **Status**: removed from `all-languages` feature (opt-in only via `--features cangjie`). Full fix requires `.scm` query updates to match grammar node types.
 - **C/C++**: no preprocessor expansion; only `#include` directives are parsed for imports
 - **Java**: no classpath/Maven/Gradle resolution; cross-file resolution is name-based
 - **Python**: no dynamic type inference; runtime-constructed symbols are not captured
@@ -265,6 +269,7 @@ Test coverage:
 - [ ] Taint analysis pipeline (dataflow edge tracking)
 - [ ] Parallel indexing with rayon
 - [ ] Support for Rust, Go, C#, Ruby, Swift, Kotlin, PHP
+- [ ] Fix Cangjie `.scm` queries to match tree-sitter-cangjie grammar node types
 - [ ] MCP Server concurrency with connection pool
 
 ---
