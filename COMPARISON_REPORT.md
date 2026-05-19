@@ -100,24 +100,66 @@ Codegraph 提取了更多细粒度节点 (import 48个、variable 30个)，Atlas
 
 ---
 
-## 五、C 大规模对比
+## 五、C 大规模对比 (curl, 1,024 files)
 
-| 指标 | Atlas | Codegraph |
+> Atlas 需 `--features "c,cpp"` 重新编译。curl 项目含 2 个 .cpp 文件。
+
+### 索引结果
+
+| 指标 | Atlas | Codegraph | 差异 |
+|------|-------|-----------|------|
+| 文件索引 | **1,024/1,024 (100%)** | 1,024/1,024 (100%) | 持平 |
+| 符号/节点 | **15,601** | 15,331 | Atlas +1.8% |
+| 边 | **95,682** | 42,726 | Atlas **2.2x** |
+| 索引时间 | **81s (1m21s)** | **4.8s** | Codegraph **17x 快** |
+| 数据库大小 | **161 MB** | 25 MB | Atlas 6.3x 大 |
+
+### Symbol Kind 分布
+
+| Kind | Atlas | Codegraph | 说明 |
+|------|-------|-----------|------|
+| function | 5,220 | 5,404 | 基本持平 |
+| method | 834 | 821 | 基本持平 |
+| variable | **3,424** | 397 | Atlas 捕获更多变量 |
+| class/struct | **2,980** | 540+72 | Atlas **偏高** (见下方) |
+| macro | **2,894** | 0 | Codegraph 不捕获 macro |
+| type_alias | 181 | 220 | 基本持平 |
+| enum | 68 | 161 | Codegraph 更多 |
+| enum_member | — | 2,367 | Codegraph 展开枚举成员 |
+| import | — | 4,325 | Atlas 独立表存储 import |
+
+### 搜索对比
+
+| 查询 | Atlas | Codegraph |
 |------|-------|-----------|
-| 文件索引 | **0 — ERROR** | 1,024 |
-| 节点 | N/A | 15,331 |
-| 边 | N/A | 42,726 |
-| 索引时间 | N/A | 6.0s |
-| 数据库大小 | N/A | 26MB |
-| 错误信息 | `Language C not enabled` | 无 |
+| `curl_global_init` | **2 结果** (score 1.060/0.841, 显示 sig+code+path:line) | 10 结果 (score 10457%) |
+| `curl_global_init --kind class` | 正常过滤 (仅保留 class 类型) | 无等同 CLI 参数 |
+| `curl_global_init --json` | JSON 含 sig/snippet/path/line/score | 默认 JSON 输出 |
+| `url_globa_init` (typo) | **Levenshtein** 模糊匹配到 `curl_global_init` | 同样支持模糊 |
+
+### Atlas 特有功能 (对比 Python 阶段新增)
+- `--kind` 过滤 (SQL 级，不影响降级链)
+- `--json` 输出 (含 snippet/signature)
+- `atlas context` 命令 (markdown + 源码摘录)
+- `atlas files` 命令 (文件浏览 + 语言统计)
+
+### 发现的问题
+
+1. **`class` 计数偏高 (2,980)**: C 的 `definitions.scm` 中 `(struct_specifier (type_identifier) @definition.class)` 捕获 **所有** `struct_specifier` 节点——包括前向声明、形参类型引用、成员类型引用——而非仅定义。这导致大量非真正定义的 `struct` 被计入 symbol 表。
+
+2. **数据库膨胀 (161MB vs 25MB)**: Atlas 存储完整符号表 (28 列含所有 range/byte offset)、引用表、数据流边、callsites；Codegraph 存储更精简的 node/edge 模型。这是架构性差异。
+
+3. **索引时间差距 (81s vs 4.8s)**: Atlas 的参考解析阶段 (resolution) 耗时显著——遍历所有引用尝试解析到目标 symbol。Codegraph 不做跨文件引用解析。
 
 ---
 
-## 六、Java 中等规模对比
+## 六、Java 中等规模对比 (apktool, 152 files)
+
+> Atlas 需 `--features "java"` 重新编译后测试。
 
 | 指标 | Atlas | Codegraph |
 |------|-------|-----------|
-| 文件索引 | 未测试 (预计 ERROR) | 152 (100%) |
+| 文件索引 | 未重测 (feature 启用后可运行) | 152 (100%) |
 | 节点 | N/A | 3,186 (152 class, 1,265 method, 698 field) |
 | 边 | N/A | 7,247 |
 | 索引时间 | N/A | 883ms |
@@ -131,39 +173,48 @@ Codegraph 提取了更多细粒度节点 (import 48个、variable 30个)，Atlas
 |------|-------|-----------|------|
 | Python (11 files) | 318ms | ~170ms | ~1.9x |
 | TypeScript (1,926 files) | **47.15s** | **9.3s** | **5.1x** |
-| C (1,024 files) | ERROR | 6.0s | 无法对比 |
-| Java (152 files) | ERROR | 883ms | 无法对比 |
+| C (1,024 files) | **81s** | **4.8s** | **17x** |
+| Java (152 files) | 未重测 | 883ms | — |
 
 ---
 
-## 八、结论与建议
+## 八、结论与建议 (更新版)
 
-### Atlas 当前问题
+### 已修复/改进的问题
 
-1. **🐛 严重Bug**: TypeScript 箭头函数导致 78% 文件索引失败 (FOREIGN KEY constraint failed)
-2. **🔧 语言支持不完整**: C/C++/Java 编译未启用 (`doctor` 显示 WARNING)
-3. **⏱ 大规模性能**: 相同 TypeScript 项目 index 耗时 47s (codegraph 仅 9s)
-4. **🎯 符号提取粒度**: 比 codegraph 少 (3,594 vs 28,474)，缺少 import 等关键节点
+| # | 问题 | 状态 | Commit |
+|---|------|------|--------|
+| 1 | TypeScript FK constraint failed (78% indexed) | **已修复** — SymbolRegistry + adapter patch | `57c0e19` `f1d787f` `f450edc` |
+| 2 | 搜索结果只显示 FileId hex | **已修复** — 显示人类可读 file_path:line | `229703f` |
+| 3 | 搜索缺少 --kind/--json 过滤 | **已添加** — CLI + JSON 输出 + snippet | `229703f` `fa8f2cf` |
+| 4 | 无 context/files 命令 | **已添加** — `atlas context` + `atlas files` | `229703f` |
+| 5 | Python 所有 function 不区分 method | **已修复** — AST walk 检查 class_definition | `fa8f2cf` |
+| 6 | 搜索无前缀排名 | **已修复** — prefix match 评分为 0.92 | `fa8f2cf` |
+| 7 | 搜索降级链在 kind filter 下断裂 | **已修复** — kind filter 推入 SQL 层 | `fa8f2cf` |
+| 8 | 搜索/context 无源码片段 | **已添加** — snippet + 源码摘录 | `fa8f2cf` |
+| 9 | C/C++ feature 未编译 | **可用** — `--features "c,cpp"` 编译 | 手动编译 |
 
-### Atlas 优势
+### 剩余问题
 
-1. FTS5 精确匹配搜索 (适合精确查找)
-2. 运维命令完善 (`doctor`, `status`, `sync`)
-3. Rust 单二进制部署 (无运行时依赖)
-4. 引用解析报告 (11.5% 链接解析率 — 虽然很低但至少报告了)
+1. **⏱ 大规模索引性能**: C 项目 Atlas 81s vs Codegraph 4.8s (17x)。主要瓶颈在引用解析阶段。
+2. **🗄 数据库体积**: C 项目 161MB vs 25MB (6.3x)。架构性差异，但可优化。
+3. **🎯 C 的 `class` 定义过宽**: `struct_specifier` 捕获了所有类型引用而非仅定义。
+4. **🔧 Java 支持**: 需 feature 编译后测试。
+5. **📏 搜索缺少 FTS5原生 rank 和 snippet()**: 当前 `fts_score` 由 IDF 重新推导，未捕获 SQLite 的 BM25 rank。
+6. **📊 符号统计粒度**: Atlas 比 Codegraph 更粗 (无拆分的 enum_member, import 独立存储不合并统计)。
 
-### Codegraph 优势
+### Codegraph 相对优势(仍存在)
 
-1. 15种语言支持 (tree-sitter wasm 动态加载)
-2. 大规模性能优越 (9.3s 索引 1926 文件)
-3. 符号提取更细粒度 (import/class/method/field/variable)
-4. 开发者功能丰富 (context/files/affected)
-5. embedding 语义搜索
+1. **15种语言** — tree-sitter wasm 动态加载
+2. **大规模索引速度** — 4.8s (curl) vs 81s，17x 更快
+3. **数据库紧凑** — 25MB vs 161MB
+4. **丰富的开发者命令** — `files/context/affected/query`
 
-### 建议优先级
+### Atlas 相对优势(持续强化)
 
-1. **P0**: 修复 `find_enclosing_function_id()` 的 SymbolId 匹配问题
-2. **P1**: 启用 C/C++/Java tree-sitter 编译
-3. **P2**: 优化大规模索引性能
-4. **P3**: 增加按 kind 过滤搜索、符号元数据输出等开发者功能
-5. **P4**: 考虑引入 embedding 语义搜索能力
+1. **多信号评分搜索** — FTS5 BM25 + 图度 + 名称相似度 + kind 加成 + 路径加成
+2. **三级降级链** — FTS5 → LIKE → Levenshtein 模糊
+3. **源码片段显示** — search/context 命令均带源码摘录
+4. **引用解析** — 跨文件引用解析 (虽慢但有)
+5. **Rust 单二进制** — 无运行时依赖
+6. **SymbolRegistry 架构** — 确保 edges/callsites 不会产生虚引用
