@@ -12,8 +12,10 @@ mod engine;
 mod extract;
 mod grammar;
 pub mod languages;
+mod scope_tree;
 
 pub use engine::{QueryCapture, QueryResults, run_queries, run_queries_text};
 pub use extract::extract_file;
 pub use grammar::LanguageRegistry;
 pub use languages::{create_adapter, LanguageAdapter};
+pub use scope_tree::build_scope_tree;

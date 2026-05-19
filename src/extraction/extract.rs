@@ -54,7 +54,7 @@ pub fn extract_file(
     let language = adapter.language();
 
     // 2. Extract and normalize definitions
-    let symbols = extract_and_normalize(
+    let mut symbols = extract_and_normalize(
         adapter, &ts_lang, adapter.definition_query(), root, source, source_bytes,
         file_id, file_path, &mut diagnostics,
         |adapter, name, node, src, fid, fp| {
@@ -81,7 +81,7 @@ pub fn extract_file(
     )?;
 
     // 5. Extract and normalize scopes
-    let scopes = extract_and_normalize(
+    let mut scopes = extract_and_normalize(
         adapter, &ts_lang, adapter.scope_query(), root, source, source_bytes,
         file_id, file_path, &mut diagnostics,
         |adapter, name, node, src, fid, fp| {
@@ -103,7 +103,10 @@ pub fn extract_file(
         )?
     };
 
-    // 7. Collect exported symbol IDs
+    // 7. Build scope tree and assign containers
+    super::build_scope_tree(&mut scopes, &mut symbols);
+
+    // 8. Collect exported symbol IDs
     let exports: Vec<_> = symbols.iter()
         .filter(|s| s.exported)
         .map(|s| s.id)
