@@ -1,6 +1,7 @@
 //! Incremental sync engine: detect changes, re-extract, re-resolve, reload graph.
 
 pub mod detector;
+pub mod discovery;
 
 #[cfg(feature = "sync")]
 pub mod watcher;

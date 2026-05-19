@@ -1,10 +1,11 @@
-//! `atlas index` command — walk project tree, extract facts, resolve references.
+//! `atlas index` command — walk project tree (git-aware), extract facts, resolve references.
 
 use crate::db::Store;
 use crate::extraction::{self, LanguageRegistry};
+use crate::sync::discovery::{discover_files, DiscoveryConfig};
 use crate::types::Language;
 use anyhow::Context;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub fn run(project: &str) -> anyhow::Result<()> {
@@ -14,21 +15,33 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     let store = Store::open(root).context("Failed to open Atlas database")?;
     store.init_schema().context("Failed to initialize schema")?;
 
-    // Detect and load language grammars for files
-    let languages = detect_project_languages(root);
-    if languages.is_empty() {
+    // Discover source files using git ls-files (or fallback walk)
+    let config = DiscoveryConfig::default();
+    let files = discover_files(root, &config)
+        .context("Failed to discover source files")?;
+
+    if files.is_empty() {
         anyhow::bail!("No recognizable source files found in {}", root.display());
     }
 
-    let registry = LanguageRegistry::new(&languages)
+    // Detect required languages from discovered files
+    let languages: Vec<Language> = files
+        .iter()
+        .filter_map(|p| Language::from_path(p))
+        .fold(Vec::new(), |mut acc, lang| {
+            if !acc.contains(&lang) { acc.push(lang); }
+            acc
+        });
+
+    let _registry = LanguageRegistry::new(&languages)
         .context("Failed to load language grammars")?;
 
     println!("Languages detected: {:?}", languages);
-    println!("Indexing project: {}", root.display());
+    println!("Indexing project: {} ({} files discovered)", root.display(), files.len());
     println!();
 
-    // Walk all source files and extract
-    let ext_files = walk_and_index(root, &store, &registry)?;
+    // Walk discovered files and extract
+    let ext_files = index_discovered_files(root, &store, &files)?;
     println!("\nIndexed {} files.", ext_files);
 
     // Resolve all references
@@ -68,50 +81,32 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Walk project files and extract FileFacts for each.
-fn walk_and_index(root: &Path, store: &Store, _registry: &LanguageRegistry) -> anyhow::Result<usize> {
+/// Process each discovered file for extraction.
+fn index_discovered_files(root: &Path, store: &Store, files: &[PathBuf]) -> anyhow::Result<usize> {
     let mut count = 0;
 
-    fn walk(dir: &Path, root: &Path, store: &Store, count: &mut usize) -> anyhow::Result<()> {
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(_) => return Ok(()),
+    for rel_path in files {
+        let abs_path = root.join(rel_path);
+        let lang = match Language::from_path(rel_path) {
+            Some(l) => l,
+            None => continue,
         };
 
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if name.starts_with('.')
-                    || name == "node_modules"
-                    || name == "target"
-                    || name == "__pycache__"
-                    || name == "venv"
-                    || name == ".git"
-                {
-                    continue;
-                }
-                walk(&path, root, store, count)?;
-            } else if let Some(lang) = Language::from_path(&path) {
-                match process_one_file(&path, root, lang, store) {
-                    Ok(()) => {
-                        *count += 1;
-                        println!("  [{}] {}", count, path.strip_prefix(root).unwrap_or(&path).display());
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "  Warning: {} — {:#}",
-                            path.strip_prefix(root).unwrap_or(&path).display(),
-                            e
-                        );
-                    }
-                }
+        match process_one_file(&abs_path, root, lang, store) {
+            Ok(()) => {
+                count += 1;
+                println!("  [{}] {}", count, rel_path.display());
+            }
+            Err(e) => {
+                eprintln!(
+                    "  Warning: {} — {:#}",
+                    rel_path.display(),
+                    e
+                );
             }
         }
-        Ok(())
     }
 
-    walk(root, root, store, &mut count)?;
     Ok(count)
 }
 
@@ -138,38 +133,4 @@ fn process_one_file(path: &Path, root: &Path, lang: Language, store: &Store) -> 
         .context("Failed to insert file facts")?;
 
     Ok(())
-}
-
-/// Walk the project root and detect what languages are present.
-fn detect_project_languages(root: &Path) -> Vec<Language> {
-    let mut langs = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    fn walk(dir: &Path, langs: &mut Vec<Language>, seen: &mut std::collections::HashSet<Language>) {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    if name.starts_with('.')
-                        || name == "node_modules"
-                        || name == "target"
-                        || name == "__pycache__"
-                        || name == "venv"
-                        || name == ".git"
-                    {
-                        continue;
-                    }
-                    walk(&path, langs, seen);
-                } else if let Some(lang) = Language::from_path(&path) {
-                    if seen.insert(lang) {
-                        langs.push(lang);
-                    }
-                }
-            }
-        }
-    }
-
-    walk(root, &mut langs, &mut seen);
-    langs
 }

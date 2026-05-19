@@ -362,4 +362,85 @@ main();
             stats.edges_created
         );
     }
+
+    #[test]
+    fn test_cross_file_callers_callees_graph() {
+        use crate::graph::{GraphEngine, GraphSnapshot};
+        use crate::extraction::extract_file;
+        use crate::extraction::languages::typescript::TypeScriptAdapter;
+
+        // ── File 1: lib.ts — exports greet and farewell ──
+        let lib_src = r#"export function greet(name: string): string {
+    return `Hello, ${name}!`;
+}
+
+export function farewell(name: string): string {
+    return `Goodbye, ${name}!`;
+}
+"#;
+        let lib_id = FileId::generate("lib.ts");
+        let lib_adapter = TypeScriptAdapter;
+        let lib_facts = extract_file(
+            &lib_adapter, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc",
+        )
+        .expect("lib.ts extraction failed");
+
+        // ── File 2: main.ts — imports and calls both functions ──
+        let main_src = r#"import { greet, farewell } from './lib';
+
+function main() {
+    greet("World");
+}
+
+function shutdown() {
+    farewell("World");
+}
+
+main();
+shutdown();
+"#;
+        let main_id = FileId::generate("main.ts");
+        let main_facts = extract_file(
+            &TypeScriptAdapter, main_id, &PathBuf::from("main.ts"), main_src, "abc",
+        )
+        .expect("main.ts extraction failed");
+
+        // ── Store, index, resolve ──
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        store.insert_file_facts(&lib_facts).expect("insert lib.ts");
+        store.insert_file_facts(&main_facts).expect("insert main.ts");
+
+        let resolver = ReferenceResolver::new(Arc::clone(&store));
+        resolver.resolve_all().expect("resolution failed");
+
+        // ── Build graph and verify callers/callees ──
+        let graph = GraphEngine::from_store(&store, 0.0).expect("graph build failed");
+
+        // Find greet and main by qualified name
+        let greet_id = store.find_symbols_by_qname("greet").unwrap()
+            .first().unwrap().id;
+        let main_id = store.find_symbols_by_qname("main").unwrap()
+            .first().unwrap().id;
+
+        // Verify callers: main → greet
+        let greet_callers = graph.callers(&greet_id);
+        let caller_names: Vec<&str> = greet_callers.callers.iter()
+            .map(|ix| graph.snapshot().node(*ix).name.as_str())
+            .collect();
+        assert!(
+            caller_names.contains(&"main"),
+            "expected main to be caller of greet, got: {:?}", caller_names
+        );
+
+        // Verify callees: main → greet
+        let main_callees = graph.callees(&main_id);
+        let callee_names: Vec<&str> = main_callees.callees.iter()
+            .map(|ix| graph.snapshot().node(*ix).name.as_str())
+            .collect();
+        assert!(
+            callee_names.contains(&"greet"),
+            "expected greet to be callee of main, got: {:?}", callee_names
+        );
+    }
 }

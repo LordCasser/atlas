@@ -251,6 +251,32 @@ impl GraphSnapshot {
         }
     }
 
+    /// Incoming neighbors (sources that point to this node) with their edge kinds.
+    pub fn incoming_neighbors_with_kinds(&self, id: &SymbolId) -> Vec<(NodeIx, EdgeKind)> {
+        let Some(&node_ix) = self.id_to_idx.get(id) else {
+            return vec![];
+        };
+        self.nodes[node_ix].incoming.iter()
+            .filter_map(|&eix| {
+                let edge = &self.edges[eix];
+                Some((edge.source_ix, edge.kind))
+            })
+            .collect()
+    }
+
+    /// Outgoing neighbors (targets this node points to) with their edge kinds.
+    pub fn outgoing_neighbors_with_kinds(&self, id: &SymbolId) -> Vec<(NodeIx, EdgeKind)> {
+        let Some(&node_ix) = self.id_to_idx.get(id) else {
+            return vec![];
+        };
+        self.nodes[node_ix].outgoing.iter()
+            .filter_map(|&eix| {
+                let edge = &self.edges[eix];
+                Some((edge.target_ix, edge.kind))
+            })
+            .collect()
+    }
+
     fn filter_edges_outgoing(
         &self,
         edge_indices: &[EdgeIx],
