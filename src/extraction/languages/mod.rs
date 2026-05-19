@@ -15,6 +15,27 @@
 use crate::types::*;
 use std::path::Path;
 
+// ── Shared helpers (used by all language adapters) ──────────────────────
+
+/// Extract the UTF-8 text of a tree-sitter node from the source string.
+pub fn node_text(node: tree_sitter::Node, source: &str) -> Option<String> {
+    node.utf8_text(source.as_bytes()).ok().map(|s| s.to_string())
+}
+
+/// Build a `TextRange` from a tree-sitter node's byte and line/column positions.
+pub fn node_range(node: tree_sitter::Node) -> TextRange {
+    let start = node.start_position();
+    let end = node.end_position();
+    TextRange {
+        start_byte: node.start_byte() as u32,
+        end_byte: node.end_byte() as u32,
+        start_line: start.row as u32,
+        start_column: start.column as u32,
+        end_line: end.row as u32,
+        end_column: end.column as u32,
+    }
+}
+
 /// Per-language extraction adapter. Query-driven, not AST-walker-driven.
 pub trait LanguageAdapter: Send + Sync {
     // -------------------------------------------------------------------

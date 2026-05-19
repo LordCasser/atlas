@@ -1,6 +1,6 @@
 //! C LanguageAdapter.
 
-use crate::extraction::languages::LanguageAdapter;
+use crate::extraction::languages::{node_range, node_text, LanguageAdapter};
 use crate::types::*;
 use std::path::Path;
 
@@ -237,25 +237,6 @@ impl LanguageAdapter for CAdapter {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Extract text from a tree-sitter node.
-fn node_text(node: tree_sitter::Node, source: &str) -> Option<String> {
-    node.utf8_text(source.as_bytes()).ok().map(|s| s.to_string())
-}
-
-/// Build a TextRange from a tree-sitter node.
-fn node_range(node: tree_sitter::Node) -> TextRange {
-    let start = node.start_position();
-    let end = node.end_position();
-    TextRange {
-        start_byte: node.start_byte() as u32,
-        end_byte: node.end_byte() as u32,
-        start_line: start.row as u32,
-        start_column: start.column as u32,
-        end_line: end.row as u32,
-        end_column: end.column as u32,
-    }
-}
 
 /// Infer a qualified name for a C symbol.
 fn qualified_name_from_node_c(

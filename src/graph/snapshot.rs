@@ -130,6 +130,15 @@ impl GraphSnapshot {
         }
 
         // ── edges (with confidence filter) ───────────────────────────────
+        //
+        // Note: edges whose source or target SymbolId is not in the symbols
+        // vector are silently skipped. This intentionally applies to dataflow
+        // edges (Parameter, Returns, Assigns, TypeOf, FieldRead, FieldWrite)
+        // whose targets are virtual/ephemeral SymbolIds (language="dataflow")
+        // that don't correspond to any defined symbol. Dataflow edges are
+        // retained in SQLite for direct query but are excluded from the graph
+        // because the graph models symbol-to-symbol relationships, not
+        // variable-level data flow within functions.
         let mut edge_summaries: Vec<EdgeSummary> = Vec::with_capacity(edges.len());
 
         for e in edges {
