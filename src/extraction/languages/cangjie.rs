@@ -295,7 +295,8 @@ fn qualified_name_from_node_cj(
     source: &str,
 ) -> String {
     let mut parts = vec![name.to_string()];
-    let mut current = node;
+    // Start from parent to avoid re-adding the immediate container's name
+    let mut current = node.parent().unwrap_or(node);
 
     while let Some(parent) = current.parent() {
         match parent.kind() {
