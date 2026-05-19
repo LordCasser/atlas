@@ -387,6 +387,18 @@ impl StoreReader {
     pub fn search_symbols(&self, query: &SearchQuery) -> Result<Vec<ScoredSymbol>>;
     pub fn get_references_to(&self, symbol_id: SymbolId) -> Result<Vec<ReferenceRecord>>;
     pub fn load_graph_snapshot(&self, config: SnapshotConfig) -> Result<GraphSnapshot>;
+    pub fn get_stats(&self) -> Result<StoreStats>;
+}
+
+pub struct StoreStats {
+    pub total_files: i64,
+    pub total_symbols: i64,
+    pub total_edges: i64,
+    pub total_references: i64,
+    pub unresolved_references: i64,
+    pub sqlite_version: String,
+    pub symbols_by_kind: Vec<(String, i64)>,     // e.g. {"class": 42, "function": 128}
+    pub files_by_language: Vec<(String, i64)>,    // e.g. {"typescript": 50, "python": 12}
 }
 ```
 
@@ -484,7 +496,35 @@ pub struct SearchEngine {
 }
 
 impl SearchEngine {
-    pub fn search_symbols(&self, query: &str, config: SearchConfig) -> Result<Vec<ScoredSymbol>>;
+    pub fn search(&self, query: &str, limit: usize, options: &SearchOptions) -> Result<Vec<SearchResult>>;
+    pub fn search_simple(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>>;
+    pub fn search_by_kind(&self, query: &str, kind: SymbolKind, limit: usize) -> Result<Vec<SearchResult>>;
+    pub fn search_in_file(&self, query: &str, file_id: &FileId, limit: usize) -> Result<Vec<SearchResult>>;
+    pub fn fuzzy_search(&self, name: &str, language: Option<Language>, limit: usize) -> Result<Vec<(SymbolDef, f64)>>;
+}
+
+pub struct SearchOptions {
+    pub language: Option<Language>,
+    pub file_path_pattern: Option<String>,  // matches real file path, not FileId hex
+    pub kind_filter: Option<SymbolKind>,
+    pub min_confidence: Option<f64>,
+}
+
+pub struct SearchResult {
+    pub symbol: SymbolDef,
+    pub score: SearchScore,
+    pub matched_field: String,
+    pub snippet: Option<String>,
+    pub file_path: Option<String>,  // resolved FileId → human-readable path
+}
+
+pub struct SearchScore {
+    pub fts_score: f64,     // IDF-weighted
+    pub graph_score: f64,   // degree-based centrality
+    pub name_score: f64,    // exact/camelCase/Levenshtein similarity
+    pub kind_bonus: f64,    // class > function > variable
+    pub path_bonus: f64,    // query in qualified_name
+    pub total: f64,         // weighted sum
 }
 ```
 
@@ -494,12 +534,25 @@ impl SearchEngine {
 pub struct ContextBuilder {
     store: Arc<Store>,
     graph: Arc<GraphEngine>,
-    search: Arc<SearchEngine>,
 }
 
 impl ContextBuilder {
-    pub fn build_context(&self, task: &str, config: ContextConfig) -> Result<ContextOutput>;
-    pub fn explore(&self, query: &str, config: ExploreConfig) -> Result<ExploreOutput>;
+    pub fn build_context_for_symbol(&self, symbol_id: &SymbolId) -> Result<ContextView>;
+    pub fn build_context_slice(&self, symbol_id: &SymbolId) -> Result<ContextSlice>;
+    pub fn build_context_for_query(&self, query: &str) -> Result<Option<ContextView>>;
+}
+
+pub struct ContextView {
+    pub subject: SymbolDef,
+    pub callers: Vec<SymbolDef>,
+    pub callees: Vec<SymbolDef>,
+    pub file_peers: Vec<SymbolDef>,
+    pub importers: Vec<String>,
+    pub dependencies: Vec<String>,
+}
+
+impl ContextView {
+    pub fn to_markdown(&self) -> String;
 }
 ```
 
@@ -577,12 +630,36 @@ truncation warning if output budget hit
 atlas init [--project <path>]
 atlas index [--project <path>] [--include <glob>] [--exclude <glob>]
 atlas sync [--project <path>]
-atlas search <query> [--project <path>] [--limit <n>]
+atlas search <query> [--project <path>] [--limit <n>] [--kind <kind>] [--json]
+atlas context <query> [--project <path>]
 atlas status [--project <path>]
 atlas files [--project <path>]
 atlas mcp [--project <path>]
 atlas doctor [--project <path>]
 ```
+
+### 11.1 search
+
+Three-tier fallback search strategy:
+1. **FTS5 full-text** (BM25, prefix matching via `symbols_fts` virtual table)
+2. **LIKE substring** (when FTS5 returns nothing)
+3. **Levenshtein edit distance** fuzzy match (final fallback for typos, ~40% tolerance)
+
+Multi-signal scoring: `BM25/IDF(0.40) + graph_degree(0.20) + name_similarity(0.25) + kind_bonus(0.10) + path_relevance(bonus)`
+
+Options:
+- `--kind <kind>`: Filter by symbol kind (class, function, method, variable, etc.)
+- `--json`: Output results as JSON array with name/kind/qualified_name/file_path/line/signature/score
+- `--limit <n>`: Maximum results (default 10)
+
+### 11.2 context
+
+Builds AI context around a symbol: callers, callees, file peers, importers, dependencies.
+Outputs Markdown via `ContextView::to_markdown()`.
+
+### 11.3 files
+
+Lists all indexed files with language annotation and summary statistics.
 
 ---
 

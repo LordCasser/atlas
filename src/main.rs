@@ -27,8 +27,18 @@ fn main() -> anyhow::Result<()> {
                 query,
                 project,
                 limit,
+                kind,
+                json,
             } => {
-                atlas::cli::commands::search::run(&query, &project, limit)?;
+                atlas::cli::commands::search::run(
+                    &query, &project, limit, kind.as_deref(), json,
+                )?;
+            }
+            Commands::Context { query, project } => {
+                atlas::cli::commands::context::run(&query, &project)?;
+            }
+            Commands::Files { project } => {
+                atlas::cli::commands::files::run(&project)?;
             }
             #[cfg(feature = "mcp")]
             Commands::Mcp { project } => {

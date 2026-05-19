@@ -54,6 +54,24 @@ pub enum Commands {
         project: String,
         #[arg(short, long, default_value = "10")]
         limit: usize,
+        /// Filter by symbol kind (e.g. class, function, method, variable)
+        #[arg(short, long)]
+        kind: Option<String>,
+        /// Output results as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Build AI context around a symbol (callers, callees, peers)
+    Context {
+        /// Symbol name or search query
+        query: String,
+        #[arg(short, long, default_value = ".")]
+        project: String,
+    },
+    /// List indexed files
+    Files {
+        #[arg(short, long, default_value = ".")]
+        project: String,
     },
     /// Start MCP server
     #[cfg(feature = "mcp")]

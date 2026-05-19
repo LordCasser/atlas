@@ -8,6 +8,7 @@ use crate::db::schema::{CURRENT_SCHEMA_VERSION, SCHEMA_DDL};
 
 use crate::types::*;
 use rusqlite::{params, Connection, Transaction};
+use std::collections::HashSet;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -657,11 +658,32 @@ impl Store {
         if !facts.imports.is_empty() {
             write_imports(&tx, &facts.imports)?;
         }
+        // Defensive FK guard: extraction should already resolve all source
+        // ownership through SymbolRegistry, but the store is the last line of
+        // defense against a single ghost edge/callsite rolling back an entire
+        // file's valid facts.
+        let valid_sources: HashSet<_> = facts.symbols.iter().map(|s| s.id).collect();
         if !facts.raw_edges.is_empty() {
-            write_edges(&tx, &facts.raw_edges)?;
+            let valid_edges: Vec<_> = facts
+                .raw_edges
+                .iter()
+                .filter(|edge| valid_sources.contains(&edge.source))
+                .cloned()
+                .collect();
+            if !valid_edges.is_empty() {
+                write_edges(&tx, &valid_edges)?;
+            }
         }
         if !facts.callsites.is_empty() {
-            write_callsites(&tx, &facts.callsites)?;
+            let valid_callsites: Vec<_> = facts
+                .callsites
+                .iter()
+                .filter(|callsite| valid_sources.contains(&callsite.caller))
+                .cloned()
+                .collect();
+            if !valid_callsites.is_empty() {
+                write_callsites(&tx, &valid_callsites)?;
+            }
         }
 
         tx.commit()?;
@@ -726,6 +748,24 @@ impl Store {
         let sqlite_version: String =
             conn.query_row("SELECT sqlite_version()", [], |r| r.get(0))?;
 
+        // Symbols grouped by kind
+        let mut stmt = conn.prepare(
+            "SELECT kind, COUNT(*) FROM symbols GROUP BY kind ORDER BY COUNT(*) DESC",
+        )?;
+        let symbols_by_kind: Vec<(String, i64)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Files grouped by language
+        let mut stmt = conn.prepare(
+            "SELECT language, COUNT(*) FROM files GROUP BY language ORDER BY COUNT(*) DESC",
+        )?;
+        let files_by_language: Vec<(String, i64)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+
         Ok(StoreStats {
             total_files,
             total_symbols,
@@ -733,6 +773,8 @@ impl Store {
             total_references,
             unresolved_references: unresolved,
             sqlite_version,
+            symbols_by_kind,
+            files_by_language,
         })
     }
 
@@ -751,6 +793,10 @@ pub struct StoreStats {
     pub total_references: i64,
     pub unresolved_references: i64,
     pub sqlite_version: String,
+    /// Symbol counts grouped by kind (e.g. {"class": 42, "function": 128}).
+    pub symbols_by_kind: Vec<(String, i64)>,
+    /// File counts grouped by language (e.g. {"typescript": 50, "python": 12}).
+    pub files_by_language: Vec<(String, i64)>,
 }
 
 // ---------------------------------------------------------------------------

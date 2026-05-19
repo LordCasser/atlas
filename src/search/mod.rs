@@ -1,12 +1,11 @@
-//! Search engine: FTS5 full-text, LIKE fallback, fuzzy matching, multi-signal scoring.
+//! Search engine: FTS5 full-text, LIKE fallback, Levenshtein fuzzy, multi-signal scoring.
 //!
-//! The `SearchEngine` combines:
-//!   - FTS5 full-text index (from `symbols_fts` virtual table)
-//!   - LIKE-based substring fallback (when FTS5 returns nothing)
-//!   - Fuzzy name matching (Levenshtein fallback, 3-char prefix FTS5)
-//!   - CamelCase/snake_case normalization ("getUser" ↔ "get_user")
-//!   - Graph degree signals (calls + references → centrality)
-//!   - Multi-signal relevance scoring (BM25 + degree + kind bonus)
+//! The `SearchEngine` combines a three-tier fallback search strategy:
+//!   1. FTS5 full-text index (BM25, prefix matching via `symbols_fts`)
+//!   2. LIKE substring search (when FTS5 returns nothing)
+//!   3. Levenshtein edit distance fuzzy match (final fallback for typos)
+//!
+//! Plus multi-signal scoring: BM25/IDF + graph degree + name similarity + kind bonus + path relevance
 
 pub mod fts;
 pub mod fuzzy;
@@ -67,6 +66,8 @@ pub struct SearchResult {
     pub matched_field: String,
     /// Brief snippet from the symbol context.
     pub snippet: Option<String>,
+    /// Resolved file path (human-readable, e.g. "src/main.rs").
+    pub file_path: Option<String>,
 }
 
 /// Unified search engine powered by FTS5 + graph signals.
@@ -112,12 +113,31 @@ impl SearchEngine {
             false
         };
 
-        // Stage 3: Fuzzy prefix fallback if still nothing
+        // Stage 3: Fuzzy Levenshtein fallback if still nothing
         let from_fuzzy = if raw_results.is_empty() && query.len() >= 2 {
-            // Use first 3 chars as FTS5 prefix for candidate pool
-            let prefix: String = query.chars().take(3).collect();
-            raw_results = self.store.search_symbols_with_limit(&prefix, limit.max(50))?;
-            // Apply language filter at DB level isn't possible here, do it post-hoc
+            // Load all symbols and compute Levenshtein distance to find close matches
+            let all_symbols = self.store.get_all_symbols()?;
+            let query_lower = query.to_lowercase();
+            let query_norm_snake = to_snake_case(&normalize_name_for_search(query));
+            let max_dist = (query.len() as f64 * 0.4).ceil() as usize; // allow ~40% edit distance
+            let mut candidates: Vec<(SymbolDef, usize)> = Vec::new();
+            for sym in &all_symbols {
+                let name_lower = sym.name.to_lowercase();
+                let name_snake = to_snake_case(&normalize_name_for_search(&sym.name));
+                // Check both original and snake_case normalized forms
+                let dist1 = fuzzy::levenshtein(&query_lower, &name_lower);
+                let dist2 = fuzzy::levenshtein(&query_norm_snake, &name_snake);
+                let min_dist = dist1.min(dist2);
+                if min_dist <= max_dist {
+                    candidates.push((sym.clone(), min_dist));
+                }
+            }
+            // Sort by distance (closest first), take top limit
+            candidates.sort_by_key(|c| c.1);
+            raw_results = candidates.into_iter()
+                .take(limit.max(50))
+                .map(|(s, _)| s)
+                .collect();
             if let Some(ref lang) = options.language {
                 raw_results.retain(|s| s.language == *lang);
             }
@@ -165,11 +185,18 @@ impl SearchEngine {
                 String::new()
             };
 
+            // Resolve FileId → human-readable path
+            let file_path = self.store.get_file(&sym.file_id)
+                .ok()
+                .flatten()
+                .map(|info| info.path);
+
             results.push(SearchResult {
                 symbol: sym,
                 score,
                 matched_field,
                 snippet: None,
+                file_path,
             });
         }
 
@@ -182,7 +209,12 @@ impl SearchEngine {
         // Apply post-filters
         if let Some(ref path_pat) = options.file_path_pattern {
             let pat = path_pat.to_lowercase();
-            results.retain(|r| r.symbol.file_id.to_hex().to_lowercase().contains(&pat));
+            results.retain(|r| {
+                r.file_path
+                    .as_ref()
+                    .map(|p| p.to_lowercase().contains(&pat))
+                    .unwrap_or(false)
+            });
         }
         if let Some(kind) = options.kind_filter {
             results.retain(|r| r.symbol.kind == kind);
@@ -217,11 +249,15 @@ impl SearchEngine {
         file_id: &FileId,
         limit: usize,
     ) -> anyhow::Result<Vec<SearchResult>> {
-        let hex = file_id.to_hex();
+        let file_path = self.store.get_file(file_id)
+            .ok()
+            .flatten()
+            .map(|info| info.path)
+            .unwrap_or_default();
         self.search(
             query,
             limit,
-            &SearchOptions::new().with_file_path(&hex[..16]),
+            &SearchOptions::new().with_file_path(&file_path),
         )
     }
 
