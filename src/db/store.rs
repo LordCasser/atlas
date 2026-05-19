@@ -160,11 +160,18 @@ impl Store {
             }
         }
 
+        if current_version < 4 {
+            // v3→v4: rename references_v2 → "references" (quoted because 'references' is a SQL reserved word)
+            let _ = conn.execute_batch(
+                "ALTER TABLE references_v2 RENAME TO \"references\";",
+            );
+        }
+
         // Record current version if not already present
         conn.execute(
             "INSERT OR IGNORE INTO schema_versions (version, description)
              VALUES (?1, ?2)",
-            params![CURRENT_SCHEMA_VERSION, "Atlas-native schema v1"],
+            params![CURRENT_SCHEMA_VERSION, "Atlas-native schema v4: references_v2 → references"],
         )?;
 
         Ok(())
@@ -474,7 +481,7 @@ impl Store {
     ) -> anyhow::Result<()> {
         let conn = self.lock();
         conn.execute(
-            "UPDATE references_v2 SET
+            "UPDATE \"references\" SET
                 resolved_symbol_id = ?2,
                 resolved_confidence = ?3,
                 resolved_strategy = ?4,
@@ -504,7 +511,7 @@ impl Store {
         }
         self.with_transaction(|tx| {
             let mut stmt = tx.prepare(
-                "UPDATE references_v2 SET
+                "UPDATE \"references\" SET
                     resolved_symbol_id = ?2,
                     resolved_confidence = ?3,
                     resolved_strategy = ?4,
@@ -831,9 +838,9 @@ impl Store {
         let total_edges: i64 =
             conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))?;
         let total_references: i64 =
-            conn.query_row("SELECT COUNT(*) FROM references_v2", [], |r| r.get(0))?;
+            conn.query_row("SELECT COUNT(*) FROM \"references\"", [], |r| r.get(0))?;
         let unresolved: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM references_v2 WHERE resolved_symbol_id IS NULL",
+            "SELECT COUNT(*) FROM \"references\" WHERE resolved_symbol_id IS NULL",
             [],
             |r| r.get(0),
         )?;
@@ -902,7 +909,7 @@ const REFERENCE_SELECT_NO_WHERE: &str = r#"
            range_start_column, range_end_line, range_end_column,
            resolved_symbol_id, resolved_confidence, resolved_strategy,
            resolved_provenance
-    FROM references_v2"#;
+    FROM "references""#;
 
 const REFERENCE_SELECT_WHERE: &str = r#"
     SELECT reference_id, file_id, source_symbol, scope_id, kind,
@@ -911,7 +918,7 @@ const REFERENCE_SELECT_WHERE: &str = r#"
            range_start_column, range_end_line, range_end_column,
            resolved_symbol_id, resolved_confidence, resolved_strategy,
            resolved_provenance
-    FROM references_v2 WHERE file_id = ?1"#;
+    FROM "references" WHERE file_id = ?1"#;
 
 fn row_to_file_info(row: &rusqlite::Row) -> rusqlite::Result<FileInfo> {
     Ok(FileInfo {
@@ -1126,7 +1133,7 @@ fn write_scopes(conn: &Connection, scopes: &[ScopeDef]) -> anyhow::Result<()> {
 
 fn write_references(conn: &Connection, refs: &[ReferenceUse]) -> anyhow::Result<()> {
     let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO references_v2
+        r#"INSERT OR REPLACE INTO "references"
             (reference_id, file_id, source_symbol, scope_id, kind, text, name,
             receiver, arity,
             range_start_byte, range_end_byte, range_start_line, range_start_column,
@@ -1328,6 +1335,7 @@ mod tests {
             range.start_byte,
             range.end_byte,
             "target",
+            ReferenceKind::Call,
         );
         let r = ReferenceUse {
             id: ref_id.clone(),
@@ -1373,6 +1381,7 @@ mod tests {
             range.start_byte,
             range.end_byte,
             "callee",
+            ReferenceKind::Call,
         );
         let r = ReferenceUse {
             id: ref_id.clone(),

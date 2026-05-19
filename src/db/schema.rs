@@ -1,6 +1,6 @@
 //! Atlas-native SQLite schema DDL and migration system.
 //!
-//! Schema version: 1
+//! Schema version: 4
 //!
 //! ## Tables
 //! - `files`      — per-file metadata
@@ -15,7 +15,7 @@
 //! - `schema_versions` — migration tracking
 
 /// Current schema version. Increment on every schema change.
-pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 /// Minimum readable schema version (for backward compatibility).
 pub const MIN_READABLE_VERSION: i64 = 1;
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS scopes (
     parent_id            BLOB REFERENCES scopes(scope_id)
 );
 
-CREATE TABLE IF NOT EXISTS references_v2 (
+CREATE TABLE IF NOT EXISTS "references" (
     reference_id         BLOB PRIMARY KEY NOT NULL,
     file_id              BLOB NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
     source_symbol        BLOB,
@@ -198,13 +198,13 @@ CREATE INDEX IF NOT EXISTS idx_scopes_parent
     ON scopes(parent_id);
 
 CREATE INDEX IF NOT EXISTS idx_references_file
-    ON references_v2(file_id);
+    ON "references"(file_id);
 CREATE INDEX IF NOT EXISTS idx_references_source
-    ON references_v2(source_symbol);
+    ON "references"(source_symbol);
 CREATE INDEX IF NOT EXISTS idx_references_resolved
-    ON references_v2(resolved_symbol_id);
+    ON "references"(resolved_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_references_unresolved
-    ON references_v2(resolved_symbol_id) WHERE resolved_symbol_id IS NULL;
+    ON "references"(resolved_symbol_id) WHERE resolved_symbol_id IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_imports_file
     ON imports(file_id);
@@ -266,7 +266,7 @@ mod tests {
         assert!(tables.contains(&"files".to_string()));
         assert!(tables.contains(&"symbols".to_string()));
         assert!(tables.contains(&"scopes".to_string()));
-        assert!(tables.contains(&"references_v2".to_string()));
+        assert!(tables.contains(&"references".to_string()));
         assert!(tables.contains(&"imports".to_string()));
         assert!(tables.contains(&"edges".to_string()));
         assert!(tables.contains(&"callsites".to_string()));

@@ -87,6 +87,7 @@ impl LanguageAdapter for CangjieAdapter {
             range.start_byte,
             range.end_byte,
             &text,
+            kind,
         );
 
         // Walk up to find enclosing function for edge promotion

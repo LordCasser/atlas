@@ -84,6 +84,7 @@ impl LanguageAdapter for CAdapter {
             range.start_byte,
             range.end_byte,
             &text,
+            kind,
         );
 
         // Compute source_symbol from enclosing function

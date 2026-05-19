@@ -84,6 +84,7 @@ impl LanguageAdapter for CppAdapter {
             range.start_byte,
             range.end_byte,
             &text,
+            kind,
         );
 
         let lang = self.language();

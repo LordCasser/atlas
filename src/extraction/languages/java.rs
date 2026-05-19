@@ -95,6 +95,7 @@ impl LanguageAdapter for JavaAdapter {
             range.start_byte,
             range.end_byte,
             &text,
+            kind,
         );
 
         Some(ReferenceUse {

@@ -17,7 +17,7 @@ use crate::types::{
 use crate::types::ids::{CallsiteId, FileId};
 
 use super::languages::{node_range, LanguageAdapter};
-use super::symbol_registry::SymbolRegistry;
+use super::semantic_binder::SemanticBinder;
 
 /// Extract a single file's facts using the given adapter.
 pub fn extract_file(
@@ -112,13 +112,12 @@ pub fn extract_file(
     // 7. Build scope tree and assign containers
     super::build_scope_tree(&mut scopes, &mut symbols);
 
-    // 8. Resolve source ownership through the definitions-derived registry.
+    // 8. Bind source ownership and scope through the semantic binder.
     // This is the single source of truth for references/dataflow/callsites:
     // adapters may produce best-effort source IDs, but only IDs present in
     // `symbols` are allowed to survive extraction.
-    let registry = SymbolRegistry::new(&symbols, &scopes);
-    registry.resolve_reference_sources(file_id, &mut references);
-    registry.resolve_edge_sources(&mut raw_edges);
+    let binder = SemanticBinder::new(&symbols, &scopes);
+    binder.bind_all(file_id, &mut references, &mut raw_edges);
 
     // 9. Derive callsites from Call references
     let callsites: Vec<Callsite> = references

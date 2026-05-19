@@ -199,7 +199,11 @@ impl ScopeId {
 // ── ReferenceId ─────────────────────────────────────────────────────────────
 
 define_id!(
-    /// Deterministic reference identifier: blake3(file_id + source_symbol + byte_range + text).
+    /// Deterministic reference identifier: blake3(file_id + source_symbol + kind + byte_range + text).
+    ///
+    /// `ReferenceKind` is included in the hash to prevent semantic collisions:
+    /// e.g., `obj.method()` produces both `Call` and `FieldAccess` references
+    /// at the same byte range — they must have distinct IDs.
     ReferenceId
 );
 
@@ -210,16 +214,25 @@ impl ReferenceId {
     /// - `source_symbol`: optional source symbol ID bytes
     /// - `start_byte`, `end_byte`: byte range of the reference
     /// - `text`: the reference text (e.g., identifier name)
+    /// - `kind`: the semantic kind of this reference (MUST be included to prevent collision)
     pub fn generate(
         file_id: &FileId,
         source_symbol: Option<&SymbolId>,
         start_byte: u32,
         end_byte: u32,
         text: &str,
+        kind: crate::types::ReferenceKind,
     ) -> Self {
         let sb = start_byte.to_le_bytes();
         let eb = end_byte.to_le_bytes();
-        let mut parts: Vec<&[u8]> = vec![file_id.as_bytes(), &sb, &eb, text.as_bytes()];
+        let mut parts: Vec<&[u8]> = vec![
+            file_id.as_bytes(),
+            kind.as_str().as_bytes(),
+            &sb,
+            &eb,
+            text.as_bytes(),
+        ];
+        // source_symbol inserted after file_id, before kind
         if let Some(src) = source_symbol {
             parts.insert(1, src.as_bytes());
         }
@@ -371,10 +384,21 @@ mod tests {
 
     #[test]
     fn test_reference_id_deterministic() {
+        use crate::types::ReferenceKind;
         let file_id = FileId::generate("src/main.ts");
-        let id1 = ReferenceId::generate(&file_id, None, 100, 108, "console");
-        let id2 = ReferenceId::generate(&file_id, None, 100, 108, "console");
+        let id1 = ReferenceId::generate(&file_id, None, 100, 108, "console", ReferenceKind::Usage);
+        let id2 = ReferenceId::generate(&file_id, None, 100, 108, "console", ReferenceKind::Usage);
         assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_reference_id_kind_prevents_collision() {
+        use crate::types::ReferenceKind;
+        let file_id = FileId::generate("src/main.ts");
+        let call_id = ReferenceId::generate(&file_id, None, 100, 108, "method", ReferenceKind::Call);
+        let field_id = ReferenceId::generate(&file_id, None, 100, 108, "method", ReferenceKind::FieldAccess);
+        // Same range + text, different kind → different IDs (fixes obj.method() collision)
+        assert_ne!(call_id, field_id);
     }
 
     #[test]
@@ -454,8 +478,9 @@ mod tests {
 
     #[test]
     fn test_callsite_id_deterministic() {
+        use crate::types::ReferenceKind;
         let file_id = FileId::generate("src/main.ts");
-        let ref_id = ReferenceId::generate(&file_id, None, 100, 108, "foo");
+        let ref_id = ReferenceId::generate(&file_id, None, 100, 108, "foo", ReferenceKind::Call);
         let caller = SymbolId::generate(&file_id, "typescript", "App.run", "method", None);
         let id1 = CallsiteId::generate(&ref_id, Some(&caller), 100);
         let id2 = CallsiteId::generate(&ref_id, Some(&caller), 100);

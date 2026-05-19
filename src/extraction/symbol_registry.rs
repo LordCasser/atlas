@@ -97,6 +97,7 @@ impl SymbolRegistry {
                     reference.range.start_byte,
                     reference.range.end_byte,
                     &reference.text,
+                    reference.kind,
                 );
             }
         }

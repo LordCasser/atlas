@@ -88,6 +88,7 @@ impl LanguageAdapter for PythonAdapter {
             range.start_byte,
             range.end_byte,
             &text,
+            kind,
         );
 
         // Populate source_symbol by walking up to the enclosing function.

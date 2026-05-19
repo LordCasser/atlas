@@ -57,13 +57,13 @@ impl Language {
     /// Detect language from file extension.
     pub fn from_extension(ext: &str) -> Option<Self> {
         match ext {
-            "ts" | "mts" | "cts" => Some(Self::TypeScript),
-            "js" | "mjs" | "cjs" => Some(Self::JavaScript),
+            "ts" | "mts" | "cts" | "tsx" => Some(Self::TypeScript),
+            "js" | "mjs" | "cjs" | "jsx" => Some(Self::JavaScript),
             "py" | "pyi" | "pyx" => Some(Self::Python),
             "java" => Some(Self::Java),
             "c" | "h" => Some(Self::C),
             "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" => Some(Self::Cpp),
-            "ets" => Some(Self::ArkTS),
+            "ets" | "sts" => Some(Self::ArkTS),
             "cj" | "cangjie" => Some(Self::Cangjie),
             _ => None,
         }
@@ -92,8 +92,8 @@ impl Language {
     /// File patterns / globs used by this language (for file discovery).
     pub fn globs(self) -> &'static [&'static str] {
         match self {
-            Self::TypeScript => &["**/*.ts", "**/*.mts", "**/*.cts"],
-            Self::JavaScript => &["**/*.js", "**/*.mjs", "**/*.cjs"],
+            Self::TypeScript => &["**/*.ts", "**/*.mts", "**/*.cts", "**/*.tsx"],
+            Self::JavaScript => &["**/*.js", "**/*.mjs", "**/*.cjs", "**/*.jsx"],
             Self::Python => &["**/*.py", "**/*.pyi"],
             Self::Java => &["**/*.java"],
             Self::C => &["**/*.c", "**/*.h"],

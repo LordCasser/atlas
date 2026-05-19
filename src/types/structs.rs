@@ -541,7 +541,7 @@ mod tests {
     fn sample_reference(file_id: FileId, source: SymbolId) -> ReferenceUse {
         let text = "foo".to_string();
         let range = sample_range();
-        let id = ReferenceId::generate(&file_id, Some(&source), range.start_byte, range.end_byte, &text);
+        let id = ReferenceId::generate(&file_id, Some(&source), range.start_byte, range.end_byte, &text, ReferenceKind::Call);
         ReferenceUse {
             id,
             file_id,
