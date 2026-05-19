@@ -477,14 +477,35 @@ fn ts_import_info(
         }
         "import.name" | "import.alias" => {
             let name = node_text(node, source)?;
-            Some((ImportKind::Import, String::new(), name))
+            // Walk up to the enclosing import_statement to find the module source
+            let module = extract_module_from_ancestor(node, source);
+            Some((ImportKind::Import, module, name))
         }
         "import.namespace" => {
             let name = node_text(node, source)?;
-            Some((ImportKind::Import, String::new(), name))
+            let module = extract_module_from_ancestor(node, source);
+            Some((ImportKind::Import, module, name))
         }
         _ => None,
     }
+}
+
+/// Walk up from a node inside an import_statement to find the `source` field
+/// (the module path string).
+fn extract_module_from_ancestor(node: tree_sitter::Node, source: &str) -> String {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        if parent.kind() == "import_statement" {
+            if let Some(source_child) = parent.child_by_field_name("source") {
+                if let Some(module_path) = node_text(source_child, source) {
+                    return module_path.trim_matches(|c| c == '"' || c == '\'').to_string();
+                }
+            }
+            break;
+        }
+        current = parent;
+    }
+    String::new()
 }
 
 #[cfg(test)]

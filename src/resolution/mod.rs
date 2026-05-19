@@ -86,12 +86,18 @@ impl ReferenceResolver {
                             .or_default() += 1;
 
                         // Create structural edges from this resolution
-                        let edges = self.create_edges(reference, &target, &ctx);
-                        if !edges.is_empty() {
-                            if let Err(e) = self.store.insert_edges(&edges) {
-                                eprintln!("Warning: failed to insert edges: {}", e);
-                            } else {
-                                stats.edges_created += edges.len();
+                        match self.create_edges(reference, &target) {
+                            Ok(edges) => {
+                                if !edges.is_empty() {
+                                    if let Err(e) = self.store.insert_edges(&edges) {
+                                        eprintln!("Warning: failed to insert edges: {}", e);
+                                    } else {
+                                        stats.edges_created += edges.len();
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Warning: failed to create edges: {}", e);
                             }
                         }
                     }
@@ -210,23 +216,25 @@ impl ReferenceResolver {
     /// - `Instantiates` when a call reference resolves to a class/struct
     /// - `Implements` when a call reference resolves to an interface/trait
     /// - `References` for non-call references
+    ///
+    /// Uses `self.store` to look up the target symbol (supports cross-file targets).
     fn create_edges(
         &self,
         reference: &ReferenceUse,
         target: &ResolvedTarget,
-        ctx: &ResolutionContext,
-    ) -> Vec<RawEdge> {
+    ) -> anyhow::Result<Vec<RawEdge>> {
         let mut edges = Vec::new();
 
-        let target_sym = match ctx.symbols_by_id.get(&target.symbol_id) {
+        // Look up target symbol from the DB (supports cross-file targets)
+        let target_sym = match self.store.find_symbol_by_id(&target.symbol_id)? {
             Some(s) => s,
-            None => return edges,
+            None => return Ok(edges),
         };
 
         // Source is the enclosing function/class that contains the reference
         let source = match reference.source_symbol {
             Some(s) => s,
-            None => return edges,
+            None => return Ok(edges),
         };
 
         let edge_kind = if reference.kind == ReferenceKind::Call {
@@ -234,7 +242,7 @@ impl ReferenceResolver {
                 SymbolKind::Class | SymbolKind::Struct => EdgeKind::Instantiates,
                 SymbolKind::Interface | SymbolKind::Trait => EdgeKind::Implements,
                 SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor => EdgeKind::Calls,
-                _ => return edges, // Non-callable target — no structural edge
+                _ => return Ok(edges), // Non-callable target — no structural edge
             }
         } else {
             EdgeKind::References
@@ -259,7 +267,7 @@ impl ReferenceResolver {
 
         // Also create Contains edges from container symbols during resolution
         if let Some(container) = target_sym.container {
-            if let Some(_container_sym) = ctx.symbols_by_id.get(&container) {
+            if self.store.find_symbol_by_id(&container)?.is_some() {
                 let contains_edge = RawEdge {
                     id: EdgeId::generate(
                         &container,
@@ -278,7 +286,7 @@ impl ReferenceResolver {
             }
         }
 
-        edges
+        Ok(edges)
     }
 }
 
@@ -290,4 +298,64 @@ pub struct ResolutionStats {
     pub unresolved: usize,
     pub by_strategy: HashMap<String, usize>,
     pub edges_created: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Store;
+    use crate::extraction::languages::typescript::TypeScriptAdapter;
+    use crate::extraction::extract_file;
+    use std::path::PathBuf;
+
+    /// Verifies that cross-file import → call creates a structural Calls edge.
+    #[test]
+    fn test_cross_file_import_call_creates_edge() {
+        // ── File 1: lib.ts — exports a function ──
+        let lib_src = r#"export function greet(name: string): string {
+    return `Hello, ${name}!`;
+}
+"#;
+        let lib_id = FileId::generate("lib.ts");
+        let lib_adapter = TypeScriptAdapter;
+        let lib_facts = extract_file(
+            &lib_adapter, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc",
+        )
+        .expect("lib.ts extraction failed");
+
+        // ── File 2: main.ts — imports and calls greet inside a function ──
+        let main_src = r#"import { greet } from './lib';
+
+function main() {
+    const msg = greet("World");
+    console.log(msg);
+}
+main();
+"#;
+        let main_id = FileId::generate("main.ts");
+        let main_facts = extract_file(
+            &TypeScriptAdapter, main_id, &PathBuf::from("main.ts"), main_src, "abc",
+        )
+        .expect("main.ts extraction failed");
+
+        // ── Store and index ──
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        store.insert_file_facts(&lib_facts).expect("insert lib.ts");
+        store.insert_file_facts(&main_facts).expect("insert main.ts");
+
+        // ── Resolve ──
+        let resolver = ReferenceResolver::new(Arc::new(store));
+        let stats = resolver.resolve_all().expect("resolution failed");
+
+        // Verify resolution happened
+        assert!(stats.resolved > 0, "expected at least 1 resolved reference, got {}", stats.resolved);
+
+        // Verify at least one Calls edge was created
+        assert!(
+            stats.edges_created > 0,
+            "expected cross-file Calls edges, got {} edges",
+            stats.edges_created
+        );
+    }
 }

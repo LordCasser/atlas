@@ -483,20 +483,56 @@ fn py_import_info(
         }
         "import.name" => {
             let name = node_text(node, source)?;
-            Some((ImportKind::Import, String::new(), name, false))
+            let module = extract_module_from_import_ancestor(node, source);
+            Some((ImportKind::Import, module, name, false))
         }
         "import.alias" => {
             let name = node_text(node, source)?;
-            Some((ImportKind::Import, String::new(), name, false))
+            let module = extract_module_from_import_ancestor(node, source);
+            Some((ImportKind::Import, module, name, false))
         }
-        "import.wildcard" => Some((
-            ImportKind::FromImport,
-            String::new(),
-            "*".into(),
-            false,
-        )),
+        "import.wildcard" => {
+            let module = extract_module_from_import_ancestor(node, source);
+            Some((
+                ImportKind::FromImport,
+                module,
+                "*".into(),
+                false,
+            ))
+        }
         _ => None,
     }
+}
+
+/// Walk up from a node inside an import_statement/import_from_statement
+/// to find the module name (either from the `name` field or dotted_name).
+fn extract_module_from_import_ancestor(node: tree_sitter::Node, source: &str) -> String {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        match parent.kind() {
+            "import_statement" => {
+                // `import foo` — module is the name/dotted_name field
+                if let Some(name_child) = parent.child_by_field_name("name") {
+                    if let Some(m) = node_text(name_child, source) {
+                        return m;
+                    }
+                }
+                break;
+            }
+            "import_from_statement" => {
+                // `from foo import bar` — module is the module_name field
+                if let Some(module_name) = parent.child_by_field_name("module_name") {
+                    if let Some(m) = node_text(module_name, source) {
+                        return m;
+                    }
+                }
+                break;
+            }
+            _ => {}
+        }
+        current = parent;
+    }
+    String::new()
 }
 
 #[cfg(test)]

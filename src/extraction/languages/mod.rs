@@ -156,6 +156,9 @@ pub trait LanguageAdapter: Send + Sync {
 #[cfg(feature = "typescript")]
 pub mod typescript;
 
+#[cfg(feature = "javascript")]
+pub mod javascript;
+
 #[cfg(feature = "python")]
 pub mod python;
 
@@ -179,9 +182,9 @@ pub mod cangjie;
 pub fn create_adapter(lang: Language) -> Option<Box<dyn LanguageAdapter>> {
     match lang {
         #[cfg(feature = "typescript")]
-        Language::TypeScript | Language::JavaScript => {
-            Some(Box::new(typescript::TypeScriptAdapter))
-        }
+        Language::TypeScript => Some(Box::new(typescript::TypeScriptAdapter)),
+        #[cfg(feature = "javascript")]
+        Language::JavaScript => Some(Box::new(javascript::JavaScriptAdapter)),
         #[cfg(feature = "python")]
         Language::Python => Some(Box::new(python::PythonAdapter)),
         #[cfg(feature = "arkts")]

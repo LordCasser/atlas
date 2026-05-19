@@ -333,6 +333,7 @@ calc.add(1, 2);
         assert!(result.is_ok(), "Insert failed: {:?}", result.err());
     }
 
+    #[cfg(feature = "java")]
     #[test]
     fn test_extract_and_insert_java() {
         use crate::db::Store;
@@ -376,6 +377,7 @@ public class UserService {
         assert!(result.is_ok(), "Insert failed: {:?}", result.err());
     }
 
+    #[cfg(feature = "c")]
     #[test]
     fn test_extract_and_insert_c() {
         use crate::db::Store;
@@ -430,6 +432,7 @@ char* user_greet(const User* u) {
         assert!(result.is_ok(), "Insert failed: {:?}", result.err());
     }
 
+    #[cfg(feature = "cpp")]
     #[test]
     fn test_extract_and_insert_cpp() {
         use crate::db::Store;
@@ -475,6 +478,7 @@ private:
         assert!(result.is_ok(), "Insert failed: {:?}", result.err());
     }
 
+    #[cfg(feature = "cpp")]
     #[test]
     fn test_extract_cpp_e2e_fixture() {
         use crate::db::Store;
