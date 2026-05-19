@@ -16,7 +16,8 @@ use crate::types::{
 };
 use crate::types::ids::{CallsiteId, FileId};
 
-use super::languages::LanguageAdapter;
+use super::languages::{node_range, LanguageAdapter};
+use super::symbol_registry::SymbolRegistry;
 
 /// Extract a single file's facts using the given adapter.
 pub fn extract_file(
@@ -63,7 +64,7 @@ pub fn extract_file(
     )?;
 
     // 3. Extract and normalize references
-    let references = extract_and_normalize(
+    let mut references = extract_and_normalize(
         adapter, &ts_lang, adapter.reference_query(), root, source, source_bytes,
         file_id, file_path, &mut diagnostics,
         |adapter, name, node, src, fid, fp| {
@@ -91,14 +92,19 @@ pub fn extract_file(
 
     // 6. Extract and normalize dataflow edges (parameter, returns, assignments, field access)
     let dataflow_query = adapter.dataflow_query();
-    let raw_edges = if dataflow_query.trim().is_empty() {
+    let mut raw_edges = if dataflow_query.trim().is_empty() {
         Vec::new()
     } else {
         extract_and_normalize(
             adapter, &ts_lang, dataflow_query, root, source, source_bytes,
             file_id, file_path, &mut diagnostics,
             |adapter, name, node, src, fid, fp| {
-                adapter.normalize_dataflow(&name, node, src, fid, fp)
+                adapter.normalize_dataflow(&name, node, src, fid, fp).map(|mut edge| {
+                    // Central source resolution relies on the original capture
+                    // range rather than adapter-generated source IDs.
+                    edge.location = Some(node_range(node));
+                    edge
+                })
             },
         )?
     };
@@ -106,7 +112,15 @@ pub fn extract_file(
     // 7. Build scope tree and assign containers
     super::build_scope_tree(&mut scopes, &mut symbols);
 
-    // 8. Derive callsites from Call references
+    // 8. Resolve source ownership through the definitions-derived registry.
+    // This is the single source of truth for references/dataflow/callsites:
+    // adapters may produce best-effort source IDs, but only IDs present in
+    // `symbols` are allowed to survive extraction.
+    let registry = SymbolRegistry::new(&symbols, &scopes);
+    registry.resolve_reference_sources(file_id, &mut references);
+    registry.resolve_edge_sources(&mut raw_edges);
+
+    // 9. Derive callsites from Call references
     let callsites: Vec<Callsite> = references
         .iter()
         .filter(|r| r.kind == ReferenceKind::Call && r.source_symbol.is_some())
@@ -125,7 +139,7 @@ pub fn extract_file(
         })
         .collect();
 
-    // 9. Collect exported symbol IDs
+    // 10. Collect exported symbol IDs
     let exports: Vec<_> = symbols.iter()
         .filter(|s| s.exported)
         .map(|s| s.id)
@@ -247,6 +261,101 @@ mod tests {
     use crate::extraction::languages::python::PythonAdapter;
     use crate::types::Language;
     use std::path::PathBuf;
+
+    fn assert_sources_are_known(facts: &FileFacts) {
+        let known: std::collections::HashSet<_> = facts.symbols.iter().map(|s| s.id).collect();
+        for edge in &facts.raw_edges {
+            assert!(known.contains(&edge.source), "raw edge has ghost source: {:?}", edge);
+        }
+        for callsite in &facts.callsites {
+            assert!(known.contains(&callsite.caller), "callsite has ghost caller: {:?}", callsite);
+        }
+        for reference in &facts.references {
+            if let Some(source) = reference.source_symbol {
+                assert!(known.contains(&source), "reference has ghost source: {:?}", reference);
+            }
+        }
+    }
+
+    #[test]
+    fn test_extract_and_insert_ts_arrow_function_registry_guard() {
+        use crate::db::Store;
+        let source = r#"export const af = (x: number) => {
+  const y = x;
+  return y;
+};
+export function f() {
+  return af(1);
+}
+[1].map(n => n + 1);
+"#;
+        let file_id = FileId::generate("arrow.ts");
+        let adapter = TypeScriptAdapter;
+        let file_path = PathBuf::from("arrow.ts");
+
+        let facts = extract_file(&adapter, file_id, &file_path, source, "abc").unwrap();
+        assert_sources_are_known(&facts);
+
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        let result = store.insert_file_facts(&facts);
+        assert!(result.is_ok(), "Insert failed: {:?}", result.err());
+    }
+
+    #[cfg(feature = "javascript")]
+    #[test]
+    fn test_extract_and_insert_js_arrow_function_registry_guard() {
+        use crate::db::Store;
+        let source = r#"export const jf = (x) => {
+  const y = x;
+  return y;
+};
+function g() {
+  return jf(1);
+}
+"#;
+        let file_id = FileId::generate("arrow.js");
+        let adapter = crate::extraction::create_adapter(Language::JavaScript).unwrap();
+        let file_path = PathBuf::from("arrow.js");
+
+        let facts = extract_file(adapter.as_ref(), file_id, &file_path, source, "abc").unwrap();
+        assert_sources_are_known(&facts);
+
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        let result = store.insert_file_facts(&facts);
+        assert!(result.is_ok(), "Insert failed: {:?}", result.err());
+    }
+
+    #[cfg(feature = "cpp")]
+    #[test]
+    fn test_extract_and_insert_cpp_out_of_class_method_registry_guard() {
+        use crate::db::Store;
+        let source = r#"#include <iostream>
+namespace N {
+class C {
+public:
+    void m();
+    int field;
+};
+void C::m() {
+    int x = 1;
+    std::cout << x;
+}
+}
+"#;
+        let file_id = FileId::generate("out_of_class.cpp");
+        let adapter = crate::extraction::create_adapter(Language::Cpp).unwrap();
+        let file_path = PathBuf::from("out_of_class.cpp");
+
+        let facts = extract_file(adapter.as_ref(), file_id, &file_path, source, "abc").unwrap();
+        assert_sources_are_known(&facts);
+
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        let result = store.insert_file_facts(&facts);
+        assert!(result.is_ok(), "Insert failed: {:?}", result.err());
+    }
 
     #[test]
     fn test_extract_ts_simple() {
