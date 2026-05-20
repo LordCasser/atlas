@@ -9,8 +9,8 @@ use crate::db::Store;
 use crate::graph::{GraphEngine, TraversalConfig, TraversalDirection};
 use crate::search::SearchEngine;
 use crate::context::ContextBuilder;
-use crate::types::{SymbolId, SymbolKind};
-use crate::types::ids::{TaintFindingId, DataNodeId, FileId};
+use crate::types::{SymbolId, SymbolKind, TaintFindingId};
+use crate::types::ids::FileId;
 use crate::types::taint::Severity;
 
 use super::protocol::{
@@ -483,7 +483,7 @@ impl ToolRouter {
         let file_filter: Option<FileId> = file_hex.and_then(|h| {
             let hex = h.trim();
             if hex.len() >= 8 {
-                FileId::from_hex(hex).ok()
+                hex.parse::<FileId>().ok()
             } else {
                 None
             }
@@ -505,11 +505,11 @@ impl ToolRouter {
         let items: Vec<_> = filtered.iter().map(|f| {
             let source_name = self.store.get_data_node(&f.source_node)
                 .ok().flatten()
-                .map(|n| n.name)
+                .and_then(|n| n.name)
                 .unwrap_or_else(|| f.source_node.to_hex());
             let sink_name = self.store.get_data_node(&f.sink_node)
                 .ok().flatten()
-                .map(|n| n.name)
+                .and_then(|n| n.name)
                 .unwrap_or_else(|| f.sink_node.to_hex());
             json!({
                 "finding_id": f.id.to_hex(),
@@ -532,9 +532,9 @@ impl ToolRouter {
 
     fn handle_taint_path(&self, args: &Value) -> (String, bool) {
         let finding_hex = get_str(args, "finding_id");
-        let fid = match TaintFindingId::from_hex(finding_hex) {
-            Ok(id) => id,
-            Err(e) => return (format!("Invalid finding_id: {}", e), true),
+        let fid = match parse_hex_id(finding_hex) {
+            Some(id) => TaintFindingId(id),
+            None => return (format!("Invalid finding_id: must be 64 hex chars",), true),
         };
 
         let steps = match self.store.get_taint_path_steps(&fid) {
@@ -548,7 +548,7 @@ impl ToolRouter {
             json!({
                 "step": s.index,
                 "data_node_id": s.data_node.to_hex(),
-                "name": node.as_ref().map(|n| &n.name).unwrap_or(&String::new()),
+                "name": node.as_ref().and_then(|n| n.name.as_deref()).unwrap_or(""),
                 "kind": node.as_ref().map(|n| n.kind.as_str()).unwrap_or(""),
                 "file_id": s.file_id.to_hex(),
                 "range": {
@@ -758,4 +758,14 @@ fn get_u64(args: &Value, key: &str) -> Option<u64> {
 
 fn truncate(s: &str, max_len: usize) -> &str {
     if s.len() <= max_len { s } else { &s[..max_len] }
+}
+
+/// Parse a 64-char hex string into `[u8; 32]`. Returns None on invalid input.
+fn parse_hex_id(s: &str) -> Option<[u8; 32]> {
+    let s = s.trim();
+    if s.len() != 64 {
+        return None;
+    }
+    let bytes = hex::decode(s).ok()?;
+    bytes.try_into().ok()
 }
