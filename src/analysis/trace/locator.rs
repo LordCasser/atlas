@@ -136,7 +136,8 @@ where
     best
 }
 
-/// Check if `(line, column)` falls inside `range`.  Line/column are 1-based.
+/// Check if `(line, column)` falls inside `range`.  Line/column are 0-based
+/// (matching tree-sitter and internal storage convention).
 fn range_contains(range: &TextRange, line: u32, column: u32) -> bool {
     if line < range.start_line || line > range.end_line {
         return false;
@@ -176,21 +177,33 @@ where
 
 /// Find the callsite at the given position.
 ///
-/// If the reference at this position is a call expression, look up the
-/// corresponding callsite by reference ID.  The callsite carries the caller
-/// symbol, callee symbol (if resolved), receiver, and argument facts.
+/// Strategy 1: If the reference at this position is a call expression, look up
+/// the corresponding callsite by reference ID.
+///
+/// Strategy 2 (fallback): If the innermost reference is NOT a call (e.g. user
+/// clicked on an argument `x` inside `foo(x)`), scan all callsites in the file
+/// and find one whose range contains the position.  This handles the common
+/// case where the user clicks on a call argument, not the call target itself.
 fn find_callsite_for_position(
     store: &Store,
     reference: &Option<&ReferenceUse>,
-    _file_id: &FileId,
-    _line: u32,
-    _column: u32,
+    file_id: &FileId,
+    line: u32,
+    column: u32,
 ) -> anyhow::Result<Option<Callsite>> {
-    let Some(r) = reference else { return Ok(None) };
-    if r.kind != ReferenceKind::Call {
-        return Ok(None);
+    // Strategy 1: direct lookup via reference
+    if let Some(r) = reference {
+        if r.kind == ReferenceKind::Call {
+            if let Some(cs) = store.find_callsite_by_reference_id(&r.id)? {
+                return Ok(Some(cs));
+            }
+        }
     }
-    store.find_callsite_by_reference_id(&r.id)
+
+    // Strategy 2: fallback — find any callsite in this file whose range
+    // contains the position (handles clicking on arguments inside a call)
+    let callsites = store.find_callsites_by_file(file_id)?;
+    Ok(find_innermost_at_position(&callsites, |cs| &cs.range, line, column).cloned())
 }
 
 /// Find the binding or binding-use at the given position.

@@ -514,13 +514,14 @@ impl ToolRouter {
             Err(e) => return (format!("Error locating position: {}", e), true),
         };
 
-        // Inject language capability profile for Agent consumption
-        if let Some(lang) = point.resolved_symbol.as_ref().map(|s| s.language)
-            .or_else(|| point.reference.as_ref().map(|_| {
-                // Fallback: if we have a reference, we can infer language from file
-                Language::TypeScript // default heuristic
-            }))
-        {
+        // Inject language capability profile for Agent consumption.
+        // Resolve language from file_id → FileInfo.language (truth), not from
+        // resolved_symbol (may be None) or hardcoded TypeScript.
+        let lang = self.store.get_file(&file_id)
+            .ok()
+            .flatten()
+            .map(|fi| fi.language);
+        if let Some(lang) = lang {
             point.capability = Some(LanguageCapabilityProfile::for_language(lang));
         }
 
@@ -550,22 +551,20 @@ impl ToolRouter {
             Err(e) => return (format!("Error locating position: {}", e), true),
         };
 
+        // Resolve language from file_id → FileInfo.language (truth)
+        let lang = self.store.get_file(&file_id)
+            .ok()
+            .flatten()
+            .map(|fi| fi.language);
+        let cap = lang.map(LanguageCapabilityProfile::for_language);
+
         let path = match Slicer::slice(&self.store, &sink, max_depth) {
             Ok(Some(mut p)) => {
-                // Inject capability from sink (carried forward by slicer)
-                if let Some(lang) = sink.resolved_symbol.as_ref().map(|s| s.language)
-                    .or_else(|| sink.reference.as_ref().map(|_| Language::TypeScript))
-                {
-                    p.capability = Some(LanguageCapabilityProfile::for_language(lang));
-                }
+                p.capability = cap;
                 p
             }
             Ok(None) => {
                 // Not an error — return partial result with diagnostics
-                let cap = sink.resolved_symbol.as_ref()
-                    .map(|s| LanguageCapabilityProfile::for_language(s.language))
-                    .or_else(|| sink.reference.as_ref()
-                        .map(|_| LanguageCapabilityProfile::for_language(Language::TypeScript)));
                 let path = TracePath {
                     source: sink.clone(),
                     steps: vec![],
@@ -616,11 +615,17 @@ impl ToolRouter {
 
         match CallerPathExplorer::explore(&self.store, &target_id, max_depth) {
             Err(e) => (format!("Caller path failed: {}", e), true),
-            Ok(None) => (
-                json!({ "nosignal": true, "message": "No callers found — this is a root/top-level function" })
-                    .to_string(),
-                false,
-            ),
+            Ok(None) => {
+                let output = json!({
+                    "partial_result": true,
+                    "diagnostics": [{
+                        "level": "warning",
+                        "message": "No callers found — this is a root/top-level function",
+                        "code": "no_callers",
+                    }],
+                });
+                (serde_json::to_string_pretty(&output).unwrap_or_else(|e| e.to_string()), false)
+            },
             Ok(Some(chain)) => {
                 let output = json!({
                     "root": {

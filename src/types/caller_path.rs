@@ -7,6 +7,13 @@
 //! dataflow slicing (which follows value flow), caller paths follow control
 //! flow through the call graph.
 //!
+//! ## Current semantics
+//!
+//! The explorer returns the **single farthest** caller chain (BFS from target
+//! to root).  This is NOT an exhaustive enumeration of all possible call paths
+//! — it finds one path to the most distant known entry-point.  Future versions
+//! may support multi-path enumeration or top-N search.
+//!
 //! ## Key types
 //!
 //! - [`CallerChain`] — a reverse call-graph path from an entry-point down to a
@@ -24,7 +31,13 @@ use super::structs::{Callsite, SymbolDef, TextRange};
 // CallerChain — reverse call-graph path
 // ---------------------------------------------------------------------------
 
-/// A chain of callers leading from an entry-point function down to a target.
+/// A single chain of callers leading from an entry-point function down to a
+/// target.
+///
+/// **Note:** This is the single farthest chain found by BFS, NOT an exhaustive
+/// enumeration of all call paths.  For a given target, there may be multiple
+/// entry-points that reach it; this type represents only one path to the most
+/// distant caller found.
 ///
 /// The chain is ordered from the **root** (farthest caller found, often an
 /// entry-point or exported function) to the **target** (the function the user

@@ -8,7 +8,9 @@
 
 use crate::analysis::trace::{CallerPathExplorer, Locator, Slicer};
 use crate::db::Store;
+use crate::types::capability::LanguageCapabilityProfile;
 use crate::types::ids::{FileId, SymbolId};
+use crate::types::trace::{TraceDiagnostic, TracePath};
 use anyhow::{anyhow, Context};
 use std::path::Path;
 
@@ -60,8 +62,13 @@ pub fn run_point(
     let store = Store::open(root).context("Failed to open Atlas database")?;
     let file_id = file_path_to_id(&store, root, file_path)?;
 
-    let point = Locator::locate(&store, &file_id, line, column)
+    let mut point = Locator::locate(&store, &file_id, line, column)
         .context("Failed to locate position")?;
+
+    // Inject capability from file_id → FileInfo.language (truth)
+    if let Some(fi) = store.get_file(&file_id).context("Failed to get file info")? {
+        point.capability = Some(LanguageCapabilityProfile::for_language(fi.language));
+    }
 
     if json {
         let output = serde_json::to_string_pretty(&point)?;
@@ -134,12 +141,38 @@ pub fn run_variable(
     let store = Store::open(root).context("Failed to open Atlas database")?;
     let file_id = file_path_to_id(&store, root, file_path)?;
 
-    let sink = Locator::locate(&store, &file_id, line, column)
+    let mut sink = Locator::locate(&store, &file_id, line, column)
         .context("Failed to locate position")?;
 
+    // Inject capability from file_id → FileInfo.language (truth)
+    let cap = if let Some(fi) = store.get_file(&file_id).context("Failed to get file info")? {
+        let c = LanguageCapabilityProfile::for_language(fi.language);
+        sink.capability = Some(c.clone());
+        Some(c)
+    } else {
+        None
+    };
+
     if sink.data_node.is_none() {
-        eprintln!("No data node found at {}:{}:{}.", file_path, line, column);
-        eprintln!("Dataflow tracing requires data nodes (only available for TypeScript and Python).");
+        if json {
+            let partial = TracePath {
+                source: sink.clone(),
+                steps: vec![],
+                sink,
+                confidence: 0.0,
+                nodes_visited: 0,
+                capability: cap,
+                partial_result: true,
+                diagnostics: vec![
+                    TraceDiagnostic::warning("No data node at this position — dataflow tracing requires data nodes (only available for some languages)")
+                        .with_code("no_data_node"),
+                ],
+            };
+            println!("{}", serde_json::to_string_pretty(&partial)?);
+        } else {
+            eprintln!("No data node found at {}:{}:{}.", file_path, line, column);
+            eprintln!("Dataflow tracing requires data nodes (only available for TypeScript and Python).");
+        }
         return Ok(());
     }
 
@@ -148,9 +181,26 @@ pub fn run_variable(
 
     match trace {
         None => {
-            eprintln!("No dataflow trace found for this position.");
-            eprintln!("The slicer could not walk backward from this data node.");
-            eprintln!("This may be normal if the value originates from a function parameter or global.");
+            if json {
+                let partial = TracePath {
+                    source: sink.clone(),
+                    steps: vec![],
+                    sink,
+                    confidence: 0.0,
+                    nodes_visited: 0,
+                    capability: cap,
+                    partial_result: true,
+                    diagnostics: vec![
+                        TraceDiagnostic::warning("Slicer could not walk backward from this data node")
+                            .with_code("no_trace_path"),
+                    ],
+                };
+                println!("{}", serde_json::to_string_pretty(&partial)?);
+            } else {
+                eprintln!("No dataflow trace found for this position.");
+                eprintln!("The slicer could not walk backward from this data node.");
+                eprintln!("This may be normal if the value originates from a function parameter or global.");
+            }
         }
         Some(path) => {
             if json {
@@ -204,8 +254,20 @@ pub fn run_caller_path(
 
     match chain {
         None => {
-            eprintln!("No callers found for symbol {}.", symbol_hex);
-            eprintln!("This function is a root/top-level function (no incoming call edges).");
+            if json {
+                let partial = serde_json::json!({
+                    "partial_result": true,
+                    "diagnostics": [{
+                        "level": "warning",
+                        "message": format!("No callers found for symbol {} — this is a root/top-level function", symbol_hex),
+                        "code": "no_callers",
+                    }],
+                });
+                println!("{}", serde_json::to_string_pretty(&partial)?);
+            } else {
+                eprintln!("No callers found for symbol {}.", symbol_hex);
+                eprintln!("This function is a root/top-level function (no incoming call edges).");
+            }
         }
         Some(c) => {
             if json {
