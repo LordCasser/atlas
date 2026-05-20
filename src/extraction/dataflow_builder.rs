@@ -152,36 +152,54 @@ fn build_dataflow_edges(
         })
         .collect();
 
-    // For each pair of related captures (target+value), create an Assign edge.
-    let assign_targets: Vec<&DataNode> = nodes
+    // Range-based assignment matching: each assign target groups with
+    // value nodes that sit between it and the next assignment target (or
+    // the end of the function).  This replaces Nth≈Nth heuristic with
+    // position-based grouping.
+    //
+    // In typical code like `let result = a + b`, "result" is the target
+    // and "a", "b" are the values (which come AFTER the target in source
+    // order).
+    let mut assign_targets: Vec<&DataNode> = nodes
         .iter()
         .filter(|n| n.kind == DataNodeKind::Local || n.kind == DataNodeKind::Parameter)
         .collect();
+    assign_targets.sort_by_key(|n| n.range.start_byte);
 
-    let expr_nodes: Vec<&DataNode> = nodes
+    let mut expr_nodes: Vec<&DataNode> = nodes
         .iter()
         .filter(|n| n.kind == DataNodeKind::Expr)
         .collect();
+    expr_nodes.sort_by_key(|n| n.range.start_byte);
 
-    // Simple heuristic: pair each assign target with the next expr node
-    let pair_count = assign_targets.len().min(expr_nodes.len());
-    for i in 0..pair_count {
-        let target = assign_targets[i];
-        let value = expr_nodes[i];
-        let edge_id = DataFlowEdgeId::generate(
-            &value.id,
-            &target.id,
-            DataFlowKind::Assign.as_str(),
-        );
-        let edge = DataFlowEdge::new(
-            edge_id,
-            value.id,
-            target.id,
-            DataFlowKind::Assign,
-            target.range,
-            0.9,
-        );
-        edges.push(edge);
+    for (idx, target) in assign_targets.iter().enumerate() {
+        // Values for this target: those between this target and the next
+        // target (or end of function if this is the last target).
+        let next_target_start = assign_targets
+            .get(idx + 1)
+            .map(|t| t.range.start_byte)
+            .unwrap_or(u32::MAX);
+
+        for value in &expr_nodes {
+            if value.range.start_byte > target.range.start_byte
+                && value.range.start_byte < next_target_start
+            {
+                let edge_id = DataFlowEdgeId::generate(
+                    &value.id,
+                    &target.id,
+                    DataFlowKind::Assign.as_str(),
+                );
+                let edge = DataFlowEdge::new(
+                    edge_id,
+                    value.id,
+                    target.id,
+                    DataFlowKind::Assign,
+                    target.range,
+                    0.9,
+                );
+                edges.push(edge);
+            }
+        }
     }
 
     // Create FieldLoad edges for member access chains
@@ -259,15 +277,26 @@ fn build_dataflow_edges(
 
 /// Standalone use-def resolution: creates edges from variable definitions
 /// to later uses of the same name within each function scope.
+///
+/// Grouping strategy: when a DataNode has a `binding_id`, it groups by
+/// `(function_id, binding_id)` — different lexical bindings (even with
+/// the same name in nested scopes) produce distinct groups, preventing
+/// false def-use connections across shadow boundaries.
+///
+/// When `binding_id` is not set, falls back to grouping by
+/// `(function_id, name)` as a conservative heuristic.
 fn resolve_use_def(data_nodes: &[DataNode]) -> Vec<DataFlowEdge> {
     let mut edges = Vec::new();
 
-    // Group nodes by (function_id, lowercase name)
-    let mut groups: HashMap<(Option<SymbolId>, String), Vec<&DataNode>> = HashMap::new();
+    // Group nodes by (function_id, binding_id?, name)
+    // - binding_id takes priority (scope-aware: same-named vars in
+    //   different scopes get different binding_ids)
+    // - name is the fallback when binding_id is None
+    let mut groups: HashMap<UseDefKey, Vec<&DataNode>> = HashMap::new();
     for node in data_nodes {
-        if let Some(ref name) = node.name {
-            let key = (node.function_id, name.to_lowercase());
-            groups.entry(key).or_default().push(node);
+        let key = use_def_key(node);
+        if let Some(k) = key {
+            groups.entry(k).or_default().push(node);
         }
     }
 
@@ -322,6 +351,36 @@ fn resolve_use_def(data_nodes: &[DataNode]) -> Vec<DataFlowEdge> {
     }
 
     edges
+}
+
+// ---------------------------------------------------------------------------
+// use-def grouping
+// ---------------------------------------------------------------------------
+
+/// Key for grouping data nodes in use-def resolution.
+///
+/// When `binding_id` is set, nodes with the same binding (i.e., same variable
+/// in the same scope) are grouped together.  When `binding_id` is None, we
+/// fall back to name-based grouping (conservative heuristic).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct UseDefKey {
+    function_id: Option<SymbolId>,
+    /// Binding-based grouping (scope-aware, preferred).
+    binding_id: Option<BindingId>,
+    /// Name-based grouping (fallback).
+    name: Option<String>,
+}
+
+fn use_def_key(node: &DataNode) -> Option<UseDefKey> {
+    let name = node.name.clone();
+    if node.binding_id.is_none() && name.is_none() {
+        return None;
+    }
+    Some(UseDefKey {
+        function_id: node.function_id,
+        binding_id: node.binding_id,
+        name,
+    })
 }
 
 #[cfg(test)]
@@ -394,5 +453,103 @@ mod tests {
         assert!(!edges.is_empty(), "Should create use-def edge");
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].kind, DataFlowKind::Assign);
+    }
+
+    #[test]
+    fn test_resolve_use_def_respects_shadowing() {
+        // Same-named "x" in different scopes (different binding_ids) should
+        // NOT be connected by use-def — they are different variables.
+        use crate::types::ids::{BindingId, ScopeId, SymbolId};
+        use crate::types::structs::TextRange;
+
+        let file_id = FileId::generate("t.ts");
+        let fid = SymbolId::generate(&file_id, "typescript", "f", "function", None);
+        let outer_scope = ScopeId::generate(
+            &file_id,
+            None,
+            "function",
+            0,
+        );
+        let inner_scope = ScopeId::generate(
+            &file_id,
+            Some(&outer_scope),
+            "block",
+            50,
+        );
+        let outer_binding = BindingId::generate(&file_id, &outer_scope, "local", "x", 10);
+        let inner_binding = BindingId::generate(&file_id, &inner_scope, "local", "x", 60);
+
+        // Outer x definition and use (same scope → should pair)
+        let outer_def = DataNode {
+            id: DataNodeId::generate(&file_id, Some(&fid), "local", Some("x"), None, 10),
+            file_id,
+            function_id: Some(fid),
+            kind: DataNodeKind::Local,
+            binding_id: Some(outer_binding),
+            callsite_id: None,
+            name: Some("x".into()),
+            access_path: None,
+            range: TextRange { start_byte: 10, end_byte: 11, start_line: 0, start_column: 0, end_line: 0, end_column: 0 },
+        };
+        let outer_use = DataNode {
+            id: DataNodeId::generate(&file_id, Some(&fid), "expr", Some("x"), None, 40),
+            file_id,
+            function_id: Some(fid),
+            kind: DataNodeKind::Expr,
+            binding_id: Some(outer_binding), // same binding → should connect
+            callsite_id: None,
+            name: Some("x".into()),
+            access_path: None,
+            range: TextRange { start_byte: 40, end_byte: 41, start_line: 0, start_column: 0, end_line: 0, end_column: 0 },
+        };
+        // Inner x — different binding_id, should NOT connect to outer
+        let inner_def = DataNode {
+            id: DataNodeId::generate(&file_id, Some(&fid), "local", Some("x"), None, 60),
+            file_id,
+            function_id: Some(fid),
+            kind: DataNodeKind::Local,
+            binding_id: Some(inner_binding),
+            callsite_id: None,
+            name: Some("x".into()),
+            access_path: None,
+            range: TextRange { start_byte: 60, end_byte: 61, start_line: 0, start_column: 0, end_line: 0, end_column: 0 },
+        };
+        let inner_use = DataNode {
+            id: DataNodeId::generate(&file_id, Some(&fid), "expr", Some("x"), None, 80),
+            file_id,
+            function_id: Some(fid),
+            kind: DataNodeKind::Expr,
+            binding_id: Some(inner_binding), // same binding as inner_def
+            callsite_id: None,
+            name: Some("x".into()),
+            access_path: None,
+            range: TextRange { start_byte: 80, end_byte: 81, start_line: 0, start_column: 0, end_line: 0, end_column: 0 },
+        };
+
+        let outer_def_id = outer_def.id.clone();
+        let outer_use_id = outer_use.id.clone();
+        let inner_def_id = inner_def.id.clone();
+        let inner_use_id = inner_use.id.clone();
+
+        let nodes = vec![outer_def, inner_def, outer_use, inner_use];
+        let edges = resolve_use_def(&nodes);
+
+        // We expect edges: outer_def→outer_use (1 edge) and inner_def→inner_use (1 edge)
+        // but NOT outer_def→inner_use or inner_def→outer_use.
+        assert_eq!(edges.len(), 2, "Should have 2 edges (outer→outer, inner→inner)");
+
+        // Verify outer→outer edge exists
+        let outer_edge = edges.iter().find(|e| e.source == outer_def_id && e.target == outer_use_id);
+        assert!(outer_edge.is_some(), "Should connect outer def to outer use");
+
+        // Verify inner→inner edge exists
+        let inner_edge = edges.iter().find(|e| e.source == inner_def_id && e.target == inner_use_id);
+        assert!(inner_edge.is_some(), "Should connect inner def to inner use");
+
+        // Verify NO cross-edge: outer_def→inner_use or inner_def→outer_use
+        let cross1 = edges.iter().find(|e| e.source == outer_def_id && e.target == inner_use_id);
+        assert!(cross1.is_none(), "Should NOT connect outer def to inner use (different scopes)");
+        let cross2 = edges.iter().find(|e| e.source == inner_def_id && e.target == outer_use_id);
+        assert!(cross2.is_none(), "Should NOT connect inner def to outer use (different scopes)");
     }
 }
