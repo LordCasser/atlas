@@ -10,6 +10,7 @@
 //! - `taint` — taint analysis types (rules, findings, path steps). *(deprecated — migrating to trace)*
 //! - `capability` — per-language analysis capability profiles.
 //! - `trace` — location-driven trace types (TracePoint, TracePath).
+//! - `caller_path` — reverse call-graph traversal types (CallerChain).
 //!
 //! ## Invariants
 //! - IDs are deterministically derived (same inputs → same [u8; 32]).
@@ -27,6 +28,7 @@ pub mod cfg;
 pub mod taint;
 pub mod capability;
 pub mod trace;
+pub mod caller_path;
 
 // --- IDs ---
 pub use ids::{
@@ -66,6 +68,9 @@ pub use capability::{CapabilityLevel, LanguageCapabilityProfile};
 
 // --- Trace types ---
 pub use trace::{TraceDataNodeRef, TracePath, TracePathStep, TracePoint};
+
+// --- Caller path types ---
+pub use caller_path::{CallerChain, CallerChainStep};
 
 // --- Utilities ---
 

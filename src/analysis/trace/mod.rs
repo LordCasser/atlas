@@ -8,6 +8,10 @@
 //! 2. **Slicer** — walks backward through dataflow edges (`Assign`, `Read`,
 //!    `Write`, `FieldLoad`, `ArgToParam`, use-def) to produce a
 //!    [`crate::types::trace::TracePath`] from origin to target.
+//! 3. **CallerPathExplorer** — walks backward through call edges (`Calls`,
+//!    `Instantiates`, `Implements`) to produce a
+//!    [`crate::types::caller_path::CallerChain`] from an entry-point to a
+//!    target function.
 //!
 //! # Relationship with other modules
 //!
@@ -15,11 +19,15 @@
 //!   bindings, and callsites.
 //! - **Slicer** queries `Store::find_dataflow_edges_by_source()` and
 //!   `Store::find_dataflow_edges_by_target()` to walk the dataflow graph.
+//! - **CallerPathExplorer** queries `Store::find_edges_by_target()` and
+//!   `Store::find_symbol_by_id()` to walk the call graph.
 //! - **Capability** determines whether dataflow tracing is available for a
 //!   given language, or only symbolic lookup.
 
 mod locator;
 mod slicer;
+mod caller_path;
 
 pub use locator::Locator;
 pub use slicer::Slicer;
+pub use caller_path::CallerPathExplorer;
