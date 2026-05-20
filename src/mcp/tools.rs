@@ -5,13 +5,13 @@
 
 use std::sync::Arc;
 
+use crate::analysis::trace::{Locator, Slicer};
 use crate::db::Store;
 use crate::graph::{GraphEngine, TraversalConfig, TraversalDirection};
 use crate::search::SearchEngine;
 use crate::context::ContextBuilder;
-use crate::types::{Language, LanguageCapabilityProfile, SymbolId, SymbolKind, TaintFindingId};
+use crate::types::{Language, LanguageCapabilityProfile, SymbolId, SymbolKind};
 use crate::types::ids::FileId;
-use crate::types::taint::Severity;
 
 use super::protocol::{
     CallToolResult, ContentBlock, ListToolsResult, Tool, ToolInputSchema,
@@ -66,8 +66,8 @@ impl ToolRouter {
             "atlas_explore" => self.handle_explore(arguments),
             "atlas_impact" => self.handle_impact(arguments),
             "atlas_context" => self.handle_context(arguments),
-            "atlas_taint_findings" => self.handle_taint_findings(arguments),
-            "atlas_taint_path" => self.handle_taint_path(arguments),
+            "atlas_trace_point" => self.handle_trace_point(arguments),
+            "atlas_trace_variable" => self.handle_trace_variable(arguments),
             "atlas_language_capabilities" => self.handle_language_capabilities(),
             _ => (format!("Unknown tool: {}", name), true),
         };
@@ -491,95 +491,61 @@ impl ToolRouter {
         }
     }
 
-    fn handle_taint_findings(&self, args: &Value) -> (String, bool) {
+    fn handle_trace_point(&self, args: &Value) -> (String, bool) {
         let file_hex = get_str_opt(args, "file_id");
-        let sev_str = get_str_opt(args, "severity");
-        let limit = get_u64(args, "limit").unwrap_or(50) as usize;
+        let file_path = get_str_opt(args, "file_path");
+        let line = get_u64(args, "line");
+        let column = get_u64(args, "column");
 
-        let file_filter: Option<FileId> = file_hex.and_then(|h| {
-            let hex = h.trim();
-            if hex.len() >= 8 {
-                hex.parse::<FileId>().ok()
-            } else {
-                None
-            }
-        });
-
-        let sev_filter: Option<Severity> = sev_str.and_then(Severity::from_str);
-
-        let findings = match self.store.get_taint_findings(file_filter.as_ref()) {
-            Ok(f) => f,
-            Err(e) => return (format!("Error loading taint findings: {}", e), true),
+        let file_id = match resolve_file_id(&self.store, file_hex, file_path) {
+            Ok(Some(fid)) => fid,
+            Ok(None) => return ("Missing file_id or file_path".into(), true),
+            Err(e) => return (format!("Error resolving file: {}", e), true),
         };
 
-        // Apply optional severity filter
-        let filtered: Vec<_> = findings.iter()
-            .filter(|f| sev_filter.as_ref().map_or(true, |sf| f.severity == *sf))
-            .take(limit)
-            .collect();
+        let (line, column) = match (line, column) {
+            (Some(l), Some(c)) => (l as u32, c as u32),
+            _ => return ("Missing line or column".into(), true),
+        };
 
-        let items: Vec<_> = filtered.iter().map(|f| {
-            let source_name = self.store.get_data_node(&f.source_node)
-                .ok().flatten()
-                .and_then(|n| n.name)
-                .unwrap_or_else(|| f.source_node.to_hex());
-            let sink_name = self.store.get_data_node(&f.sink_node)
-                .ok().flatten()
-                .and_then(|n| n.name)
-                .unwrap_or_else(|| f.sink_node.to_hex());
-            json!({
-                "finding_id": f.id.to_hex(),
-                "source_node": f.source_node.to_hex(),
-                "source_name": source_name,
-                "sink_node": f.sink_node.to_hex(),
-                "sink_name": sink_name,
-                "rule_id": f.rule_id,
-                "severity": f.severity.as_str(),
-                "confidence": f.confidence.as_f32(),
-                "file_id": f.file_id.to_hex(),
-            })
-        }).collect();
+        let point = match Locator::locate(&self.store, &file_id, line, column) {
+            Ok(p) => p,
+            Err(e) => return (format!("Error locating position: {}", e), true),
+        };
 
-        (serde_json::to_string_pretty(&json!({
-            "count": filtered.len(),
-            "findings": items,
-        })).unwrap_or_else(|e| e.to_string()), false)
+        (serde_json::to_string_pretty(&point).unwrap_or_else(|e| e.to_string()), false)
     }
 
-    fn handle_taint_path(&self, args: &Value) -> (String, bool) {
-        let finding_hex = get_str(args, "finding_id");
-        let fid = match parse_hex_id(finding_hex) {
-            Some(id) => TaintFindingId(id),
-            None => return (format!("Invalid finding_id: must be 64 hex chars",), true),
+    fn handle_trace_variable(&self, args: &Value) -> (String, bool) {
+        let file_hex = get_str_opt(args, "file_id");
+        let file_path = get_str_opt(args, "file_path");
+        let line = get_u64(args, "line");
+        let column = get_u64(args, "column");
+        let max_depth = get_u64(args, "max_depth").unwrap_or(30) as usize;
+
+        let file_id = match resolve_file_id(&self.store, file_hex, file_path) {
+            Ok(Some(fid)) => fid,
+            Ok(None) => return ("Missing file_id or file_path".into(), true),
+            Err(e) => return (format!("Error resolving file: {}", e), true),
         };
 
-        let steps = match self.store.get_taint_path_steps(&fid) {
-            Ok(s) => s,
-            Err(e) => return (format!("Error loading taint path: {}", e), true),
+        let (line, column) = match (line, column) {
+            (Some(l), Some(c)) => (l as u32, c as u32),
+            _ => return ("Missing line or column".into(), true),
         };
 
-        let enriched: Vec<_> = steps.iter().map(|s| {
-            let node = self.store.get_data_node(&s.data_node)
-                .ok().flatten();
-            json!({
-                "step": s.index,
-                "data_node_id": s.data_node.to_hex(),
-                "name": node.as_ref().and_then(|n| n.name.as_deref()).unwrap_or(""),
-                "kind": node.as_ref().map(|n| n.kind.as_str()).unwrap_or(""),
-                "file_id": s.file_id.to_hex(),
-                "range": {
-                    "line": s.range.start_line,
-                    "column": s.range.start_column,
-                },
-                "message": s.message,
-            })
-        }).collect();
+        let sink = match Locator::locate(&self.store, &file_id, line, column) {
+            Ok(p) => p,
+            Err(e) => return (format!("Error locating position: {}", e), true),
+        };
 
-        (serde_json::to_string_pretty(&json!({
-            "finding_id": finding_hex,
-            "step_count": steps.len(),
-            "steps": enriched,
-        })).unwrap_or_else(|e| e.to_string()), false)
+        let path = match Slicer::slice(&self.store, &sink, max_depth) {
+            Ok(Some(p)) => p,
+            Ok(None) => return ("No dataflow trace found for this position (no data node, or no backward edges)".into(), true),
+            Err(e) => return (format!("Error tracing dataflow: {}", e), true),
+        };
+
+        (serde_json::to_string_pretty(&path).unwrap_or_else(|e| e.to_string()), false)
     }
 
     fn handle_language_capabilities(&self) -> (String, bool) {
@@ -748,27 +714,32 @@ pub fn make_all_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "atlas_taint_findings".into(),
-            description: "List taint analysis findings: source→sink flows with severity and confidence. Optionally filter by file_id hex or severity (critical/high/medium/low/info).".into(),
+            name: "atlas_trace_point".into(),
+            description: "Resolve a source position (file_id or file_path + line + column) to its full context: reference, symbol, data node, scope, bindings, and incident dataflow edges.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
-                    "file_id": { "type": "string", "description": "Optional file_id hex prefix to filter by" },
-                    "severity": { "type": "string", "description": "Optional severity filter: critical/high/medium/low/info" },
-                    "limit": { "type": "integer", "description": "Max results (default 50)" },
+                    "file_id": { "type": "string", "description": "File ID in hex (from atlas_files)" },
+                    "file_path": { "type": "string", "description": "File path relative to project root (e.g. 'src/foo.ts')" },
+                    "line": { "type": "integer", "description": "1-based line number" },
+                    "column": { "type": "integer", "description": "1-based column number" },
                 })),
                 required: None,
             },
         },
         Tool {
-            name: "atlas_taint_path".into(),
-            description: "Trace a full taint flow path from source to sink for a given finding.".into(),
+            name: "atlas_trace_variable".into(),
+            description: "Trace where a variable's value comes from. Walks backward through dataflow edges from a source position to find origins (parameters, literals, globals). Returns the full trace path with steps.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
-                    "finding_id": { "type": "string", "description": "Taint finding ID in hex" },
+                    "file_id": { "type": "string", "description": "File ID in hex (from atlas_files)" },
+                    "file_path": { "type": "string", "description": "File path relative to project root (e.g. 'src/foo.ts')" },
+                    "line": { "type": "integer", "description": "1-based line number" },
+                    "column": { "type": "integer", "description": "1-based column number" },
+                    "max_depth": { "type": "integer", "description": "Maximum backward traversal depth (default 30)" },
                 })),
-                required: Some(vec!["finding_id".into()]),
+                required: None,
             },
         },
         Tool {
@@ -787,6 +758,33 @@ pub fn make_all_tools() -> Vec<Tool> {
 // Helpers
 // -------------------------------------------------------------------
 
+/// Resolve a file_id from either a hex string or a file_path string.
+/// Returns `Ok(None)` when neither is provided; `Err` on lookup failure.
+fn resolve_file_id(
+    store: &Store,
+    file_hex: Option<&str>,
+    file_path: Option<&str>,
+) -> anyhow::Result<Option<FileId>> {
+    // 1. Try hex file_id
+    if let Some(hex) = file_hex.and_then(|h| {
+        let h = h.trim();
+        if h.len() >= 8 { h.parse::<FileId>().ok() } else { None }
+    }) {
+        return Ok(Some(hex));
+    }
+    // 2. Try file_path match
+    if let Some(path) = file_path {
+        let clean = path.trim_start_matches("./").trim_start_matches('/');
+        let files = store.list_files()?;
+        for f in &files {
+            if f.path == clean || f.path.ends_with(&format!("/{}", clean)) {
+                return Ok(Some(f.file_id.clone()));
+            }
+        }
+    }
+    Ok(None)
+}
+
 fn get_str<'a>(args: &'a Value, key: &str) -> &'a str {
     args.get(key).and_then(|v| v.as_str()).unwrap_or("")
 }
@@ -801,14 +799,4 @@ fn get_u64(args: &Value, key: &str) -> Option<u64> {
 
 fn truncate(s: &str, max_len: usize) -> &str {
     if s.len() <= max_len { s } else { &s[..max_len] }
-}
-
-/// Parse a 64-char hex string into `[u8; 32]`. Returns None on invalid input.
-fn parse_hex_id(s: &str) -> Option<[u8; 32]> {
-    let s = s.trim();
-    if s.len() != 64 {
-        return None;
-    }
-    let bytes = hex::decode(s).ok()?;
-    bytes.try_into().ok()
 }

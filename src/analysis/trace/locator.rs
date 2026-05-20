@@ -5,8 +5,6 @@
 //! resolved symbol, the data node, incident dataflow edges, the lexical
 //! binding, and the enclosing scope.
 
-use std::sync::Arc;
-
 use crate::db::Store;
 use crate::types::bindings::{BindingDef, BindingUse};
 use crate::types::ids::{DataNodeId, FileId};
@@ -30,7 +28,7 @@ impl Locator {
     /// The locator finds the innermost reference, data node, scope, and binding
     /// whose byte range contains the given position.
     pub fn locate(
-        store: &Arc<Store>,
+        store: &Store,
         file_id: &FileId,
         line: u32,
         column: u32,
@@ -150,7 +148,7 @@ fn extract_ref_range(r: &ReferenceUse) -> &TextRange {
 /// Resolve a set of dataflow edges to `TraceDataNodeRef`s, looking up each
 /// node ID in the Store.
 fn resolve_data_node_refs<F>(
-    store: &Arc<Store>,
+    store: &Store,
     edges: &[crate::types::dataflow::DataFlowEdge],
     id_fn: F,
 ) -> anyhow::Result<Vec<TraceDataNodeRef>>
@@ -169,7 +167,7 @@ where
 /// Find the callsite that contains the given position.  A callsite is a call
 /// expression node identified during extraction.
 fn find_callsite_for_position(
-    store: &Arc<Store>,
+    store: &Store,
     _reference: &Option<&ReferenceUse>,
     _file_id: &FileId,
     _line: u32,
@@ -183,7 +181,7 @@ fn find_callsite_for_position(
 
 /// Find the binding or binding-use at the given position.
 fn find_binding_at_position(
-    _store: &Arc<Store>,
+    _store: &Store,
     _file_id: &FileId,
     _line: u32,
     _column: u32,

@@ -1,4 +1,4 @@
-use atlas::cli::{Cli, Commands};
+use atlas::cli::{Cli, Commands, TraceCmd};
 use clap::Parser;
 
 fn main() -> anyhow::Result<()> {
@@ -49,16 +49,29 @@ fn main() -> anyhow::Result<()> {
             Commands::Mcp { project } => {
                 atlas::cli::commands::mcp::run(&project)?;
             }
-            Commands::Taint {
-                project,
-                file_id,
-                severity,
-                json,
-            } => {
-                atlas::cli::commands::taint::run(
-                    &project, file_id.as_deref(), severity.as_deref(), json,
-                )?;
-            }
+            Commands::Trace { project, sub } => match sub {
+                TraceCmd::Point {
+                    file,
+                    line,
+                    column,
+                    json,
+                } => {
+                    atlas::cli::commands::trace::run_point(
+                        &project, &file, line, column, json,
+                    )?;
+                }
+                TraceCmd::Variable {
+                    file,
+                    line,
+                    column,
+                    max_depth,
+                    json,
+                } => {
+                    atlas::cli::commands::trace::run_variable(
+                        &project, &file, line, column, max_depth, json,
+                    )?;
+                }
+            },
         }
     }
 

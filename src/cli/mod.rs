@@ -88,17 +88,48 @@ pub enum Commands {
         #[arg(short, long, default_value = ".")]
         project: String,
     },
-    /// Run taint analysis (source→sink dataflow tracking)
-    Taint {
+    /// Trace variable dataflow from a source position
+    Trace {
         #[arg(short, long, default_value = ".")]
         project: String,
-        /// Filter by file_id hex prefix
-        #[arg(long)]
-        file_id: Option<String>,
-        /// Only show findings at or above severity (critical/high/medium/low/info)
+        #[command(subcommand)]
+        sub: TraceCmd,
+    },
+}
+
+#[cfg(feature = "cli")]
+#[derive(clap::Subcommand, Debug)]
+pub enum TraceCmd {
+    /// Resolve a source position to its full context
+    Point {
+        /// File path relative to project root (e.g. "src/foo.ts")
         #[arg(short, long)]
-        severity: Option<String>,
-        /// Output results as JSON
+        file: String,
+        /// 1-based line number
+        #[arg(short, long)]
+        line: u32,
+        /// 1-based column number
+        #[arg(short, long)]
+        column: u32,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Trace a variable's dataflow backward from a source position
+    Variable {
+        /// File path relative to project root
+        #[arg(short, long)]
+        file: String,
+        /// 1-based line number
+        #[arg(short, long)]
+        line: u32,
+        /// 1-based column number
+        #[arg(short, long)]
+        column: u32,
+        /// Maximum backward traversal depth (default: 30)
+        #[arg(long, default_value = "30")]
+        max_depth: usize,
+        /// Output as JSON
         #[arg(long)]
         json: bool,
     },

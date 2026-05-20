@@ -20,7 +20,6 @@
 //!   always be a true program input.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
 
 use crate::db::Store;
 use crate::types::dataflow::DataNode;
@@ -46,7 +45,7 @@ impl Slicer {
     /// * `sink_point` — the user-chosen position to trace from.
     /// * `max_depth` — maximum number of backward steps (default: [`DEFAULT_MAX_DEPTH`]).
     pub fn slice(
-        store: &Arc<Store>,
+        store: &Store,
         sink_point: &TracePoint,
         max_depth: usize,
     ) -> anyhow::Result<Option<TracePath>> {
@@ -175,7 +174,7 @@ fn reconstruct_path(
     predecessors: &HashMap<String, (DataNodeId, DataFlowKind)>,
     farthest_node_id: &DataNodeId,
     sink_node_id: &DataNodeId,
-    store: &Arc<Store>,
+    store: &Store,
 ) -> anyhow::Result<Vec<TracePathStep>> {
     // Walk from sink backward to farthest, collecting steps in reverse
     let mut raw_steps: Vec<(DataNodeId, DataNodeId, DataFlowKind)> = Vec::new();
