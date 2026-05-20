@@ -9,6 +9,7 @@
 //! - `cfg` — per-function control-flow graph types.
 //! - `taint` — taint analysis types (rules, findings, path steps). *(deprecated — migrating to trace)*
 //! - `capability` — per-language analysis capability profiles.
+//! - `trace` — location-driven trace types (TracePoint, TracePath).
 //!
 //! ## Invariants
 //! - IDs are deterministically derived (same inputs → same [u8; 32]).
@@ -25,6 +26,7 @@ pub mod dataflow;
 pub mod cfg;
 pub mod taint;
 pub mod capability;
+pub mod trace;
 
 // --- IDs ---
 pub use ids::{
@@ -61,6 +63,9 @@ pub use taint::{Severity, TaintFinding, TaintFindingId, TaintPathStep, TaintRule
 
 // --- Capability types ---
 pub use capability::{CapabilityLevel, LanguageCapabilityProfile};
+
+// --- Trace types ---
+pub use trace::{TraceDataNodeRef, TracePath, TracePathStep, TracePoint};
 
 // --- Utilities ---
 

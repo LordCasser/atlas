@@ -923,6 +923,20 @@ impl Store {
         }
     }
 
+    /// Find all data nodes in a file.
+    pub fn find_data_nodes_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<DataNode>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id,
+                    name, access_path,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column
+             FROM data_nodes WHERE file_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![file_id], row_to_data_node)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Find dataflow edges originating from a data node.
     pub fn find_dataflow_edges_by_source(&self, source: &DataNodeId) -> anyhow::Result<Vec<DataFlowEdge>> {
         let conn = self.lock();
