@@ -9,6 +9,7 @@
 
 pub mod fts;
 pub mod fuzzy;
+pub mod query_parser;
 pub mod scoring;
 
 use crate::db::Store;

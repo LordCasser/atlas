@@ -2,6 +2,7 @@
 
 pub mod detector;
 pub mod discovery;
+pub mod file_lock;
 
 #[cfg(feature = "sync")]
 pub mod watcher;

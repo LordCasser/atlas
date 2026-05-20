@@ -6,6 +6,7 @@
 //! - `engine` — standalone query runner (QueryCapture-based, for testing/debugging)
 //! - `extract` — main extraction pipeline (parses source, runs queries, normalizes into FileFacts)
 //! - `semantic_binder` — extraction-time source ownership and scope binding (wraps SymbolRegistry)
+//! - `worker` — managed extraction with timeout, panic isolation, and error reporting (ParseWorkerPool)
 //!
 //! Extraction never writes final edges — that's the resolver's job.
 
@@ -16,6 +17,7 @@ pub mod languages;
 mod scope_tree;
 mod semantic_binder;
 mod symbol_registry;
+mod worker;
 
 pub use engine::{QueryCapture, QueryResults, run_queries, run_queries_text};
 pub use extract::extract_file;
@@ -24,3 +26,4 @@ pub use languages::{create_adapter, LanguageAdapter};
 pub use scope_tree::build_scope_tree;
 pub use semantic_binder::SemanticBinder;
 pub use symbol_registry::{all_edge_sources_known, all_reference_sources_known, SymbolRegistry};
+pub use worker::{ParseWorkerPool, WorkerConfig};

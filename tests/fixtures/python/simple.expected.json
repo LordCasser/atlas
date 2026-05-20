@@ -1,0 +1,130 @@
+{
+  "symbols": [
+    {
+      "name": "Config",
+      "kind": "class"
+    },
+    {
+      "name": "__init__",
+      "kind": "method"
+    },
+    {
+      "name": "create_server",
+      "kind": "function"
+    },
+    {
+      "name": "main",
+      "kind": "function"
+    }
+  ],
+  "references": [
+    {
+      "text": "port",
+      "kind": "field_access"
+    },
+    {
+      "text": "host",
+      "kind": "field_access"
+    },
+    {
+      "text": "Config",
+      "kind": "call"
+    },
+    {
+      "text": "print",
+      "kind": "call"
+    },
+    {
+      "text": "create_server",
+      "kind": "call"
+    },
+    {
+      "text": "path",
+      "kind": "field_access"
+    },
+    {
+      "text": "join",
+      "kind": "call"
+    },
+    {
+      "text": "join",
+      "kind": "field_access"
+    },
+    {
+      "text": "print",
+      "kind": "call"
+    },
+    {
+      "text": "main",
+      "kind": "call"
+    }
+  ],
+  "imports": [
+    {
+      "module": "os"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Class#129",
+      "kind": "class"
+    },
+    {
+      "name": "Block#147",
+      "kind": "block"
+    },
+    {
+      "name": "Function#147",
+      "kind": "function"
+    },
+    {
+      "name": "Block#197",
+      "kind": "block"
+    },
+    {
+      "name": "Function#241",
+      "kind": "function"
+    },
+    {
+      "name": "Block#285",
+      "kind": "block"
+    },
+    {
+      "name": "Function#361",
+      "kind": "function"
+    },
+    {
+      "name": "Block#377",
+      "kind": "block"
+    },
+    {
+      "name": "Conditional#464",
+      "kind": "conditional"
+    },
+    {
+      "name": "Block#495",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "create_server"
+    },
+    {
+      "caller": "create_server"
+    },
+    {
+      "caller": "main"
+    },
+    {
+      "caller": "main"
+    },
+    {
+      "caller": "main"
+    }
+  ]
+}

@@ -1,0 +1,153 @@
+{
+  "symbols": [
+    {
+      "name": "Config",
+      "kind": "interface"
+    },
+    {
+      "name": "Server",
+      "kind": "class"
+    },
+    {
+      "name": "Server",
+      "kind": "class"
+    },
+    {
+      "name": "constructor",
+      "kind": "method"
+    },
+    {
+      "name": "start",
+      "kind": "method"
+    },
+    {
+      "name": "router",
+      "kind": "variable"
+    },
+    {
+      "name": "createServer",
+      "kind": "function"
+    },
+    {
+      "name": "config",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "Config",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Server",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Config",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Config",
+      "kind": "type_reference"
+    },
+    {
+      "text": "config",
+      "kind": "field_access"
+    },
+    {
+      "text": "Router",
+      "kind": "instantiation"
+    },
+    {
+      "text": "listen",
+      "kind": "call"
+    },
+    {
+      "text": "listen",
+      "kind": "field_access"
+    },
+    {
+      "text": "config",
+      "kind": "field_access"
+    },
+    {
+      "text": "port",
+      "kind": "field_access"
+    },
+    {
+      "text": "log",
+      "kind": "call"
+    },
+    {
+      "text": "log",
+      "kind": "field_access"
+    },
+    {
+      "text": "Server",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Config",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Server",
+      "kind": "instantiation"
+    }
+  ],
+  "imports": [
+    {
+      "module": "express",
+      "imported_name": "Router"
+    },
+    {
+      "module": "express"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Interface#196",
+      "kind": "interface"
+    },
+    {
+      "name": "Class#257",
+      "kind": "class"
+    },
+    {
+      "name": "Method#301",
+      "kind": "method"
+    },
+    {
+      "name": "Block#329",
+      "kind": "block"
+    },
+    {
+      "name": "Method#364",
+      "kind": "method"
+    },
+    {
+      "name": "Block#378",
+      "kind": "block"
+    },
+    {
+      "name": "Function#485",
+      "kind": "function"
+    },
+    {
+      "name": "Block#529",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "start"
+    },
+    {
+      "caller": "start"
+    }
+  ]
+}

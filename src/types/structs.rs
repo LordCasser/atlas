@@ -492,6 +492,104 @@ impl FileFacts {
 }
 
 // ---------------------------------------------------------------------------
+// IndexReport — post-indexing summary
+// ---------------------------------------------------------------------------
+
+/// Why a single-file extraction failed.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FailureCategory {
+    /// tree-sitter parse exceeded the per-file timeout.
+    ParseTimeout,
+    /// A tree-sitter query returned an unexpected capture or malformed node.
+    QueryError,
+    /// File I/O failure (read error, encoding issue).
+    IoError,
+    /// File exceeded the configured maximum file size.
+    MaxFileSizeExceeded,
+    /// Grammar code panicked (caught by panic::catch_unwind).
+    GrammarPanic,
+}
+
+impl FailureCategory {
+    /// Stable string key for serialization / aggregation.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ParseTimeout => "parse_timeout",
+            Self::QueryError => "query_error",
+            Self::IoError => "io_error",
+            Self::MaxFileSizeExceeded => "max_file_size_exceeded",
+            Self::GrammarPanic => "grammar_panic",
+        }
+    }
+}
+
+impl std::fmt::Display for FailureCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Structured error produced by extraction for a single file.
+#[derive(Debug, Clone)]
+pub struct ExtractionError {
+    /// Which file failed.
+    pub file_path: String,
+    /// Why it failed.
+    pub category: FailureCategory,
+    /// Human-readable detail (e.g. the panic message or I/O error).
+    pub message: String,
+}
+
+/// Index report — written to `.atlas/index_report.json` after a full or
+/// incremental index run.  Consumed by CLI progress display and MCP tools.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IndexReport {
+    /// Total files discovered (before filtering).
+    pub files_discovered: usize,
+    /// Files successfully indexed.
+    pub files_indexed: usize,
+    /// Files skipped (too large, generated, etc.).
+    pub files_skipped: usize,
+    /// Files that failed extraction.
+    pub files_failed: usize,
+    /// Failure counts keyed by [`FailureCategory::as_str`].
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub failures_by_category: std::collections::HashMap<String, usize>,
+    /// Total references extracted.
+    pub references_total: usize,
+    /// References with a resolved target.
+    pub references_resolved: usize,
+    /// `references_resolved / references_total` (0.0 if no references).
+    pub resolution_rate: f64,
+    /// Wall-clock time for the entire index operation (ms).
+    pub duration_ms: u64,
+}
+
+impl IndexReport {
+    /// Create a zeroed report.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a file-level extraction failure.
+    pub fn record_failure(&mut self, category: &FailureCategory) {
+        *self.failures_by_category
+            .entry(category.as_str().to_string())
+            .or_insert(0) += 1;
+        self.files_failed += 1;
+    }
+
+    /// Finalize the report: compute resolution_rate from raw counters.
+    pub fn finalize(&mut self) {
+        self.resolution_rate = if self.references_total > 0 {
+            self.references_resolved as f64 / self.references_total as f64
+        } else {
+            0.0
+        };
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -685,5 +783,41 @@ mod tests {
             Provenance::TreeSitter,
         );
         assert_eq!(e1.id, e2.id);
+    }
+
+    #[test]
+    fn test_failure_category_as_str() {
+        assert_eq!(FailureCategory::ParseTimeout.as_str(), "parse_timeout");
+        assert_eq!(FailureCategory::QueryError.as_str(), "query_error");
+        assert_eq!(FailureCategory::IoError.as_str(), "io_error");
+        assert_eq!(FailureCategory::MaxFileSizeExceeded.as_str(), "max_file_size_exceeded");
+        assert_eq!(FailureCategory::GrammarPanic.as_str(), "grammar_panic");
+    }
+
+    #[test]
+    fn test_index_report_record_failure() {
+        let mut report = IndexReport::new();
+        report.record_failure(&FailureCategory::ParseTimeout);
+        report.record_failure(&FailureCategory::ParseTimeout);
+        report.record_failure(&FailureCategory::IoError);
+        assert_eq!(report.files_failed, 3);
+        assert_eq!(*report.failures_by_category.get("parse_timeout").unwrap(), 2);
+        assert_eq!(*report.failures_by_category.get("io_error").unwrap(), 1);
+    }
+
+    #[test]
+    fn test_index_report_finalize() {
+        let mut report = IndexReport::new();
+        report.files_discovered = 10;
+        report.files_indexed = 8;
+        report.references_total = 100;
+        report.references_resolved = 75;
+        report.finalize();
+        assert!((report.resolution_rate - 0.75).abs() < f64::EPSILON);
+
+        // Zero references → 0.0 rate
+        let mut empty = IndexReport::new();
+        empty.finalize();
+        assert_eq!(empty.resolution_rate, 0.0);
     }
 }

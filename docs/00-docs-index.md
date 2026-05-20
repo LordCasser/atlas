@@ -123,6 +123,38 @@ MVP milestones
 
 ---
 
+### 2.7 架构改进路线图
+
+- [`../ARCHITECTURE_IMPROVEMENT_ROADMAP.md`](../ARCHITECTURE_IMPROVEMENT_ROADMAP.md)
+
+定义 P0-P5 渐进式改进路线图：从正确性基线 → 产品化 → 模块解析 → DataFlow → 污点分析。
+
+### 2.8 P1-P5 架构设计文档
+
+- [`10-p1-p5-architecture-design.md`](./10-p1-p5-architecture-design.md)
+
+**当前最重要的实现指导文档**。基于 ROADMAP 和 V2 文档的完整 P1-P5 架构设计：
+- P1: 产品化 (ParseWorkerPool, FileLock, IndexReport, SearchQueryParser, GoldenTest)
+- P2: 模块解析 (Resolver/GraphBuilder 分离, Import/Export/PathAlias, IncludeGraph)
+- P3: BindingGraph + DataFlowGraph (BindingDef/BindingUse, DataNode/DataFlowEdge, CallsiteArgs)
+- P4: CFG + 跨函数 Dataflow (CfgBuilder, Intra/Interprocedural, FunctionSummary)
+- P5: 污点分析 (TaintRule, TaintEngine, TaintPath)
+
+### 2.9 参考文档（历史/补充）
+
+- [`07-架构变动文档.md`](./07-架构变动文档.md)
+- [`08-Elixir项目分析与可参考实践.md`](./08-Elixir项目分析与可参考实践.md)
+- [`09-p0-refactor-log.md`](./09-p0-refactor-log.md) — P0 重构实施日志
+- [`11-p1-refactor-log.md`](./11-p1-refactor-log.md) — P1 产品化实施日志
+
+### 2.10 v2 全量重构方案（长期参考）
+
+- [`../ARCHITECTURE_CLEAN_REFACTOR_V2.md`](../ARCHITECTURE_CLEAN_REFACTOR_V2.md)
+
+描述 Atlas 面向未来的干净分层架构 (frontend/hir/semantic/facts/analysis)。P1-P5 渐进式方案对标 v2 目标。
+
+---
+
 ## 4. 当前 docs 文件列表
 
 ```text
@@ -134,6 +166,11 @@ docs/
   04-current-requirements.md
   05-implementation-plan.md
   06-module-contracts.md
+  07-架构变动文档.md
+  08-Elixir项目分析与可参考实践.md
+  09-p0-refactor-log.md
+  10-p1-p5-architecture-design.md
+  11-p1-refactor-log.md
 ```
 
 如需增加新文档，请保持编号顺序，并在本索引中注册。

@@ -206,6 +206,87 @@ impl Store {
     }
 
     // -----------------------------------------------------------------------
+    // Exclusive lock (cross-process, via project_metadata table)
+    // -----------------------------------------------------------------------
+
+    /// Try to acquire an exclusive write lock.
+    ///
+    /// Records the current PID and timestamp in `project_metadata`.
+    /// Fails if another process already holds the lock and is still alive.
+    /// Stale locks (process died) are automatically stolen.
+    pub fn acquire_exclusive_lock(&self) -> anyhow::Result<()> {
+        let conn = self.lock();
+        let pid = std::process::id();
+        let now = chrono_now_ms();
+
+        // Check for existing lock
+        let existing: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT value FROM project_metadata WHERE key = 'exclusive_lock_pid'",
+                [],
+                |row| {
+                    let v: String = row.get(0)?;
+                    // Format: "pid:timestamp_ms"
+                    let parts: Vec<&str> = v.splitn(2, ':').collect();
+                    if parts.len() == 2 {
+                        Ok(Some((parts[0].parse().unwrap_or(0), parts[1].parse().unwrap_or(0))))
+                    } else {
+                        Ok(None)
+                    }
+                },
+            )
+            .ok()
+            .flatten();
+
+        if let Some((existing_pid, _ts)) = existing {
+            if existing_pid != pid as i64 && is_process_alive(existing_pid) {
+                anyhow::bail!(
+                    "Another atlas process (PID {}) already holds the lock",
+                    existing_pid
+                );
+            }
+            // Stale lock — steal it
+        }
+
+        // Write our lock
+        let lock_value = format!("{}:{}", pid, now);
+        conn.execute(
+            "INSERT OR REPLACE INTO project_metadata (key, value) VALUES ('exclusive_lock_pid', ?1)",
+            params![lock_value],
+        )?;
+        Ok(())
+    }
+
+    /// Release the exclusive write lock.
+    ///
+    /// Only releases if the current PID matches the lock holder.
+    pub fn release_exclusive_lock(&self) -> anyhow::Result<()> {
+        let conn = self.lock();
+        let pid = std::process::id();
+        let existing: Option<i64> = conn
+            .query_row(
+                "SELECT value FROM project_metadata WHERE key = 'exclusive_lock_pid'",
+                [],
+                |row| {
+                    let v: String = row.get(0)?;
+                    Ok(v.splitn(2, ':').next().and_then(|s| s.parse().ok()))
+                },
+            )
+            .ok()
+            .flatten();
+
+        if let Some(existing_pid) = existing {
+            if existing_pid == pid as i64 {
+                conn.execute(
+                    "DELETE FROM project_metadata WHERE key = 'exclusive_lock_pid'",
+                    [],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
     // Files
     // -----------------------------------------------------------------------
 
@@ -1065,6 +1146,40 @@ fn sanitize_fts5_query(raw: &str) -> String {
         "*".to_string()
     } else {
         sanitized
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for exclusive lock
+// ---------------------------------------------------------------------------
+
+/// Current time in milliseconds since Unix epoch.
+fn chrono_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+/// Check whether a process with the given PID is still alive.
+///
+/// Uses `kill -0` on Unix (no signal sent, just checks existence).
+/// On non-Unix, assumes alive (conservative — won't steal locks).
+fn is_process_alive(pid: i64) -> bool {
+    #[cfg(unix)]
+    {
+        // `kill -0 <pid>` checks process existence without sending a signal.
+        // This uses the system `kill` command — no external crate needed.
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(true) // conservative: assume alive if check fails
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true // conservative: assume alive
     }
 }
 

@@ -26,8 +26,9 @@ pub use enums::Confidence;
 
 // --- Core IR ---
 pub use structs::{
-    ArgumentFact, Callsite, DiagnosticLevel, ExtractDiagnostic, FileFacts, FileInfo, ImportDef,
-    RawEdge, ReferenceUse, ResolvedTarget, ScopeDef, SymbolDef, TextRange,
+    ArgumentFact, Callsite, DiagnosticLevel, ExtractionError, ExtractDiagnostic, FailureCategory,
+    FileFacts, FileInfo, ImportDef, IndexReport, RawEdge, ReferenceUse, ResolvedTarget, ScopeDef,
+    SymbolDef, TextRange,
 };
 
 // --- Utilities ---
