@@ -862,6 +862,21 @@ impl Store {
     }
 
     // -----------------------------------------------------------------------
+    /// Find all callsites in a file.
+    pub fn find_callsites_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<Callsite>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT callsite_id, reference_id, caller, callee, receiver, args_json,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column
+             FROM callsites WHERE EXISTS (
+                 SELECT 1 FROM symbols WHERE symbols.symbol_id = callsites.caller AND symbols.file_id = ?1
+             )",
+        )?;
+        let rows = stmt.query_map(params![file_id], row_to_callsite)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     // ── Binding + Dataflow — query APIs ──
     // -----------------------------------------------------------------------
 
@@ -878,6 +893,19 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Find all bindings in a file.
+    pub fn find_bindings_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<BindingDef>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT binding_id, file_id, function_id, scope_id, kind, name, symbol_id,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column
+             FROM bindings WHERE file_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![file_id], row_to_binding)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Find binding uses for a specific binding.
     pub fn find_binding_uses_by_binding(&self, binding_id: &BindingId) -> anyhow::Result<Vec<BindingUse>> {
         let conn = self.lock();
@@ -888,6 +916,19 @@ impl Store {
              FROM binding_uses WHERE binding_id = ?1",
         )?;
         let rows = stmt.query_map(params![binding_id], row_to_binding_use)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find all binding uses in a file.
+    pub fn find_binding_uses_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<BindingUse>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT binding_use_id, file_id, scope_id, binding_id, reference_id, name,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column
+             FROM binding_uses WHERE file_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![file_id], row_to_binding_use)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -957,6 +998,23 @@ impl Store {
         )?;
         let rows = stmt.query_map(params![target], row_to_dataflow_edge)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find a callsite by its originating reference ID.
+    pub fn find_callsite_by_reference_id(&self, ref_id: &ReferenceId) -> anyhow::Result<Option<Callsite>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT callsite_id, reference_id, caller, callee, receiver, args_json,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column
+             FROM callsites WHERE reference_id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![ref_id], row_to_callsite)?;
+        match rows.next() {
+            Some(Ok(cs)) => Ok(Some(cs)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1713,6 +1771,29 @@ fn row_to_dataflow_edge(row: &rusqlite::Row) -> rusqlite::Result<DataFlowEdge> {
         kind: DataFlowKind::from_str(row.get::<_, String>(3)?.as_str()).unwrap_or(DataFlowKind::Assign),
         location,
         confidence: conf.unwrap_or(0.8),
+    })
+}
+
+// ── Callsite row mapper ───────────────────────────────────────────────────
+
+fn row_to_callsite(row: &rusqlite::Row) -> rusqlite::Result<Callsite> {
+    let args_str: String = row.get(5)?;
+    let args: Vec<ArgumentFact> = serde_json::from_str(&args_str).unwrap_or_default();
+    Ok(Callsite {
+        id: row.get(0)?,
+        reference_id: row.get(1)?,
+        caller: row.get(2)?,
+        callee: row.get(3)?,
+        receiver: row.get(4)?,
+        args,
+        range: TextRange {
+            start_byte: row.get(6)?,
+            end_byte: row.get(7)?,
+            start_line: row.get(8)?,
+            start_column: row.get(9)?,
+            end_line: row.get(10)?,
+            end_column: row.get(11)?,
+        },
     })
 }
 

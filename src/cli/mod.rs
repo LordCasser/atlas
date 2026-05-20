@@ -133,4 +133,16 @@ pub enum TraceCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Trace how a function gets invoked — reverse call-graph from target upward
+    CallerPath {
+        /// Symbol ID in hex (from atlas_search or atlas_symbol)
+        #[arg(short, long)]
+        symbol: String,
+        /// Maximum backward call depth (default: 20)
+        #[arg(long, default_value = "20")]
+        max_depth: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }

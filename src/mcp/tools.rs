@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::analysis::trace::{Locator, Slicer};
+use crate::analysis::trace::{CallerPathExplorer, Locator, Slicer};
 use crate::db::Store;
 use crate::graph::{GraphEngine, TraversalConfig, TraversalDirection};
 use crate::search::SearchEngine;
@@ -68,6 +68,7 @@ impl ToolRouter {
             "atlas_context" => self.handle_context(arguments),
             "atlas_trace_point" => self.handle_trace_point(arguments),
             "atlas_trace_variable" => self.handle_trace_variable(arguments),
+            "atlas_trace_caller_path" => self.handle_trace_caller_path(arguments),
             "atlas_language_capabilities" => self.handle_language_capabilities(),
             _ => (format!("Unknown tool: {}", name), true),
         };
@@ -603,6 +604,50 @@ impl ToolRouter {
             "profiles": caps,
         })).unwrap_or_else(|e| e.to_string()), false)
     }
+
+    fn handle_trace_caller_path(&self, args: &Value) -> (String, bool) {
+        let symbol_hex = args["symbol"].as_str().unwrap_or("");
+        let max_depth = args["max_depth"].as_u64().unwrap_or(20) as usize;
+
+        let target_id: SymbolId = match symbol_hex.parse() {
+            Ok(id) => id,
+            Err(e) => return (format!("Invalid symbol hex ID: {}", e), true),
+        };
+
+        match CallerPathExplorer::explore(&self.store, &target_id, max_depth) {
+            Err(e) => (format!("Caller path failed: {}", e), true),
+            Ok(None) => (
+                json!({ "nosignal": true, "message": "No callers found — this is a root/top-level function" })
+                    .to_string(),
+                false,
+            ),
+            Ok(Some(chain)) => {
+                let output = json!({
+                    "root": {
+                        "name": chain.root.name,
+                        "kind": chain.root.kind.as_str(),
+                        "file": chain.root.file_id.to_hex(),
+                    },
+                    "target": {
+                        "name": chain.target.name,
+                        "kind": chain.target.kind.as_str(),
+                        "file": chain.target.file_id.to_hex(),
+                    },
+                    "steps": chain.steps.iter().map(|s| json!({
+                        "index": s.index,
+                        "caller": s.caller.to_hex(),
+                        "callee": s.callee.to_hex(),
+                        "edge_kind": s.edge_kind.as_str(),
+                        "description": s.description,
+                        "file_id": s.file_id.to_hex(),
+                    })).collect::<Vec<_>>(),
+                    "nodes_visited": chain.nodes_visited,
+                    "max_depth_reached": chain.max_depth_reached,
+                });
+                (serde_json::to_string_pretty(&output).unwrap_or_else(|e| e.to_string()), false)
+            }
+        }
+    }
 }
 
 // -------------------------------------------------------------------
@@ -778,6 +823,18 @@ pub fn make_all_tools() -> Vec<Tool> {
                     "max_depth": { "type": "integer", "description": "Maximum backward traversal depth (default 30)" },
                 })),
                 required: None,
+            },
+        },
+        Tool {
+            name: "atlas_trace_caller_path".into(),
+            description: "Trace how a function gets invoked. Walks backward through call edges (Calls/Instantiates/Implements) from a target symbol to its farthest caller. Returns the full caller chain.".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "symbol": { "type": "string", "description": "Symbol ID in hex (from atlas_search or atlas_symbol)" },
+                    "max_depth": { "type": "integer", "description": "Maximum backward call depth (default 20)" },
+                })),
+                required: Some(vec!["symbol".into()]),
             },
         },
         Tool {

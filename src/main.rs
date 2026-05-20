@@ -71,6 +71,15 @@ fn main() -> anyhow::Result<()> {
                         &project, &file, line, column, max_depth, json,
                     )?;
                 }
+                TraceCmd::CallerPath {
+                    symbol,
+                    max_depth,
+                    json,
+                } => {
+                    atlas::cli::commands::trace::run_caller_path(
+                        &project, &symbol, max_depth, json,
+                    )?;
+                }
             },
         }
     }

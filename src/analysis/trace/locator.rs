@@ -7,6 +7,7 @@
 
 use crate::db::Store;
 use crate::types::bindings::{BindingDef, BindingUse};
+use crate::types::enums::ReferenceKind;
 use crate::types::ids::{DataNodeId, FileId};
 use crate::types::structs::{Callsite, ReferenceUse, TextRange};
 use crate::types::trace::{TraceDataNodeRef, TracePoint};
@@ -173,31 +174,42 @@ where
     Ok(refs)
 }
 
-/// Find the callsite that contains the given position.  A callsite is a call
-/// expression node identified during extraction.
+/// Find the callsite at the given position.
+///
+/// If the reference at this position is a call expression, look up the
+/// corresponding callsite by reference ID.  The callsite carries the caller
+/// symbol, callee symbol (if resolved), receiver, and argument facts.
 fn find_callsite_for_position(
     store: &Store,
-    _reference: &Option<&ReferenceUse>,
+    reference: &Option<&ReferenceUse>,
     _file_id: &FileId,
     _line: u32,
     _column: u32,
 ) -> anyhow::Result<Option<Callsite>> {
-    // Callsites are stored per-file; we could filter by range here.
-    // For now, return None — callsite enrichment can be added when needed.
-    let _ = store;
-    Ok(None)
+    let Some(r) = reference else { return Ok(None) };
+    if r.kind != ReferenceKind::Call {
+        return Ok(None);
+    }
+    store.find_callsite_by_reference_id(&r.id)
 }
 
 /// Find the binding or binding-use at the given position.
+///
+/// Looks through all bindings and binding uses in the file, returning the
+/// one whose byte range most tightly contains the position.
 fn find_binding_at_position(
-    _store: &Store,
-    _file_id: &FileId,
-    _line: u32,
-    _column: u32,
+    store: &Store,
+    file_id: &FileId,
+    line: u32,
+    column: u32,
 ) -> anyhow::Result<(Option<BindingDef>, Option<BindingUse>)> {
-    // Binding lookup requires iterating bindings for the file.
-    // For now, return None — binding enrichment can be added when needed.
-    Ok((None, None))
+    let bindings = store.find_bindings_by_file(file_id)?;
+    let binding = find_innermost_at_position(&bindings, |b| &b.range, line, column).cloned();
+
+    let uses = store.find_binding_uses_by_file(file_id)?;
+    let binding_use = find_innermost_at_position(&uses, |u| &u.range, line, column).cloned();
+
+    Ok((binding, binding_use))
 }
 
 // ---------------------------------------------------------------------------

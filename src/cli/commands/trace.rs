@@ -6,9 +6,9 @@
 //! - `trace variable` — trace dataflow backward from a source position to
 //!   find how a value reaches that point.
 
-use crate::analysis::trace::{Locator, Slicer};
+use crate::analysis::trace::{CallerPathExplorer, Locator, Slicer};
 use crate::db::Store;
-use crate::types::ids::FileId;
+use crate::types::ids::{FileId, SymbolId};
 use anyhow::{anyhow, Context};
 use std::path::Path;
 
@@ -178,6 +178,58 @@ pub fn run_variable(
                 if let Some(ref dn) = path.sink.data_node {
                     eprintln!("║ {} ({})", dn.name.as_deref().unwrap_or("?"), dn.kind.as_str());
                 }
+                eprintln!("╚══════════════════════════════════════════════════");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// `atlas trace caller-path`
+pub fn run_caller_path(
+    project: &str,
+    symbol_hex: &str,
+    max_depth: usize,
+    json: bool,
+) -> anyhow::Result<()> {
+    let root = Path::new(project);
+    let store = Store::open(root).context("Failed to open Atlas database")?;
+    let target_id: SymbolId = symbol_hex
+        .parse()
+        .map_err(|_| anyhow!("Invalid symbol hex ID: {}", symbol_hex))?;
+
+    let chain = CallerPathExplorer::explore(&store, &target_id, max_depth)
+        .context("Failed to explore caller path")?;
+
+    match chain {
+        None => {
+            eprintln!("No callers found for symbol {}.", symbol_hex);
+            eprintln!("This function is a root/top-level function (no incoming call edges).");
+        }
+        Some(c) => {
+            if json {
+                let output = serde_json::to_string_pretty(&c)?;
+                println!("{}", output);
+            } else {
+                eprintln!("╔══ Caller Path ═══════════════════════════════════");
+                eprintln!("║ nodes visited: {}", c.nodes_visited);
+                eprintln!("║ max depth reached: {}", c.max_depth_reached);
+                eprintln!("║ steps: {}", c.steps.len());
+                eprintln!("╠══ Root (farthest caller) ════════════════════════");
+                eprintln!("║ {} ({})", c.root.name, c.root.kind.as_str());
+                eprintln!("╠══ Steps ═════════════════════════════════════════");
+                for step in &c.steps {
+                    eprintln!(
+                        "║ {}: {} → {} ({})",
+                        step.index,
+                        step.caller.to_hex().chars().take(8).collect::<String>(),
+                        step.callee.to_hex().chars().take(8).collect::<String>(),
+                        step.description,
+                    );
+                }
+                eprintln!("╠══ Target ════════════════════════════════════════");
+                eprintln!("║ {} ({})", c.target.name, c.target.kind.as_str());
                 eprintln!("╚══════════════════════════════════════════════════");
             }
         }
