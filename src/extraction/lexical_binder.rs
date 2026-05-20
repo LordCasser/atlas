@@ -1,21 +1,29 @@
 //! Lexical binder — per-file lexical binding extraction.
 //!
 //! The LexicalBinder extracts binding definitions (parameters, locals, import aliases,
-//! catch variables, fields) and binding use sites from tree-sitter ASTs.
+//! catch variables, fields) from tree-sitter ASTs via the adapter's `lexical_query()`.
 //!
 //! # Architecture
 //!
-//! - Uses the adapter's `lexical_query()` to find binding definitions.
-//! - Resolves binding uses by matching identifier references to binding definitions
-//!   within the same scope chain (handles shadowing).
-//! - Post-extraction: scope IDs and function IDs are resolved by SemanticBinder.
+//! - Runs the adapter's `lexical_query()` to find binding definition sites.
+//! - Resolves scope containment for each binding (innermost enclosing scope).
+//! - Creates one [`BindingUse`] per binding definition (declaration-as-use for dataflow).
+//! - Does NOT scan standalone identifier references or resolve shadowing.
+//! - Does NOT resolve `function_id` or `symbol_id` — those are filled by post-extraction
+//!   steps (scope tree, SemanticBinder).
+//!
+//! # Current limitations (not yet implemented)
+//!
+//! - Identifier-use scanning (every variable reference as a BindingUse).
+//! - Shadowing resolution across scope chains.
+//! - Per-function grouping (function_id always None).
 //!
 //! # Invariants
 //!
-//! - Every `BindingDef` has a non-empty `scope_id` and `name`.
+//! - Every `BindingDef` has a non-empty `scope_id` (resolved here) and `name`.
 //! - Every `BindingUse` has `file_id`, `scope_id`, `name`, and `range`.
 //! - `BindingUse::binding_id` may be `None` if unresolved (e.g. external reference).
-//! - Shadowing: inner scope bindings hide outer scope bindings with the same name.
+//! - `function_id` is always `None` at this stage; downstream consumers should fill it.
 
 use std::path::Path;
 
@@ -50,11 +58,11 @@ pub struct LexicalBindingResult {
 pub struct LexicalBinder;
 
 impl LexicalBinder {
-    /// Extract lexical bindings and uses from the given AST.
+    /// Extract lexical binding definitions and declaration-as-use sites.
     ///
-    /// This runs the adapter's `lexical_query()`, normalizes captures into
-    /// `BindingDef` structs, and then resolves binding uses by matching
-    /// identifiers to their enclosing scope's bindings.
+    /// Runs the adapter's `lexical_query()`, normalizes captures into
+    /// `BindingDef` structs, resolves scope containment, and creates
+    /// one `BindingUse` per binding definition.
     pub fn extract(
         adapter: &dyn LanguageAdapter,
         ts_lang: &tree_sitter::Language,

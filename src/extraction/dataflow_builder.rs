@@ -1,7 +1,7 @@
 //! DataFlow builder — per-function dataflow graph construction.
 //!
 //! The DataFlowBuilder creates [`DataNode`]s and [`DataFlowEdge`]s from tree-sitter
-//! AST captures.  This forms the basis for taint analysis (P5).
+//! AST captures.  This forms the basis for taint analysis.
 //!
 //! # Architecture
 //!
@@ -20,7 +20,7 @@
 //! - DataNode IDs are deterministic (blake3).
 //! - DataFlowEdge IDs are deterministic (blake3(source + target + kind)).
 //! - Each DataNode has exactly one function_id (or None for top-level).
-//! - Per-function dataflow only (interprocedural is P4).
+//! - Per-function dataflow only (interprocedural deferred to taint analysis layer).
 
 use std::collections::HashMap;
 use std::path::Path;

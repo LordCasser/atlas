@@ -22,7 +22,7 @@ use std::sync::Arc;
 /// Combined stats from the resolve + build pipeline.
 struct PipelineStats {
     resolution: ResolutionStats,
-    edges_created: usize,
+    edges_built: usize,
 }
 
 /// Run the full pipeline on a set of source files and return the store + stats.
@@ -54,7 +54,7 @@ fn index_files(files: &[(&str, &str)]) -> (Arc<Store>, PipelineStats) {
 
     let stats = PipelineStats {
         resolution,
-        edges_created: build_stats.edges_created,
+        edges_built: build_stats.edges_built,
     };
     (store, stats)
 }
@@ -94,8 +94,8 @@ main();
     // Basic resolution stats
     assert!(stats.resolution.resolved > 0,
         "expected some resolved refs, got {}", stats.resolution.resolved);
-    assert!(stats.edges_created > 0,
-        "expected structural edges, got {}", stats.edges_created);
+    assert!(stats.edges_built > 0,
+        "expected structural edges, got {}", stats.edges_built);
 
     // Find the greet symbol from lib.ts
     let lib_id = FileId::generate("lib.ts");
@@ -225,8 +225,8 @@ if __name__ == '__main__':
 
     assert!(stats.resolution.resolved > 0,
         "expected some resolved refs, got {}", stats.resolution.resolved);
-    assert!(stats.edges_created > 0,
-        "expected structural edges, got {}", stats.edges_created);
+    assert!(stats.edges_built > 0,
+        "expected structural edges, got {}", stats.edges_built);
 
     // Verify lib.py symbols
     let lib_id = FileId::generate("lib.py");
@@ -265,7 +265,7 @@ if __name__ == '__main__':
     let (store, stats) = index_files(files);
 
     assert!(stats.resolution.resolved > 0, "expected some resolved refs");
-    assert!(stats.edges_created > 0, "expected structural edges");
+    assert!(stats.edges_built > 0, "expected structural edges");
 
     // Verify User class exists
     let models_id = FileId::generate("models.py");
@@ -436,7 +436,7 @@ fn java_cross_file_import_call() {
     let (store, stats) = index_files(files);
 
     assert!(stats.resolution.resolved > 0, "expected some resolved refs");
-    assert!(stats.edges_created > 0, "expected structural edges");
+    assert!(stats.edges_built > 0, "expected structural edges");
 
     let greeter_id = FileId::generate("Greeter.java");
     let syms = store.find_symbols_by_file(&greeter_id).unwrap();

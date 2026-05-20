@@ -138,7 +138,7 @@ impl Store {
         conn.execute(
             "INSERT OR IGNORE INTO schema_versions (version, description)
              VALUES (?1, ?2)",
-            params![CURRENT_SCHEMA_VERSION, "Atlas-native schema v5: P3 bindings/dataflow tables, edges→symbol_edges"],
+            params![CURRENT_SCHEMA_VERSION, "v6: binding + dataflow + CFG tables, edges→symbol_edges"],
         )?;
 
         Ok(())
@@ -801,7 +801,8 @@ impl Store {
     }
 
     /// Load ALL edges (for GraphSnapshot construction).
-    /// Uses a separate read connection to avoid blocking writes via the mutex.
+    /// Uses the shared connection via the mutex; long-running reads may
+    //  block writes.  In the future this should use a separate read connection.
     pub fn get_all_edges(&self) -> anyhow::Result<Vec<RawEdge>> {
         let guard = self.lock();
         let conn: &Connection = &guard;
@@ -815,7 +816,7 @@ impl Store {
     }
 
     // -----------------------------------------------------------------------
-    // P3: Binding + Dataflow — write APIs
+    // ── Binding + Dataflow — write APIs ──
     // -----------------------------------------------------------------------
 
     /// Batch-insert bindings.
@@ -861,7 +862,7 @@ impl Store {
     }
 
     // -----------------------------------------------------------------------
-    // P3: Binding + Dataflow — query APIs
+    // ── Binding + Dataflow — query APIs ──
     // -----------------------------------------------------------------------
 
     /// Find bindings for a function.
@@ -927,7 +928,7 @@ impl Store {
     }
 
     // -----------------------------------------------------------------------
-    // P4: CFG — query APIs
+    // ── CFG — query APIs ──
     // -----------------------------------------------------------------------
 
     /// Find all CFG nodes for a function.
@@ -1017,7 +1018,7 @@ impl Store {
             }
         }
 
-        // P3: Binding + Dataflow data
+        // Binding + Dataflow data
         if !facts.bindings.is_empty() {
             write_bindings(&tx, &facts.bindings)?;
         }
@@ -1521,7 +1522,7 @@ fn write_callsites(conn: &Connection, callsites: &[Callsite]) -> anyhow::Result<
 }
 
 // ---------------------------------------------------------------------------
-// P3: Binding + Dataflow — row mappers
+// ── Binding + Dataflow — row mappers ──
 // ---------------------------------------------------------------------------
 
 fn row_to_binding(row: &rusqlite::Row) -> rusqlite::Result<BindingDef> {
@@ -1605,7 +1606,7 @@ fn row_to_dataflow_edge(row: &rusqlite::Row) -> rusqlite::Result<DataFlowEdge> {
 }
 
 // ---------------------------------------------------------------------------
-// P3: Binding + Dataflow — write helpers
+// ── Binding + Dataflow — write helpers ──
 // ---------------------------------------------------------------------------
 
 fn write_bindings(conn: &Connection, bindings: &[BindingDef]) -> anyhow::Result<()> {
@@ -1698,7 +1699,7 @@ fn write_callsite_args(conn: &Connection, args: &[CallsiteArg]) -> anyhow::Resul
     Ok(())
 }
 
-// ── P4: CFG — row converters and low-level writers ────────────────────────
+// ── CFG — row converters and low-level writers ──────────────────────────
 
 fn row_to_cfg_node(row: &rusqlite::Row) -> rusqlite::Result<CfgNode> {
     use crate::types::enums::CfgNodeKind;

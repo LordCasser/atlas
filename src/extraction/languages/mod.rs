@@ -7,8 +7,8 @@
 //! - Extraction never writes final edges — that belongs to the resolution phase.
 //!
 //! ## Adding a new language
-//! 1. Create `atlas-languages/src/<lang>.rs`
-//! 2. Add tree-sitter query files in `atlas-languages/queries/<lang>/`
+//! 1. Create `src/extraction/languages/<lang>.rs`
+//! 2. Add tree-sitter query files in `src/extraction/queries/<lang>/`
 //! 3. Implement `LanguageAdapter` trait
 //! 4. Feature-gate with `#[cfg(feature = "<lang>")]`
 
@@ -79,7 +79,7 @@ pub trait LanguageAdapter: Send + Sync {
     ///
     /// Captures parameter declarations, local variable declarations (let/const/var),
     /// import aliases, catch variables, and destructuring patterns.
-    /// Returns empty string by default — lexical binding is P3+.
+    /// Returns empty string by default — languages opt in via their query files.
     fn lexical_query(&self) -> &str {
         ""
     }
@@ -88,13 +88,11 @@ pub trait LanguageAdapter: Send + Sync {
     ///
     /// Captures assignments, return statements, call arguments, member access chains,
     /// and literals for per-function dataflow graph construction.
-    /// Returns empty string by default — dataflow builder is P3+.
+    /// Returns empty string by default — languages opt in via their query files.
     fn dataflow_builder_query(&self) -> &str {
         ""
     }
 
-    // -------------------------------------------------------------------
-    // Normalization: raw capture → Atlas IR
     // -------------------------------------------------------------------
     // Normalization: raw capture → Atlas IR
     // -------------------------------------------------------------------
@@ -157,7 +155,7 @@ pub trait LanguageAdapter: Send + Sync {
     }
 
     /// Convert a lexical query capture into a `BindingDef`, or `None`.
-    /// Default returns `None` — lexical binding is P3+.
+    /// Default returns `None` — language adapters opt in by overriding.
     fn normalize_lexical(
         &self,
         _capture_name: &str,

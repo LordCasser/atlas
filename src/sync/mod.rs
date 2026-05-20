@@ -111,7 +111,7 @@ impl SyncEngine {
         // 4b. Build edges from resolved references
         let builder = GraphBuilder::new(self.store.clone());
         let build_stats = builder.build_all(&resolved);
-        stats.new_edges = build_stats.edges_created;
+        stats.new_edges = build_stats.edges_built;
 
         // 5. Persist file hashes for the next incremental sync
         let atlas_dir = self.project_root.join(".atlas");

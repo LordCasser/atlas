@@ -188,7 +188,7 @@ pub struct ReferenceUse {
     pub range: TextRange,
 
     /// Lexical binding that this reference resolves to, if any.
-    /// Filled by the lexical binder (P3); not participating in ReferenceId generation.
+    /// Filled by the lexical binder; not participating in ReferenceId generation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binding_id: Option<crate::types::ids::BindingId>,
 
@@ -474,7 +474,7 @@ pub struct FileFacts {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<ExtractDiagnostic>,
 
-    // ── P3: Binding + Dataflow ──
+    // ── Binding + Dataflow ──
 
     /// Lexical binding definitions (per-function variables/parameters).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -496,11 +496,11 @@ pub struct FileFacts {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub callsite_args: Vec<CallsiteArg>,
 
-    /// Control-flow graph nodes (P4: per-function CFG).
+    /// Control-flow graph nodes (per-function CFG).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cfg_nodes: Vec<CfgNode>,
 
-    /// Control-flow graph edges (P4: per-function CFG).
+    /// Control-flow graph edges (per-function CFG).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cfg_edges: Vec<CfgEdge>,
 }

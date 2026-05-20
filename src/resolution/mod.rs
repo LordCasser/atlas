@@ -309,9 +309,9 @@ main();
         let builder = GraphBuilder::new(Arc::clone(&store));
         let build_stats = builder.build_all(&resolved);
         assert!(
-            build_stats.edges_created > 0,
+            build_stats.edges_built > 0,
             "expected cross-file Calls edges, got {} edges",
-            build_stats.edges_created
+            build_stats.edges_built
         );
     }
 

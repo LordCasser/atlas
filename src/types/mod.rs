@@ -4,9 +4,9 @@
 //! - `ids`  — 13 typed blake3 newtypes stored as BLOB in SQLite.
 //! - `enums` — 16 enum families describing language, kind, visibility, etc.
 //! - `structs` — the core IR: SymbolDef, ReferenceUse, FileFacts, etc.
-//! - `bindings` — lexical binding types (P3: binding graph foundation).
-//! - `dataflow` — dataflow types (P3: DataNode → DataNode, NOT SymbolId).
-//! - `cfg` — control-flow graph types (P4: per-function CFG).
+//! - `bindings` — lexical binding graph types.
+//! - `dataflow` — per-function dataflow types (DataNode → DataNode, NOT SymbolId).
+//! - `cfg` — per-function control-flow graph types.
 //!
 //! ## Invariants
 //! - IDs are deterministically derived (same inputs → same [u8; 32]).
@@ -43,13 +43,13 @@ pub use structs::{
     SymbolDef, TextRange,
 };
 
-// --- Bindings (P3) ---
+// --- Binding types ---
 pub use bindings::{BindingDef, BindingUse};
 
-// --- Dataflow (P3) ---
+// --- Dataflow types ---
 pub use dataflow::{CallsiteArg, DataFlowEdge, DataNode};
 
-// --- CFG (P4) ---
+// --- CFG types ---
 pub use cfg::{CfgEdge, CfgNode};
 
 // --- Utilities ---

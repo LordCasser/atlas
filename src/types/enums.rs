@@ -80,11 +80,11 @@ impl Language {
     pub fn all_extensions() -> Vec<&'static str> {
         vec![
             "ts", "mts", "cts", "tsx", "js", "mjs", "cjs", "jsx",
-            "py", "pyi",
+            "py", "pyi", "pyx",
             "java",
             "c", "h",
             "cpp", "cc", "cxx", "hpp", "hh", "hxx",
-            "ets",
+            "ets", "sts",
             "cj", "cangjie",
         ]
     }
@@ -94,11 +94,11 @@ impl Language {
         match self {
             Self::TypeScript => &["**/*.ts", "**/*.mts", "**/*.cts", "**/*.tsx"],
             Self::JavaScript => &["**/*.js", "**/*.mjs", "**/*.cjs", "**/*.jsx"],
-            Self::Python => &["**/*.py", "**/*.pyi"],
+            Self::Python => &["**/*.py", "**/*.pyi", "**/*.pyx"],
             Self::Java => &["**/*.java"],
             Self::C => &["**/*.c", "**/*.h"],
             Self::Cpp => &["**/*.cpp", "**/*.cc", "**/*.cxx", "**/*.hpp", "**/*.hh", "**/*.hxx"],
-            Self::ArkTS => &["**/*.ets"],
+            Self::ArkTS => &["**/*.ets", "**/*.sts"],
             Self::Cangjie => &["**/*.cj", "**/*.cangjie"],
         }
     }

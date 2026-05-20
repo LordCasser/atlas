@@ -314,7 +314,7 @@ impl LanguageAdapter for TypeScriptAdapter {
         Some(BindingDef {
             id,
             file_id,
-            function_id: None, // resolved post-extraction by LexicalBinder
+            function_id: None, // not resolved here; filled by post-extraction
             scope_id,
             kind,
             name,

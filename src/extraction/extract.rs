@@ -222,13 +222,13 @@ pub fn extract_file(
         raw_edges,         // Symbol-level dataflow edges from normalize_dataflow (old path)
         callsites,         // Derived from Call references (resolved later)
         diagnostics,
-        bindings,          // P3: lexical binding definitions
-        binding_uses,      // P3: lexical binding use sites
-        data_nodes,        // P3: per-function dataflow nodes
-        dataflow_edges,    // P3: DataNode→DataNode dataflow edges
-        callsite_args: vec![],  // P3: filled later by post-processing
-        cfg_nodes,          // P4: per-function control-flow graph nodes
-        cfg_edges,          // P4: per-function control-flow graph edges
+        bindings,          // lexical binding definitions
+        binding_uses,      // lexical binding use sites
+        data_nodes,        // per-function dataflow nodes
+        dataflow_edges,    // DataNode→DataNode dataflow edges
+        callsite_args: vec![],  // filled later by post-processing
+        cfg_nodes,          // per-function control-flow graph nodes
+        cfg_edges,          // per-function control-flow graph edges
     })
 }
 

@@ -252,7 +252,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     println!("\nBuilding edges...");
     let builder = crate::graph::GraphBuilder::new(Arc::clone(&store));
     let build_stats = builder.build_all(&resolved);
-    println!("  Edges created:      {}", build_stats.edges_created);
+    println!("  Edges built:         {}", build_stats.edges_built);
 
     // Show final stats
     let db_stats = store.get_stats()?;

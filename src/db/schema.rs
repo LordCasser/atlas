@@ -8,15 +8,15 @@
 //! - `scopes`         — containment regions
 //! - `references`     — all reference uses (preserved after resolution)
 //! - `imports`        — import statements
-//! - `symbol_edges`   — semantic edges between symbols (P3: renamed from edges)
+//! - `symbol_edges`   — semantic edges between symbols (renamed from edges)
 //! - `callsites`      — call expressions
-//! - `bindings`       — lexical binding definitions (P3)
-//! - `binding_uses`   — references to bindings (P3)
-//! - `data_nodes`     — dataflow nodes (P3)
-//! - `dataflow_edges` — dataflow edges between DataNodes (P3)
-//! - `callsite_args`  — individual arguments at callsites (P3)
-//! - `cfg_nodes`      — control-flow graph nodes per function (P4)
-//! - `cfg_edges`      — control-flow graph edges (P4)
+//! - `bindings`       — lexical binding definitions
+//! - `binding_uses`   — references to bindings
+//! - `data_nodes`     — dataflow nodes
+//! - `dataflow_edges` — dataflow edges between DataNodes
+//! - `callsite_args`  — individual arguments at callsites
+//! - `cfg_nodes`      — control-flow graph nodes per function
+//! - `cfg_edges`      — control-flow graph edges
 //! - `project_metadata` — key-value project configuration
 //! - `symbols_fts`    — FTS5 index on symbol names
 //! - `schema_versions` — migration tracking
@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS "references" (
     resolved_confidence  REAL,
     resolved_strategy    TEXT,
     resolved_provenance  TEXT,
-    -- P3: lexical binding link (filled by SemanticBinder after extraction)
+    -- lexical binding link (filled by SemanticBinder after extraction)
     binding_id           BLOB
 );
 
@@ -163,7 +163,7 @@ CREATE TABLE IF NOT EXISTS callsites (
     range_end_column     INTEGER NOT NULL
 );
 
--- ===== P3: Binding + Dataflow tables =====
+-- ===== Binding + Dataflow tables =====
 
 CREATE TABLE IF NOT EXISTS bindings (
     binding_id           BLOB PRIMARY KEY NOT NULL,
@@ -331,7 +331,7 @@ CREATE INDEX IF NOT EXISTS idx_callsites_caller
 CREATE INDEX IF NOT EXISTS idx_callsites_callee
     ON callsites(callee);
 
--- P3 indexes
+-- Binding + Dataflow indexes
 CREATE INDEX IF NOT EXISTS idx_bindings_file
     ON bindings(file_id);
 CREATE INDEX IF NOT EXISTS idx_bindings_function

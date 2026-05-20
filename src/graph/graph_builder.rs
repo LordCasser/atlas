@@ -63,7 +63,7 @@ impl GraphBuilder {
         }
 
         GraphBuilderStats {
-            edges_created: edge_count,
+            edges_built: edge_count,
             warnings,
         }
     }
@@ -163,7 +163,9 @@ impl GraphBuilder {
 /// Statistics from a GraphBuilder run.
 #[derive(Debug, Clone, Default)]
 pub struct GraphBuilderStats {
-    pub edges_created: usize,
+    /// Number of edges built (before write to store; may differ from
+    /// actual stored count if the batch insert fails).
+    pub edges_built: usize,
     pub warnings: Vec<String>,
 }
 
@@ -225,9 +227,9 @@ main();
         let stats = builder.build_all(&resolved);
 
         assert!(
-            stats.edges_created > 0,
-            "expected at least 1 edge, got {}",
-            stats.edges_created
+            stats.edges_built > 0,
+            "Expected >0 edges, got {}",
+            stats.edges_built
         );
     }
 }
