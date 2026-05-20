@@ -1,6 +1,6 @@
 //! Atlas-native SQLite schema DDL and migration system.
 //!
-//! Schema version: 6
+//! Schema version: 7
 //!
 //! ## Tables
 //! - `files`          — per-file metadata
@@ -17,12 +17,15 @@
 //! - `callsite_args`  — individual arguments at callsites
 //! - `cfg_nodes`      — control-flow graph nodes per function
 //! - `cfg_edges`      — control-flow graph edges
+//! - `taint_rules`    — taint analysis rules (source/sink/sanitizer)
+//! - `taint_findings` — detected taint flows
+//! - `taint_path_steps` — taint path steps for explainability
 //! - `project_metadata` — key-value project configuration
 //! - `symbols_fts`    — FTS5 index on symbol names
 //! - `schema_versions` — migration tracking
 
 /// Current schema version. Increment on every schema change.
-pub const CURRENT_SCHEMA_VERSION: i64 = 6;
+pub const CURRENT_SCHEMA_VERSION: i64 = 7;
 
 /// Minimum readable schema version (for backward compatibility).
 pub const MIN_READABLE_VERSION: i64 = 1;
@@ -257,7 +260,48 @@ CREATE TABLE IF NOT EXISTS cfg_edges (
     cfg_edge_id          BLOB PRIMARY KEY NOT NULL,
     source_node          BLOB NOT NULL REFERENCES cfg_nodes(cfg_node_id) ON DELETE CASCADE,
     target_node          BLOB NOT NULL REFERENCES cfg_nodes(cfg_node_id) ON DELETE CASCADE,
-    kind                 TEXT NOT NULL             -- normal/true_branch/false_branch/loop_back/exception
+    kind                 TEXT NOT NULL
+);
+
+-- taint_rules: taint analysis rules (source/sink/sanitizer/propagator)
+CREATE TABLE IF NOT EXISTS taint_rules (
+    rule_id              TEXT PRIMARY KEY NOT NULL,
+    language             TEXT,
+    kind                 TEXT NOT NULL,
+    symbol_pattern       TEXT,
+    callee               TEXT,
+    access_path_pattern  TEXT,
+    argument_index       INTEGER,
+    applies_to_return    INTEGER NOT NULL DEFAULT 0,
+    severity             TEXT NOT NULL DEFAULT 'medium'
+);
+
+-- taint_findings: detected taint flows source→sink
+CREATE TABLE IF NOT EXISTS taint_findings (
+    finding_id           BLOB PRIMARY KEY NOT NULL,
+    source_node          BLOB NOT NULL REFERENCES data_nodes(data_node_id) ON DELETE CASCADE,
+    sink_node            BLOB NOT NULL REFERENCES data_nodes(data_node_id) ON DELETE CASCADE,
+    rule_id              TEXT NOT NULL REFERENCES taint_rules(rule_id),
+    severity             TEXT NOT NULL,
+    confidence           REAL NOT NULL DEFAULT 0.5,
+    file_id              BLOB NOT NULL REFERENCES files(file_id) ON DELETE CASCADE
+);
+
+-- taint_path_steps: individual steps in a taint path
+CREATE TABLE IF NOT EXISTS taint_path_steps (
+    finding_id           BLOB NOT NULL REFERENCES taint_findings(finding_id) ON DELETE CASCADE,
+    step_index           INTEGER NOT NULL,
+    data_node            BLOB NOT NULL,
+    edge_id              BLOB,
+    file_id              BLOB NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
+    range_start_byte     INTEGER NOT NULL,
+    range_end_byte       INTEGER NOT NULL,
+    range_start_line     INTEGER NOT NULL,
+    range_start_column   INTEGER NOT NULL,
+    range_end_line       INTEGER NOT NULL,
+    range_end_column     INTEGER NOT NULL,
+    message              TEXT NOT NULL,
+    PRIMARY KEY (finding_id, step_index)
 );
 
 -- FTS5 virtual table for symbol name search
@@ -375,6 +419,24 @@ CREATE INDEX IF NOT EXISTS idx_cfg_edges_target
 CREATE INDEX IF NOT EXISTS idx_cfg_edges_kind
     ON cfg_edges(kind);
 
+-- Taint analysis indexes
+CREATE INDEX IF NOT EXISTS idx_taint_rules_language
+    ON taint_rules(language);
+CREATE INDEX IF NOT EXISTS idx_taint_rules_kind
+    ON taint_rules(kind);
+
+CREATE INDEX IF NOT EXISTS idx_taint_findings_rule
+    ON taint_findings(rule_id);
+CREATE INDEX IF NOT EXISTS idx_taint_findings_file
+    ON taint_findings(file_id);
+CREATE INDEX IF NOT EXISTS idx_taint_findings_source
+    ON taint_findings(source_node);
+CREATE INDEX IF NOT EXISTS idx_taint_findings_sink
+    ON taint_findings(sink_node);
+
+CREATE INDEX IF NOT EXISTS idx_taint_path_steps_data_node
+    ON taint_path_steps(data_node);
+
 -- --- FTS Triggers ---
 
 CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
@@ -427,6 +489,9 @@ mod tests {
         assert!(tables.contains(&"callsite_args".to_string()));
         assert!(tables.contains(&"cfg_nodes".to_string()));
         assert!(tables.contains(&"cfg_edges".to_string()));
+        assert!(tables.contains(&"taint_rules".to_string()));
+        assert!(tables.contains(&"taint_findings".to_string()));
+        assert!(tables.contains(&"taint_path_steps".to_string()));
         assert!(tables.contains(&"symbols_fts".to_string()));
         assert!(tables.contains(&"project_metadata".to_string()));
         assert!(tables.contains(&"schema_versions".to_string()));

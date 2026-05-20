@@ -88,4 +88,18 @@ pub enum Commands {
         #[arg(short, long, default_value = ".")]
         project: String,
     },
+    /// Run taint analysis (source→sink dataflow tracking)
+    Taint {
+        #[arg(short, long, default_value = ".")]
+        project: String,
+        /// Filter by file_id hex prefix
+        #[arg(long)]
+        file_id: Option<String>,
+        /// Only show findings at or above severity (critical/high/medium/low/info)
+        #[arg(short, long)]
+        severity: Option<String>,
+        /// Output results as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }

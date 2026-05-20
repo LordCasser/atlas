@@ -1,12 +1,13 @@
 //! Atlas core type system: IDs, enums, and the Intermediate Representation (IR).
 //!
 //! ## Layering
-//! - `ids`  — 13 typed blake3 newtypes stored as BLOB in SQLite.
-//! - `enums` — 16 enum families describing language, kind, visibility, etc.
+//! - `ids`  — 14 typed blake3 newtypes stored as BLOB in SQLite.
+//! - `enums` — 17 enum families describing language, kind, visibility, etc.
 //! - `structs` — the core IR: SymbolDef, ReferenceUse, FileFacts, etc.
 //! - `bindings` — lexical binding graph types.
 //! - `dataflow` — per-function dataflow types (DataNode → DataNode, NOT SymbolId).
 //! - `cfg` — per-function control-flow graph types.
+//! - `taint` — taint analysis types (rules, findings, path steps).
 //!
 //! ## Invariants
 //! - IDs are deterministically derived (same inputs → same [u8; 32]).
@@ -21,6 +22,7 @@ pub mod structs;
 pub mod bindings;
 pub mod dataflow;
 pub mod cfg;
+pub mod taint;
 
 // --- IDs ---
 pub use ids::{
@@ -51,6 +53,9 @@ pub use dataflow::{CallsiteArg, DataFlowEdge, DataNode};
 
 // --- CFG types ---
 pub use cfg::{CfgEdge, CfgNode};
+
+// --- Taint types ---
+pub use taint::{Severity, TaintFinding, TaintFindingId, TaintPathStep, TaintRule, TaintRuleKind};
 
 // --- Utilities ---
 

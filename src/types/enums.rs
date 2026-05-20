@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// The 8 languages supported in MVP.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
 pub enum Language {
     #[default]
     TypeScript,

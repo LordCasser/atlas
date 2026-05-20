@@ -10,6 +10,8 @@ use crate::graph::{GraphEngine, TraversalConfig, TraversalDirection};
 use crate::search::SearchEngine;
 use crate::context::ContextBuilder;
 use crate::types::{SymbolId, SymbolKind};
+use crate::types::ids::{TaintFindingId, DataNodeId, FileId};
+use crate::types::taint::Severity;
 
 use super::protocol::{
     CallToolResult, ContentBlock, ListToolsResult, Tool, ToolInputSchema,
@@ -64,6 +66,8 @@ impl ToolRouter {
             "atlas_explore" => self.handle_explore(arguments),
             "atlas_impact" => self.handle_impact(arguments),
             "atlas_context" => self.handle_context(arguments),
+            "atlas_taint_findings" => self.handle_taint_findings(arguments),
+            "atlas_taint_path" => self.handle_taint_path(arguments),
             _ => (format!("Unknown tool: {}", name), true),
         };
 
@@ -470,6 +474,97 @@ impl ToolRouter {
             Err(e) => (format!("Context build error: {}", e), true),
         }
     }
+
+    fn handle_taint_findings(&self, args: &Value) -> (String, bool) {
+        let file_hex = get_str_opt(args, "file_id");
+        let sev_str = get_str_opt(args, "severity");
+        let limit = get_u64(args, "limit").unwrap_or(50) as usize;
+
+        let file_filter: Option<FileId> = file_hex.and_then(|h| {
+            let hex = h.trim();
+            if hex.len() >= 8 {
+                FileId::from_hex(hex).ok()
+            } else {
+                None
+            }
+        });
+
+        let sev_filter: Option<Severity> = sev_str.and_then(Severity::from_str);
+
+        let findings = match self.store.get_taint_findings(file_filter.as_ref()) {
+            Ok(f) => f,
+            Err(e) => return (format!("Error loading taint findings: {}", e), true),
+        };
+
+        // Apply optional severity filter
+        let filtered: Vec<_> = findings.iter()
+            .filter(|f| sev_filter.as_ref().map_or(true, |sf| f.severity == *sf))
+            .take(limit)
+            .collect();
+
+        let items: Vec<_> = filtered.iter().map(|f| {
+            let source_name = self.store.get_data_node(&f.source_node)
+                .ok().flatten()
+                .map(|n| n.name)
+                .unwrap_or_else(|| f.source_node.to_hex());
+            let sink_name = self.store.get_data_node(&f.sink_node)
+                .ok().flatten()
+                .map(|n| n.name)
+                .unwrap_or_else(|| f.sink_node.to_hex());
+            json!({
+                "finding_id": f.id.to_hex(),
+                "source_node": f.source_node.to_hex(),
+                "source_name": source_name,
+                "sink_node": f.sink_node.to_hex(),
+                "sink_name": sink_name,
+                "rule_id": f.rule_id,
+                "severity": f.severity.as_str(),
+                "confidence": f.confidence.as_f32(),
+                "file_id": f.file_id.to_hex(),
+            })
+        }).collect();
+
+        (serde_json::to_string_pretty(&json!({
+            "count": filtered.len(),
+            "findings": items,
+        })).unwrap_or_else(|e| e.to_string()), false)
+    }
+
+    fn handle_taint_path(&self, args: &Value) -> (String, bool) {
+        let finding_hex = get_str(args, "finding_id");
+        let fid = match TaintFindingId::from_hex(finding_hex) {
+            Ok(id) => id,
+            Err(e) => return (format!("Invalid finding_id: {}", e), true),
+        };
+
+        let steps = match self.store.get_taint_path_steps(&fid) {
+            Ok(s) => s,
+            Err(e) => return (format!("Error loading taint path: {}", e), true),
+        };
+
+        let enriched: Vec<_> = steps.iter().map(|s| {
+            let node = self.store.get_data_node(&s.data_node)
+                .ok().flatten();
+            json!({
+                "step": s.index,
+                "data_node_id": s.data_node.to_hex(),
+                "name": node.as_ref().map(|n| &n.name).unwrap_or(&String::new()),
+                "kind": node.as_ref().map(|n| n.kind.as_str()).unwrap_or(""),
+                "file_id": s.file_id.to_hex(),
+                "range": {
+                    "line": s.range.start_line,
+                    "column": s.range.start_column,
+                },
+                "message": s.message,
+            })
+        }).collect();
+
+        (serde_json::to_string_pretty(&json!({
+            "finding_id": finding_hex,
+            "step_count": steps.len(),
+            "steps": enriched,
+        })).unwrap_or_else(|e| e.to_string()), false)
+    }
 }
 
 // -------------------------------------------------------------------
@@ -616,6 +711,30 @@ pub fn make_all_tools() -> Vec<Tool> {
                     "symbol": { "type": "string", "description": "Qualified symbol name" },
                 })),
                 required: Some(vec!["symbol".into()]),
+            },
+        },
+        Tool {
+            name: "atlas_taint_findings".into(),
+            description: "List taint analysis findings: source→sink flows with severity and confidence. Optionally filter by file_id hex or severity (critical/high/medium/low/info).".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "file_id": { "type": "string", "description": "Optional file_id hex prefix to filter by" },
+                    "severity": { "type": "string", "description": "Optional severity filter: critical/high/medium/low/info" },
+                    "limit": { "type": "integer", "description": "Max results (default 50)" },
+                })),
+                required: None,
+            },
+        },
+        Tool {
+            name: "atlas_taint_path".into(),
+            description: "Trace a full taint flow path from source to sink for a given finding.".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "finding_id": { "type": "string", "description": "Taint finding ID in hex" },
+                })),
+                required: Some(vec!["finding_id".into()]),
             },
         },
     ]

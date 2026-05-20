@@ -905,6 +905,24 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Get a single data node by ID.
+    pub fn get_data_node(&self, node_id: &DataNodeId) -> anyhow::Result<Option<DataNode>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id,
+                    name, access_path,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column
+             FROM data_nodes WHERE data_node_id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![node_id], row_to_data_node)?;
+        match rows.next() {
+            Some(Ok(node)) => Ok(Some(node)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
     /// Find dataflow edges originating from a data node.
     pub fn find_dataflow_edges_by_source(&self, source: &DataNodeId) -> anyhow::Result<Vec<DataFlowEdge>> {
         let conn = self.lock();
@@ -951,6 +969,85 @@ impl Store {
             "SELECT cfg_edge_id, source_node, target_node, kind FROM cfg_edges WHERE source_node = ?1",
         )?;
         let rows = stmt.query_map(params![source], row_to_cfg_edge)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    // -----------------------------------------------------------------------
+    // ── Taint — write APIs ──
+    // -----------------------------------------------------------------------
+
+    /// Insert taint rules (REPLACE semantics).
+    pub fn insert_taint_rules(&self, rules: &[TaintRule]) -> anyhow::Result<()> {
+        if rules.is_empty() { return Ok(()); }
+        self.with_transaction(|tx| write_taint_rules(tx, rules))
+    }
+
+    /// Insert taint findings.
+    pub fn insert_taint_findings(&self, findings: &[TaintFinding]) -> anyhow::Result<()> {
+        if findings.is_empty() { return Ok(()); }
+        self.with_transaction(|tx| write_taint_findings(tx, findings))
+    }
+
+    /// Insert taint path steps.
+    pub fn insert_taint_path_steps(&self, steps: &[TaintPathStep]) -> anyhow::Result<()> {
+        if steps.is_empty() { return Ok(()); }
+        self.with_transaction(|tx| write_taint_path_steps(tx, steps))
+    }
+
+    // -----------------------------------------------------------------------
+    // ── Taint — query APIs ──
+    // -----------------------------------------------------------------------
+
+    /// Get all taint rules, optionally filtered by language.
+    pub fn get_taint_rules(&self, language: Option<Language>) -> anyhow::Result<Vec<TaintRule>> {
+        let conn = self.lock();
+        let sql = if language.is_some() {
+            "SELECT rule_id, language, kind, symbol_pattern, callee,
+                    access_path_pattern, argument_index, applies_to_return, severity
+             FROM taint_rules WHERE language = ?1 OR language IS NULL"
+        } else {
+            "SELECT rule_id, language, kind, symbol_pattern, callee,
+                    access_path_pattern, argument_index, applies_to_return, severity
+             FROM taint_rules"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let rows = if let Some(lang) = language {
+            stmt.query_map(params![lang.as_str()], row_to_taint_rule)?
+        } else {
+            stmt.query_map([], row_to_taint_rule)?
+        };
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Get taint findings, optionally filtered by file.
+    pub fn get_taint_findings(&self, file_id: Option<&FileId>) -> anyhow::Result<Vec<TaintFinding>> {
+        let conn = self.lock();
+        let sql = if file_id.is_some() {
+            "SELECT finding_id, source_node, sink_node, rule_id, severity, confidence, file_id
+             FROM taint_findings WHERE file_id = ?1 ORDER BY severity, confidence DESC"
+        } else {
+            "SELECT finding_id, source_node, sink_node, rule_id, severity, confidence, file_id
+             FROM taint_findings ORDER BY severity, confidence DESC"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let rows = if let Some(fid) = file_id {
+            stmt.query_map(params![fid], row_to_taint_finding)?
+        } else {
+            stmt.query_map([], row_to_taint_finding)?
+        };
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Get the path steps for a specific finding.
+    pub fn get_taint_path_steps(&self, finding_id: &TaintFindingId) -> anyhow::Result<Vec<TaintPathStep>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT finding_id, step_index, data_node, edge_id, file_id,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column, message
+             FROM taint_path_steps WHERE finding_id = ?1 ORDER BY step_index",
+        )?;
+        let rows = stmt.query_map(params![finding_id], row_to_taint_path_step)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -1761,6 +1858,111 @@ fn write_cfg_edges(conn: &Connection, edges: &[CfgEdge]) -> anyhow::Result<()> {
         stmt.execute(params![e.id, e.source, e.target, e.kind.as_str()])?;
     }
     Ok(())
+}
+
+// ── Taint — private write helpers ────────────────────────────────────────
+
+fn write_taint_rules(conn: &Connection, rules: &[TaintRule]) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(
+        r#"INSERT OR REPLACE INTO taint_rules
+           (rule_id, language, kind, symbol_pattern, callee,
+            access_path_pattern, argument_index, applies_to_return, severity)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"#,
+    )?;
+    for r in rules {
+        let lang = r.language.map(|l| l.as_str().to_string());
+        stmt.execute(params![
+            r.id,
+            lang,
+            r.kind.as_str(),
+            r.symbol_pattern,
+            r.callee,
+            r.access_path_pattern,
+            r.argument_index,
+            r.applies_to_return as i32,
+            r.severity.as_str(),
+        ])?;
+    }
+    Ok(())
+}
+
+fn write_taint_findings(conn: &Connection, findings: &[TaintFinding]) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(
+        r#"INSERT OR REPLACE INTO taint_findings
+           (finding_id, source_node, sink_node, rule_id, severity, confidence, file_id)
+        VALUES (?1,?2,?3,?4,?5,?6,?7)"#,
+    )?;
+    for f in findings {
+        let conf = f.confidence.as_f32();
+        stmt.execute(params![f.id, f.source_node, f.sink_node, f.rule_id, f.severity.as_str(), conf, f.file_id])?;
+    }
+    Ok(())
+}
+
+fn write_taint_path_steps(conn: &Connection, steps: &[TaintPathStep]) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(
+        r#"INSERT OR REPLACE INTO taint_path_steps
+           (finding_id, step_index, data_node, edge_id, file_id,
+            range_start_byte, range_end_byte, range_start_line, range_start_column,
+            range_end_line, range_end_column, message)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"#,
+    )?;
+    for s in steps {
+        stmt.execute(params![
+            s.finding_id, s.index, s.data_node, s.edge_id, s.file_id,
+            s.range.start_byte, s.range.end_byte, s.range.start_line, s.range.start_column,
+            s.range.end_line, s.range.end_column, s.message,
+        ])?;
+    }
+    Ok(())
+}
+
+// ── Taint — private row-to-type helpers ──────────────────────────────────
+
+fn row_to_taint_rule(row: &rusqlite::Row) -> rusqlite::Result<TaintRule> {
+    use crate::types::enums::Language;
+    let kind_str: String = row.get(2)?;
+    let kind = match kind_str.as_str() {
+        "source" => TaintRuleKind::Source,
+        "sink" => TaintRuleKind::Sink,
+        "sanitizer" => TaintRuleKind::Sanitizer,
+        "propagator" => TaintRuleKind::Propagator,
+        _ => TaintRuleKind::Source,
+    };
+    let lang_str: Option<String> = row.get(1)?;
+    let language = lang_str.and_then(|s| Language::from_extension(&s));
+    let sev_str: String = row.get(8)?;
+    let severity = Severity::from_str(&sev_str).unwrap_or(Severity::Medium);
+    Ok(TaintRule {
+        id: row.get(0)?, language, kind,
+        symbol_pattern: row.get(3)?, callee: row.get(4)?,
+        access_path_pattern: row.get(5)?, argument_index: row.get(6)?,
+        applies_to_return: row.get::<_, i32>(7)? != 0, severity,
+    })
+}
+
+fn row_to_taint_finding(row: &rusqlite::Row) -> rusqlite::Result<TaintFinding> {
+    let sev_str: String = row.get(4)?;
+    let severity = Severity::from_str(&sev_str).unwrap_or(Severity::Medium);
+    let conf_val: f32 = row.get(5)?;
+    Ok(TaintFinding {
+        id: row.get(0)?, source_node: row.get(1)?, sink_node: row.get(2)?,
+        rule_id: row.get(3)?, severity, confidence: Confidence::new(conf_val),
+        file_id: row.get(6)?,
+    })
+}
+
+fn row_to_taint_path_step(row: &rusqlite::Row) -> rusqlite::Result<TaintPathStep> {
+    Ok(TaintPathStep {
+        finding_id: row.get(0)?, index: row.get(1)?, data_node: row.get(2)?,
+        edge_id: row.get(3)?, file_id: row.get(4)?,
+        range: TextRange {
+            start_byte: row.get(5)?, end_byte: row.get(6)?,
+            start_line: row.get(7)?, start_column: row.get(8)?,
+            end_line: row.get(9)?, end_column: row.get(10)?,
+        },
+        message: row.get(11)?,
+    })
 }
 
 #[cfg(test)]

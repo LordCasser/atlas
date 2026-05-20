@@ -49,6 +49,16 @@ fn main() -> anyhow::Result<()> {
             Commands::Mcp { project } => {
                 atlas::cli::commands::mcp::run(&project)?;
             }
+            Commands::Taint {
+                project,
+                file_id,
+                severity,
+                json,
+            } => {
+                atlas::cli::commands::taint::run(
+                    &project, file_id.as_deref(), severity.as_deref(), json,
+                )?;
+            }
         }
     }
 
