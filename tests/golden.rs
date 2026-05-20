@@ -44,6 +44,10 @@ struct GoldenExpected {
     scopes: Vec<GldScope>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     callsites: Vec<GldCallsite>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    cfg_nodes: Vec<GldCfgNode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    cfg_edges: Vec<GldCfgEdge>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -76,6 +80,18 @@ struct GldCallsite {
     caller: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     receiver: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+struct GldCfgNode {
+    kind: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+struct GldCfgEdge {
+    source_kind: String,
+    target_kind: String,
+    kind: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +157,25 @@ fn run_golden(lang_dir: &str, stem: &str, ext: &str, lang: Language) {
             receiver: c.receiver.clone(),
         }
     }).collect(),
+        cfg_nodes: facts.cfg_nodes.iter().map(|n| GldCfgNode {
+            kind: n.kind.as_str().to_string(),
+        }).collect(),
+        cfg_edges: facts.cfg_edges.iter().map(|e| {
+            // Resolve source/target node kinds from the CFG nodes list
+            let source_kind = facts.cfg_nodes.iter()
+                .find(|n| n.id == e.source)
+                .map(|n| n.kind.as_str().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            let target_kind = facts.cfg_nodes.iter()
+                .find(|n| n.id == e.target)
+                .map(|n| n.kind.as_str().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            GldCfgEdge {
+                source_kind,
+                target_kind,
+                kind: e.kind.as_str().to_string(),
+            }
+        }).collect(),
     };
 
     if !expected_path.exists() {
@@ -196,4 +231,14 @@ fn golden_typescript_imports() {
 #[test]
 fn golden_c_includes() {
     run_golden("c", "includes", "c", Language::C);
+}
+
+// ---------------------------------------------------------------------------
+// P4: CFG golden tests
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "typescript")]
+#[test]
+fn golden_typescript_cfg() {
+    run_golden("typescript", "cfg", "ts", Language::TypeScript);
 }

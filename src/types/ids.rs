@@ -493,6 +493,57 @@ impl DataFlowEdgeId {
     }
 }
 
+// ── CfgNodeId ────────────────────────────────────────────────────────────────
+
+define_id!(
+    /// Deterministic CFG-node identifier: blake3(function_id + kind + start_byte).
+    ///
+    /// Represents a control-flow graph node within a function.
+    CfgNodeId
+);
+
+impl CfgNodeId {
+    /// Generate a CfgNodeId from its constituent parts.
+    ///
+    /// - `function_id`: the function symbol this node belongs to
+    /// - `kind`: node kind name (e.g., "entry", "statement", "branch")
+    /// - `start_byte`: start byte offset of the corresponding AST node
+    pub fn generate(function_id: &SymbolId, kind: &str, start_byte: u32) -> Self {
+        let sb = start_byte.to_le_bytes();
+        let parts: Vec<&[u8]> = vec![
+            function_id.as_bytes(),
+            kind.as_bytes(),
+            &sb,
+        ];
+        Self::from_parts(&parts)
+    }
+}
+
+// ── CfgEdgeId ────────────────────────────────────────────────────────────────
+
+define_id!(
+    /// Deterministic CFG-edge identifier: blake3(source_node + target_node + kind).
+    ///
+    /// Represents a control-flow edge between two CFG nodes.
+    CfgEdgeId
+);
+
+impl CfgEdgeId {
+    /// Generate a CfgEdgeId from its constituent parts.
+    ///
+    /// - `source`: source CfgNodeId
+    /// - `target`: target CfgNodeId
+    /// - `kind`: edge kind name (e.g., "normal", "true_branch")
+    pub fn generate(source: &CfgNodeId, target: &CfgNodeId, kind: &str) -> Self {
+        let parts: Vec<&[u8]> = vec![
+            source.as_bytes(),
+            target.as_bytes(),
+            kind.as_bytes(),
+        ];
+        Self::from_parts(&parts)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -742,5 +793,38 @@ mod tests {
 
         let id3 = DataFlowEdgeId::generate(&tgt, &src, "assign"); // reversed
         assert_ne!(id1, id3);
+    }
+
+    // -- CfgNodeId -------------------------------------------------------
+
+    #[test]
+    fn test_cfg_node_id_deterministic() {
+        let file_id = FileId::generate("src/main.ts");
+        let func_id = SymbolId::generate(&file_id, "typescript", "handler", "function", None);
+        let id1 = CfgNodeId::generate(&func_id, "statement", 100);
+        let id2 = CfgNodeId::generate(&func_id, "statement", 100);
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_cfg_node_id_different_kind() {
+        let file_id = FileId::generate("src/main.ts");
+        let func_id = SymbolId::generate(&file_id, "typescript", "handler", "function", None);
+        let id1 = CfgNodeId::generate(&func_id, "entry", 50);
+        let id2 = CfgNodeId::generate(&func_id, "exit", 50);
+        assert_ne!(id1, id2);
+    }
+
+    // -- CfgEdgeId --------------------------------------------------------
+
+    #[test]
+    fn test_cfg_edge_id_deterministic() {
+        let file_id = FileId::generate("src/main.ts");
+        let func_id = SymbolId::generate(&file_id, "typescript", "handler", "function", None);
+        let src = CfgNodeId::generate(&func_id, "entry", 10);
+        let tgt = CfgNodeId::generate(&func_id, "statement", 100);
+        let id1 = CfgEdgeId::generate(&src, &tgt, "normal");
+        let id2 = CfgEdgeId::generate(&src, &tgt, "normal");
+        assert_eq!(id1, id2);
     }
 }

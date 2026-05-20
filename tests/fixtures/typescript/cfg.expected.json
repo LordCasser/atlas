@@ -1,0 +1,108 @@
+{
+  "symbols": [
+    {
+      "name": "greet",
+      "kind": "function"
+    },
+    {
+      "name": "msg",
+      "kind": "variable"
+    },
+    {
+      "name": "check",
+      "kind": "function"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#0",
+      "kind": "function"
+    },
+    {
+      "name": "Block#37",
+      "kind": "block"
+    },
+    {
+      "name": "Function#91",
+      "kind": "function"
+    },
+    {
+      "name": "Block#125",
+      "kind": "block"
+    },
+    {
+      "name": "Conditional#131",
+      "kind": "conditional"
+    },
+    {
+      "name": "Block#142",
+      "kind": "block"
+    },
+    {
+      "name": "Block#173",
+      "kind": "block"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "exit"
+    },
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "branch"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "return",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "entry",
+      "target_kind": "branch",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "join",
+      "kind": "true_branch"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "join",
+      "kind": "false_branch"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "exit",
+      "kind": "normal"
+    }
+  ]
+}

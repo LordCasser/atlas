@@ -1,35 +1,38 @@
 //! Atlas core type system: IDs, enums, and the Intermediate Representation (IR).
 //!
 //! ## Layering
-//! - `ids`  — 11 typed blake3 newtypes stored as BLOB in SQLite.
-//! - `enums` — 14 enum families describing language, kind, visibility, etc.
+//! - `ids`  — 13 typed blake3 newtypes stored as BLOB in SQLite.
+//! - `enums` — 16 enum families describing language, kind, visibility, etc.
 //! - `structs` — the core IR: SymbolDef, ReferenceUse, FileFacts, etc.
 //! - `bindings` — lexical binding types (P3: binding graph foundation).
 //! - `dataflow` — dataflow types (P3: DataNode → DataNode, NOT SymbolId).
+//! - `cfg` — control-flow graph types (P4: per-function CFG).
 //!
 //! ## Invariants
 //! - IDs are deterministically derived (same inputs → same [u8; 32]).
 //! - References are preserved after resolution (via `resolved: Option<...>`).
 //! - All semantic edges carry `Confidence` and `Provenance`.
 //! - DataNode → DataNode edges form the dataflow graph (NOT SymbolId).
+//! - CfgNode → CfgNode edges form the control-flow graph (per-function).
 
 pub mod ids;
 pub mod enums;
 pub mod structs;
 pub mod bindings;
 pub mod dataflow;
+pub mod cfg;
 
 // --- IDs ---
 pub use ids::{
-    BindingId, BindingUseId, CallsiteId, DataFlowEdgeId, DataNodeId, EdgeId, FileId, ImportId,
-    ReferenceId, ScopeId, SymbolId,
+    BindingId, BindingUseId, CallsiteId, CfgEdgeId, CfgNodeId, DataFlowEdgeId, DataNodeId, EdgeId,
+    FileId, ImportId, ReferenceId, ScopeId, SymbolId,
 };
 
 // --- Enums ---
 pub use enums::{
-    BindingKind, DataFlowKind, DataNodeKind, EdgeKind, ImportKind, Language, ParseStatus,
-    Provenance, ReferenceKind, ResolutionStatus, ResolutionStrategy, ScopeKind, SymbolKind,
-    Visibility,
+    BindingKind, CfgEdgeKind, CfgNodeKind, DataFlowKind, DataNodeKind, EdgeKind, ImportKind,
+    Language, ParseStatus, Provenance, ReferenceKind, ResolutionStatus, ResolutionStrategy,
+    ScopeKind, SymbolKind, Visibility,
 };
 pub use enums::Confidence;
 
@@ -45,6 +48,9 @@ pub use bindings::{BindingDef, BindingUse};
 
 // --- Dataflow (P3) ---
 pub use dataflow::{CallsiteArg, DataFlowEdge, DataNode};
+
+// --- CFG (P4) ---
+pub use cfg::{CfgEdge, CfgNode};
 
 // --- Utilities ---
 

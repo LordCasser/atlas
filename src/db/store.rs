@@ -848,6 +848,18 @@ impl Store {
         self.with_transaction(|tx| write_callsite_args(tx, args))
     }
 
+    /// Batch-insert CFG nodes.
+    pub fn insert_cfg_nodes(&self, nodes: &[CfgNode]) -> anyhow::Result<()> {
+        if nodes.is_empty() { return Ok(()); }
+        self.with_transaction(|tx| write_cfg_nodes(tx, nodes))
+    }
+
+    /// Batch-insert CFG edges.
+    pub fn insert_cfg_edges(&self, edges: &[CfgEdge]) -> anyhow::Result<()> {
+        if edges.is_empty() { return Ok(()); }
+        self.with_transaction(|tx| write_cfg_edges(tx, edges))
+    }
+
     // -----------------------------------------------------------------------
     // P3: Binding + Dataflow — query APIs
     // -----------------------------------------------------------------------
@@ -911,6 +923,33 @@ impl Store {
              FROM dataflow_edges WHERE target = ?1",
         )?;
         let rows = stmt.query_map(params![target], row_to_dataflow_edge)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    // -----------------------------------------------------------------------
+    // P4: CFG — query APIs
+    // -----------------------------------------------------------------------
+
+    /// Find all CFG nodes for a function.
+    pub fn find_cfg_nodes_by_function(&self, function_id: &SymbolId) -> anyhow::Result<Vec<CfgNode>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT cfg_node_id, function_id, kind,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column
+             FROM cfg_nodes WHERE function_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![function_id], row_to_cfg_node)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find CFG edges originating from a CFG node.
+    pub fn find_cfg_edges_by_source(&self, source: &CfgNodeId) -> anyhow::Result<Vec<CfgEdge>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT cfg_edge_id, source_node, target_node, kind FROM cfg_edges WHERE source_node = ?1",
+        )?;
+        let rows = stmt.query_map(params![source], row_to_cfg_edge)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -993,6 +1032,12 @@ impl Store {
         }
         if !facts.callsite_args.is_empty() {
             write_callsite_args(&tx, &facts.callsite_args)?;
+        }
+        if !facts.cfg_nodes.is_empty() {
+            write_cfg_nodes(&tx, &facts.cfg_nodes)?;
+        }
+        if !facts.cfg_edges.is_empty() {
+            write_cfg_edges(&tx, &facts.cfg_edges)?;
         }
 
         tx.commit()?;
@@ -1649,6 +1694,70 @@ fn write_callsite_args(conn: &Connection, args: &[CallsiteArg]) -> anyhow::Resul
             a.range.start_byte, a.range.end_byte, a.range.start_line,
             a.range.start_column, a.range.end_line, a.range.end_column,
         ])?;
+    }
+    Ok(())
+}
+
+// ── P4: CFG — row converters and low-level writers ────────────────────────
+
+fn row_to_cfg_node(row: &rusqlite::Row) -> rusqlite::Result<CfgNode> {
+    use crate::types::enums::CfgNodeKind;
+    let kind_str: String = row.get(2)?;
+    let kind = CfgNodeKind::from_str(&kind_str).unwrap_or(CfgNodeKind::Statement);
+    Ok(CfgNode {
+        id: row.get(0)?,
+        function_id: row.get(1)?,
+        kind,
+        stmt_range: TextRange {
+            start_byte: row.get::<_, u32>(3)? as u32,
+            end_byte: row.get::<_, u32>(4)? as u32,
+            start_line: row.get::<_, u32>(5)? as u32,
+            start_column: row.get::<_, u32>(6)? as u32,
+            end_line: row.get::<_, u32>(7)? as u32,
+            end_column: row.get::<_, u32>(8)? as u32,
+        },
+    })
+}
+
+fn row_to_cfg_edge(row: &rusqlite::Row) -> rusqlite::Result<CfgEdge> {
+    use crate::types::enums::CfgEdgeKind;
+    let kind_str: String = row.get(3)?;
+    let kind = CfgEdgeKind::from_str(&kind_str).unwrap_or(CfgEdgeKind::Normal);
+    Ok(CfgEdge {
+        id: row.get(0)?,
+        source: row.get(1)?,
+        target: row.get(2)?,
+        kind,
+    })
+}
+
+fn write_cfg_nodes(conn: &Connection, nodes: &[CfgNode]) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(
+        r#"INSERT OR REPLACE INTO cfg_nodes
+           (cfg_node_id, function_id, kind,
+            range_start_byte, range_end_byte, range_start_line, range_start_column,
+            range_end_line, range_end_column)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"#,
+    )?;
+    for n in nodes {
+        stmt.execute(params![
+            n.id, n.function_id, n.kind.as_str(),
+            n.stmt_range.start_byte, n.stmt_range.end_byte,
+            n.stmt_range.start_line, n.stmt_range.start_column,
+            n.stmt_range.end_line, n.stmt_range.end_column,
+        ])?;
+    }
+    Ok(())
+}
+
+fn write_cfg_edges(conn: &Connection, edges: &[CfgEdge]) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(
+        r#"INSERT OR REPLACE INTO cfg_edges
+           (cfg_edge_id, source_node, target_node, kind)
+        VALUES (?1,?2,?3,?4)"#,
+    )?;
+    for e in edges {
+        stmt.execute(params![e.id, e.source, e.target, e.kind.as_str()])?;
     }
     Ok(())
 }

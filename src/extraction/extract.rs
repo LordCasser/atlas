@@ -12,14 +12,16 @@ use tree_sitter::{Parser, Query, QueryCursor};
 
 use crate::types::{
     Callsite, DiagnosticLevel, ExtractDiagnostic, FileFacts, FileInfo,
-    ParseStatus, ReferenceKind,
+    ParseStatus, ReferenceKind, SymbolDef,
 };
+use crate::types::enums::SymbolKind;
 use crate::types::ids::{CallsiteId, FileId};
 
 use super::languages::{node_range, LanguageAdapter};
 use super::semantic_binder::SemanticBinder;
 use super::lexical_binder::LexicalBindingResult;
 use super::dataflow_builder::DataFlowResult;
+use super::cfg_builder::{CfgBuilder, CfgResult};
 
 /// Extract a single file's facts using the given adapter.
 pub fn extract_file(
@@ -149,6 +151,20 @@ pub fn extract_file(
     let data_nodes = dataflow_result.nodes;
     let dataflow_edges = dataflow_result.edges;
 
+    // 7c. Build per-function control-flow graphs (CfgBuilder)
+    //     Matches function symbols to tree-sitter nodes, builds CFG for each.
+    let cfg_result = build_cfg_for_functions(root, &symbols, source_bytes)
+        .unwrap_or_else(|e| {
+            diagnostics.push(ExtractDiagnostic {
+                level: DiagnosticLevel::Warning,
+                message: format!("CFG builder failed: {}", e),
+                range: None,
+            });
+            CfgResult::default()
+        });
+    let cfg_nodes = cfg_result.nodes;
+    let cfg_edges = cfg_result.edges;
+
     // 8. Bind source ownership and scope through the semantic binder.
     // This is the single source of truth for references/dataflow/callsites:
     // adapters may produce best-effort source IDs, but only IDs present in
@@ -211,6 +227,8 @@ pub fn extract_file(
         data_nodes,        // P3: per-function dataflow nodes
         dataflow_edges,    // P3: DataNode→DataNode dataflow edges
         callsite_args: vec![],  // P3: filled later by post-processing
+        cfg_nodes,          // P4: per-function control-flow graph nodes
+        cfg_edges,          // P4: per-function control-flow graph edges
     })
 }
 
@@ -293,6 +311,59 @@ pub(crate) fn collect_captures<'a>(
         }
     }
     Ok(captures_result)
+}
+
+// ── CFG Helper ────────────────────────────────────────────────────────────
+
+/// Function node kinds that CfgBuilder handles across languages.
+const FUNCTION_NODE_KINDS: &[&str] = &[
+    "function_declaration", "method_definition", "arrow_function",
+    "generator_function_declaration", "generator_function",
+    "function_definition", "async_function_definition",
+    "method_declaration", "constructor_declaration",
+];
+
+/// Build per-function control-flow graphs by matching function symbols
+/// to tree-sitter nodes.
+fn build_cfg_for_functions<'a>(
+    root: tree_sitter::Node<'a>,
+    symbols: &[SymbolDef],
+    source_bytes: &[u8],
+) -> anyhow::Result<CfgResult> {
+    let function_symbols: Vec<&SymbolDef> = symbols
+        .iter()
+        .filter(|s| matches!(s.kind,
+            SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor))
+        .collect();
+
+    let mut all_nodes = Vec::new();
+    let mut all_edges = Vec::new();
+
+    for sym in &function_symbols {
+        if let Some(func_node) = find_function_node(root, sym) {
+            let result = CfgBuilder::build(&sym.id, func_node, source_bytes);
+            all_nodes.extend(result.nodes);
+            all_edges.extend(result.edges);
+        }
+    }
+
+    Ok(CfgResult { nodes: all_nodes, edges: all_edges })
+}
+
+/// Walk up from the symbol's name position to find the enclosing function node.
+fn find_function_node<'a>(
+    root: tree_sitter::Node<'a>,
+    symbol: &SymbolDef,
+) -> Option<tree_sitter::Node<'a>> {
+    let pos = symbol.name_range.start_byte as usize;
+    let mut node = root.descendant_for_byte_range(pos, pos)?;
+    // Walk up parent chain to find the enclosing function node
+    loop {
+        if FUNCTION_NODE_KINDS.contains(&node.kind()) {
+            return Some(node);
+        }
+        node = node.parent()?;
+    }
 }
 
 #[cfg(test)]

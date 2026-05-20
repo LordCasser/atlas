@@ -1,0 +1,66 @@
+{
+  "symbols": [
+    {
+      "name": "main",
+      "kind": "function"
+    }
+  ],
+  "references": [
+    {
+      "text": "helper",
+      "kind": "call"
+    },
+    {
+      "text": "printf",
+      "kind": "call"
+    }
+  ],
+  "imports": [
+    {
+      "module": "<stdio.h>"
+    },
+    {
+      "module": "helper.h"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "// Golden test fixture: C includes\n// Covers: local #include with quotes, function definitions and calls\n\n#include <stdio.h>\n#include \"helper.h\"\n\nint main() {\n    int result = helper(42);\n    printf(\"Result: %d\\n\", result);\n    return 0;\n}\n",
+      "kind": "file"
+    },
+    {
+      "name": "{\n    int result = helper(42);\n    printf(\"Result: %d\\n\", result);\n    return 0;\n}",
+      "kind": "function"
+    },
+    {
+      "name": "{\n    int result = helper(42);\n    printf(\"Result: %d\\n\", result);\n    return 0;\n}",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "main"
+    },
+    {
+      "caller": "main"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "exit",
+      "kind": "normal"
+    }
+  ]
+}

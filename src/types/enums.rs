@@ -854,6 +854,102 @@ impl DataFlowKind {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CfgNodeKind — CFG node types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Type of control-flow graph node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CfgNodeKind {
+    /// Function entry node (virtual start).
+    Entry,
+    /// Function exit node (virtual end).
+    Exit,
+    /// Regular statement node.
+    Statement,
+    /// Branch point (if/switch/ternary).
+    Branch,
+    /// Loop header (for/while/do).
+    Loop,
+    /// Return statement node.
+    Return,
+    /// Throw statement node.
+    Throw,
+    /// Join point after branch/loop.
+    Join,
+}
+
+impl CfgNodeKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Entry => "entry",
+            Self::Exit => "exit",
+            Self::Statement => "statement",
+            Self::Branch => "branch",
+            Self::Loop => "loop",
+            Self::Return => "return",
+            Self::Throw => "throw",
+            Self::Join => "join",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "entry" => Some(Self::Entry),
+            "exit" => Some(Self::Exit),
+            "statement" => Some(Self::Statement),
+            "branch" => Some(Self::Branch),
+            "loop" => Some(Self::Loop),
+            "return" => Some(Self::Return),
+            "throw" => Some(Self::Throw),
+            "join" => Some(Self::Join),
+            _ => None,
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CfgEdgeKind — CFG edge types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Type of control-flow graph edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CfgEdgeKind {
+    /// Sequential normal flow.
+    Normal,
+    /// True branch of a condition.
+    TrueBranch,
+    /// False branch of a condition.
+    FalseBranch,
+    /// Loop back edge.
+    LoopBack,
+    /// Exception flow edge.
+    Exception,
+}
+
+impl CfgEdgeKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::TrueBranch => "true_branch",
+            Self::FalseBranch => "false_branch",
+            Self::LoopBack => "loop_back",
+            Self::Exception => "exception",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "normal" => Some(Self::Normal),
+            "true_branch" => Some(Self::TrueBranch),
+            "false_branch" => Some(Self::FalseBranch),
+            "loop_back" => Some(Self::LoopBack),
+            "exception" => Some(Self::Exception),
+            _ => None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

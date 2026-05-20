@@ -100,7 +100,6 @@ pub struct BindingUse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::enums::Language;
     use crate::types::ids::FileId;
     use crate::types::ids::ScopeId;
     use crate::types::ids::SymbolId;

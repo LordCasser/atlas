@@ -1,6 +1,6 @@
 //! Atlas-native SQLite schema DDL and migration system.
 //!
-//! Schema version: 5
+//! Schema version: 6
 //!
 //! ## Tables
 //! - `files`          — per-file metadata
@@ -15,12 +15,14 @@
 //! - `data_nodes`     — dataflow nodes (P3)
 //! - `dataflow_edges` — dataflow edges between DataNodes (P3)
 //! - `callsite_args`  — individual arguments at callsites (P3)
+//! - `cfg_nodes`      — control-flow graph nodes per function (P4)
+//! - `cfg_edges`      — control-flow graph edges (P4)
 //! - `project_metadata` — key-value project configuration
 //! - `symbols_fts`    — FTS5 index on symbol names
 //! - `schema_versions` — migration tracking
 
 /// Current schema version. Increment on every schema change.
-pub const CURRENT_SCHEMA_VERSION: i64 = 5;
+pub const CURRENT_SCHEMA_VERSION: i64 = 6;
 
 /// Minimum readable schema version (for backward compatibility).
 pub const MIN_READABLE_VERSION: i64 = 1;
@@ -237,6 +239,27 @@ CREATE TABLE IF NOT EXISTS callsite_args (
     PRIMARY KEY (callsite_id, index_)
 );
 
+-- cfg_nodes: per-function control-flow graph nodes
+CREATE TABLE IF NOT EXISTS cfg_nodes (
+    cfg_node_id          BLOB PRIMARY KEY NOT NULL,
+    function_id          BLOB NOT NULL REFERENCES symbols(symbol_id) ON DELETE CASCADE,
+    kind                 TEXT NOT NULL,            -- entry/exit/statement/branch/loop/return/throw/join
+    range_start_byte     INTEGER NOT NULL,
+    range_end_byte       INTEGER NOT NULL,
+    range_start_line     INTEGER NOT NULL,
+    range_start_column   INTEGER NOT NULL,
+    range_end_line       INTEGER NOT NULL,
+    range_end_column     INTEGER NOT NULL
+);
+
+-- cfg_edges: control-flow edges between CFG nodes
+CREATE TABLE IF NOT EXISTS cfg_edges (
+    cfg_edge_id          BLOB PRIMARY KEY NOT NULL,
+    source_node          BLOB NOT NULL REFERENCES cfg_nodes(cfg_node_id) ON DELETE CASCADE,
+    target_node          BLOB NOT NULL REFERENCES cfg_nodes(cfg_node_id) ON DELETE CASCADE,
+    kind                 TEXT NOT NULL             -- normal/true_branch/false_branch/loop_back/exception
+);
+
 -- FTS5 virtual table for symbol name search
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     name,
@@ -340,6 +363,18 @@ CREATE INDEX IF NOT EXISTS idx_dataflow_edges_kind
 CREATE INDEX IF NOT EXISTS idx_callsite_args_data_node
     ON callsite_args(data_node_id);
 
+CREATE INDEX IF NOT EXISTS idx_cfg_nodes_function
+    ON cfg_nodes(function_id);
+CREATE INDEX IF NOT EXISTS idx_cfg_nodes_kind
+    ON cfg_nodes(kind);
+
+CREATE INDEX IF NOT EXISTS idx_cfg_edges_source
+    ON cfg_edges(source_node);
+CREATE INDEX IF NOT EXISTS idx_cfg_edges_target
+    ON cfg_edges(target_node);
+CREATE INDEX IF NOT EXISTS idx_cfg_edges_kind
+    ON cfg_edges(kind);
+
 -- --- FTS Triggers ---
 
 CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
@@ -390,6 +425,8 @@ mod tests {
         assert!(tables.contains(&"data_nodes".to_string()));
         assert!(tables.contains(&"dataflow_edges".to_string()));
         assert!(tables.contains(&"callsite_args".to_string()));
+        assert!(tables.contains(&"cfg_nodes".to_string()));
+        assert!(tables.contains(&"cfg_edges".to_string()));
         assert!(tables.contains(&"symbols_fts".to_string()));
         assert!(tables.contains(&"project_metadata".to_string()));
         assert!(tables.contains(&"schema_versions".to_string()));

@@ -20,6 +20,7 @@ mod symbol_registry;
 mod worker;
 mod lexical_binder;
 mod dataflow_builder;
+mod cfg_builder;
 
 pub use engine::{QueryCapture, QueryResults, run_queries, run_queries_text};
 pub use extract::extract_file;
@@ -31,3 +32,4 @@ pub use symbol_registry::{all_edge_sources_known, all_reference_sources_known, S
 pub use worker::{ParseWorkerPool, WorkerConfig};
 pub use lexical_binder::{LexicalBinder, LexicalBindingResult};
 pub use dataflow_builder::{DataFlowBuilder, DataFlowResult};
+pub use cfg_builder::{CfgBuilder, CfgResult};

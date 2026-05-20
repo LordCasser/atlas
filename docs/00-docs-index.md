@@ -149,7 +149,11 @@ MVP milestones
 - [`12-p2-refactor-log.md`](./12-p2-refactor-log.md) — P2 模块解析+调用图实施日志
 - [`13-p3-refactor-log.md`](./13-p3-refactor-log.md) — P3 绑定图+数据流图实施日志
 
-### 2.10 v2 全量重构方案（长期参考）
+### 2.10 CFG 与控制流图 (P4)
+
+- [`14-p4-refactor-log.md`](./14-p4-refactor-log.md) — P4 CFG/CfgBuilder 实施日志
+
+### 2.11 v2 全量重构方案（长期参考）
 
 - [`../ARCHITECTURE_CLEAN_REFACTOR_V2.md`](../ARCHITECTURE_CLEAN_REFACTOR_V2.md)
 
@@ -175,6 +179,7 @@ docs/
   11-p1-refactor-log.md
   12-p2-refactor-log.md
   13-p3-refactor-log.md
+  14-p4-refactor-log.md
 ```
 
 如需增加新文档，请保持编号顺序，并在本索引中注册。
