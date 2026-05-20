@@ -40,10 +40,6 @@ impl LanguageAdapter for CangjieAdapter {
         include_str!("../queries/cangjie/scopes.scm")
     }
 
-    fn dataflow_query(&self) -> &str {
-        include_str!("../queries/cangjie/dataflow.scm")
-    }
-
     // -------------------------------------------------------------------
     // Normalizers
     // -------------------------------------------------------------------
@@ -166,54 +162,6 @@ impl LanguageAdapter for CangjieAdapter {
             range,
         })
     }
-
-    fn normalize_dataflow(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        _file_path: &Path,
-    ) -> Option<RawEdge> {
-        let kind_str = cj_dataflow_kind(capture_name)?;
-        let kind = EdgeKind::from_str(kind_str).unwrap_or(EdgeKind::Assigns);
-        let text = node_text(node, source)?;
-        let range = node_range(node);
-
-        // Use a placeholder source; SemanticBinder::resolve_edge_sources()
-        // will rewrite it via the location field after extraction.
-        let placeholder = SymbolId::generate(
-            &file_id,
-            "placeholder",
-            "",
-            "placeholder",
-            None::<&str>,
-        );
-        let target = SymbolId::generate(
-            &file_id,
-            "dataflow",
-            &text,
-            kind_str,
-            None::<&str>,
-        );
-        let edge_id = EdgeId::generate(
-            &placeholder,
-            &target,
-            kind_str,
-            None::<&ReferenceId>,
-            Provenance::TreeSitter.as_str(),
-        );
-        let mut edge = RawEdge::new(
-            edge_id,
-            placeholder,
-            target,
-            kind,
-            Confidence::certain(),
-            Provenance::TreeSitter,
-        );
-        edge.location = Some(range);
-        Some(edge)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -298,16 +246,6 @@ fn cj_scope_kind(capture: &str) -> Option<ScopeKind> {
     }
 }
 
-fn cj_dataflow_kind(capture: &str) -> Option<&'static str> {
-    match capture {
-        "dataflow.parameter" => Some("parameter"),
-        "dataflow.return" => Some("returns"),
-        "dataflow.assign" => Some("assigns"),
-        "dataflow.field_write" => Some("field_write"),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,7 +259,6 @@ mod tests {
         assert!(!adapter.reference_query().is_empty());
         assert!(!adapter.import_query().is_empty());
         assert!(!adapter.scope_query().is_empty());
-        assert!(!adapter.dataflow_query().is_empty());
     }
 
     #[test]
@@ -345,9 +282,6 @@ mod tests {
 
         let sc_q = tree_sitter::Query::new(&lang, adapter.scope_query());
         assert!(sc_q.is_ok(), "scopes query: {:?}", sc_q.err());
-
-        let df_q = tree_sitter::Query::new(&lang, adapter.dataflow_query());
-        assert!(df_q.is_ok(), "dataflow query: {:?}", df_q.err());
     }
 
     #[test]

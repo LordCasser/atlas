@@ -43,10 +43,6 @@ impl LanguageAdapter for JavaScriptAdapter {
         include_str!("../queries/typescript/scopes.scm")
     }
 
-    fn dataflow_query(&self) -> &str {
-        include_str!("../queries/typescript/dataflow.scm")
-    }
-
     fn normalize_definition(
         &self,
         capture_name: &str,
@@ -95,18 +91,6 @@ impl LanguageAdapter for JavaScriptAdapter {
     ) -> Option<ScopeDef> {
         super::typescript::TypeScriptAdapter
             .normalize_scope(capture_name, node, source, file_id, file_path)
-    }
-
-    fn normalize_dataflow(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        file_path: &Path,
-    ) -> Option<RawEdge> {
-        super::typescript::TypeScriptAdapter
-            .normalize_dataflow(capture_name, node, source, file_id, file_path)
     }
 
     fn detect_package(&self, source: &str, file_path: &Path) -> Option<String> {

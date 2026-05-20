@@ -14,10 +14,11 @@ use crate::types::{
     Callsite, DiagnosticLevel, ExtractDiagnostic, FileFacts, FileInfo,
     ParseStatus, ReferenceKind, SymbolDef,
 };
+use crate::types::dataflow::DataNode;
 use crate::types::enums::SymbolKind;
 use crate::types::ids::{CallsiteId, FileId};
 
-use super::languages::{node_range, LanguageAdapter};
+use super::languages::LanguageAdapter;
 use super::semantic_binder::SemanticBinder;
 use super::lexical_binder::LexicalBindingResult;
 use super::dataflow_builder::DataFlowResult;
@@ -94,24 +95,9 @@ pub fn extract_file(
         },
     )?;
 
-    // 6. Extract and normalize dataflow edges (parameter, returns, assignments, field access)
-    let dataflow_query = adapter.dataflow_query();
-    let mut raw_edges = if dataflow_query.trim().is_empty() {
-        Vec::new()
-    } else {
-        extract_and_normalize(
-            adapter, &ts_lang, dataflow_query, root, source, source_bytes,
-            file_id, file_path, &mut diagnostics,
-            |adapter, name, node, src, fid, fp| {
-                adapter.normalize_dataflow(&name, node, src, fid, fp).map(|mut edge| {
-                    // Central source resolution relies on the original capture
-                    // range rather than adapter-generated source IDs.
-                    edge.location = Some(node_range(node));
-                    edge
-                })
-            },
-        )?
-    };
+    // 6. Raw edges are now populated downstream by GraphBuilder (new P3 path).
+    //    Old normalize_dataflow path was removed in favor of DataFlowBuilder.
+    let mut raw_edges = Vec::new();
 
     // 7. Build scope tree and assign containers
     super::build_scope_tree(&mut scopes, &mut symbols);
@@ -148,7 +134,7 @@ pub fn extract_file(
         });
         DataFlowResult::default()
     });
-    let data_nodes = dataflow_result.nodes;
+    let mut data_nodes = dataflow_result.nodes;
     let dataflow_edges = dataflow_result.edges;
 
     // 7c. Build per-function control-flow graphs (CfgBuilder)
@@ -164,6 +150,12 @@ pub fn extract_file(
         });
     let cfg_nodes = cfg_result.nodes;
     let cfg_edges = cfg_result.edges;
+
+    // 7d. Resolve DataNode function_ids from enclosing function symbols.
+    //     DataFlowBuilder produces nodes without function_id (None).  This
+    //     step walks the AST to find the enclosing function for each node
+    //     and sets function_id to the matching SymbolDef.
+    resolve_dataflow_function_ids(&mut data_nodes, &symbols);
 
     // 8. Bind source ownership and scope through the semantic binder.
     // This is the single source of truth for references/dataflow/callsites:
@@ -350,6 +342,51 @@ fn build_cfg_for_functions<'a>(
     Ok(CfgResult { nodes: all_nodes, edges: all_edges })
 }
 
+/// Resolve DataNode function_ids by matching each node to its enclosing
+/// function symbol.
+///
+/// For each DataNode with `function_id: None`, finds the function symbol
+/// whose range contains the node's start position, and sets the id.
+fn resolve_dataflow_function_ids(
+    nodes: &mut [DataNode],
+    symbols: &[SymbolDef],
+) {
+    // Build (start_byte, end_byte, symbol_id) for all function symbols
+    let function_ranges: Vec<(u32, u32, crate::types::ids::SymbolId)> = symbols
+        .iter()
+        .filter(|s| matches!(s.kind,
+            SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor))
+        .map(|s| (s.range.start_byte, s.range.end_byte, s.id))
+        .collect();
+
+    if function_ranges.is_empty() {
+        return;
+    }
+
+    for node in nodes.iter_mut() {
+        if node.function_id.is_some() {
+            continue;
+        }
+        // Find the innermost function that contains this node's start position
+        let pos = node.range.start_byte;
+        let mut best: Option<(u32, u32, crate::types::ids::SymbolId)> = None;
+        for (start, end, id) in &function_ranges {
+            if pos >= *start && pos <= *end {
+                match best {
+                    Some((bs, be, _)) if (*end - *start) < (be - bs) => {
+                        best = Some((*start, *end, *id));
+                    }
+                    None => best = Some((*start, *end, *id)),
+                    _ => {}
+                }
+            }
+        }
+        if let Some((_, _, id)) = best {
+            node.function_id = Some(id);
+        }
+    }
+}
+
 /// Walk up from the symbol's name position to find the enclosing function node.
 fn find_function_node<'a>(
     root: tree_sitter::Node<'a>,
@@ -497,30 +534,30 @@ void C::m() {
 
     #[test]
     fn test_extract_ts_dataflow() {
+        // New P3 path: DataFlowBuilder produces DataNodes + DataFlowEdges
         let source = "function add(a: number, b: number) {\n  let result = a + b;\n  return result;\n}\n";
         let file_id = FileId::generate("test.ts");
         let adapter = TypeScriptAdapter;
         let file_path = PathBuf::from("test.ts");
 
         let facts = extract_file(&adapter, file_id, &file_path, source, "abc").unwrap();
-        assert!(!facts.raw_edges.is_empty(), "Should have dataflow edges");
-        // Check for at least one parameter edge
-        let has_param = facts.raw_edges.iter().any(|e| e.kind.as_str() == "parameter");
-        assert!(has_param, "Expected parameter edges, got: {:?}", facts.raw_edges.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>());
+        assert!(!facts.data_nodes.is_empty(), "Should have dataflow nodes");
+        assert!(!facts.dataflow_edges.is_empty(), "Should have dataflow edges");
     }
 
     #[test]
     fn test_extract_python_dataflow() {
+        // Python adapter does not yet implement DataFlowBuilder.
+        // This test verifies basic extraction still succeeds without the old
+        // normalize_dataflow path.
         let source = "def add(a, b):\n    c = a + b\n    return c\n";
         let file_id = FileId::generate("test.py");
         let adapter = PythonAdapter;
         let file_path = PathBuf::from("test.py");
 
         let facts = extract_file(&adapter, file_id, &file_path, source, "abc").unwrap();
-        assert!(!facts.raw_edges.is_empty(), "Should have dataflow edges");
-        // Check for at least one parameter edge
-        let has_param = facts.raw_edges.iter().any(|e| e.kind.as_str() == "parameter");
-        assert!(has_param, "Expected parameter edges, got: {:?}", facts.raw_edges.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>());
+        assert!(!facts.symbols.is_empty(), "Should have symbols");
+        assert!(facts.raw_edges.is_empty(), "Old dataflow path removed");
     }
 
     #[test]
@@ -568,7 +605,6 @@ calc.add(1, 2);
 
         let facts = extract_file(&adapter, file_id, &file_path, source, "abc").unwrap();
         assert!(!facts.symbols.is_empty());
-        assert!(!facts.raw_edges.is_empty());
 
         let store = Store::open_in_memory().unwrap();
         store.init_schema().unwrap();

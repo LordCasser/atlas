@@ -225,64 +225,12 @@ impl LanguageAdapter for TypeScriptAdapter {
         frameworks
     }
 
-    fn dataflow_query(&self) -> &str {
-        include_str!("../queries/typescript/dataflow.scm")
-    }
-
     fn lexical_query(&self) -> &str {
         include_str!("../queries/typescript/lexical.scm")
     }
 
     fn dataflow_builder_query(&self) -> &str {
         include_str!("../queries/typescript/dataflow_builder.scm")
-    }
-
-    fn normalize_dataflow(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        _file_path: &Path,
-    ) -> Option<RawEdge> {
-        let kind_str = ts_dataflow_kind(capture_name)?;
-        let kind = EdgeKind::from_str(kind_str).unwrap_or(EdgeKind::Assigns);
-        let text = node_text(node, source)?;
-        let range = node_range(node);
-
-        // Use a placeholder source; SemanticBinder::resolve_edge_sources()
-        // will rewrite it via the location field after extraction.
-        let placeholder = SymbolId::generate(
-            &file_id,
-            "placeholder",
-            "",
-            "placeholder",
-            None::<&str>,
-        );
-        let target = SymbolId::generate(
-            &file_id,
-            "dataflow",
-            &text,
-            kind_str,
-            None::<&str>,
-        );
-        let edge_id = EdgeId::generate(
-            &placeholder,
-            &target,
-            kind_str,
-            None::<&ReferenceId>,
-            Provenance::TreeSitter.as_str(),
-        );
-        let mut edge = RawEdge::new(
-            edge_id,
-            placeholder,
-            target,
-            kind,
-            Confidence::certain(),
-            Provenance::TreeSitter,
-        );
-        edge.location = Some(range);
-        Some(edge)
     }
 
     fn normalize_lexical(
@@ -410,18 +358,6 @@ impl LanguageAdapter for TypeScriptAdapter {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Map dataflow capture name to EdgeKind string.
-fn ts_dataflow_kind(capture_name: &str) -> Option<&'static str> {
-    match capture_name {
-        "dataflow.parameter" => Some("parameter"),
-        "dataflow.return" => Some("returns"),
-        "dataflow.assign" => Some("assigns"),
-        "dataflow.field_write" => Some("field_write"),
-        "dataflow.field_read" => Some("field_read"),
-        _ => None,
-    }
-}
 
 /// Map lexical capture name to BindingKind.
 fn ts_binding_kind(capture_name: &str) -> Option<crate::types::enums::BindingKind> {
