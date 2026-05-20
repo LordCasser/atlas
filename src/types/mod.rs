@@ -1,26 +1,35 @@
 //! Atlas core type system: IDs, enums, and the Intermediate Representation (IR).
 //!
 //! ## Layering
-//! - `ids`  — 7 typed blake3 newtypes stored as BLOB in SQLite.
-//! - `enums` — 11 enum families describing language, kind, visibility, etc.
+//! - `ids`  — 11 typed blake3 newtypes stored as BLOB in SQLite.
+//! - `enums` — 14 enum families describing language, kind, visibility, etc.
 //! - `structs` — the core IR: SymbolDef, ReferenceUse, FileFacts, etc.
+//! - `bindings` — lexical binding types (P3: binding graph foundation).
+//! - `dataflow` — dataflow types (P3: DataNode → DataNode, NOT SymbolId).
 //!
 //! ## Invariants
 //! - IDs are deterministically derived (same inputs → same [u8; 32]).
 //! - References are preserved after resolution (via `resolved: Option<...>`).
 //! - All semantic edges carry `Confidence` and `Provenance`.
+//! - DataNode → DataNode edges form the dataflow graph (NOT SymbolId).
 
 pub mod ids;
 pub mod enums;
 pub mod structs;
+pub mod bindings;
+pub mod dataflow;
 
 // --- IDs ---
-pub use ids::{CallsiteId, EdgeId, FileId, ImportId, ReferenceId, ScopeId, SymbolId};
+pub use ids::{
+    BindingId, BindingUseId, CallsiteId, DataFlowEdgeId, DataNodeId, EdgeId, FileId, ImportId,
+    ReferenceId, ScopeId, SymbolId,
+};
 
 // --- Enums ---
 pub use enums::{
-    EdgeKind, ImportKind, Language, ParseStatus, Provenance, ReferenceKind, ResolutionStatus,
-    ResolutionStrategy, ScopeKind, SymbolKind, Visibility,
+    BindingKind, DataFlowKind, DataNodeKind, EdgeKind, ImportKind, Language, ParseStatus,
+    Provenance, ReferenceKind, ResolutionStatus, ResolutionStrategy, ScopeKind, SymbolKind,
+    Visibility,
 };
 pub use enums::Confidence;
 
@@ -30,6 +39,12 @@ pub use structs::{
     FileFacts, FileInfo, ImportDef, IndexReport, RawEdge, ReferenceUse, ResolvedTarget, ScopeDef,
     SymbolDef, TextRange,
 };
+
+// --- Bindings (P3) ---
+pub use bindings::{BindingDef, BindingUse};
+
+// --- Dataflow (P3) ---
+pub use dataflow::{CallsiteArg, DataFlowEdge, DataNode};
 
 // --- Utilities ---
 

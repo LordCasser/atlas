@@ -674,6 +674,187 @@ impl std::ops::Mul<f32> for Confidence {
 }
 
 // ---------------------------------------------------------------------------
+// BindingKind — lexical binding categories
+// ---------------------------------------------------------------------------
+
+/// 7 lexical binding kinds.  Used by [`super::bindings::BindingDef`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BindingKind {
+    /// Function / method formal parameter.
+    Parameter,
+    /// Local variable (let / const / var).
+    Local,
+    /// Class / struct field member.
+    Field,
+    /// Import alias (e.g. `import { x as y }` → alias "y").
+    ImportAlias,
+    /// Catch-clause variable.
+    CatchVariable,
+    /// Lambda / arrow-function parameter.
+    LambdaParameter,
+    /// Global-scope binding (top-level `var` / module-level).
+    Global,
+}
+
+impl BindingKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Parameter => "parameter",
+            Self::Local => "local",
+            Self::Field => "field",
+            Self::ImportAlias => "import_alias",
+            Self::CatchVariable => "catch_variable",
+            Self::LambdaParameter => "lambda_parameter",
+            Self::Global => "global",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "parameter" => Some(Self::Parameter),
+            "local" => Some(Self::Local),
+            "field" => Some(Self::Field),
+            "import_alias" => Some(Self::ImportAlias),
+            "catch_variable" => Some(Self::CatchVariable),
+            "lambda_parameter" => Some(Self::LambdaParameter),
+            "global" => Some(Self::Global),
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DataNodeKind — data-flow node categories
+// ---------------------------------------------------------------------------
+
+/// 11 data-node kinds.  Used by [`super::dataflow::DataNode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataNodeKind {
+    /// Formal parameter of a function.
+    Parameter,
+    /// Local variable binding.
+    Local,
+    /// Field / member access node.
+    Field,
+    /// Function return value.
+    Return,
+    /// Literal constant (string, number, bool).
+    Literal,
+    /// Generic expression node (when kind is not more specific).
+    Expr,
+    /// Argument passed at a call-site.
+    CallArg,
+    /// Value returned from a call-site.
+    CallReturn,
+    /// Receiver object (`this` / `self`).
+    Receiver,
+    /// Global / module-scoped variable.
+    Global,
+    /// Unknown / opaque node (conservative lower bound for taint).
+    Unknown,
+}
+
+impl DataNodeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Parameter => "parameter",
+            Self::Local => "local",
+            Self::Field => "field",
+            Self::Return => "return",
+            Self::Literal => "literal",
+            Self::Expr => "expr",
+            Self::CallArg => "call_arg",
+            Self::CallReturn => "call_return",
+            Self::Receiver => "receiver",
+            Self::Global => "global",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "parameter" => Some(Self::Parameter),
+            "local" => Some(Self::Local),
+            "field" => Some(Self::Field),
+            "return" => Some(Self::Return),
+            "literal" => Some(Self::Literal),
+            "expr" => Some(Self::Expr),
+            "call_arg" => Some(Self::CallArg),
+            "call_return" => Some(Self::CallReturn),
+            "receiver" => Some(Self::Receiver),
+            "global" => Some(Self::Global),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DataFlowKind — data-flow edge kinds
+// ---------------------------------------------------------------------------
+
+/// 10 data-flow edge kinds.  Used by [`super::dataflow::DataFlowEdge`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataFlowKind {
+    /// Assignment: `x = expr`  →  node(expr) → node(x)
+    Assign,
+    /// Read of a variable / field.
+    Read,
+    /// Write to a variable / field.
+    Write,
+    /// Field / member load: `a.b`  →  node(a) → node(a.b)
+    FieldLoad,
+    /// Field / member store: `a.b = v`  →  node(v) → node(a.b)
+    FieldStore,
+    /// Actual argument flows to formal parameter (inter-procedural).
+    ArgToParam,
+    /// Return value flows to call-site result (inter-procedural).
+    ReturnToCall,
+    /// Receiver flows to `this` / `self` inside callee.
+    ReceiverToThis,
+    /// Phi node (SSA merge point, e.g. after if-else).
+    Phi,
+    /// Sanitizer / filter node (breaks taint propagation).
+    Sanitized,
+}
+
+impl DataFlowKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Assign => "assign",
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::FieldLoad => "field_load",
+            Self::FieldStore => "field_store",
+            Self::ArgToParam => "arg_to_param",
+            Self::ReturnToCall => "return_to_call",
+            Self::ReceiverToThis => "receiver_to_this",
+            Self::Phi => "phi",
+            Self::Sanitized => "sanitized",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "assign" => Some(Self::Assign),
+            "read" => Some(Self::Read),
+            "write" => Some(Self::Write),
+            "field_load" => Some(Self::FieldLoad),
+            "field_store" => Some(Self::FieldStore),
+            "arg_to_param" => Some(Self::ArgToParam),
+            "return_to_call" => Some(Self::ReturnToCall),
+            "receiver_to_this" => Some(Self::ReceiverToThis),
+            "phi" => Some(Self::Phi),
+            "sanitized" => Some(Self::Sanitized),
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

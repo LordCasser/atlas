@@ -75,6 +75,24 @@ pub trait LanguageAdapter: Send + Sync {
         ""
     }
 
+    /// S-expression query for lexical binding extraction.
+    ///
+    /// Captures parameter declarations, local variable declarations (let/const/var),
+    /// import aliases, catch variables, and destructuring patterns.
+    /// Returns empty string by default — lexical binding is P3+.
+    fn lexical_query(&self) -> &str {
+        ""
+    }
+
+    /// S-expression query for dataflow builder.
+    ///
+    /// Captures assignments, return statements, call arguments, member access chains,
+    /// and literals for per-function dataflow graph construction.
+    /// Returns empty string by default — dataflow builder is P3+.
+    fn dataflow_builder_query(&self) -> &str {
+        ""
+    }
+
     // -------------------------------------------------------------------
     // Normalization: raw capture → Atlas IR
     // -------------------------------------------------------------------
@@ -136,6 +154,32 @@ pub trait LanguageAdapter: Send + Sync {
         _file_path: &Path,
     ) -> Option<RawEdge> {
         None
+    }
+
+    /// Convert a lexical query capture into a `BindingDef`, or `None`.
+    /// Default returns `None` — lexical binding is P3+.
+    fn normalize_lexical(
+        &self,
+        _capture_name: &str,
+        _node: tree_sitter::Node,
+        _source: &str,
+        _file_id: FileId,
+        _file_path: &Path,
+    ) -> Option<crate::types::bindings::BindingDef> {
+        None
+    }
+
+    /// Convert a dataflow builder query capture into a `DataNode` or `DataFlowEdge`,
+    /// returned as a tuple of optional vectors. Default returns `(None, None)`.
+    fn normalize_dataflow_builder(
+        &self,
+        _capture_name: &str,
+        _node: tree_sitter::Node,
+        _source: &str,
+        _file_id: FileId,
+        _file_path: &Path,
+    ) -> (Option<crate::types::dataflow::DataNode>, Option<crate::types::dataflow::DataFlowEdge>) {
+        (None, None)
     }
 
     // -------------------------------------------------------------------

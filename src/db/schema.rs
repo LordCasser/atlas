@@ -1,21 +1,26 @@
 //! Atlas-native SQLite schema DDL and migration system.
 //!
-//! Schema version: 4
+//! Schema version: 5
 //!
 //! ## Tables
-//! - `files`      — per-file metadata
-//! - `symbols`    — all symbol definitions
-//! - `scopes`     — containment regions
-//! - `references` — all reference uses (preserved after resolution)
-//! - `imports`    — import statements
-//! - `edges`      — semantic edges with confidence/provenance
-//! - `callsites`  — call expressions
+//! - `files`          — per-file metadata
+//! - `symbols`        — all symbol definitions
+//! - `scopes`         — containment regions
+//! - `references`     — all reference uses (preserved after resolution)
+//! - `imports`        — import statements
+//! - `symbol_edges`   — semantic edges between symbols (P3: renamed from edges)
+//! - `callsites`      — call expressions
+//! - `bindings`       — lexical binding definitions (P3)
+//! - `binding_uses`   — references to bindings (P3)
+//! - `data_nodes`     — dataflow nodes (P3)
+//! - `dataflow_edges` — dataflow edges between DataNodes (P3)
+//! - `callsite_args`  — individual arguments at callsites (P3)
 //! - `project_metadata` — key-value project configuration
-//! - `symbols_fts`— FTS5 index on symbol names
+//! - `symbols_fts`    — FTS5 index on symbol names
 //! - `schema_versions` — migration tracking
 
 /// Current schema version. Increment on every schema change.
-pub const CURRENT_SCHEMA_VERSION: i64 = 4;
+pub const CURRENT_SCHEMA_VERSION: i64 = 5;
 
 /// Minimum readable schema version (for backward compatibility).
 pub const MIN_READABLE_VERSION: i64 = 1;
@@ -100,7 +105,9 @@ CREATE TABLE IF NOT EXISTS "references" (
     resolved_symbol_id   BLOB,
     resolved_confidence  REAL,
     resolved_strategy    TEXT,
-    resolved_provenance  TEXT
+    resolved_provenance  TEXT,
+    -- P3: lexical binding link (filled by SemanticBinder after extraction)
+    binding_id           BLOB
 );
 
 CREATE TABLE IF NOT EXISTS imports (
@@ -121,7 +128,7 @@ CREATE TABLE IF NOT EXISTS imports (
     alias                TEXT
 );
 
-CREATE TABLE IF NOT EXISTS edges (
+CREATE TABLE IF NOT EXISTS symbol_edges (
     edge_id      BLOB PRIMARY KEY NOT NULL,
     source       BLOB NOT NULL REFERENCES symbols(symbol_id) ON DELETE CASCADE,
     target       BLOB,
@@ -152,6 +159,82 @@ CREATE TABLE IF NOT EXISTS callsites (
     range_start_column   INTEGER NOT NULL,
     range_end_line       INTEGER NOT NULL,
     range_end_column     INTEGER NOT NULL
+);
+
+-- ===== P3: Binding + Dataflow tables =====
+
+CREATE TABLE IF NOT EXISTS bindings (
+    binding_id           BLOB PRIMARY KEY NOT NULL,
+    file_id              BLOB NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
+    function_id          BLOB REFERENCES symbols(symbol_id) ON DELETE CASCADE,
+    scope_id             BLOB NOT NULL REFERENCES scopes(scope_id) ON DELETE CASCADE,
+    kind                 TEXT NOT NULL,
+    name                 TEXT NOT NULL,
+    symbol_id            BLOB REFERENCES symbols(symbol_id) ON DELETE SET NULL,
+    range_start_byte     INTEGER NOT NULL,
+    range_end_byte       INTEGER NOT NULL,
+    range_start_line     INTEGER NOT NULL,
+    range_start_column   INTEGER NOT NULL,
+    range_end_line       INTEGER NOT NULL,
+    range_end_column     INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS binding_uses (
+    binding_use_id       BLOB PRIMARY KEY NOT NULL,
+    file_id              BLOB NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
+    scope_id             BLOB REFERENCES scopes(scope_id),
+    binding_id           BLOB REFERENCES bindings(binding_id) ON DELETE SET NULL,
+    reference_id         BLOB REFERENCES "references"(reference_id) ON DELETE SET NULL,
+    name                 TEXT NOT NULL,
+    range_start_byte     INTEGER NOT NULL,
+    range_end_byte       INTEGER NOT NULL,
+    range_start_line     INTEGER NOT NULL,
+    range_start_column   INTEGER NOT NULL,
+    range_end_line       INTEGER NOT NULL,
+    range_end_column     INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS data_nodes (
+    data_node_id         BLOB PRIMARY KEY NOT NULL,
+    file_id              BLOB NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
+    function_id          BLOB REFERENCES symbols(symbol_id) ON DELETE CASCADE,
+    kind                 TEXT NOT NULL,
+    binding_id           BLOB REFERENCES bindings(binding_id) ON DELETE SET NULL,
+    callsite_id          BLOB REFERENCES callsites(callsite_id) ON DELETE SET NULL,
+    name                 TEXT,
+    access_path          TEXT,
+    range_start_byte     INTEGER NOT NULL,
+    range_end_byte       INTEGER NOT NULL,
+    range_start_line     INTEGER NOT NULL,
+    range_start_column   INTEGER NOT NULL,
+    range_end_line       INTEGER NOT NULL,
+    range_end_column     INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dataflow_edges (
+    dataflow_edge_id     BLOB PRIMARY KEY NOT NULL,
+    source               BLOB NOT NULL REFERENCES data_nodes(data_node_id) ON DELETE CASCADE,
+    target               BLOB NOT NULL REFERENCES data_nodes(data_node_id) ON DELETE CASCADE,
+    kind                 TEXT NOT NULL,
+    location_0           INTEGER,
+    location_1           INTEGER,
+    location_2           INTEGER,
+    confidence           REAL NOT NULL DEFAULT 0.8
+);
+
+CREATE TABLE IF NOT EXISTS callsite_args (
+    callsite_id          BLOB NOT NULL REFERENCES callsites(callsite_id) ON DELETE CASCADE,
+    index_               INTEGER NOT NULL,
+    name                 TEXT,
+    expr_text            TEXT,
+    data_node_id         BLOB REFERENCES data_nodes(data_node_id) ON DELETE SET NULL,
+    range_start_byte     INTEGER NOT NULL,
+    range_end_byte       INTEGER NOT NULL,
+    range_start_line     INTEGER NOT NULL,
+    range_start_column   INTEGER NOT NULL,
+    range_end_line       INTEGER NOT NULL,
+    range_end_column     INTEGER NOT NULL,
+    PRIMARY KEY (callsite_id, index_)
 );
 
 -- FTS5 virtual table for symbol name search
@@ -211,19 +294,51 @@ CREATE INDEX IF NOT EXISTS idx_imports_file
 CREATE INDEX IF NOT EXISTS idx_imports_module
     ON imports(module);
 
-CREATE INDEX IF NOT EXISTS idx_edges_source
-    ON edges(source);
-CREATE INDEX IF NOT EXISTS idx_edges_target
-    ON edges(target);
-CREATE INDEX IF NOT EXISTS idx_edges_kind
-    ON edges(kind);
-CREATE INDEX IF NOT EXISTS idx_edges_source_kind
-    ON edges(source, kind);
+CREATE INDEX IF NOT EXISTS idx_symbol_edges_source
+    ON symbol_edges(source);
+CREATE INDEX IF NOT EXISTS idx_symbol_edges_target
+    ON symbol_edges(target);
+CREATE INDEX IF NOT EXISTS idx_symbol_edges_kind
+    ON symbol_edges(kind);
+CREATE INDEX IF NOT EXISTS idx_symbol_edges_source_kind
+    ON symbol_edges(source, kind);
 
 CREATE INDEX IF NOT EXISTS idx_callsites_caller
     ON callsites(caller);
 CREATE INDEX IF NOT EXISTS idx_callsites_callee
     ON callsites(callee);
+
+-- P3 indexes
+CREATE INDEX IF NOT EXISTS idx_bindings_file
+    ON bindings(file_id);
+CREATE INDEX IF NOT EXISTS idx_bindings_function
+    ON bindings(function_id);
+CREATE INDEX IF NOT EXISTS idx_bindings_symbol
+    ON bindings(symbol_id);
+
+CREATE INDEX IF NOT EXISTS idx_binding_uses_file
+    ON binding_uses(file_id);
+CREATE INDEX IF NOT EXISTS idx_binding_uses_binding
+    ON binding_uses(binding_id);
+CREATE INDEX IF NOT EXISTS idx_binding_uses_reference
+    ON binding_uses(reference_id);
+
+CREATE INDEX IF NOT EXISTS idx_data_nodes_file
+    ON data_nodes(file_id);
+CREATE INDEX IF NOT EXISTS idx_data_nodes_function
+    ON data_nodes(function_id);
+CREATE INDEX IF NOT EXISTS idx_data_nodes_binding
+    ON data_nodes(binding_id);
+
+CREATE INDEX IF NOT EXISTS idx_dataflow_edges_source
+    ON dataflow_edges(source);
+CREATE INDEX IF NOT EXISTS idx_dataflow_edges_target
+    ON dataflow_edges(target);
+CREATE INDEX IF NOT EXISTS idx_dataflow_edges_kind
+    ON dataflow_edges(kind);
+
+CREATE INDEX IF NOT EXISTS idx_callsite_args_data_node
+    ON callsite_args(data_node_id);
 
 -- --- FTS Triggers ---
 
@@ -268,8 +383,13 @@ mod tests {
         assert!(tables.contains(&"scopes".to_string()));
         assert!(tables.contains(&"references".to_string()));
         assert!(tables.contains(&"imports".to_string()));
-        assert!(tables.contains(&"edges".to_string()));
+        assert!(tables.contains(&"symbol_edges".to_string()));
         assert!(tables.contains(&"callsites".to_string()));
+        assert!(tables.contains(&"bindings".to_string()));
+        assert!(tables.contains(&"binding_uses".to_string()));
+        assert!(tables.contains(&"data_nodes".to_string()));
+        assert!(tables.contains(&"dataflow_edges".to_string()));
+        assert!(tables.contains(&"callsite_args".to_string()));
         assert!(tables.contains(&"symbols_fts".to_string()));
         assert!(tables.contains(&"project_metadata".to_string()));
         assert!(tables.contains(&"schema_versions".to_string()));

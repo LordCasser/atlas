@@ -105,6 +105,7 @@ impl LanguageAdapter for TypeScriptAdapter {
             arity: None,
             range,
             resolved: None,
+            binding_id: None,
         })
     }
 
@@ -228,6 +229,14 @@ impl LanguageAdapter for TypeScriptAdapter {
         include_str!("../queries/typescript/dataflow.scm")
     }
 
+    fn lexical_query(&self) -> &str {
+        include_str!("../queries/typescript/lexical.scm")
+    }
+
+    fn dataflow_builder_query(&self) -> &str {
+        include_str!("../queries/typescript/dataflow_builder.scm")
+    }
+
     fn normalize_dataflow(
         &self,
         capture_name: &str,
@@ -275,6 +284,127 @@ impl LanguageAdapter for TypeScriptAdapter {
         edge.location = Some(range);
         Some(edge)
     }
+
+    fn normalize_lexical(
+        &self,
+        capture_name: &str,
+        node: tree_sitter::Node,
+        source: &str,
+        file_id: FileId,
+        _file_path: &Path,
+    ) -> Option<BindingDef> {
+        let kind = ts_binding_kind(capture_name)?;
+        let name = node_text(node, source)?;
+        let range = node_range(node);
+        // Use a zero-based scope_id placeholder; scope_id is resolved post-extraction
+        // when we know the parent scope relationships.
+        let scope_id = crate::types::ids::ScopeId::generate(
+            &file_id,
+            None::<&crate::types::ids::ScopeId>,
+            kind.as_str(),
+            range.start_byte,
+        );
+        let id = crate::types::ids::BindingId::generate(
+            &file_id,
+            &scope_id,
+            kind.as_str(),
+            &name,
+            range.start_byte,
+        );
+        Some(BindingDef {
+            id,
+            file_id,
+            function_id: None, // resolved post-extraction by LexicalBinder
+            scope_id,
+            kind,
+            name,
+            symbol_id: None,
+            range,
+        })
+    }
+
+    fn normalize_dataflow_builder(
+        &self,
+        capture_name: &str,
+        node: tree_sitter::Node,
+        source: &str,
+        file_id: FileId,
+        _file_path: &Path,
+    ) -> (Option<DataNode>, Option<DataFlowEdge>) {
+        use crate::types::ids::DataNodeId;
+
+        let range = node_range(node);
+
+        match capture_name {
+            "df.assign_target" => {
+                node_text(node, source).map(|name| {
+                    let node_id = DataNodeId::generate(
+                        &file_id, None::<&crate::types::ids::SymbolId>,
+                        "local", Some(&name), Some(&name), range.start_byte,
+                    );
+                    // FK fields are None at extraction — resolved post-extraction
+                    let dn = DataNode::local(node_id, file_id, None, None, &name, range);
+                    (Some(dn), None)
+                }).unwrap_or((None, None))
+            }
+            "df.assign_value" => {
+                let text = node_text(node, source).unwrap_or_default();
+                let node_id = DataNodeId::generate(
+                    &file_id, None::<&crate::types::ids::SymbolId>,
+                    "expr", Some(&text), None, range.start_byte,
+                );
+                let dn = DataNode {
+                    id: node_id, file_id, function_id: None,
+                    kind: crate::types::enums::DataNodeKind::Expr, binding_id: None,
+                    callsite_id: None, name: Some(text),
+                    access_path: None, range,
+                };
+                (Some(dn), None)
+            }
+            "df.return_value" => {
+                let node_id = DataNodeId::generate(
+                    &file_id, None::<&crate::types::ids::SymbolId>,
+                    "return", None, None, range.start_byte,
+                );
+                let dn = DataNode::return_(node_id, file_id, None, range);
+                (Some(dn), None)
+            }
+            "df.call_arg" => {
+                let text = node_text(node, source).unwrap_or_default();
+                let node_id = DataNodeId::generate(
+                    &file_id, None::<&crate::types::ids::SymbolId>,
+                    "call_arg", Some(&text), None, range.start_byte,
+                );
+                let dn = DataNode::call_arg(node_id, file_id, None, None, Some(&text), range);
+                (Some(dn), None)
+            }
+            "df.field_name" => {
+                node_text(node, source).map(|name| {
+                    let node_id = DataNodeId::generate(
+                        &file_id, None::<&crate::types::ids::SymbolId>,
+                        "field", Some(&name), Some(&name), range.start_byte,
+                    );
+                    let dn = DataNode::field(node_id, file_id, None, &name, &name, range);
+                    (Some(dn), None)
+                }).unwrap_or((None, None))
+            }
+            "df.literal" | "df.await_value" | "df.receiver" => {
+                let text = node_text(node, source).unwrap_or_default();
+                let node_id = DataNodeId::generate(
+                    &file_id, None::<&crate::types::ids::SymbolId>,
+                    "literal", Some(&text), None, range.start_byte,
+                );
+                let dn = DataNode {
+                    id: node_id, file_id, function_id: None,
+                    kind: crate::types::enums::DataNodeKind::Literal, binding_id: None,
+                    callsite_id: None, name: Some(text),
+                    access_path: None, range,
+                };
+                (Some(dn), None)
+            }
+            _ => (None, None),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +419,19 @@ fn ts_dataflow_kind(capture_name: &str) -> Option<&'static str> {
         "dataflow.assign" => Some("assigns"),
         "dataflow.field_write" => Some("field_write"),
         "dataflow.field_read" => Some("field_read"),
+        _ => None,
+    }
+}
+
+/// Map lexical capture name to BindingKind.
+fn ts_binding_kind(capture_name: &str) -> Option<crate::types::enums::BindingKind> {
+    use crate::types::enums::BindingKind;
+    match capture_name {
+        "lexical.parameter" => Some(BindingKind::Parameter),
+        "lexical.local" => Some(BindingKind::Local),
+        "lexical.import_alias" => Some(BindingKind::ImportAlias),
+        "lexical.catch_variable" => Some(BindingKind::CatchVariable),
+        "lexical.field" => Some(BindingKind::Field),
         _ => None,
     }
 }

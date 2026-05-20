@@ -103,6 +103,7 @@ impl LanguageAdapter for CangjieAdapter {
             arity: None,
             range,
             resolved: None,
+            binding_id: None,
         })
     }
 

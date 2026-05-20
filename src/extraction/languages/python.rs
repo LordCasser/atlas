@@ -104,6 +104,7 @@ impl LanguageAdapter for PythonAdapter {
             arity: None,
             range,
             resolved: None,
+            binding_id: None,
         })
     }
 

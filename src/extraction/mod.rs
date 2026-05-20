@@ -18,6 +18,8 @@ mod scope_tree;
 mod semantic_binder;
 mod symbol_registry;
 mod worker;
+mod lexical_binder;
+mod dataflow_builder;
 
 pub use engine::{QueryCapture, QueryResults, run_queries, run_queries_text};
 pub use extract::extract_file;
@@ -27,3 +29,5 @@ pub use scope_tree::build_scope_tree;
 pub use semantic_binder::SemanticBinder;
 pub use symbol_registry::{all_edge_sources_known, all_reference_sources_known, SymbolRegistry};
 pub use worker::{ParseWorkerPool, WorkerConfig};
+pub use lexical_binder::{LexicalBinder, LexicalBindingResult};
+pub use dataflow_builder::{DataFlowBuilder, DataFlowResult};

@@ -129,49 +129,16 @@ impl Store {
         })
     }
 
-    /// Initialize the schema (idempotent, with forward migrations).
+    /// Initialize the schema (idempotent).
     pub fn init_schema(&self) -> anyhow::Result<()> {
         let conn = self.lock();
         conn.execute_batch(SCHEMA_DDL)?;
-
-        // Run forward migrations for each version
-        let current_version: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(version), 0) FROM schema_versions",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-
-        if current_version < 3 {
-            // v2→v3: add ref_id, location, metadata, resolved_by to edges
-            for col in &[
-                "ALTER TABLE edges ADD COLUMN ref_id BLOB",
-                "ALTER TABLE edges ADD COLUMN location_0 INTEGER",
-                "ALTER TABLE edges ADD COLUMN location_1 INTEGER",
-                "ALTER TABLE edges ADD COLUMN location_2 INTEGER",
-                "ALTER TABLE edges ADD COLUMN location_3 INTEGER",
-                "ALTER TABLE edges ADD COLUMN location_4 INTEGER",
-                "ALTER TABLE edges ADD COLUMN location_5 INTEGER",
-                "ALTER TABLE edges ADD COLUMN metadata TEXT",
-                "ALTER TABLE edges ADD COLUMN resolved_by TEXT",
-            ] {
-                let _ = conn.execute(col, []);
-            }
-        }
-
-        if current_version < 4 {
-            // v3→v4: rename references_v2 → "references" (quoted because 'references' is a SQL reserved word)
-            let _ = conn.execute_batch(
-                "ALTER TABLE references_v2 RENAME TO \"references\";",
-            );
-        }
 
         // Record current version if not already present
         conn.execute(
             "INSERT OR IGNORE INTO schema_versions (version, description)
              VALUES (?1, ?2)",
-            params![CURRENT_SCHEMA_VERSION, "Atlas-native schema v4: references_v2 → references"],
+            params![CURRENT_SCHEMA_VERSION, "Atlas-native schema v5: P3 bindings/dataflow tables, edges→symbol_edges"],
         )?;
 
         Ok(())
@@ -657,7 +624,7 @@ impl Store {
         // Find all reference IDs belonging to this file, then delete edges
         // whose ref_id matches any of them.
         let count = conn.execute(
-            r#"DELETE FROM edges WHERE ref_id IN (
+            r#"DELETE FROM symbol_edges WHERE ref_id IN (
                 SELECT reference_id FROM "references" WHERE file_id = ?1
             )"#,
             params![file_id],
@@ -712,7 +679,7 @@ impl Store {
             "SELECT edge_id, source, target, kind, confidence, provenance,
                     ref_id, location_0, location_1, location_2, location_3, location_4, location_5,
                     metadata, resolved_by
-             FROM edges WHERE source = ?1",
+             FROM symbol_edges WHERE source = ?1",
         )?;
         let rows = stmt.query_map(params![source], row_to_edge)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -725,7 +692,7 @@ impl Store {
             "SELECT edge_id, source, target, kind, confidence, provenance,
                     ref_id, location_0, location_1, location_2, location_3, location_4, location_5,
                     metadata, resolved_by
-             FROM edges WHERE target = ?1",
+             FROM symbol_edges WHERE target = ?1",
         )?;
         let rows = stmt.query_map(params![target], row_to_edge)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -841,9 +808,109 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT edge_id, source, target, kind, confidence, provenance,
                     ref_id, location_0, location_1, location_2, location_3, location_4, location_5,
-                    metadata, resolved_by FROM edges",
+                    metadata, resolved_by FROM symbol_edges",
         )?;
         let rows = stmt.query_map([], row_to_edge)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    // -----------------------------------------------------------------------
+    // P3: Binding + Dataflow — write APIs
+    // -----------------------------------------------------------------------
+
+    /// Batch-insert bindings.
+    pub fn insert_bindings(&self, bindings: &[BindingDef]) -> anyhow::Result<()> {
+        if bindings.is_empty() { return Ok(()); }
+        self.with_transaction(|tx| write_bindings(tx, bindings))
+    }
+
+    /// Batch-insert binding uses.
+    pub fn insert_binding_uses(&self, uses: &[BindingUse]) -> anyhow::Result<()> {
+        if uses.is_empty() { return Ok(()); }
+        self.with_transaction(|tx| write_binding_uses(tx, uses))
+    }
+
+    /// Batch-insert data nodes.
+    pub fn insert_data_nodes(&self, nodes: &[DataNode]) -> anyhow::Result<()> {
+        if nodes.is_empty() { return Ok(()); }
+        self.with_transaction(|tx| write_data_nodes(tx, nodes))
+    }
+
+    /// Batch-insert dataflow edges.
+    pub fn insert_dataflow_edges(&self, edges: &[DataFlowEdge]) -> anyhow::Result<()> {
+        if edges.is_empty() { return Ok(()); }
+        self.with_transaction(|tx| write_dataflow_edges(tx, edges))
+    }
+
+    /// Batch-insert callsite args.
+    pub fn insert_callsite_args(&self, args: &[CallsiteArg]) -> anyhow::Result<()> {
+        if args.is_empty() { return Ok(()); }
+        self.with_transaction(|tx| write_callsite_args(tx, args))
+    }
+
+    // -----------------------------------------------------------------------
+    // P3: Binding + Dataflow — query APIs
+    // -----------------------------------------------------------------------
+
+    /// Find bindings for a function.
+    pub fn find_bindings_by_function(&self, function_id: &SymbolId) -> anyhow::Result<Vec<BindingDef>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT binding_id, file_id, function_id, scope_id, kind, name, symbol_id,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column
+             FROM bindings WHERE function_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![function_id], row_to_binding)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find binding uses for a specific binding.
+    pub fn find_binding_uses_by_binding(&self, binding_id: &BindingId) -> anyhow::Result<Vec<BindingUse>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT binding_use_id, file_id, scope_id, binding_id, reference_id, name,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column
+             FROM binding_uses WHERE binding_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![binding_id], row_to_binding_use)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find data nodes for a function.
+    pub fn find_data_nodes_by_function(&self, function_id: &SymbolId) -> anyhow::Result<Vec<DataNode>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id,
+                    name, access_path,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column
+             FROM data_nodes WHERE function_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![function_id], row_to_data_node)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find dataflow edges originating from a data node.
+    pub fn find_dataflow_edges_by_source(&self, source: &DataNodeId) -> anyhow::Result<Vec<DataFlowEdge>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT dataflow_edge_id, source, target, kind, location_0, location_1, location_2, confidence
+             FROM dataflow_edges WHERE source = ?1",
+        )?;
+        let rows = stmt.query_map(params![source], row_to_dataflow_edge)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find dataflow edges targeting a data node.
+    pub fn find_dataflow_edges_by_target(&self, target: &DataNodeId) -> anyhow::Result<Vec<DataFlowEdge>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT dataflow_edge_id, source, target, kind, location_0, location_1, location_2, confidence
+             FROM dataflow_edges WHERE target = ?1",
+        )?;
+        let rows = stmt.query_map(params![target], row_to_dataflow_edge)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -911,6 +978,23 @@ impl Store {
             }
         }
 
+        // P3: Binding + Dataflow data
+        if !facts.bindings.is_empty() {
+            write_bindings(&tx, &facts.bindings)?;
+        }
+        if !facts.binding_uses.is_empty() {
+            write_binding_uses(&tx, &facts.binding_uses)?;
+        }
+        if !facts.data_nodes.is_empty() {
+            write_data_nodes(&tx, &facts.data_nodes)?;
+        }
+        if !facts.dataflow_edges.is_empty() {
+            write_dataflow_edges(&tx, &facts.dataflow_edges)?;
+        }
+        if !facts.callsite_args.is_empty() {
+            write_callsite_args(&tx, &facts.callsite_args)?;
+        }
+
         tx.commit()?;
         Ok(())
     }
@@ -962,7 +1046,7 @@ impl Store {
         let total_symbols: i64 =
             conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))?;
         let total_edges: i64 =
-            conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))?;
+            conn.query_row("SELECT COUNT(*) FROM symbol_edges", [], |r| r.get(0))?;
         let total_references: i64 =
             conn.query_row("SELECT COUNT(*) FROM \"references\"", [], |r| r.get(0))?;
         let unresolved: i64 = conn.query_row(
@@ -1034,7 +1118,7 @@ const REFERENCE_SELECT_NO_WHERE: &str = r#"
            range_start_byte, range_end_byte, range_start_line,
            range_start_column, range_end_line, range_end_column,
            resolved_symbol_id, resolved_confidence, resolved_strategy,
-           resolved_provenance
+           resolved_provenance, binding_id
     FROM "references""#;
 
 const REFERENCE_SELECT_WHERE: &str = r#"
@@ -1043,7 +1127,7 @@ const REFERENCE_SELECT_WHERE: &str = r#"
            range_start_byte, range_end_byte, range_start_line,
            range_start_column, range_end_line, range_end_column,
            resolved_symbol_id, resolved_confidence, resolved_strategy,
-           resolved_provenance
+           resolved_provenance, binding_id
     FROM "references" WHERE file_id = ?1"#;
 
 fn row_to_file_info(row: &rusqlite::Row) -> rusqlite::Result<FileInfo> {
@@ -1140,6 +1224,7 @@ fn row_to_reference(row: &rusqlite::Row) -> rusqlite::Result<ReferenceUse> {
             end_column: row.get(14)?,
         },
         resolved,
+        binding_id: row.get(19)?,
     })
 }
 
@@ -1298,8 +1383,9 @@ fn write_references(conn: &Connection, refs: &[ReferenceUse]) -> anyhow::Result<
             receiver, arity,
             range_start_byte, range_end_byte, range_start_line, range_start_column,
             range_end_line, range_end_column,
-            resolved_symbol_id, resolved_confidence, resolved_strategy, resolved_provenance)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)"#,
+            resolved_symbol_id, resolved_confidence, resolved_strategy, resolved_provenance,
+            binding_id)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)"#,
     )?;
     for r in refs {
         stmt.execute(params![
@@ -1311,6 +1397,7 @@ fn write_references(conn: &Connection, refs: &[ReferenceUse]) -> anyhow::Result<
             r.resolved.as_ref().map(|rt| rt.confidence.as_f32()),
             r.resolved.as_ref().map(|rt| rt.strategy.as_str()),
             r.resolved.as_ref().map(|rt| rt.provenance.as_str()),
+            r.binding_id,
         ])?;
     }
     Ok(())
@@ -1338,7 +1425,7 @@ fn write_imports(conn: &Connection, imports: &[ImportDef]) -> anyhow::Result<()>
 
 fn write_edges(conn: &Connection, edges: &[RawEdge]) -> anyhow::Result<()> {
     let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO edges
+        r#"INSERT OR REPLACE INTO symbol_edges
            (edge_id, source, target, kind, confidence, provenance,
             ref_id, location_0, location_1, location_2, location_3, location_4, location_5,
             metadata, resolved_by)
@@ -1383,6 +1470,184 @@ fn write_callsites(conn: &Connection, callsites: &[Callsite]) -> anyhow::Result<
             cs.id, cs.reference_id, cs.caller, cs.callee, cs.receiver, args_json,
             cs.range.start_byte, cs.range.end_byte, cs.range.start_line,
             cs.range.start_column, cs.range.end_line, cs.range.end_column,
+        ])?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// P3: Binding + Dataflow — row mappers
+// ---------------------------------------------------------------------------
+
+fn row_to_binding(row: &rusqlite::Row) -> rusqlite::Result<BindingDef> {
+    Ok(BindingDef {
+        id: row.get(0)?,
+        file_id: row.get(1)?,
+        function_id: row.get(2)?,
+        scope_id: row.get(3)?,
+        kind: BindingKind::from_str(row.get::<_, String>(4)?.as_str()).unwrap_or(BindingKind::Local),
+        name: row.get(5)?,
+        symbol_id: row.get(6)?,
+        range: TextRange {
+            start_byte: row.get(7)?,
+            end_byte: row.get(8)?,
+            start_line: row.get(9)?,
+            start_column: row.get(10)?,
+            end_line: row.get(11)?,
+            end_column: row.get(12)?,
+        },
+    })
+}
+
+fn row_to_binding_use(row: &rusqlite::Row) -> rusqlite::Result<BindingUse> {
+    Ok(BindingUse {
+        id: row.get(0)?,
+        file_id: row.get(1)?,
+        scope_id: row.get(2)?,
+        binding_id: row.get(3)?,
+        reference_id: row.get(4)?,
+        name: row.get(5)?,
+        range: TextRange {
+            start_byte: row.get(6)?,
+            end_byte: row.get(7)?,
+            start_line: row.get(8)?,
+            start_column: row.get(9)?,
+            end_line: row.get(10)?,
+            end_column: row.get(11)?,
+        },
+    })
+}
+
+fn row_to_data_node(row: &rusqlite::Row) -> rusqlite::Result<DataNode> {
+    Ok(DataNode {
+        id: row.get(0)?,
+        file_id: row.get(1)?,
+        function_id: row.get(2)?,
+        kind: DataNodeKind::from_str(row.get::<_, String>(3)?.as_str()).unwrap_or(DataNodeKind::Unknown),
+        binding_id: row.get(4)?,
+        callsite_id: row.get(5)?,
+        name: row.get(6)?,
+        access_path: row.get(7)?,
+        range: TextRange {
+            start_byte: row.get(8)?,
+            end_byte: row.get(9)?,
+            start_line: row.get(10)?,
+            start_column: row.get(11)?,
+            end_line: row.get(12)?,
+            end_column: row.get(13)?,
+        },
+    })
+}
+
+fn row_to_dataflow_edge(row: &rusqlite::Row) -> rusqlite::Result<DataFlowEdge> {
+    let location = TextRange {
+        start_byte: row.get::<_, u32>(4).unwrap_or(0),
+        end_byte: row.get::<_, u32>(5).unwrap_or(0),
+        start_line: row.get::<_, u32>(6).unwrap_or(0),
+        start_column: 0,
+        end_line: 0,
+        end_column: 0,
+    };
+    let conf: Option<f64> = row.get(7)?;
+    Ok(DataFlowEdge {
+        id: row.get(0)?,
+        source: row.get(1)?,
+        target: row.get(2)?,
+        kind: DataFlowKind::from_str(row.get::<_, String>(3)?.as_str()).unwrap_or(DataFlowKind::Assign),
+        location,
+        confidence: conf.unwrap_or(0.8),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// P3: Binding + Dataflow — write helpers
+// ---------------------------------------------------------------------------
+
+fn write_bindings(conn: &Connection, bindings: &[BindingDef]) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(
+        r#"INSERT OR REPLACE INTO bindings
+           (binding_id, file_id, function_id, scope_id, kind, name, symbol_id,
+            range_start_byte, range_end_byte, range_start_line, range_start_column,
+            range_end_line, range_end_column)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"#,
+    )?;
+    for b in bindings {
+        stmt.execute(params![
+            b.id, b.file_id, b.function_id, b.scope_id, b.kind.as_str(), b.name, b.symbol_id,
+            b.range.start_byte, b.range.end_byte, b.range.start_line,
+            b.range.start_column, b.range.end_line, b.range.end_column,
+        ])?;
+    }
+    Ok(())
+}
+
+fn write_binding_uses(conn: &Connection, uses: &[BindingUse]) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(
+        r#"INSERT OR REPLACE INTO binding_uses
+           (binding_use_id, file_id, scope_id, binding_id, reference_id, name,
+            range_start_byte, range_end_byte, range_start_line, range_start_column,
+            range_end_line, range_end_column)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"#,
+    )?;
+    for u in uses {
+        stmt.execute(params![
+            u.id, u.file_id, u.scope_id, u.binding_id, u.reference_id, u.name,
+            u.range.start_byte, u.range.end_byte, u.range.start_line,
+            u.range.start_column, u.range.end_line, u.range.end_column,
+        ])?;
+    }
+    Ok(())
+}
+
+fn write_data_nodes(conn: &Connection, nodes: &[DataNode]) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(
+        r#"INSERT OR REPLACE INTO data_nodes
+           (data_node_id, file_id, function_id, kind, binding_id, callsite_id,
+            name, access_path,
+            range_start_byte, range_end_byte, range_start_line, range_start_column,
+            range_end_line, range_end_column)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"#,
+    )?;
+    for n in nodes {
+        stmt.execute(params![
+            n.id, n.file_id, n.function_id, n.kind.as_str(), n.binding_id, n.callsite_id,
+            n.name, n.access_path,
+            n.range.start_byte, n.range.end_byte, n.range.start_line,
+            n.range.start_column, n.range.end_line, n.range.end_column,
+        ])?;
+    }
+    Ok(())
+}
+
+fn write_dataflow_edges(conn: &Connection, edges: &[DataFlowEdge]) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(
+        r#"INSERT OR REPLACE INTO dataflow_edges
+           (dataflow_edge_id, source, target, kind, location_0, location_1, location_2, confidence)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8)"#,
+    )?;
+    for e in edges {
+        stmt.execute(params![
+            e.id, e.source, e.target, e.kind.as_str(),
+            e.location.start_byte, e.location.end_byte, e.location.start_line,
+            e.confidence,
+        ])?;
+    }
+    Ok(())
+}
+
+fn write_callsite_args(conn: &Connection, args: &[CallsiteArg]) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(
+        r#"INSERT OR REPLACE INTO callsite_args
+           (callsite_id, index_, name, expr_text, data_node_id,
+            range_start_byte, range_end_byte, range_start_line, range_start_column,
+            range_end_line, range_end_column)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)"#,
+    )?;
+    for a in args {
+        stmt.execute(params![
+            a.callsite_id, a.index, a.name, a.expr_text, a.data_node,
+            a.range.start_byte, a.range.end_byte, a.range.start_line,
+            a.range.start_column, a.range.end_line, a.range.end_column,
         ])?;
     }
     Ok(())
@@ -1508,6 +1773,7 @@ mod tests {
             receiver: None,
             arity: Some(1),
             range,
+            binding_id: None,
             resolved: None,
         };
         store.insert_references(&[r]).unwrap();
@@ -1554,6 +1820,7 @@ mod tests {
             receiver: None,
             arity: None,
             range,
+            binding_id: None,
             resolved: None,
         };
         store.insert_references(&[r]).unwrap();

@@ -334,6 +334,165 @@ impl ImportId {
     }
 }
 
+// ── BindingId ────────────────────────────────────────────────────────────────
+
+define_id!(
+    /// Deterministic binding identifier: blake3(file_id + scope_id + kind + name + start_byte).
+    ///
+    /// Represents a lexical binding definition: parameter, local variable,
+    /// import alias, catch variable, etc.
+    BindingId
+);
+
+impl BindingId {
+    /// Generate a BindingId from its constituent parts.
+    ///
+    /// - `file_id`: parent file's ID bytes
+    /// - `scope_id`: scope containing this binding
+    /// - `kind`: binding kind name (e.g., "parameter", "local")
+    /// - `name`: the binding name (e.g., "req", "name")
+    /// - `start_byte`: start byte offset of the binding declaration
+    pub fn generate(
+        file_id: &FileId,
+        scope_id: &ScopeId,
+        kind: &str,
+        name: &str,
+        start_byte: u32,
+    ) -> Self {
+        let sb = start_byte.to_le_bytes();
+        let parts: Vec<&[u8]> = vec![
+            file_id.as_bytes(),
+            scope_id.as_bytes(),
+            kind.as_bytes(),
+            name.as_bytes(),
+            &sb,
+        ];
+        Self::from_parts(&parts)
+    }
+}
+
+// ── BindingUseId ─────────────────────────────────────────────────────────────
+
+define_id!(
+    /// Deterministic binding-use identifier: blake3(file_id + binding_id? + reference_id? + name + start_byte).
+    ///
+    /// Represents a usage site of a lexical binding.
+    BindingUseId
+);
+
+impl BindingUseId {
+    /// Generate a BindingUseId from its constituent parts.
+    ///
+    /// - `file_id`: parent file's ID bytes
+    /// - `binding_id`: optional binding being used (None if unresolved)
+    /// - `reference_id`: optional reference associated with this use
+    /// - `name`: the identifier name at the use site
+    /// - `start_byte`: start byte offset of the use
+    pub fn generate(
+        file_id: &FileId,
+        binding_id: Option<&BindingId>,
+        reference_id: Option<&ReferenceId>,
+        name: &str,
+        start_byte: u32,
+    ) -> Self {
+        let sb = start_byte.to_le_bytes();
+        let mut parts: Vec<&[u8]> = vec![
+            file_id.as_bytes(),
+            name.as_bytes(),
+            &sb,
+        ];
+        // binding_id inserted at position 1 (after file_id)
+        if let Some(bid) = binding_id {
+            parts.insert(1, bid.as_bytes());
+        }
+        // reference_id inserted after binding_id (or at position 1 if no binding)
+        if let Some(rid) = reference_id {
+            let insert_pos = if binding_id.is_some() { 2 } else { 1 };
+            parts.insert(insert_pos, rid.as_bytes());
+        }
+        Self::from_parts(&parts)
+    }
+}
+
+// ── DataNodeId ───────────────────────────────────────────────────────────────
+
+define_id!(
+    /// Deterministic data-node identifier: blake3(file_id + function_id? + kind + name? + access_path? + start_byte).
+    ///
+    /// A DataNode represents a data entity in the dataflow graph:
+    /// parameter, local variable, field, return value, call argument, etc.
+    /// DataNodeId → DataNodeId edges form the dataflow graph (NOT SymbolId).
+    DataNodeId
+);
+
+impl DataNodeId {
+    /// Generate a DataNodeId from its constituent parts.
+    ///
+    /// - `file_id`: parent file's ID bytes
+    /// - `function_id`: optional function symbol ID (None for file-level nodes)
+    /// - `kind`: data node kind name (e.g., "parameter", "local", "call_arg")
+    /// - `name`: optional name (e.g., "req", "name")
+    /// - `access_path`: optional access path (e.g., "req.body.name")
+    /// - `start_byte`: start byte offset of the data entity
+    pub fn generate(
+        file_id: &FileId,
+        function_id: Option<&SymbolId>,
+        kind: &str,
+        name: Option<&str>,
+        access_path: Option<&str>,
+        start_byte: u32,
+    ) -> Self {
+        let sb = start_byte.to_le_bytes();
+        let mut parts: Vec<&[u8]> = vec![
+            file_id.as_bytes(),
+            kind.as_bytes(),
+            &sb,
+        ];
+        // function_id inserted at position 1 (after file_id)
+        if let Some(fid) = function_id {
+            parts.insert(1, fid.as_bytes());
+        }
+        // name inserted after kind
+        if let Some(n) = name {
+            parts.push(n.as_bytes());
+        }
+        // access_path appended last
+        if let Some(ap) = access_path {
+            parts.push(ap.as_bytes());
+        }
+        Self::from_parts(&parts)
+    }
+}
+
+// ── DataFlowEdgeId ───────────────────────────────────────────────────────────
+
+define_id!(
+    /// Deterministic dataflow-edge identifier: blake3(source_node + target_node + kind).
+    ///
+    /// Represents a data flow between two DataNodes.
+    DataFlowEdgeId
+);
+
+impl DataFlowEdgeId {
+    /// Generate a DataFlowEdgeId from its constituent parts.
+    ///
+    /// - `source`: source DataNodeId
+    /// - `target`: target DataNodeId
+    /// - `kind`: dataflow kind name (e.g., "assign", "field_load", "arg_to_param")
+    pub fn generate(
+        source: &DataNodeId,
+        target: &DataNodeId,
+        kind: &str,
+    ) -> Self {
+        let parts: Vec<&[u8]> = vec![
+            source.as_bytes(),
+            target.as_bytes(),
+            kind.as_bytes(),
+        ];
+        Self::from_parts(&parts)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,5 +644,103 @@ mod tests {
         let id1 = CallsiteId::generate(&ref_id, Some(&caller), 100);
         let id2 = CallsiteId::generate(&ref_id, Some(&caller), 100);
         assert_eq!(id1, id2);
+    }
+
+    // -- BindingId --------------------------------------------------------
+
+    #[test]
+    fn test_binding_id_deterministic() {
+        let file_id = FileId::generate("src/main.ts");
+        let scope_id = ScopeId::generate(&file_id, None, "function", 42);
+        let id1 = BindingId::generate(&file_id, &scope_id, "parameter", "req", 50);
+        let id2 = BindingId::generate(&file_id, &scope_id, "parameter", "req", 50);
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_binding_id_different_scope() {
+        let file_id = FileId::generate("src/main.ts");
+        let s1 = ScopeId::generate(&file_id, None, "function", 42);
+        let s2 = ScopeId::generate(&file_id, None, "function", 100);
+        let id1 = BindingId::generate(&file_id, &s1, "parameter", "req", 50);
+        let id2 = BindingId::generate(&file_id, &s2, "parameter", "req", 50);
+        assert_ne!(id1, id2);
+    }
+
+    // -- BindingUseId -----------------------------------------------------
+
+    #[test]
+    fn test_binding_use_id_deterministic() {
+        let file_id = FileId::generate("src/main.ts");
+        let scope_id = ScopeId::generate(&file_id, None, "function", 42);
+        let binding_id = BindingId::generate(&file_id, &scope_id, "parameter", "req", 50);
+        let id1 = BindingUseId::generate(&file_id, Some(&binding_id), None, "req", 120);
+        let id2 = BindingUseId::generate(&file_id, Some(&binding_id), None, "req", 120);
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_binding_use_id_no_binding() {
+        let file_id = FileId::generate("src/main.ts");
+        let id1 = BindingUseId::generate(&file_id, None, None, "x", 80);
+        let id2 = BindingUseId::generate(&file_id, None, None, "x", 81);
+        assert_ne!(id1, id2);
+    }
+
+    // -- DataNodeId -------------------------------------------------------
+
+    #[test]
+    fn test_data_node_id_deterministic() {
+        let file_id = FileId::generate("src/main.ts");
+        let func_id = SymbolId::generate(&file_id, "typescript", "handler", "function", None);
+        let id1 = DataNodeId::generate(
+            &file_id, Some(&func_id), "parameter", Some("req"), Some("req"), 50,
+        );
+        let id2 = DataNodeId::generate(
+            &file_id, Some(&func_id), "parameter", Some("req"), Some("req"), 50,
+        );
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_data_node_id_different_kind() {
+        let file_id = FileId::generate("src/main.ts");
+        let func_id = SymbolId::generate(&file_id, "typescript", "handler", "function", None);
+        let id1 = DataNodeId::generate(
+            &file_id, Some(&func_id), "parameter", Some("req"), None, 50,
+        );
+        let id2 = DataNodeId::generate(
+            &file_id, Some(&func_id), "local", Some("req"), None, 50,
+        );
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_data_node_id_different_access_path() {
+        let file_id = FileId::generate("src/main.ts");
+        let func_id = SymbolId::generate(&file_id, "typescript", "handler", "function", None);
+        let id1 = DataNodeId::generate(
+            &file_id, Some(&func_id), "field", Some("body"), Some("req.body"), 80,
+        );
+        let id2 = DataNodeId::generate(
+            &file_id, Some(&func_id), "field", Some("body"), Some("req.body.name"), 80,
+        );
+        assert_ne!(id1, id2);
+    }
+
+    // -- DataFlowEdgeId ---------------------------------------------------
+
+    #[test]
+    fn test_dataflow_edge_id_deterministic() {
+        let file_id = FileId::generate("src/main.ts");
+        let func_id = SymbolId::generate(&file_id, "typescript", "handler", "function", None);
+        let src = DataNodeId::generate(&file_id, Some(&func_id), "parameter", Some("req"), None, 50);
+        let tgt = DataNodeId::generate(&file_id, Some(&func_id), "local", Some("name"), None, 100);
+        let id1 = DataFlowEdgeId::generate(&src, &tgt, "assign");
+        let id2 = DataFlowEdgeId::generate(&src, &tgt, "assign");
+        assert_eq!(id1, id2);
+
+        let id3 = DataFlowEdgeId::generate(&tgt, &src, "assign"); // reversed
+        assert_ne!(id1, id3);
     }
 }

@@ -18,6 +18,8 @@ use crate::types::ids::{CallsiteId, FileId};
 
 use super::languages::{node_range, LanguageAdapter};
 use super::semantic_binder::SemanticBinder;
+use super::lexical_binder::LexicalBindingResult;
+use super::dataflow_builder::DataFlowResult;
 
 /// Extract a single file's facts using the given adapter.
 pub fn extract_file(
@@ -112,6 +114,41 @@ pub fn extract_file(
     // 7. Build scope tree and assign containers
     super::build_scope_tree(&mut scopes, &mut symbols);
 
+    // 7a. Extract lexical bindings (parameters, locals, import aliases, etc.)
+    //     This runs the adapter's lexical_query() to find binding definitions and uses.
+    let lexical_result = super::lexical_binder::LexicalBinder::extract(
+        adapter, &ts_lang, root, source, source_bytes,
+        file_id, file_path, &scopes, &symbols,
+    )
+    .unwrap_or_else(|e| {
+        diagnostics.push(ExtractDiagnostic {
+            level: DiagnosticLevel::Warning,
+            message: format!("Lexical binding extraction failed: {}", e),
+            range: None,
+        });
+        LexicalBindingResult { bindings: vec![], uses: vec![] }
+    });
+    let bindings = lexical_result.bindings;
+    let binding_uses = lexical_result.uses;
+
+    // 7b. Build dataflow graph (DataNodes + DataFlowEdges)
+    //     Runs the adapter's dataflow_builder_query() to find assignments,
+    //     returns, call args, member accesses, and literals.
+    let dataflow_result = super::dataflow_builder::DataFlowBuilder::extract(
+        adapter, &ts_lang, root, source, source_bytes,
+        file_id, file_path, &bindings, &scopes,
+    )
+    .unwrap_or_else(|e| {
+        diagnostics.push(ExtractDiagnostic {
+            level: DiagnosticLevel::Warning,
+            message: format!("DataFlow builder failed: {}", e),
+            range: None,
+        });
+        DataFlowResult::default()
+    });
+    let data_nodes = dataflow_result.nodes;
+    let dataflow_edges = dataflow_result.edges;
+
     // 8. Bind source ownership and scope through the semantic binder.
     // This is the single source of truth for references/dataflow/callsites:
     // adapters may produce best-effort source IDs, but only IDs present in
@@ -166,9 +203,14 @@ pub fn extract_file(
         references,
         imports,
         exports,
-        raw_edges,   // Dataflow edges extracted inline; structural edges still by resolver
-        callsites,   // Derived from Call references (resolved later)
+        raw_edges,         // Symbol-level dataflow edges from normalize_dataflow (old path)
+        callsites,         // Derived from Call references (resolved later)
         diagnostics,
+        bindings,          // P3: lexical binding definitions
+        binding_uses,      // P3: lexical binding use sites
+        data_nodes,        // P3: per-function dataflow nodes
+        dataflow_edges,    // P3: DataNode→DataNode dataflow edges
+        callsite_args: vec![],  // P3: filled later by post-processing
     })
 }
 
@@ -221,7 +263,7 @@ fn extract_and_normalize<'a, T>(
 }
 
 /// Collect raw (capture_name, node) pairs from a single query.
-fn collect_captures<'a>(
+pub(crate) fn collect_captures<'a>(
     ts_lang: &tree_sitter::Language,
     query_src: &str,
     root: tree_sitter::Node<'a>,

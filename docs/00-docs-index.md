@@ -147,6 +147,7 @@ MVP milestones
 - [`09-p0-refactor-log.md`](./09-p0-refactor-log.md) — P0 重构实施日志
 - [`11-p1-refactor-log.md`](./11-p1-refactor-log.md) — P1 产品化实施日志
 - [`12-p2-refactor-log.md`](./12-p2-refactor-log.md) — P2 模块解析+调用图实施日志
+- [`13-p3-refactor-log.md`](./13-p3-refactor-log.md) — P3 绑定图+数据流图实施日志
 
 ### 2.10 v2 全量重构方案（长期参考）
 
@@ -173,6 +174,7 @@ docs/
   10-p1-p5-architecture-design.md
   11-p1-refactor-log.md
   12-p2-refactor-log.md
+  13-p3-refactor-log.md
 ```
 
 如需增加新文档，请保持编号顺序，并在本索引中注册。

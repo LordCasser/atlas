@@ -100,6 +100,7 @@ impl LanguageAdapter for CAdapter {
             arity: None,
             range,
             resolved: None,
+            binding_id: None,
         })
     }
 

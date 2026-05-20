@@ -8,6 +8,8 @@
 
 use crate::types::enums::*;
 use crate::types::ids::*;
+use crate::types::bindings::{BindingDef, BindingUse};
+use crate::types::dataflow::{CallsiteArg, DataFlowEdge, DataNode};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -183,6 +185,11 @@ pub struct ReferenceUse {
 
     /// Range of the reference in source.
     pub range: TextRange,
+
+    /// Lexical binding that this reference resolves to, if any.
+    /// Filled by the lexical binder (P3); not participating in ReferenceId generation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binding_id: Option<crate::types::ids::BindingId>,
 
     /// Resolution result. None if not yet resolved.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -465,6 +472,28 @@ pub struct FileFacts {
     /// Extraction warnings/errors.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<ExtractDiagnostic>,
+
+    // ── P3: Binding + Dataflow ──
+
+    /// Lexical binding definitions (per-function variables/parameters).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bindings: Vec<BindingDef>,
+
+    /// Uses of bindings (identifier → binding link).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub binding_uses: Vec<BindingUse>,
+
+    /// Dataflow nodes (per-function SSA-like data tracking).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data_nodes: Vec<DataNode>,
+
+    /// Dataflow edges between DataNodes (DataNodeId → DataNodeId).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dataflow_edges: Vec<DataFlowEdge>,
+
+    /// Per-argument detail at callsites.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub callsite_args: Vec<CallsiteArg>,
 }
 
 impl FileFacts {
@@ -651,6 +680,7 @@ mod tests {
             receiver: None,
             arity: Some(2),
             range,
+            binding_id: None,
             resolved: None,
         }
     }

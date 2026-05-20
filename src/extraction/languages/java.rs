@@ -108,6 +108,7 @@ impl LanguageAdapter for JavaAdapter {
             arity: None,
             range,
             resolved: None,
+            binding_id: None,
         })
     }
 

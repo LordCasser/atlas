@@ -172,6 +172,7 @@ mod tests {
             receiver: None,
             arity: None,
             range,
+            binding_id: None,
             resolved: None,
         }
     }
