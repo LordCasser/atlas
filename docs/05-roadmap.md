@@ -4,40 +4,43 @@
 
 ## 1. 近期优先级
 
-1. 基于当前架构稳定 schema v7 和 taint 基础写入/查询。
-2. 补齐 MVP 语言的 lexical binding、local dataflow 和 taint 所需 facts。
-3. 为每种 MVP 语言建立污点分析端到端 fixture。
-4. 将 taint CLI/MCP 输出打磨为 Agent 可消费格式。
-5. 在污点端到端测试完成前，不做 crate/workspace 拆分，不开启 Corpus 分支。
+1. 基于当前架构稳定变量来源追踪和调用路径查询所需 facts：bindings、binding uses、callsite args、data nodes、dataflow edges、call graph。
+2. 优先补齐 TypeScript/JavaScript/Python 的 backward slice 能力，再为 Java/C/C++/ArkTS/Cangjie 标注能力等级。
+3. 建立“指定位置 -> 变量来源 -> caller path -> Agent evidence”的端到端 fixture。
+4. 将 trace CLI/MCP 输出打磨为 Agent 可消费格式。
+5. 在变量来源追踪和调用路径查询端到端测试完成前，不做 crate/workspace 拆分，不开启 Corpus 分支。
 
-## 2. P5：污点分析 MVP
+## 2. P5：Variable Provenance And Caller Path MVP
 
 目标：
 
-- 从 YAML 规则识别 source、sink、sanitizer、propagator。
-- 基于 dataflow graph 做 source-to-sink propagation。
-- 输出 finding、severity、confidence、source/sink、path steps。
-- 支持 CLI 和 MCP 查询。
+- 用户指定函数、问题变量、调用点、文件行列或代码模式。
+- 从指定位置做 backward slice，追踪变量、表达式、字段访问、函数返回值、参数和 caller 实参来源。
+- 结合 callers/callees 输出可能调用路径。
+- 输出 path steps、源码 range、代码片段、confidence/provenance 和截断说明。
+- 支持 CLI 和 MCP 查询，供 AI 继续分析。
 
 需要补齐：
 
-- `.atlas/rules/*.yaml` 用户规则覆盖和合并策略。
-- rule validation 和错误报告。
-- finding persistence/query API。
-- path 输出中的代码片段和上下文预算。
-- sink/source 匹配从简单 substring 逐步增强为 qualified name、access path、callee、argument index。
+- 从 file/line/column 定位 ReferenceUse、CallsiteArg、BindingUse、DataNode。
+- BindingUse 扫描和 shadowing，避免同名变量误连。
+- CallsiteArg 可靠落库，支持 argument index、keyword/named argument、receiver。
+- DataFlowBuilder 从 capture 顺序启发式升级为 AST 结构建边。
+- BackwardSlicer：从 DataNode/BindingUse 反向追 `Assign`、`FieldLoad`、`CallArg`、`Return`、`ArgToParam` 等来源边。
+- CallerPathExplorer：沿 symbol call graph 向上游展开 caller chain，带 depth/limit/confidence。
+- Trace output formatter：返回 JSON facts + 可读 Markdown evidence。
 
 MVP 语言端到端验收：
 
-- 每种 MVP 语言至少有一个 source -> dataflow propagation -> sink 的 fixture。
-- fixture 应验证 finding、severity、confidence、source range、sink range、path steps。
-- CLI `atlas taint` 必须能在 fixture 项目上输出稳定结果。
-- MCP 或等价接口必须能读取 finding/path，并提供 bounded 输出。
+- TypeScript/JavaScript/Python 至少各有一个真实源码 fixture：指定位置实参 -> 局部变量 -> 字段访问表达式 -> caller path。
+- Java/C/C++/ArkTS/Cangjie 至少提供 Level 1 callers/callees fixture，并为 Level 2/3 能力提供 best-effort fixture 或显式 unsupported diagnostics。
+- CLI/MCP 或等价接口必须能读取 trace path，并提供 bounded 输出。
+- 测试必须断言每一步的 kind、range、file、confidence/provenance。
 - 失败或不支持的语言能力必须显式标记，不得静默通过。
 
-## 3. 函数摘要与跨过程数据流
+## 3. 函数摘要与轻量跨函数追踪
 
-当前 CFG 和 local dataflow 已有基础，但跨函数传播仍需函数摘要。
+当前 CFG 和 local dataflow 已有基础，但从指定位置回溯到 caller 仍需轻量函数摘要。不需要完整跨过程污点分析，也不规划 taint rule engine，先做 query-time summary 即可。
 
 建议新增：
 
@@ -45,25 +48,25 @@ MVP 语言端到端验收：
 FunctionSummary
   input_flows
   return_flows
-  sink_flows
-  source_flows
-  sanitizer_flows
+  parameter_flows
+  call_arg_flows
+  field_flows
   side_effects
 ```
 
 阶段目标：
 
-1. intraprocedural summary：从参数到返回值、参数到 sink、source 到返回值。
-2. callsite bridging：arg -> param、return -> call result。
-3. limited interprocedural propagation：深度限制、循环检测、confidence 衰减。
-4. MCP `atlas_taint_trace` 或扩展 `atlas_path` 支持 dataflow path。
+1. intraprocedural summary：从参数到返回值、参数到关键 call arg、field/access path 到返回值。
+2. callsite bridging：caller arg -> callee param、callee return -> caller assignment/call result。
+3. limited backward interprocedural trace：深度限制、循环检测、confidence 衰减。
+4. MCP `atlas_trace_point` / `atlas_trace_variable` 或扩展 `atlas_path` 支持 dataflow path。
 
 ## 4. Graph 分层加载
 
 当前方向：
 
 - SymbolGraph 可以全量 snapshot。
-- DataFlowGraph、CFG、TaintGraph 应按函数、文件或 slice 按需加载。
+- DataFlowGraph、CFG、TraceGraph 应按函数、文件或 slice 按需加载。
 
 原因：
 
@@ -74,19 +77,19 @@ FunctionSummary
 
 - `GraphSnapshot` 只负责 symbol graph。
 - dataflow/CFG 提供专门 reader 和 bounded traversal API。
-- context/taint/path 工具按需加载局部 facts。
+- context/trace/path 工具按需加载局部 facts。
 
 ## 5. Engine / CLI / MCP 拆分
 
 拆分时机：
 
 ```text
-当前架构完成 MVP 语言 taint E2E
+当前架构完成 MVP 语言 variable provenance / caller path E2E
   -> 拆分 engine / CLI / MCP
   -> 后续再分叉 Atlas 与 Corpus
 ```
 
-拆分目标不是只抽 tree-sitter parser，而是抽出包含语法解析和污点分析能力的核心引擎：
+拆分目标不是只抽 tree-sitter parser，而是抽出包含语法解析、变量来源追踪和调用路径查询能力的核心引擎：
 
 ```text
 crates/
@@ -96,11 +99,12 @@ crates/
     LanguageAdapter
     binding/dataflow/CFG builders
     resolution primitives
-    taint rules and taint engine
+    variable provenance trace / slicing engine
+    caller path explorer
 
   atlas-cli
     command-line interaction
-    init/index/sync/search/context/taint commands
+    init/index/sync/search/context/trace commands
 
   atlas-mcp
     MCP transport
@@ -113,10 +117,11 @@ crates/
 - `atlas-engine` 可以被其他 Rust 程序作为 crate 直接使用。
 - `atlas-engine` 不依赖 CLI/MCP。
 - CLI 和 MCP 只依赖 engine API。
-- engine crate 包含污点分析，不把 taint 留在交互层。
+- engine crate 包含变量来源追踪和调用路径查询，不把 trace 算法留在交互层。
+- 不规划完整污点分析或 taint engine 产品线；变量来源追踪和调用路径查询是分析主线。
 - 项目级持久化和索引策略可以先保留在 Atlas 应用层，后续为 Atlas/Corpus 分支分别适配。
 
-不要过早拆分；当前门槛是 MVP 语言污点分析端到端测试完成。
+不要过早拆分；当前门槛是 MVP 语言变量来源追踪和调用路径查询端到端测试完成。
 
 ## 6. 后续分叉方向
 
@@ -128,8 +133,8 @@ Engine / CLI / MCP 边界拆清后，演进分为两条线。
 
 - 做好当前 Atlas 主线：本地单仓库、单版本、workspace graph。
 - 稳定 `.atlas/atlas.db`、GraphSnapshot、search/context/MCP。
-- 强化 incremental sync、影响面分析、调用图和 taint 分析。
-- 面向日常代码理解、审查、Agent 上下文构建和安全分析。
+- 强化 incremental sync、影响面分析、调用图、变量来源追踪和调用路径查询。
+- 面向日常代码理解、审查、Agent 上下文构建和路径分析。
 
 该分支继续使用 project-relative path 作为文件身份基础。
 
@@ -166,6 +171,24 @@ MVP 之后可以引入：
 - Swift
 - Kotlin
 
+当前 MVP 语言按能力等级推进：
+
+```text
+Level 1: symbols + references + calls
+Level 2: bindings + simple assignments
+Level 3: field access + call args + returns
+Level 4: CFG
+Level 5: lightweight interprocedural summaries
+```
+
+策略：
+
+- TypeScript/JavaScript/Python 是首批精度语言，优先补齐 Level 3 和轻量 Level 5。
+- Java 依赖 package/import 和类型提示，优先保证 method invocation、argument、return。
+- C/C++ 受宏、preprocessing、指针和函数指针限制，先提供 include-aware Level 1/2，复杂别名路径标低置信度。
+- ArkTS 先沿 TypeScript-like fallback 提供 best-effort。
+- Cangjie 先保持 minimal facts，不以 trace 精度作为近期门槛。
+
 新增语言必须满足：
 
 - adapter 和 query 独立。
@@ -191,15 +214,15 @@ MVP 之后可以引入：
 - `atlas_dependencies`
 - `atlas_dependents`
 - `atlas_dataflow_path`
-- `atlas_taint_trace`
-- `atlas_rules`
+- `atlas_trace_variable`
+- `atlas_trace_point`
 
 所有工具必须保持：
 
 - bounded output
 - project path validation
 - explicit confidence/provenance
-- structured JSON plus optional Markdown context
+- structured JSON plus Markdown context where useful
 
 ## 10. 不建议近期投入
 
@@ -208,5 +231,5 @@ MVP 之后可以引入：
 - Python 动态类型精确推断。
 - 全语言 framework resolver 生态。
 - 提前构建大型 graph database。
-- 在 MVP 语言污点端到端测试完成前做 workspace 大拆分。
+- 在 MVP 语言变量来源追踪和调用路径查询端到端测试完成前做 workspace 大拆分。
 - 在 engine/CLI/MCP 边界拆清前开启 Corpus 分支。

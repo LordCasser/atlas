@@ -232,6 +232,125 @@ impl LanguageAdapter for PythonAdapter {
         }
         frameworks
     }
+
+    fn dataflow_builder_query(&self) -> &str {
+        include_str!("../queries/python/dataflow_builder.scm")
+    }
+
+    fn normalize_dataflow_builder(
+        &self,
+        capture_name: &str,
+        node: tree_sitter::Node,
+        source: &str,
+        file_id: FileId,
+        _file_path: &Path,
+    ) -> (Option<crate::types::dataflow::DataNode>, Option<crate::types::dataflow::DataFlowEdge>) {
+        use crate::types::ids::DataNodeId;
+        use crate::types::dataflow::DataNode;
+
+        let range = node_range(node);
+
+        match capture_name {
+            "df.parameter" => {
+                node_text(node, source).map(|name| {
+                    let node_id = DataNodeId::generate(
+                        &file_id, None::<&crate::types::ids::SymbolId>,
+                        "parameter", Some(&name), Some(&name), range.start_byte,
+                    );
+                    let dn = DataNode::parameter(node_id, file_id, None, None, &name, range);
+                    (Some(dn), None)
+                }).unwrap_or((None, None))
+            }
+            "df.assign_target" => {
+                node_text(node, source).map(|name| {
+                    let node_id = DataNodeId::generate(
+                        &file_id, None::<&crate::types::ids::SymbolId>,
+                        "local", Some(&name), Some(&name), range.start_byte,
+                    );
+                    let dn = DataNode::local(node_id, file_id, None, None, &name, range);
+                    (Some(dn), None)
+                }).unwrap_or((None, None))
+            }
+            "df.assign_value" => {
+                let text = node_text(node, source).unwrap_or_default();
+                let node_id = DataNodeId::generate(
+                    &file_id, None::<&crate::types::ids::SymbolId>,
+                    "expr", Some(&text), None, range.start_byte,
+                );
+                let dn = DataNode {
+                    id: node_id, file_id, function_id: None,
+                    kind: crate::types::enums::DataNodeKind::Expr, binding_id: None,
+                    callsite_id: None, name: Some(text),
+                    access_path: None, range,
+                };
+                (Some(dn), None)
+            }
+            "df.return_value" => {
+                let node_id = DataNodeId::generate(
+                    &file_id, None::<&crate::types::ids::SymbolId>,
+                    "return", None, None, range.start_byte,
+                );
+                let dn = DataNode::return_(node_id, file_id, None, range);
+                (Some(dn), None)
+            }
+            "df.call_arg" => {
+                let text = node_text(node, source).unwrap_or_default();
+                let node_id = DataNodeId::generate(
+                    &file_id, None::<&crate::types::ids::SymbolId>,
+                    "call_arg", Some(&text), None, range.start_byte,
+                );
+                let dn = DataNode::call_arg(node_id, file_id, None, None, Some(&text), range);
+                (Some(dn), None)
+            }
+            "df.call_target" => {
+                node_text(node, source).map(|name| {
+                    // Build full access_path from parent attribute node
+                    // e.g. for "os.system" → access_path = "os.system"
+                    let access_path = node.parent()
+                        .filter(|p| p.kind() == "attribute")
+                        .and_then(|p| node_text(p, source))
+                        .unwrap_or_else(|| name.clone());
+                    let node_id = DataNodeId::generate(
+                        &file_id, None::<&crate::types::ids::SymbolId>,
+                        "call_target", Some(&name), Some(&access_path), range.start_byte,
+                    );
+                    let dn = DataNode::call_target(node_id, file_id, None, &name, &access_path, range);
+                    (Some(dn), None)
+                }).unwrap_or((None, None))
+            }
+            "df.field_name" => {
+                node_text(node, source).map(|name| {
+                    // Build full access_path from parent attribute node
+                    // e.g. for "request.args" → access_path = "request.args"
+                    let access_path = node.parent()
+                        .filter(|p| p.kind() == "attribute")
+                        .and_then(|p| node_text(p, source))
+                        .unwrap_or_else(|| name.clone());
+                    let node_id = DataNodeId::generate(
+                        &file_id, None::<&crate::types::ids::SymbolId>,
+                        "field", Some(&name), Some(&access_path), range.start_byte,
+                    );
+                    let dn = DataNode::field(node_id, file_id, None, &name, &access_path, range);
+                    (Some(dn), None)
+                }).unwrap_or((None, None))
+            }
+            "df.literal" | "df.receiver" => {
+                let text = node_text(node, source).unwrap_or_default();
+                let node_id = DataNodeId::generate(
+                    &file_id, None::<&crate::types::ids::SymbolId>,
+                    "literal", Some(&text), None, range.start_byte,
+                );
+                let dn = DataNode {
+                    id: node_id, file_id, function_id: None,
+                    kind: crate::types::enums::DataNodeKind::Literal, binding_id: None,
+                    callsite_id: None, name: Some(text),
+                    access_path: None, range,
+                };
+                (Some(dn), None)
+            }
+            _ => (None, None),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

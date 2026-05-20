@@ -19,7 +19,7 @@
 
 - ID 生成、enum roundtrip、range 工具函数。
 - query parser、name matcher、scoring、rule matcher。
-- 单个 builder 的局部行为，例如 CFG 节点生成、path tracer、taint worklist propagation。
+- 单个 builder 的局部行为，例如 CFG 节点生成、path tracer、backward slicer。
 
 要求：
 
@@ -59,20 +59,20 @@
 
 适用范围：
 
-- `atlas init/index/sync/search/status/files/context/taint/doctor`。
+- `atlas init/index/sync/search/status/files/context/trace/doctor`。
 
 要求：
 
 - 对用户可见能力，至少要有一个真实临时项目测试实际命令路径。
 - CLI 输出可以断言稳定 JSON 或关键文本片段；不要依赖无意义的进度输出。
 - `index` 必须验证单文件失败不会中断整个项目，并验证结构化失败报告。
-- `taint` 必须验证真实源码项目经过 `index` 后能产生 finding 和 path steps。
+- `trace` 必须验证真实源码项目经过 `index` 后能从指定指定位置产生变量来源和 caller path。
 
 ### 2.5 MCP 测试
 
 适用范围：
 
-- MCP tool registration、schema、bounded output、错误输出、taint/query/context 工具。
+- MCP tool registration、schema、bounded output、错误输出、trace/query/context 工具。
 
 要求：
 
@@ -148,7 +148,7 @@
 
 - 端到端链路中 `DataNode.function_id`、`binding_id`、`callsite_id` 在需要查询时必须可用。
 - 不允许继续用 fake `SymbolId` 表示变量、表达式、参数或返回值数据流。
-- 旧 `RawEdge` dataflow 路径必须删除、隔离或明确标记为兼容遗留路径，不能作为 taint 输入。
+- 旧 `RawEdge` dataflow 路径必须删除、隔离或明确标记为兼容遗留路径，不能作为 trace 输入。
 
 ### P4：CFG 基础
 
@@ -163,23 +163,23 @@
 - CFG edge 必须同属一个 function。
 - 不支持的语言结构必须通过 diagnostics 或文档显式标记。
 
-### P5：Taint MVP
+### P5：Variable Provenance Trace Explorer MVP
 
 最低要求：
 
-- rule loader 覆盖默认规则、用户规则、覆盖策略、非法规则诊断。
-- taint engine 单元测试可以使用手写 `DataNode` 和 `DataFlowEdge`。
-- path tracer 单元测试可以使用手写图。
+- 从 file/line/column 定位 ReferenceUse、BindingUse、CallsiteArg 或 DataNode。
+- backward slicer 单元测试可以使用手写 `DataNode` 和 `DataFlowEdge`。
+- caller path explorer 单元测试可以使用手写 symbol graph。
+- path formatter 测试必须覆盖 bounded JSON 和 Markdown evidence。
 
 完成标准：
 
-- 每种 MVP 语言至少有一个真实源码 fixture：source -> propagation -> sink。
-- fixture 必须经过 extraction -> store -> dataflow_edges -> taint engine -> finding -> path steps。
-- `atlas taint` 必须能在 fixture 项目上输出稳定结果。
-- MCP 或等价 public API 必须能查询 finding/path，并返回 bounded、结构化输出。
-- 测试必须断言 source range、sink range、rule id、severity、confidence、path step 顺序。
-- sanitizer 和 max depth 必须有负向测试。
-- 只用 canned facts 的测试只能证明 engine，不计入 P5 端到端验收。
+- TypeScript/JavaScript/Python 至少各有一个真实源码 fixture：指定指定位置实参或变量 -> backward slice -> caller path。
+- fixture 必须经过 extraction -> store -> resolution -> GraphBuilder -> dataflow/call graph -> trace query。
+- CLI、MCP 或等价 public API 必须能查询 trace path，并返回 bounded、结构化输出。
+- 测试必须断言每个 path step 的 kind、file、range、confidence/provenance 和截断行为。
+- Java/C/C++/ArkTS/Cangjie 如果只能支持 Level 1/2，测试必须断言 unsupported diagnostics 或 lower-confidence best-effort 输出。
+- 既有 taint 原型测试可以保留为历史回归测试，但不计入 Trace Explorer 端到端验收，也不作为后续能力规划依据。
 
 ### Engine / CLI / MCP 拆分阶段
 
@@ -225,7 +225,7 @@ cargo test --features "all-languages,mcp,sync"
 ## 5. 禁止事项
 
 1. 禁止用手写 facts 的测试宣称端到端能力完成。
-2. 禁止只断言数量大于 0 来证明 resolution、graph、taint 正确。
+2. 禁止只断言数量大于 0 来证明 resolution、graph、trace 正确。
 3. 禁止 MCP/CLI 工具只注册不测试实际调用。
 4. 禁止新增 schema 表但不测试 insert/query/delete/cascade。
 5. 禁止修改 golden expected 而不说明语义原因。
@@ -236,7 +236,7 @@ cargo test --features "all-languages,mcp,sync"
 当前已知缺口应优先修复：
 
 1. `mcp` feature 必须可编译，并纳入默认验证矩阵。
-2. `atlas taint` 需要真实源码端到端 fixture，而不是只依赖 canned `DataNode` 测试。
-3. `DataNode.function_id`、`callsite_args`、binding use scanning 需要补齐，否则 taint CLI 可能无法读取真实抽取结果。
+2. Trace Explorer 需要真实源码端到端 fixture，而不是只依赖 canned `DataNode` 测试。
+3. `DataNode.function_id`、`callsite_args`、binding use scanning 需要补齐，否则 trace 查询无法可靠定位变量来源和调用实参。
 4. `ParseWorkerPool` 需要接入 `atlas index` 和 `sync` 的生产路径。
 5. 旧 `RawEdge` dataflow 路径需要清理或明确降级，避免和 `DataFlowEdge` 双轨腐化。

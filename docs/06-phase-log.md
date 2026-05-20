@@ -59,7 +59,7 @@
 
 ## P3：Binding 与 DataFlow 基础
 
-目标：为污点分析建立局部绑定和数据流事实，不再把 dataflow 塞进 symbol graph。
+目标：为变量来源与调用路径追踪建立局部绑定和数据流事实，不再把 dataflow 塞进 symbol graph。
 
 完成内容：
 
@@ -77,7 +77,7 @@
 
 ## P4：CFG 基础
 
-目标：为跨过程 dataflow 和 taint 提供函数内控制流骨架。
+目标：为跨函数路径追踪和 dataflow 提供函数内控制流骨架。
 
 完成内容：
 
@@ -94,11 +94,11 @@
 - `IntraproceduralDataflow` / `InterproceduralDataflow` 专用抽象。
 - `BindingGraph` / `DataFlowGraph` 的专用 in-memory graph。
 
-原因：当前消费者不足，P5 taint 可以先从 DB facts 按需加载。
+原因：当前消费者不足，P5 trace 可以先从 DB facts 按需加载。
 
-## P5：Taint 分析 MVP
+## P5：Taint 原型实现
 
-目标：在 P3/P4 基础上提供 source-to-sink 分析雏形。
+目标：在 P3/P4 基础上验证 source-to-sink 规则分析和 path tracing 雏形。该阶段已经落地的 taint 能力只作为历史原型记录；后续产品主线调整为指定位置驱动的 Trace Explorer。
 
 完成内容：
 
@@ -120,6 +120,7 @@
 - 函数摘要 (FunctionSummary) — 跨函数传播当前硬依赖 dataflow_edges。
 - 跨语言规则共享和规则生态。
 - Path slicing 和 sanitizer 链精细化。
+- 用户指定指定位置后的 backward slice / caller path explorer。
 
 测试覆盖：
 
@@ -127,6 +128,12 @@
 - 1 个 path tracer 单元测试。
 - 3 个 rules loader 单元测试。
 - 5 个 E2E 集成测试 (`tests/taint_e2e.rs`) — 用预制 DataNode + DataFlowEdge 模拟 source→sink、sanitizer 阻断、max_depth 短路等场景。
+
+方向调整：
+
+- 不再把“全项目自动 taint finding”作为当前主线验收。
+- 当前主线改为用户指定指定位置、变量或调用点后的路径追踪。
+- taint engine 不进入当前产品路线，不能替代 Trace Explorer 的真实源码端到端验收。
 
 ## Post-P5：工程成熟度改进
 

@@ -1,8 +1,18 @@
-;; Dataflow builder captures: assignments, returns, call args, member access, literals
+;; Dataflow builder captures: parameters, assignments, returns, call targets,
+;; call args, member access, literals
 ;;
 ;; These captures feed into DataFlowBuilder which creates DataNodes and DataFlowEdges.
 ;; Unlike the old dataflow.scm (which produces SymbolId-based RawEdges),
 ;; this produces DataNode-based DataFlowEdges.
+
+;; --- Function parameters ---
+;; Required parameter: function f(x: T)
+(required_parameter
+  (identifier) @df.parameter)
+
+;; Optional parameter: function f(x?: T)
+(optional_parameter
+  (identifier) @df.parameter)
 
 ;; --- Assignments: target = value ---
 ;; Captures both left-hand side and right-hand side of assignments
@@ -18,6 +28,16 @@
 ;; --- Return statements ---
 ;; return expr
 (return_statement (_) @df.return_value)
+
+;; --- Call targets ---
+;; Direct call: func(args) — captures the function being called
+(call_expression
+  function: (identifier) @df.call_target)
+
+;; Method call: obj.method(args) — captures the method name
+(call_expression
+  function: (member_expression
+    property: (property_identifier) @df.call_target))
 
 ;; --- Call arguments ---
 ;; Each argument expression at a call site

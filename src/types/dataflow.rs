@@ -187,6 +187,28 @@ impl DataNode {
             range,
         }
     }
+
+    /// Convenience constructor for a call-target (callee) node.
+    pub fn call_target(
+        id: DataNodeId,
+        file_id: FileId,
+        function_id: Option<SymbolId>,
+        name: &str,
+        access_path: &str,
+        range: TextRange,
+    ) -> Self {
+        Self {
+            id,
+            file_id,
+            function_id,
+            kind: DataNodeKind::CallTarget,
+            binding_id: None,
+            callsite_id: None,
+            name: Some(name.to_string()),
+            access_path: Some(access_path.to_string()),
+            range,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

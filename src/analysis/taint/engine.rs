@@ -199,6 +199,7 @@ impl TaintEngine {
 /// Matching logic:
 /// - `symbol_pattern`: the node's name contains the pattern (case-insensitive)
 /// - `callee`: if set, the node's access_path must contain the callee pattern
+/// - `access_path_pattern`: if set, the node's access_path must contain the pattern
 /// - No file_id/language filtering (caller is responsible for language-scoped rules)
 fn match_node_against_rule(node: &DataNode, rule: &TaintRule) -> bool {
     // symbol_pattern matching
@@ -212,10 +213,21 @@ fn match_node_against_rule(node: &DataNode, rule: &TaintRule) -> bool {
         }
     }
 
-    // callee matching
+    // callee matching (legacy: checks access_path contains callee)
     if let Some(ref callee) = rule.callee {
         if let Some(ref access_path) = node.access_path {
             if !access_path.to_lowercase().contains(&callee.to_lowercase()) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    // access_path_pattern matching (checks access_path contains pattern)
+    if let Some(ref pattern) = rule.access_path_pattern {
+        if let Some(ref access_path) = node.access_path {
+            if !access_path.to_lowercase().contains(&pattern.to_lowercase()) {
                 return false;
             }
         } else {

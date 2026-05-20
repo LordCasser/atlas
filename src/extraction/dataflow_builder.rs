@@ -215,6 +215,46 @@ fn build_dataflow_edges(
             }
         }
     }
+
+    // Create ArgToParam edges: call_arg → call_target
+    // Associates each call argument with its call target (callee).
+    // Logic: within each function, associate each CallArg with the most recent
+    // preceding CallTarget in byte position.
+    let call_targets: Vec<&DataNode> = nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::CallTarget)
+        .collect();
+
+    let call_args: Vec<&DataNode> = nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::CallArg)
+        .collect();
+
+    if !call_targets.is_empty() && !call_args.is_empty() {
+        for arg in &call_args {
+            let best_target = call_targets.iter()
+                .filter(|t| t.function_id == arg.function_id)
+                .filter(|t| t.range.start_byte < arg.range.start_byte)
+                .max_by_key(|t| t.range.start_byte);
+
+            if let Some(target) = best_target {
+                let edge_id = DataFlowEdgeId::generate(
+                    &arg.id,
+                    &target.id,
+                    DataFlowKind::ArgToParam.as_str(),
+                );
+                let edge = DataFlowEdge::new(
+                    edge_id,
+                    arg.id,
+                    target.id,
+                    DataFlowKind::ArgToParam,
+                    arg.range,
+                    0.75,
+                );
+                edges.push(edge);
+            }
+        }
+    }
 }
 
 /// Standalone use-def resolution: creates edges from variable definitions

@@ -31,13 +31,13 @@ Types
 - `extraction` 只产出单文件事实，不做跨文件 resolution。
 - `resolution` 更新 resolved facts，不直接承担展示格式。
 - `graph` 从 resolved facts 和 structural facts 构建 symbol graph。
-- `analysis` 消费 dataflow/CFG/rules，不破坏底层 facts。
+- `analysis` 消费 dataflow、CFG 和 call graph，不破坏底层 facts。
 - `cli` 和 `mcp` 只编排能力，不内嵌解析、resolution 或分析算法。
 
 当前阶段约束：
 
-- 先在当前单 crate/当前架构内完成 MVP 语言污点分析端到端测试。
-- 在端到端污点能力稳定前，不先做 workspace/crate 拆分。
+- 先在当前单 crate/当前架构内完成变量来源与调用路径追踪端到端测试。
+- 在端到端 trace 能力稳定前，不先做 workspace/crate 拆分。
 - CLI 和 MCP 可以继续在同一 crate 内编排，但新增逻辑要维持清晰边界，避免后续拆分时把交互层和引擎层绑死。
 
 ## 3. ID 约束
@@ -129,7 +129,7 @@ diagnostics
 - data_nodes / dataflow_edges
 - callsite_args
 - cfg_nodes / cfg_edges
-- taint rules/findings/path steps where analysis is enabled
+- trace path steps where analysis is enabled
 - project metadata
 - FTS indexes
 - schema versions
@@ -165,7 +165,7 @@ diagnostics
 
 ## 8. 引擎拆分边界
 
-完成 MVP 语言污点分析端到端测试后，再拆分可复用引擎 crate。
+完成 MVP 语言变量来源与调用路径追踪端到端测试后，再拆分可复用引擎 crate。
 
 拆分目标：
 
@@ -176,13 +176,13 @@ atlas-engine
   language adapters
   binding/dataflow/CFG builders
   reference resolution where storage-independent
-  taint rule loading and taint engine
+  variable provenance trace / slicing engine
 
 atlas-cli
   command-line interaction
   project initialization
   indexing/sync commands
-  search/context/taint commands
+  search/context/trace commands
 
 atlas-mcp
   JSON-RPC stdio transport
@@ -195,7 +195,8 @@ atlas-mcp
 - `atlas-engine` 必须可作为独立 crate 被其他程序直接使用。
 - `atlas-engine` 不能依赖 CLI 参数解析、MCP transport 或交互格式。
 - CLI/MCP 只能调用 engine API，不应反向被 engine 调用。
-- engine crate 必须包含语法解析和污点分析能力，而不是只包含 tree-sitter parser。
+- engine crate 必须包含语法解析、facts 构建和变量来源与调用路径追踪能力，而不是只包含 tree-sitter parser。
+- 不在 engine crate 中规划完整 taint rule engine；trace/slicing 是分析主线。
 - 持久化和项目索引可以先保留在 Atlas 应用层，后续按 Atlas/Corpus 两个分支的存储模型分别演进。
 
 ## 9. Corpus 边界
@@ -214,5 +215,5 @@ Corpus 的详细功能和需求以历史文档为准，需要时从 git 历史�
 
 - Corpus 不共享 Atlas 的 path-based 持久化 ID。
 - Corpus 以 Git blob/tag/path/version mapping 为核心索引模型。
-- Corpus 可以复用 engine 的 parser、LanguageAdapter、函数/符号/引用抽取和污点分析能力。
+- Corpus 可以复用 engine 的 parser、LanguageAdapter、函数/符号/引用抽取和变量来源与调用路径追踪能力。
 - Corpus 必须独立选择存储、索引、Web/API 和 MCP 工具语义。

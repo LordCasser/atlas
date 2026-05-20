@@ -746,6 +746,8 @@ pub enum DataNodeKind {
     Expr,
     /// Argument passed at a call-site.
     CallArg,
+    /// Function/method being called (callee identifier).
+    CallTarget,
     /// Value returned from a call-site.
     CallReturn,
     /// Receiver object (`this` / `self`).
@@ -766,6 +768,7 @@ impl DataNodeKind {
             Self::Literal => "literal",
             Self::Expr => "expr",
             Self::CallArg => "call_arg",
+            Self::CallTarget => "call_target",
             Self::CallReturn => "call_return",
             Self::Receiver => "receiver",
             Self::Global => "global",
@@ -782,6 +785,7 @@ impl DataNodeKind {
             "literal" => Some(Self::Literal),
             "expr" => Some(Self::Expr),
             "call_arg" => Some(Self::CallArg),
+            "call_target" => Some(Self::CallTarget),
             "call_return" => Some(Self::CallReturn),
             "receiver" => Some(Self::Receiver),
             "global" => Some(Self::Global),

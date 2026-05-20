@@ -284,6 +284,16 @@ impl LanguageAdapter for TypeScriptAdapter {
         let range = node_range(node);
 
         match capture_name {
+            "df.parameter" => {
+                node_text(node, source).map(|name| {
+                    let node_id = DataNodeId::generate(
+                        &file_id, None::<&crate::types::ids::SymbolId>,
+                        "parameter", Some(&name), Some(&name), range.start_byte,
+                    );
+                    let dn = DataNode::parameter(node_id, file_id, None, None, &name, range);
+                    (Some(dn), None)
+                }).unwrap_or((None, None))
+            }
             "df.assign_target" => {
                 node_text(node, source).map(|name| {
                     let node_id = DataNodeId::generate(
@@ -326,13 +336,35 @@ impl LanguageAdapter for TypeScriptAdapter {
                 let dn = DataNode::call_arg(node_id, file_id, None, None, Some(&text), range);
                 (Some(dn), None)
             }
-            "df.field_name" => {
+            "df.call_target" => {
                 node_text(node, source).map(|name| {
+                    // Build full access_path from parent member_expression
+                    // e.g. for "child_process.exec" → access_path = "child_process.exec"
+                    let access_path = node.parent()
+                        .filter(|p| p.kind() == "member_expression")
+                        .and_then(|p| node_text(p, source))
+                        .unwrap_or_else(|| name.clone());
                     let node_id = DataNodeId::generate(
                         &file_id, None::<&crate::types::ids::SymbolId>,
-                        "field", Some(&name), Some(&name), range.start_byte,
+                        "call_target", Some(&name), Some(&access_path), range.start_byte,
                     );
-                    let dn = DataNode::field(node_id, file_id, None, &name, &name, range);
+                    let dn = DataNode::call_target(node_id, file_id, None, &name, &access_path, range);
+                    (Some(dn), None)
+                }).unwrap_or((None, None))
+            }
+            "df.field_name" => {
+                node_text(node, source).map(|name| {
+                    // Build full access_path from parent member_expression
+                    // e.g. for "req.query" → access_path = "req.query"
+                    let access_path = node.parent()
+                        .filter(|p| p.kind() == "member_expression")
+                        .and_then(|p| node_text(p, source))
+                        .unwrap_or_else(|| name.clone());
+                    let node_id = DataNodeId::generate(
+                        &file_id, None::<&crate::types::ids::SymbolId>,
+                        "field", Some(&name), Some(&access_path), range.start_byte,
+                    );
+                    let dn = DataNode::field(node_id, file_id, None, &name, &access_path, range);
                     (Some(dn), None)
                 }).unwrap_or((None, None))
             }

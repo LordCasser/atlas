@@ -18,35 +18,36 @@ use crate::types::enums::Language;
 /// Embedded default taint rules for TypeScript/JavaScript.
 const DEFAULT_RULES_TS: &str = r#"
 # ── Sources ──────────────────────────────────────────────────────────────────
+# Express request sources: access_path_pattern matches both req.X and request.X
 - id: ts.req.query
   language: typescript
   kind: source
   symbol_pattern: "query"
-  callee: "request"
+  access_path_pattern: ".query"
   severity: high
 - id: ts.req.body
   language: typescript
   kind: source
   symbol_pattern: "body"
-  callee: "request"
+  access_path_pattern: ".body"
   severity: high
 - id: ts.req.params
   language: typescript
   kind: source
   symbol_pattern: "params"
-  callee: "request"
+  access_path_pattern: ".params"
   severity: high
 - id: ts.req.cookies
   language: typescript
   kind: source
   symbol_pattern: "cookies"
-  callee: "request"
+  access_path_pattern: ".cookies"
   severity: medium
 - id: ts.req.headers
   language: typescript
   kind: source
   symbol_pattern: "headers"
-  callee: "request"
+  access_path_pattern: ".headers"
   severity: medium
 - id: ts.location.hash
   language: typescript
@@ -163,29 +164,30 @@ const DEFAULT_RULES_TS: &str = r#"
 /// Embedded default taint rules for Python.
 const DEFAULT_RULES_PYTHON: &str = r#"
 # ── Sources ──────────────────────────────────────────────────────────────────
+# Flask/Django request sources: access_path_pattern matches request.X
 - id: py.request.args
   language: python
   kind: source
   symbol_pattern: "args"
-  callee: "request"
+  access_path_pattern: ".args"
   severity: high
 - id: py.request.form
   language: python
   kind: source
   symbol_pattern: "form"
-  callee: "request"
+  access_path_pattern: ".form"
   severity: high
 - id: py.request.json
   language: python
   kind: source
   symbol_pattern: "json"
-  callee: "request"
+  access_path_pattern: ".json"
   severity: high
 - id: py.request.cookies
   language: python
   kind: source
   symbol_pattern: "cookies"
-  callee: "request"
+  access_path_pattern: ".cookies"
   severity: medium
 - id: py.sys.argv
   language: python

@@ -16,7 +16,7 @@
 - Atlas 是 CodeGraph-inspired 的 Rust-native 本地代码知识图谱引擎。
 - CodeGraph 只作为产品形态和经验参考。
 - MVP 聚焦 8 种语言。
-- schema 为 Atlas 自有模型，保留 scopes、references、callsites、dataflow、CFG、taint 基础事实。
+- schema 为 Atlas 自有模型，保留 scopes、references、callsites、dataflow、CFG 和 trace 基础事实。
 - extraction 使用 tree-sitter queries + LanguageAdapter。
 - SQLite 是 source of truth，GraphSnapshot 是查询加速层。
 
@@ -42,13 +42,13 @@
 
 - 不立即拆分 crate。
 - 不立即开启 Corpus 分支。
-- 先基于当前架构完成 MVP 语言污点分析端到端测试。
-- 污点能力稳定后，先拆出包含语法解析和污点分析能力的 engine crate，以及交互用 CLI/MCP 层。
+- 先基于当前架构完成变量来源与调用路径追踪端到端测试。
+- trace 能力稳定后，先拆出包含语法解析和路径追踪能力的 engine crate，以及交互用 CLI/MCP 层。
 - 只有完成 engine/CLI/MCP 边界拆分后，后续演进才分叉为 Atlas 单仓库单版本索引和 Corpus 多版本源码索引。
 
 ## 3. 从 symbol-only graph 演进到 facts-first graph
 
-旧方向容易把抽取结果直接压成最终 graph edge，导致 callsite、低置信度引用、局部数据流和污点路径缺少源码定位。
+旧方向容易把抽取结果直接压成最终 graph edge，导致 callsite、低置信度引用、局部数据流和代码路径缺少源码定位。
 
 当前方向：
 
@@ -78,23 +78,35 @@
 - Binding 和 DataNode 有独立 ID。
 - DataFlowEdge 的 source/target 必须是 DataNode。
 - callsite args、return、field access、local variable 都应能定位到数据流节点。
-- 污点分析基于 dataflow facts，而不是 symbol edge。
+- 变量来源与调用路径追踪基于 dataflow facts，而不是 symbol edge。
 
-## 6. 从未来污点预留到早期 taint 实现
+## 6. 从自动 taint 扫描改为变量来源与调用路径追踪
 
-旧需求只要求为 taint 预留 references/callsites/dataflow。
+旧方向一度把 P5 定义为自动 source-to-sink taint MVP：
 
-当前状态：
+- 通过规则识别 source、sink、sanitizer。
+- 全项目 forward propagation。
+- 输出 finding、severity、path steps。
+
+当前决策：
+
+- 自动 taint engine 不进入当前产品线。
+- 产品主线改为指定位置驱动的 path explorer / backward slicer。
+- 用户先指定指定位置、问题变量、函数或漏洞模式，Atlas 负责找变量来源、调用者链路和可能触发路径。
+- AI 基于 Atlas 返回的结构化证据判断路径是否真实可触发。
+
+当前已有状态：
 
 - taint rules、findings、path steps 已进入 schema。
 - `analysis/taint` 已提供规则加载、forward propagation 和 path tracing。
-- 该能力仍属于早期实现，完整跨函数传播和规则生态放在未来演进。
+- 这些内容视为历史原型事实，不作为当前需求、路线图或验收门槛。
 
 新增阶段门禁：
 
-- 当前主线优先完成 MVP 语言的污点分析端到端测试。
-- 端到端测试必须覆盖 source、propagation、sink、finding、path steps、CLI/MCP 查询输出。
-- 只有当污点分析作为产品能力稳定后，才把语法解析和污点分析引擎抽出为可复用 crate。
+- 当前主线优先完成变量来源与调用路径追踪端到端测试。
+- 端到端测试必须覆盖指定指定位置、变量来源、跨函数参数/返回追踪、caller path、bounded CLI/MCP 输出。
+- taint fixture 只能作为历史原型测试存在，不能替代 trace explorer 的验收。
+- 只有当路径追踪作为产品能力稳定后，才把语法解析和 trace engine 抽出为可复用 crate。
 
 ## 7. 阶段实施记录
 

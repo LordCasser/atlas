@@ -6,7 +6,7 @@
 
 ```text
 src/
-  types/        ID、enum、IR、binding、dataflow、CFG、taint 类型
+  types/        ID、enum、IR、binding、dataflow、CFG、trace 类型
   db/           SQLite schema、store API、迁移入口
   extraction/   tree-sitter 解析、query、scope、semantic binder、lexical binder、dataflow、CFG
   resolution/   builtin filter、import/export/include/path alias/name matching
@@ -14,7 +14,7 @@ src/
   search/       FTS、LIKE/fuzzy、query parser、scoring
   context/      Agent context builder
   sync/         file discovery、change detection、file lock、watcher
-  analysis/     taint analysis layer
+  analysis/     变量来源与调用路径追踪分析层
   mcp/          MCP protocol、transport、tools
   cli/          CLI commands
 ```
@@ -41,7 +41,7 @@ Source files
   -> ReferenceResolver updates resolved_* fields
   -> GraphBuilder writes symbol_edges
   -> GraphSnapshot loads query graph
-  -> CLI / MCP / Search / Context / Analysis
+  -> CLI / MCP / Search / Context / Analysis / Trace
 ```
 
 ## 3. Schema 状态
@@ -79,7 +79,7 @@ schema_versions
 - symbol-level edges 已使用 `symbol_edges`。
 - dataflow facts 已使用 `data_nodes` 和 `dataflow_edges`。
 - CFG facts 已使用 `cfg_nodes` 和 `cfg_edges`。
-- taint rules/findings/path persistence 已进入 schema v7。
+- taint rules/findings/path persistence 已进入 schema v7，但这些表只属于历史原型状态，不参与当前主线能力。
 
 ## 4. Extraction
 
@@ -163,24 +163,37 @@ CLI：
 - `context`
 - `mcp`
 - `doctor`
-- `taint`
 
-## 7. Analysis / Taint
+当前代码里还存在 `taint` 命令和相关模块，但它只作为历史原型实现记录，不列为当前产品主线命令。
 
-当前 `src/analysis/taint/` 已引入：
+## 7. Analysis / Trace
+
+当前代码中曾引入 `src/analysis/taint/`：
 
 - `TaintRuleLoader`
 - `TaintEngine`
 - `TaintPathTracer`
 - finding storage module
 
-设计状态：
+当前实现状态：
 
 - 规则来自内置默认规则和 `.atlas/rules/*.yaml`。
 - 默认规则覆盖 TypeScript/JavaScript 和 Python 的常见 source/sink/sanitizer。
 - TaintEngine 基于 `DataNode` 和 `DataFlowEdge` 做 worklist forward propagation。
 - TaintPathTracer 基于 reverse BFS 生成 source-to-sink path steps。
-- 当前分析以 P3 dataflow 为基础，跨函数精度仍依赖后续函数摘要和更完整 interprocedural flow。
+- 当前 taint 能力属于历史原型，不作为产品能力、路线图目标或验收目标。后续分析主线只围绕用户指定位置后的变量来源和调用路径追踪。
+
+当前产品主线调整为变量来源追踪和调用路径查询：
+
+```text
+用户指定位置 / callsite / 问题变量
+  -> 定位 DataNode / BindingUse / ReferenceUse
+  -> backward slice 追踪变量来源
+  -> 结合 callers/callees 找到可能调用路径
+  -> 输出 bounded evidence 给 Agent 分析
+```
+
+该能力不依赖 source/sink/sanitizer 规则，也不做全项目自动 finding。
 
 ## 8. Cargo Features
 
@@ -214,14 +227,14 @@ cangjie
 
 当前主线目标：
 
-1. 在现有 `types/db/extraction/resolution/graph/analysis/cli/mcp` 架构内完成污点分析。
-2. 为所有 MVP 语言补齐 taint 所需 facts 和端到端测试。
-3. 稳定 CLI/MCP 的 taint 查询输出。
+1. 在现有 `types/db/extraction/resolution/graph/analysis/cli/mcp` 架构内完成变量来源与调用路径追踪。
+2. 为 MVP 语言按能力等级补齐 trace 所需 facts 和端到端测试。
+3. 稳定 CLI/MCP 的 trace 查询输出。
 
 完成上述目标后，再把核心能力拆成可复用 engine crate：
 
 ```text
-engine: 语法解析 + facts + binding/dataflow/CFG + taint analysis
+engine: 语法解析 + facts + binding/dataflow/CFG + variable provenance trace
 cli: command-line interaction
 mcp: JSON-RPC transport and tools
 ```
