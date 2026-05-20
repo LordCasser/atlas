@@ -215,11 +215,11 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
         println!("\nIndexed {}/{} files (100% success)", success_count, total);
     }
 
-    // ── Phase 3: Resolve all references ───────────────────────────────────
+    // ── Phase 3: Resolve all references (P2: two-step pipeline) ──────────
     println!("\nResolving references...");
     let store = Arc::new(store);
     let resolver = crate::resolution::ReferenceResolver::new(Arc::clone(&store));
-    let stats = resolver.resolve_all()?;
+    let (resolved, stats) = resolver.resolve_all()?;
 
     let resolution_rate = if stats.total_refs > 0 {
         (stats.resolved as f64 / stats.total_refs as f64) * 100.0
@@ -232,7 +232,6 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
         stats.resolved, resolution_rate
     );
     println!("  Unresolved:         {}", stats.unresolved);
-    println!("  Edges created:      {}", stats.edges_created);
     if !stats.by_strategy.is_empty() {
         println!("  By strategy:");
         for (strat, count) in &stats.by_strategy {
@@ -248,6 +247,12 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
             println!("    ... and {} more", stats.warnings.len() - 10);
         }
     }
+
+    // ── Phase 3b: Build edges from resolved references ───────────────────
+    println!("\nBuilding edges...");
+    let builder = crate::graph::GraphBuilder::new(Arc::clone(&store));
+    let build_stats = builder.build_all(&resolved);
+    println!("  Edges created:      {}", build_stats.edges_created);
 
     // Show final stats
     let db_stats = store.get_stats()?;

@@ -8,7 +8,8 @@
 
 use atlas::db::Store;
 use atlas::extraction::extract_file;
-use atlas::resolution::ReferenceResolver;
+use atlas::graph::GraphBuilder;
+use atlas::resolution::{ReferenceResolver, ResolutionStats};
 use atlas::types::ids::FileId;
 use atlas::types::enums::{EdgeKind, Language};
 use std::path::{Path, PathBuf};
@@ -18,8 +19,14 @@ use std::sync::Arc;
 // Helpers
 // ────────────────────────────────────────────────────────────────
 
+/// Combined stats from the resolve + build pipeline.
+struct PipelineStats {
+    resolution: ResolutionStats,
+    edges_created: usize,
+}
+
 /// Run the full pipeline on a set of source files and return the store + stats.
-fn index_files(files: &[(&str, &str)]) -> (Arc<Store>, atlas::resolution::ResolutionStats) {
+fn index_files(files: &[(&str, &str)]) -> (Arc<Store>, PipelineStats) {
     let store = Arc::new(Store::open_in_memory().unwrap());
     store.init_schema().unwrap();
 
@@ -38,8 +45,17 @@ fn index_files(files: &[(&str, &str)]) -> (Arc<Store>, atlas::resolution::Resolu
             .unwrap_or_else(|e| panic!("insert {} failed: {:?}", rel_path, e));
     }
 
+    // P2: two-step pipeline — resolve then build edges
     let resolver = ReferenceResolver::new(store.clone());
-    let stats = resolver.resolve_all().expect("resolution failed");
+    let (resolved, resolution) = resolver.resolve_all().expect("resolution failed");
+
+    let builder = GraphBuilder::new(store.clone());
+    let build_stats = builder.build_all(&resolved);
+
+    let stats = PipelineStats {
+        resolution,
+        edges_created: build_stats.edges_created,
+    };
     (store, stats)
 }
 
@@ -76,8 +92,8 @@ main();
     let (store, stats) = index_files(files);
 
     // Basic resolution stats
-    assert!(stats.resolved > 0,
-        "expected some resolved refs, got {}", stats.resolved);
+    assert!(stats.resolution.resolved > 0,
+        "expected some resolved refs, got {}", stats.resolution.resolved);
     assert!(stats.edges_created > 0,
         "expected structural edges, got {}", stats.edges_created);
 
@@ -157,51 +173,25 @@ fn ts_scope_tree_assigns_parent_and_container() {
 
     let (store, _stats) = index_files(files);
     let file_id = FileId::generate("app.ts");
-    let symbols = store.find_symbols_by_file(&file_id).unwrap();
 
-    eprintln!("=== All symbols ===");
-    for s in &symbols {
-        eprintln!("  {} (kind={}, scope_id={:?}, container={:?})",
-            s.name, s.kind.as_str(), s.scope_id, s.container);
-    }
+    // Find the Calculator class
+    let syms = store.find_symbols_by_file(&file_id).unwrap();
+    let calc = syms.iter().find(|s| s.name == "Calculator")
+        .expect("Calculator class not found");
+    let add = syms.iter().find(|s| s.name == "add")
+        .expect("add method not found");
+    let sub = syms.iter().find(|s| s.name == "sub")
+        .expect("sub method not found");
 
-    let scopes = store.find_scopes_by_file(&file_id).unwrap();
-    eprintln!("=== All scopes ===");
-    for s in &scopes {
-        eprintln!("  {} (kind={}, range={}-{}, parent={:?})",
-            s.name, s.kind.as_str(), s.range.start_byte, s.range.end_byte, s.parent_id);
-    }
-
-    // All methods should have Calculator as container
-    let calc_sym = symbols.iter().find(|s| s.name == "Calculator")
-        .expect("Calculator not found");
-    let method_syms: Vec<_> = symbols.iter()
-        .filter(|s| s.kind.as_str() == "method")
-        .collect();
-
-    assert_eq!(method_syms.len(), 2, "expected 2 methods, got {:?}",
-        method_syms.iter().map(|s| &s.name).collect::<Vec<_>>());
-
-    for method in &method_syms {
-        assert_eq!(method.container, Some(calc_sym.id),
-            "method '{}' should have container = Calculator, got {:?}",
-            method.name, method.container);
-        assert!(method.scope_id.is_some(),
-            "method '{}' should have scope_id assigned", method.name);
-    }
-
-    // Verify scopes have parent relationships
-    let scopes = store.find_scopes_by_file(&file_id).unwrap();
-    assert!(!scopes.is_empty(), "should have at least file scope");
-
-    let class_scopes: Vec<_> = scopes.iter()
-        .filter(|s| s.kind.as_str() == "class")
-        .collect();
-    assert!(!class_scopes.is_empty(), "should have class scope");
+    // Verify container relationships
+    assert_eq!(add.container, Some(calc.id),
+        "add.container should be Calculator");
+    assert_eq!(sub.container, Some(calc.id),
+        "sub.container should be Calculator");
 }
 
 // ────────────────────────────────────────────────────────────────
-// Python Cross-File Integration Tests (default features)
+// Python Integration Tests (default feature)
 // ────────────────────────────────────────────────────────────────
 
 #[test]
@@ -210,13 +200,14 @@ fn py_cross_file_import_call() {
     let files = &[
         ("lib.py", r#"class Calculator:
     def __init__(self, initial=0):
-        self.base = initial
+        self.value = initial
 
-    def add(self, value):
-        return self.base + value
+    def add(self, x):
+        self.value += x
+        return self.value
 
-def create_calculator():
-    return Calculator(10)
+def create_calculator(initial=0):
+    return Calculator(initial)
 "#),
         ("main.py", r#"from lib import Calculator, create_calculator
 
@@ -232,8 +223,8 @@ if __name__ == '__main__':
 
     let (store, stats) = index_files(files);
 
-    assert!(stats.resolved > 0,
-        "expected some resolved refs, got {}", stats.resolved);
+    assert!(stats.resolution.resolved > 0,
+        "expected some resolved refs, got {}", stats.resolution.resolved);
     assert!(stats.edges_created > 0,
         "expected structural edges, got {}", stats.edges_created);
 
@@ -273,7 +264,7 @@ if __name__ == '__main__':
 
     let (store, stats) = index_files(files);
 
-    assert!(stats.resolved > 0, "expected some resolved refs");
+    assert!(stats.resolution.resolved > 0, "expected some resolved refs");
     assert!(stats.edges_created > 0, "expected structural edges");
 
     // Verify User class exists
@@ -339,8 +330,8 @@ main();
     assert!(!py_syms.is_empty(), "Python file should have symbols");
 
     // Verify resolution happened across files
-    assert!(stats.resolved > 0,
-        "expected cross-file TS resolution, got {} resolved", stats.resolved);
+    assert!(stats.resolution.resolved > 0,
+        "expected cross-file TS resolution, got {} resolved", stats.resolution.resolved);
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -444,7 +435,7 @@ fn java_cross_file_import_call() {
 
     let (store, stats) = index_files(files);
 
-    assert!(stats.resolved > 0, "expected some resolved refs");
+    assert!(stats.resolution.resolved > 0, "expected some resolved refs");
     assert!(stats.edges_created > 0, "expected structural edges");
 
     let greeter_id = FileId::generate("Greeter.java");

@@ -1,0 +1,104 @@
+{
+  "symbols": [
+    {
+      "name": "main",
+      "kind": "function"
+    },
+    {
+      "name": "main",
+      "kind": "function"
+    },
+    {
+      "name": "r",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "Router",
+      "kind": "instantiation"
+    },
+    {
+      "text": "greet",
+      "kind": "call"
+    },
+    {
+      "text": "farewell",
+      "kind": "call"
+    },
+    {
+      "text": "format",
+      "kind": "call"
+    },
+    {
+      "text": "readFileSync",
+      "kind": "call"
+    },
+    {
+      "text": "readFileSync",
+      "kind": "field_access"
+    }
+  ],
+  "imports": [
+    {
+      "module": "express",
+      "imported_name": "Router"
+    },
+    {
+      "module": "express"
+    },
+    {
+      "module": "./lib",
+      "imported_name": "greet"
+    },
+    {
+      "module": "./lib",
+      "imported_name": "farewell"
+    },
+    {
+      "module": "./lib"
+    },
+    {
+      "module": "./utils/index",
+      "imported_name": "format"
+    },
+    {
+      "module": "./utils/index"
+    },
+    {
+      "module": "fs",
+      "imported_name": "fs"
+    },
+    {
+      "module": "fs"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#258",
+      "kind": "function"
+    },
+    {
+      "name": "Block#280",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "main"
+    },
+    {
+      "caller": "main"
+    },
+    {
+      "caller": "main"
+    },
+    {
+      "caller": "main"
+    }
+  ]
+}

@@ -11,7 +11,7 @@ use crate::db::Store;
 use crate::extraction::create_adapter;
 use crate::extraction::extract_file;
 use crate::extraction::LanguageRegistry;
-use crate::graph::{GraphEngine, GraphSnapshot};
+use crate::graph::{GraphBuilder, GraphEngine, GraphSnapshot};
 use crate::resolution::ReferenceResolver;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -63,6 +63,9 @@ impl SyncEngine {
             let file_id = crate::types::ids::FileId::generate(
                 &relative.to_string_lossy(),
             );
+            // P2: Invalidate edges derived from this file's references before
+            // deleting the file (CASCADE handles the rest).
+            let _ = self.store.delete_edges_for_file_references(&file_id);
             self.store.delete_file_data(&file_id)?;
             stats.files_removed += 1;
         }
@@ -73,6 +76,10 @@ impl SyncEngine {
                 .unwrap_or(path);
             let file_id =
                 crate::types::ids::FileId::generate(&relative.to_string_lossy());
+            // P2: Invalidate resolved facts and derived edges for modified files.
+            // This ensures stale resolution targets don't persist after re-extraction.
+            let _ = self.store.invalidate_references_for_file(&file_id);
+            let _ = self.store.delete_edges_for_file_references(&file_id);
             self.store.delete_file_data(&file_id)?;
         }
 
@@ -96,10 +103,15 @@ impl SyncEngine {
         let after_symbols = self.store.count_symbols().unwrap_or(0);
         stats.new_nodes = after_symbols.saturating_sub(before_symbols);
 
-        // 4. Re-resolve all unresolved references
+        // 4. Re-resolve all unresolved references (P2: two-step pipeline)
         let resolver = ReferenceResolver::new(self.store.clone());
-        let res_stats = resolver.resolve_all()?;
+        let (resolved, res_stats) = resolver.resolve_all()?;
         stats.new_edges = res_stats.resolved;
+
+        // 4b. Build edges from resolved references
+        let builder = GraphBuilder::new(self.store.clone());
+        let build_stats = builder.build_all(&resolved);
+        stats.new_edges = build_stats.edges_created;
 
         // 5. Persist file hashes for the next incremental sync
         let atlas_dir = self.project_root.join(".atlas");

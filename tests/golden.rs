@@ -181,3 +181,19 @@ fn golden_typescript_simple() {
 fn golden_python_simple() {
     run_golden("python", "simple", "py", Language::Python);
 }
+
+// ---------------------------------------------------------------------------
+// P2: Import resolution golden tests
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "typescript")]
+#[test]
+fn golden_typescript_imports() {
+    run_golden("typescript", "imports", "ts", Language::TypeScript);
+}
+
+#[cfg(feature = "c")]
+#[test]
+fn golden_c_includes() {
+    run_golden("c", "includes", "c", Language::C);
+}

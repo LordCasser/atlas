@@ -621,6 +621,51 @@ impl Store {
     }
 
     // -----------------------------------------------------------------------
+    // Resolved fact invalidation (P2)
+    // -----------------------------------------------------------------------
+
+    /// Clear all resolution results for references belonging to a file.
+    ///
+    /// This is called when a file is modified — the references themselves
+    /// remain (they are never deleted), but their resolved targets become
+    /// stale and must be re-computed.
+    ///
+    /// Returns the number of references that were invalidated.
+    pub fn invalidate_references_for_file(&self, file_id: &FileId) -> anyhow::Result<usize> {
+        let conn = self.lock();
+        let count = conn.execute(
+            r#"UPDATE "references" SET
+                resolved_symbol_id = NULL,
+                resolved_confidence = NULL,
+                resolved_strategy = NULL,
+                resolved_provenance = NULL
+               WHERE file_id = ?1 AND resolved_symbol_id IS NOT NULL"#,
+            params![file_id],
+        )?;
+        Ok(count)
+    }
+
+    /// Delete all edges that were created from references belonging to a file.
+    ///
+    /// When a file is modified, the edges derived from its references become
+    /// invalid. This deletes edges whose `ref_id` points to a reference in
+    /// the given file.
+    ///
+    /// Returns the number of edges deleted.
+    pub fn delete_edges_for_file_references(&self, file_id: &FileId) -> anyhow::Result<usize> {
+        let conn = self.lock();
+        // Find all reference IDs belonging to this file, then delete edges
+        // whose ref_id matches any of them.
+        let count = conn.execute(
+            r#"DELETE FROM edges WHERE ref_id IN (
+                SELECT reference_id FROM "references" WHERE file_id = ?1
+            )"#,
+            params![file_id],
+        )?;
+        Ok(count)
+    }
+
+    // -----------------------------------------------------------------------
     // Scopes
     // -----------------------------------------------------------------------
 

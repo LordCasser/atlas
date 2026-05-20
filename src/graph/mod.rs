@@ -1,6 +1,10 @@
 //! Graph layer: in-memory GraphSnapshot with BFS/DFS traversal,
 //! call graph analysis, import analysis, impact radius, shortest path.
+//!
+//! P2: GraphBuilder is separated from ReferenceResolver — the resolver
+//! only produces resolved facts, GraphBuilder converts them to edges.
 
+pub mod graph_builder;
 pub mod snapshot;
 
 use std::sync::Arc;
@@ -8,6 +12,7 @@ use std::sync::Arc;
 use crate::types::ids::SymbolId;
 use crate::types::EdgeKind;
 
+pub use graph_builder::{GraphBuilder, GraphBuilderStats};
 pub use snapshot::{
     CallGraphView, GraphPath, GraphSnapshot, NodeIx, NodeSummary, Subgraph, TraversalConfig,
     TraversalDirection,

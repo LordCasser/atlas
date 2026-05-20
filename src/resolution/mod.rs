@@ -5,6 +5,9 @@
 //! 2. Import / include resolution
 //! 3. Name-based fuzzy fallback (project-wide)
 //!
+//! P2: Resolver only produces resolved facts — `Vec<(ReferenceUse, ResolvedTarget)>`.
+//! Edge creation is handled by `GraphBuilder` in the `graph` module.
+//!
 //! Cross-module invariant: references are NEVER deleted — resolution updates
 //! their `resolved` field in place but leaves the record intact.
 
@@ -20,12 +23,22 @@ use self::import_resolver::ImportResolver;
 use self::name_matcher::NameMatcher;
 
 pub mod context;
+pub mod export_resolver;
 pub mod import_resolver;
+pub mod include_graph;
 pub mod name_matcher;
+pub mod path_alias;
 pub mod builtins;
 pub mod frameworks;
 
+pub use export_resolver::ExportResolver;
+pub use include_graph::IncludeGraph;
+pub use path_alias::PathAliasResolver;
+
 /// Three-stage reference resolution orchestrator.
+///
+/// P2: `resolve_all()` only resolves references and updates the `"references"`
+/// table. Edge creation is delegated to `GraphBuilder`.
 pub struct ReferenceResolver {
     store: Arc<Store>,
     import_resolver: ImportResolver,
@@ -43,11 +56,14 @@ impl ReferenceResolver {
 
     /// Resolve all unresolved references in the project.
     ///
-    /// Uses batched writes: resolution results and edges are accumulated in
-    /// memory and flushed to SQLite in bulk transactions. This avoids the
-    /// per-reference transaction overhead that dominated indexing time for
-    /// large projects (e.g., 50s+ for curl's 95k+ edges).
-    pub fn resolve_all(&self) -> anyhow::Result<ResolutionStats> {
+    /// Returns `(resolved, stats)` where:
+    /// - `resolved` contains `(ReferenceUse, ResolvedTarget)` pairs for use
+    ///   by `GraphBuilder` to create structural edges.
+    /// - `stats` contains resolution statistics.
+    ///
+    /// Uses batched writes: resolution results are accumulated in memory and
+    /// flushed to SQLite in bulk transactions.
+    pub fn resolve_all(&self) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
         let unresolved = self.store.find_unresolved_references()?;
         let total_refs = unresolved.len();
         let mut stats = ResolutionStats::default();
@@ -59,9 +75,9 @@ impl ReferenceResolver {
             by_file.entry(r.file_id).or_default().push(r.clone());
         }
 
-        // Accumulate resolutions and edges for batched writes
+        // Accumulate resolutions for batched writes
         let mut pending_resolutions: Vec<(ReferenceId, ResolvedTarget)> = Vec::new();
-        let mut pending_edges: Vec<RawEdge> = Vec::new();
+        let mut all_resolved: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
         let batch_size = 500; // Flush every N resolutions
 
         for (file_id, refs) in &by_file {
@@ -78,21 +94,12 @@ impl ReferenceResolver {
                 match self.resolve_one(reference, &ctx) {
                     Some(target) => {
                         pending_resolutions.push((reference.id, target.clone()));
+                        all_resolved.push((reference.clone(), target.clone()));
                         stats.resolved += 1;
                         *stats
                             .by_strategy
                             .entry(target.strategy.as_str().to_string())
                             .or_default() += 1;
-
-                        // Create structural edges from this resolution
-                        match self.create_edges(reference, &target) {
-                            Ok(edges) => {
-                                pending_edges.extend(edges);
-                            }
-                            Err(e) => {
-                                stats.add_warning(format!("failed to create edges: {}", e));
-                            }
-                        }
                     }
                     None => {
                         stats.unresolved += 1;
@@ -100,40 +107,31 @@ impl ReferenceResolver {
                 }
             }
 
-            // Flush accumulated results when batch is full
+            // Flush accumulated resolutions when batch is full
             if pending_resolutions.len() >= batch_size {
-                self.flush_batch(&mut pending_resolutions, &mut pending_edges, &mut stats);
+                self.flush_resolutions(&mut pending_resolutions, &mut stats);
             }
         }
 
         // Final flush
-        self.flush_batch(&mut pending_resolutions, &mut pending_edges, &mut stats);
+        self.flush_resolutions(&mut pending_resolutions, &mut stats);
 
-        Ok(stats)
+        Ok((all_resolved, stats))
     }
 
-    /// Flush pending resolutions and edges to the store in batch.
-    fn flush_batch(
+    /// Flush pending resolution updates to the store in batch.
+    fn flush_resolutions(
         &self,
         pending_resolutions: &mut Vec<(ReferenceId, ResolvedTarget)>,
-        pending_edges: &mut Vec<RawEdge>,
         stats: &mut ResolutionStats,
     ) {
-        if !pending_resolutions.is_empty() {
-            if let Err(e) = self.store.batch_update_resolutions(pending_resolutions) {
-                stats.add_warning(format!("batch resolution update failed: {}", e));
-            }
-            pending_resolutions.clear();
+        if pending_resolutions.is_empty() {
+            return;
         }
-        if !pending_edges.is_empty() {
-            let edge_count = pending_edges.len();
-            if let Err(e) = self.store.batch_insert_edges(pending_edges) {
-                stats.add_warning(format!("batch edge insert failed ({} edges): {}", edge_count, e));
-            } else {
-                stats.edges_created += edge_count;
-            }
-            pending_edges.clear();
+        if let Err(e) = self.store.batch_update_resolutions(pending_resolutions) {
+            stats.add_warning(format!("batch resolution update failed: {}", e));
         }
+        pending_resolutions.clear();
     }
 
     /// Resolve a single reference. Returns `None` if no match found.
@@ -233,97 +231,6 @@ impl ReferenceResolver {
 
         None
     }
-
-    /// Create structural edges from a resolved reference.
-    ///
-    /// Produces:
-    /// - `Calls` when a call reference resolves to a function/method/constructor
-    /// - `Instantiates` when a call reference resolves to a class/struct
-    /// - `Implements` when a call reference resolves to an interface/trait
-    /// - `Extends` when an inheritance reference resolves to a class
-    /// - `Implements` when an implementation reference resolves to an interface/trait
-    /// - `References` for non-call references
-    /// - `References` for non-call references
-    ///
-    /// Uses `self.store` to look up the target symbol (supports cross-file targets).
-    fn create_edges(
-        &self,
-        reference: &ReferenceUse,
-        target: &ResolvedTarget,
-    ) -> anyhow::Result<Vec<RawEdge>> {
-        let mut edges = Vec::new();
-
-        // Look up target symbol from the DB (supports cross-file targets)
-        let target_sym = match self.store.find_symbol_by_id(&target.symbol_id)? {
-            Some(s) => s,
-            None => return Ok(edges),
-        };
-
-        // Source is the enclosing function/class that contains the reference
-        let source = match reference.source_symbol {
-            Some(s) => s,
-            None => return Ok(edges),
-        };
-
-        let edge_kind = if reference.kind == ReferenceKind::Call {
-            match target_sym.kind {
-                SymbolKind::Class | SymbolKind::Struct => EdgeKind::Instantiates,
-                SymbolKind::Interface | SymbolKind::Trait => EdgeKind::Implements,
-                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor => EdgeKind::Calls,
-                _ => return Ok(edges), // Non-callable target — no structural edge
-            }
-        } else if reference.kind == ReferenceKind::Inheritance {
-            EdgeKind::Extends
-        } else if reference.kind == ReferenceKind::Implementation {
-            EdgeKind::Implements
-        } else {
-            EdgeKind::References
-        };
-
-        let mut edge = RawEdge::new(
-            EdgeId::generate(
-                &source,
-                &target.symbol_id,
-                edge_kind.as_str(),
-                Some(&reference.id),
-                target.provenance.as_str(),
-            ),
-            source,
-            target.symbol_id,
-            edge_kind,
-            target.confidence,
-            target.provenance,
-        );
-        edge.ref_id = Some(reference.id);
-        edge.resolved_by = Some(target.strategy);
-
-        edges.push(edge);
-
-        // Also create Contains edges from container symbols during resolution
-        if let Some(container) = target_sym.container {
-            if self.store.find_symbol_by_id(&container)?.is_some() {
-                let mut contains_edge = RawEdge::new(
-                    EdgeId::generate(
-                        &container,
-                        &target.symbol_id,
-                        EdgeKind::Contains.as_str(),
-                        Some(&reference.id),
-                        Provenance::TreeSitter.as_str(),
-                    ),
-                    container,
-                    target.symbol_id,
-                    EdgeKind::Contains,
-                    Confidence::certain(),
-                    Provenance::TreeSitter,
-                );
-                contains_edge.ref_id = Some(reference.id);
-                contains_edge.resolved_by = Some(target.strategy);
-                edges.push(contains_edge);
-            }
-        }
-
-        Ok(edges)
-    }
 }
 
 /// Statistics from a resolution run.
@@ -333,9 +240,8 @@ pub struct ResolutionStats {
     pub resolved: usize,
     pub unresolved: usize,
     pub by_strategy: HashMap<String, usize>,
-    pub edges_created: usize,
     /// Non-fatal warnings collected during resolution (context build failures,
-    /// edge insertion errors, etc.).
+    /// resolution update errors, etc.).
     pub warnings: Vec<String>,
 }
 
@@ -352,9 +258,11 @@ mod tests {
     use crate::db::Store;
     use crate::extraction::languages::typescript::TypeScriptAdapter;
     use crate::extraction::extract_file;
+    use crate::graph::{GraphBuilder, GraphEngine};
     use std::path::PathBuf;
 
-    /// Verifies that cross-file import → call creates a structural Calls edge.
+    /// Verifies that cross-file import → call creates a structural Calls edge
+    /// through the Resolver + GraphBuilder pipeline.
     #[test]
     fn test_cross_file_import_call_creates_edge() {
         // ── File 1: lib.ts — exports a function ──
@@ -385,32 +293,30 @@ main();
         .expect("main.ts extraction failed");
 
         // ── Store and index ──
-        let store = Store::open_in_memory().unwrap();
+        let store = Arc::new(Store::open_in_memory().unwrap());
         store.init_schema().unwrap();
         store.insert_file_facts(&lib_facts).expect("insert lib.ts");
         store.insert_file_facts(&main_facts).expect("insert main.ts");
 
         // ── Resolve ──
-        let resolver = ReferenceResolver::new(Arc::new(store));
-        let stats = resolver.resolve_all().expect("resolution failed");
+        let resolver = ReferenceResolver::new(Arc::clone(&store));
+        let (resolved, stats) = resolver.resolve_all().expect("resolution failed");
 
         // Verify resolution happened
         assert!(stats.resolved > 0, "expected at least 1 resolved reference, got {}", stats.resolved);
 
-        // Verify at least one Calls edge was created
+        // ── Build edges ──
+        let builder = GraphBuilder::new(Arc::clone(&store));
+        let build_stats = builder.build_all(&resolved);
         assert!(
-            stats.edges_created > 0,
+            build_stats.edges_created > 0,
             "expected cross-file Calls edges, got {} edges",
-            stats.edges_created
+            build_stats.edges_created
         );
     }
 
     #[test]
     fn test_cross_file_callers_callees_graph() {
-        use crate::graph::GraphEngine;
-        use crate::extraction::extract_file;
-        use crate::extraction::languages::typescript::TypeScriptAdapter;
-
         // ── File 1: lib.ts — exports greet and farewell ──
         let lib_src = r#"export function greet(name: string): string {
     return `Hello, ${name}!`;
@@ -454,7 +360,11 @@ shutdown();
         store.insert_file_facts(&main_facts).expect("insert main.ts");
 
         let resolver = ReferenceResolver::new(Arc::clone(&store));
-        resolver.resolve_all().expect("resolution failed");
+        let (resolved, _) = resolver.resolve_all().expect("resolution failed");
+
+        // ── Build edges ──
+        let builder = GraphBuilder::new(Arc::clone(&store));
+        builder.build_all(&resolved);
 
         // ── Build graph and verify callers/callees ──
         let graph = GraphEngine::from_store(&store, 0.0).expect("graph build failed");
