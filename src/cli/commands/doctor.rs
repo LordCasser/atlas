@@ -1,6 +1,9 @@
-//! `atlas doctor` — check environment readiness for Atlas.
+//! `atlas doctor` — check environment readiness for Atlas, including per-language
+//! capability profiles.
 
 use std::path::Path;
+
+use crate::types::LanguageCapabilityProfile;
 
 pub fn run(project: &str) -> anyhow::Result<()> {
     let root = Path::new(project);
@@ -12,12 +15,12 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     println!();
 
     // 1. Project root exists and is a directory
-    check("Project root exists", root.try_exists().is_ok_and(|e| e), &mut all_ok);
     check(
-        "Project root is a directory",
-        root.is_dir(),
+        "Project root exists",
+        root.try_exists().is_ok_and(|e| e),
         &mut all_ok,
     );
+    check("Project root is a directory", root.is_dir(), &mut all_ok);
 
     // 2. .atlas/ directory
     let atlas_exists = atlas_dir.is_dir();
@@ -37,7 +40,11 @@ pub fn run(project: &str) -> anyhow::Result<()> {
                 println!("     Hint: Rebuild rusqlite with 'bundled' feature");
             }
             Err(e) => {
-                check(&format!("SQLite FTS5 check ({e})"), false, &mut all_ok);
+                check(
+                    &format!("SQLite FTS5 check ({e})"),
+                    false,
+                    &mut all_ok,
+                );
             }
         }
     } else {
@@ -60,7 +67,11 @@ pub fn run(project: &str) -> anyhow::Result<()> {
                 println!("     Hint: Run `atlas init` to initialize the database");
             }
             Err(e) => {
-                check(&format!("Schema version check ({e})"), false, &mut all_ok);
+                check(
+                    &format!("Schema version check ({e})"),
+                    false,
+                    &mut all_ok,
+                );
             }
         }
     }
@@ -75,6 +86,9 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     check_lang("C++", cfg!(feature = "cpp"), &mut all_ok);
     check_lang("ArkTS", cfg!(feature = "arkts"), &mut all_ok);
     check_lang("Cangjie", cfg!(feature = "cangjie"), &mut all_ok);
+
+    // 7. Per-language capability summary
+    print_capabilities();
 
     // Summary
     println!();
@@ -110,7 +124,9 @@ fn check_lang(name: &str, enabled: bool, all_ok: &mut bool) {
 /// Check that FTS5 is available in the bundled SQLite.
 fn check_fts5(db_path: &Path) -> anyhow::Result<bool> {
     let conn = rusqlite::Connection::open(db_path)?;
-    let mut stmt = conn.prepare("SELECT 1 FROM pragma_compile_options WHERE compile_options = 'ENABLE_FTS5'")?;
+    let mut stmt = conn.prepare(
+        "SELECT 1 FROM pragma_compile_options WHERE compile_options = 'ENABLE_FTS5'",
+    )?;
     let has_fts5 = stmt.exists([])?;
     Ok(has_fts5)
 }
@@ -119,11 +135,14 @@ fn check_fts5(db_path: &Path) -> anyhow::Result<bool> {
 fn check_schema(db_path: &Path) -> anyhow::Result<Option<i64>> {
     let conn = rusqlite::Connection::open(db_path)?;
     // Check if schema_versions table exists
-    let table_exists: bool = conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_versions'",
-        [],
-        |r| r.get::<_, i64>(0),
-    ).map(|c| c > 0).unwrap_or(false);
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_versions'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap_or(false);
 
     if !table_exists {
         return Ok(None);
@@ -135,4 +154,46 @@ fn check_schema(db_path: &Path) -> anyhow::Result<Option<i64>> {
         |r| r.get(0),
     )?;
     Ok(Some(ver))
+}
+
+/// Print per-language capability levels for all compiled-in languages.
+fn print_capabilities() {
+    let profiles = LanguageCapabilityProfile::all_compiled();
+    if profiles.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("  Capability Profile by Language:");
+    println!(
+        "  {:<18} {:<20} {:<7} {}",
+        "Language", "Capability Level", "Conf", "Key Limitations"
+    );
+    println!(
+        "  {:-<18} {:-<20} {:-<7} {:-<48}",
+        "", "", "", ""
+    );
+
+    for p in &profiles {
+        let limiter = p
+            .limitations
+            .first()
+            .map(|s| truncate_str(s, 48))
+            .unwrap_or_default();
+        println!(
+            "  {:<18} {:<20} {:<4.0}%  {}",
+            p.language,
+            p.capability_level.as_str(),
+            p.confidence_floor * 100.0,
+            limiter,
+        );
+    }
+}
+
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max_len - 1])
+    }
 }

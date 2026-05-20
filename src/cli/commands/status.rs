@@ -1,6 +1,7 @@
-//! `atlas status` — display project indexing status.
+//! `atlas status` — display project indexing status and language capability summary.
 
 use crate::db::Store;
+use crate::types::{Language, LanguageCapabilityProfile};
 use anyhow::Context;
 use std::path::Path;
 
@@ -49,6 +50,9 @@ pub fn run(project: &str) -> anyhow::Result<()> {
         }
     }
 
+    // Show capability summary
+    print_capability_summary(&stats.files_by_language);
+
     // List indexed files if any
     if stats.total_files > 0 && stats.total_files <= 20 {
         let files = store.list_files().context("Failed to list files")?;
@@ -60,11 +64,41 @@ pub fn run(project: &str) -> anyhow::Result<()> {
         }
     } else if stats.total_files > 20 {
         println!();
-        println!("  ({} files indexed. Use `atlas files` to list them.)", stats.total_files);
+        println!(
+            "  ({} files indexed. Use `atlas files` to list them.)",
+            stats.total_files
+        );
     } else {
         println!();
         println!("  (No files indexed yet. Run `atlas index` to index your codebase.)");
     }
 
     Ok(())
+}
+
+/// Print per-language capability levels for languages that appear in the project.
+fn print_capability_summary(files_by_language: &[(String, i64)]) {
+    let mut lang_names: Vec<&str> = files_by_language.iter().map(|(k, _)| k.as_str()).collect();
+    lang_names.sort();
+
+    if lang_names.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("  Capability Summary:");
+    println!("  {:<14} {:<20} {}", "Language", "Level", "Confidence Floor");
+    println!("  {:-<14} {:-<20} {:-<16}", "", "", "");
+
+    for name in lang_names {
+        if let Some(lang) = Language::from_str(name) {
+            let profile = LanguageCapabilityProfile::for_language(lang);
+            println!(
+                "  {:<14} {:<20} {:.0}%",
+                name,
+                profile.capability_level.as_str(),
+                profile.confidence_floor * 100.0
+            );
+        }
+    }
 }

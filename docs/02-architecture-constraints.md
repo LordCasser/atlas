@@ -36,7 +36,7 @@ Types
 
 当前阶段约束：
 
-- 先在当前单 crate/当前架构内完成变量来源与调用路径追踪端到端测试。
+- 先在当前单 crate/当前架构内完成变量来源追踪与调用路径查询端到端测试。
 - 在端到端 trace 能力稳定前，不先做 workspace/crate 拆分。
 - CLI 和 MCP 可以继续在同一 crate 内编排，但新增逻辑要维持清晰边界，避免后续拆分时把交互层和引擎层绑死。
 
@@ -112,7 +112,34 @@ diagnostics
 - dataflow 使用 `DataNodeId -> DataNodeId`。
 - CFG 节点必须属于同一 function，函数 CFG 应有 Entry/Exit。
 
-## 6. Persistence 约束
+## 6. 语言能力边界约束
+
+不同语言的实现精度必须由显式 capability profile 描述，不能由 CLI/MCP 在展示层临时猜测。
+
+推荐模型：
+
+```text
+LanguageCapabilityProfile
+  language
+  capability_level
+  supported_features
+  unsupported_features
+  known_limitations
+  required_facts
+  confidence_floor
+  test_coverage_marker
+```
+
+约束：
+
+- capability profile 属于 engine/analysis 边界的一部分，CLI/MCP/context 只能读取并展示，不能绕过它宣称能力。
+- 每个 trace、callgraph、context 查询结果都必须携带实际使用的语言能力信息。
+- 查询请求超出当前语言边界时，analysis 应返回 partial result + diagnostics，而不是让交互层用空数组表达失败。
+- `unsupported_features` 必须能区分“尚未实现”“语言语义本身难以精确”“缺少当前项目 facts”三类原因。
+- 低置信度 fallback 必须带 `confidence`、`strategy` 和 `provenance`，不得升级为精确结果。
+- 新增或提升某语言能力等级时，必须同时更新 capability profile、fixture、测试规范和用户可见输出样例。
+
+## 7. Persistence 约束
 
 `.atlas/atlas.db` 不兼容 `.codegraph`。
 
@@ -129,7 +156,6 @@ diagnostics
 - data_nodes / dataflow_edges
 - callsite_args
 - cfg_nodes / cfg_edges
-- trace path steps where analysis is enabled
 - project metadata
 - FTS indexes
 - schema versions
@@ -142,7 +168,7 @@ diagnostics
 - schema 变化必须 bump version，并同步更新当前架构文档。
 - symbol graph 与 dataflow graph 必须分表。
 
-## 7. Resolution 与 Graph 约束
+## 8. Resolution 与 Graph 约束
 
 - `ReferenceResolver` 只产生 resolved facts。
 - `GraphBuilder` 负责从 resolved references、callsites、raw structural facts 生成 symbol-level edges。
@@ -163,9 +189,9 @@ diagnostics
 <0.50 unresolved or speculative
 ```
 
-## 8. 引擎拆分边界
+## 9. 引擎拆分边界
 
-完成 MVP 语言变量来源与调用路径追踪端到端测试后，再拆分可复用引擎 crate。
+完成 MVP 语言变量来源追踪与调用路径查询端到端测试后，再拆分可复用引擎 crate。
 
 拆分目标：
 
@@ -195,11 +221,11 @@ atlas-mcp
 - `atlas-engine` 必须可作为独立 crate 被其他程序直接使用。
 - `atlas-engine` 不能依赖 CLI 参数解析、MCP transport 或交互格式。
 - CLI/MCP 只能调用 engine API，不应反向被 engine 调用。
-- engine crate 必须包含语法解析、facts 构建和变量来源与调用路径追踪能力，而不是只包含 tree-sitter parser。
+- engine crate 必须包含语法解析、facts 构建和变量来源追踪与调用路径查询能力，而不是只包含 tree-sitter parser。
 - 不在 engine crate 中规划完整 taint rule engine；trace/slicing 是分析主线。
 - 持久化和项目索引可以先保留在 Atlas 应用层，后续按 Atlas/Corpus 两个分支的存储模型分别演进。
 
-## 9. Corpus 边界
+## 10. Corpus 边界
 
 大型多版本源码索引系统不并入 Atlas 主体。
 
@@ -215,5 +241,5 @@ Corpus 的详细功能和需求以历史文档为准，需要时从 git 历史�
 
 - Corpus 不共享 Atlas 的 path-based 持久化 ID。
 - Corpus 以 Git blob/tag/path/version mapping 为核心索引模型。
-- Corpus 可以复用 engine 的 parser、LanguageAdapter、函数/符号/引用抽取和变量来源与调用路径追踪能力。
+- Corpus 可以复用 engine 的 parser、LanguageAdapter、函数/符号/引用抽取和变量来源追踪与调用路径查询能力。
 - Corpus 必须独立选择存储、索引、Web/API 和 MCP 工具语义。

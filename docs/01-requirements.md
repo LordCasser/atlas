@@ -139,16 +139,16 @@ Resolution 结果必须写回引用事实，并包含 target、confidence、stra
 
 图查询优先使用 `GraphSnapshot` 或按需加载的专用图结构，避免每一步访问 SQLite。
 
-### 变量来源与调用路径查询
+### 变量来源追踪与调用路径查询
 
-当前分析主线不是全项目自动漏洞扫描，也不是污点分析。用户可以指定某个函数、变量、调用点、文件行列或代码模式；Atlas 只提供结构化证据，让 AI 或用户继续判断这些路径是否和某个漏洞相关。
+当前分析主线不是全项目自动漏洞扫描，也不是污点分析。用户或 AI 可以把外部发现的疑似问题点、代码模式或具体变量作为查询入口；Atlas 只把它们当作普通代码位置和程序事实处理，返回变量来源、调用者链路和相关源码证据。Atlas 不判断“这是不是漏洞”，也不主动枚举项目里的漏洞模式。
 
 必须支持的查询目标：
 
 - 某个函数被哪些函数直接或间接调用。
 - 某个调用点的某个实参来自哪里。
 - 某个函数内的某个变量或表达式来自哪里。
-- 某个问题变量是否来自函数参数、字段访问、返回值、import alias 或上游 caller 实参。
+- 某个目标变量是否来自函数参数、字段访问、返回值、import alias 或上游 caller 实参。
 - 从指定位置向上游回溯数据来源和调用路径，并返回相关代码片段、range、confidence 和 provenance。
 
 核心能力是 backward slice / provenance trace：
@@ -165,9 +165,18 @@ target argument / variable
 
 Atlas 不做 taint rule / finding 产品能力。已有 taint 相关代码和 schema 只视为历史原型，不进入当前需求、路线图或验收门槛。当前阶段不要求、也不规划 source/sink/sanitizer 规则、自动 source-to-sink 扫描、全项目 finding 或内置漏洞规则生态。
 
+解析侧必须提供的基础 facts：
+
+- `BindingDef` / `BindingUse`：区分定义和使用，记录作用域、range、shadowing 关系。
+- `Callsite` / `CallsiteArg`：记录 callee、receiver、argument index、named/keyword argument、spread/varargs where applicable。
+- `DataNode`：覆盖参数、局部变量、字面量、字段访问、调用结果、返回值、表达式和 import alias。
+- `DataFlowEdge`：覆盖简单赋值、字段读取/写入、实参到形参、返回值到调用结果、变量到返回值等关系。
+- `FunctionSummary`：用轻量摘要表达参数、返回值、关键调用实参和字段访问之间的关系，供 query-time 跨函数回溯使用。
+
 语言能力按等级验收，不要求所有语言一次性达到同等精度：
 
 ```text
+Level 0: parse/index only, trace unsupported
 Level 1: symbols + references + calls
 Level 2: bindings + simple assignments
 Level 3: field access + call args + returns
@@ -175,7 +184,32 @@ Level 4: CFG
 Level 5: lightweight interprocedural summaries
 ```
 
-当前 trace 主线至少要求 TypeScript/JavaScript/Python 达到 Level 3，并逐步补 Level 5 的轻量摘要。Java/C/C++/ArkTS/Cangjie 可以先提供 Level 1/2 best-effort，但输出必须标注能力和置信度。
+当前语言能力边界必须以用户可见方式呈现：
+
+| 语言 | 当前 trace 边界 | 用户交互展示要求 |
+|---|---|---|
+| TypeScript | Level 3 为当前主目标；Level 4/5 只能在对应 facts 和测试存在时启用 | 可展示变量来源、call args、field access、return；跨函数结果必须标注 depth、summary/heuristic 和 confidence |
+| JavaScript | 与 TypeScript 共用 JS grammar 路径，按 Level 3 主目标推进 | 展示同 TypeScript，但必须标注 `javascript`，不能混写成 `typescript` |
+| Python | Level 3 为当前主目标；动态属性、monkey patch、反射调用不保证精确 | 对动态调用、属性链、import alias fallback 输出 lower confidence 或 unsupported diagnostics |
+| Java | 当前至少 Level 1；Level 2/3 只有 fixture 覆盖后才可宣称 | 默认展示 callers/callees；参数、返回值、字段来源若不可用必须显示 unsupported |
+| C | 当前 include-aware Level 1/2 best-effort；宏、preprocessing、函数指针不保证 | 调用路径可低置信度展示；宏展开、函数指针、复杂指针别名必须显示 limitation |
+| C++ | 当前 include-aware Level 1/2 best-effort；模板、重载、ADL、复杂类型不保证 | 调用路径和局部来源必须标注 best-effort；不能把重载解析结果伪装成精确 |
+| ArkTS | 复用 TypeScript grammar 的 Level 1/2 best-effort；ArkTS 特有语义不保证 | 必须显示 `arkts via TypeScript grammar` 或等价 provenance |
+| Cangjie | Level 0/1 grammar spike / minimal facts；trace 默认不宣称可用 | trace 查询应返回 unsupported 或 minimal capability，不应静默给空结果 |
+
+CLI、MCP 和 context 输出都必须包含语言能力信息。最小字段：
+
+- `language`
+- `capability_level`
+- `supported_features`
+- `unsupported_features`
+- `limitations`
+- `confidence`
+- `provenance`
+- `partial_result`
+- `truncation`
+
+当查询能力超出当前语言边界时，Atlas 必须返回结构化 diagnostics，例如 `unsupported_feature`、`best_effort_only`、`missing_fact`、`low_confidence_resolution`。用户交互中禁止只返回空路径而不解释原因。
 
 ### MCP
 

@@ -42,8 +42,8 @@
 
 - 不立即拆分 crate。
 - 不立即开启 Corpus 分支。
-- 先基于当前架构完成变量来源与调用路径追踪端到端测试。
-- trace 能力稳定后，先拆出包含语法解析和路径追踪能力的 engine crate，以及交互用 CLI/MCP 层。
+- 先基于当前架构完成变量来源追踪与调用路径查询端到端测试。
+- trace 能力稳定后，先拆出包含语法解析、变量来源追踪和调用路径查询能力的 engine crate，以及交互用 CLI/MCP 层。
 - 只有完成 engine/CLI/MCP 边界拆分后，后续演进才分叉为 Atlas 单仓库单版本索引和 Corpus 多版本源码索引。
 
 ## 3. 从 symbol-only graph 演进到 facts-first graph
@@ -78,9 +78,9 @@
 - Binding 和 DataNode 有独立 ID。
 - DataFlowEdge 的 source/target 必须是 DataNode。
 - callsite args、return、field access、local variable 都应能定位到数据流节点。
-- 变量来源与调用路径追踪基于 dataflow facts，而不是 symbol edge。
+- 变量来源追踪与调用路径查询基于 dataflow facts，而不是 symbol edge。
 
-## 6. 从自动 taint 扫描改为变量来源与调用路径追踪
+## 6. 从自动 taint 扫描改为变量来源追踪与调用路径查询
 
 旧方向一度把 P5 定义为自动 source-to-sink taint MVP：
 
@@ -91,9 +91,9 @@
 当前决策：
 
 - 自动 taint engine 不进入当前产品线。
-- 产品主线改为指定位置驱动的 path explorer / backward slicer。
-- 用户先指定指定位置、问题变量、函数或漏洞模式，Atlas 负责找变量来源、调用者链路和可能触发路径。
-- AI 基于 Atlas 返回的结构化证据判断路径是否真实可触发。
+- 产品主线改为用户指定入口驱动的变量来源追踪器和调用路径查询器。
+- 用户或 AI 先指定代码位置、目标变量、函数、调用点或代码模式，Atlas 负责找变量来源、调用者链路和可能调用路径。
+- Atlas 不判断这些路径是否构成漏洞；AI 或用户基于 Atlas 返回的结构化证据继续分析。
 
 当前已有状态：
 
@@ -103,11 +103,23 @@
 
 新增阶段门禁：
 
-- 当前主线优先完成变量来源与调用路径追踪端到端测试。
-- 端到端测试必须覆盖指定指定位置、变量来源、跨函数参数/返回追踪、caller path、bounded CLI/MCP 输出。
-- taint fixture 只能作为历史原型测试存在，不能替代 trace explorer 的验收。
+- 当前主线优先完成变量来源追踪与调用路径查询端到端测试。
+- 端到端测试必须覆盖指定位置、变量来源、跨函数参数/返回追踪、caller path、bounded CLI/MCP 输出。
+- taint fixture 只能作为历史原型测试存在，不能替代变量来源追踪与调用路径查询的验收。
 - 只有当路径追踪作为产品能力稳定后，才把语法解析和 trace engine 抽出为可复用 crate。
 
 ## 7. 阶段实施记录
 
 P0-P5 的阶段性实施内容单独维护在 [阶段日志](./06-phase-log.md)。`04-changes.md` 只保留方向性变更，不展开每个阶段的文件清单和测试细节。
+
+## 8. 从内部能力假设改为用户可见能力边界
+
+旧方向容易把“Atlas 支持某语言”理解成所有分析能力都支持该语言。
+
+当前决策：
+
+- 每种语言必须有显式 capability profile。
+- 能力等级从 Level 0 到 Level 5 描述，不同语言可以停在不同等级。
+- CLI、MCP、context 输出必须展示当前语言的 capability、limitations、unsupported features 和 confidence。
+- 查询超出语言能力边界时返回 partial result + diagnostics，不能只给空结果，也不能把 best-effort 结果包装成精确结论。
+- 能力等级升级必须由 fixture 和用户可见输出测试共同证明。

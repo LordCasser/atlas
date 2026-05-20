@@ -59,7 +59,7 @@
 
 ## P3：Binding 与 DataFlow 基础
 
-目标：为变量来源与调用路径追踪建立局部绑定和数据流事实，不再把 dataflow 塞进 symbol graph。
+目标：为变量来源追踪与调用路径查询建立局部绑定和数据流事实，不再把 dataflow 塞进 symbol graph。
 
 完成内容：
 
@@ -98,7 +98,7 @@
 
 ## P5：Taint 原型实现
 
-目标：在 P3/P4 基础上验证 source-to-sink 规则分析和 path tracing 雏形。该阶段已经落地的 taint 能力只作为历史原型记录；后续产品主线调整为指定位置驱动的 Trace Explorer。
+目标：在 P3/P4 基础上验证 source-to-sink 规则分析和 path tracing 雏形。该阶段已经落地的 taint 能力只作为历史原型记录；后续产品主线调整为指定位置驱动的变量来源追踪与调用路径查询。
 
 完成内容：
 
@@ -120,7 +120,7 @@
 - 函数摘要 (FunctionSummary) — 跨函数传播当前硬依赖 dataflow_edges。
 - 跨语言规则共享和规则生态。
 - Path slicing 和 sanitizer 链精细化。
-- 用户指定指定位置后的 backward slice / caller path explorer。
+- 用户指定位置后的 backward slice / caller path explorer。
 
 测试覆盖：
 
@@ -132,8 +132,8 @@
 方向调整：
 
 - 不再把“全项目自动 taint finding”作为当前主线验收。
-- 当前主线改为用户指定指定位置、变量或调用点后的路径追踪。
-- taint engine 不进入当前产品路线，不能替代 Trace Explorer 的真实源码端到端验收。
+- 当前主线改为用户指定位置、变量或调用点后的变量来源追踪与调用路径查询。
+- taint engine 不进入当前产品路线，不能替代真实源码端到端 trace 查询验收。
 
 ## Post-P5：工程成熟度改进
 
@@ -148,4 +148,4 @@
 
 - **use-def 跨语句边**：新增 `DataFlowBuilder::resolve_use_def()`，按 `(function_id, 小写变量名)` 分组 DataNodes，在各组内从第一个 Local/Parameter（定义）创建 Assign 边到后续 Expr/CallArg/Field/Return（使用）（confidence 0.85）。保守启发式算法，非 SSA 精度。集成到 extraction 流程 step 7e。
 - 新增 3 个测试：unit test（预制 DataNodes）、真实 TS 提取 test、跨语句变量传递 test。
-- 当前局限：DataFlowBuilder 不捕获函数参数（无 `@df.parameter`）、不捕获 call target（无 `@df.call_target`），完整 source→sink 传播需要后续增强。
+- 当前状态：DataFlowBuilder 已补充函数参数、call target、完整 access_path 和 access_path_pattern 匹配；变量来源追踪与调用实参查询还需要真实源码端到端 fixture 继续约束精度。

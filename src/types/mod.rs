@@ -7,7 +7,8 @@
 //! - `bindings` — lexical binding graph types.
 //! - `dataflow` — per-function dataflow types (DataNode → DataNode, NOT SymbolId).
 //! - `cfg` — per-function control-flow graph types.
-//! - `taint` — taint analysis types (rules, findings, path steps).
+//! - `taint` — taint analysis types (rules, findings, path steps). *(deprecated — migrating to trace)*
+//! - `capability` — per-language analysis capability profiles.
 //!
 //! ## Invariants
 //! - IDs are deterministically derived (same inputs → same [u8; 32]).
@@ -23,6 +24,7 @@ pub mod bindings;
 pub mod dataflow;
 pub mod cfg;
 pub mod taint;
+pub mod capability;
 
 // --- IDs ---
 pub use ids::{
@@ -54,8 +56,11 @@ pub use dataflow::{CallsiteArg, DataFlowEdge, DataNode};
 // --- CFG types ---
 pub use cfg::{CfgEdge, CfgNode};
 
-// --- Taint types ---
+// --- Taint types (deprecated — migrating to trace) ---
 pub use taint::{Severity, TaintFinding, TaintFindingId, TaintPathStep, TaintRule, TaintRuleKind};
+
+// --- Capability types ---
+pub use capability::{CapabilityLevel, LanguageCapabilityProfile};
 
 // --- Utilities ---
 

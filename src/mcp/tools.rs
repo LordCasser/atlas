@@ -9,7 +9,7 @@ use crate::db::Store;
 use crate::graph::{GraphEngine, TraversalConfig, TraversalDirection};
 use crate::search::SearchEngine;
 use crate::context::ContextBuilder;
-use crate::types::{SymbolId, SymbolKind, TaintFindingId};
+use crate::types::{Language, LanguageCapabilityProfile, SymbolId, SymbolKind, TaintFindingId};
 use crate::types::ids::FileId;
 use crate::types::taint::Severity;
 
@@ -68,6 +68,7 @@ impl ToolRouter {
             "atlas_context" => self.handle_context(arguments),
             "atlas_taint_findings" => self.handle_taint_findings(arguments),
             "atlas_taint_path" => self.handle_taint_path(arguments),
+            "atlas_language_capabilities" => self.handle_language_capabilities(),
             _ => (format!("Unknown tool: {}", name), true),
         };
 
@@ -116,6 +117,20 @@ impl ToolRouter {
             Ok(s) => s,
             Err(e) => return (format!("Error getting stats: {}", e), true),
         };
+
+        // Build per-language capability summary for languages present in the project.
+        let mut lang_caps = Vec::new();
+        for (lang_name, _count) in &stats.files_by_language {
+            if let Some(lang) = Language::from_str(lang_name) {
+                let profile = LanguageCapabilityProfile::for_language(lang);
+                lang_caps.push(json!({
+                    "language": lang_name,
+                    "capability_level": profile.capability_level.as_str(),
+                    "confidence_floor": profile.confidence_floor,
+                }));
+            }
+        }
+
         (serde_json::to_string_pretty(&json!({
             "summary": {
                 "files": stats.total_files,
@@ -126,7 +141,8 @@ impl ToolRouter {
             },
             "database": {
                 "sqlite_version": stats.sqlite_version,
-            }
+            },
+            "language_capabilities": lang_caps,
         })).unwrap_or_else(|e| e.to_string()), false)
     }
 
@@ -565,6 +581,24 @@ impl ToolRouter {
             "steps": enriched,
         })).unwrap_or_else(|e| e.to_string()), false)
     }
+
+    fn handle_language_capabilities(&self) -> (String, bool) {
+        let profiles = LanguageCapabilityProfile::all_compiled();
+        let caps: Vec<Value> = profiles.iter().map(|p| {
+            json!({
+                "language": p.language,
+                "capability_level": p.capability_level.as_str(),
+                "supported_features": p.supported_features,
+                "unsupported_features": p.unsupported_features,
+                "limitations": p.limitations,
+                "confidence_floor": p.confidence_floor,
+            })
+        }).collect();
+        (serde_json::to_string_pretty(&json!({
+            "language_count": caps.len(),
+            "profiles": caps,
+        })).unwrap_or_else(|e| e.to_string()), false)
+    }
 }
 
 // -------------------------------------------------------------------
@@ -575,7 +609,7 @@ pub fn make_all_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "atlas_status".into(),
-            description: "Show project overview: file/symbol/edge counts, DB stats.".into(),
+            description: "Show project overview: file/symbol/edge counts, DB stats, per-language capability profiles.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({})),
@@ -735,6 +769,15 @@ pub fn make_all_tools() -> Vec<Tool> {
                     "finding_id": { "type": "string", "description": "Taint finding ID in hex" },
                 })),
                 required: Some(vec!["finding_id".into()]),
+            },
+        },
+        Tool {
+            name: "atlas_language_capabilities".into(),
+            description: "Show per-language analysis capability profiles: supported features, limitations, confidence floor.".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({})),
+                required: None,
             },
         },
     ]

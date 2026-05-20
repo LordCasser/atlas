@@ -66,7 +66,8 @@
 - 对用户可见能力，至少要有一个真实临时项目测试实际命令路径。
 - CLI 输出可以断言稳定 JSON 或关键文本片段；不要依赖无意义的进度输出。
 - `index` 必须验证单文件失败不会中断整个项目，并验证结构化失败报告。
-- `trace` 必须验证真实源码项目经过 `index` 后能从指定指定位置产生变量来源和 caller path。
+- `trace` 必须验证真实源码项目经过 `index` 后能从指定位置产生变量来源和 caller path。
+- `trace`、`status`、`doctor` 必须验证用户可见的语言能力边界输出，包括 capability level、supported/unsupported features、limitations 和 diagnostics。
 
 ### 2.5 MCP 测试
 
@@ -80,6 +81,7 @@
 - 新增 MCP 工具必须测试注册名、required schema、正常调用和错误调用。
 - 涉及项目文件或源码片段的工具必须测试 project path 限制。
 - 输出必须断言 bounded 行为、confidence/provenance 暴露和结构化 JSON。
+- trace/query/context 工具必须断言顶层 `capability` 对象存在，且不同语言的 unsupported/partial 结果不会被表示成无解释的空数组。
 
 ### 2.6 端到端测试
 
@@ -93,6 +95,7 @@
 - 必须经过 SQLite 持久化，而不是直接把 facts 传给分析器。
 - 必须经过用户入口：CLI、MCP 或明确等价的 public API。
 - 必须断言最终用户可消费结果，包括 ID、range、confidence、provenance、path steps 和 truncation/budget 信息。
+- 必须覆盖至少一个“请求超出语言能力边界”的场景，断言 partial result、unsupported feature 和 limitation 对用户可见。
 
 ## 3. 阶段测试要求
 
@@ -163,7 +166,7 @@
 - CFG edge 必须同属一个 function。
 - 不支持的语言结构必须通过 diagnostics 或文档显式标记。
 
-### P5：Variable Provenance Trace Explorer MVP
+### P5：变量来源追踪与调用路径查询 MVP
 
 最低要求：
 
@@ -171,15 +174,17 @@
 - backward slicer 单元测试可以使用手写 `DataNode` 和 `DataFlowEdge`。
 - caller path explorer 单元测试可以使用手写 symbol graph。
 - path formatter 测试必须覆盖 bounded JSON 和 Markdown evidence。
+- 不测试、不验收自动漏洞枚举、漏洞模式扫描、source/sink/sanitizer 规则或 finding 产出。
 
 完成标准：
 
-- TypeScript/JavaScript/Python 至少各有一个真实源码 fixture：指定指定位置实参或变量 -> backward slice -> caller path。
+- TypeScript/JavaScript/Python 至少各有一个真实源码 fixture：指定位置实参或变量 -> backward slice -> caller path。
 - fixture 必须经过 extraction -> store -> resolution -> GraphBuilder -> dataflow/call graph -> trace query。
 - CLI、MCP 或等价 public API 必须能查询 trace path，并返回 bounded、结构化输出。
 - 测试必须断言每个 path step 的 kind、file、range、confidence/provenance 和截断行为。
-- Java/C/C++/ArkTS/Cangjie 如果只能支持 Level 1/2，测试必须断言 unsupported diagnostics 或 lower-confidence best-effort 输出。
-- 既有 taint 原型测试可以保留为历史回归测试，但不计入 Trace Explorer 端到端验收，也不作为后续能力规划依据。
+- Java/C/C++/ArkTS/Cangjie 如果只能支持 Level 0/1/2，测试必须断言 capability profile、unsupported diagnostics 或 lower-confidence best-effort 输出。
+- 每种 MVP 语言至少有一个 capability profile 快照测试；能力等级升级时必须同步更新 fixture 和用户可见输出断言。
+- 既有 taint 原型测试可以保留为历史回归测试，但不计入变量来源追踪与调用路径查询端到端验收，也不作为后续能力规划依据。
 
 ### Engine / CLI / MCP 拆分阶段
 
@@ -236,7 +241,7 @@ cargo test --features "all-languages,mcp,sync"
 当前已知缺口应优先修复：
 
 1. `mcp` feature 必须可编译，并纳入默认验证矩阵。
-2. Trace Explorer 需要真实源码端到端 fixture，而不是只依赖 canned `DataNode` 测试。
+2. 变量来源追踪与调用路径查询需要真实源码端到端 fixture，而不是只依赖 canned `DataNode` 测试。
 3. `DataNode.function_id`、`callsite_args`、binding use scanning 需要补齐，否则 trace 查询无法可靠定位变量来源和调用实参。
 4. `ParseWorkerPool` 需要接入 `atlas index` 和 `sync` 的生产路径。
 5. 旧 `RawEdge` dataflow 路径需要清理或明确降级，避免和 `DataFlowEdge` 双轨腐化。

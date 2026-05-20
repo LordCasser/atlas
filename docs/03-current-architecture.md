@@ -6,7 +6,7 @@
 
 ```text
 src/
-  types/        ID、enum、IR、binding、dataflow、CFG、trace 类型
+  types/        ID、enum、IR、binding、dataflow、CFG、trace 查询类型
   db/           SQLite schema、store API、迁移入口
   extraction/   tree-sitter 解析、query、scope、semantic binder、lexical binder、dataflow、CFG
   resolution/   builtin filter、import/export/include/path alias/name matching
@@ -14,7 +14,7 @@ src/
   search/       FTS、LIKE/fuzzy、query parser、scoring
   context/      Agent context builder
   sync/         file discovery、change detection、file lock、watcher
-  analysis/     变量来源与调用路径追踪分析层
+  analysis/     变量来源追踪与调用路径查询分析层
   mcp/          MCP protocol、transport、tools
   cli/          CLI commands
 ```
@@ -181,9 +181,9 @@ CLI：
 - 默认规则覆盖 TypeScript/JavaScript 和 Python 的常见 source/sink/sanitizer。
 - TaintEngine 基于 `DataNode` 和 `DataFlowEdge` 做 worklist forward propagation。
 - TaintPathTracer 基于 reverse BFS 生成 source-to-sink path steps。
-- 当前 taint 能力属于历史原型，不作为产品能力、路线图目标或验收目标。后续分析主线只围绕用户指定位置后的变量来源和调用路径追踪。
+- 当前 taint 能力属于历史原型，不作为产品能力、路线图目标或验收目标。后续分析主线只围绕用户指定位置后的变量来源追踪与调用路径查询。
 
-当前产品主线调整为变量来源追踪和调用路径查询：
+当前产品主线调整为变量来源追踪与调用路径查询：
 
 ```text
 用户指定位置 / callsite / 问题变量
@@ -193,7 +193,14 @@ CLI：
   -> 输出 bounded evidence 给 Agent 分析
 ```
 
-该能力不依赖 source/sink/sanitizer 规则，也不做全项目自动 finding。
+该能力不依赖 source/sink/sanitizer 规则，也不做全项目自动 finding。外部工具或用户可以把疑似问题点作为入口传给 Atlas，但 Atlas 只返回程序结构证据，不负责判定漏洞。
+
+当前架构需要补齐显式语言能力边界：
+
+- analysis 层应提供 `LanguageCapabilityProfile` 或等价结构，描述每种语言当前支持的 trace level、supported features、unsupported features、known limitations 和 confidence floor。
+- CLI/MCP/context 不能自行推断语言能力，只能展示 analysis/engine 返回的 capability。
+- trace 查询即使返回 partial result，也必须同时返回 capability 和 diagnostics，说明哪些路径是完整证据、哪些只是 best-effort、哪些请求超出当前语言能力。
+- 当前默认边界：TypeScript/JavaScript/Python 作为 Level 3 主目标推进；Java/C/C++/ArkTS 以 Level 1/2 best-effort 输出；Cangjie 以 Level 0/1 minimal facts 输出，trace 默认不宣称可用。
 
 ## 8. Cargo Features
 
@@ -227,14 +234,14 @@ cangjie
 
 当前主线目标：
 
-1. 在现有 `types/db/extraction/resolution/graph/analysis/cli/mcp` 架构内完成变量来源与调用路径追踪。
+1. 在现有 `types/db/extraction/resolution/graph/analysis/cli/mcp` 架构内完成变量来源追踪与调用路径查询。
 2. 为 MVP 语言按能力等级补齐 trace 所需 facts 和端到端测试。
 3. 稳定 CLI/MCP 的 trace 查询输出。
 
 完成上述目标后，再把核心能力拆成可复用 engine crate：
 
 ```text
-engine: 语法解析 + facts + binding/dataflow/CFG + variable provenance trace
+engine: 语法解析 + facts + binding/dataflow/CFG + variable provenance trace / caller path query
 cli: command-line interaction
 mcp: JSON-RPC transport and tools
 ```
