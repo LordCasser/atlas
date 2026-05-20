@@ -180,6 +180,17 @@ impl ParseWorkerPool {
         }
     }
 
+    /// Record a pre-extraction failure directly (e.g. no adapter, I/O error).
+    ///
+    /// Use this for failures that happen before `extract_one()` is called.
+    pub(crate) fn push_failure(&self, file_path: &str, category: FailureCategory, message: String) {
+        self.errors.lock().unwrap().push(ExtractionError {
+            file_path: file_path.to_string(),
+            category,
+            message,
+        });
+    }
+
     // --- internal ---
 
     fn record_error(&self, err: ExtractionError) {

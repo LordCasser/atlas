@@ -9,39 +9,15 @@
 //! during the extraction phase (typically 70-80% of total index time).
 
 use crate::db::Store;
-use crate::extraction::{self, LanguageRegistry};
+use crate::extraction::{self, LanguageRegistry, ParseWorkerPool, WorkerConfig};
 use crate::sync::discovery::{discover_files, DiscoveryConfig};
 use crate::types::Language;
+use crate::types::FailureCategory;
 use anyhow::Context;
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-
-/// Categorized index failure for summary reporting.
-#[derive(Debug)]
-#[allow(dead_code)]
-enum IndexFailure {
-    /// No adapter compiled in for this language.
-    NoAdapter(String),
-    /// File I/O error (e.g. permission denied, encoding).
-    IoError(String),
-    /// Tree-sitter extraction error (parse failure, etc.).
-    ExtractError(String),
-    /// Database insertion error (FK violation, etc.).
-    InsertError(String),
-}
-
-impl IndexFailure {
-    fn category(&self) -> &'static str {
-        match self {
-            IndexFailure::NoAdapter(_) => "no_adapter",
-            IndexFailure::IoError(_) => "io_error",
-            IndexFailure::ExtractError(_) => "extract_error",
-            IndexFailure::InsertError(_) => "insert_error",
-        }
-    }
-}
 
 /// Result of extracting a single file.
 struct ExtractedFile {
@@ -97,7 +73,8 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     println!();
 
     // ── Phase 1: Parallel extraction ──────────────────────────────────────
-    // Extract all files in parallel (CPU-bound). Collect results + failures.
+    // Use ParseWorkerPool for panic isolation, size checks, and error tracking.
+    let pool = ParseWorkerPool::new(WorkerConfig::default());
     let total = files.len();
     let extracted_count = AtomicUsize::new(0);
 
@@ -107,112 +84,68 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
             let abs_path = root.join(rel_path);
             let lang = Language::from_path(rel_path)?;
 
-            // Extract (CPU-bound, no SQLite access)
-            let result = extract_one_file(&abs_path, root, lang);
+            // Extract with pool (CPU-bound, no SQLite access)
+            let result = extract_one_with_pool(&pool, &abs_path, root, lang);
 
             let count = extracted_count.fetch_add(1, Ordering::Relaxed);
             if count % 100 == 0 || count == total - 1 {
                 eprint!("\r  Extracting: {}/{} ", count + 1, total);
             }
 
-            let rel = rel_path.clone();
             match result {
-                Ok(facts) => Some(Ok(ExtractedFile {
-                    rel_path: rel,
-                    facts,
-                })),
-                Err(e) => Some(Err((rel, e))),
+                Ok(facts) => {
+                    Some(ExtractedFile {
+                        rel_path: rel_path.clone(),
+                        facts,
+                    })
+                }
+                Err((category, msg)) => {
+                    pool.push_failure(&rel_path.to_string_lossy(), category, msg);
+                    None
+                }
             }
         })
         .collect();
 
     eprintln!(); // newline after progress
 
-    // Partition into successes and failures
-    let mut extracted: Vec<ExtractedFile> = Vec::new();
-    let mut failures: Vec<(PathBuf, anyhow::Error)> = Vec::new();
-    for r in results {
-        match r {
-            Ok(f) => extracted.push(f),
-            Err((p, e)) => failures.push((p, e)),
-        }
-    }
+    let extracted = results; // already filtered: successes only, failures recorded to pool
 
     // ── Phase 2: Sequential insertion ─────────────────────────────────────
-    // Insert all extracted facts into the store (SQLite single-writer).
-    let mut insert_failures: Vec<(PathBuf, IndexFailure)> = Vec::new();
+    let mut insert_failures = 0usize;
     for ef in &extracted {
-        match store.insert_file_facts(&ef.facts) {
-            Ok(()) => {}
-            Err(e) => {
-                insert_failures.push((
-                    ef.rel_path.clone(),
-                    IndexFailure::InsertError(format!("{:#}", e)),
-                ));
-            }
+        if let Err(e) = store.insert_file_facts(&ef.facts) {
+            pool.push_failure(
+                &ef.rel_path.to_string_lossy(),
+                FailureCategory::QueryError, // insertion failure → DB error
+                format!("Insert failed: {:#}", e),
+            );
+            insert_failures += 1;
         }
     }
 
-    // Categorize extraction failures
-    let mut all_failures: Vec<(PathBuf, IndexFailure)> = Vec::new();
-    for (path, err) in failures {
-        let err_str = format!("{:#}", err);
-        let category = if err_str.contains("No adapter") {
-            IndexFailure::NoAdapter(err_str)
-        } else if err_str.contains("Failed to read") || err_str.contains("No such file") {
-            IndexFailure::IoError(err_str)
-        } else {
-            IndexFailure::ExtractError(err_str)
-        };
-        all_failures.push((path, category));
-    }
-    all_failures.extend(insert_failures);
-
-    let fail_count = all_failures.len();
-    let success_count = extracted.len()
-        - all_failures
-            .iter()
-            .filter(|(_, f)| matches!(f, IndexFailure::InsertError(_)))
-            .count();
+    // Build final report from pool
+    let mut index_report = pool.into_report(total, 0 /* duration filled below */);
+    index_report.files_indexed = extracted.len().saturating_sub(insert_failures);
+    // references filled by Phase 3 resolution
 
     // ── Print index summary ───────────────────────────────────────────────
-    if fail_count > 0 {
-        let pct = (fail_count as f64 / total as f64) * 100.0;
+    if index_report.files_failed > 0 {
+        let success_count = index_report.files_indexed;
+        let pct = (index_report.files_failed as f64 / total as f64) * 100.0;
         println!(
             "\nIndexed {}/{} files ({:.1}% success)",
-            success_count,
-            total,
-            100.0 - pct
+            success_count, total, 100.0 - pct
         );
-
-        // Group failures by category
-        let mut by_category: std::collections::HashMap<&str, Vec<&PathBuf>> =
-            std::collections::HashMap::new();
-        for (path, failure) in &all_failures {
-            by_category
-                .entry(failure.category())
-                .or_default()
-                .push(path);
+        println!("  {} failed:", index_report.files_failed);
+        for (cat, count) in &index_report.failures_by_category {
+            println!("    {}: {}", cat, count);
         }
-        println!("  {} failed:", fail_count);
-        for (cat, paths) in &by_category {
-            println!("    {} ({}): {}", cat, paths.len(), paths.iter().take(5).map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
-            if paths.len() > 5 {
-                println!("      ... and {} more", paths.len() - 5);
-            }
-        }
-        // Print the first failure's error message for debugging
-        if let Some((path, failure)) = all_failures.first() {
-            let err_msg = match failure {
-                IndexFailure::NoAdapter(m) => m.clone(),
-                IndexFailure::IoError(m) => m.clone(),
-                IndexFailure::ExtractError(m) => m.clone(),
-                IndexFailure::InsertError(m) => m.clone(),
-            };
-            println!("\n  First error ({}):\n    {}", path.display(), err_msg.lines().next().unwrap_or(&err_msg));
+        if index_report.files_skipped > 0 {
+            println!("  {} skipped (size limit)", index_report.files_skipped);
         }
     } else {
-        println!("\nIndexed {}/{} files (100% success)", success_count, total);
+        println!("\nIndexed {}/{} files (100% success)", total, total);
     }
 
     // ── Phase 3: Resolve all references (P2: two-step pipeline) ──────────
@@ -274,27 +207,32 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     Ok(())
 }
 
-/// Extract a single file (CPU-bound, no SQLite access).
-fn extract_one_file(
+/// Extract a single file using the parse worker pool.
+///
+/// Pre-extraction errors (no adapter, I/O) are returned as `Err((category, message))`.
+/// Extraction errors are recorded internally by the pool.
+fn extract_one_with_pool(
+    pool: &ParseWorkerPool,
     path: &Path,
     root: &Path,
     lang: Language,
-) -> anyhow::Result<crate::types::FileFacts> {
+) -> Result<crate::types::FileFacts, (FailureCategory, String)> {
     let adapter = extraction::create_adapter(lang)
-        .ok_or_else(|| anyhow::anyhow!("No adapter available for {:?}", lang))?;
+        .ok_or_else(|| (FailureCategory::QueryError, format!("No adapter available for {:?}", lang)))?;
 
-    let source = std::fs::read_to_string(path).context("Failed to read source file")?;
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => return Err((FailureCategory::IoError, format!("Failed to read {}: {}", path.display(), e))),
+    };
+
     let content_hash = blake3::hash(source.as_bytes()).to_hex();
     let relative = path.strip_prefix(root).unwrap_or(path);
     let file_id = crate::types::FileId::generate(&relative.to_string_lossy());
 
-    let facts = extraction::extract_file(
-        adapter.as_ref(),
-        file_id,
-        relative,
-        &source,
-        &content_hash,
-    )?;
-
-    Ok(facts)
+    // Delegate to pool: handles size check, panic isolation, and error recording
+    pool.extract_one(adapter.as_ref(), file_id, relative, &source, &content_hash)
+        .map_err(|err| {
+            let category = err.category;
+            (category, err.message)
+        })
 }
