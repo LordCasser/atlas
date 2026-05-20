@@ -10,7 +10,7 @@ use crate::db::Store;
 use crate::graph::{GraphEngine, TraversalConfig, TraversalDirection};
 use crate::search::SearchEngine;
 use crate::context::ContextBuilder;
-use crate::types::{Language, LanguageCapabilityProfile, SymbolId, SymbolKind};
+use crate::types::{Language, LanguageCapabilityProfile, SymbolId, SymbolKind, TraceDiagnostic, TracePath};
 use crate::types::ids::FileId;
 
 use super::protocol::{
@@ -499,7 +499,7 @@ impl ToolRouter {
 
         let file_id = match resolve_file_id(&self.store, file_hex, file_path) {
             Ok(Some(fid)) => fid,
-            Ok(None) => return ("Missing file_id or file_path".into(), true),
+            Ok(None) => return (format!("Missing file_id or file_path").into(), true),
             Err(e) => return (format!("Error resolving file: {}", e), true),
         };
 
@@ -508,10 +508,20 @@ impl ToolRouter {
             _ => return ("Missing line or column".into(), true),
         };
 
-        let point = match Locator::locate(&self.store, &file_id, line, column) {
+        let mut point = match Locator::locate(&self.store, &file_id, line, column) {
             Ok(p) => p,
             Err(e) => return (format!("Error locating position: {}", e), true),
         };
+
+        // Inject language capability profile for Agent consumption
+        if let Some(lang) = point.resolved_symbol.as_ref().map(|s| s.language)
+            .or_else(|| point.reference.as_ref().map(|_| {
+                // Fallback: if we have a reference, we can infer language from file
+                Language::TypeScript // default heuristic
+            }))
+        {
+            point.capability = Some(LanguageCapabilityProfile::for_language(lang));
+        }
 
         (serde_json::to_string_pretty(&point).unwrap_or_else(|e| e.to_string()), false)
     }
@@ -540,8 +550,36 @@ impl ToolRouter {
         };
 
         let path = match Slicer::slice(&self.store, &sink, max_depth) {
-            Ok(Some(p)) => p,
-            Ok(None) => return ("No dataflow trace found for this position (no data node, or no backward edges)".into(), true),
+            Ok(Some(mut p)) => {
+                // Inject capability from sink (carried forward by slicer)
+                if let Some(lang) = sink.resolved_symbol.as_ref().map(|s| s.language)
+                    .or_else(|| sink.reference.as_ref().map(|_| Language::TypeScript))
+                {
+                    p.capability = Some(LanguageCapabilityProfile::for_language(lang));
+                }
+                p
+            }
+            Ok(None) => {
+                // Not an error — return partial result with diagnostics
+                let cap = sink.resolved_symbol.as_ref()
+                    .map(|s| LanguageCapabilityProfile::for_language(s.language))
+                    .or_else(|| sink.reference.as_ref()
+                        .map(|_| LanguageCapabilityProfile::for_language(Language::TypeScript)));
+                let path = TracePath {
+                    source: sink.clone(),
+                    steps: vec![],
+                    sink,
+                    confidence: 0.0,
+                    nodes_visited: 0,
+                    capability: cap,
+                    partial_result: true,
+                    diagnostics: vec![
+                        TraceDiagnostic::warning("No data node at this position — consider using atlas_trace_point for symbol-level info")
+                            .with_code("no_data_node"),
+                    ],
+                };
+                return (serde_json::to_string_pretty(&path).unwrap_or_else(|e| e.to_string()), false);
+            }
             Err(e) => return (format!("Error tracing dataflow: {}", e), true),
         };
 

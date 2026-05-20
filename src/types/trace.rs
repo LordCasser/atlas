@@ -25,10 +25,41 @@
 use serde::{Deserialize, Serialize};
 
 use super::bindings::{BindingDef, BindingUse};
+use super::capability::LanguageCapabilityProfile;
 use super::dataflow::DataNode;
 use super::enums::DataFlowKind;
 use super::ids::{DataNodeId, FileId};
-use super::structs::{Callsite, ReferenceUse, ScopeDef, SymbolDef, TextRange};
+use super::structs::{Callsite, DiagnosticLevel, ReferenceUse, ScopeDef, SymbolDef, TextRange};
+
+// ---------------------------------------------------------------------------
+// TraceDiagnostic — a structured hint/warning/error for trace results
+// ---------------------------------------------------------------------------
+
+/// A diagnostic message attached to a trace result, indicating data quality
+/// or analysis limitations.  Not an error — the result is still delivered.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceDiagnostic {
+    pub level: DiagnosticLevel,
+    pub message: String,
+    /// Optional machine-readable code (e.g. "no_data_node", "unsupported_language").
+    pub code: Option<String>,
+}
+
+impl TraceDiagnostic {
+    pub fn info(message: &str) -> Self {
+        Self { level: DiagnosticLevel::Info, message: message.to_string(), code: None }
+    }
+    pub fn warning(message: &str) -> Self {
+        Self { level: DiagnosticLevel::Warning, message: message.to_string(), code: None }
+    }
+    pub fn error(message: &str) -> Self {
+        Self { level: DiagnosticLevel::Error, message: message.to_string(), code: None }
+    }
+    pub fn with_code(mut self, code: &str) -> Self {
+        self.code = Some(code.to_string());
+        self
+    }
+}
 
 // ---------------------------------------------------------------------------
 // TracePoint — resolved state at a source position
@@ -71,6 +102,17 @@ pub struct TracePoint {
     pub line: u32,
     /// The query position used to locate this point (1-based column).
     pub column: u32,
+    /// The analysis capability for the language of this point (resolved from
+    /// the symbol's language, if a symbol was found).
+    #[serde(default)]
+    pub capability: Option<LanguageCapabilityProfile>,
+    /// If true, the trace produced a partial result (e.g., dataflow sliced
+    /// some edges but couldn't reach the origin).
+    #[serde(default)]
+    pub partial_result: bool,
+    /// Diagnostics (warnings, notes) produced during location or slicing.
+    #[serde(default)]
+    pub diagnostics: Vec<TraceDiagnostic>,
 }
 
 /// A lightweight reference to a data node that flows into or out of a trace
@@ -121,7 +163,19 @@ pub struct TracePath {
     pub confidence: f64,
     /// The number of dataflow nodes visited during the trace.
     pub nodes_visited: usize,
+    /// Language capability profile. Always present for MCP consumers.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub capability: Option<LanguageCapabilityProfile>,
+    /// Best-effort / incomplete result flag.
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub partial_result: bool,
+    /// Structured diagnostics.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub diagnostics: Vec<TraceDiagnostic>,
 }
+
+/// serde skip helper
+fn is_false(b: &bool) -> bool { !b }
 
 /// A single step in a trace path — connects two data nodes via a dataflow edge.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -244,6 +298,9 @@ mod tests {
             file_id,
             line: 10,
             column: 5,
+            capability: None,
+            partial_result: false,
+            diagnostics: vec![],
         };
         let json = serde_json::to_string(&tp).unwrap();
         let _: TracePoint = serde_json::from_str(&json).unwrap();

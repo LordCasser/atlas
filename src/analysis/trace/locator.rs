@@ -33,9 +33,15 @@ impl Locator {
         line: u32,
         column: u32,
     ) -> anyhow::Result<TracePoint> {
+        // Convert 1-based editor coordinates to 0-based internal representation.
+        // tree-sitter produces 0-based line/column, and TextRange stores those
+        // directly.  CLI and MCP accept 1-based input (editor convention).
+        let line0 = line.saturating_sub(1);
+        let col0 = column.saturating_sub(1);
+
         // 1. Find the reference at this position
         let refs = store.find_references_by_file(file_id)?;
-        let reference = find_innermost_at_position(&refs, extract_ref_range, line, column);
+        let reference = find_innermost_at_position(&refs, extract_ref_range, line0, col0);
 
         // 2. Resolve the symbol this reference points to
         let resolved_symbol = match &reference {
@@ -48,12 +54,12 @@ impl Locator {
 
         // 3. Find the enclosing scope
         let scopes = store.find_scopes_by_file(file_id)?;
-        let scope = find_innermost_at_position(&scopes, |s| &s.range, line, column).cloned();
+        let scope = find_innermost_at_position(&scopes, |s| &s.range, line0, col0).cloned();
 
         // 4. Find the data node at this position (prefer the most specific,
         //    i.e. the one with the smallest byte range)
         let data_nodes = store.find_data_nodes_by_file(file_id)?;
-        let data_node = find_innermost_at_position(&data_nodes, |dn| &dn.range, line, column)
+        let data_node = find_innermost_at_position(&data_nodes, |dn| &dn.range, line0, col0)
             .cloned();
 
         // 5. Collect incoming and outgoing dataflow edges
@@ -72,10 +78,10 @@ impl Locator {
         };
 
         // 6. Check for callsite
-        let callsite = find_callsite_for_position(store, &reference, file_id, line, column)?;
+        let callsite = find_callsite_for_position(store, &reference, file_id, line0, col0)?;
 
         // 7. Check for binding
-        let (binding, binding_use) = find_binding_at_position(store, file_id, line, column)?;
+        let (binding, binding_use) = find_binding_at_position(store, file_id, line0, col0)?;
 
         Ok(TracePoint {
             reference: reference.cloned(),
@@ -90,6 +96,9 @@ impl Locator {
             file_id: file_id.clone(),
             line,
             column,
+            capability: None,
+            partial_result: false,
+            diagnostics: vec![],
         })
     }
 }

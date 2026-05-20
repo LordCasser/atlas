@@ -67,7 +67,7 @@ pub use taint::{Severity, TaintFinding, TaintFindingId, TaintPathStep, TaintRule
 pub use capability::{CapabilityLevel, LanguageCapabilityProfile};
 
 // --- Trace types ---
-pub use trace::{TraceDataNodeRef, TracePath, TracePathStep, TracePoint};
+pub use trace::{TraceDataNodeRef, TraceDiagnostic, TracePath, TracePathStep, TracePoint};
 
 // --- Caller path types ---
 pub use caller_path::{CallerChain, CallerChainStep};

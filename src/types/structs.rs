@@ -25,13 +25,13 @@ pub struct TextRange {
     pub start_byte: u32,
     /// 0-based absolute byte offset of the character after the last (end, exclusive).
     pub end_byte: u32,
-    /// 1-based line number where the range starts.
+    /// 0-based line number where the range starts (tree-sitter convention).
     pub start_line: u32,
-    /// 1-based column (UTF-16 code units) where the range starts.
+    /// 0-based column (UTF-16 code units) where the range starts.
     pub start_column: u32,
-    /// 1-based line number where the range ends.
+    /// 0-based line number where the range ends.
     pub end_line: u32,
-    /// 1-based column (UTF-16 code units) where the range ends.
+    /// 0-based column (UTF-16 code units) where the range ends.
     pub end_column: u32,
 }
 

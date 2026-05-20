@@ -86,10 +86,13 @@ impl Slicer {
 
                 if !visited.contains_key(&source_key) {
                     let new_depth = depth + 1;
+                    let current_key = hex::encode(current_id.as_bytes());
                     visited.insert(source_key.clone(), new_depth);
+                    // Store current→source so reconstruct_path can walk
+                    // backward from sink through each predecessor.
                     predecessors.insert(
-                        source_key.clone(),
-                        (current_id.clone(), edge.kind.clone()),
+                        current_key,
+                        (source_id.clone(), edge.kind.clone()),
                     );
                     queue.push_back((source_id.clone(), new_depth));
 
@@ -134,6 +137,9 @@ impl Slicer {
             file_id: sink_point.file_id.clone(),
             line: sink_point.line,
             column: sink_point.column,
+            capability: sink_point.capability.clone(),
+            partial_result: false,
+            diagnostics: vec![],
         };
 
         Ok(Some(TracePath {
@@ -142,6 +148,9 @@ impl Slicer {
             sink: sink_point.clone(),
             confidence: compute_confidence(farthest_depth),
             nodes_visited: visited.len(),
+            capability: sink_point.capability.clone(),
+            partial_result: false,
+            diagnostics: vec![],
         }))
     }
 }

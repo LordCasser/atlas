@@ -84,8 +84,11 @@ impl CallerPathExplorer {
 
                 if !visited.contains_key(&caller_key) {
                     let new_depth = depth + 1;
+                    let current_key = hex::encode(current_id.as_bytes());
                     visited.insert(caller_key.clone(), new_depth);
-                    predecessors.insert(caller_key, (current_id.clone(), edge.kind.clone()));
+                    // Store current→caller so reconstruct_call_path can walk
+                    // backward from target through each caller.
+                    predecessors.insert(current_key, (caller.clone(), edge.kind.clone()));
                     queue.push_back((caller.clone(), new_depth));
 
                     if new_depth > farthest_depth {
