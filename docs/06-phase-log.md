@@ -127,3 +127,18 @@
 - 1 个 path tracer 单元测试。
 - 3 个 rules loader 单元测试。
 - 5 个 E2E 集成测试 (`tests/taint_e2e.rs`) — 用预制 DataNode + DataFlowEdge 模拟 source→sink、sanitizer 阻断、max_depth 短路等场景。
+
+## Post-P5：工程成熟度改进
+
+### 问题修复
+
+- **MCP 编译修复**：`atlas_taint_findings` 和 `atlas_taint_path` 在 `--features mcp` 下编译失败，修复 import 和类型匹配。
+- **ParseWorkerPool 接入 index 命令**：原来的 index 命令手动管理 `IndexFailure` 和并行逻辑。统一为由 `ParseWorkerPool.extract_one()` 驱动，`IndexReport` 替换 `IndexFailure`。
+- **DataNode function_id 填充**：DataFlowBuilder 产出的 DataNode 原来 `function_id: None`。新增 `resolve_dataflow_function_ids()` 在 extraction 阶段按 range 匹配 function symbol，填充 `function_id`。
+- **删除旧 normalize_dataflow → RawEdge 路径**：LanguageAdapter trait 中移除 `dataflow_query()` 和 `normalize_dataflow()`。RawEdge 仍保留（GraphBuilder 用于 structural edges），但 dataflow edge 只通过 DataNode→DataNode 路径生成。删除 6 个 `.scm` query 文件，更新所有 8 个 adapter。
+
+### DataFlowBuilder 增强
+
+- **use-def 跨语句边**：新增 `DataFlowBuilder::resolve_use_def()`，按 `(function_id, 小写变量名)` 分组 DataNodes，在各组内从第一个 Local/Parameter（定义）创建 Assign 边到后续 Expr/CallArg/Field/Return（使用）（confidence 0.85）。保守启发式算法，非 SSA 精度。集成到 extraction 流程 step 7e。
+- 新增 3 个测试：unit test（预制 DataNodes）、真实 TS 提取 test、跨语句变量传递 test。
+- 当前局限：DataFlowBuilder 不捕获函数参数（无 `@df.parameter`）、不捕获 call target（无 `@df.call_target`），完整 source→sink 传播需要后续增强。

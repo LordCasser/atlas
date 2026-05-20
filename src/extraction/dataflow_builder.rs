@@ -28,7 +28,7 @@ use std::path::Path;
 use crate::types::bindings::BindingDef;
 use crate::types::dataflow::{DataFlowEdge, DataNode};
 use crate::types::enums::{DataFlowKind, DataNodeKind};
-use crate::types::ids::{BindingId, DataFlowEdgeId, DataNodeId, FileId};
+use crate::types::ids::{BindingId, DataFlowEdgeId, DataNodeId, FileId, SymbolId};
 use crate::types::ScopeDef;
 
 use super::languages::LanguageAdapter;
@@ -93,6 +93,25 @@ impl DataFlowBuilder {
         build_dataflow_edges(&nodes, &bindings, file_id, &mut edges);
 
         Ok(DataFlowResult { nodes, edges })
+    }
+
+    /// Resolve use-def edges across statements within each function.
+    ///
+    /// After the initial extraction creates intra-statement edges (Assign for
+    /// target↔value, FieldLoad for base↔field), this second pass creates
+    /// edges from variable definitions to later uses of the same name.
+    ///
+    /// Key heuristic: nodes with the same `function_id` and name (case-
+    /// insensitive) are grouped.  The first Local/Parameter in byte order
+    /// is treated as a definition; all later Expr/CallArg/Field nodes are
+    /// treated as uses.  This enables basic cross-statement taint
+    /// propagation (e.g. `const x = source; sink(x)`).
+    ///
+    /// This is a conservative heuristic — it may connect unrelated
+    /// occurrences in nested scopes.  Shadowing and SSA-style precision
+    /// require BindingGraph (P3-deferred).
+    pub fn resolve_use_def(data_nodes: &[DataNode]) -> Vec<DataFlowEdge> {
+        resolve_use_def(data_nodes)
     }
 }
 
@@ -198,6 +217,73 @@ fn build_dataflow_edges(
     }
 }
 
+/// Standalone use-def resolution: creates edges from variable definitions
+/// to later uses of the same name within each function scope.
+fn resolve_use_def(data_nodes: &[DataNode]) -> Vec<DataFlowEdge> {
+    let mut edges = Vec::new();
+
+    // Group nodes by (function_id, lowercase name)
+    let mut groups: HashMap<(Option<SymbolId>, String), Vec<&DataNode>> = HashMap::new();
+    for node in data_nodes {
+        if let Some(ref name) = node.name {
+            let key = (node.function_id, name.to_lowercase());
+            groups.entry(key).or_default().push(node);
+        }
+    }
+
+    for (_key, mut group) in groups {
+        if group.len() < 2 {
+            continue;
+        }
+
+        // Sort by byte position
+        group.sort_by_key(|n| n.range.start_byte);
+
+        // Find definition nodes (first Local/Parameter in byte order)
+        let def_indices: Vec<usize> = group
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| {
+                n.kind == DataNodeKind::Local || n.kind == DataNodeKind::Parameter
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        for &def_idx in &def_indices {
+            let def_node = group[def_idx];
+            // Create edges from def to all later uses of different kinds
+            for use_node in group.iter().skip(def_idx + 1) {
+                if use_node.id == def_node.id {
+                    continue;
+                }
+                // Only connect to nodes that are Expr, CallArg, Return, or Field uses
+                if matches!(use_node.kind,
+                    DataNodeKind::Expr
+                    | DataNodeKind::CallArg
+                    | DataNodeKind::Field
+                    | DataNodeKind::Return
+                ) {
+                    let edge_id = DataFlowEdgeId::generate(
+                        &def_node.id,
+                        &use_node.id,
+                        DataFlowKind::Assign.as_str(),
+                    );
+                    edges.push(DataFlowEdge::new(
+                        edge_id,
+                        def_node.id,
+                        use_node.id,
+                        DataFlowKind::Assign,
+                        use_node.range,
+                        0.85,
+                    ));
+                }
+            }
+        }
+    }
+
+    edges
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,5 +315,44 @@ mod tests {
 
         // We should have some data nodes (at minimum, the variable declarations and returns)
         assert!(!result.nodes.is_empty(), "Should have data nodes");
+    }
+
+    #[test]
+    fn test_resolve_use_def_creates_cross_statement_edges() {
+        use crate::types::ids::SymbolId;
+        use crate::types::structs::TextRange;
+
+        let file_id = FileId::generate("t.ts");
+        let fid = SymbolId::generate(&file_id, "typescript", "f", "function", None);
+
+        let def = DataNode {
+            id: DataNodeId::generate(&file_id, Some(&fid), "local", Some("x"), None, 10),
+            file_id,
+            function_id: Some(fid),
+            kind: DataNodeKind::Local,
+            binding_id: None,
+            callsite_id: None,
+            name: Some("x".into()),
+            access_path: None,
+            range: TextRange { start_byte: 10, end_byte: 11, start_line: 0, start_column: 0, end_line: 0, end_column: 0 },
+        };
+        let use1 = DataNode {
+            id: DataNodeId::generate(&file_id, Some(&fid), "expr", Some("x"), None, 40),
+            file_id,
+            function_id: Some(fid),
+            kind: DataNodeKind::Expr,
+            binding_id: None,
+            callsite_id: None,
+            name: Some("x".into()),
+            access_path: None,
+            range: TextRange { start_byte: 40, end_byte: 41, start_line: 0, start_column: 0, end_line: 0, end_column: 0 },
+        };
+
+        let nodes = vec![def, use1];
+        let edges = resolve_use_def(&nodes);
+
+        assert!(!edges.is_empty(), "Should create use-def edge");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].kind, DataFlowKind::Assign);
     }
 }

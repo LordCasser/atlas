@@ -267,3 +267,90 @@ fn ts_max_depth_prevents_infinite_propagation() {
     assert!(result.sources_matched >= 1, "Source should be matched");
     assert!(result.paths_explored > 0, "Some paths should be explored");
 }
+
+// ── Real extraction + use-def → taint (TypeScript) ────────────────────────
+
+#[cfg(feature = "typescript")]
+#[test]
+fn ts_real_extraction_use_def_taint() {
+    use atlas::extraction::languages::{LanguageAdapter, typescript::TypeScriptAdapter};
+    use atlas::extraction::DataFlowBuilder;
+    use atlas::types::ids::FileId;
+    use tree_sitter::Parser;
+
+    let source = "function handler(req: any) {\n  const cmd = req.query.q;\n  exec(cmd);\n}";
+    let file_id = FileId::generate("handler.ts");
+    let adapter = TypeScriptAdapter;
+    let ts_lang = adapter.tree_sitter_language();
+
+    let mut parser = Parser::new();
+    parser.set_language(&ts_lang).unwrap();
+    let tree = parser.parse(source.as_bytes(), None).unwrap();
+    let root = tree.root_node();
+
+    let result = DataFlowBuilder::extract(
+        &adapter, &ts_lang, root, source, source.as_bytes(),
+        file_id, &std::path::PathBuf::from("handler.ts"),
+        &[], &[],
+    ).unwrap();
+
+    let mut all_edges = result.edges.clone();
+    let use_def = DataFlowBuilder::resolve_use_def(&result.nodes);
+    all_edges.extend(use_def);
+
+    // Verify: DataFlowBuilder produces nodes and cross-statement use-def edges.
+    // Complete source→sink taint propagation requires additional edges
+    // (e.g. parameter captures, expression→field edges) not yet implemented
+    // in DataFlowBuilder; those are covered by the canned-data taint tests above.
+    assert!(!result.nodes.is_empty(), "DataFlowBuilder should produce data nodes");
+    assert!(!all_edges.is_empty(), "Should have at least one edge");
+
+    // With use-def, variable `cmd` (Local in stmt1) should have edge to `cmd` (CallArg in stmt2)
+    let has_use_def = all_edges.len() > result.edges.len();
+    assert!(has_use_def, "Use-def should create additional cross-statement edges");
+}
+
+// ── Use-def connects definitions to uses across statements ─────────────────
+
+#[cfg(feature = "typescript")]
+#[test]
+fn ts_use_def_connects_variable_across_statements() {
+    use atlas::extraction::languages::{LanguageAdapter, typescript::TypeScriptAdapter};
+    use atlas::extraction::DataFlowBuilder;
+    use atlas::types::enums::DataNodeKind;
+    use atlas::types::ids::FileId;
+    use tree_sitter::Parser;
+
+    let source = "function test() {\n  const cmd = 1;\n  f(cmd);\n}";
+    let file_id = FileId::generate("use_def.ts");
+    let adapter = TypeScriptAdapter;
+    let ts_lang = adapter.tree_sitter_language();
+
+    let mut parser = Parser::new();
+    parser.set_language(&ts_lang).unwrap();
+    let tree = parser.parse(source.as_bytes(), None).unwrap();
+
+    let result = DataFlowBuilder::extract(
+        &adapter, &ts_lang, tree.root_node(), source, source.as_bytes(),
+        file_id, &std::path::PathBuf::from("use_def.ts"),
+        &[], &[],
+    ).unwrap();
+
+    let use_def = DataFlowBuilder::resolve_use_def(&result.nodes);
+
+    assert!(!use_def.is_empty(),
+        "Use-def should create cross-statement edges. Nodes: {:?}",
+        result.nodes.iter().map(|n| (n.name.as_deref(), n.kind)).collect::<Vec<_>>(),
+    );
+
+    let has_local_to_call_arg = use_def.iter().any(|e| {
+        let src = result.nodes.iter().find(|n| n.id == e.source);
+        let tgt = result.nodes.iter().find(|n| n.id == e.target);
+        src.map(|n| n.kind == DataNodeKind::Local).unwrap_or(false)
+            && tgt.map(|n| n.kind == DataNodeKind::CallArg).unwrap_or(false)
+    });
+    assert!(has_local_to_call_arg,
+        "Expected edge Local→CallArg. Edges: {:?}",
+        use_def.iter().map(|e| format!("{:?}→{:?}", e.source, e.target)).collect::<Vec<_>>(),
+    );
+}

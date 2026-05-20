@@ -21,7 +21,7 @@ use crate::types::ids::{CallsiteId, FileId};
 use super::languages::LanguageAdapter;
 use super::semantic_binder::SemanticBinder;
 use super::lexical_binder::LexicalBindingResult;
-use super::dataflow_builder::DataFlowResult;
+use super::dataflow_builder::{DataFlowBuilder, DataFlowResult};
 use super::cfg_builder::{CfgBuilder, CfgResult};
 
 /// Extract a single file's facts using the given adapter.
@@ -135,7 +135,7 @@ pub fn extract_file(
         DataFlowResult::default()
     });
     let mut data_nodes = dataflow_result.nodes;
-    let dataflow_edges = dataflow_result.edges;
+    let mut dataflow_edges = dataflow_result.edges;
 
     // 7c. Build per-function control-flow graphs (CfgBuilder)
     //     Matches function symbols to tree-sitter nodes, builds CFG for each.
@@ -156,6 +156,13 @@ pub fn extract_file(
     //     step walks the AST to find the enclosing function for each node
     //     and sets function_id to the matching SymbolDef.
     resolve_dataflow_function_ids(&mut data_nodes, &symbols);
+
+    // 7e. Resolve cross-statement use-def edges.
+    //     After function_ids are set, group nodes by (function_id, name)
+    //     and create edges from the first definition to later uses.
+    //     This enables basic taint propagation across statements.
+    let use_def_edges = DataFlowBuilder::resolve_use_def(&data_nodes);
+    dataflow_edges.extend(use_def_edges);
 
     // 8. Bind source ownership and scope through the semantic binder.
     // This is the single source of truth for references/dataflow/callsites:
