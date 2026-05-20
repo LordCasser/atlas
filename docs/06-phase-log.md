@@ -120,3 +120,10 @@
 - 函数摘要 (FunctionSummary) — 跨函数传播当前硬依赖 dataflow_edges。
 - 跨语言规则共享和规则生态。
 - Path slicing 和 sanitizer 链精细化。
+
+测试覆盖：
+
+- 3 个 engine 单元测试 (source→sink, sanitizer blocks, simple flow)。
+- 1 个 path tracer 单元测试。
+- 3 个 rules loader 单元测试。
+- 5 个 E2E 集成测试 (`tests/taint_e2e.rs`) — 用预制 DataNode + DataFlowEdge 模拟 source→sink、sanitizer 阻断、max_depth 短路等场景。
