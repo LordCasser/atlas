@@ -57,8 +57,7 @@ impl FileHashStore {
         let path = atlas_dir.join("file_hashes.json");
         match fs::read_to_string(&path) {
             Ok(json) => {
-                let map: HashMap<String, String> =
-                    serde_json::from_str(&json).unwrap_or_default();
+                let map: HashMap<String, String> = serde_json::from_str(&json).unwrap_or_default();
                 Ok(Self { hashes: map })
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -376,7 +375,10 @@ mod tests {
         // Save and reload hash store to verify persistence
         hash_store.save(&atlas_dir).unwrap();
         let mut reloaded = FileHashStore::load(&atlas_dir).unwrap();
-        assert_eq!(reloaded.get("new.ts"), Some(hash_store.get("new.ts").unwrap()));
+        assert_eq!(
+            reloaded.get("new.ts"),
+            Some(hash_store.get("new.ts").unwrap())
+        );
 
         // Modify the file
         fs::write(&file_path, b"const y = 2;").unwrap();

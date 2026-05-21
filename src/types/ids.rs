@@ -321,12 +321,8 @@ impl ImportId {
         start_byte: u32,
     ) -> Self {
         let sb = start_byte.to_le_bytes();
-        let mut parts: Vec<&[u8]> = vec![
-            file_id.as_bytes(),
-            kind.as_bytes(),
-            module.as_bytes(),
-            &sb,
-        ];
+        let mut parts: Vec<&[u8]> =
+            vec![file_id.as_bytes(), kind.as_bytes(), module.as_bytes(), &sb];
         if let Some(name) = imported_name {
             parts.insert(3, name.as_bytes());
         }
@@ -396,11 +392,7 @@ impl BindingUseId {
         start_byte: u32,
     ) -> Self {
         let sb = start_byte.to_le_bytes();
-        let mut parts: Vec<&[u8]> = vec![
-            file_id.as_bytes(),
-            name.as_bytes(),
-            &sb,
-        ];
+        let mut parts: Vec<&[u8]> = vec![file_id.as_bytes(), name.as_bytes(), &sb];
         // binding_id inserted at position 1 (after file_id)
         if let Some(bid) = binding_id {
             parts.insert(1, bid.as_bytes());
@@ -443,11 +435,7 @@ impl DataNodeId {
         start_byte: u32,
     ) -> Self {
         let sb = start_byte.to_le_bytes();
-        let mut parts: Vec<&[u8]> = vec![
-            file_id.as_bytes(),
-            kind.as_bytes(),
-            &sb,
-        ];
+        let mut parts: Vec<&[u8]> = vec![file_id.as_bytes(), kind.as_bytes(), &sb];
         // function_id inserted at position 1 (after file_id)
         if let Some(fid) = function_id {
             parts.insert(1, fid.as_bytes());
@@ -479,16 +467,8 @@ impl DataFlowEdgeId {
     /// - `source`: source DataNodeId
     /// - `target`: target DataNodeId
     /// - `kind`: dataflow kind name (e.g., "assign", "field_load", "arg_to_param")
-    pub fn generate(
-        source: &DataNodeId,
-        target: &DataNodeId,
-        kind: &str,
-    ) -> Self {
-        let parts: Vec<&[u8]> = vec![
-            source.as_bytes(),
-            target.as_bytes(),
-            kind.as_bytes(),
-        ];
+    pub fn generate(source: &DataNodeId, target: &DataNodeId, kind: &str) -> Self {
+        let parts: Vec<&[u8]> = vec![source.as_bytes(), target.as_bytes(), kind.as_bytes()];
         Self::from_parts(&parts)
     }
 }
@@ -510,11 +490,7 @@ impl CfgNodeId {
     /// - `start_byte`: start byte offset of the corresponding AST node
     pub fn generate(function_id: &SymbolId, kind: &str, start_byte: u32) -> Self {
         let sb = start_byte.to_le_bytes();
-        let parts: Vec<&[u8]> = vec![
-            function_id.as_bytes(),
-            kind.as_bytes(),
-            &sb,
-        ];
+        let parts: Vec<&[u8]> = vec![function_id.as_bytes(), kind.as_bytes(), &sb];
         Self::from_parts(&parts)
     }
 }
@@ -535,11 +511,7 @@ impl CfgEdgeId {
     /// - `target`: target CfgNodeId
     /// - `kind`: edge kind name (e.g., "normal", "true_branch")
     pub fn generate(source: &CfgNodeId, target: &CfgNodeId, kind: &str) -> Self {
-        let parts: Vec<&[u8]> = vec![
-            source.as_bytes(),
-            target.as_bytes(),
-            kind.as_bytes(),
-        ];
+        let parts: Vec<&[u8]> = vec![source.as_bytes(), target.as_bytes(), kind.as_bytes()];
         Self::from_parts(&parts)
     }
 }
@@ -582,13 +554,7 @@ mod tests {
     fn test_symbol_id_discriminator() {
         let file_id = FileId::generate("src/main.ts");
         let id1 = SymbolId::generate(&file_id, "typescript", "App.run", "method", None);
-        let id2 = SymbolId::generate(
-            &file_id,
-            "typescript",
-            "App.run",
-            "method",
-            Some("(int)"),
-        );
+        let id2 = SymbolId::generate(&file_id, "typescript", "App.run", "method", Some("(int)"));
         assert_ne!(id1, id2);
     }
 
@@ -605,8 +571,16 @@ mod tests {
     fn test_reference_id_kind_prevents_collision() {
         use crate::types::ReferenceKind;
         let file_id = FileId::generate("src/main.ts");
-        let call_id = ReferenceId::generate(&file_id, None, 100, 108, "method", ReferenceKind::Call);
-        let field_id = ReferenceId::generate(&file_id, None, 100, 108, "method", ReferenceKind::FieldAccess);
+        let call_id =
+            ReferenceId::generate(&file_id, None, 100, 108, "method", ReferenceKind::Call);
+        let field_id = ReferenceId::generate(
+            &file_id,
+            None,
+            100,
+            108,
+            "method",
+            ReferenceKind::FieldAccess,
+        );
         // Same range + text, different kind → different IDs (fixes obj.method() collision)
         assert_ne!(call_id, field_id);
     }
@@ -745,10 +719,20 @@ mod tests {
         let file_id = FileId::generate("src/main.ts");
         let func_id = SymbolId::generate(&file_id, "typescript", "handler", "function", None);
         let id1 = DataNodeId::generate(
-            &file_id, Some(&func_id), "parameter", Some("req"), Some("req"), 50,
+            &file_id,
+            Some(&func_id),
+            "parameter",
+            Some("req"),
+            Some("req"),
+            50,
         );
         let id2 = DataNodeId::generate(
-            &file_id, Some(&func_id), "parameter", Some("req"), Some("req"), 50,
+            &file_id,
+            Some(&func_id),
+            "parameter",
+            Some("req"),
+            Some("req"),
+            50,
         );
         assert_eq!(id1, id2);
     }
@@ -757,12 +741,9 @@ mod tests {
     fn test_data_node_id_different_kind() {
         let file_id = FileId::generate("src/main.ts");
         let func_id = SymbolId::generate(&file_id, "typescript", "handler", "function", None);
-        let id1 = DataNodeId::generate(
-            &file_id, Some(&func_id), "parameter", Some("req"), None, 50,
-        );
-        let id2 = DataNodeId::generate(
-            &file_id, Some(&func_id), "local", Some("req"), None, 50,
-        );
+        let id1 =
+            DataNodeId::generate(&file_id, Some(&func_id), "parameter", Some("req"), None, 50);
+        let id2 = DataNodeId::generate(&file_id, Some(&func_id), "local", Some("req"), None, 50);
         assert_ne!(id1, id2);
     }
 
@@ -771,10 +752,20 @@ mod tests {
         let file_id = FileId::generate("src/main.ts");
         let func_id = SymbolId::generate(&file_id, "typescript", "handler", "function", None);
         let id1 = DataNodeId::generate(
-            &file_id, Some(&func_id), "field", Some("body"), Some("req.body"), 80,
+            &file_id,
+            Some(&func_id),
+            "field",
+            Some("body"),
+            Some("req.body"),
+            80,
         );
         let id2 = DataNodeId::generate(
-            &file_id, Some(&func_id), "field", Some("body"), Some("req.body.name"), 80,
+            &file_id,
+            Some(&func_id),
+            "field",
+            Some("body"),
+            Some("req.body.name"),
+            80,
         );
         assert_ne!(id1, id2);
     }
@@ -785,7 +776,8 @@ mod tests {
     fn test_dataflow_edge_id_deterministic() {
         let file_id = FileId::generate("src/main.ts");
         let func_id = SymbolId::generate(&file_id, "typescript", "handler", "function", None);
-        let src = DataNodeId::generate(&file_id, Some(&func_id), "parameter", Some("req"), None, 50);
+        let src =
+            DataNodeId::generate(&file_id, Some(&func_id), "parameter", Some("req"), None, 50);
         let tgt = DataNodeId::generate(&file_id, Some(&func_id), "local", Some("name"), None, 100);
         let id1 = DataFlowEdgeId::generate(&src, &tgt, "assign");
         let id2 = DataFlowEdgeId::generate(&src, &tgt, "assign");

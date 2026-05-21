@@ -1,7 +1,7 @@
 //! DataFlow builder — per-function dataflow graph construction.
 //!
 //! The DataFlowBuilder creates [`DataNode`]s and [`DataFlowEdge`]s from tree-sitter
-//! AST captures.  This forms the basis for taint analysis.
+//! AST captures.  This forms the basis for intraprocedural dataflow analysis.
 //!
 //! # Architecture
 //!
@@ -20,16 +20,16 @@
 //! - DataNode IDs are deterministic (blake3).
 //! - DataFlowEdge IDs are deterministic (blake3(source + target + kind)).
 //! - Each DataNode has exactly one function_id (or None for top-level).
-//! - Per-function dataflow only (interprocedural deferred to taint analysis layer).
+//! - Per-function dataflow only (interprocedural deferred to analysis layer).
 
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::types::ScopeDef;
 use crate::types::bindings::BindingDef;
 use crate::types::dataflow::{DataFlowEdge, DataNode};
 use crate::types::enums::{DataFlowKind, DataNodeKind};
 use crate::types::ids::{BindingId, DataFlowEdgeId, DataNodeId, FileId, SymbolId};
-use crate::types::ScopeDef;
 
 use super::languages::LanguageAdapter;
 
@@ -104,7 +104,7 @@ impl DataFlowBuilder {
     /// Key heuristic: nodes with the same `function_id` and name (case-
     /// insensitive) are grouped.  The first Local/Parameter in byte order
     /// is treated as a definition; all later Expr/CallArg/Field nodes are
-    /// treated as uses.  This enables basic cross-statement taint
+    /// treated as uses. This enables basic cross-statement dataflow tracking
     /// propagation (e.g. `const x = source; sink(x)`).
     ///
     /// This is a conservative heuristic — it may connect unrelated
@@ -119,10 +119,8 @@ impl DataFlowBuilder {
 /// to an actual binding definition by name.
 fn resolve_bindings_to_nodes(nodes: &mut [DataNode], bindings: &[BindingDef]) {
     // Build a lookup: name → binding_id (within a scope)
-    let binding_by_name: HashMap<&str, &BindingId> = bindings
-        .iter()
-        .map(|b| (b.name.as_str(), &b.id))
-        .collect();
+    let binding_by_name: HashMap<&str, &BindingId> =
+        bindings.iter().map(|b| (b.name.as_str(), &b.id)).collect();
 
     for node in nodes.iter_mut() {
         if let Some(ref name) = node.name {
@@ -147,9 +145,7 @@ fn build_dataflow_edges(
     // Build a lookup: name+kind → DataNodeId for quick matching
     let node_by_name: HashMap<(&str, DataNodeKind), &DataNodeId> = nodes
         .iter()
-        .filter_map(|n| {
-            n.name.as_ref().map(|name| ((name.as_str(), n.kind), &n.id))
-        })
+        .filter_map(|n| n.name.as_ref().map(|name| ((name.as_str(), n.kind), &n.id)))
         .collect();
 
     // Range-based assignment matching: each assign target groups with
@@ -184,11 +180,8 @@ fn build_dataflow_edges(
             if value.range.start_byte > target.range.start_byte
                 && value.range.start_byte < next_target_start
             {
-                let edge_id = DataFlowEdgeId::generate(
-                    &value.id,
-                    &target.id,
-                    DataFlowKind::Assign.as_str(),
-                );
+                let edge_id =
+                    DataFlowEdgeId::generate(&value.id, &target.id, DataFlowKind::Assign.as_str());
                 let edge = DataFlowEdge::new(
                     edge_id,
                     value.id,
@@ -213,7 +206,8 @@ fn build_dataflow_edges(
             // If the base name (first part of access_path) matches a known local/parameter,
             // create a FieldLoad edge from base → field.
             let base_name = access_path.split('.').next().unwrap_or(access_path);
-            if let Some(base_id) = node_by_name.get(&(base_name, DataNodeKind::Local))
+            if let Some(base_id) = node_by_name
+                .get(&(base_name, DataNodeKind::Local))
                 .or_else(|| node_by_name.get(&(base_name, DataNodeKind::Parameter)))
             {
                 let edge_id = DataFlowEdgeId::generate(
@@ -250,7 +244,8 @@ fn build_dataflow_edges(
 
     if !call_targets.is_empty() && !call_args.is_empty() {
         for arg in &call_args {
-            let best_target = call_targets.iter()
+            let best_target = call_targets
+                .iter()
                 .filter(|t| t.function_id == arg.function_id)
                 .filter(|t| t.range.start_byte < arg.range.start_byte)
                 .max_by_key(|t| t.range.start_byte);
@@ -312,9 +307,7 @@ fn resolve_use_def(data_nodes: &[DataNode]) -> Vec<DataFlowEdge> {
         let def_indices: Vec<usize> = group
             .iter()
             .enumerate()
-            .filter(|(_, n)| {
-                n.kind == DataNodeKind::Local || n.kind == DataNodeKind::Parameter
-            })
+            .filter(|(_, n)| n.kind == DataNodeKind::Local || n.kind == DataNodeKind::Parameter)
             .map(|(i, _)| i)
             .collect();
 
@@ -326,11 +319,12 @@ fn resolve_use_def(data_nodes: &[DataNode]) -> Vec<DataFlowEdge> {
                     continue;
                 }
                 // Only connect to nodes that are Expr, CallArg, Return, or Field uses
-                if matches!(use_node.kind,
+                if matches!(
+                    use_node.kind,
                     DataNodeKind::Expr
-                    | DataNodeKind::CallArg
-                    | DataNodeKind::Field
-                    | DataNodeKind::Return
+                        | DataNodeKind::CallArg
+                        | DataNodeKind::Field
+                        | DataNodeKind::Return
                 ) {
                     let edge_id = DataFlowEdgeId::generate(
                         &def_node.id,
@@ -394,7 +388,8 @@ mod tests {
         use crate::extraction::languages::typescript::TypeScriptAdapter;
         use tree_sitter::Parser;
 
-        let source = "function handler(req: any) {\n  const name = req.body.name;\n  return name;\n}";
+        let source =
+            "function handler(req: any) {\n  const name = req.body.name;\n  return name;\n}";
         let file_id = FileId::generate("test.ts");
         let adapter = TypeScriptAdapter;
         let ts_lang = adapter.tree_sitter_language();
@@ -408,9 +403,17 @@ mod tests {
         let scopes: Vec<ScopeDef> = vec![];
 
         let result = DataFlowBuilder::extract(
-            &adapter, &ts_lang, root, source, source.as_bytes(),
-            file_id, &PathBuf::from("test.ts"), &bindings, &scopes,
-        ).unwrap();
+            &adapter,
+            &ts_lang,
+            root,
+            source,
+            source.as_bytes(),
+            file_id,
+            &PathBuf::from("test.ts"),
+            &bindings,
+            &scopes,
+        )
+        .unwrap();
 
         // We should have some data nodes (at minimum, the variable declarations and returns)
         assert!(!result.nodes.is_empty(), "Should have data nodes");
@@ -433,7 +436,14 @@ mod tests {
             callsite_id: None,
             name: Some("x".into()),
             access_path: None,
-            range: TextRange { start_byte: 10, end_byte: 11, start_line: 0, start_column: 0, end_line: 0, end_column: 0 },
+            range: TextRange {
+                start_byte: 10,
+                end_byte: 11,
+                start_line: 0,
+                start_column: 0,
+                end_line: 0,
+                end_column: 0,
+            },
         };
         let use1 = DataNode {
             id: DataNodeId::generate(&file_id, Some(&fid), "expr", Some("x"), None, 40),
@@ -444,7 +454,14 @@ mod tests {
             callsite_id: None,
             name: Some("x".into()),
             access_path: None,
-            range: TextRange { start_byte: 40, end_byte: 41, start_line: 0, start_column: 0, end_line: 0, end_column: 0 },
+            range: TextRange {
+                start_byte: 40,
+                end_byte: 41,
+                start_line: 0,
+                start_column: 0,
+                end_line: 0,
+                end_column: 0,
+            },
         };
 
         let nodes = vec![def, use1];
@@ -464,18 +481,8 @@ mod tests {
 
         let file_id = FileId::generate("t.ts");
         let fid = SymbolId::generate(&file_id, "typescript", "f", "function", None);
-        let outer_scope = ScopeId::generate(
-            &file_id,
-            None,
-            "function",
-            0,
-        );
-        let inner_scope = ScopeId::generate(
-            &file_id,
-            Some(&outer_scope),
-            "block",
-            50,
-        );
+        let outer_scope = ScopeId::generate(&file_id, None, "function", 0);
+        let inner_scope = ScopeId::generate(&file_id, Some(&outer_scope), "block", 50);
         let outer_binding = BindingId::generate(&file_id, &outer_scope, "local", "x", 10);
         let inner_binding = BindingId::generate(&file_id, &inner_scope, "local", "x", 60);
 
@@ -489,7 +496,14 @@ mod tests {
             callsite_id: None,
             name: Some("x".into()),
             access_path: None,
-            range: TextRange { start_byte: 10, end_byte: 11, start_line: 0, start_column: 0, end_line: 0, end_column: 0 },
+            range: TextRange {
+                start_byte: 10,
+                end_byte: 11,
+                start_line: 0,
+                start_column: 0,
+                end_line: 0,
+                end_column: 0,
+            },
         };
         let outer_use = DataNode {
             id: DataNodeId::generate(&file_id, Some(&fid), "expr", Some("x"), None, 40),
@@ -500,7 +514,14 @@ mod tests {
             callsite_id: None,
             name: Some("x".into()),
             access_path: None,
-            range: TextRange { start_byte: 40, end_byte: 41, start_line: 0, start_column: 0, end_line: 0, end_column: 0 },
+            range: TextRange {
+                start_byte: 40,
+                end_byte: 41,
+                start_line: 0,
+                start_column: 0,
+                end_line: 0,
+                end_column: 0,
+            },
         };
         // Inner x — different binding_id, should NOT connect to outer
         let inner_def = DataNode {
@@ -512,7 +533,14 @@ mod tests {
             callsite_id: None,
             name: Some("x".into()),
             access_path: None,
-            range: TextRange { start_byte: 60, end_byte: 61, start_line: 0, start_column: 0, end_line: 0, end_column: 0 },
+            range: TextRange {
+                start_byte: 60,
+                end_byte: 61,
+                start_line: 0,
+                start_column: 0,
+                end_line: 0,
+                end_column: 0,
+            },
         };
         let inner_use = DataNode {
             id: DataNodeId::generate(&file_id, Some(&fid), "expr", Some("x"), None, 80),
@@ -523,7 +551,14 @@ mod tests {
             callsite_id: None,
             name: Some("x".into()),
             access_path: None,
-            range: TextRange { start_byte: 80, end_byte: 81, start_line: 0, start_column: 0, end_line: 0, end_column: 0 },
+            range: TextRange {
+                start_byte: 80,
+                end_byte: 81,
+                start_line: 0,
+                start_column: 0,
+                end_line: 0,
+                end_column: 0,
+            },
         };
 
         let outer_def_id = outer_def.id.clone();
@@ -536,20 +571,44 @@ mod tests {
 
         // We expect edges: outer_def→outer_use (1 edge) and inner_def→inner_use (1 edge)
         // but NOT outer_def→inner_use or inner_def→outer_use.
-        assert_eq!(edges.len(), 2, "Should have 2 edges (outer→outer, inner→inner)");
+        assert_eq!(
+            edges.len(),
+            2,
+            "Should have 2 edges (outer→outer, inner→inner)"
+        );
 
         // Verify outer→outer edge exists
-        let outer_edge = edges.iter().find(|e| e.source == outer_def_id && e.target == outer_use_id);
-        assert!(outer_edge.is_some(), "Should connect outer def to outer use");
+        let outer_edge = edges
+            .iter()
+            .find(|e| e.source == outer_def_id && e.target == outer_use_id);
+        assert!(
+            outer_edge.is_some(),
+            "Should connect outer def to outer use"
+        );
 
         // Verify inner→inner edge exists
-        let inner_edge = edges.iter().find(|e| e.source == inner_def_id && e.target == inner_use_id);
-        assert!(inner_edge.is_some(), "Should connect inner def to inner use");
+        let inner_edge = edges
+            .iter()
+            .find(|e| e.source == inner_def_id && e.target == inner_use_id);
+        assert!(
+            inner_edge.is_some(),
+            "Should connect inner def to inner use"
+        );
 
         // Verify NO cross-edge: outer_def→inner_use or inner_def→outer_use
-        let cross1 = edges.iter().find(|e| e.source == outer_def_id && e.target == inner_use_id);
-        assert!(cross1.is_none(), "Should NOT connect outer def to inner use (different scopes)");
-        let cross2 = edges.iter().find(|e| e.source == inner_def_id && e.target == outer_use_id);
-        assert!(cross2.is_none(), "Should NOT connect inner def to outer use (different scopes)");
+        let cross1 = edges
+            .iter()
+            .find(|e| e.source == outer_def_id && e.target == inner_use_id);
+        assert!(
+            cross1.is_none(),
+            "Should NOT connect outer def to inner use (different scopes)"
+        );
+        let cross2 = edges
+            .iter()
+            .find(|e| e.source == inner_def_id && e.target == outer_use_id);
+        assert!(
+            cross2.is_none(),
+            "Should NOT connect inner def to outer use (different scopes)"
+        );
     }
 }

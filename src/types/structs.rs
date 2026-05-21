@@ -6,11 +6,11 @@
 //! All positions use byte offsets (for tree-sitter) AND line/column (for humans).
 //! All semantic facts carry confidence and provenance.
 
-use crate::types::enums::*;
-use crate::types::ids::*;
 use crate::types::bindings::{BindingDef, BindingUse};
 use crate::types::cfg::{CfgEdge, CfgNode};
 use crate::types::dataflow::{CallsiteArg, DataFlowEdge, DataNode};
+use crate::types::enums::*;
+use crate::types::ids::*;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -283,6 +283,10 @@ pub struct ImportDef {
 /// A single argument at a call site.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArgumentFact {
+    /// 0-based argument index (positional order).
+    #[serde(default)]
+    pub index: u32,
+
     /// Parameter name if named argument.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -293,6 +297,10 @@ pub struct ArgumentFact {
     /// Source range of the argument.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub range: Option<TextRange>,
+
+    /// Data node ID for this argument, if dataflow is available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_node_id: Option<DataNodeId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -324,8 +332,13 @@ pub struct Callsite {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<ArgumentFact>,
 
-    /// Source range of the entire call expression.
+    /// Source range of the entire call expression (e.g. `inner(doubled)`).
     pub range: TextRange,
+
+    /// Source range of the callee token only (e.g. `inner` in `inner(doubled)`).
+    /// This is always a sub-range of `range`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callee_range: Option<TextRange>,
 }
 
 // ---------------------------------------------------------------------------
@@ -374,9 +387,21 @@ pub struct RawEdge {
 impl RawEdge {
     /// Create a RawEdge with the new extensibility fields set to None.
     /// Preferred over struct literal for forward compatibility.
-    pub fn new(id: EdgeId, source: SymbolId, target: SymbolId, kind: EdgeKind, confidence: Confidence, provenance: Provenance) -> Self {
+    pub fn new(
+        id: EdgeId,
+        source: SymbolId,
+        target: SymbolId,
+        kind: EdgeKind,
+        confidence: Confidence,
+        provenance: Provenance,
+    ) -> Self {
         Self {
-            id, source, target, kind, confidence, provenance,
+            id,
+            source,
+            target,
+            kind,
+            confidence,
+            provenance,
             ref_id: None,
             location: None,
             metadata: None,
@@ -419,6 +444,16 @@ pub enum DiagnosticLevel {
     Error,
     Warning,
     Info,
+}
+
+impl DiagnosticLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::Info => "info",
+        }
+    }
 }
 
 /// A diagnostic message produced during extraction.
@@ -475,7 +510,6 @@ pub struct FileFacts {
     pub diagnostics: Vec<ExtractDiagnostic>,
 
     // ── Binding + Dataflow ──
-
     /// Lexical binding definitions (per-function variables/parameters).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<BindingDef>,
@@ -601,6 +635,15 @@ pub struct IndexReport {
     pub resolution_rate: f64,
     /// Wall-clock time for the entire index operation (ms).
     pub duration_ms: u64,
+    /// Per-phase timing breakdown (P0: performance observability).
+    #[serde(default, skip_serializing_if = "crate::types::PhaseTimings::is_empty")]
+    pub phase_timings: crate::types::PhaseTimings,
+    /// Per-language file/timing/error statistics (P0: performance observability).
+    #[serde(
+        default,
+        skip_serializing_if = "crate::types::PerLanguageStats::is_empty"
+    )]
+    pub per_language: crate::types::PerLanguageStats,
 }
 
 impl IndexReport {
@@ -611,7 +654,8 @@ impl IndexReport {
 
     /// Record a file-level extraction failure.
     pub fn record_failure(&mut self, category: &FailureCategory) {
-        *self.failures_by_category
+        *self
+            .failures_by_category
             .entry(category.as_str().to_string())
             .or_insert(0) += 1;
         self.files_failed += 1;
@@ -677,7 +721,14 @@ mod tests {
     fn sample_reference(file_id: FileId, source: SymbolId) -> ReferenceUse {
         let text = "foo".to_string();
         let range = sample_range();
-        let id = ReferenceId::generate(&file_id, Some(&source), range.start_byte, range.end_byte, &text, ReferenceKind::Call);
+        let id = ReferenceId::generate(
+            &file_id,
+            Some(&source),
+            range.start_byte,
+            range.end_byte,
+            &text,
+            ReferenceKind::Call,
+        );
         ReferenceUse {
             id,
             file_id,
@@ -829,7 +880,10 @@ mod tests {
         assert_eq!(FailureCategory::ParseTimeout.as_str(), "parse_timeout");
         assert_eq!(FailureCategory::QueryError.as_str(), "query_error");
         assert_eq!(FailureCategory::IoError.as_str(), "io_error");
-        assert_eq!(FailureCategory::MaxFileSizeExceeded.as_str(), "max_file_size_exceeded");
+        assert_eq!(
+            FailureCategory::MaxFileSizeExceeded.as_str(),
+            "max_file_size_exceeded"
+        );
         assert_eq!(FailureCategory::GrammarPanic.as_str(), "grammar_panic");
     }
 
@@ -840,7 +894,10 @@ mod tests {
         report.record_failure(&FailureCategory::ParseTimeout);
         report.record_failure(&FailureCategory::IoError);
         assert_eq!(report.files_failed, 3);
-        assert_eq!(*report.failures_by_category.get("parse_timeout").unwrap(), 2);
+        assert_eq!(
+            *report.failures_by_category.get("parse_timeout").unwrap(),
+            2
+        );
         assert_eq!(*report.failures_by_category.get("io_error").unwrap(), 1);
     }
 

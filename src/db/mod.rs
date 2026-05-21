@@ -6,5 +6,5 @@
 mod schema;
 mod store;
 
-pub use schema::{CURRENT_SCHEMA_VERSION, MIN_READABLE_VERSION, SCHEMA_DDL};
+pub use schema::{CURRENT_SCHEMA_VERSION, SCHEMA_DDL};
 pub use store::{Store, StoreStats};

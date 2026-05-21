@@ -8,19 +8,19 @@ Source code extraction powered by tree-sitter queries.
 Source File
     |
     v
-LanguageAdapter::language()  ──► tree_sitter::Language
+LanguageFrontend / LanguageAdapter  ──► tree_sitter::Language
     |                              + queries/*.scm
     v
 QueryEngine::run_queries_text()  ──► QueryResults(captures)
     |
     v
-extract_and_normalize()  ──► LanguageAdapter::normalize_*()
+extract_file()  ──► queries + binder + callsite/dataflow/CFG builders
     |
     v
-FileFacts { symbols, scopes, references, imports, raw_edges, callsites }
+FileFacts { symbols, scopes, references, imports, callsites, bindings, dataflow, CFG, diagnostics }
     |
     v
-Store::insert_file_facts()  ──► SQLite (7 tables)
+Store::insert_file_facts()  ──► SQLite
 ```
 
 Extraction is **purely syntactic** — it runs tree-sitter queries on source files and produces `FileFacts`. Resolution and semantic edges happen later in `atlas-resolve`.
@@ -29,13 +29,17 @@ Extraction is **purely syntactic** — it runs tree-sitter queries on source fil
 
 | File | Purpose |
 |------|---------|
-| `mod.rs` | Module exports (`LanguageRegistry`, `LanguageAdapter`, `QueryEngine`, `extract_file`) |
-| `grammar.rs` | `LanguageRegistry` — maps Language → grammar + adapter |
+| `mod.rs` | Module exports (`LanguageRegistry`, `LanguageAdapter`, `LanguageFrontend`, `QueryEngine`, `extract_file`) |
+| `grammar.rs` | `LanguageRegistry` — maps Language → frontend/grammar/adapter |
+| `frontend.rs` | Capability-slot wrapper around language adapters |
+| `callsite_spec.rs` | Language-specific callsite extraction hooks |
 | `languages/mod.rs` | `LanguageAdapter` trait definition |
-| `languages/typescript.rs` | TypeScript adapter implementation |
-| `languages/python.rs` | Python adapter implementation |
 | `engine.rs` | `QueryEngine` — runs tree-sitter queries against source text |
 | `extract.rs` | `extract_file()` — orchestrator: parse → query → normalize → FileFacts |
+| `semantic_binder.rs` | Fills source/scope/binding ownership after raw extraction |
+| `lexical_binder.rs` | Builds lexical binding definitions and uses where supported |
+| `dataflow_builder.rs` | Builds local provenance facts from data nodes and AST ranges |
+| `cfg_builder.rs` | Builds function-local CFG facts where supported |
 
 ## QueryEngine (`engine.rs`)
 
@@ -67,9 +71,11 @@ Steps:
 1. Detect language + look up adapter
 2. Compute `FileId` via `blake3(path)`
 3. Parse source → tree-sitter `Tree`
-4. Run 4 queries (definitions, references, imports, scopes) via `collect_captures()`
-5. Call `extract_and_normalize()` — maps captures through adapter's `normalize_*()` methods
-6. Assemble `FileFacts` (structural edges like Contains/Calls deferred to resolver)
+4. Run per-language queries for definitions, references, imports, scopes, callsites, data nodes, and CFG captures where available
+5. Normalize captures through adapter/front-end hooks
+6. Build scope, lexical binding, callsite, dataflow, and CFG facts within the current file
+7. Apply `SemanticBinder` so source/scope/binding ownership is centralized
+8. Assemble `FileFacts`; cross-file resolution is deferred to `resolution`
 
 ## LanguageAdapter Trait (`languages/mod.rs`)
 
@@ -130,18 +136,18 @@ impl LanguageRegistry {
 }
 ```
 
-### MVP Languages (8)
+### MVP Languages (7) + Experimental Opt-In
 
 | Language | Feature Flag | Crate | Adapter Status |
 |----------|-------------|-------|----------------|
 | TypeScript | `typescript` | `tree-sitter-typescript` | ✅ Implemented |
 | JavaScript | `javascript` | `tree-sitter-typescript` | ✅ Implemented |
 | Python | `python` | `tree-sitter-python` | ✅ Implemented |
-| Java | `java` | `tree-sitter-java` | Not implemented |
-| C | `c` | `tree-sitter-c` | Not implemented |
-| C++ | `cpp` | `tree-sitter-cpp` | Not implemented |
-| ArkTS | `arkts` | `tree-sitter-typescript` | Not implemented |
-| Cangjie | `cangjie` | `tree-sitter-cangjie` | Not implemented |
+| Java | `java` | `tree-sitter-java` | Implemented with lower trace capability |
+| C | `c` | `tree-sitter-c` | Implemented with lower trace capability |
+| C++ | `cpp` | `tree-sitter-cpp` | Implemented with lower trace capability |
+| ArkTS | `arkts` | `tree-sitter-typescript` | Implemented via TypeScript grammar fallback |
+| Cangjie | `cangjie` | `tree-sitter-cangjie` | Experimental opt-in, not in MVP/all-languages |
 
 ## Query File Convention
 
@@ -155,6 +161,8 @@ atlas/extraction/queries/
         imports.scm
         scopes.scm
         callsites.scm
+        dataflow_builder.scm
+        cfg.scm
     python/
         ...
     java/
@@ -174,6 +182,7 @@ pub enum ExtractError {
 
 ## Cross-Module Contract
 
-1. **Extraction never writes edges** — only produces `FileFacts` with `raw_edges` (calls, contains, exports). Resolution is responsible for semantic edges.
+1. **Extraction is single-file only** — it produces `FileFacts`; cross-file resolution and graph promotion happen later.
 2. **Resolution never deletes facts** — references and symbols persist regardless of resolution status.
-3. **Adding a language requires**: a `LanguageAdapter` implementation + query files. No changes to the core engine.
+3. **Language capability is explicit** — adapters/frontends must report feature support and limitations for trace output.
+4. **Adding a language requires**: adapter/front-end hooks + query files + fixtures. No central mega-extractor.

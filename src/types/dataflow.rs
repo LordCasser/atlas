@@ -297,8 +297,8 @@ pub struct CallsiteArg {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ids::{BindingId, CallsiteId, FileId, ScopeId};
     use crate::types::enums::*;
+    use crate::types::ids::{BindingId, CallsiteId, FileId, ScopeId};
 
     fn make_file_id() -> FileId {
         FileId::generate("test.ts")
@@ -322,9 +322,21 @@ mod tests {
         let scope_id = ScopeId::generate(&file_id, None, "function", 10);
         let binding_id = BindingId::generate(&file_id, &scope_id, "parameter", "req", 42);
         let node_id = DataNodeId::generate(
-            &file_id, Some(&func_id), "parameter", Some("req"), Some("req"), 42,
+            &file_id,
+            Some(&func_id),
+            "parameter",
+            Some("req"),
+            Some("req"),
+            42,
         );
-        let node = DataNode::parameter(node_id, file_id, Some(func_id), Some(binding_id), "req", make_range(42, 45));
+        let node = DataNode::parameter(
+            node_id,
+            file_id,
+            Some(func_id),
+            Some(binding_id),
+            "req",
+            make_range(42, 45),
+        );
         assert_eq!(node.kind, DataNodeKind::Parameter);
         assert_eq!(node.name.as_deref(), Some("req"));
         assert_eq!(node.access_path.as_deref(), Some("req"));
@@ -337,9 +349,21 @@ mod tests {
         let scope_id = ScopeId::generate(&file_id, None, "function", 10);
         let binding_id = BindingId::generate(&file_id, &scope_id, "local", "name", 100);
         let node_id = DataNodeId::generate(
-            &file_id, Some(&func_id), "local", Some("name"), Some("name"), 100,
+            &file_id,
+            Some(&func_id),
+            "local",
+            Some("name"),
+            Some("name"),
+            100,
         );
-        let node = DataNode::local(node_id, file_id, Some(func_id), Some(binding_id), "name", make_range(100, 104));
+        let node = DataNode::local(
+            node_id,
+            file_id,
+            Some(func_id),
+            Some(binding_id),
+            "name",
+            make_range(100, 104),
+        );
         assert_eq!(node.kind, DataNodeKind::Local);
     }
 
@@ -347,7 +371,8 @@ mod tests {
     fn test_dataflow_edge_serialization_roundtrip() {
         let file_id = make_file_id();
         let func_id = SymbolId::generate(&file_id, "typescript", "handler", "function", None);
-        let src = DataNodeId::generate(&file_id, Some(&func_id), "parameter", Some("req"), None, 42);
+        let src =
+            DataNodeId::generate(&file_id, Some(&func_id), "parameter", Some("req"), None, 42);
         let tgt = DataNodeId::generate(&file_id, Some(&func_id), "local", Some("name"), None, 100);
         let edge_id = DataFlowEdgeId::generate(&src, &tgt, "assign");
         let edge = DataFlowEdge {
@@ -369,14 +394,25 @@ mod tests {
         let file_id = make_file_id();
         let func_id = SymbolId::generate(&file_id, "typescript", "handler", "function", None);
         let data_node = DataNodeId::generate(
-            &file_id, Some(&func_id), "call_arg", Some("req"), Some("req"), 200,
+            &file_id,
+            Some(&func_id),
+            "call_arg",
+            Some("req"),
+            Some("req"),
+            200,
         );
         let arg = CallsiteArg {
             callsite_id: CallsiteId::generate(
                 &crate::types::ids::ReferenceId::generate(
-                    &file_id, None, 200, 210, "sink", ReferenceKind::Call,
+                    &file_id,
+                    None,
+                    200,
+                    210,
+                    "sink",
+                    ReferenceKind::Call,
                 ),
-                Some(&func_id), 200,
+                Some(&func_id),
+                200,
             ),
             index: 0,
             name: None,

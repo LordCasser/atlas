@@ -60,8 +60,8 @@ impl Locator {
         // 4. Find the data node at this position (prefer the most specific,
         //    i.e. the one with the smallest byte range)
         let data_nodes = store.find_data_nodes_by_file(file_id)?;
-        let data_node = find_innermost_at_position(&data_nodes, |dn| &dn.range, line0, col0)
-            .cloned();
+        let data_node =
+            find_innermost_at_position(&data_nodes, |dn| &dn.range, line0, col0).cloned();
 
         // 5. Collect incoming and outgoing dataflow edges
         let (incoming, outgoing) = if let Some(ref dn) = data_node {
@@ -111,12 +111,7 @@ impl Locator {
 /// Find the one item in `items` whose range most tightly contains `(line,
 /// column)`.  When multiple items contain the same position, the one with
 /// the smallest byte span wins (innermost match).
-fn find_innermost_at_position<T, F>(
-    items: &[T],
-    range_fn: F,
-    line: u32,
-    column: u32,
-) -> Option<&T>
+fn find_innermost_at_position<T, F>(items: &[T], range_fn: F, line: u32, column: u32) -> Option<&T>
 where
     F: Fn(&T) -> &TextRange,
 {
@@ -232,8 +227,6 @@ fn find_binding_at_position(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::enums::{ReferenceKind, ScopeKind};
-    use crate::types::ids::ScopeId;
     use crate::types::structs::TextRange;
 
     #[test]

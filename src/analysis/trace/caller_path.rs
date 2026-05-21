@@ -24,7 +24,8 @@ use std::collections::{HashMap, VecDeque};
 use crate::db::Store;
 use crate::types::caller_path::{CallerChain, CallerChainStep};
 use crate::types::enums::EdgeKind;
-use crate::types::ids::SymbolId;
+use crate::types::ids::{ReferenceId, SymbolId};
+use crate::types::structs::TextRange;
 
 /// Default maximum depth for caller-chain traversal.
 #[allow(dead_code)]
@@ -55,8 +56,11 @@ impl CallerPathExplorer {
             None => return Ok(None),
         };
 
-        // BFS backward: node_id → (predecessor, edge_kind)
-        let mut predecessors: HashMap<String, (SymbolId, EdgeKind)> = HashMap::new();
+        // BFS backward: node_id → (predecessor, edge_kind, ref_id, location)
+        let mut predecessors: HashMap<
+            String,
+            (SymbolId, EdgeKind, Option<ReferenceId>, Option<TextRange>),
+        > = HashMap::new();
         let mut visited: HashMap<String, usize> = HashMap::new(); // node_id hex → depth
         let mut queue: VecDeque<(SymbolId, usize)> = VecDeque::new();
 
@@ -87,8 +91,18 @@ impl CallerPathExplorer {
                     let current_key = hex::encode(current_id.as_bytes());
                     visited.insert(caller_key.clone(), new_depth);
                     // Store current→caller so reconstruct_call_path can walk
-                    // backward from target through each caller.
-                    predecessors.insert(current_key, (caller.clone(), edge.kind.clone()));
+                    // backward from target through each caller.  Also preserve
+                    // the edge's ref_id and location so we can populate the
+                    // step's callsite and range with real evidence.
+                    predecessors.insert(
+                        current_key,
+                        (
+                            caller.clone(),
+                            edge.kind.clone(),
+                            edge.ref_id.clone(),
+                            edge.location.clone(),
+                        ),
+                    );
                     queue.push_back((caller.clone(), new_depth));
 
                     if new_depth > farthest_depth {
@@ -109,12 +123,7 @@ impl CallerPathExplorer {
             .unwrap_or_else(|| target.clone());
 
         // Reconstruct path from root to target
-        let steps = reconstruct_call_path(
-            &predecessors,
-            &root.id,
-            target_id,
-            store,
-        )?;
+        let steps = reconstruct_call_path(&predecessors, &root.id, target_id, store)?;
 
         Ok(Some(CallerChain {
             root,
@@ -132,27 +141,42 @@ impl CallerPathExplorer {
 
 /// Only follow structural edges that indicate a call/invoke relationship.
 fn is_call_edge(kind: &EdgeKind) -> bool {
-    matches!(kind, EdgeKind::Calls | EdgeKind::Instantiates | EdgeKind::Implements)
+    matches!(
+        kind,
+        EdgeKind::Calls | EdgeKind::Instantiates | EdgeKind::Implements
+    )
 }
 
 /// Reconstruct the forward path from `root_id` to `target_id` by walking
 /// the predecessor chain backward (from target up to root, then reversing).
 fn reconstruct_call_path(
-    predecessors: &HashMap<String, (SymbolId, EdgeKind)>,
+    predecessors: &HashMap<String, (SymbolId, EdgeKind, Option<ReferenceId>, Option<TextRange>)>,
     root_id: &SymbolId,
     target_id: &SymbolId,
     store: &Store,
 ) -> anyhow::Result<Vec<CallerChainStep>> {
     // Walk from target upward to root, collecting steps in reverse
-    let mut raw_steps: Vec<(SymbolId, SymbolId, EdgeKind)> = Vec::new();
+    let mut raw_steps: Vec<(
+        SymbolId,
+        SymbolId,
+        EdgeKind,
+        Option<ReferenceId>,
+        Option<TextRange>,
+    )> = Vec::new();
     let mut current = target_id.clone();
 
     while &current != root_id {
         let key = hex::encode(current.as_bytes());
         match predecessors.get(&key) {
-            Some((pred_id, kind)) => {
+            Some((pred_id, kind, ref_id, location)) => {
                 // pred_id calls current_id: pred → current
-                raw_steps.push((pred_id.clone(), current.clone(), kind.clone()));
+                raw_steps.push((
+                    pred_id.clone(),
+                    current.clone(),
+                    kind.clone(),
+                    ref_id.clone(),
+                    location.clone(),
+                ));
                 current = pred_id.clone();
             }
             None => break,
@@ -163,15 +187,33 @@ fn reconstruct_call_path(
     raw_steps.reverse();
 
     let mut steps = Vec::new();
-    for (idx, (caller, callee, kind)) in raw_steps.into_iter().enumerate() {
+    for (idx, (caller, callee, kind, ref_id, edge_location)) in raw_steps.into_iter().enumerate() {
         let file_id = store
             .find_symbol_by_id(&caller)?
             .map(|s| s.file_id)
             .unwrap_or_else(|| crate::types::ids::FileId::generate("unknown"));
 
-        let range = store
-            .find_symbol_by_id(&caller)?
-            .map(|s| s.range);
+        // Look up the callsite via the edge's ref_id.
+        let callsite = if let Some(ref rid) = ref_id {
+            store.find_callsite_by_reference_id(rid).ok().flatten()
+        } else {
+            None
+        };
+
+        // Primary range: use the full callsite range (call expression) if
+        // available, then the edge location (callee token), then the caller
+        // symbol range as last resort.
+        let range = if let Some(ref cs) = callsite {
+            Some(cs.range)
+        } else {
+            edge_location.clone().or_else(|| {
+                store
+                    .find_symbol_by_id(&caller)
+                    .ok()
+                    .flatten()
+                    .map(|s| s.range)
+            })
+        };
 
         let caller_name = store
             .find_symbol_by_id(&caller)?
@@ -182,7 +224,7 @@ fn reconstruct_call_path(
             .map(|s| s.name)
             .unwrap_or_default();
 
-        steps.push(CallerChainStep::new(
+        let mut step = CallerChainStep::new(
             idx as u32,
             caller,
             callee,
@@ -190,7 +232,9 @@ fn reconstruct_call_path(
             file_id,
             range,
             &format!("{} → {}", caller_name, callee_name),
-        ));
+        );
+        step.callsite = callsite;
+        steps.push(step);
     }
 
     Ok(steps)

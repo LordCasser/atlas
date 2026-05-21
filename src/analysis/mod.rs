@@ -1,8 +1,7 @@
-//! Analysis layer: taint tracking, vulnerability detection, and code quality checks.
+//! Analysis layer: location-driven trace queries and call-graph exploration.
 //!
 //! Architecture:
-//! - `taint/` — source-to-sink taint analysis (rule-based, YAML-configurable)
-//! - `trace/` — location-driven variable tracking (where does this value come from?)
+//! - `trace/` — variable tracking, caller-path, and trace-point resolution
+//!   (production API exposed via CLI and MCP)
 
-pub mod taint;
 pub mod trace;

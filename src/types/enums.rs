@@ -1,16 +1,22 @@
 //! Atlas core enums: Language, SymbolKind, EdgeKind, ReferenceKind, ImportKind,
 //! ScopeKind, Visibility, ResolutionStrategy, Provenance, ResolutionStatus, ParseStatus.
 //!
-//! Severely trimmed from 22+ languages / 12 edge kinds to MVP 8 languages / 21+ edge kinds.
+//! Severely trimmed from 22+ languages / 12 edge kinds to the MVP language set
+//! plus explicitly opt-in experimental languages.
 
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
-// Language — 8 MVP languages (down from 23)
+// Language — MVP languages plus opt-in experimental languages
 // ---------------------------------------------------------------------------
 
-/// The 8 languages supported in MVP.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
+/// Languages known to Atlas.
+///
+/// Cangjie is intentionally retained as an opt-in experimental language. It is
+/// not part of the MVP/default/all-languages compile set.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
     #[default]
@@ -64,6 +70,7 @@ impl Language {
             "c" | "h" => Some(Self::C),
             "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" => Some(Self::Cpp),
             "ets" | "sts" => Some(Self::ArkTS),
+            #[cfg(feature = "cangjie")]
             "cj" | "cangjie" => Some(Self::Cangjie),
             _ => None,
         }
@@ -76,17 +83,19 @@ impl Language {
             .and_then(Self::from_extension)
     }
 
-    /// All file extensions (without dot) for the 8 MVP languages.
+    /// All file extensions (without dot) for enabled discovery languages.
     pub fn all_extensions() -> Vec<&'static str> {
-        vec![
-            "ts", "mts", "cts", "tsx", "js", "mjs", "cjs", "jsx",
-            "py", "pyi", "pyx",
-            "java",
-            "c", "h",
-            "cpp", "cc", "cxx", "hpp", "hh", "hxx",
-            "ets", "sts",
-            "cj", "cangjie",
-        ]
+        let extensions = vec![
+            "ts", "mts", "cts", "tsx", "js", "mjs", "cjs", "jsx", "py", "pyi", "pyx", "java", "c",
+            "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "ets", "sts",
+        ];
+        #[cfg(feature = "cangjie")]
+        {
+            let mut extensions = extensions;
+            extensions.extend(["cj", "cangjie"]);
+            return extensions;
+        }
+        extensions
     }
 
     /// File patterns / globs used by this language (for file discovery).
@@ -97,7 +106,9 @@ impl Language {
             Self::Python => &["**/*.py", "**/*.pyi", "**/*.pyx"],
             Self::Java => &["**/*.java"],
             Self::C => &["**/*.c", "**/*.h"],
-            Self::Cpp => &["**/*.cpp", "**/*.cc", "**/*.cxx", "**/*.hpp", "**/*.hh", "**/*.hxx"],
+            Self::Cpp => &[
+                "**/*.cpp", "**/*.cc", "**/*.cxx", "**/*.hpp", "**/*.hh", "**/*.hxx",
+            ],
             Self::ArkTS => &["**/*.ets", "**/*.sts"],
             Self::Cangjie => &["**/*.cj", "**/*.cangjie"],
         }
@@ -754,7 +765,7 @@ pub enum DataNodeKind {
     Receiver,
     /// Global / module-scoped variable.
     Global,
-    /// Unknown / opaque node (conservative lower bound for taint).
+    /// Unknown / opaque node (low confidence).
     Unknown,
 }
 
@@ -821,8 +832,6 @@ pub enum DataFlowKind {
     ReceiverToThis,
     /// Phi node (SSA merge point, e.g. after if-else).
     Phi,
-    /// Sanitizer / filter node (breaks taint propagation).
-    Sanitized,
 }
 
 impl DataFlowKind {
@@ -837,7 +846,6 @@ impl DataFlowKind {
             Self::ReturnToCall => "return_to_call",
             Self::ReceiverToThis => "receiver_to_this",
             Self::Phi => "phi",
-            Self::Sanitized => "sanitized",
         }
     }
 
@@ -852,7 +860,6 @@ impl DataFlowKind {
             "return_to_call" => Some(Self::ReturnToCall),
             "receiver_to_this" => Some(Self::ReceiverToThis),
             "phi" => Some(Self::Phi),
-            "sanitized" => Some(Self::Sanitized),
             _ => None,
         }
     }
@@ -984,7 +991,10 @@ mod tests {
     fn test_language_from_extension() {
         assert_eq!(Language::from_extension("ts"), Some(Language::TypeScript));
         assert_eq!(Language::from_extension("ets"), Some(Language::ArkTS));
+        #[cfg(feature = "cangjie")]
         assert_eq!(Language::from_extension("cj"), Some(Language::Cangjie));
+        #[cfg(not(feature = "cangjie"))]
+        assert_eq!(Language::from_extension("cj"), None);
         assert_eq!(Language::from_extension("java"), Some(Language::Java));
         assert_eq!(Language::from_extension("unknown"), None);
     }

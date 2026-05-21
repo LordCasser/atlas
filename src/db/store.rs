@@ -7,7 +7,7 @@
 use crate::db::schema::{CURRENT_SCHEMA_VERSION, SCHEMA_DDL};
 
 use crate::types::*;
-use rusqlite::{params, Connection, Transaction};
+use rusqlite::{Connection, Transaction, params};
 use std::collections::HashSet;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -134,11 +134,11 @@ impl Store {
         let conn = self.lock();
         conn.execute_batch(SCHEMA_DDL)?;
 
-        // Record current version if not already present
+        // Record current version (always V1 during rapid development)
         conn.execute(
             "INSERT OR IGNORE INTO schema_versions (version, description)
              VALUES (?1, ?2)",
-            params![CURRENT_SCHEMA_VERSION, "v6: binding + dataflow + CFG tables, edges→symbol_edges"],
+            params![CURRENT_SCHEMA_VERSION, "v1: initial schema"],
         )?;
 
         Ok(())
@@ -196,7 +196,10 @@ impl Store {
                     // Format: "pid:timestamp_ms"
                     let parts: Vec<&str> = v.splitn(2, ':').collect();
                     if parts.len() == 2 {
-                        Ok(Some((parts[0].parse().unwrap_or(0), parts[1].parse().unwrap_or(0))))
+                        Ok(Some((
+                            parts[0].parse().unwrap_or(0),
+                            parts[1].parse().unwrap_or(0),
+                        )))
                     } else {
                         Ok(None)
                     }
@@ -419,14 +422,13 @@ impl Store {
     ) -> anyhow::Result<Vec<SymbolDef>> {
         let conn = self.lock();
         let like_pattern = format!("%{}%", pattern.replace('%', "").replace('_', ""));
-        if like_pattern.len() <= 2 {  // Just "%%"
+        if like_pattern.len() <= 2 {
+            // Just "%%"
             return Ok(Vec::new());
         }
 
         // Build WHERE clause dynamically based on filters
-        let mut where_clauses = vec![
-            "(s.name LIKE ?1 OR s.qualified_name LIKE ?2)".to_string(),
-        ];
+        let mut where_clauses = vec!["(s.name LIKE ?1 OR s.qualified_name LIKE ?2)".to_string()];
         let mut param_idx = 3; // ?1 and ?2 are LIKE patterns
 
         if language.is_some() {
@@ -458,21 +460,22 @@ impl Store {
 
         // Build params dynamically
         let lang_str = language.map(|l| l.as_str().to_string()).unwrap_or_default();
-        let kind_str = kind_filter.map(|k| k.as_str().to_string()).unwrap_or_default();
+        let kind_str = kind_filter
+            .map(|k| k.as_str().to_string())
+            .unwrap_or_default();
 
         let rows = match (language.is_some(), kind_filter.is_some()) {
-            (true, true) => {
-                stmt.query_map(params![like_pattern, like_pattern, lang_str, kind_str], row_to_symbol)?
-            }
+            (true, true) => stmt.query_map(
+                params![like_pattern, like_pattern, lang_str, kind_str],
+                row_to_symbol,
+            )?,
             (true, false) => {
                 stmt.query_map(params![like_pattern, like_pattern, lang_str], row_to_symbol)?
             }
             (false, true) => {
                 stmt.query_map(params![like_pattern, like_pattern, kind_str], row_to_symbol)?
             }
-            (false, false) => {
-                stmt.query_map(params![like_pattern, like_pattern], row_to_symbol)?
-            }
+            (false, false) => stmt.query_map(params![like_pattern, like_pattern], row_to_symbol)?,
         };
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -511,12 +514,10 @@ impl Store {
     /// Find unresolved references (no resolved target).
     pub fn find_unresolved_references(&self) -> anyhow::Result<Vec<ReferenceUse>> {
         let conn = self.lock();
-        let mut stmt = conn.prepare(
-            &format!(
-                "{} WHERE resolved_symbol_id IS NULL",
-                REFERENCE_SELECT_NO_WHERE
-            ),
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "{} WHERE resolved_symbol_id IS NULL",
+            REFERENCE_SELECT_NO_WHERE
+        ))?;
         let rows = stmt.query_map([], row_to_reference)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -800,6 +801,11 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Alias for `get_all_symbols` (P4: GlobalSymbolIndex construction).
+    pub fn load_all_symbols(&self) -> anyhow::Result<Vec<SymbolDef>> {
+        self.get_all_symbols()
+    }
+
     /// Load ALL edges (for GraphSnapshot construction).
     /// Uses the shared connection via the mutex; long-running reads may
     //  block writes.  In the future this should use a separate read connection.
@@ -821,43 +827,57 @@ impl Store {
 
     /// Batch-insert bindings.
     pub fn insert_bindings(&self, bindings: &[BindingDef]) -> anyhow::Result<()> {
-        if bindings.is_empty() { return Ok(()); }
+        if bindings.is_empty() {
+            return Ok(());
+        }
         self.with_transaction(|tx| write_bindings(tx, bindings))
     }
 
     /// Batch-insert binding uses.
     pub fn insert_binding_uses(&self, uses: &[BindingUse]) -> anyhow::Result<()> {
-        if uses.is_empty() { return Ok(()); }
+        if uses.is_empty() {
+            return Ok(());
+        }
         self.with_transaction(|tx| write_binding_uses(tx, uses))
     }
 
     /// Batch-insert data nodes.
     pub fn insert_data_nodes(&self, nodes: &[DataNode]) -> anyhow::Result<()> {
-        if nodes.is_empty() { return Ok(()); }
+        if nodes.is_empty() {
+            return Ok(());
+        }
         self.with_transaction(|tx| write_data_nodes(tx, nodes))
     }
 
     /// Batch-insert dataflow edges.
     pub fn insert_dataflow_edges(&self, edges: &[DataFlowEdge]) -> anyhow::Result<()> {
-        if edges.is_empty() { return Ok(()); }
+        if edges.is_empty() {
+            return Ok(());
+        }
         self.with_transaction(|tx| write_dataflow_edges(tx, edges))
     }
 
     /// Batch-insert callsite args.
     pub fn insert_callsite_args(&self, args: &[CallsiteArg]) -> anyhow::Result<()> {
-        if args.is_empty() { return Ok(()); }
+        if args.is_empty() {
+            return Ok(());
+        }
         self.with_transaction(|tx| write_callsite_args(tx, args))
     }
 
     /// Batch-insert CFG nodes.
     pub fn insert_cfg_nodes(&self, nodes: &[CfgNode]) -> anyhow::Result<()> {
-        if nodes.is_empty() { return Ok(()); }
+        if nodes.is_empty() {
+            return Ok(());
+        }
         self.with_transaction(|tx| write_cfg_nodes(tx, nodes))
     }
 
     /// Batch-insert CFG edges.
     pub fn insert_cfg_edges(&self, edges: &[CfgEdge]) -> anyhow::Result<()> {
-        if edges.is_empty() { return Ok(()); }
+        if edges.is_empty() {
+            return Ok(());
+        }
         self.with_transaction(|tx| write_cfg_edges(tx, edges))
     }
 
@@ -868,7 +888,9 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT callsite_id, reference_id, caller, callee, receiver, args_json,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
-                    range_end_line, range_end_column
+                    range_end_line, range_end_column,
+                    callee_start_line, callee_start_column, callee_end_line, callee_end_column,
+                    callee_start_byte, callee_end_byte
              FROM callsites WHERE EXISTS (
                  SELECT 1 FROM symbols WHERE symbols.symbol_id = callsites.caller AND symbols.file_id = ?1
              )",
@@ -881,7 +903,10 @@ impl Store {
     // -----------------------------------------------------------------------
 
     /// Find bindings for a function.
-    pub fn find_bindings_by_function(&self, function_id: &SymbolId) -> anyhow::Result<Vec<BindingDef>> {
+    pub fn find_bindings_by_function(
+        &self,
+        function_id: &SymbolId,
+    ) -> anyhow::Result<Vec<BindingDef>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT binding_id, file_id, function_id, scope_id, kind, name, symbol_id,
@@ -907,7 +932,10 @@ impl Store {
     }
 
     /// Find binding uses for a specific binding.
-    pub fn find_binding_uses_by_binding(&self, binding_id: &BindingId) -> anyhow::Result<Vec<BindingUse>> {
+    pub fn find_binding_uses_by_binding(
+        &self,
+        binding_id: &BindingId,
+    ) -> anyhow::Result<Vec<BindingUse>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT binding_use_id, file_id, scope_id, binding_id, reference_id, name,
@@ -933,7 +961,10 @@ impl Store {
     }
 
     /// Find data nodes for a function.
-    pub fn find_data_nodes_by_function(&self, function_id: &SymbolId) -> anyhow::Result<Vec<DataNode>> {
+    pub fn find_data_nodes_by_function(
+        &self,
+        function_id: &SymbolId,
+    ) -> anyhow::Result<Vec<DataNode>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id,
@@ -979,7 +1010,10 @@ impl Store {
     }
 
     /// Find dataflow edges originating from a data node.
-    pub fn find_dataflow_edges_by_source(&self, source: &DataNodeId) -> anyhow::Result<Vec<DataFlowEdge>> {
+    pub fn find_dataflow_edges_by_source(
+        &self,
+        source: &DataNodeId,
+    ) -> anyhow::Result<Vec<DataFlowEdge>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT dataflow_edge_id, source, target, kind, location_0, location_1, location_2, confidence
@@ -990,7 +1024,10 @@ impl Store {
     }
 
     /// Find dataflow edges targeting a data node.
-    pub fn find_dataflow_edges_by_target(&self, target: &DataNodeId) -> anyhow::Result<Vec<DataFlowEdge>> {
+    pub fn find_dataflow_edges_by_target(
+        &self,
+        target: &DataNodeId,
+    ) -> anyhow::Result<Vec<DataFlowEdge>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT dataflow_edge_id, source, target, kind, location_0, location_1, location_2, confidence
@@ -1001,12 +1038,17 @@ impl Store {
     }
 
     /// Find a callsite by its originating reference ID.
-    pub fn find_callsite_by_reference_id(&self, ref_id: &ReferenceId) -> anyhow::Result<Option<Callsite>> {
+    pub fn find_callsite_by_reference_id(
+        &self,
+        ref_id: &ReferenceId,
+    ) -> anyhow::Result<Option<Callsite>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT callsite_id, reference_id, caller, callee, receiver, args_json,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
-                    range_end_line, range_end_column
+                    range_end_line, range_end_column,
+                    callee_start_line, callee_start_column, callee_end_line, callee_end_column,
+                    callee_start_byte, callee_end_byte
              FROM callsites WHERE reference_id = ?1",
         )?;
         let mut rows = stmt.query_map(params![ref_id], row_to_callsite)?;
@@ -1017,12 +1059,32 @@ impl Store {
         }
     }
 
+    /// Update the `callee` field of the callsite linked to a given reference.
+    ///
+    /// Called by GraphBuilder when a Calls/Instantiates edge is resolved,
+    /// linking the callsite to the resolved target symbol.
+    pub fn update_callsite_callee(
+        &self,
+        ref_id: &ReferenceId,
+        callee: &SymbolId,
+    ) -> anyhow::Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE callsites SET callee = ?1 WHERE reference_id = ?2",
+            params![callee, ref_id],
+        )?;
+        Ok(())
+    }
+
     // -----------------------------------------------------------------------
     // ── CFG — query APIs ──
     // -----------------------------------------------------------------------
 
     /// Find all CFG nodes for a function.
-    pub fn find_cfg_nodes_by_function(&self, function_id: &SymbolId) -> anyhow::Result<Vec<CfgNode>> {
+    pub fn find_cfg_nodes_by_function(
+        &self,
+        function_id: &SymbolId,
+    ) -> anyhow::Result<Vec<CfgNode>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT cfg_node_id, function_id, kind,
@@ -1045,169 +1107,106 @@ impl Store {
     }
 
     // -----------------------------------------------------------------------
-    // ── Taint — write APIs ──
-    // -----------------------------------------------------------------------
-
-    /// Insert taint rules (REPLACE semantics).
-    pub fn insert_taint_rules(&self, rules: &[TaintRule]) -> anyhow::Result<()> {
-        if rules.is_empty() { return Ok(()); }
-        self.with_transaction(|tx| write_taint_rules(tx, rules))
-    }
-
-    /// Insert taint findings.
-    pub fn insert_taint_findings(&self, findings: &[TaintFinding]) -> anyhow::Result<()> {
-        if findings.is_empty() { return Ok(()); }
-        self.with_transaction(|tx| write_taint_findings(tx, findings))
-    }
-
-    /// Insert taint path steps.
-    pub fn insert_taint_path_steps(&self, steps: &[TaintPathStep]) -> anyhow::Result<()> {
-        if steps.is_empty() { return Ok(()); }
-        self.with_transaction(|tx| write_taint_path_steps(tx, steps))
-    }
-
-    // -----------------------------------------------------------------------
-    // ── Taint — query APIs ──
-    // -----------------------------------------------------------------------
-
-    /// Get all taint rules, optionally filtered by language.
-    pub fn get_taint_rules(&self, language: Option<Language>) -> anyhow::Result<Vec<TaintRule>> {
-        let conn = self.lock();
-        let sql = if language.is_some() {
-            "SELECT rule_id, language, kind, symbol_pattern, callee,
-                    access_path_pattern, argument_index, applies_to_return, severity
-             FROM taint_rules WHERE language = ?1 OR language IS NULL"
-        } else {
-            "SELECT rule_id, language, kind, symbol_pattern, callee,
-                    access_path_pattern, argument_index, applies_to_return, severity
-             FROM taint_rules"
-        };
-        let mut stmt = conn.prepare(sql)?;
-        let rows = if let Some(lang) = language {
-            stmt.query_map(params![lang.as_str()], row_to_taint_rule)?
-        } else {
-            stmt.query_map([], row_to_taint_rule)?
-        };
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-    }
-
-    /// Get taint findings, optionally filtered by file.
-    pub fn get_taint_findings(&self, file_id: Option<&FileId>) -> anyhow::Result<Vec<TaintFinding>> {
-        let conn = self.lock();
-        let sql = if file_id.is_some() {
-            "SELECT finding_id, source_node, sink_node, rule_id, severity, confidence, file_id
-             FROM taint_findings WHERE file_id = ?1 ORDER BY severity, confidence DESC"
-        } else {
-            "SELECT finding_id, source_node, sink_node, rule_id, severity, confidence, file_id
-             FROM taint_findings ORDER BY severity, confidence DESC"
-        };
-        let mut stmt = conn.prepare(sql)?;
-        let rows = if let Some(fid) = file_id {
-            stmt.query_map(params![fid], row_to_taint_finding)?
-        } else {
-            stmt.query_map([], row_to_taint_finding)?
-        };
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-    }
-
-    /// Get the path steps for a specific finding.
-    pub fn get_taint_path_steps(&self, finding_id: &TaintFindingId) -> anyhow::Result<Vec<TaintPathStep>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
-            "SELECT finding_id, step_index, data_node, edge_id, file_id,
-                    range_start_byte, range_end_byte, range_start_line, range_start_column,
-                    range_end_line, range_end_column, message
-             FROM taint_path_steps WHERE finding_id = ?1 ORDER BY step_index",
-        )?;
-        let rows = stmt.query_map(params![finding_id], row_to_taint_path_step)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-    }
-
-    // -----------------------------------------------------------------------
     // FileFacts — convenience batch insert
     // -----------------------------------------------------------------------
 
     /// Insert all components of a `FileFacts` in a single transaction.
     /// This is the primary write path from extraction.
     pub fn insert_file_facts(&self, facts: &FileFacts) -> anyhow::Result<()> {
+        self.insert_file_facts_impl(std::slice::from_ref(facts))
+    }
+
+    /// Batch-insert multiple `FileFacts` in a single transaction (P3: bulk write).
+    ///
+    /// This avoids per-file transaction overhead. All files are committed
+    /// atomically. Use this for fresh/rebuild indexes; incremental sync may
+    /// prefer the single-file path for finer-grained failure isolation.
+    pub fn insert_file_facts_batch(&self, batch: &[FileFacts]) -> anyhow::Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        self.insert_file_facts_impl(batch)
+    }
+
+    /// Shared implementation: one transaction, one lock, N files.
+    fn insert_file_facts_impl(&self, batch: &[FileFacts]) -> anyhow::Result<()> {
         let conn = self.lock();
         let tx = conn.unchecked_transaction()?;
 
-        // File info
-        tx.execute(
-            r#"INSERT OR REPLACE INTO files
-               (file_id, path, language, content_hash, status, index_time)
-               VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))"#,
-            params![
-                facts.file.file_id,
-                facts.file.path,
-                facts.file.language.as_str(),
-                facts.file.content_hash,
-                facts.file.status.as_str(),
-            ],
-        )?;
+        for facts in batch {
+            // File info
+            tx.execute(
+                r#"INSERT OR REPLACE INTO files
+                   (file_id, path, language, content_hash, status, index_time)
+                   VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))"#,
+                params![
+                    facts.file.file_id,
+                    facts.file.path,
+                    facts.file.language.as_str(),
+                    facts.file.content_hash,
+                    facts.file.status.as_str(),
+                ],
+            )?;
 
-        if !facts.symbols.is_empty() {
-            write_symbols(&tx, &facts.symbols)?;
-        }
-        if !facts.scopes.is_empty() {
-            write_scopes(&tx, &facts.scopes)?;
-        }
-        if !facts.references.is_empty() {
-            write_references(&tx, &facts.references)?;
-        }
-        if !facts.imports.is_empty() {
-            write_imports(&tx, &facts.imports)?;
-        }
-        // Defensive FK guard: extraction should already resolve all source
-        // ownership through SymbolRegistry, but the store is the last line of
-        // defense against a single ghost edge/callsite rolling back an entire
-        // file's valid facts.
-        let valid_sources: HashSet<_> = facts.symbols.iter().map(|s| s.id).collect();
-        if !facts.raw_edges.is_empty() {
-            let valid_edges: Vec<_> = facts
-                .raw_edges
-                .iter()
-                .filter(|edge| valid_sources.contains(&edge.source))
-                .cloned()
-                .collect();
-            if !valid_edges.is_empty() {
-                write_edges(&tx, &valid_edges)?;
+            if !facts.symbols.is_empty() {
+                write_symbols(&tx, &facts.symbols)?;
             }
-        }
-        if !facts.callsites.is_empty() {
-            let valid_callsites: Vec<_> = facts
-                .callsites
-                .iter()
-                .filter(|callsite| valid_sources.contains(&callsite.caller))
-                .cloned()
-                .collect();
-            if !valid_callsites.is_empty() {
-                write_callsites(&tx, &valid_callsites)?;
+            if !facts.scopes.is_empty() {
+                write_scopes(&tx, &facts.scopes)?;
             }
-        }
+            if !facts.references.is_empty() {
+                write_references(&tx, &facts.references)?;
+            }
+            if !facts.imports.is_empty() {
+                write_imports(&tx, &facts.imports)?;
+            }
+            // Defensive FK guard
+            let valid_sources: HashSet<_> = facts.symbols.iter().map(|s| s.id).collect();
+            if !facts.raw_edges.is_empty() {
+                let valid_edges: Vec<_> = facts
+                    .raw_edges
+                    .iter()
+                    .filter(|edge| valid_sources.contains(&edge.source))
+                    .cloned()
+                    .collect();
+                if !valid_edges.is_empty() {
+                    write_edges(&tx, &valid_edges)?;
+                }
+            }
+            if !facts.callsites.is_empty() {
+                let valid_callsites: Vec<_> = facts
+                    .callsites
+                    .iter()
+                    .filter(|callsite| valid_sources.contains(&callsite.caller))
+                    .cloned()
+                    .collect();
+                if !valid_callsites.is_empty() {
+                    write_callsites(&tx, &valid_callsites)?;
+                }
+            }
 
-        // Binding + Dataflow data
-        if !facts.bindings.is_empty() {
-            write_bindings(&tx, &facts.bindings)?;
-        }
-        if !facts.binding_uses.is_empty() {
-            write_binding_uses(&tx, &facts.binding_uses)?;
-        }
-        if !facts.data_nodes.is_empty() {
-            write_data_nodes(&tx, &facts.data_nodes)?;
-        }
-        if !facts.dataflow_edges.is_empty() {
-            write_dataflow_edges(&tx, &facts.dataflow_edges)?;
-        }
-        if !facts.callsite_args.is_empty() {
-            write_callsite_args(&tx, &facts.callsite_args)?;
-        }
-        if !facts.cfg_nodes.is_empty() {
-            write_cfg_nodes(&tx, &facts.cfg_nodes)?;
-        }
-        if !facts.cfg_edges.is_empty() {
-            write_cfg_edges(&tx, &facts.cfg_edges)?;
+            // Binding + Dataflow data
+            if !facts.bindings.is_empty() {
+                write_bindings(&tx, &facts.bindings)?;
+            }
+            if !facts.binding_uses.is_empty() {
+                write_binding_uses(&tx, &facts.binding_uses)?;
+            }
+            if !facts.data_nodes.is_empty() {
+                write_data_nodes(&tx, &facts.data_nodes)?;
+            }
+            if !facts.dataflow_edges.is_empty() {
+                write_dataflow_edges(&tx, &facts.dataflow_edges)?;
+            }
+            if !facts.callsite_args.is_empty() {
+                write_callsite_args(&tx, &facts.callsite_args)?;
+            }
+            if !facts.cfg_nodes.is_empty() {
+                write_cfg_nodes(&tx, &facts.cfg_nodes)?;
+            }
+            if !facts.cfg_edges.is_empty() {
+                write_cfg_edges(&tx, &facts.cfg_edges)?;
+            }
         }
 
         tx.commit()?;
@@ -1242,9 +1241,7 @@ impl Store {
     /// Get the schema version from the database.
     pub fn schema_version(&self) -> anyhow::Result<i64> {
         let conn = self.lock();
-        let mut stmt = conn.prepare(
-            "SELECT MAX(version) FROM schema_versions"
-        )?;
+        let mut stmt = conn.prepare("SELECT MAX(version) FROM schema_versions")?;
         let version: Option<i64> = stmt.query_row([], |row| row.get(0))?;
         Ok(version.unwrap_or(0))
     }
@@ -1256,8 +1253,7 @@ impl Store {
     /// Collection metrics about the indexed codebase.
     pub fn get_stats(&self) -> anyhow::Result<StoreStats> {
         let conn = self.lock();
-        let total_files: i64 =
-            conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
+        let total_files: i64 = conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
         let total_symbols: i64 =
             conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))?;
         let total_edges: i64 =
@@ -1269,13 +1265,11 @@ impl Store {
             [],
             |r| r.get(0),
         )?;
-        let sqlite_version: String =
-            conn.query_row("SELECT sqlite_version()", [], |r| r.get(0))?;
+        let sqlite_version: String = conn.query_row("SELECT sqlite_version()", [], |r| r.get(0))?;
 
         // Symbols grouped by kind
-        let mut stmt = conn.prepare(
-            "SELECT kind, COUNT(*) FROM symbols GROUP BY kind ORDER BY COUNT(*) DESC",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT kind, COUNT(*) FROM symbols GROUP BY kind ORDER BY COUNT(*) DESC")?;
         let symbols_by_kind: Vec<(String, i64)> = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .filter_map(|r| r.ok())
@@ -1301,7 +1295,6 @@ impl Store {
             files_by_language,
         })
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -1349,11 +1342,9 @@ fn row_to_file_info(row: &rusqlite::Row) -> rusqlite::Result<FileInfo> {
     Ok(FileInfo {
         file_id: row.get(0)?,
         path: row.get(1)?,
-        language: Language::from_str(row.get::<_, String>(2)?.as_str())
-            .unwrap_or_default(),
+        language: Language::from_str(row.get::<_, String>(2)?.as_str()).unwrap_or_default(),
         content_hash: row.get(3)?,
-        status: ParseStatus::from_str(row.get::<_, String>(4)?.as_str())
-            .unwrap_or_default(),
+        status: ParseStatus::from_str(row.get::<_, String>(4)?.as_str()).unwrap_or_default(),
     })
 }
 
@@ -1468,8 +1459,7 @@ fn row_to_edge(row: &rusqlite::Row) -> rusqlite::Result<RawEdge> {
         target: row.get(2)?,
         kind: EdgeKind::from_str(row.get::<_, String>(3)?.as_str()).unwrap_or(EdgeKind::References),
         confidence: Confidence::new(row.get(4)?),
-        provenance: Provenance::from_str(row.get::<_, String>(5)?.as_str())
-            .unwrap_or_default(),
+        provenance: Provenance::from_str(row.get::<_, String>(5)?.as_str()).unwrap_or_default(),
         ref_id,
         location,
         metadata,
@@ -1559,15 +1549,34 @@ fn write_symbols(conn: &Connection, symbols: &[SymbolDef]) -> anyhow::Result<()>
         let path_json = serde_json::to_string(&s.symbol_path)?;
         let ns_json = serde_json::to_string(&s.namespace_path)?;
         stmt.execute(params![
-            s.id, s.file_id, s.kind.as_str(), s.name, s.qualified_name, path_json,
+            s.id,
+            s.file_id,
+            s.kind.as_str(),
+            s.name,
+            s.qualified_name,
+            path_json,
             s.language.as_str(),
-            s.range.start_byte, s.range.end_byte, s.range.start_line, s.range.start_column,
-            s.range.end_line, s.range.end_column,
-            s.name_range.start_byte, s.name_range.end_byte, s.name_range.start_line,
-            s.name_range.start_column, s.name_range.end_line, s.name_range.end_column,
-            s.signature, s.visibility.map(|v| v.as_str()),
-            s.exported as i32, s.static_ as i32, s.async_ as i32,
-            s.container, s.scope_id, s.package_name, ns_json,
+            s.range.start_byte,
+            s.range.end_byte,
+            s.range.start_line,
+            s.range.start_column,
+            s.range.end_line,
+            s.range.end_column,
+            s.name_range.start_byte,
+            s.name_range.end_byte,
+            s.name_range.start_line,
+            s.name_range.start_column,
+            s.name_range.end_line,
+            s.name_range.end_column,
+            s.signature,
+            s.visibility.map(|v| v.as_str()),
+            s.exported as i32,
+            s.static_ as i32,
+            s.async_ as i32,
+            s.container,
+            s.scope_id,
+            s.package_name,
+            ns_json,
         ])?;
     }
     Ok(())
@@ -1583,9 +1592,18 @@ fn write_scopes(conn: &Connection, scopes: &[ScopeDef]) -> anyhow::Result<()> {
     )?;
     for sc in scopes {
         stmt.execute(params![
-            sc.id, sc.file_id, sc.kind.as_str(), sc.name, sc.scope_path, sc.parent_id,
-            sc.range.start_byte, sc.range.end_byte, sc.range.start_line,
-            sc.range.start_column, sc.range.end_line, sc.range.end_column,
+            sc.id,
+            sc.file_id,
+            sc.kind.as_str(),
+            sc.name,
+            sc.scope_path,
+            sc.parent_id,
+            sc.range.start_byte,
+            sc.range.end_byte,
+            sc.range.start_line,
+            sc.range.start_column,
+            sc.range.end_line,
+            sc.range.end_column,
         ])?;
     }
     Ok(())
@@ -1604,10 +1622,21 @@ fn write_references(conn: &Connection, refs: &[ReferenceUse]) -> anyhow::Result<
     )?;
     for r in refs {
         stmt.execute(params![
-            r.id, r.file_id, r.source_symbol, r.scope_id, r.kind.as_str(),
-            r.text, r.name, r.receiver, r.arity,
-            r.range.start_byte, r.range.end_byte, r.range.start_line,
-            r.range.start_column, r.range.end_line, r.range.end_column,
+            r.id,
+            r.file_id,
+            r.source_symbol,
+            r.scope_id,
+            r.kind.as_str(),
+            r.text,
+            r.name,
+            r.receiver,
+            r.arity,
+            r.range.start_byte,
+            r.range.end_byte,
+            r.range.start_line,
+            r.range.start_column,
+            r.range.end_line,
+            r.range.end_column,
             r.resolved.as_ref().map(|rt| &rt.symbol_id),
             r.resolved.as_ref().map(|rt| rt.confidence.as_f32()),
             r.resolved.as_ref().map(|rt| rt.strategy.as_str()),
@@ -1629,10 +1658,21 @@ fn write_imports(conn: &Connection, imports: &[ImportDef]) -> anyhow::Result<()>
     )?;
     for imp in imports {
         stmt.execute(params![
-            imp.id, imp.file_id, imp.kind.as_str(), imp.module, imp.imported_name,
-            imp.local_name, imp.alias, imp.is_wildcard as i32, imp.is_relative as i32,
-            imp.range.start_byte, imp.range.end_byte, imp.range.start_line,
-            imp.range.start_column, imp.range.end_line, imp.range.end_column,
+            imp.id,
+            imp.file_id,
+            imp.kind.as_str(),
+            imp.module,
+            imp.imported_name,
+            imp.local_name,
+            imp.alias,
+            imp.is_wildcard as i32,
+            imp.is_relative as i32,
+            imp.range.start_byte,
+            imp.range.end_byte,
+            imp.range.start_line,
+            imp.range.start_column,
+            imp.range.end_line,
+            imp.range.end_column,
         ])?;
     }
     Ok(())
@@ -1659,11 +1699,19 @@ fn write_edges(conn: &Connection, edges: &[RawEdge]) -> anyhow::Result<()> {
             None => (None, None, None, None, None, None),
         };
         stmt.execute(params![
-            e.id, e.source, e.target, e.kind.as_str(),
+            e.id,
+            e.source,
+            e.target,
+            e.kind.as_str(),
             e.confidence.as_f32(),
             e.provenance.as_str(),
             e.ref_id,
-            loc_0, loc_1, loc_2, loc_3, loc_4, loc_5,
+            loc_0,
+            loc_1,
+            loc_2,
+            loc_3,
+            loc_4,
+            loc_5,
             e.metadata,
             e.resolved_by.as_ref().map(|s| s.as_str()),
         ])?;
@@ -1676,15 +1724,43 @@ fn write_callsites(conn: &Connection, callsites: &[Callsite]) -> anyhow::Result<
         r#"INSERT OR REPLACE INTO callsites
            (callsite_id, reference_id, caller, callee, receiver, args_json,
             range_start_byte, range_end_byte, range_start_line, range_start_column,
-            range_end_line, range_end_column)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"#,
+            range_end_line, range_end_column,
+            callee_start_line, callee_start_column, callee_end_line, callee_end_column,
+            callee_start_byte, callee_end_byte)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)"#,
     )?;
     for cs in callsites {
         let args_json = serde_json::to_string(&cs.args)?;
+        let (cs_sl, cs_sc, cs_el, cs_ec, cs_sb, cs_eb) = match &cs.callee_range {
+            Some(r) => (
+                Some(r.start_line as i64),
+                Some(r.start_column as i64),
+                Some(r.end_line as i64),
+                Some(r.end_column as i64),
+                Some(r.start_byte as i64),
+                Some(r.end_byte as i64),
+            ),
+            None => (None, None, None, None, None, None),
+        };
         stmt.execute(params![
-            cs.id, cs.reference_id, cs.caller, cs.callee, cs.receiver, args_json,
-            cs.range.start_byte, cs.range.end_byte, cs.range.start_line,
-            cs.range.start_column, cs.range.end_line, cs.range.end_column,
+            cs.id,
+            cs.reference_id,
+            cs.caller,
+            cs.callee,
+            cs.receiver,
+            args_json,
+            cs.range.start_byte,
+            cs.range.end_byte,
+            cs.range.start_line,
+            cs.range.start_column,
+            cs.range.end_line,
+            cs.range.end_column,
+            cs_sl,
+            cs_sc,
+            cs_el,
+            cs_ec,
+            cs_sb,
+            cs_eb,
         ])?;
     }
     Ok(())
@@ -1700,7 +1776,8 @@ fn row_to_binding(row: &rusqlite::Row) -> rusqlite::Result<BindingDef> {
         file_id: row.get(1)?,
         function_id: row.get(2)?,
         scope_id: row.get(3)?,
-        kind: BindingKind::from_str(row.get::<_, String>(4)?.as_str()).unwrap_or(BindingKind::Local),
+        kind: BindingKind::from_str(row.get::<_, String>(4)?.as_str())
+            .unwrap_or(BindingKind::Local),
         name: row.get(5)?,
         symbol_id: row.get(6)?,
         range: TextRange {
@@ -1738,7 +1815,8 @@ fn row_to_data_node(row: &rusqlite::Row) -> rusqlite::Result<DataNode> {
         id: row.get(0)?,
         file_id: row.get(1)?,
         function_id: row.get(2)?,
-        kind: DataNodeKind::from_str(row.get::<_, String>(3)?.as_str()).unwrap_or(DataNodeKind::Unknown),
+        kind: DataNodeKind::from_str(row.get::<_, String>(3)?.as_str())
+            .unwrap_or(DataNodeKind::Unknown),
         binding_id: row.get(4)?,
         callsite_id: row.get(5)?,
         name: row.get(6)?,
@@ -1768,7 +1846,8 @@ fn row_to_dataflow_edge(row: &rusqlite::Row) -> rusqlite::Result<DataFlowEdge> {
         id: row.get(0)?,
         source: row.get(1)?,
         target: row.get(2)?,
-        kind: DataFlowKind::from_str(row.get::<_, String>(3)?.as_str()).unwrap_or(DataFlowKind::Assign),
+        kind: DataFlowKind::from_str(row.get::<_, String>(3)?.as_str())
+            .unwrap_or(DataFlowKind::Assign),
         location,
         confidence: conf.unwrap_or(0.8),
     })
@@ -1779,6 +1858,30 @@ fn row_to_dataflow_edge(row: &rusqlite::Row) -> rusqlite::Result<DataFlowEdge> {
 fn row_to_callsite(row: &rusqlite::Row) -> rusqlite::Result<Callsite> {
     let args_str: String = row.get(5)?;
     let args: Vec<ArgumentFact> = serde_json::from_str(&args_str).unwrap_or_default();
+    let callee_start_line: Option<u32> = row.get(12).ok();
+    let callee_start_column: Option<u32> = row.get(13).ok();
+    let callee_end_line: Option<u32> = row.get(14).ok();
+    let callee_end_column: Option<u32> = row.get(15).ok();
+    let callee_start_byte: Option<i64> = row.get(16).ok();
+    let callee_end_byte: Option<i64> = row.get(17).ok();
+    let callee_range = match (
+        callee_start_line,
+        callee_start_column,
+        callee_end_line,
+        callee_end_column,
+        callee_start_byte,
+        callee_end_byte,
+    ) {
+        (Some(sl), Some(sc), Some(el), Some(ec), Some(sb), Some(eb)) => Some(TextRange {
+            start_line: sl,
+            start_column: sc,
+            end_line: el,
+            end_column: ec,
+            start_byte: sb as u32,
+            end_byte: eb as u32,
+        }),
+        _ => None,
+    };
     Ok(Callsite {
         id: row.get(0)?,
         reference_id: row.get(1)?,
@@ -1794,6 +1897,7 @@ fn row_to_callsite(row: &rusqlite::Row) -> rusqlite::Result<Callsite> {
             end_line: row.get(10)?,
             end_column: row.get(11)?,
         },
+        callee_range,
     })
 }
 
@@ -1811,9 +1915,19 @@ fn write_bindings(conn: &Connection, bindings: &[BindingDef]) -> anyhow::Result<
     )?;
     for b in bindings {
         stmt.execute(params![
-            b.id, b.file_id, b.function_id, b.scope_id, b.kind.as_str(), b.name, b.symbol_id,
-            b.range.start_byte, b.range.end_byte, b.range.start_line,
-            b.range.start_column, b.range.end_line, b.range.end_column,
+            b.id,
+            b.file_id,
+            b.function_id,
+            b.scope_id,
+            b.kind.as_str(),
+            b.name,
+            b.symbol_id,
+            b.range.start_byte,
+            b.range.end_byte,
+            b.range.start_line,
+            b.range.start_column,
+            b.range.end_line,
+            b.range.end_column,
         ])?;
     }
     Ok(())
@@ -1829,9 +1943,18 @@ fn write_binding_uses(conn: &Connection, uses: &[BindingUse]) -> anyhow::Result<
     )?;
     for u in uses {
         stmt.execute(params![
-            u.id, u.file_id, u.scope_id, u.binding_id, u.reference_id, u.name,
-            u.range.start_byte, u.range.end_byte, u.range.start_line,
-            u.range.start_column, u.range.end_line, u.range.end_column,
+            u.id,
+            u.file_id,
+            u.scope_id,
+            u.binding_id,
+            u.reference_id,
+            u.name,
+            u.range.start_byte,
+            u.range.end_byte,
+            u.range.start_line,
+            u.range.start_column,
+            u.range.end_line,
+            u.range.end_column,
         ])?;
     }
     Ok(())
@@ -1848,10 +1971,20 @@ fn write_data_nodes(conn: &Connection, nodes: &[DataNode]) -> anyhow::Result<()>
     )?;
     for n in nodes {
         stmt.execute(params![
-            n.id, n.file_id, n.function_id, n.kind.as_str(), n.binding_id, n.callsite_id,
-            n.name, n.access_path,
-            n.range.start_byte, n.range.end_byte, n.range.start_line,
-            n.range.start_column, n.range.end_line, n.range.end_column,
+            n.id,
+            n.file_id,
+            n.function_id,
+            n.kind.as_str(),
+            n.binding_id,
+            n.callsite_id,
+            n.name,
+            n.access_path,
+            n.range.start_byte,
+            n.range.end_byte,
+            n.range.start_line,
+            n.range.start_column,
+            n.range.end_line,
+            n.range.end_column,
         ])?;
     }
     Ok(())
@@ -1865,8 +1998,13 @@ fn write_dataflow_edges(conn: &Connection, edges: &[DataFlowEdge]) -> anyhow::Re
     )?;
     for e in edges {
         stmt.execute(params![
-            e.id, e.source, e.target, e.kind.as_str(),
-            e.location.start_byte, e.location.end_byte, e.location.start_line,
+            e.id,
+            e.source,
+            e.target,
+            e.kind.as_str(),
+            e.location.start_byte,
+            e.location.end_byte,
+            e.location.start_line,
             e.confidence,
         ])?;
     }
@@ -1883,9 +2021,17 @@ fn write_callsite_args(conn: &Connection, args: &[CallsiteArg]) -> anyhow::Resul
     )?;
     for a in args {
         stmt.execute(params![
-            a.callsite_id, a.index, a.name, a.expr_text, a.data_node,
-            a.range.start_byte, a.range.end_byte, a.range.start_line,
-            a.range.start_column, a.range.end_line, a.range.end_column,
+            a.callsite_id,
+            a.index,
+            a.name,
+            a.expr_text,
+            a.data_node,
+            a.range.start_byte,
+            a.range.end_byte,
+            a.range.start_line,
+            a.range.start_column,
+            a.range.end_line,
+            a.range.end_column,
         ])?;
     }
     Ok(())
@@ -1934,10 +2080,15 @@ fn write_cfg_nodes(conn: &Connection, nodes: &[CfgNode]) -> anyhow::Result<()> {
     )?;
     for n in nodes {
         stmt.execute(params![
-            n.id, n.function_id, n.kind.as_str(),
-            n.stmt_range.start_byte, n.stmt_range.end_byte,
-            n.stmt_range.start_line, n.stmt_range.start_column,
-            n.stmt_range.end_line, n.stmt_range.end_column,
+            n.id,
+            n.function_id,
+            n.kind.as_str(),
+            n.stmt_range.start_byte,
+            n.stmt_range.end_byte,
+            n.stmt_range.start_line,
+            n.stmt_range.start_column,
+            n.stmt_range.end_line,
+            n.stmt_range.end_column,
         ])?;
     }
     Ok(())
@@ -1953,111 +2104,6 @@ fn write_cfg_edges(conn: &Connection, edges: &[CfgEdge]) -> anyhow::Result<()> {
         stmt.execute(params![e.id, e.source, e.target, e.kind.as_str()])?;
     }
     Ok(())
-}
-
-// ── Taint — private write helpers ────────────────────────────────────────
-
-fn write_taint_rules(conn: &Connection, rules: &[TaintRule]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO taint_rules
-           (rule_id, language, kind, symbol_pattern, callee,
-            access_path_pattern, argument_index, applies_to_return, severity)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"#,
-    )?;
-    for r in rules {
-        let lang = r.language.map(|l| l.as_str().to_string());
-        stmt.execute(params![
-            r.id,
-            lang,
-            r.kind.as_str(),
-            r.symbol_pattern,
-            r.callee,
-            r.access_path_pattern,
-            r.argument_index,
-            r.applies_to_return as i32,
-            r.severity.as_str(),
-        ])?;
-    }
-    Ok(())
-}
-
-fn write_taint_findings(conn: &Connection, findings: &[TaintFinding]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO taint_findings
-           (finding_id, source_node, sink_node, rule_id, severity, confidence, file_id)
-        VALUES (?1,?2,?3,?4,?5,?6,?7)"#,
-    )?;
-    for f in findings {
-        let conf = f.confidence.as_f32();
-        stmt.execute(params![f.id, f.source_node, f.sink_node, f.rule_id, f.severity.as_str(), conf, f.file_id])?;
-    }
-    Ok(())
-}
-
-fn write_taint_path_steps(conn: &Connection, steps: &[TaintPathStep]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO taint_path_steps
-           (finding_id, step_index, data_node, edge_id, file_id,
-            range_start_byte, range_end_byte, range_start_line, range_start_column,
-            range_end_line, range_end_column, message)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"#,
-    )?;
-    for s in steps {
-        stmt.execute(params![
-            s.finding_id, s.index, s.data_node, s.edge_id, s.file_id,
-            s.range.start_byte, s.range.end_byte, s.range.start_line, s.range.start_column,
-            s.range.end_line, s.range.end_column, s.message,
-        ])?;
-    }
-    Ok(())
-}
-
-// ── Taint — private row-to-type helpers ──────────────────────────────────
-
-fn row_to_taint_rule(row: &rusqlite::Row) -> rusqlite::Result<TaintRule> {
-    use crate::types::enums::Language;
-    let kind_str: String = row.get(2)?;
-    let kind = match kind_str.as_str() {
-        "source" => TaintRuleKind::Source,
-        "sink" => TaintRuleKind::Sink,
-        "sanitizer" => TaintRuleKind::Sanitizer,
-        "propagator" => TaintRuleKind::Propagator,
-        _ => TaintRuleKind::Source,
-    };
-    let lang_str: Option<String> = row.get(1)?;
-    let language = lang_str.and_then(|s| Language::from_extension(&s));
-    let sev_str: String = row.get(8)?;
-    let severity = Severity::from_str(&sev_str).unwrap_or(Severity::Medium);
-    Ok(TaintRule {
-        id: row.get(0)?, language, kind,
-        symbol_pattern: row.get(3)?, callee: row.get(4)?,
-        access_path_pattern: row.get(5)?, argument_index: row.get(6)?,
-        applies_to_return: row.get::<_, i32>(7)? != 0, severity,
-    })
-}
-
-fn row_to_taint_finding(row: &rusqlite::Row) -> rusqlite::Result<TaintFinding> {
-    let sev_str: String = row.get(4)?;
-    let severity = Severity::from_str(&sev_str).unwrap_or(Severity::Medium);
-    let conf_val: f32 = row.get(5)?;
-    Ok(TaintFinding {
-        id: row.get(0)?, source_node: row.get(1)?, sink_node: row.get(2)?,
-        rule_id: row.get(3)?, severity, confidence: Confidence::new(conf_val),
-        file_id: row.get(6)?,
-    })
-}
-
-fn row_to_taint_path_step(row: &rusqlite::Row) -> rusqlite::Result<TaintPathStep> {
-    Ok(TaintPathStep {
-        finding_id: row.get(0)?, index: row.get(1)?, data_node: row.get(2)?,
-        edge_id: row.get(3)?, file_id: row.get(4)?,
-        range: TextRange {
-            start_byte: row.get(5)?, end_byte: row.get(6)?,
-            start_line: row.get(7)?, start_column: row.get(8)?,
-            end_line: row.get(9)?, end_column: row.get(10)?,
-        },
-        message: row.get(11)?,
-    })
 }
 
 #[cfg(test)]
@@ -2238,9 +2284,7 @@ mod tests {
             strategy: ResolutionStrategy::ExactMatch,
             provenance: Provenance::TreeSitter,
         };
-        store
-            .update_reference_resolution(&ref_id, &target)
-            .unwrap();
+        store.update_reference_resolution(&ref_id, &target).unwrap();
 
         let unresolved = store.find_unresolved_references().unwrap();
         assert!(unresolved.is_empty());

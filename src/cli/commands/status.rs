@@ -1,7 +1,7 @@
 //! `atlas status` — display project indexing status and language capability summary.
 
 use crate::db::Store;
-use crate::types::{Language, LanguageCapabilityProfile};
+use crate::types::{FeatureSupport, Language, LanguageCapabilityProfile};
 use anyhow::Context;
 use std::path::Path;
 
@@ -87,7 +87,10 @@ fn print_capability_summary(files_by_language: &[(String, i64)]) {
 
     println!();
     println!("  Capability Summary:");
-    println!("  {:<14} {:<20} {}", "Language", "Level", "Confidence Floor");
+    println!(
+        "  {:<14} {:<20} {}",
+        "Language", "Level", "Confidence Floor"
+    );
     println!("  {:-<14} {:-<20} {:-<16}", "", "", "");
 
     for name in lang_names {
@@ -99,6 +102,44 @@ fn print_capability_summary(files_by_language: &[(String, i64)]) {
                 profile.capability_level.as_str(),
                 profile.confidence_floor * 100.0
             );
+            // If FeatureMatrix is available, show fine-grained capabilities
+            if let Some(ref features) = profile.features {
+                println!("    Features:");
+                print_feature("symbols", &features.symbols);
+                print_feature("references", &features.references);
+                print_feature("imports", &features.imports);
+                print_feature("scopes", &features.scopes);
+                print_feature("call_graph", &features.call_graph);
+                print_feature("lexical_bindings", &features.lexical_bindings);
+                print_feature("local_dataflow", &features.local_dataflow);
+                print_feature("use_def", &features.use_def);
+                print_feature("field_access", &features.field_access);
+                print_feature("call_arguments", &features.call_arguments);
+                print_feature("returns_flow", &features.returns_flow);
+                print_feature("cfg", &features.cfg);
+                print_feature("interprocedural", &features.interprocedural_summaries);
+            }
         }
     }
+}
+
+fn print_feature(name: &str, fs: &FeatureSupport) {
+    let status = if fs.is_supported() {
+        "supported"
+    } else {
+        "unsupported"
+    };
+    let detail = match fs {
+        FeatureSupport::Supported { limitations, .. } => {
+            if limitations.is_empty() {
+                String::new()
+            } else {
+                format!(" (limitations: {})", limitations.join(", "))
+            }
+        }
+        FeatureSupport::Unsupported { reason } => {
+            format!(" ({})", reason)
+        }
+    };
+    println!("      {:<20} {}{}", name, status, detail);
 }

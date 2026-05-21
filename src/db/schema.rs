@@ -1,6 +1,12 @@
-//! Atlas-native SQLite schema DDL and migration system.
+//! Atlas-native SQLite schema DDL — static schema, no migration.
 //!
-//! Schema version: 7
+//! This is a rapid-development codebase with no production deployments.
+//! The schema is treated as **single-version** (V1).  There is no
+//! migration system, no backward-compatibility guarantees, and no
+//! version negotiation between client and database.  If the schema
+//! needs to change, it changes in-place in this file.
+//!
+//! Schema version: 1
 //!
 //! ## Tables
 //! - `files`          — per-file metadata
@@ -14,21 +20,19 @@
 //! - `binding_uses`   — references to bindings
 //! - `data_nodes`     — dataflow nodes
 //! - `dataflow_edges` — dataflow edges between DataNodes
-//! - `callsite_args`  — individual arguments at callsites
+//! - `callsite_args`  — [DEPRECATED] individual arguments at callsites.
+//!   Call argument facts are now stored inline in `callsites.args_json`.
+//!   This table is retained for future structured queries but is currently
+//!   not populated.
 //! - `cfg_nodes`      — control-flow graph nodes per function
 //! - `cfg_edges`      — control-flow graph edges
-//! - `taint_rules`    — taint analysis rules (source/sink/sanitizer)
-//! - `taint_findings` — detected taint flows
-//! - `taint_path_steps` — taint path steps for explainability
 //! - `project_metadata` — key-value project configuration
 //! - `symbols_fts`    — FTS5 index on symbol names
 //! - `schema_versions` — migration tracking
 
-/// Current schema version. Increment on every schema change.
-pub const CURRENT_SCHEMA_VERSION: i64 = 7;
-
-/// Minimum readable schema version (for backward compatibility).
-pub const MIN_READABLE_VERSION: i64 = 1;
+/// Current schema version — always 1 during rapid development.
+/// There is no migration system; schema changes are made in-place.
+pub const CURRENT_SCHEMA_VERSION: i64 = 1;
 /// Complete DDL for a fresh database.
 pub const SCHEMA_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -163,7 +167,13 @@ CREATE TABLE IF NOT EXISTS callsites (
     range_start_line     INTEGER NOT NULL,
     range_start_column   INTEGER NOT NULL,
     range_end_line       INTEGER NOT NULL,
-    range_end_column     INTEGER NOT NULL
+    range_end_column     INTEGER NOT NULL,
+    callee_start_line    INTEGER,
+    callee_start_column  INTEGER,
+    callee_end_line      INTEGER,
+    callee_end_column    INTEGER,
+    callee_start_byte    INTEGER,
+    callee_end_byte      INTEGER
 );
 
 -- ===== Binding + Dataflow tables =====
@@ -263,47 +273,6 @@ CREATE TABLE IF NOT EXISTS cfg_edges (
     kind                 TEXT NOT NULL
 );
 
--- taint_rules: taint analysis rules (source/sink/sanitizer/propagator)
-CREATE TABLE IF NOT EXISTS taint_rules (
-    rule_id              TEXT PRIMARY KEY NOT NULL,
-    language             TEXT,
-    kind                 TEXT NOT NULL,
-    symbol_pattern       TEXT,
-    callee               TEXT,
-    access_path_pattern  TEXT,
-    argument_index       INTEGER,
-    applies_to_return    INTEGER NOT NULL DEFAULT 0,
-    severity             TEXT NOT NULL DEFAULT 'medium'
-);
-
--- taint_findings: detected taint flows source→sink
-CREATE TABLE IF NOT EXISTS taint_findings (
-    finding_id           BLOB PRIMARY KEY NOT NULL,
-    source_node          BLOB NOT NULL REFERENCES data_nodes(data_node_id) ON DELETE CASCADE,
-    sink_node            BLOB NOT NULL REFERENCES data_nodes(data_node_id) ON DELETE CASCADE,
-    rule_id              TEXT NOT NULL REFERENCES taint_rules(rule_id),
-    severity             TEXT NOT NULL,
-    confidence           REAL NOT NULL DEFAULT 0.5,
-    file_id              BLOB NOT NULL REFERENCES files(file_id) ON DELETE CASCADE
-);
-
--- taint_path_steps: individual steps in a taint path
-CREATE TABLE IF NOT EXISTS taint_path_steps (
-    finding_id           BLOB NOT NULL REFERENCES taint_findings(finding_id) ON DELETE CASCADE,
-    step_index           INTEGER NOT NULL,
-    data_node            BLOB NOT NULL,
-    edge_id              BLOB,
-    file_id              BLOB NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
-    range_start_byte     INTEGER NOT NULL,
-    range_end_byte       INTEGER NOT NULL,
-    range_start_line     INTEGER NOT NULL,
-    range_start_column   INTEGER NOT NULL,
-    range_end_line       INTEGER NOT NULL,
-    range_end_column     INTEGER NOT NULL,
-    message              TEXT NOT NULL,
-    PRIMARY KEY (finding_id, step_index)
-);
-
 -- FTS5 virtual table for symbol name search
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     name,
@@ -319,7 +288,7 @@ CREATE TABLE IF NOT EXISTS project_metadata (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Schema version tracking
+-- Schema single-version marker (no migration — always V1)
 CREATE TABLE IF NOT EXISTS schema_versions (
     version     INTEGER PRIMARY KEY,
     applied_at  TEXT NOT NULL DEFAULT (datetime('now')),
@@ -419,24 +388,6 @@ CREATE INDEX IF NOT EXISTS idx_cfg_edges_target
 CREATE INDEX IF NOT EXISTS idx_cfg_edges_kind
     ON cfg_edges(kind);
 
--- Taint analysis indexes
-CREATE INDEX IF NOT EXISTS idx_taint_rules_language
-    ON taint_rules(language);
-CREATE INDEX IF NOT EXISTS idx_taint_rules_kind
-    ON taint_rules(kind);
-
-CREATE INDEX IF NOT EXISTS idx_taint_findings_rule
-    ON taint_findings(rule_id);
-CREATE INDEX IF NOT EXISTS idx_taint_findings_file
-    ON taint_findings(file_id);
-CREATE INDEX IF NOT EXISTS idx_taint_findings_source
-    ON taint_findings(source_node);
-CREATE INDEX IF NOT EXISTS idx_taint_findings_sink
-    ON taint_findings(sink_node);
-
-CREATE INDEX IF NOT EXISTS idx_taint_path_steps_data_node
-    ON taint_path_steps(data_node);
-
 -- --- FTS Triggers ---
 
 CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
@@ -489,9 +440,6 @@ mod tests {
         assert!(tables.contains(&"callsite_args".to_string()));
         assert!(tables.contains(&"cfg_nodes".to_string()));
         assert!(tables.contains(&"cfg_edges".to_string()));
-        assert!(tables.contains(&"taint_rules".to_string()));
-        assert!(tables.contains(&"taint_findings".to_string()));
-        assert!(tables.contains(&"taint_path_steps".to_string()));
         assert!(tables.contains(&"symbols_fts".to_string()));
         assert!(tables.contains(&"project_metadata".to_string()));
         assert!(tables.contains(&"schema_versions".to_string()));

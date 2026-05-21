@@ -3,12 +3,12 @@
 //! Key design: graph queries do NOT hit SQLite; all data is pre-loaded into
 //! HashMaps and adjacency lists. Snapshot is immutable after construction.
 
-use std::collections::{HashMap, VecDeque};
 use crate::db::Store;
 use crate::types::ids::{FileId, SymbolId};
 use crate::types::{
     Confidence, EdgeKind, Language, Provenance, RawEdge, SymbolDef, SymbolKind, Visibility,
 };
+use std::collections::{HashMap, VecDeque};
 
 // ── type aliases ────────────────────────────────────────────────────────────
 
@@ -107,7 +107,8 @@ impl GraphSnapshot {
         confidence_threshold: f32,
     ) -> anyhow::Result<Self> {
         // ── nodes ────────────────────────────────────────────────────────
-        let mut nodes: Vec<NodeSummary> = symbols.into_iter().map(NodeSummary::from_symbol).collect();
+        let mut nodes: Vec<NodeSummary> =
+            symbols.into_iter().map(NodeSummary::from_symbol).collect();
         let mut id_to_idx: HashMap<SymbolId, usize> = HashMap::with_capacity(nodes.len());
         let mut name_index: HashMap<String, Vec<usize>> = HashMap::new();
         let mut qname_index: HashMap<String, Vec<usize>> = HashMap::new();
@@ -115,18 +116,12 @@ impl GraphSnapshot {
 
         for (ix, node) in nodes.iter().enumerate() {
             id_to_idx.insert(node.symbol_id, ix);
-            name_index
-                .entry(node.name.clone())
-                .or_default()
-                .push(ix);
+            name_index.entry(node.name.clone()).or_default().push(ix);
             qname_index
                 .entry(node.qualified_name.clone())
                 .or_default()
                 .push(ix);
-            file_index
-                .entry(node.file_id)
-                .or_default()
-                .push(ix);
+            file_index.entry(node.file_id).or_default().push(ix);
         }
 
         // ── edges (with confidence filter) ───────────────────────────────
@@ -240,12 +235,9 @@ impl GraphSnapshot {
                 self.filter_edges_incoming(&self.nodes[node_ix].incoming, kind_filter)
             }
             TraversalDirection::Both => {
-                let mut both = self.filter_edges_outgoing(
-                    &self.nodes[node_ix].outgoing, node_ix, kind_filter,
-                );
-                both.extend(self.filter_edges_incoming(
-                    &self.nodes[node_ix].incoming, kind_filter,
-                ));
+                let mut both =
+                    self.filter_edges_outgoing(&self.nodes[node_ix].outgoing, node_ix, kind_filter);
+                both.extend(self.filter_edges_incoming(&self.nodes[node_ix].incoming, kind_filter));
                 both
             }
         }
@@ -256,7 +248,9 @@ impl GraphSnapshot {
         let Some(&node_ix) = self.id_to_idx.get(id) else {
             return vec![];
         };
-        self.nodes[node_ix].incoming.iter()
+        self.nodes[node_ix]
+            .incoming
+            .iter()
             .filter_map(|&eix| {
                 let edge = &self.edges[eix];
                 Some((edge.source_ix, edge.kind))
@@ -269,7 +263,9 @@ impl GraphSnapshot {
         let Some(&node_ix) = self.id_to_idx.get(id) else {
             return vec![];
         };
-        self.nodes[node_ix].outgoing.iter()
+        self.nodes[node_ix]
+            .outgoing
+            .iter()
             .filter_map(|&eix| {
                 let edge = &self.edges[eix];
                 Some((edge.target_ix, edge.kind))
@@ -342,7 +338,11 @@ impl GraphSnapshot {
                 break;
             }
 
-            let neighbors = self.neighbors(current, config.direction, config.edge_kind_filter.as_deref());
+            let neighbors = self.neighbors(
+                current,
+                config.direction,
+                config.edge_kind_filter.as_deref(),
+            );
             for (neighbor_ix, _) in neighbors {
                 if !visited[neighbor_ix] {
                     visited[neighbor_ix] = true;
@@ -355,12 +355,7 @@ impl GraphSnapshot {
     }
 
     /// Shortest path between two nodes (BFS). Returns node indices in order.
-    pub fn shortest_path(
-        &self,
-        from: NodeIx,
-        to: NodeIx,
-        max_depth: usize,
-    ) -> Option<Vec<NodeIx>> {
+    pub fn shortest_path(&self, from: NodeIx, to: NodeIx, max_depth: usize) -> Option<Vec<NodeIx>> {
         if from == to {
             return Some(vec![from]);
         }
@@ -396,10 +391,7 @@ impl GraphSnapshot {
             }
 
             // Follow all edges in both directions
-            for edge_list in [
-                &self.nodes[current].outgoing,
-                &self.nodes[current].incoming,
-            ] {
+            for edge_list in [&self.nodes[current].outgoing, &self.nodes[current].incoming] {
                 for &eix in edge_list {
                     let edge = &self.edges[eix];
                     let neighbor = if edge.source_ix == current {
@@ -490,7 +482,13 @@ mod tests {
     }
 
     fn make_symbol(file_id: FileId, name: &str, qname: &str, kind: SymbolKind) -> SymbolDef {
-        let id = crate::types::ids::SymbolId::generate(&file_id, "typescript", qname, kind.as_str(), None);
+        let id = crate::types::ids::SymbolId::generate(
+            &file_id,
+            "typescript",
+            qname,
+            kind.as_str(),
+            None,
+        );
         SymbolDef {
             id,
             kind,
@@ -515,7 +513,13 @@ mod tests {
 
     fn make_edge(source: SymbolId, target: SymbolId, kind: EdgeKind) -> RawEdge {
         use crate::types::ids::EdgeId;
-        let id = EdgeId::generate(&source, &target, kind.as_str(), None, Provenance::TreeSitter.as_str());
+        let id = EdgeId::generate(
+            &source,
+            &target,
+            kind.as_str(),
+            None,
+            Provenance::TreeSitter.as_str(),
+        );
         RawEdge::new(
             id,
             source,
@@ -533,12 +537,7 @@ mod tests {
         let b = make_symbol(fid, "run", "A.run", SymbolKind::Method);
         let e = make_edge(a.id, b.id, EdgeKind::Contains);
 
-        let snap = GraphSnapshot::from_parts(
-            vec![a.clone(), b.clone()],
-            vec![e],
-            0.0,
-        )
-        .unwrap();
+        let snap = GraphSnapshot::from_parts(vec![a.clone(), b.clone()], vec![e], 0.0).unwrap();
 
         assert_eq!(snap.node_count(), 2);
         assert_eq!(snap.edge_count, 1);
@@ -553,12 +552,8 @@ mod tests {
         let callee = make_symbol(fid, "helper", "helper", SymbolKind::Function);
         let e = make_edge(caller.id, callee.id, EdgeKind::Calls);
 
-        let snap = GraphSnapshot::from_parts(
-            vec![caller.clone(), callee.clone()],
-            vec![e],
-            0.0,
-        )
-        .unwrap();
+        let snap =
+            GraphSnapshot::from_parts(vec![caller.clone(), callee.clone()], vec![e], 0.0).unwrap();
 
         let caller_ix = snap.id_to_idx[&caller.id];
         let neighbors = snap.neighbors(caller_ix, TraversalDirection::Outgoing, None);
@@ -575,12 +570,9 @@ mod tests {
         let e1 = make_edge(a.id, b.id, EdgeKind::Calls);
         let e2 = make_edge(b.id, c.id, EdgeKind::Calls);
 
-        let snap = GraphSnapshot::from_parts(
-            vec![a.clone(), b.clone(), c.clone()],
-            vec![e1, e2],
-            0.0,
-        )
-        .unwrap();
+        let snap =
+            GraphSnapshot::from_parts(vec![a.clone(), b.clone(), c.clone()], vec![e1, e2], 0.0)
+                .unwrap();
 
         let a_ix = snap.id_to_idx[&a.id];
         let config = TraversalConfig {
@@ -602,12 +594,9 @@ mod tests {
         let e1 = make_edge(a.id, b.id, EdgeKind::Calls);
         let e2 = make_edge(b.id, c.id, EdgeKind::Calls);
 
-        let snap = GraphSnapshot::from_parts(
-            vec![a.clone(), b.clone(), c.clone()],
-            vec![e1, e2],
-            0.0,
-        )
-        .unwrap();
+        let snap =
+            GraphSnapshot::from_parts(vec![a.clone(), b.clone(), c.clone()], vec![e1, e2], 0.0)
+                .unwrap();
 
         let a_ix = snap.id_to_idx[&a.id];
         let c_ix = snap.id_to_idx[&c.id];

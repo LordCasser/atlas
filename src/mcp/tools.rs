@@ -5,19 +5,17 @@
 
 use std::sync::Arc;
 
-use crate::analysis::trace::{CallerPathExplorer, Locator, Slicer};
+use crate::analysis::trace::{TraceEngine, TraceQueryResponse};
+use crate::context::ContextBuilder;
 use crate::db::Store;
 use crate::graph::{GraphEngine, TraversalConfig, TraversalDirection};
 use crate::search::SearchEngine;
-use crate::context::ContextBuilder;
-use crate::types::{Language, LanguageCapabilityProfile, SymbolId, SymbolKind, TraceDiagnostic, TracePath};
 use crate::types::ids::FileId;
+use crate::types::{Language, LanguageCapabilityProfile, SymbolId, SymbolKind};
 
-use super::protocol::{
-    CallToolResult, ContentBlock, ListToolsResult, Tool, ToolInputSchema,
-};
+use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolInputSchema};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // -------------------------------------------------------------------
 // ToolRouter
@@ -30,6 +28,8 @@ pub struct ToolRouter {
     context: ContextBuilder,
     /// Lazily-rebuilt GraphEngine per request (from fresh snapshot).
     graph_fn: Box<dyn Fn() -> GraphEngine + Send + Sync>,
+    /// Project root directory for snippet extraction.
+    project_root: std::path::PathBuf,
     tools: Vec<Tool>,
 }
 
@@ -39,14 +39,29 @@ impl ToolRouter {
         search: SearchEngine,
         context: ContextBuilder,
         graph_fn: impl Fn() -> GraphEngine + Send + Sync + 'static,
+        project_root: std::path::PathBuf,
     ) -> Self {
         let tools = make_all_tools();
-        Self { store, search, context, graph_fn: Box::new(graph_fn), tools }
+        Self {
+            store,
+            search,
+            context,
+            graph_fn: Box::new(graph_fn),
+            project_root,
+            tools,
+        }
+    }
+
+    /// Access the underlying store (for testing).
+    pub fn store(&self) -> Arc<Store> {
+        self.store.clone()
     }
 
     /// Handle tools/list — return all registered tool definitions.
     pub fn list_tools(&self) -> ListToolsResult {
-        ListToolsResult { tools: self.tools.clone() }
+        ListToolsResult {
+            tools: self.tools.clone(),
+        }
     }
 
     /// Handle tools/call — dispatch by tool name.
@@ -74,16 +89,19 @@ impl ToolRouter {
         };
 
         // Wrap long results with truncation warning
-        let text = truncate(&result, 8000);
+        let text = truncate(&result, 25000);
         let mut content = vec![ContentBlock::text(text)];
-        if result.len() > 8000 {
+        if result.len() > 25000 {
             content.push(ContentBlock::text(format!(
-                "(truncated — {} chars total, showing first 8000)",
+                "(truncated — {} chars total, showing first 25000)",
                 result.len()
             )));
         }
 
-        CallToolResult { content, is_error: Some(is_error) }
+        CallToolResult {
+            content,
+            is_error: Some(is_error),
+        }
     }
 
     // -------------------------------------------------------------------
@@ -92,9 +110,12 @@ impl ToolRouter {
 
     /// Resolve a qualified name to a SymbolId, returning error string on failure.
     fn resolve_qname(&self, qname: &str) -> Result<SymbolId, String> {
-        let symbols = self.store.find_symbols_by_qname(qname)
+        let symbols = self
+            .store
+            .find_symbols_by_qname(qname)
             .map_err(|e| format!("Lookup error: {}", e))?;
-        symbols.first()
+        symbols
+            .first()
             .map(|s| s.id)
             .ok_or_else(|| format!("Symbol not found: {}", qname))
     }
@@ -132,33 +153,39 @@ impl ToolRouter {
             }
         }
 
-        (serde_json::to_string_pretty(&json!({
-            "summary": {
-                "files": stats.total_files,
-                "symbols": stats.total_symbols,
-                "references": stats.total_references,
-                "edges": stats.total_edges,
-                "unresolved_references": stats.unresolved_references,
-            },
-            "database": {
-                "sqlite_version": stats.sqlite_version,
-            },
-            "language_capabilities": lang_caps,
-        })).unwrap_or_else(|e| e.to_string()), false)
+        (
+            serde_json::to_string_pretty(&json!({
+                "summary": {
+                    "files": stats.total_files,
+                    "symbols": stats.total_symbols,
+                    "references": stats.total_references,
+                    "edges": stats.total_edges,
+                    "unresolved_references": stats.unresolved_references,
+                },
+                "database": {
+                    "sqlite_version": stats.sqlite_version,
+                },
+                "language_capabilities": lang_caps,
+            }))
+            .unwrap_or_else(|e| e.to_string()),
+            false,
+        )
     }
 
     fn handle_files(&self) -> (String, bool) {
         match self.store.list_files() {
-            Ok(files) => {
-                (serde_json::to_string_pretty(&json!({
+            Ok(files) => (
+                serde_json::to_string_pretty(&json!({
                     "count": files.len(),
                     "files": files.iter().map(|f| json!({
                         "path": f.path,
                         "language": f.language.as_str(),
                         "status": f.status.as_str(),
                     })).collect::<Vec<_>>(),
-                })).unwrap_or_else(|e| e.to_string()), false)
-            }
+                }))
+                .unwrap_or_else(|e| e.to_string()),
+                false,
+            ),
             Err(e) => (format!("Error listing files: {}", e), true),
         }
     }
@@ -178,8 +205,8 @@ impl ToolRouter {
         };
 
         match results {
-            Ok(entries) => {
-                (serde_json::to_string_pretty(&json!({
+            Ok(entries) => (
+                serde_json::to_string_pretty(&json!({
                     "query": query,
                     "count": entries.len(),
                     "results": entries.iter().map(|e| json!({
@@ -190,8 +217,10 @@ impl ToolRouter {
                         "score": e.score.total,
                         "file": e.symbol.file_id.to_hex(),
                     })).collect::<Vec<_>>(),
-                })).unwrap_or_else(|e| e.to_string()), false)
-            }
+                }))
+                .unwrap_or_else(|e| e.to_string()),
+                false,
+            ),
             Err(e) => (format!("Search error: {}", e), true),
         }
     }
@@ -211,21 +240,25 @@ impl ToolRouter {
         let callers_count = graph.callers(&sym.id).callers.len();
         let callees_count = graph.callees(&sym.id).callees.len();
 
-        (serde_json::to_string_pretty(&json!({
-            "name": sym.name,
-            "qualified_name": sym.qualified_name,
-            "kind": sym.kind.as_str(),
-            "language": sym.language.as_str(),
-            "visibility": sym.visibility.as_ref().map(|v| v.as_str()),
-            "signature": sym.signature,
-            "file": sym.file_id.to_hex(),
-            "range": {
-                "line": sym.range.start_line,
-                "column": sym.range.start_column,
-            },
-            "callers": callers_count,
-            "callees": callees_count,
-        })).unwrap_or_else(|e| e.to_string()), false)
+        (
+            serde_json::to_string_pretty(&json!({
+                "name": sym.name,
+                "qualified_name": sym.qualified_name,
+                "kind": sym.kind.as_str(),
+                "language": sym.language.as_str(),
+                "visibility": sym.visibility.as_ref().map(|v| v.as_str()),
+                "signature": sym.signature,
+                "file": sym.file_id.to_hex(),
+                "range": {
+                    "line": sym.range.start_line,
+                    "column": sym.range.start_column,
+                },
+                "callers": callers_count,
+                "callees": callees_count,
+            }))
+            .unwrap_or_else(|e| e.to_string()),
+            false,
+        )
     }
 
     fn handle_neighbors(&self, args: &Value) -> (String, bool) {
@@ -246,25 +279,35 @@ impl ToolRouter {
             _ => TraversalDirection::Both,
         };
 
-        let sub = graph.neighbors(&sid, TraversalConfig {
-            direction: dir,
-            max_depth: depth.min(3),
-            limit: limit.min(100),
-            edge_kind_filter: None,
-        });
+        let sub = graph.neighbors(
+            &sid,
+            TraversalConfig {
+                direction: dir,
+                max_depth: depth.min(3),
+                limit: limit.min(100),
+                edge_kind_filter: None,
+            },
+        );
 
         let snap = graph.snapshot();
-        let nodes: Vec<_> = sub.node_indices.iter().take(limit)
+        let nodes: Vec<_> = sub
+            .node_indices
+            .iter()
+            .take(limit)
             .map(|ix| Self::node_json(snap, *ix))
             .collect();
 
-        (serde_json::to_string_pretty(&json!({
-            "symbol": qname,
-            "direction": direction,
-            "depth": depth,
-            "nodes": nodes,
-            "total_found": sub.node_indices.len(),
-        })).unwrap_or_else(|e| e.to_string()), false)
+        (
+            serde_json::to_string_pretty(&json!({
+                "symbol": qname,
+                "direction": direction,
+                "depth": depth,
+                "nodes": nodes,
+                "total_found": sub.node_indices.len(),
+            }))
+            .unwrap_or_else(|e| e.to_string()),
+            false,
+        )
     }
 
     fn handle_callers(&self, args: &Value) -> (String, bool) {
@@ -281,15 +324,17 @@ impl ToolRouter {
         let snap = graph.snapshot();
         let shown = cg.callers.iter().take(limit);
 
-        let nodes: Vec<_> = shown
-            .map(|ix| Self::node_json(snap, *ix))
-            .collect();
+        let nodes: Vec<_> = shown.map(|ix| Self::node_json(snap, *ix)).collect();
 
-        (serde_json::to_string_pretty(&json!({
-            "symbol": qname,
-            "total_callers": cg.callers.len(),
-            "callers": nodes,
-        })).unwrap_or_else(|e| e.to_string()), false)
+        (
+            serde_json::to_string_pretty(&json!({
+                "symbol": qname,
+                "total_callers": cg.callers.len(),
+                "callers": nodes,
+            }))
+            .unwrap_or_else(|e| e.to_string()),
+            false,
+        )
     }
 
     fn handle_callees(&self, args: &Value) -> (String, bool) {
@@ -306,15 +351,17 @@ impl ToolRouter {
         let snap = graph.snapshot();
         let shown = cg.callees.iter().take(limit);
 
-        let nodes: Vec<_> = shown
-            .map(|ix| Self::node_json(snap, *ix))
-            .collect();
+        let nodes: Vec<_> = shown.map(|ix| Self::node_json(snap, *ix)).collect();
 
-        (serde_json::to_string_pretty(&json!({
-            "symbol": qname,
-            "total_callees": cg.callees.len(),
-            "callees": nodes,
-        })).unwrap_or_else(|e| e.to_string()), false)
+        (
+            serde_json::to_string_pretty(&json!({
+                "symbol": qname,
+                "total_callees": cg.callees.len(),
+                "callees": nodes,
+            }))
+            .unwrap_or_else(|e| e.to_string()),
+            false,
+        )
     }
 
     fn handle_callgraph(&self, args: &Value) -> (String, bool) {
@@ -331,16 +378,23 @@ impl ToolRouter {
         let sub = graph.callgraph(&sid, depth.min(5));
         let snap = graph.snapshot();
 
-        let nodes: Vec<_> = sub.node_indices.iter().take(limit)
+        let nodes: Vec<_> = sub
+            .node_indices
+            .iter()
+            .take(limit)
             .map(|ix| Self::node_json(snap, *ix))
             .collect();
 
-        (serde_json::to_string_pretty(&json!({
-            "symbol": qname,
-            "max_depth": depth,
-            "nodes_found": sub.node_indices.len(),
-            "nodes": nodes,
-        })).unwrap_or_else(|e| e.to_string()), false)
+        (
+            serde_json::to_string_pretty(&json!({
+                "symbol": qname,
+                "max_depth": depth,
+                "nodes_found": sub.node_indices.len(),
+                "nodes": nodes,
+            }))
+            .unwrap_or_else(|e| e.to_string()),
+            false,
+        )
     }
 
     fn handle_path(&self, args: &Value) -> (String, bool) {
@@ -361,25 +415,33 @@ impl ToolRouter {
         match graph.shortest_path(&from_id, &to_id, max_depth.min(10)) {
             Some(path) => {
                 let snap = graph.snapshot();
-                let nodes: Vec<_> = path.node_indices.iter()
+                let nodes: Vec<_> = path
+                    .node_indices
+                    .iter()
                     .map(|ix| Self::node_json(snap, *ix))
                     .collect();
-                (serde_json::to_string_pretty(&json!({
-                    "from": from_qname,
-                    "to": to_qname,
-                    "path_length": nodes.len(),
-                    "path": nodes,
-                })).unwrap_or_else(|e| e.to_string()), false)
+                (
+                    serde_json::to_string_pretty(&json!({
+                        "from": from_qname,
+                        "to": to_qname,
+                        "path_length": nodes.len(),
+                        "path": nodes,
+                    }))
+                    .unwrap_or_else(|e| e.to_string()),
+                    false,
+                )
             }
-            None => {
-                (serde_json::to_string_pretty(&json!({
+            None => (
+                serde_json::to_string_pretty(&json!({
                     "from": from_qname,
                     "to": to_qname,
                     "path_length": 0,
                     "path": [],
                     "message": "No path found within depth limit",
-                })).unwrap_or_else(|e| e.to_string()), false)
-            }
+                }))
+                .unwrap_or_else(|e| e.to_string()),
+                false,
+            ),
         }
     }
 
@@ -399,7 +461,8 @@ impl ToolRouter {
         let snap = graph.snapshot();
 
         // Immediate neighbors with edge kind info
-        let incoming: Vec<_> = snap.incoming_neighbors_with_kinds(&sym.id)
+        let incoming: Vec<_> = snap
+            .incoming_neighbors_with_kinds(&sym.id)
             .iter()
             .map(|(node_ix, edge_kind)| {
                 let n = snap.node(*node_ix);
@@ -413,7 +476,8 @@ impl ToolRouter {
             })
             .collect();
 
-        let outgoing: Vec<_> = snap.outgoing_neighbors_with_kinds(&sym.id)
+        let outgoing: Vec<_> = snap
+            .outgoing_neighbors_with_kinds(&sym.id)
             .iter()
             .map(|(node_ix, edge_kind)| {
                 let n = snap.node(*node_ix);
@@ -427,22 +491,26 @@ impl ToolRouter {
             })
             .collect();
 
-        (serde_json::to_string_pretty(&json!({
-            "symbol": {
-                "name": sym.name,
-                "qualified_name": sym.qualified_name,
-                "kind": sym.kind.as_str(),
-                "language": sym.language.as_str(),
-                "file": sym.file_id.to_hex(),
-                "range": { "line": sym.range.start_line, "column": sym.range.start_column },
-            },
-            "neighbors": {
-                "incoming_count": incoming.len(),
-                "outgoing_count": outgoing.len(),
-                "incoming": incoming,
-                "outgoing": outgoing,
-            },
-        })).unwrap_or_else(|e| e.to_string()), false)
+        (
+            serde_json::to_string_pretty(&json!({
+                "symbol": {
+                    "name": sym.name,
+                    "qualified_name": sym.qualified_name,
+                    "kind": sym.kind.as_str(),
+                    "language": sym.language.as_str(),
+                    "file": sym.file_id.to_hex(),
+                    "range": { "line": sym.range.start_line, "column": sym.range.start_column },
+                },
+                "neighbors": {
+                    "incoming_count": incoming.len(),
+                    "outgoing_count": outgoing.len(),
+                    "incoming": incoming,
+                    "outgoing": outgoing,
+                },
+            }))
+            .unwrap_or_else(|e| e.to_string()),
+            false,
+        )
     }
 
     fn handle_impact(&self, args: &Value) -> (String, bool) {
@@ -458,16 +526,23 @@ impl ToolRouter {
         let sub = graph.impact(&sid, depth.min(5));
         let snap = graph.snapshot();
 
-        let nodes: Vec<_> = sub.node_indices.iter().take(30)
+        let nodes: Vec<_> = sub
+            .node_indices
+            .iter()
+            .take(30)
             .map(|ix| Self::node_json(snap, *ix))
             .collect();
 
-        (serde_json::to_string_pretty(&json!({
-            "symbol": qname,
-            "max_depth": depth,
-            "impacted_nodes": nodes.len(),
-            "nodes": nodes,
-        })).unwrap_or_else(|e| e.to_string()), false)
+        (
+            serde_json::to_string_pretty(&json!({
+                "symbol": qname,
+                "max_depth": depth,
+                "impacted_nodes": nodes.len(),
+                "nodes": nodes,
+            }))
+            .unwrap_or_else(|e| e.to_string()),
+            false,
+        )
     }
 
     fn handle_context(&self, args: &Value) -> (String, bool) {
@@ -484,9 +559,13 @@ impl ToolRouter {
             Ok(view) => {
                 // Wrap markdown in JSON so it's not misdetected as error
                 let md = view.to_markdown();
-                (serde_json::to_string_pretty(&json!({
-                    "markdown": md,
-                })).unwrap_or_else(|e| e.to_string()), false)
+                (
+                    serde_json::to_string_pretty(&json!({
+                        "markdown": md,
+                    }))
+                    .unwrap_or_else(|e| e.to_string()),
+                    false,
+                )
             }
             Err(e) => (format!("Context build error: {}", e), true),
         }
@@ -500,32 +579,44 @@ impl ToolRouter {
 
         let file_id = match resolve_file_id(&self.store, file_hex, file_path) {
             Ok(Some(fid)) => fid,
-            Ok(None) => return (format!("Missing file_id or file_path").into(), true),
-            Err(e) => return (format!("Error resolving file: {}", e), true),
+            Ok(None) => {
+                let resp: TraceQueryResponse<()> =
+                    TraceQueryResponse::err("trace_point", "Missing file_id or file_path");
+                return (
+                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                    true,
+                );
+            }
+            Err(e) => {
+                let resp: TraceQueryResponse<()> =
+                    TraceQueryResponse::err("trace_point", &format!("Error resolving file: {}", e));
+                return (
+                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                    true,
+                );
+            }
         };
 
         let (line, column) = match (line, column) {
             (Some(l), Some(c)) => (l as u32, c as u32),
-            _ => return ("Missing line or column".into(), true),
+            _ => {
+                let resp: TraceQueryResponse<()> =
+                    TraceQueryResponse::err("trace_point", "Missing line or column");
+                return (
+                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                    true,
+                );
+            }
         };
 
-        let mut point = match Locator::locate(&self.store, &file_id, line, column) {
-            Ok(p) => p,
-            Err(e) => return (format!("Error locating position: {}", e), true),
-        };
+        let engine = TraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
+        let resp = engine.trace_point(&file_id, line, column);
+        let is_error = !resp.ok;
 
-        // Inject language capability profile for Agent consumption.
-        // Resolve language from file_id → FileInfo.language (truth), not from
-        // resolved_symbol (may be None) or hardcoded TypeScript.
-        let lang = self.store.get_file(&file_id)
-            .ok()
-            .flatten()
-            .map(|fi| fi.language);
-        if let Some(lang) = lang {
-            point.capability = Some(LanguageCapabilityProfile::for_language(lang));
-        }
-
-        (serde_json::to_string_pretty(&point).unwrap_or_else(|e| e.to_string()), false)
+        (
+            serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+            is_error,
+        )
     }
 
     fn handle_trace_variable(&self, args: &Value) -> (String, bool) {
@@ -537,121 +628,117 @@ impl ToolRouter {
 
         let file_id = match resolve_file_id(&self.store, file_hex, file_path) {
             Ok(Some(fid)) => fid,
-            Ok(None) => return ("Missing file_id or file_path".into(), true),
-            Err(e) => return (format!("Error resolving file: {}", e), true),
+            Ok(None) => {
+                let resp: TraceQueryResponse<()> =
+                    TraceQueryResponse::err("trace_variable", "Missing file_id or file_path");
+                return (
+                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                    true,
+                );
+            }
+            Err(e) => {
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                    "trace_variable",
+                    &format!("Error resolving file: {}", e),
+                );
+                return (
+                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                    true,
+                );
+            }
         };
 
         let (line, column) = match (line, column) {
             (Some(l), Some(c)) => (l as u32, c as u32),
-            _ => return ("Missing line or column".into(), true),
-        };
-
-        let sink = match Locator::locate(&self.store, &file_id, line, column) {
-            Ok(p) => p,
-            Err(e) => return (format!("Error locating position: {}", e), true),
-        };
-
-        // Resolve language from file_id → FileInfo.language (truth)
-        let lang = self.store.get_file(&file_id)
-            .ok()
-            .flatten()
-            .map(|fi| fi.language);
-        let cap = lang.map(LanguageCapabilityProfile::for_language);
-
-        let path = match Slicer::slice(&self.store, &sink, max_depth) {
-            Ok(Some(mut p)) => {
-                p.capability = cap;
-                p
+            _ => {
+                let resp: TraceQueryResponse<()> =
+                    TraceQueryResponse::err("trace_variable", "Missing line or column");
+                return (
+                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                    true,
+                );
             }
-            Ok(None) => {
-                // Not an error — return partial result with diagnostics
-                let path = TracePath {
-                    source: sink.clone(),
-                    steps: vec![],
-                    sink,
-                    confidence: 0.0,
-                    nodes_visited: 0,
-                    capability: cap,
-                    partial_result: true,
-                    diagnostics: vec![
-                        TraceDiagnostic::warning("No data node at this position — consider using atlas_trace_point for symbol-level info")
-                            .with_code("no_data_node"),
-                    ],
-                };
-                return (serde_json::to_string_pretty(&path).unwrap_or_else(|e| e.to_string()), false);
-            }
-            Err(e) => return (format!("Error tracing dataflow: {}", e), true),
         };
 
-        (serde_json::to_string_pretty(&path).unwrap_or_else(|e| e.to_string()), false)
+        let engine = TraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
+        let resp = engine.trace_variable(&file_id, line, column, max_depth);
+        let is_error = !resp.ok;
+
+        (
+            serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+            is_error,
+        )
     }
 
     fn handle_language_capabilities(&self) -> (String, bool) {
         let profiles = LanguageCapabilityProfile::all_compiled();
-        let caps: Vec<Value> = profiles.iter().map(|p| {
-            json!({
-                "language": p.language,
-                "capability_level": p.capability_level.as_str(),
-                "supported_features": p.supported_features,
-                "unsupported_features": p.unsupported_features,
-                "limitations": p.limitations,
-                "confidence_floor": p.confidence_floor,
+        let caps: Vec<Value> = profiles
+            .iter()
+            .map(|p| {
+                let mut cap = json!({
+                    "language": p.language,
+                    "capability_level": p.capability_level.as_str(),
+                    "supported_features": p.supported_features,
+                    "unsupported_features": p.unsupported_features,
+                    "limitations": p.limitations,
+                    "confidence_floor": p.confidence_floor,
+                });
+                // Include the fine-grained FeatureMatrix if available
+                if let Some(ref features) = p.features {
+                    cap["features"] = serde_json::to_value(features).unwrap_or(Value::Null);
+                }
+                cap
             })
-        }).collect();
-        (serde_json::to_string_pretty(&json!({
-            "language_count": caps.len(),
-            "profiles": caps,
-        })).unwrap_or_else(|e| e.to_string()), false)
+            .collect();
+        (
+            serde_json::to_string(&json!({
+                "language_count": caps.len(),
+                "profiles": caps,
+            }))
+            .unwrap_or_else(|e| e.to_string()),
+            false,
+        )
     }
 
     fn handle_trace_caller_path(&self, args: &Value) -> (String, bool) {
-        let symbol_hex = args["symbol"].as_str().unwrap_or("");
+        let symbol_hex = args["symbol"].as_str().filter(|s| !s.is_empty());
+        let symbol_name = args["symbol_name"].as_str().filter(|s| !s.is_empty());
         let max_depth = args["max_depth"].as_u64().unwrap_or(20) as usize;
 
-        let target_id: SymbolId = match symbol_hex.parse() {
-            Ok(id) => id,
-            Err(e) => return (format!("Invalid symbol hex ID: {}", e), true),
+        let engine = TraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
+        let resp = if let Some(hex) = symbol_hex {
+            let target_id: SymbolId = match hex.parse() {
+                Ok(id) => id,
+                Err(e) => {
+                    let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                        "trace_callers",
+                        &format!("Invalid symbol hex ID: {}", e),
+                    );
+                    return (
+                        serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                        true,
+                    );
+                }
+            };
+            engine.trace_callers(&target_id, max_depth)
+        } else if let Some(name) = symbol_name {
+            engine.trace_callers_by_name(name, max_depth)
+        } else {
+            let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                "trace_callers",
+                "Must provide either 'symbol' (hex) or 'symbol_name'",
+            );
+            return (
+                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                true,
+            );
         };
+        let is_error = !resp.ok;
 
-        match CallerPathExplorer::explore(&self.store, &target_id, max_depth) {
-            Err(e) => (format!("Caller path failed: {}", e), true),
-            Ok(None) => {
-                let output = json!({
-                    "partial_result": true,
-                    "diagnostics": [{
-                        "level": "warning",
-                        "message": "No callers found — this is a root/top-level function",
-                        "code": "no_callers",
-                    }],
-                });
-                (serde_json::to_string_pretty(&output).unwrap_or_else(|e| e.to_string()), false)
-            },
-            Ok(Some(chain)) => {
-                let output = json!({
-                    "root": {
-                        "name": chain.root.name,
-                        "kind": chain.root.kind.as_str(),
-                        "file": chain.root.file_id.to_hex(),
-                    },
-                    "target": {
-                        "name": chain.target.name,
-                        "kind": chain.target.kind.as_str(),
-                        "file": chain.target.file_id.to_hex(),
-                    },
-                    "steps": chain.steps.iter().map(|s| json!({
-                        "index": s.index,
-                        "caller": s.caller.to_hex(),
-                        "callee": s.callee.to_hex(),
-                        "edge_kind": s.edge_kind.as_str(),
-                        "description": s.description,
-                        "file_id": s.file_id.to_hex(),
-                    })).collect::<Vec<_>>(),
-                    "nodes_visited": chain.nodes_visited,
-                    "max_depth_reached": chain.max_depth_reached,
-                });
-                (serde_json::to_string_pretty(&output).unwrap_or_else(|e| e.to_string()), false)
-            }
-        }
+        (
+            serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+            is_error,
+        )
     }
 }
 
@@ -837,9 +924,10 @@ pub fn make_all_tools() -> Vec<Tool> {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "symbol": { "type": "string", "description": "Symbol ID in hex (from atlas_search or atlas_symbol)" },
+                    "symbol_name": { "type": "string", "description": "Symbol name for lookup (e.g. 'inner'). Alternative to 'symbol' hex ID." },
                     "max_depth": { "type": "integer", "description": "Maximum backward call depth (default 20)" },
                 })),
-                required: Some(vec!["symbol".into()]),
+                required: None,
             },
         },
         Tool {
@@ -868,7 +956,11 @@ fn resolve_file_id(
     // 1. Try hex file_id
     if let Some(hex) = file_hex.and_then(|h| {
         let h = h.trim();
-        if h.len() >= 8 { h.parse::<FileId>().ok() } else { None }
+        if h.len() >= 8 {
+            h.parse::<FileId>().ok()
+        } else {
+            None
+        }
     }) {
         return Ok(Some(hex));
     }

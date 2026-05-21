@@ -143,6 +143,7 @@ fn parse_language(s: &str) -> Option<Language> {
         "c" => Some(Language::C),
         "cpp" | "c++" => Some(Language::Cpp),
         "arkts" | "ark-ts" | "ets" => Some(Language::ArkTS),
+        #[cfg(feature = "cangjie")]
         "cangjie" | "cj" => Some(Language::Cangjie),
         _ => None,
     }
@@ -199,15 +200,42 @@ mod tests {
 
     #[test]
     fn test_parse_kind_aliases() {
-        assert_eq!(parse_query("kind:fn").kind_filter, Some(SymbolKind::Function));
-        assert_eq!(parse_query("kind:func").kind_filter, Some(SymbolKind::Function));
-        assert_eq!(parse_query("kind:class").kind_filter, Some(SymbolKind::Class));
-        assert_eq!(parse_query("kind:var").kind_filter, Some(SymbolKind::Variable));
-        assert_eq!(parse_query("kind:const").kind_filter, Some(SymbolKind::Constant));
-        assert_eq!(parse_query("kind:prop").kind_filter, Some(SymbolKind::Property));
-        assert_eq!(parse_query("kind:ctor").kind_filter, Some(SymbolKind::Constructor));
-        assert_eq!(parse_query("kind:iface").kind_filter, Some(SymbolKind::Interface));
-        assert_eq!(parse_query("kind:pkg").kind_filter, Some(SymbolKind::Package));
+        assert_eq!(
+            parse_query("kind:fn").kind_filter,
+            Some(SymbolKind::Function)
+        );
+        assert_eq!(
+            parse_query("kind:func").kind_filter,
+            Some(SymbolKind::Function)
+        );
+        assert_eq!(
+            parse_query("kind:class").kind_filter,
+            Some(SymbolKind::Class)
+        );
+        assert_eq!(
+            parse_query("kind:var").kind_filter,
+            Some(SymbolKind::Variable)
+        );
+        assert_eq!(
+            parse_query("kind:const").kind_filter,
+            Some(SymbolKind::Constant)
+        );
+        assert_eq!(
+            parse_query("kind:prop").kind_filter,
+            Some(SymbolKind::Property)
+        );
+        assert_eq!(
+            parse_query("kind:ctor").kind_filter,
+            Some(SymbolKind::Constructor)
+        );
+        assert_eq!(
+            parse_query("kind:iface").kind_filter,
+            Some(SymbolKind::Interface)
+        );
+        assert_eq!(
+            parse_query("kind:pkg").kind_filter,
+            Some(SymbolKind::Package)
+        );
     }
 
     #[test]
@@ -216,7 +244,10 @@ mod tests {
         assert_eq!(parse_query("lang:js").language, Some(Language::JavaScript));
         assert_eq!(parse_query("lang:py").language, Some(Language::Python));
         assert_eq!(parse_query("lang:c++").language, Some(Language::Cpp));
+        #[cfg(feature = "cangjie")]
         assert_eq!(parse_query("lang:cj").language, Some(Language::Cangjie));
+        #[cfg(not(feature = "cangjie"))]
+        assert_eq!(parse_query("lang:cj").language, None);
     }
 
     #[test]

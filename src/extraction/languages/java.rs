@@ -4,7 +4,7 @@
 //! Supports: class, interface, enum, method, field, constant, variable definitions;
 //! method calls, field access, type references; import/include; scopes.
 
-use crate::extraction::languages::{node_range, node_text, LanguageAdapter};
+use crate::extraction::languages::{LanguageAdapter, node_range, node_text};
 use crate::types::*;
 use std::path::Path;
 
@@ -165,12 +165,8 @@ impl LanguageAdapter for JavaAdapter {
         let name = format!("{:?}#{}", kind, range.start_byte);
         let scope_path = name.clone();
 
-        let scope_id = ScopeId::generate(
-            &file_id,
-            None::<&ScopeId>,
-            kind.as_str(),
-            range.start_byte,
-        );
+        let scope_id =
+            ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
 
         Some(ScopeDef {
             id: scope_id,
@@ -344,7 +340,11 @@ mod tests {
         let adapter = JavaAdapter;
         let lang = adapter.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, adapter.definition_query());
-        assert!(query.is_ok(), "definition query must compile: {:?}", query.err());
+        assert!(
+            query.is_ok(),
+            "definition query must compile: {:?}",
+            query.err()
+        );
     }
 
     #[test]
@@ -352,7 +352,11 @@ mod tests {
         let adapter = JavaAdapter;
         let lang = adapter.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, adapter.reference_query());
-        assert!(query.is_ok(), "reference query must compile: {:?}", query.err());
+        assert!(
+            query.is_ok(),
+            "reference query must compile: {:?}",
+            query.err()
+        );
     }
 
     #[test]
@@ -360,7 +364,11 @@ mod tests {
         let adapter = JavaAdapter;
         let lang = adapter.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, adapter.import_query());
-        assert!(query.is_ok(), "import query must compile: {:?}", query.err());
+        assert!(
+            query.is_ok(),
+            "import query must compile: {:?}",
+            query.err()
+        );
     }
 
     #[test]

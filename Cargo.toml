@@ -23,7 +23,7 @@ tree-sitter-ruby = { version = "0.23", optional = true }
 tree-sitter-swift = { version = "0.7", optional = true }
 tree-sitter-kotlin = { version = "0.3", optional = true }
 
-# HarmonyOS: Cangjie language (git dependency — crate has its own Cargo.toml + Rust bindings)
+# HarmonyOS: Cangjie language (experimental opt-in; not part of MVP/all-languages)
 # ArkTS (.ets) uses TypeScript grammar, no separate crate needed
 tree-sitter-cangjie = { git = "https://gitcode.com/Cangjie-SIG/tree-sitter-cangjie.git", optional = true }
 
@@ -70,6 +70,8 @@ java = ["dep:tree-sitter-java"]
 c = ["dep:tree-sitter-c"]
 cpp = ["dep:tree-sitter-cpp"]
 arkts = ["typescript"]  # ArkTS uses TypeScript grammar
+
+# Incomplete / experimental language support (opt-in only, excluded from all-languages)
 cangjie = ["dep:tree-sitter-cangjie"]
 
 # Future languages (not in MVP default, opt-in only)

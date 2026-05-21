@@ -7,10 +7,10 @@
 //! - `bindings` — lexical binding graph types.
 //! - `dataflow` — per-function dataflow types (DataNode → DataNode, NOT SymbolId).
 //! - `cfg` — per-function control-flow graph types.
-//! - `taint` — taint analysis types (rules, findings, path steps). *(deprecated — migrating to trace)*
 //! - `capability` — per-language analysis capability profiles.
 //! - `trace` — location-driven trace types (TracePoint, TracePath).
-//! - `caller_path` — reverse call-graph traversal types (CallerChain).
+//! - `caller_path` — reverse call-graph traversal types (CallerChain/CallerPath).
+//! - `timing` — phase timing and per-language statistics for index pipeline.
 //!
 //! ## Invariants
 //! - IDs are deterministically derived (same inputs → same [u8; 32]).
@@ -19,16 +19,16 @@
 //! - DataNode → DataNode edges form the dataflow graph (NOT SymbolId).
 //! - CfgNode → CfgNode edges form the control-flow graph (per-function).
 
-pub mod ids;
-pub mod enums;
-pub mod structs;
 pub mod bindings;
-pub mod dataflow;
-pub mod cfg;
-pub mod taint;
-pub mod capability;
-pub mod trace;
 pub mod caller_path;
+pub mod capability;
+pub mod cfg;
+pub mod dataflow;
+pub mod enums;
+pub mod ids;
+pub mod structs;
+pub mod timing;
+pub mod trace;
 
 // --- IDs ---
 pub use ids::{
@@ -37,16 +37,16 @@ pub use ids::{
 };
 
 // --- Enums ---
+pub use enums::Confidence;
 pub use enums::{
     BindingKind, CfgEdgeKind, CfgNodeKind, DataFlowKind, DataNodeKind, EdgeKind, ImportKind,
     Language, ParseStatus, Provenance, ReferenceKind, ResolutionStatus, ResolutionStrategy,
     ScopeKind, SymbolKind, Visibility,
 };
-pub use enums::Confidence;
 
 // --- Core IR ---
 pub use structs::{
-    ArgumentFact, Callsite, DiagnosticLevel, ExtractionError, ExtractDiagnostic, FailureCategory,
+    ArgumentFact, Callsite, DiagnosticLevel, ExtractDiagnostic, ExtractionError, FailureCategory,
     FileFacts, FileInfo, ImportDef, IndexReport, RawEdge, ReferenceUse, ResolvedTarget, ScopeDef,
     SymbolDef, TextRange,
 };
@@ -60,17 +60,20 @@ pub use dataflow::{CallsiteArg, DataFlowEdge, DataNode};
 // --- CFG types ---
 pub use cfg::{CfgEdge, CfgNode};
 
-// --- Taint types (deprecated — migrating to trace) ---
-pub use taint::{Severity, TaintFinding, TaintFindingId, TaintPathStep, TaintRule, TaintRuleKind};
-
 // --- Capability types ---
-pub use capability::{CapabilityLevel, LanguageCapabilityProfile};
+pub use capability::{CapabilityLevel, FeatureMatrix, FeatureSupport, LanguageCapabilityProfile};
 
 // --- Trace types ---
-pub use trace::{TraceDataNodeRef, TraceDiagnostic, TracePath, TracePathStep, TracePoint};
+pub use trace::{
+    Evidence, TraceDataNodeRef, TraceDiagnostic, TracePath, TracePathStep, TracePoint,
+    VariableTracePath,
+};
 
 // --- Caller path types ---
-pub use caller_path::{CallerChain, CallerChainStep};
+pub use caller_path::{CallerChain, CallerChainStep, CallerPath};
+
+// --- Timing types ---
+pub use timing::{LanguageEntry, PerLanguageStats, PhaseTimer, PhaseTiming, PhaseTimings};
 
 // --- Utilities ---
 
@@ -95,10 +98,12 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
     for i in 1..=n {
         curr[0] = i;
         for j in 1..=m {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1)
-                .min(curr[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }

@@ -57,7 +57,12 @@ pub struct JsonRpcError {
 
 impl Response {
     pub fn success(id: Option<RequestId>, result: Value) -> Self {
-        Self { jsonrpc: JSONRPC_VERSION, id, result: Some(result), error: None }
+        Self {
+            jsonrpc: JSONRPC_VERSION,
+            id,
+            result: Some(result),
+            error: None,
+        }
     }
 
     pub fn error(id: Option<RequestId>, code: i32, message: String) -> Self {
@@ -65,7 +70,11 @@ impl Response {
             jsonrpc: JSONRPC_VERSION,
             id,
             result: None,
-            error: Some(JsonRpcError { code, message, data: None }),
+            error: Some(JsonRpcError {
+                code,
+                message,
+                data: None,
+            }),
         }
     }
 
@@ -154,7 +163,9 @@ pub enum ContentBlock {
 
 impl ContentBlock {
     pub fn text(content: impl Into<String>) -> Self {
-        ContentBlock::Text { text: content.into() }
+        ContentBlock::Text {
+            text: content.into(),
+        }
     }
 }
 

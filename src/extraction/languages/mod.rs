@@ -21,7 +21,9 @@ pub mod shared;
 
 /// Extract the UTF-8 text of a tree-sitter node from the source string.
 pub fn node_text(node: tree_sitter::Node, source: &str) -> Option<String> {
-    node.utf8_text(source.as_bytes()).ok().map(|s| s.to_string())
+    node.utf8_text(source.as_bytes())
+        .ok()
+        .map(|s| s.to_string())
 }
 
 /// Build a `TextRange` from a tree-sitter node's byte and line/column positions.
@@ -157,7 +159,10 @@ pub trait LanguageAdapter: Send + Sync {
         _source: &str,
         _file_id: FileId,
         _file_path: &Path,
-    ) -> (Option<crate::types::dataflow::DataNode>, Option<crate::types::dataflow::DataFlowEdge>) {
+    ) -> (
+        Option<crate::types::dataflow::DataNode>,
+        Option<crate::types::dataflow::DataFlowEdge>,
+    ) {
         (None, None)
     }
 
@@ -224,4 +229,14 @@ pub fn create_adapter(lang: Language) -> Option<Box<dyn LanguageAdapter>> {
         Language::Cangjie => Some(Box::new(cangjie::CangjieAdapter)),
         _ => None,
     }
+}
+
+/// Create a `LanguageFrontend` for the given language.
+/// Returns `None` if the language's adapter is not compiled in (feature-gated).
+///
+/// `LanguageFrontend` is the new slot-based interface that replaces
+/// `LanguageAdapter` for typed feature queries. It wraps the adapter
+/// internally for backward compatibility.
+pub fn create_frontend(lang: Language) -> Option<crate::extraction::frontend::LanguageFrontend> {
+    create_adapter(lang).map(crate::extraction::frontend::LanguageFrontend::from_adapter)
 }

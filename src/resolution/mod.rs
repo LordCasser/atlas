@@ -18,18 +18,18 @@ use crate::db::Store;
 use crate::types::*;
 
 use self::builtins::BuiltinFilter;
-use self::context::ResolutionContext;
+use self::context::{GlobalSymbolIndex, ResolutionContext};
 use self::import_resolver::ImportResolver;
 use self::name_matcher::NameMatcher;
 
+pub mod builtins;
 pub mod context;
 pub mod export_resolver;
+pub mod frameworks;
 pub mod import_resolver;
 pub mod include_graph;
 pub mod name_matcher;
 pub mod path_alias;
-pub mod builtins;
-pub mod frameworks;
 
 pub use export_resolver::ExportResolver;
 pub use include_graph::IncludeGraph;
@@ -39,10 +39,16 @@ pub use path_alias::PathAliasResolver;
 ///
 /// P2: `resolve_all()` only resolves references and updates the `"references"`
 /// table. Edge creation is delegated to `GraphBuilder`.
+///
+/// P4: Uses `GlobalSymbolIndex` for project-wide name search instead of
+/// per-reference FTS5 queries. The global index is built once at the start
+/// of resolution.
 pub struct ReferenceResolver {
     store: Arc<Store>,
     import_resolver: ImportResolver,
     name_matcher: NameMatcher,
+    /// P4: Global in-memory symbol index (built once per resolve_all).
+    global_index: Option<GlobalSymbolIndex>,
 }
 
 impl ReferenceResolver {
@@ -51,6 +57,7 @@ impl ReferenceResolver {
             import_resolver: ImportResolver::new(store.clone()),
             name_matcher: NameMatcher::new(),
             store,
+            global_index: None,
         }
     }
 
@@ -61,9 +68,15 @@ impl ReferenceResolver {
     ///   by `GraphBuilder` to create structural edges.
     /// - `stats` contains resolution statistics.
     ///
-    /// Uses batched writes: resolution results are accumulated in memory and
-    /// flushed to SQLite in bulk transactions.
-    pub fn resolve_all(&self) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
+    /// P4: Loads `GlobalSymbolIndex` once, then processes file groups with
+    /// O(1) in-memory lookups instead of per-reference FTS5 queries.
+    pub fn resolve_all(
+        &mut self,
+    ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
+        // P4: Build global index once
+        if self.global_index.is_none() {
+            self.global_index = Some(GlobalSymbolIndex::build(&self.store)?);
+        }
         let unresolved = self.store.find_unresolved_references()?;
         let total_refs = unresolved.len();
         let mut stats = ResolutionStats::default();
@@ -183,11 +196,10 @@ impl ReferenceResolver {
 
         // ---- Strategy 4: Same-file exact match ----
         let same_file = ctx.find_in_file_by_name(&reference.name);
-        if let Some(matched) = self.name_matcher.best_match(
-            &same_file,
-            &reference.name,
-            Confidence::certain(),
-        ) {
+        if let Some(matched) =
+            self.name_matcher
+                .best_match(&same_file, &reference.name, Confidence::certain())
+        {
             return Some(ResolvedTarget {
                 symbol_id: matched.symbol_id,
                 confidence: matched.confidence,
@@ -214,18 +226,36 @@ impl ReferenceResolver {
             }
         }
 
-        // ---- Strategy 6: Project-wide name search (FTS5) ----
-        if let Ok(candidates) = self.store.search_symbols(&reference.name) {
-            if let Some(matched) = self
-                .name_matcher
-                .best_match(&candidates, &reference.name, Confidence::new(0.6))
-            {
-                return Some(ResolvedTarget {
-                    symbol_id: matched.symbol_id,
-                    confidence: matched.confidence,
-                    strategy: ResolutionStrategy::FuzzyMatch,
-                    provenance: Provenance::Heuristic,
-                });
+        // ---- Strategy 6: Project-wide name search (P4: in-memory index) ----
+        if let Some(ref idx) = self.global_index {
+            let candidates = idx.find_by_name(&reference.name);
+            if !candidates.is_empty() {
+                if let Some(matched) =
+                    self.name_matcher
+                        .best_match(&candidates, &reference.name, Confidence::new(0.6))
+                {
+                    return Some(ResolvedTarget {
+                        symbol_id: matched.symbol_id,
+                        confidence: matched.confidence,
+                        strategy: ResolutionStrategy::FuzzyMatch,
+                        provenance: Provenance::Heuristic,
+                    });
+                }
+            }
+            // Bounded fuzzy fallback
+            let fuzzy = idx.fuzzy_search(&reference.name, 2);
+            if !fuzzy.is_empty() {
+                if let Some(matched) =
+                    self.name_matcher
+                        .best_match(&fuzzy, &reference.name, Confidence::new(0.4))
+                {
+                    return Some(ResolvedTarget {
+                        symbol_id: matched.symbol_id,
+                        confidence: matched.confidence,
+                        strategy: ResolutionStrategy::FuzzyMatch,
+                        provenance: Provenance::Heuristic,
+                    });
+                }
             }
         }
 
@@ -256,8 +286,9 @@ impl ResolutionStats {
 mod tests {
     use super::*;
     use crate::db::Store;
-    use crate::extraction::languages::typescript::TypeScriptAdapter;
+    use crate::extraction::LanguageFrontend;
     use crate::extraction::extract_file;
+    use crate::extraction::languages::typescript::TypeScriptAdapter;
     use crate::graph::{GraphBuilder, GraphEngine};
     use std::path::PathBuf;
 
@@ -271,9 +302,13 @@ mod tests {
 }
 "#;
         let lib_id = FileId::generate("lib.ts");
-        let lib_adapter = TypeScriptAdapter;
+        let ts_frontend = LanguageFrontend::from_adapter(Box::new(TypeScriptAdapter));
         let lib_facts = extract_file(
-            &lib_adapter, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc",
+            &ts_frontend,
+            lib_id,
+            &PathBuf::from("lib.ts"),
+            lib_src,
+            "abc",
         )
         .expect("lib.ts extraction failed");
 
@@ -288,7 +323,11 @@ main();
 "#;
         let main_id = FileId::generate("main.ts");
         let main_facts = extract_file(
-            &TypeScriptAdapter, main_id, &PathBuf::from("main.ts"), main_src, "abc",
+            &ts_frontend,
+            main_id,
+            &PathBuf::from("main.ts"),
+            main_src,
+            "abc",
         )
         .expect("main.ts extraction failed");
 
@@ -296,14 +335,20 @@ main();
         let store = Arc::new(Store::open_in_memory().unwrap());
         store.init_schema().unwrap();
         store.insert_file_facts(&lib_facts).expect("insert lib.ts");
-        store.insert_file_facts(&main_facts).expect("insert main.ts");
+        store
+            .insert_file_facts(&main_facts)
+            .expect("insert main.ts");
 
         // ── Resolve ──
-        let resolver = ReferenceResolver::new(Arc::clone(&store));
+        let mut resolver = ReferenceResolver::new(Arc::clone(&store));
         let (resolved, stats) = resolver.resolve_all().expect("resolution failed");
 
         // Verify resolution happened
-        assert!(stats.resolved > 0, "expected at least 1 resolved reference, got {}", stats.resolved);
+        assert!(
+            stats.resolved > 0,
+            "expected at least 1 resolved reference, got {}",
+            stats.resolved
+        );
 
         // ── Build edges ──
         let builder = GraphBuilder::new(Arc::clone(&store));
@@ -327,9 +372,13 @@ export function farewell(name: string): string {
 }
 "#;
         let lib_id = FileId::generate("lib.ts");
-        let lib_adapter = TypeScriptAdapter;
+        let ts_frontend = LanguageFrontend::from_adapter(Box::new(TypeScriptAdapter));
         let lib_facts = extract_file(
-            &lib_adapter, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc",
+            &ts_frontend,
+            lib_id,
+            &PathBuf::from("lib.ts"),
+            lib_src,
+            "abc",
         )
         .expect("lib.ts extraction failed");
 
@@ -349,7 +398,11 @@ shutdown();
 "#;
         let main_id = FileId::generate("main.ts");
         let main_facts = extract_file(
-            &TypeScriptAdapter, main_id, &PathBuf::from("main.ts"), main_src, "abc",
+            &ts_frontend,
+            main_id,
+            &PathBuf::from("main.ts"),
+            main_src,
+            "abc",
         )
         .expect("main.ts extraction failed");
 
@@ -357,9 +410,11 @@ shutdown();
         let store = Arc::new(Store::open_in_memory().unwrap());
         store.init_schema().unwrap();
         store.insert_file_facts(&lib_facts).expect("insert lib.ts");
-        store.insert_file_facts(&main_facts).expect("insert main.ts");
+        store
+            .insert_file_facts(&main_facts)
+            .expect("insert main.ts");
 
-        let resolver = ReferenceResolver::new(Arc::clone(&store));
+        let mut resolver = ReferenceResolver::new(Arc::clone(&store));
         let (resolved, _) = resolver.resolve_all().expect("resolution failed");
 
         // ── Build edges ──
@@ -370,29 +425,43 @@ shutdown();
         let graph = GraphEngine::from_store(&store, 0.0).expect("graph build failed");
 
         // Find greet and main by qualified name
-        let greet_id = store.find_symbols_by_qname("greet").unwrap()
-            .first().unwrap().id;
-        let main_id = store.find_symbols_by_qname("main").unwrap()
-            .first().unwrap().id;
+        let greet_id = store
+            .find_symbols_by_qname("greet")
+            .unwrap()
+            .first()
+            .unwrap()
+            .id;
+        let main_id = store
+            .find_symbols_by_qname("main")
+            .unwrap()
+            .first()
+            .unwrap()
+            .id;
 
         // Verify callers: main → greet
         let greet_callers = graph.callers(&greet_id);
-        let caller_names: Vec<&str> = greet_callers.callers.iter()
+        let caller_names: Vec<&str> = greet_callers
+            .callers
+            .iter()
             .map(|ix| graph.snapshot().node(*ix).name.as_str())
             .collect();
         assert!(
             caller_names.contains(&"main"),
-            "expected main to be caller of greet, got: {:?}", caller_names
+            "expected main to be caller of greet, got: {:?}",
+            caller_names
         );
 
         // Verify callees: main → greet
         let main_callees = graph.callees(&main_id);
-        let callee_names: Vec<&str> = main_callees.callees.iter()
+        let callee_names: Vec<&str> = main_callees
+            .callees
+            .iter()
             .map(|ix| graph.snapshot().node(*ix).name.as_str())
             .collect();
         assert!(
             callee_names.contains(&"greet"),
-            "expected greet to be callee of main, got: {:?}", callee_names
+            "expected greet to be callee of main, got: {:?}",
+            callee_names
         );
     }
 }

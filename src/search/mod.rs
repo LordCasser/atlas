@@ -33,7 +33,9 @@ pub struct SearchOptions {
 }
 
 impl SearchOptions {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn with_language(mut self, lang: Language) -> Self {
         self.language = Some(lang);
@@ -146,7 +148,8 @@ impl SearchEngine {
             }
             // Sort by distance (closest first), take top limit
             candidates.sort_by_key(|c| c.1);
-            raw_results = candidates.into_iter()
+            raw_results = candidates
+                .into_iter()
                 .take(limit.max(50))
                 .map(|(s, _)| s)
                 .collect();
@@ -175,7 +178,10 @@ impl SearchEngine {
         let mut results: Vec<SearchResult> = Vec::with_capacity(raw_results.len());
         for sym in raw_results {
             let name_sim = compute_name_similarity(query, &sym.name, &query_norm);
-            let path_match = sym.qualified_name.to_lowercase().contains(&query.to_lowercase());
+            let path_match = sym
+                .qualified_name
+                .to_lowercase()
+                .contains(&query.to_lowercase());
             let degree = self.graph.degree(&sym.id);
             let idf = scoring::idf_weight(total_symbols, matching_symbols);
 
@@ -198,7 +204,9 @@ impl SearchEngine {
             };
 
             // Resolve FileId → human-readable path
-            let file_path = self.store.get_file(&sym.file_id)
+            let file_path = self
+                .store
+                .get_file(&sym.file_id)
                 .ok()
                 .flatten()
                 .map(|info| info.path);
@@ -214,7 +222,10 @@ impl SearchEngine {
 
         // Sort by total score descending
         results.sort_by(|a, b| {
-            b.score.total.partial_cmp(&a.score.total).unwrap_or(std::cmp::Ordering::Equal)
+            b.score
+                .total
+                .partial_cmp(&a.score.total)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
         results.truncate(limit);
 
@@ -261,7 +272,9 @@ impl SearchEngine {
         file_id: &FileId,
         limit: usize,
     ) -> anyhow::Result<Vec<SearchResult>> {
-        let file_path = self.store.get_file(file_id)
+        let file_path = self
+            .store
+            .get_file(file_id)
             .ok()
             .flatten()
             .map(|info| info.path)
@@ -382,9 +395,9 @@ fn compute_name_similarity(query: &str, name: &str, query_norm: &[String]) -> f6
     }
 
     // Word-level matching: if any normalized word matches, boost slightly
-    let word_match = query_norm.iter().any(|w| {
-        !w.is_empty() && name_norm.iter().any(|nw| nw == w)
-    });
+    let word_match = query_norm
+        .iter()
+        .any(|w| !w.is_empty() && name_norm.iter().any(|nw| nw == w));
     if word_match {
         // Partial word match — scale by how many words overlap
         let overlap = query_norm.iter().filter(|w| name_norm.contains(w)).count();
@@ -420,21 +433,38 @@ mod tests {
 
     fn seed_symbols(store: &Store) {
         let fid = crate::types::FileId::generate("test.ts");
-        store.upsert_file(&FileInfo {
-            file_id: fid,
-            path: "test.ts".into(),
-            language: Language::TypeScript,
-            content_hash: "abc".into(),
-            status: ParseStatus::Success,
-        }).unwrap();
+        store
+            .upsert_file(&FileInfo {
+                file_id: fid,
+                path: "test.ts".into(),
+                language: Language::TypeScript,
+                content_hash: "abc".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
 
         let syms: Vec<SymbolDef> = vec![
             mk_sym(fid, "UserManager", "UserManager", SymbolKind::Class),
-            mk_sym(fid, "createUser", "UserManager.createUser", SymbolKind::Method),
-            mk_sym(fid, "deleteUser", "UserManager.deleteUser", SymbolKind::Method),
+            mk_sym(
+                fid,
+                "createUser",
+                "UserManager.createUser",
+                SymbolKind::Method,
+            ),
+            mk_sym(
+                fid,
+                "deleteUser",
+                "UserManager.deleteUser",
+                SymbolKind::Method,
+            ),
             mk_sym(fid, "UserRouter", "UserRouter", SymbolKind::Class),
             mk_sym(fid, "findUser", "UserRouter.findUser", SymbolKind::Method),
-            mk_sym(fid, "get_user_name", "UserManager.get_user_name", SymbolKind::Method),
+            mk_sym(
+                fid,
+                "get_user_name",
+                "UserManager.get_user_name",
+                SymbolKind::Method,
+            ),
         ];
         store.insert_symbols(&syms).unwrap();
     }
@@ -489,7 +519,9 @@ mod tests {
         seed_symbols(&store);
         let engine = test_engine(store);
 
-        let results = engine.search_by_kind("User", SymbolKind::Method, 10).unwrap();
+        let results = engine
+            .search_by_kind("User", SymbolKind::Method, 10)
+            .unwrap();
         for r in &results {
             assert_eq!(r.symbol.kind, SymbolKind::Method);
         }
@@ -509,7 +541,10 @@ mod tests {
     fn test_camel_case_split() {
         assert_eq!(split_camel_case("getUser"), vec!["get", "user"]);
         assert_eq!(split_camel_case("UserManager"), vec!["user", "manager"]);
-        assert_eq!(split_camel_case("get_user_name"), vec!["get", "user", "name"]);
+        assert_eq!(
+            split_camel_case("get_user_name"),
+            vec!["get", "user", "name"]
+        );
         assert_eq!(split_camel_case("XMLParser"), vec!["xml", "parser"]);
         assert_eq!(split_camel_case("simple"), vec!["simple"]);
     }
@@ -547,7 +582,10 @@ mod tests {
 
         // "anager" won't match FTS5 prefix, but LIKE should find "UserManager"
         let results = engine.search_simple("anager", 10).unwrap();
-        assert!(!results.is_empty(), "LIKE fallback should find 'UserManager'");
+        assert!(
+            !results.is_empty(),
+            "LIKE fallback should find 'UserManager'"
+        );
     }
 
     #[test]
@@ -556,11 +594,13 @@ mod tests {
         seed_symbols(&store);
         let engine = test_engine(store);
 
-        let results = engine.search(
-            "User",
-            10,
-            &SearchOptions::new().with_language(Language::TypeScript),
-        ).unwrap();
+        let results = engine
+            .search(
+                "User",
+                10,
+                &SearchOptions::new().with_language(Language::TypeScript),
+            )
+            .unwrap();
         for r in &results {
             assert_eq!(r.symbol.language, Language::TypeScript);
         }

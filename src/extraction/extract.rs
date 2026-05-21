@@ -6,27 +6,59 @@
 //! 3. Calls `normalize_*()` on each capture — adapter converts raw nodes into Atlas IR
 //! 4. Assembles FileFacts (structural edges left to resolver phase)
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::path::Path;
 use tree_sitter::{Parser, Query, QueryCursor};
 
-use crate::types::{
-    Callsite, DiagnosticLevel, ExtractDiagnostic, FileFacts, FileInfo,
-    ParseStatus, ReferenceKind, SymbolDef,
-};
 use crate::types::dataflow::DataNode;
 use crate::types::enums::SymbolKind;
 use crate::types::ids::{CallsiteId, FileId};
+use crate::types::{
+    ArgumentFact, Callsite, DiagnosticLevel, ExtractDiagnostic, FileFacts, FileInfo, ParseStatus,
+    ReferenceKind, SymbolDef, TextRange,
+};
 
-use super::languages::LanguageAdapter;
-use super::semantic_binder::SemanticBinder;
-use super::lexical_binder::LexicalBindingResult;
-use super::dataflow_builder::{DataFlowBuilder, DataFlowResult};
+use super::callsite_spec::CallsiteParts;
 use super::cfg_builder::{CfgBuilder, CfgResult};
+use super::dataflow_builder::{DataFlowBuilder, DataFlowResult};
+use super::frontend::LanguageFrontend;
+use super::languages::LanguageAdapter;
+use super::lexical_binder::LexicalBindingResult;
+use super::semantic_binder::SemanticBinder;
 
-/// Extract a single file's facts using the given adapter.
+// ── P2: Thread-local tree-sitter parser ──────────────────────────────────
+//
+// Creating a new `tree_sitter::Parser` per file is expensive (alloc + init).
+// Thread-local storage reuses one parser per Rayon worker thread.
+
+thread_local! {
+    static TL_PARSER: std::cell::RefCell<Option<Parser>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Get (or create) a thread-local parser set to the given language.
+/// The parser is reset and ready for a new parse.
+fn tl_parse(
+    ts_lang: &tree_sitter::Language,
+    source_bytes: &[u8],
+) -> Result<tree_sitter::Tree> {
+    TL_PARSER.with(|cell| {
+        let mut opt = cell.borrow_mut();
+        if opt.is_none() {
+            *opt = Some(Parser::new());
+        }
+        let parser = opt.as_mut().unwrap();
+        parser
+            .set_language(ts_lang)
+            .map_err(|e| anyhow!("Failed to set tree-sitter language: {}", e))?;
+        parser.parse(source_bytes, None)
+            .context("Failed to parse source")
+    })
+}
+
+
+/// Extract a single file's facts using the given language frontend.
 pub fn extract_file(
-    adapter: &dyn LanguageAdapter,
+    frontend: &LanguageFrontend,
     file_id: FileId,
     file_path: &Path,
     source: &str,
@@ -34,19 +66,10 @@ pub fn extract_file(
 ) -> Result<FileFacts> {
     let mut diagnostics = Vec::new();
 
-    let ts_lang = adapter.tree_sitter_language();
-
-    // 1. Parse
-    let mut parser = Parser::new();
-    parser
-        .set_language(&ts_lang)
-        .context("Failed to set tree-sitter language")?;
-
+    // 1. Parse (P2: uses thread-local parser to avoid per-file alloc)
+    let ts_lang = frontend.parser.tree_sitter_language();
     let source_bytes = source.as_bytes();
-    let tree = parser
-        .parse(source_bytes, None)
-        .context("Failed to parse source")?;
-
+    let tree = tl_parse(&ts_lang, source_bytes)?;
     let root = tree.root_node();
 
     if root.has_error() {
@@ -57,42 +80,62 @@ pub fn extract_file(
         });
     }
 
-    let language = adapter.language();
+    let language = frontend.language();
 
     // 2. Extract and normalize definitions
     let mut symbols = extract_and_normalize(
-        adapter, &ts_lang, adapter.definition_query(), root, source, source_bytes,
-        file_id, file_path, &mut diagnostics,
-        |adapter, name, node, src, fid, fp| {
-            adapter.normalize_definition(&name, node, src, fid, fp)
-        },
+        frontend.adapter(),
+        &ts_lang,
+        frontend.symbols.definition_query(),
+        root,
+        source,
+        source_bytes,
+        file_id,
+        file_path,
+        &mut diagnostics,
+        |adapter, name, node, src, fid, fp| adapter.normalize_definition(&name, node, src, fid, fp),
     )?;
 
     // 3. Extract and normalize references
     let mut references = extract_and_normalize(
-        adapter, &ts_lang, adapter.reference_query(), root, source, source_bytes,
-        file_id, file_path, &mut diagnostics,
-        |adapter, name, node, src, fid, fp| {
-            adapter.normalize_reference(&name, node, src, fid, fp)
-        },
+        frontend.adapter(),
+        &ts_lang,
+        frontend.references.reference_query(),
+        root,
+        source,
+        source_bytes,
+        file_id,
+        file_path,
+        &mut diagnostics,
+        |adapter, name, node, src, fid, fp| adapter.normalize_reference(&name, node, src, fid, fp),
     )?;
 
     // 4. Extract and normalize imports
     let imports = extract_and_normalize(
-        adapter, &ts_lang, adapter.import_query(), root, source, source_bytes,
-        file_id, file_path, &mut diagnostics,
-        |adapter, name, node, src, fid, fp| {
-            adapter.normalize_import(&name, node, src, fid, fp)
-        },
+        frontend.adapter(),
+        &ts_lang,
+        frontend.imports.import_query(),
+        root,
+        source,
+        source_bytes,
+        file_id,
+        file_path,
+        &mut diagnostics,
+        |adapter, name, node, src, fid, fp| adapter.normalize_import(&name, node, src, fid, fp),
     )?;
 
     // 5. Extract and normalize scopes
     let mut scopes = extract_and_normalize(
-        adapter, &ts_lang, adapter.scope_query(), root, source, source_bytes,
-        file_id, file_path, &mut diagnostics,
-        |adapter, name, node, src, fid, fp| {
-            adapter.normalize_scope(&name, node, src, fid, fp)
-        },
+        frontend.adapter(),
+        &ts_lang,
+        frontend.scopes.scope_query(),
+        root,
+        source,
+        source_bytes,
+        file_id,
+        file_path,
+        &mut diagnostics,
+        |adapter, name, node, src, fid, fp| adapter.normalize_scope(&name, node, src, fid, fp),
     )?;
 
     // 6. Raw edges are now populated downstream by GraphBuilder (new P3 path).
@@ -102,45 +145,72 @@ pub fn extract_file(
     // 7. Build scope tree and assign containers
     super::build_scope_tree(&mut scopes, &mut symbols);
 
-    // 7a. Extract lexical bindings (parameters, locals, import aliases, etc.)
-    //     This runs the adapter's lexical_query() to find binding definitions and uses.
-    let lexical_result = super::lexical_binder::LexicalBinder::extract(
-        adapter, &ts_lang, root, source, source_bytes,
-        file_id, file_path, &scopes, &symbols,
-    )
-    .unwrap_or_else(|e| {
-        diagnostics.push(ExtractDiagnostic {
-            level: DiagnosticLevel::Warning,
-            message: format!("Lexical binding extraction failed: {}", e),
-            range: None,
-        });
-        LexicalBindingResult { bindings: vec![], uses: vec![] }
-    });
-    let bindings = lexical_result.bindings;
-    let binding_uses = lexical_result.uses;
-
-    // 7b. Build dataflow graph (DataNodes + DataFlowEdges)
-    //     Runs the adapter's dataflow_builder_query() to find assignments,
-    //     returns, call args, member accesses, and literals.
-    let dataflow_result = super::dataflow_builder::DataFlowBuilder::extract(
-        adapter, &ts_lang, root, source, source_bytes,
-        file_id, file_path, &bindings, &scopes,
-    )
-    .unwrap_or_else(|e| {
-        diagnostics.push(ExtractDiagnostic {
-            level: DiagnosticLevel::Warning,
-            message: format!("DataFlow builder failed: {}", e),
-            range: None,
-        });
-        DataFlowResult::default()
-    });
-    let mut data_nodes = dataflow_result.nodes;
-    let mut dataflow_edges = dataflow_result.edges;
-
-    // 7c. Build per-function control-flow graphs (CfgBuilder)
-    //     Matches function symbols to tree-sitter nodes, builds CFG for each.
-    let cfg_result = build_cfg_for_functions(root, &symbols, source_bytes)
+    // 7a. Extract lexical bindings (P7: skip if unsupported)
+    let (bindings, binding_uses) = if frontend.lexical.capability().is_supported() {
+        let lexical_result = super::lexical_binder::LexicalBinder::extract(
+            frontend.adapter(),
+            &ts_lang,
+            root,
+            source,
+            source_bytes,
+            file_id,
+            file_path,
+            &scopes,
+            &symbols,
+        )
         .unwrap_or_else(|e| {
+            diagnostics.push(ExtractDiagnostic {
+                level: DiagnosticLevel::Warning,
+                message: format!("Lexical binding extraction failed: {}", e),
+                range: None,
+            });
+            LexicalBindingResult { bindings: vec![], uses: vec![] }
+        });
+        (lexical_result.bindings, lexical_result.uses)
+    } else {
+        (vec![], vec![])
+    };
+
+    // 7b. Build dataflow graph (P7: skip if unsupported)
+    let (mut data_nodes, dataflow_edges) = if frontend.dataflow.capability().is_supported() {
+        let dataflow_result = super::dataflow_builder::DataFlowBuilder::extract(
+            frontend.adapter(),
+            &ts_lang,
+            root,
+            source,
+            source_bytes,
+            file_id,
+            file_path,
+            &bindings,
+            &scopes,
+        )
+        .unwrap_or_else(|e| {
+            diagnostics.push(ExtractDiagnostic {
+                level: DiagnosticLevel::Warning,
+                message: format!("DataFlow builder failed: {}", e),
+                range: None,
+            });
+            DataFlowResult::default()
+        });
+        let nodes = dataflow_result.nodes;
+        let edges = dataflow_result.edges;
+
+        // 7c. Build use-def edges (only if dataflow succeeded)
+        let use_def_edges = DataFlowBuilder::resolve_use_def(&nodes);
+        let mut all_edges = edges;
+        all_edges.extend(use_def_edges);
+
+        (nodes, all_edges)
+    } else {
+        (vec![], vec![])
+    };
+
+    // 7d. Resolve DataNode function_ids (only if dataflow was built)
+    resolve_dataflow_function_ids(&mut data_nodes, &symbols);
+
+    // 7e. Build per-function control-flow graphs (P7: skip if CFG unsupported)
+    let (cfg_nodes, cfg_edges) = if frontend.capability.supported_features.contains(&"cfg".to_string()) {
+        let cfg_result = build_cfg_for_functions(root, &symbols, source_bytes).unwrap_or_else(|e| {
             diagnostics.push(ExtractDiagnostic {
                 level: DiagnosticLevel::Warning,
                 message: format!("CFG builder failed: {}", e),
@@ -148,21 +218,10 @@ pub fn extract_file(
             });
             CfgResult::default()
         });
-    let cfg_nodes = cfg_result.nodes;
-    let cfg_edges = cfg_result.edges;
-
-    // 7d. Resolve DataNode function_ids from enclosing function symbols.
-    //     DataFlowBuilder produces nodes without function_id (None).  This
-    //     step walks the AST to find the enclosing function for each node
-    //     and sets function_id to the matching SymbolDef.
-    resolve_dataflow_function_ids(&mut data_nodes, &symbols);
-
-    // 7e. Resolve cross-statement use-def edges.
-    //     After function_ids are set, group nodes by (function_id, name)
-    //     and create edges from the first definition to later uses.
-    //     This enables basic taint propagation across statements.
-    let use_def_edges = DataFlowBuilder::resolve_use_def(&data_nodes);
-    dataflow_edges.extend(use_def_edges);
+        (cfg_result.nodes, cfg_result.edges)
+    } else {
+        (vec![], vec![])
+    };
 
     // 8. Bind source ownership and scope through the semantic binder.
     // This is the single source of truth for references/dataflow/callsites:
@@ -172,32 +231,98 @@ pub fn extract_file(
     binder.bind_all(file_id, &mut references, &mut raw_edges);
 
     // 9. Derive callsites from Call references
+    //
+    //    The reference range only covers the callee name (e.g. `inner`),
+    //    but the callsite range should span the entire call expression
+    //    (e.g. `inner(doubled)`) so that positions on arguments still
+    //    match the callsite during fallback lookup.
+    //
+    //    We use the `frontend.callsites` slot, which delegates to the
+    //    language-specific `CallsiteExtractorSpec`.  The spec handles
+    //    all AST walking internally (including universal fallback for
+    //    edge cases).  If the spec returns None, we fall back to using
+    //    the reference range as the callsite range.
     let callsites: Vec<Callsite> = references
         .iter()
         .filter(|r| r.kind == ReferenceKind::Call && r.source_symbol.is_some())
         .map(|r| {
             let caller = r.source_symbol.unwrap(); // safe: filter ensures Some
             let cs_id = CallsiteId::generate(&r.id, Some(&caller), r.range.start_byte);
+
+            let parts = frontend.callsites.extract_callsite(
+                root,
+                r.range.start_byte as usize,
+                r.range.end_byte as usize,
+                source,
+            );
+
+            let (callsite_range, callee_range, receiver_fallback, argument_ranges, _call_kind) =
+                if let Some(CallsiteParts {
+                    call_range,
+                    callee_range,
+                    receiver_text,
+                    argument_ranges,
+                    call_kind,
+                    ..
+                }) = parts
+                {
+                    (
+                        call_range,
+                        Some(callee_range),
+                        receiver_text,
+                        argument_ranges,
+                        Some(call_kind),
+                    )
+                } else {
+                    // Spec couldn't find a call expression — fall back to reference range.
+                    // This is a safety net; the spec's built-in universal fallback should
+                    // handle all real-world call-expression node kinds.
+                    let callee_range = Some(r.range);
+                    (r.range, callee_range, None, Vec::new(), None)
+                };
+
+            let receiver = r.receiver.clone().or(receiver_fallback);
+            let args: Vec<ArgumentFact> = argument_ranges
+                .into_iter()
+                .enumerate()
+                .map(|(i, arg_range)| {
+                    let value = source[arg_range.start_byte as usize..arg_range.end_byte as usize]
+                        .to_string();
+                    ArgumentFact {
+                        index: i as u32,
+                        name: None,
+                        value,
+                        range: Some(arg_range),
+                        data_node_id: None,
+                    }
+                })
+                .collect();
+
             Callsite {
                 id: cs_id,
                 reference_id: Some(r.id),
                 caller,
-                callee: None,      // resolved later by the resolution pipeline
-                receiver: r.receiver.clone(),
-                args: Vec::new(),  // arguments filled later by dataflow resolution
-                range: r.range,
+                callee: None, // resolved later by the resolution pipeline
+                receiver,
+                args,
+                range: callsite_range,
+                callee_range,
             }
         })
         .collect();
 
     // 10. Collect exported symbol IDs
-    let exports: Vec<_> = symbols.iter()
+    let exports: Vec<_> = symbols
+        .iter()
         .filter(|s| s.exported)
         .map(|s| s.id)
         .collect();
 
     // Determine parse status
-    let status = if diagnostics.iter().any(|d| d.level == DiagnosticLevel::Error) {
+    let status = if diagnostics
+        .iter()
+        .any(|d| d.level == DiagnosticLevel::Error)
+    {
         ParseStatus::Error
     } else if !diagnostics.is_empty() {
         ParseStatus::Partial
@@ -218,16 +343,16 @@ pub fn extract_file(
         references,
         imports,
         exports,
-        raw_edges,         // Symbol-level dataflow edges from normalize_dataflow (old path)
-        callsites,         // Derived from Call references (resolved later)
+        raw_edges, // Symbol-level dataflow edges from normalize_dataflow (old path)
+        callsites, // Derived from Call references (resolved later)
         diagnostics,
-        bindings,          // lexical binding definitions
-        binding_uses,      // lexical binding use sites
-        data_nodes,        // per-function dataflow nodes
-        dataflow_edges,    // DataNode→DataNode dataflow edges
-        callsite_args: vec![],  // filled later by post-processing
-        cfg_nodes,          // per-function control-flow graph nodes
-        cfg_edges,          // per-function control-flow graph edges
+        bindings,              // lexical binding definitions
+        binding_uses,          // lexical binding use sites
+        data_nodes,            // per-function dataflow nodes
+        dataflow_edges,        // DataNode→DataNode dataflow edges
+        callsite_args: vec![], // filled later by post-processing
+        cfg_nodes,             // per-function control-flow graph nodes
+        cfg_edges,             // per-function control-flow graph edges
     })
 }
 
@@ -246,7 +371,14 @@ fn extract_and_normalize<'a, T>(
     file_id: FileId,
     file_path: &Path,
     diagnostics: &mut Vec<ExtractDiagnostic>,
-    mut normalize: impl FnMut(&dyn LanguageAdapter, String, tree_sitter::Node<'a>, &str, FileId, &Path) -> Option<T>,
+    mut normalize: impl FnMut(
+        &dyn LanguageAdapter,
+        String,
+        tree_sitter::Node<'a>,
+        &str,
+        FileId,
+        &Path,
+    ) -> Option<T>,
 ) -> Result<Vec<T>> {
     let captures = collect_captures(ts_lang, query_src, root, source_bytes)?;
     let mut results = Vec::new();
@@ -263,7 +395,7 @@ fn extract_and_normalize<'a, T>(
                         name,
                         pos.row + 1
                     ),
-                    range: Some(crate::types::TextRange {
+                    range: Some(TextRange {
                         start_byte: node.start_byte() as u32,
                         end_byte: node.end_byte() as u32,
                         start_line: pos.row as u32,
@@ -293,9 +425,12 @@ pub(crate) fn collect_captures<'a>(
         return Ok(Vec::new());
     }
 
-    let query = Query::new(ts_lang, trimmed)
-        .map_err(|e| anyhow!("Query compile error: {}", e))?;
-    let capture_names: Vec<String> = query.capture_names().iter().map(|s| s.to_string()).collect();
+    let query = Query::new(ts_lang, trimmed).map_err(|e| anyhow!("Query compile error: {}", e))?;
+    let capture_names: Vec<String> = query
+        .capture_names()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
 
     let mut cursor = QueryCursor::new();
     let mut captures_result = Vec::new();
@@ -303,7 +438,8 @@ pub(crate) fn collect_captures<'a>(
     let mut captures = cursor.captures(&query, root, source_bytes);
     while let Some((m, capture_index)) = captures.next() {
         if let Some(cap) = m.captures.get(*capture_index) {
-            let name = capture_names.get(cap.index as usize)
+            let name = capture_names
+                .get(cap.index as usize)
                 .cloned()
                 .unwrap_or_else(|| format!("capture_{}", cap.index));
             captures_result.push((name, cap.node));
@@ -316,10 +452,15 @@ pub(crate) fn collect_captures<'a>(
 
 /// Function node kinds that CfgBuilder handles across languages.
 const FUNCTION_NODE_KINDS: &[&str] = &[
-    "function_declaration", "method_definition", "arrow_function",
-    "generator_function_declaration", "generator_function",
-    "function_definition", "async_function_definition",
-    "method_declaration", "constructor_declaration",
+    "function_declaration",
+    "method_definition",
+    "arrow_function",
+    "generator_function_declaration",
+    "generator_function",
+    "function_definition",
+    "async_function_definition",
+    "method_declaration",
+    "constructor_declaration",
 ];
 
 /// Build per-function control-flow graphs by matching function symbols
@@ -331,8 +472,12 @@ fn build_cfg_for_functions<'a>(
 ) -> anyhow::Result<CfgResult> {
     let function_symbols: Vec<&SymbolDef> = symbols
         .iter()
-        .filter(|s| matches!(s.kind,
-            SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor))
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
         .collect();
 
     let mut all_nodes = Vec::new();
@@ -346,7 +491,10 @@ fn build_cfg_for_functions<'a>(
         }
     }
 
-    Ok(CfgResult { nodes: all_nodes, edges: all_edges })
+    Ok(CfgResult {
+        nodes: all_nodes,
+        edges: all_edges,
+    })
 }
 
 /// Resolve DataNode function_ids by matching each node to its enclosing
@@ -354,15 +502,16 @@ fn build_cfg_for_functions<'a>(
 ///
 /// For each DataNode with `function_id: None`, finds the function symbol
 /// whose range contains the node's start position, and sets the id.
-fn resolve_dataflow_function_ids(
-    nodes: &mut [DataNode],
-    symbols: &[SymbolDef],
-) {
+fn resolve_dataflow_function_ids(nodes: &mut [DataNode], symbols: &[SymbolDef]) {
     // Build (start_byte, end_byte, symbol_id) for all function symbols
     let function_ranges: Vec<(u32, u32, crate::types::ids::SymbolId)> = symbols
         .iter()
-        .filter(|s| matches!(s.kind,
-            SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor))
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
         .map(|s| (s.range.start_byte, s.range.end_byte, s.id))
         .collect();
 
@@ -413,22 +562,44 @@ fn find_function_node<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extraction::languages::typescript::TypeScriptAdapter;
+    use crate::extraction::create_frontend;
     use crate::extraction::languages::python::PythonAdapter;
+    use crate::extraction::languages::typescript::TypeScriptAdapter;
     use crate::types::Language;
     use std::path::PathBuf;
+
+    /// Helper: create a TypeScript LanguageFrontend for tests.
+    fn ts_frontend() -> LanguageFrontend {
+        LanguageFrontend::from_adapter(Box::new(TypeScriptAdapter))
+    }
+    /// Helper: create a Python LanguageFrontend for tests.
+    fn py_frontend() -> LanguageFrontend {
+        LanguageFrontend::from_adapter(Box::new(PythonAdapter))
+    }
 
     fn assert_sources_are_known(facts: &FileFacts) {
         let known: std::collections::HashSet<_> = facts.symbols.iter().map(|s| s.id).collect();
         for edge in &facts.raw_edges {
-            assert!(known.contains(&edge.source), "raw edge has ghost source: {:?}", edge);
+            assert!(
+                known.contains(&edge.source),
+                "raw edge has ghost source: {:?}",
+                edge
+            );
         }
         for callsite in &facts.callsites {
-            assert!(known.contains(&callsite.caller), "callsite has ghost caller: {:?}", callsite);
+            assert!(
+                known.contains(&callsite.caller),
+                "callsite has ghost caller: {:?}",
+                callsite
+            );
         }
         for reference in &facts.references {
             if let Some(source) = reference.source_symbol {
-                assert!(known.contains(&source), "reference has ghost source: {:?}", reference);
+                assert!(
+                    known.contains(&source),
+                    "reference has ghost source: {:?}",
+                    reference
+                );
             }
         }
     }
@@ -446,10 +617,10 @@ export function f() {
 [1].map(n => n + 1);
 "#;
         let file_id = FileId::generate("arrow.ts");
-        let adapter = TypeScriptAdapter;
+        let frontend = ts_frontend();
         let file_path = PathBuf::from("arrow.ts");
 
-        let facts = extract_file(&adapter, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
         assert_sources_are_known(&facts);
 
         let store = Store::open_in_memory().unwrap();
@@ -471,10 +642,10 @@ function g() {
 }
 "#;
         let file_id = FileId::generate("arrow.js");
-        let adapter = crate::extraction::create_adapter(Language::JavaScript).unwrap();
+        let frontend = create_frontend(Language::JavaScript).unwrap();
         let file_path = PathBuf::from("arrow.js");
 
-        let facts = extract_file(adapter.as_ref(), file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
         assert_sources_are_known(&facts);
 
         let store = Store::open_in_memory().unwrap();
@@ -501,10 +672,10 @@ void C::m() {
 }
 "#;
         let file_id = FileId::generate("out_of_class.cpp");
-        let adapter = crate::extraction::create_adapter(Language::Cpp).unwrap();
+        let frontend = create_frontend(Language::Cpp).unwrap();
         let file_path = PathBuf::from("out_of_class.cpp");
 
-        let facts = extract_file(adapter.as_ref(), file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
         assert_sources_are_known(&facts);
 
         let store = Store::open_in_memory().unwrap();
@@ -517,13 +688,17 @@ void C::m() {
     fn test_extract_ts_simple() {
         let source = "const foo = 1;\nconsole.log(foo);\n";
         let file_id = FileId::generate("test.ts");
-        let adapter = TypeScriptAdapter;
+        let frontend = ts_frontend();
         let file_path = PathBuf::from("test.ts");
 
-        let facts = extract_file(&adapter, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
         assert_eq!(facts.file.path, "test.ts");
         assert_eq!(facts.file.language, Language::TypeScript);
-        assert!(!facts.symbols.is_empty(), "Should have symbols: {:?}", facts.symbols);
+        assert!(
+            !facts.symbols.is_empty(),
+            "Should have symbols: {:?}",
+            facts.symbols
+        );
         assert!(!facts.references.is_empty(), "Should have references");
     }
 
@@ -531,10 +706,10 @@ void C::m() {
     fn test_extract_python_simple() {
         let source = "def foo():\n    return True\n\nfoo()\n";
         let file_id = FileId::generate("test.py");
-        let adapter = PythonAdapter;
+        let frontend = py_frontend();
         let file_path = PathBuf::from("test.py");
 
-        let facts = extract_file(&adapter, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
         assert_eq!(facts.file.language, Language::Python);
         assert!(!facts.symbols.is_empty(), "Should have symbols");
     }
@@ -542,14 +717,18 @@ void C::m() {
     #[test]
     fn test_extract_ts_dataflow() {
         // New P3 path: DataFlowBuilder produces DataNodes + DataFlowEdges
-        let source = "function add(a: number, b: number) {\n  let result = a + b;\n  return result;\n}\n";
+        let source =
+            "function add(a: number, b: number) {\n  let result = a + b;\n  return result;\n}\n";
         let file_id = FileId::generate("test.ts");
-        let adapter = TypeScriptAdapter;
+        let frontend = ts_frontend();
         let file_path = PathBuf::from("test.ts");
 
-        let facts = extract_file(&adapter, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
         assert!(!facts.data_nodes.is_empty(), "Should have dataflow nodes");
-        assert!(!facts.dataflow_edges.is_empty(), "Should have dataflow edges");
+        assert!(
+            !facts.dataflow_edges.is_empty(),
+            "Should have dataflow edges"
+        );
     }
 
     #[test]
@@ -559,10 +738,10 @@ void C::m() {
         // normalize_dataflow path.
         let source = "def add(a, b):\n    c = a + b\n    return c\n";
         let file_id = FileId::generate("test.py");
-        let adapter = PythonAdapter;
+        let frontend = py_frontend();
         let file_path = PathBuf::from("test.py");
 
-        let facts = extract_file(&adapter, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
         assert!(!facts.symbols.is_empty(), "Should have symbols");
         assert!(facts.raw_edges.is_empty(), "Old dataflow path removed");
     }
@@ -572,21 +751,32 @@ void C::m() {
         use crate::db::Store;
         let source = "function add(a: number, b: number) {\n  return a + b;\n}\nadd(1, 2);\n";
         let file_id = FileId::generate("test.ts");
-        let adapter = TypeScriptAdapter;
+        let frontend = ts_frontend();
         let file_path = PathBuf::from("test.ts");
 
-        let facts = extract_file(&adapter, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
         println!("Symbols: {}", facts.symbols.len());
         for s in &facts.symbols {
             let sid = s.id.to_hex();
-            println!("  sym: {} ({}) qname={} id={}", s.name, s.kind.as_str(), s.qualified_name, &sid[..8]);
+            println!(
+                "  sym: {} ({}) qname={} id={}",
+                s.name,
+                s.kind.as_str(),
+                s.qualified_name,
+                &sid[..8]
+            );
         }
         println!("References: {}", facts.references.len());
         println!("Dataflow edges: {}", facts.raw_edges.len());
         for e in &facts.raw_edges {
             let src = e.source.to_hex();
             let tgt = e.target.to_hex();
-            println!("  edge: {} -> {} ({})", &src[..8], &tgt[..8], e.kind.as_str());
+            println!(
+                "  edge: {} -> {} ({})",
+                &src[..8],
+                &tgt[..8],
+                e.kind.as_str()
+            );
         }
 
         let store = Store::open_in_memory().unwrap();
@@ -607,10 +797,10 @@ const calc = new Calculator();
 calc.add(1, 2);
 "#;
         let file_id = FileId::generate("test.ts");
-        let adapter = TypeScriptAdapter;
+        let frontend = ts_frontend();
         let file_path = PathBuf::from("test.ts");
 
-        let facts = extract_file(&adapter, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
         assert!(!facts.symbols.is_empty());
 
         let store = Store::open_in_memory().unwrap();
@@ -638,14 +828,20 @@ public class UserService {
 }
 "#;
         let file_id = FileId::generate("test.java");
-        let adapter = crate::extraction::create_adapter(Language::Java).unwrap();
+        let frontend = create_frontend(Language::Java).unwrap();
         let file_path = PathBuf::from("test.java");
 
-        let facts = extract_file(adapter.as_ref(), file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
         println!("Java Symbols: {}", facts.symbols.len());
         for s in &facts.symbols {
             let sid = s.id.to_hex();
-            println!("  sym: {} ({}) qname={} id={}", s.name, s.kind.as_str(), s.qualified_name, &sid[..8]);
+            println!(
+                "  sym: {} ({}) qname={} id={}",
+                s.name,
+                s.kind.as_str(),
+                s.qualified_name,
+                &sid[..8]
+            );
         }
         println!("References: {}", facts.references.len());
         println!("Imports: {}", facts.imports.len());
@@ -654,7 +850,12 @@ public class UserService {
         for e in &facts.raw_edges {
             let src = e.source.to_hex();
             let tgt = e.target.to_hex();
-            println!("  edge: {} -> {} ({})", &src[..8], &tgt[..8], e.kind.as_str());
+            println!(
+                "  edge: {} -> {} ({})",
+                &src[..8],
+                &tgt[..8],
+                e.kind.as_str()
+            );
         }
 
         let store = Store::open_in_memory().unwrap();
@@ -696,20 +897,31 @@ char* user_greet(const User* u) {
 }
 "#;
         let file_id = FileId::generate("test.c");
-        let adapter = crate::extraction::create_adapter(Language::C).unwrap();
+        let frontend = create_frontend(Language::C).unwrap();
         let file_path = PathBuf::from("test.c");
 
-        let facts = extract_file(adapter.as_ref(), file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
         println!("C Symbols: {}", facts.symbols.len());
         for s in &facts.symbols {
             let sid = s.id.to_hex();
-            println!("  sym: {} ({}) qname={} id={}", s.name, s.kind.as_str(), s.qualified_name, &sid[..8]);
+            println!(
+                "  sym: {} ({}) qname={} id={}",
+                s.name,
+                s.kind.as_str(),
+                s.qualified_name,
+                &sid[..8]
+            );
         }
         println!("Dataflow edges: {}", facts.raw_edges.len());
         for e in &facts.raw_edges {
             let src = e.source.to_hex();
             let tgt = e.target.to_hex();
-            println!("  edge: {} -> {} ({})", &src[..8], &tgt[..8], e.kind.as_str());
+            println!(
+                "  edge: {} -> {} ({})",
+                &src[..8],
+                &tgt[..8],
+                e.kind.as_str()
+            );
         }
 
         let store = Store::open_in_memory().unwrap();
@@ -742,20 +954,31 @@ private:
 };
 "#;
         let file_id = FileId::generate("test.cpp");
-        let adapter = crate::extraction::create_adapter(Language::Cpp).unwrap();
+        let frontend = create_frontend(Language::Cpp).unwrap();
         let file_path = PathBuf::from("test.cpp");
 
-        let facts = extract_file(adapter.as_ref(), file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
         println!("C++ Symbols: {}", facts.symbols.len());
         for s in &facts.symbols {
             let sid = s.id.to_hex();
-            println!("  sym: {} ({}) qname={} id={}", s.name, s.kind.as_str(), s.qualified_name, &sid[..8]);
+            println!(
+                "  sym: {} ({}) qname={} id={}",
+                s.name,
+                s.kind.as_str(),
+                s.qualified_name,
+                &sid[..8]
+            );
         }
         println!("Dataflow edges: {}", facts.raw_edges.len());
         for e in &facts.raw_edges {
             let src = e.source.to_hex();
             let tgt = e.target.to_hex();
-            println!("  edge: {} -> {} ({})", &src[..8], &tgt[..8], e.kind.as_str());
+            println!(
+                "  edge: {} -> {} ({})",
+                &src[..8],
+                &tgt[..8],
+                e.kind.as_str()
+            );
         }
 
         let store = Store::open_in_memory().unwrap();
@@ -821,20 +1044,31 @@ int main() {
 }
 "#;
         let file_id = FileId::generate("test.cpp");
-        let adapter = crate::extraction::create_adapter(Language::Cpp).unwrap();
+        let frontend = create_frontend(Language::Cpp).unwrap();
         let file_path = PathBuf::from("test.cpp");
 
-        let facts = extract_file(adapter.as_ref(), file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
         println!("C++ E2E Symbols: {}", facts.symbols.len());
         for s in &facts.symbols {
             let sid = s.id.to_hex();
-            println!("  sym: {} ({}) qname={} id={}", s.name, s.kind.as_str(), s.qualified_name, &sid[..8]);
+            println!(
+                "  sym: {} ({}) qname={} id={}",
+                s.name,
+                s.kind.as_str(),
+                s.qualified_name,
+                &sid[..8]
+            );
         }
         println!("Dataflow edges: {}", facts.raw_edges.len());
         for e in &facts.raw_edges {
             let src = e.source.to_hex();
             let tgt = e.target.to_hex();
-            println!("  edge: {} -> {} ({})", &src[..8], &tgt[..8], e.kind.as_str());
+            println!(
+                "  edge: {} -> {} ({})",
+                &src[..8],
+                &tgt[..8],
+                e.kind.as_str()
+            );
         }
 
         let store = Store::open_in_memory().unwrap();

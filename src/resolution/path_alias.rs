@@ -140,7 +140,11 @@ impl PathAliasResolver {
         // When `paths` are configured, unmatched bare specifiers like "lodash"
         // are assumed to be external npm packages — don't resolve them via baseUrl.
         // When only baseUrl is set (no paths), resolve bare specifiers against it.
-        if self.paths.is_empty() && self.base_url.is_some() && !import_path.starts_with('.') && !import_path.starts_with('/') {
+        if self.paths.is_empty()
+            && self.base_url.is_some()
+            && !import_path.starts_with('.')
+            && !import_path.starts_with('/')
+        {
             return Some(self.apply_base_url(import_path));
         }
 
@@ -154,7 +158,11 @@ impl PathAliasResolver {
             if base_str.is_empty() || base_str == "." {
                 return path.to_string();
             }
-            format!("{}/{}", base_str.trim_end_matches('/'), path.trim_start_matches("./"))
+            format!(
+                "{}/{}",
+                base_str.trim_end_matches('/'),
+                path.trim_start_matches("./")
+            )
         } else {
             path.to_string()
         }
@@ -187,7 +195,10 @@ mod tests {
             paths,
         };
 
-        assert_eq!(resolver.resolve("@/components/Button"), Some("src/components/Button".to_string()));
+        assert_eq!(
+            resolver.resolve("@/components/Button"),
+            Some("src/components/Button".to_string())
+        );
         assert_eq!(resolver.resolve("@/utils"), Some("src/utils".to_string()));
         assert_eq!(resolver.resolve("lodash"), None); // no matching pattern
     }
@@ -202,7 +213,10 @@ mod tests {
             paths,
         };
 
-        assert_eq!(resolver.resolve("@utils"), Some("src/utils/index.ts".to_string()));
+        assert_eq!(
+            resolver.resolve("@utils"),
+            Some("src/utils/index.ts".to_string())
+        );
         assert_eq!(resolver.resolve("@utils/extra"), None); // doesn't match exact
     }
 
@@ -214,7 +228,10 @@ mod tests {
         };
 
         // Non-relative paths should be resolved against baseUrl
-        assert_eq!(resolver.resolve("utils/helper"), Some("src/utils/helper".to_string()));
+        assert_eq!(
+            resolver.resolve("utils/helper"),
+            Some("src/utils/helper".to_string())
+        );
         // Relative paths should not be modified
         assert_eq!(resolver.resolve("./local"), None);
     }
@@ -223,7 +240,10 @@ mod tests {
     fn test_longest_prefix_match() {
         let mut paths = HashMap::new();
         paths.insert("@/*".to_string(), vec!["src/*".to_string()]);
-        paths.insert("@/utils/*".to_string(), vec!["src/shared/utils/*".to_string()]);
+        paths.insert(
+            "@/utils/*".to_string(),
+            vec!["src/shared/utils/*".to_string()],
+        );
 
         let resolver = PathAliasResolver {
             base_url: None,
@@ -231,8 +251,14 @@ mod tests {
         };
 
         // More specific pattern should win
-        assert_eq!(resolver.resolve("@/utils/format"), Some("src/shared/utils/format".to_string()));
+        assert_eq!(
+            resolver.resolve("@/utils/format"),
+            Some("src/shared/utils/format".to_string())
+        );
         // Less specific pattern
-        assert_eq!(resolver.resolve("@/components/Button"), Some("src/components/Button".to_string()));
+        assert_eq!(
+            resolver.resolve("@/components/Button"),
+            Some("src/components/Button".to_string())
+        );
     }
 }

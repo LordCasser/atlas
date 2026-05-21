@@ -40,11 +40,7 @@ pub fn run(project: &str) -> anyhow::Result<()> {
                 println!("     Hint: Rebuild rusqlite with 'bundled' feature");
             }
             Err(e) => {
-                check(
-                    &format!("SQLite FTS5 check ({e})"),
-                    false,
-                    &mut all_ok,
-                );
+                check(&format!("SQLite FTS5 check ({e})"), false, &mut all_ok);
             }
         }
     } else {
@@ -57,21 +53,20 @@ pub fn run(project: &str) -> anyhow::Result<()> {
             Ok(Some(ver)) => {
                 let current = crate::db::CURRENT_SCHEMA_VERSION;
                 check(
-                    &format!("Schema version ({ver} == {current})"),
+                    &format!("Schema version (expected v{current}, got v{ver})"),
                     ver == current,
                     &mut all_ok,
                 );
+                if ver != current {
+                    println!("     Hint: Re-run `atlas init` to create a fresh database.");
+                }
             }
             Ok(None) => {
                 check("Schema version", false, &mut all_ok);
                 println!("     Hint: Run `atlas init` to initialize the database");
             }
             Err(e) => {
-                check(
-                    &format!("Schema version check ({e})"),
-                    false,
-                    &mut all_ok,
-                );
+                check(&format!("Schema version check ({e})"), false, &mut all_ok);
             }
         }
     }
@@ -79,13 +74,17 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     // 6. Language grammar availability (compile-time feature check)
     println!();
     println!("  Language grammar support:");
-    check_lang("TypeScript/JavaScript", cfg!(feature = "typescript"), &mut all_ok);
+    check_lang(
+        "TypeScript/JavaScript",
+        cfg!(feature = "typescript"),
+        &mut all_ok,
+    );
     check_lang("Python", cfg!(feature = "python"), &mut all_ok);
     check_lang("Java", cfg!(feature = "java"), &mut all_ok);
     check_lang("C", cfg!(feature = "c"), &mut all_ok);
     check_lang("C++", cfg!(feature = "cpp"), &mut all_ok);
     check_lang("ArkTS", cfg!(feature = "arkts"), &mut all_ok);
-    check_lang("Cangjie", cfg!(feature = "cangjie"), &mut all_ok);
+    check_experimental_lang("Cangjie", cfg!(feature = "cangjie"));
 
     // 7. Per-language capability summary
     print_capabilities();
@@ -121,12 +120,19 @@ fn check_lang(name: &str, enabled: bool, all_ok: &mut bool) {
     }
 }
 
+fn check_experimental_lang(name: &str, enabled: bool) {
+    if enabled {
+        println!("    [OK]    {name} (experimental)");
+    } else {
+        println!("    [SKIP]  {name} (experimental opt-in)");
+    }
+}
+
 /// Check that FTS5 is available in the bundled SQLite.
 fn check_fts5(db_path: &Path) -> anyhow::Result<bool> {
     let conn = rusqlite::Connection::open(db_path)?;
-    let mut stmt = conn.prepare(
-        "SELECT 1 FROM pragma_compile_options WHERE compile_options = 'ENABLE_FTS5'",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT 1 FROM pragma_compile_options WHERE compile_options = 'ENABLE_FTS5'")?;
     let has_fts5 = stmt.exists([])?;
     Ok(has_fts5)
 }
@@ -169,10 +175,7 @@ fn print_capabilities() {
         "  {:<18} {:<20} {:<7} {}",
         "Language", "Capability Level", "Conf", "Key Limitations"
     );
-    println!(
-        "  {:-<18} {:-<20} {:-<7} {:-<48}",
-        "", "", "", ""
-    );
+    println!("  {:-<18} {:-<20} {:-<7} {:-<48}", "", "", "", "");
 
     for p in &profiles {
         let limiter = p
@@ -187,6 +190,41 @@ fn print_capabilities() {
             p.confidence_floor * 100.0,
             limiter,
         );
+    }
+
+    // Show unsupported features from the FeatureMatrix for each language
+    println!();
+    println!("  Unsupported Features:");
+    for p in &profiles {
+        if let Some(ref feats) = p.features {
+            let unsupported: Vec<&str> = [
+                ("symbols", &feats.symbols),
+                ("references", &feats.references),
+                ("imports", &feats.imports),
+                ("scopes", &feats.scopes),
+                ("call_graph", &feats.call_graph),
+                ("lexical_bindings", &feats.lexical_bindings),
+                ("local_dataflow", &feats.local_dataflow),
+                ("use_def", &feats.use_def),
+                ("field_access", &feats.field_access),
+                ("call_arguments", &feats.call_arguments),
+                ("returns_flow", &feats.returns_flow),
+                ("cfg", &feats.cfg),
+                ("interprocedural", &feats.interprocedural_summaries),
+            ]
+            .iter()
+            .filter_map(|(name, fs)| {
+                if !fs.is_supported() {
+                    Some(*name)
+                } else {
+                    None
+                }
+            })
+            .collect();
+            if !unsupported.is_empty() {
+                println!("    {:<16}  {}", p.language, unsupported.join(", "));
+            }
+        }
     }
 }
 

@@ -116,7 +116,13 @@ pub fn node_name_range(node: tree_sitter::Node, name: &str, source: &str) -> Opt
         let child = node.child(i)?;
         let kind = child.kind();
         // Handle common identifier-like node types
-        if matches!(kind, "identifier" | "type_identifier" | "property_identifier" | "shorthand_property_identifier") {
+        if matches!(
+            kind,
+            "identifier"
+                | "type_identifier"
+                | "property_identifier"
+                | "shorthand_property_identifier"
+        ) {
             if let Ok(text) = child.utf8_text(source.as_bytes()) {
                 if text == name {
                     return Some(super::node_range(child));

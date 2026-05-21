@@ -1,6 +1,6 @@
 //! C LanguageAdapter.
 
-use crate::extraction::languages::{node_range, node_text, LanguageAdapter};
+use crate::extraction::languages::{LanguageAdapter, node_range, node_text};
 use crate::types::*;
 use std::path::Path;
 
@@ -150,12 +150,8 @@ impl LanguageAdapter for CAdapter {
         let name = node_text(node, source).unwrap_or_default();
         let range = node_range(node);
 
-        let scope_id = ScopeId::generate(
-            &file_id,
-            None::<&ScopeId>,
-            kind.as_str(),
-            range.start_byte,
-        );
+        let scope_id =
+            ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
 
         Some(ScopeDef {
             id: scope_id,
@@ -174,11 +170,7 @@ impl LanguageAdapter for CAdapter {
 // ---------------------------------------------------------------------------
 
 /// Infer a qualified name for a C symbol.
-fn qualified_name_from_node_c(
-    name: &str,
-    node: tree_sitter::Node,
-    source: &str,
-) -> String {
+fn qualified_name_from_node_c(name: &str, node: tree_sitter::Node, source: &str) -> String {
     let mut parts = vec![name.to_string()];
     // Start from parent to avoid re-adding the immediate container's name
     let mut current = node.parent().unwrap_or(node);
@@ -205,7 +197,7 @@ fn qualified_name_from_node_c(
 fn c_definition_kind(capture: &str) -> Option<SymbolKind> {
     match capture {
         "definition.function" => Some(SymbolKind::Function),
-        "definition.class" => Some(SymbolKind::Class),       // struct
+        "definition.class" => Some(SymbolKind::Class), // struct
         "definition.enum" => Some(SymbolKind::Enum),
         "definition.type_alias" => Some(SymbolKind::TypeAlias), // typedef
         "definition.macro" => Some(SymbolKind::Macro),
@@ -291,7 +283,11 @@ mod tests {
         let adapter = CAdapter;
         let lang = adapter.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, adapter.definition_query());
-        assert!(query.is_ok(), "definition query must compile: {:?}", query.err());
+        assert!(
+            query.is_ok(),
+            "definition query must compile: {:?}",
+            query.err()
+        );
     }
 
     #[test]
@@ -299,7 +295,11 @@ mod tests {
         let adapter = CAdapter;
         let lang = adapter.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, adapter.reference_query());
-        assert!(query.is_ok(), "reference query must compile: {:?}", query.err());
+        assert!(
+            query.is_ok(),
+            "reference query must compile: {:?}",
+            query.err()
+        );
     }
 
     #[test]
@@ -307,7 +307,11 @@ mod tests {
         let adapter = CAdapter;
         let lang = adapter.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, adapter.import_query());
-        assert!(query.is_ok(), "import query must compile: {:?}", query.err());
+        assert!(
+            query.is_ok(),
+            "import query must compile: {:?}",
+            query.err()
+        );
     }
 
     #[test]

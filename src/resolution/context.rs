@@ -2,11 +2,89 @@
 //!
 //! Loads file-level data from the store once and builds hash-based indexes
 //! so resolution strategies can query without hitting SQLite every step.
+//!
+//! P4: `GlobalSymbolIndex` loads all project symbols into memory once,
+//! replacing per-reference FTS5 queries with in-memory exact + fuzzy matching.
 
 use std::collections::HashMap;
 
 use crate::db::Store;
 use crate::types::*;
+
+/// Global in-memory index of all project symbols (P4: avoids per-reference DB queries).
+///
+/// Built once at the start of resolution. Provides O(1) exact lookups by
+/// name/ID, plus bounded fuzzy fallback using Levenshtein distance.
+#[derive(Debug, Clone)]
+pub struct GlobalSymbolIndex {
+    /// All symbols in the project.
+    symbols: Vec<SymbolDef>,
+    /// name (lowercase) → Vec<SymbolDef> (exact name match).
+    by_name: HashMap<String, Vec<SymbolDef>>,
+    /// SymbolId → SymbolDef.
+    by_id: HashMap<SymbolId, SymbolDef>,
+}
+
+impl GlobalSymbolIndex {
+    /// Build the global index from all symbols in the store.
+    pub fn build(store: &Store) -> anyhow::Result<Self> {
+        let symbols = store.load_all_symbols()?;
+        let mut by_name: HashMap<String, Vec<SymbolDef>> = HashMap::new();
+        let mut by_id: HashMap<SymbolId, SymbolDef> = HashMap::new();
+
+        for sym in &symbols {
+            by_id.insert(sym.id, sym.clone());
+            let key = sym.name.to_lowercase();
+            by_name.entry(key).or_default().push(sym.clone());
+        }
+
+        Ok(Self {
+            symbols,
+            by_name,
+            by_id,
+        })
+    }
+
+    /// Find symbols by exact name (case-insensitive).
+    pub fn find_by_name(&self, name: &str) -> Vec<SymbolDef> {
+        self.by_name
+            .get(&name.to_lowercase())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Find a symbol by ID.
+    pub fn get(&self, id: &SymbolId) -> Option<&SymbolDef> {
+        self.by_id.get(id)
+    }
+
+    /// Bounded fuzzy search (Levenshtein, max 20 results).
+    /// Returns candidates for downstream scoring.
+    pub fn fuzzy_search(&self, name: &str, max_distance: usize) -> Vec<SymbolDef> {
+        let lower = name.to_lowercase();
+        let mut candidates: Vec<(usize, SymbolDef)> = self
+            .symbols
+            .iter()
+            .filter_map(|s| {
+                let d = crate::types::levenshtein(&lower, &s.name.to_lowercase());
+                if d <= max_distance { Some((d, s.clone())) } else { None }
+            })
+            .collect();
+        candidates.sort_by_key(|(d, _)| *d);
+        candidates.truncate(20);
+        candidates.into_iter().map(|(_, s)| s).collect()
+    }
+
+    /// Total number of symbols indexed.
+    pub fn len(&self) -> usize {
+        self.symbols.len()
+    }
+
+    /// Whether the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.symbols.is_empty()
+    }
+}
 
 /// In-memory resolution context for a single file.
 #[derive(Debug, Clone)]
@@ -24,7 +102,6 @@ pub struct ResolutionContext {
     pub imports: Vec<ImportDef>,
 
     // --- Indexes ---
-
     /// ScopeId → Vec<SymbolDef> (symbols in scope, including children).
     pub symbols_by_scope: HashMap<ScopeId, Vec<SymbolDef>>,
 

@@ -12,8 +12,7 @@ pub fn run(query: &str, project: &str) -> anyhow::Result<()> {
     let store = Store::open(root).context("Failed to open Atlas database")?;
     let store = Arc::new(store);
 
-    let graph = GraphEngine::from_store(&store, 0.3)
-        .context("Failed to load graph snapshot")?;
+    let graph = GraphEngine::from_store(&store, 0.3).context("Failed to load graph snapshot")?;
     let graph = Arc::new(graph);
 
     let builder = ContextBuilder::new(Arc::clone(&store), Arc::clone(&graph));
@@ -41,11 +40,7 @@ pub fn run(query: &str, project: &str) -> anyhow::Result<()> {
 }
 
 /// Print a source code excerpt for a symbol (file path + line range).
-fn print_source_excerpt(
-    project_root: &std::path::Path,
-    store: &Store,
-    sym: &SymbolDef,
-) {
+fn print_source_excerpt(project_root: &std::path::Path, store: &Store, sym: &SymbolDef) {
     if let Ok(Some(file_info)) = store.get_file(&sym.file_id) {
         let full_path = project_root.join(&file_info.path);
         if let Ok(content) = std::fs::read_to_string(&full_path) {
@@ -53,7 +48,13 @@ fn print_source_excerpt(
             let start = sym.range.start_line as usize; // tree-sitter rows are 0-indexed
             let end = (sym.range.end_line as usize + 1).min(lines.len()); // end_line inclusive → exclusive
             if start < end {
-                println!("#### {} ({}:{}-{})", sym.qualified_name, file_info.path, start + 1, end);
+                println!(
+                    "#### {} ({}:{}-{})",
+                    sym.qualified_name,
+                    file_info.path,
+                    start + 1,
+                    end
+                );
                 println!("```{}", language_tag(&sym.language.as_str()));
                 for line in &lines[start..end] {
                     println!("{}", line);

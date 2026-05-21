@@ -2,16 +2,16 @@
 //!
 //! Architecture: CLI > MCP > Context/Graph/Search/Sync > Analysis > Resolution > Extraction > Database > Types
 
-pub mod types;
-pub mod db;
-pub mod extraction;
-pub mod resolution;
-pub mod graph;
-pub mod context;
-pub mod search;
-pub mod sync;
 pub mod analysis;
-#[cfg(feature = "mcp")]
-pub mod mcp;
 #[cfg(feature = "cli")]
 pub mod cli;
+pub mod context;
+pub mod db;
+pub mod extraction;
+pub mod graph;
+#[cfg(feature = "mcp")]
+pub mod mcp;
+pub mod resolution;
+pub mod search;
+pub mod sync;
+pub mod types;

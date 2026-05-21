@@ -23,7 +23,10 @@ pub struct IncludeGraph {
 
 impl IncludeGraph {
     pub fn new(store: Arc<Store>, project_root: PathBuf) -> Self {
-        Self { store, project_root }
+        Self {
+            store,
+            project_root,
+        }
     }
 
     /// Resolve an include directive to a file in the project.

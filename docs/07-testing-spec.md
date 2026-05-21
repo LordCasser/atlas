@@ -151,7 +151,7 @@
 
 - 端到端链路中 `DataNode.function_id`、`binding_id`、`callsite_id` 在需要查询时必须可用。
 - 不允许继续用 fake `SymbolId` 表示变量、表达式、参数或返回值数据流。
-- 旧 `RawEdge` dataflow 路径必须删除、隔离或明确标记为兼容遗留路径，不能作为 trace 输入。
+- 旧 `RawEdge` dataflow 路径必须删除或隔离，不能作为 trace 输入。
 
 ### P4：CFG 基础
 
@@ -174,7 +174,7 @@
 - backward slicer 单元测试可以使用手写 `DataNode` 和 `DataFlowEdge`。
 - caller path explorer 单元测试可以使用手写 symbol graph。
 - path formatter 测试必须覆盖 bounded JSON 和 Markdown evidence。
-- 不测试、不验收自动漏洞枚举、漏洞模式扫描、source/sink/sanitizer 规则或 finding 产出。
+- 不测试、不验收自动漏洞枚举、漏洞模式扫描、漏洞规则系统或 finding 产出。
 
 完成标准：
 
@@ -182,9 +182,8 @@
 - fixture 必须经过 extraction -> store -> resolution -> GraphBuilder -> dataflow/call graph -> trace query。
 - CLI、MCP 或等价 public API 必须能查询 trace path，并返回 bounded、结构化输出。
 - 测试必须断言每个 path step 的 kind、file、range、confidence/provenance 和截断行为。
-- Java/C/C++/ArkTS/Cangjie 如果只能支持 Level 0/1/2，测试必须断言 capability profile、unsupported diagnostics 或 lower-confidence best-effort 输出。
+- Java/C/C++/ArkTS 如果只能支持 Level 0/1/2，测试必须断言 capability profile、unsupported diagnostics 或 lower-confidence best-effort 输出；Cangjie 只在显式启用 `cangjie` feature 的实验测试中覆盖。
 - 每种 MVP 语言至少有一个 capability profile 快照测试；能力等级升级时必须同步更新 fixture 和用户可见输出断言。
-- 既有 taint 原型测试可以保留为历史回归测试，但不计入变量来源追踪与调用路径查询端到端验收，也不作为后续能力规划依据。
 
 ### Engine / CLI / MCP 拆分阶段
 

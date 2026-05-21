@@ -28,14 +28,8 @@ impl ContextView {
     /// Format as a Markdown summary suitable for AI consumption.
     pub fn to_markdown(&self) -> String {
         let mut md = String::new();
-        md.push_str(&format!(
-            "## Symbol: `{}`\n",
-            self.subject.qualified_name
-        ));
-        md.push_str(&format!(
-            "- Kind: `{}`\n",
-            self.subject.kind.as_str()
-        ));
+        md.push_str(&format!("## Symbol: `{}`\n", self.subject.qualified_name));
+        md.push_str(&format!("- Kind: `{}`\n", self.subject.kind.as_str()));
         md.push_str(&format!(
             "- Language: `{}`\n",
             self.subject.language.as_str()

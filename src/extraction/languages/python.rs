@@ -2,7 +2,7 @@
 //!
 //! Uses tree-sitter-python grammar and embedded query files.
 
-use crate::extraction::languages::{node_range, node_text, LanguageAdapter};
+use crate::extraction::languages::{LanguageAdapter, node_range, node_text};
 use crate::types::*;
 use std::path::Path;
 
@@ -165,12 +165,8 @@ impl LanguageAdapter for PythonAdapter {
         let name = format!("{:?}#{}", kind, range.start_byte);
         let scope_path = name.clone();
 
-        let scope_id = ScopeId::generate(
-            &file_id,
-            None::<&ScopeId>,
-            kind.as_str(),
-            range.start_byte,
-        );
+        let scope_id =
+            ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
 
         Some(ScopeDef {
             id: scope_id,
@@ -244,51 +240,75 @@ impl LanguageAdapter for PythonAdapter {
         source: &str,
         file_id: FileId,
         _file_path: &Path,
-    ) -> (Option<crate::types::dataflow::DataNode>, Option<crate::types::dataflow::DataFlowEdge>) {
-        use crate::types::ids::DataNodeId;
+    ) -> (
+        Option<crate::types::dataflow::DataNode>,
+        Option<crate::types::dataflow::DataFlowEdge>,
+    ) {
         use crate::types::dataflow::DataNode;
+        use crate::types::ids::DataNodeId;
 
         let range = node_range(node);
 
         match capture_name {
-            "df.parameter" => {
-                node_text(node, source).map(|name| {
+            "df.parameter" => node_text(node, source)
+                .map(|name| {
                     let node_id = DataNodeId::generate(
-                        &file_id, None::<&crate::types::ids::SymbolId>,
-                        "parameter", Some(&name), Some(&name), range.start_byte,
+                        &file_id,
+                        None::<&crate::types::ids::SymbolId>,
+                        "parameter",
+                        Some(&name),
+                        Some(&name),
+                        range.start_byte,
                     );
                     let dn = DataNode::parameter(node_id, file_id, None, None, &name, range);
                     (Some(dn), None)
-                }).unwrap_or((None, None))
-            }
-            "df.assign_target" => {
-                node_text(node, source).map(|name| {
+                })
+                .unwrap_or((None, None)),
+            "df.assign_target" => node_text(node, source)
+                .map(|name| {
                     let node_id = DataNodeId::generate(
-                        &file_id, None::<&crate::types::ids::SymbolId>,
-                        "local", Some(&name), Some(&name), range.start_byte,
+                        &file_id,
+                        None::<&crate::types::ids::SymbolId>,
+                        "local",
+                        Some(&name),
+                        Some(&name),
+                        range.start_byte,
                     );
                     let dn = DataNode::local(node_id, file_id, None, None, &name, range);
                     (Some(dn), None)
-                }).unwrap_or((None, None))
-            }
+                })
+                .unwrap_or((None, None)),
             "df.assign_value" => {
                 let text = node_text(node, source).unwrap_or_default();
                 let node_id = DataNodeId::generate(
-                    &file_id, None::<&crate::types::ids::SymbolId>,
-                    "expr", Some(&text), None, range.start_byte,
+                    &file_id,
+                    None::<&crate::types::ids::SymbolId>,
+                    "expr",
+                    Some(&text),
+                    None,
+                    range.start_byte,
                 );
                 let dn = DataNode {
-                    id: node_id, file_id, function_id: None,
-                    kind: crate::types::enums::DataNodeKind::Expr, binding_id: None,
-                    callsite_id: None, name: Some(text),
-                    access_path: None, range,
+                    id: node_id,
+                    file_id,
+                    function_id: None,
+                    kind: crate::types::enums::DataNodeKind::Expr,
+                    binding_id: None,
+                    callsite_id: None,
+                    name: Some(text),
+                    access_path: None,
+                    range,
                 };
                 (Some(dn), None)
             }
             "df.return_value" => {
                 let node_id = DataNodeId::generate(
-                    &file_id, None::<&crate::types::ids::SymbolId>,
-                    "return", None, None, range.start_byte,
+                    &file_id,
+                    None::<&crate::types::ids::SymbolId>,
+                    "return",
+                    None,
+                    None,
+                    range.start_byte,
                 );
                 let dn = DataNode::return_(node_id, file_id, None, range);
                 (Some(dn), None)
@@ -296,55 +316,90 @@ impl LanguageAdapter for PythonAdapter {
             "df.call_arg" => {
                 let text = node_text(node, source).unwrap_or_default();
                 let node_id = DataNodeId::generate(
-                    &file_id, None::<&crate::types::ids::SymbolId>,
-                    "call_arg", Some(&text), None, range.start_byte,
+                    &file_id,
+                    None::<&crate::types::ids::SymbolId>,
+                    "call_arg",
+                    Some(&text),
+                    None,
+                    range.start_byte,
                 );
                 let dn = DataNode::call_arg(node_id, file_id, None, None, Some(&text), range);
                 (Some(dn), None)
             }
             "df.call_target" => {
-                node_text(node, source).map(|name| {
-                    // Build full access_path from parent attribute node
-                    // e.g. for "os.system" → access_path = "os.system"
-                    let access_path = node.parent()
-                        .filter(|p| p.kind() == "attribute")
-                        .and_then(|p| node_text(p, source))
-                        .unwrap_or_else(|| name.clone());
-                    let node_id = DataNodeId::generate(
-                        &file_id, None::<&crate::types::ids::SymbolId>,
-                        "call_target", Some(&name), Some(&access_path), range.start_byte,
-                    );
-                    let dn = DataNode::call_target(node_id, file_id, None, &name, &access_path, range);
-                    (Some(dn), None)
-                }).unwrap_or((None, None))
+                node_text(node, source)
+                    .map(|name| {
+                        // Build full access_path from parent attribute node
+                        // e.g. for "os.system" → access_path = "os.system"
+                        let access_path = node
+                            .parent()
+                            .filter(|p| p.kind() == "attribute")
+                            .and_then(|p| node_text(p, source))
+                            .unwrap_or_else(|| name.clone());
+                        let node_id = DataNodeId::generate(
+                            &file_id,
+                            None::<&crate::types::ids::SymbolId>,
+                            "call_target",
+                            Some(&name),
+                            Some(&access_path),
+                            range.start_byte,
+                        );
+                        let dn = DataNode::call_target(
+                            node_id,
+                            file_id,
+                            None,
+                            &name,
+                            &access_path,
+                            range,
+                        );
+                        (Some(dn), None)
+                    })
+                    .unwrap_or((None, None))
             }
             "df.field_name" => {
-                node_text(node, source).map(|name| {
-                    // Build full access_path from parent attribute node
-                    // e.g. for "request.args" → access_path = "request.args"
-                    let access_path = node.parent()
-                        .filter(|p| p.kind() == "attribute")
-                        .and_then(|p| node_text(p, source))
-                        .unwrap_or_else(|| name.clone());
-                    let node_id = DataNodeId::generate(
-                        &file_id, None::<&crate::types::ids::SymbolId>,
-                        "field", Some(&name), Some(&access_path), range.start_byte,
-                    );
-                    let dn = DataNode::field(node_id, file_id, None, &name, &access_path, range);
-                    (Some(dn), None)
-                }).unwrap_or((None, None))
+                node_text(node, source)
+                    .map(|name| {
+                        // Build full access_path from parent attribute node
+                        // e.g. for "request.args" → access_path = "request.args"
+                        let access_path = node
+                            .parent()
+                            .filter(|p| p.kind() == "attribute")
+                            .and_then(|p| node_text(p, source))
+                            .unwrap_or_else(|| name.clone());
+                        let node_id = DataNodeId::generate(
+                            &file_id,
+                            None::<&crate::types::ids::SymbolId>,
+                            "field",
+                            Some(&name),
+                            Some(&access_path),
+                            range.start_byte,
+                        );
+                        let dn =
+                            DataNode::field(node_id, file_id, None, &name, &access_path, range);
+                        (Some(dn), None)
+                    })
+                    .unwrap_or((None, None))
             }
             "df.literal" | "df.receiver" => {
                 let text = node_text(node, source).unwrap_or_default();
                 let node_id = DataNodeId::generate(
-                    &file_id, None::<&crate::types::ids::SymbolId>,
-                    "literal", Some(&text), None, range.start_byte,
+                    &file_id,
+                    None::<&crate::types::ids::SymbolId>,
+                    "literal",
+                    Some(&text),
+                    None,
+                    range.start_byte,
                 );
                 let dn = DataNode {
-                    id: node_id, file_id, function_id: None,
-                    kind: crate::types::enums::DataNodeKind::Literal, binding_id: None,
-                    callsite_id: None, name: Some(text),
-                    access_path: None, range,
+                    id: node_id,
+                    file_id,
+                    function_id: None,
+                    kind: crate::types::enums::DataNodeKind::Literal,
+                    binding_id: None,
+                    callsite_id: None,
+                    name: Some(text),
+                    access_path: None,
+                    range,
                 };
                 (Some(dn), None)
             }
@@ -418,8 +473,8 @@ fn is_exported_in_tree_py(node: tree_sitter::Node, name: &str) -> bool {
     let mut current = node;
     while let Some(parent) = current.parent() {
         match parent.kind() {
-            "module" => return true,      // Top-level definition
-            "class_definition" => return true, // Class member (public by convention)
+            "module" => return true,                          // Top-level definition
+            "class_definition" => return true,                // Class member (public by convention)
             "function_definition" | "lambda" => return false, // Nested in function → not exported
             _ => {}
         }
@@ -466,7 +521,11 @@ fn py_reference_kind(capture: &str) -> Option<ReferenceKind> {
 /// The `node` is the identifier captured by `@definition.function` or `@definition.class`.
 /// For functions/methods, we walk to the parent `function_definition` and extract its
 /// `parameters` child. For classes, we look for `__init__` parameters.
-fn py_extract_signature(capture_name: &str, node: tree_sitter::Node, source: &str) -> Option<String> {
+fn py_extract_signature(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+) -> Option<String> {
     match capture_name {
         "definition.function" => {
             // node is the identifier; parent is function_definition
@@ -505,12 +564,7 @@ fn py_import_info(
         }
         "import.wildcard" => {
             let module = extract_module_from_import_ancestor(node, source);
-            Some((
-                ImportKind::FromImport,
-                module,
-                "*".into(),
-                false,
-            ))
+            Some((ImportKind::FromImport, module, "*".into(), false))
         }
         _ => None,
     }
@@ -584,7 +638,9 @@ mod tests {
         // integration test pipeline. Here we verify the fallback behavior:
         // when node has no class_definition parent, "definition.function" → Function.
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .unwrap();
 
         // Top-level function → Function
         let tree = parser.parse("def foo(): pass", None).unwrap();
@@ -596,7 +652,9 @@ mod tests {
         );
 
         // Method (function inside class) → Method
-        let tree = parser.parse("class Foo:\n    def bar(self): pass", None).unwrap();
+        let tree = parser
+            .parse("class Foo:\n    def bar(self): pass", None)
+            .unwrap();
         let root = tree.root_node();
         // class → body → block → function_definition → name
         let class_node = root.child(0).unwrap();

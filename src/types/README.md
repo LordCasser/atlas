@@ -1,4 +1,4 @@
-# Atlas Core Types (`atlas-core`)
+# Atlas Core Types
 
 Core type system for the Atlas semantic knowledge graph engine.
 
@@ -9,10 +9,13 @@ Core type system for the Atlas semantic knowledge graph engine.
 | `FileId` | `project_relative_path` | blake3 | 32B |
 | `SymbolId` | `file_id + language + symbol_path + kind + discriminator` | blake3 | 32B |
 | `ScopeId` | `file_id + parent + kind + start_byte` | blake3 | 32B |
-| `ReferenceId` | `file_id + source_symbol + byte_range + text` | blake3 | 32B |
+| `ReferenceId` | `file_id + kind + source/range + reference_text` | blake3 | 32B |
 | `EdgeId` | `source + target + kind + ref_id/provenance` | blake3 | 32B |
 | `CallsiteId` | `ref_id + caller + start_byte` | blake3 | 32B |
 | `ImportId` | `file_id + kind + module + imported_name + start_byte` | blake3 | 32B |
+| `BindingId` | `file_id + scope_id + kind + name + start_byte` | blake3 | 32B |
+| `DataNodeId` | `file_id + function_id? + kind + name/access_path + start_byte` | blake3 | 32B |
+| `CfgNodeId` | `function_id + kind + start_byte` | blake3 | 32B |
 
 All ID types implement: `Copy`, `Default`, `PartialEq`, `Eq`, `Hash`, `Ord`, `Display` (hex), `FromStr`, `Serialize`, `Deserialize`, `ToSql` (BLOB), `FromSql`.
 
@@ -22,15 +25,15 @@ ID generation uses the `define_id!` macro to eliminate boilerplate.
 
 | Enum | Variants | Description |
 |------|----------|-------------|
-| `Language` | 8 | TypeScript, JavaScript, Python, Java, C, Cpp, ArkTS, Cangjie |
+| `Language` | 7 MVP + opt-in experimental | TypeScript, JavaScript, Python, Java, C, Cpp, ArkTS; Cangjie only with `cangjie` feature |
 | `SymbolKind` | 20 | File, Module, Class, Struct, Interface, Trait, Enum, EnumMember, Function, Method, Property, Field, Variable, Constant, TypeAlias, Namespace, Parameter, Constructor, Macro, Decorator, Package |
 | `EdgeKind` | 21 | Contains, Calls, Imports, Includes, Exports, Extends, Implements, References, TypeOf, Returns, Instantiates, Overrides, Decorates, Defines, Argument, Parameter, Assigns, Reads, Writes, FieldRead, FieldWrite |
 | `ReferenceKind` | 10 | Usage, TypeReference, Call, Import, FieldAccess, Inheritance, Implementation, Override, Decoration, Read, Write, Instantiation |
 | `ImportKind` | 5 | Include, Import, FromImport, Package, Use |
 | `ScopeKind` | 13 | File, Module, Class, Struct, Interface, Enum, Function, Method, Block, Loop, Conditional, Namespace, Trait |
 | `Visibility` | 5 | Public, Private, Protected, Internal, Package |
-| `ResolutionStrategy` | 5 | ExactMatch, NameOnly, FuzzyMatch, Heuristic, Builtin |
-| `Provenance` | 3 | TreeSitter, Scip, Heuristic |
+| `ResolutionStrategy` | current enum | Exact, scope/import/name/fuzzy/heuristic strategies |
+| `Provenance` | current enum | Origin of extracted or inferred facts |
 | `ResolutionStatus` | 3 | Resolved, Unresolved, Partial |
 | `ParseStatus` | 4 | Success, PartialFailure, Failure, NotParsed |
 
@@ -156,10 +159,16 @@ struct FileFacts {
     exports: Vec<String>,
     raw_edges: Vec<RawEdge>,
     callsites: Vec<Callsite>,
+    bindings: Vec<BindingDef>,
+    binding_uses: Vec<BindingUse>,
+    data_nodes: Vec<DataNode>,
+    dataflow_edges: Vec<DataFlowEdge>,
+    cfg_nodes: Vec<CfgNode>,
+    cfg_edges: Vec<CfgEdge>,
     diagnostics: Vec<ExtractDiagnostic>,
 }
 ```
-The primary extraction output. Extraction writes facts; resolution adds edges; neither deletes facts.
+The primary extraction output. Extraction writes single-file facts; resolution and graph construction enrich them without deleting unresolved occurrences.
 
 ### ExtractDiagnostic
 ```rust

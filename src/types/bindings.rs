@@ -127,7 +127,13 @@ mod tests {
         let binding = BindingDef {
             id: BindingId::generate(&file_id, &scope_id, "parameter", "req", 42),
             file_id,
-            function_id: Some(SymbolId::generate(&file_id, "typescript", "handler", "function", None)),
+            function_id: Some(SymbolId::generate(
+                &file_id,
+                "typescript",
+                "handler",
+                "function",
+                None,
+            )),
             scope_id,
             kind: BindingKind::Parameter,
             name: "req".to_string(),

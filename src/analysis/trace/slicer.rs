@@ -90,10 +90,7 @@ impl Slicer {
                     visited.insert(source_key.clone(), new_depth);
                     // Store current→source so reconstruct_path can walk
                     // backward from sink through each predecessor.
-                    predecessors.insert(
-                        current_key,
-                        (source_id.clone(), edge.kind.clone()),
-                    );
+                    predecessors.insert(current_key, (source_id.clone(), edge.kind.clone()));
                     queue.push_back((source_id.clone(), new_depth));
 
                     if new_depth > farthest_depth {
@@ -105,12 +102,7 @@ impl Slicer {
         }
 
         // Reconstruct path from farthest node to sink
-        let steps = reconstruct_path(
-            &predecessors,
-            &farthest_node_id,
-            &sink_node.id,
-            store,
-        )?;
+        let steps = reconstruct_path(&predecessors, &farthest_node_id, &sink_node.id, store)?;
 
         // Resolve the source node as a TracePoint
         let source_node = store.get_data_node(&farthest_node_id)?.unwrap_or_else(|| {
@@ -259,7 +251,6 @@ fn kind_description(kind: &DataFlowKind) -> &'static str {
         DataFlowKind::ReturnToCall => "return → callsite",
         DataFlowKind::ReceiverToThis => "receiver → self",
         DataFlowKind::Phi => "phi (control-flow merge)",
-        DataFlowKind::Sanitized => "sanitized",
     }
 }
 

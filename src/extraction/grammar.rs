@@ -1,10 +1,10 @@
-//! Language registry: loads tree-sitter grammars for the 8 MVP languages.
+//! Language registry: loads tree-sitter grammars for enabled Atlas languages.
 //!
-//! Severely trimmed from 23 languages down to the 8 MVP languages.
-//! Non-MVP languages are gated behind `future-languages` feature.
+//! The MVP compile set excludes incomplete/experimental languages such as
+//! Cangjie. Those languages must be enabled explicitly with their own feature.
 
 use crate::types::Language;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -123,9 +123,15 @@ mod tests {
             LanguageRegistry::detect_language(Path::new("App.ets")),
             Some(Language::ArkTS)
         );
+        #[cfg(feature = "cangjie")]
         assert_eq!(
             LanguageRegistry::detect_language(Path::new("hello.cj")),
             Some(Language::Cangjie)
+        );
+        #[cfg(not(feature = "cangjie"))]
+        assert_eq!(
+            LanguageRegistry::detect_language(Path::new("hello.cj")),
+            None
         );
         assert_eq!(
             LanguageRegistry::detect_language(Path::new("Main.java")),

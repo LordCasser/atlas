@@ -4,8 +4,8 @@
 //! executes the 4 capture queries, and returns structured query results.
 
 use anyhow::Context;
-use tree_sitter::{Parser, Query, QueryCursor};
 use streaming_iterator::StreamingIterator;
+use tree_sitter::{Parser, Query, QueryCursor};
 
 use crate::extraction::languages::LanguageAdapter;
 
@@ -69,10 +69,7 @@ impl QueryCapture {
 
 /// Runs the 4 query files (definitions, references, imports, scopes) provided
 /// by a language adapter against `source` and collects all captures.
-pub fn run_queries(
-    adapter: &dyn LanguageAdapter,
-    source: &[u8],
-) -> anyhow::Result<QueryResults> {
+pub fn run_queries(adapter: &dyn LanguageAdapter, source: &[u8]) -> anyhow::Result<QueryResults> {
     let ts_lang = adapter.tree_sitter_language();
 
     // 1. Parse
@@ -97,9 +94,12 @@ pub fn run_queries(
         if query_src.trim().is_empty() {
             return Ok(Vec::new());
         }
-        let query = Query::new(&ts_lang, query_src)
-            .context("Failed to compile query")?;
-        let capture_names: Vec<String> = query.capture_names().iter().map(|s| s.to_string()).collect();
+        let query = Query::new(&ts_lang, query_src).context("Failed to compile query")?;
+        let capture_names: Vec<String> = query
+            .capture_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         let mut cursor = QueryCursor::new();
         let mut result = Vec::new();
@@ -108,14 +108,11 @@ pub fn run_queries(
         let mut captures = cursor.captures(&query, root, source);
         while let Some((m, capture_index)) = captures.next() {
             if let Some(cap) = m.captures.get(*capture_index) {
-                let name = capture_names.get(cap.index as usize)
+                let name = capture_names
+                    .get(cap.index as usize)
                     .cloned()
                     .unwrap_or_else(|| format!("capture_{}", cap.index));
-                result.push(QueryCapture::from_ts_capture_node(
-                    &name,
-                    cap.node,
-                    source,
-                )?);
+                result.push(QueryCapture::from_ts_capture_node(&name, cap.node, source)?);
             }
         }
         Ok(result)
@@ -146,8 +143,8 @@ pub fn run_queries_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extraction::languages::typescript::TypeScriptAdapter;
     use crate::extraction::languages::python::PythonAdapter;
+    use crate::extraction::languages::typescript::TypeScriptAdapter;
 
     #[test]
     fn test_query_typescript_simple() {
@@ -155,11 +152,15 @@ mod tests {
         let adapter = TypeScriptAdapter;
         let results = run_queries_text(&adapter, source).unwrap();
         // We should have at least one definition capture
-        assert!(!results.definitions.is_empty(),
-            "Expected at least one definition");
+        assert!(
+            !results.definitions.is_empty(),
+            "Expected at least one definition"
+        );
         // Verify at least one reference capture
-        assert!(!results.references.is_empty(),
-            "Expected at least one reference");
+        assert!(
+            !results.references.is_empty(),
+            "Expected at least one reference"
+        );
     }
 
     #[test]
@@ -167,10 +168,14 @@ mod tests {
         let source = "def foo():\n    return True\n\nfoo()\n";
         let adapter = PythonAdapter;
         let results = run_queries_text(&adapter, source).unwrap();
-        assert!(!results.definitions.is_empty(),
-            "Expected at least one definition");
-        assert!(!results.references.is_empty(),
-            "Expected at least one reference");
+        assert!(
+            !results.definitions.is_empty(),
+            "Expected at least one definition"
+        );
+        assert!(
+            !results.references.is_empty(),
+            "Expected at least one reference"
+        );
     }
 
     #[test]

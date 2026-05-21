@@ -57,11 +57,7 @@ impl CfgBuilder {
     /// Build CFG for a function node.
     ///
     /// Scans the function body for statements and produces CFG nodes/edges.
-    pub fn build(
-        function_id: &SymbolId,
-        function_node: Node,
-        source_bytes: &[u8],
-    ) -> CfgResult {
+    pub fn build(function_id: &SymbolId, function_node: Node, source_bytes: &[u8]) -> CfgResult {
         let mut ctx = CfgContext {
             function_id: function_id.clone(),
             nodes: Vec::new(),
@@ -119,7 +115,12 @@ impl CfgContext<'_> {
         id
     }
 
-    fn add_edge(&mut self, source: &crate::types::ids::CfgNodeId, target: &crate::types::ids::CfgNodeId, kind: CfgEdgeKind) {
+    fn add_edge(
+        &mut self,
+        source: &crate::types::ids::CfgNodeId,
+        target: &crate::types::ids::CfgNodeId,
+        kind: CfgEdgeKind,
+    ) {
         self.edges.push(CfgEdge::new(source, target, kind));
     }
 
@@ -150,8 +151,12 @@ impl CfgContext<'_> {
                     self.emit_stmt(CfgNodeKind::Throw, stmt_range.start_byte);
                     i += 1;
                 }
-                "expression_statement" | "variable_declaration" | "lexical_declaration"
-                | "continue_statement" | "break_statement" | "debugger_statement"
+                "expression_statement"
+                | "variable_declaration"
+                | "lexical_declaration"
+                | "continue_statement"
+                | "break_statement"
+                | "debugger_statement"
                 | "empty_statement" => {
                     self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte);
                     i += 1;
@@ -252,15 +257,17 @@ fn node_text_range(node: &Node, _source: &[u8]) -> TextRange {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extraction::languages::create_adapter;
+    use crate::extraction::languages::create_frontend;
     use crate::types::enums::Language;
     use crate::types::ids::FileId;
 
     fn parse_ts(source: &str) -> (tree_sitter::Tree, Vec<u8>) {
         let source_bytes = source.as_bytes().to_vec();
         let mut parser = tree_sitter::Parser::new();
-        let adapter = create_adapter(Language::TypeScript).unwrap();
-        parser.set_language(&adapter.tree_sitter_language()).unwrap();
+        let frontend = create_frontend(Language::TypeScript).unwrap();
+        parser
+            .set_language(&frontend.parser.tree_sitter_language())
+            .unwrap();
         let tree = parser.parse(&source_bytes, None).unwrap();
         (tree, source_bytes)
     }
@@ -272,7 +279,9 @@ mod tests {
     }
 
     fn find_function_recursive<'a>(
-        node: Node<'a>, file_id: &FileId, source: &[u8],
+        node: Node<'a>,
+        file_id: &FileId,
+        source: &[u8],
     ) -> Option<(Node<'a>, SymbolId)> {
         if node.kind() == "function_declaration"
             || node.kind() == "method_definition"
@@ -308,7 +317,10 @@ mod tests {
 
         let result = CfgBuilder::build(&func_id, func_node, &source_bytes);
 
-        assert!(result.nodes.len() >= 3, "Expected at least Entry + Statement + Exit");
+        assert!(
+            result.nodes.len() >= 3,
+            "Expected at least Entry + Statement + Exit"
+        );
         assert!(result.edges.len() >= 2, "Expected at least 2 edges");
 
         // Check that there's an Entry, at least one Statement/Return, and Exit

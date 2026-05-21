@@ -23,8 +23,8 @@
 //! ```
 
 use atlas::extraction::extract_file;
-use atlas::types::ids::FileId;
 use atlas::types::enums::Language;
+use atlas::types::ids::FileId;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -115,12 +115,12 @@ fn run_golden(lang_dir: &str, stem: &str, ext: &str, lang: Language) {
         .unwrap_or_else(|e| panic!("Cannot read {}: {}", src_path.display(), e));
 
     let rel_path = format!("{}/{}.{}", lang_dir, stem, ext);
-    let adapter = atlas::extraction::create_adapter(lang)
-        .unwrap_or_else(|| panic!("No adapter for {:?}", lang));
+    let frontend = atlas::extraction::create_frontend(lang)
+        .unwrap_or_else(|| panic!("No frontend for {:?}", lang));
 
     let file_id = FileId::generate(&rel_path);
     let facts = extract_file(
-        adapter.as_ref(),
+        &frontend,
         file_id,
         Path::new(&rel_path),
         &source,
@@ -130,52 +130,90 @@ fn run_golden(lang_dir: &str, stem: &str, ext: &str, lang: Language) {
 
     // Convert to simplified golden format
     let actual = GoldenExpected {
-        symbols: facts.symbols.iter().map(|s| GldSymbol {
-            name: s.name.clone(),
-            kind: s.kind.as_str().to_string(),
-        }).collect(),
-        references: facts.references.iter().map(|r| GldReference {
-            text: r.text.clone(),
-            kind: r.kind.as_str().to_string(),
-        }).collect(),
-        imports: facts.imports.iter().map(|i| GldImport {
-            module: i.module.clone(),
-            imported_name: if i.imported_name.is_empty() { None } else { Some(i.imported_name.clone()) },
-        }).collect(),
-        scopes: facts.scopes.iter().map(|s| GldScope {
-            name: s.name.clone(),
-            kind: s.kind.as_str().to_string(),
-        }).collect(),
-    callsites: facts.callsites.iter().map(|c| {
-        // Find caller name from symbols
-        let caller_name = facts.symbols.iter()
-            .find(|s| s.id == c.caller)
-            .map(|s| s.name.clone())
-            .unwrap_or_else(|| format!("{:?}", c.caller));
-        GldCallsite {
-            caller: caller_name,
-            receiver: c.receiver.clone(),
-        }
-    }).collect(),
-        cfg_nodes: facts.cfg_nodes.iter().map(|n| GldCfgNode {
-            kind: n.kind.as_str().to_string(),
-        }).collect(),
-        cfg_edges: facts.cfg_edges.iter().map(|e| {
-            // Resolve source/target node kinds from the CFG nodes list
-            let source_kind = facts.cfg_nodes.iter()
-                .find(|n| n.id == e.source)
-                .map(|n| n.kind.as_str().to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-            let target_kind = facts.cfg_nodes.iter()
-                .find(|n| n.id == e.target)
-                .map(|n| n.kind.as_str().to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-            GldCfgEdge {
-                source_kind,
-                target_kind,
-                kind: e.kind.as_str().to_string(),
-            }
-        }).collect(),
+        symbols: facts
+            .symbols
+            .iter()
+            .map(|s| GldSymbol {
+                name: s.name.clone(),
+                kind: s.kind.as_str().to_string(),
+            })
+            .collect(),
+        references: facts
+            .references
+            .iter()
+            .map(|r| GldReference {
+                text: r.text.clone(),
+                kind: r.kind.as_str().to_string(),
+            })
+            .collect(),
+        imports: facts
+            .imports
+            .iter()
+            .map(|i| GldImport {
+                module: i.module.clone(),
+                imported_name: if i.imported_name.is_empty() {
+                    None
+                } else {
+                    Some(i.imported_name.clone())
+                },
+            })
+            .collect(),
+        scopes: facts
+            .scopes
+            .iter()
+            .map(|s| GldScope {
+                name: s.name.clone(),
+                kind: s.kind.as_str().to_string(),
+            })
+            .collect(),
+        callsites: facts
+            .callsites
+            .iter()
+            .map(|c| {
+                // Find caller name from symbols
+                let caller_name = facts
+                    .symbols
+                    .iter()
+                    .find(|s| s.id == c.caller)
+                    .map(|s| s.name.clone())
+                    .unwrap_or_else(|| format!("{:?}", c.caller));
+                GldCallsite {
+                    caller: caller_name,
+                    receiver: c.receiver.clone(),
+                }
+            })
+            .collect(),
+        cfg_nodes: facts
+            .cfg_nodes
+            .iter()
+            .map(|n| GldCfgNode {
+                kind: n.kind.as_str().to_string(),
+            })
+            .collect(),
+        cfg_edges: facts
+            .cfg_edges
+            .iter()
+            .map(|e| {
+                // Resolve source/target node kinds from the CFG nodes list
+                let source_kind = facts
+                    .cfg_nodes
+                    .iter()
+                    .find(|n| n.id == e.source)
+                    .map(|n| n.kind.as_str().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let target_kind = facts
+                    .cfg_nodes
+                    .iter()
+                    .find(|n| n.id == e.target)
+                    .map(|n| n.kind.as_str().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                GldCfgEdge {
+                    source_kind,
+                    target_kind,
+                    kind: e.kind.as_str().to_string(),
+                }
+            })
+            .collect(),
     };
 
     if !expected_path.exists() {

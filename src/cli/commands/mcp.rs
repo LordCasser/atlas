@@ -12,8 +12,7 @@ use crate::db::Store;
 
 pub fn run(project: &str) -> anyhow::Result<()> {
     let root = if project == "." {
-        Store::find_project_root()
-            .context("No .atlas directory found (run 'atlas init' first)")?
+        Store::find_project_root().context("No .atlas directory found (run 'atlas init' first)")?
     } else {
         std::path::PathBuf::from(project)
     };
@@ -24,6 +23,6 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     tracing::info!("Starting Atlas MCP server...");
     tracing::info!("Project: {}", root.display());
 
-    let server = crate::mcp::McpServer::new(Arc::clone(&store));
+    let server = crate::mcp::McpServer::new(Arc::clone(&store), root);
     server.serve()
 }

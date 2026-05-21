@@ -5,7 +5,7 @@
 ## 1. 近期优先级
 
 1. 基于当前架构稳定变量来源追踪和调用路径查询所需 facts：bindings、binding uses、callsite args、data nodes、dataflow edges、function summaries、call graph。
-2. 优先补齐 TypeScript/JavaScript/Python 的 backward slice 能力，再为 Java/C/C++/ArkTS/Cangjie 标注能力等级。
+2. 优先补齐 TypeScript/JavaScript/Python 的 backward slice 能力，再为 Java/C/C++/ArkTS 标注能力等级；Cangjie 只在显式启用时展示 experimental capability。
 3. 建立“指定位置 -> 变量来源 -> caller path -> Agent evidence”的端到端 fixture。
 4. 将 trace CLI/MCP 输出打磨为 Agent 可消费格式。
 5. 在变量来源追踪和调用路径查询端到端测试完成前，不做 crate/workspace 拆分，不开启 Corpus 分支。
@@ -19,7 +19,7 @@
 - 结合 callers/callees 输出可能调用路径。
 - 输出 path steps、源码 range、代码片段、confidence/provenance 和截断说明。
 - 支持 CLI 和 MCP 查询，供 AI 继续分析。
-- 不内置漏洞枚举、漏洞模式扫描、source/sink/sanitizer 规则或 finding 产出。
+- 不内置漏洞枚举、漏洞模式扫描、漏洞规则系统或 finding 产出。
 
 需要补齐：
 
@@ -44,14 +44,14 @@
 MVP 语言端到端验收：
 
 - TypeScript/JavaScript/Python 至少各有一个真实源码 fixture：指定位置实参 -> 局部变量 -> 字段访问表达式 -> caller path。
-- Java/C/C++/ArkTS/Cangjie 至少提供 Level 1 callers/callees fixture，并为 Level 2/3 能力提供 best-effort fixture 或显式 unsupported diagnostics。
+- Java/C/C++/ArkTS 至少提供 Level 1 callers/callees fixture，并为 Level 2/3 能力提供 best-effort fixture 或显式 unsupported diagnostics；Cangjie 不进入 MVP fixture 门槛。
 - CLI/MCP 或等价接口必须能读取 trace path，并提供 bounded 输出。
 - 测试必须断言每一步的 kind、range、file、confidence/provenance。
 - 失败或不支持的语言能力必须显式标记，不得静默通过。
 
 ## 3. 函数摘要与轻量跨函数追踪
 
-当前 CFG 和 local dataflow 已有基础，但从指定位置回溯到 caller 仍需轻量函数摘要。不需要完整跨过程污点分析，也不规划 taint rule engine，先做 query-time summary 即可。
+当前 CFG 和 local dataflow 已有基础，但从指定位置回溯到 caller 仍需轻量函数摘要。先做 query-time summary 即可。CFG 是未来精度增强能力，不是 P5 MVP 的前置门槛；P5 优先完成 Level 3 facts + 轻量 summary bridge。
 
 建议新增：
 
@@ -129,7 +129,7 @@ crates/
 - `atlas-engine` 不依赖 CLI/MCP。
 - CLI 和 MCP 只依赖 engine API。
 - engine crate 包含变量来源追踪和调用路径查询，不把 trace 算法留在交互层。
-- 不规划完整污点分析或 taint engine 产品线；变量来源追踪和调用路径查询是分析主线。
+- 不规划污点分析产品线；变量来源追踪和调用路径查询是分析主线。
 - 项目级持久化和索引策略可以先保留在 Atlas 应用层，后续为 Atlas/Corpus 分支分别适配。
 
 不要过早拆分；当前门槛是 MVP 语言变量来源追踪和调用路径查询端到端测试完成。
@@ -189,7 +189,7 @@ Level 0: parse/index only, trace unsupported
 Level 1: symbols + references + calls
 Level 2: bindings + simple assignments
 Level 3: field access + call args + returns
-Level 4: CFG
+Level 4: CFG (future precision layer, not P5 gate)
 Level 5: lightweight interprocedural summaries
 ```
 
@@ -204,7 +204,7 @@ Level 5: lightweight interprocedural summaries
 | C | include-aware Level 1/2 best-effort | callsite args、局部 assignment、return、include provenance | 宏、函数指针、复杂指针别名标 low confidence/unsupported |
 | C++ | include-aware Level 1/2 best-effort | method call、namespace、simple assignment、return | 模板、重载、ADL 不得宣称精确 |
 | ArkTS | TypeScript grammar fallback 的 Level 1/2 best-effort | ArkTS fixture、语言标识、TS fallback provenance | 输出必须说明 ArkTS via TS grammar fallback |
-| Cangjie | Level 0/1 minimal | grammar spike、minimal adapter、definitions/calls fixture | trace 默认 unsupported，不返回静默空结果 |
+| Cangjie | 不属于 MVP；experimental opt-in | grammar spike、minimal adapter、definitions/calls fixture | 默认/all-languages binary 不发现 `.cj/.cangjie`；启用后 trace 默认 unsupported，不返回静默空结果 |
 
 交互层演进：
 

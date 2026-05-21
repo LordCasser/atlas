@@ -30,10 +30,7 @@ impl ImportResolver {
 
     /// Create an ImportResolver with a configured path alias resolver.
     pub fn with_path_alias(store: std::sync::Arc<Store>, path_alias: PathAliasResolver) -> Self {
-        Self {
-            store,
-            path_alias,
-        }
+        Self { store, path_alias }
     }
 
     /// Resolve an import definition into candidate symbols.
@@ -49,13 +46,10 @@ impl ImportResolver {
 
         if results.is_empty() {
             // Fallback: search by local name or imported name
-            let fallback_name = import
-                .local_name
-                .clone()
-                .or_else(|| {
-                    let n = import.imported_name.clone();
-                    if n.is_empty() { None } else { Some(n) }
-                });
+            let fallback_name = import.local_name.clone().or_else(|| {
+                let n = import.imported_name.clone();
+                if n.is_empty() { None } else { Some(n) }
+            });
 
             if let Some(name) = fallback_name {
                 results.extend(self.store.search_symbols(&name)?);
@@ -79,14 +73,20 @@ impl ImportResolver {
 
         // P2: Apply path alias resolution to the module path
         let resolved_module = if self.path_alias.has_aliases() {
-            self.path_alias.resolve(module).unwrap_or_else(|| module.clone())
+            self.path_alias
+                .resolve(module)
+                .unwrap_or_else(|| module.clone())
         } else {
             module.clone()
         };
 
         match import.kind {
             ImportKind::Import | ImportKind::Package | ImportKind::Use => {
-                let n: &str = if !local.is_empty() { local } else { name.as_str() };
+                let n: &str = if !local.is_empty() {
+                    local
+                } else {
+                    name.as_str()
+                };
                 if !n.is_empty() {
                     candidates.push(n.to_string());
                 }
@@ -196,7 +196,8 @@ mod tests {
         // Should resolve @/utils to src/utils
         assert!(
             candidates.iter().any(|c| c.contains("src/utils")),
-            "expected src/utils in candidates, got: {:?}", candidates
+            "expected src/utils in candidates, got: {:?}",
+            candidates
         );
     }
 }

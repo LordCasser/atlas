@@ -11,6 +11,10 @@ impl FrameworkResolver for ReactResolver {
     }
 
     fn supported_edge_kinds(&self) -> &[EdgeKind] {
-        &[EdgeKind::Calls, EdgeKind::References, EdgeKind::Instantiates]
+        &[
+            EdgeKind::Calls,
+            EdgeKind::References,
+            EdgeKind::Instantiates,
+        ]
     }
 }

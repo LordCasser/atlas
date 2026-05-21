@@ -82,7 +82,7 @@ tree-sitter parser
 - 单文件失败必须结构化记录，不中断项目索引。
 - ArkTS MVP 复用 TypeScript grammar，但 language 必须是 `arkts`。
 - C/C++ 是 best-effort，不承诺完整 preprocessing、模板、重载。
-- Cangjie 必须先验证 grammar 和 minimal fixture。
+- Cangjie 不属于 MVP，必须显式启用 `cangjie` feature；启用前不参与默认发现、默认编译或 `all-languages` 验收。
 
 ## 5. Fact 模型约束
 
@@ -154,7 +154,7 @@ LanguageCapabilityProfile
 - callsites
 - bindings / binding_uses
 - data_nodes / dataflow_edges
-- callsite_args
+- callsite_args (deprecated persistence surface unless reactivated as the single source of truth)
 - cfg_nodes / cfg_edges
 - project metadata
 - FTS indexes
@@ -165,7 +165,7 @@ LanguageCapabilityProfile
 - SQLite 使用 WAL。
 - 写路径走事务和 batch write。
 - 读路径可以短连接或 read API。
-- schema 变化必须 bump version，并同步更新当前架构文档。
+- 快速开发阶段 `CURRENT_SCHEMA_VERSION` 保持为当前 schema 代号；schema 变化必须同步更新当前架构文档和测试。部署迁移和旧库兼容不作为当前约束。
 - symbol graph 与 dataflow graph 必须分表。
 
 ## 8. Resolution 与 Graph 约束
@@ -222,7 +222,7 @@ atlas-mcp
 - `atlas-engine` 不能依赖 CLI 参数解析、MCP transport 或交互格式。
 - CLI/MCP 只能调用 engine API，不应反向被 engine 调用。
 - engine crate 必须包含语法解析、facts 构建和变量来源追踪与调用路径查询能力，而不是只包含 tree-sitter parser。
-- 不在 engine crate 中规划完整 taint rule engine；trace/slicing 是分析主线。
+- 不在 engine crate 中规划完整自动扫描规则引擎；trace/slicing 是分析主线。
 - 持久化和项目索引可以先保留在 Atlas 应用层，后续按 Atlas/Corpus 两个分支的存储模型分别演进。
 
 ## 10. Corpus 边界

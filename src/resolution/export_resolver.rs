@@ -94,12 +94,7 @@ impl ExportResolver {
 
                         if matches {
                             // Recurse into the re-exported module
-                            self.resolve_reexport_recursive(
-                                re_export,
-                                results,
-                                visited,
-                                depth + 1,
-                            );
+                            self.resolve_reexport_recursive(re_export, results, visited, depth + 1);
                         }
                     }
                 }
@@ -111,6 +106,7 @@ impl ExportResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extraction::LanguageFrontend;
     use crate::extraction::extract_file;
     use crate::extraction::languages::typescript::TypeScriptAdapter;
     use std::path::PathBuf;
@@ -118,6 +114,7 @@ mod tests {
     /// Test that ExportResolver can find re-exported symbols.
     #[test]
     fn test_reexport_resolution() {
+        let ts_frontend = LanguageFrontend::from_adapter(Box::new(TypeScriptAdapter));
         // lib.ts exports a function
         let lib_src = r#"export function internalHelper(): string {
     return "help";
@@ -125,7 +122,7 @@ mod tests {
 "#;
         let lib_id = FileId::generate("lib.ts");
         let lib_facts = extract_file(
-            &TypeScriptAdapter,
+            &ts_frontend,
             lib_id,
             &PathBuf::from("lib.ts"),
             lib_src,
@@ -138,7 +135,7 @@ mod tests {
 "#;
         let index_id = FileId::generate("index.ts");
         let index_facts = extract_file(
-            &TypeScriptAdapter,
+            &ts_frontend,
             index_id,
             &PathBuf::from("index.ts"),
             index_src,
@@ -149,7 +146,9 @@ mod tests {
         let store = Arc::new(Store::open_in_memory().unwrap());
         store.init_schema().unwrap();
         store.insert_file_facts(&lib_facts).expect("insert lib.ts");
-        store.insert_file_facts(&index_facts).expect("insert index.ts");
+        store
+            .insert_file_facts(&index_facts)
+            .expect("insert index.ts");
 
         let resolver = ExportResolver::new(store.clone());
 

@@ -1,6 +1,7 @@
 //! `atlas init` — create `.atlas/` directory and initialize the database.
 
 use crate::db::Store;
+use crate::types::Language;
 use anyhow::Context;
 use std::path::Path;
 
@@ -45,11 +46,6 @@ pub fn run(project: &str) -> anyhow::Result<()> {
 
 /// Quick check: does the directory contain source files we can recognize?
 fn has_source_files(root: &Path) -> bool {
-    // Known extensions from the Atlas Language::from_extension map
-    let known_extensions = [
-        "ts", "mts", "cts", "js", "mjs", "cjs", "py", "pyi", "java", "c", "h", "cpp", "cc",
-        "cxx", "hpp", "hh", "hxx", "ets", "cj", "cangjie",
-    ];
     let mut found = false;
 
     // Walk up to 100 entries deep, stop early on first match
@@ -57,11 +53,9 @@ fn has_source_files(root: &Path) -> bool {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_file() {
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    if known_extensions.contains(&ext) {
-                        found = true;
-                        break;
-                    }
+                if Language::from_path(&path).is_some() {
+                    found = true;
+                    break;
                 }
             }
             if path.is_dir() {
@@ -70,11 +64,9 @@ fn has_source_files(root: &Path) -> bool {
                     for sub in sub_entries.flatten() {
                         let sub_path = sub.path();
                         if sub_path.is_file() {
-                            if let Some(ext) = sub_path.extension().and_then(|e| e.to_str()) {
-                                if known_extensions.contains(&ext) {
-                                    found = true;
-                                    break;
-                                }
+                            if Language::from_path(&sub_path).is_some() {
+                                found = true;
+                                break;
                             }
                         }
                     }

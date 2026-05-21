@@ -10,15 +10,18 @@
 //! trait gains `Send + Sync` bounds (P2).  For now, Rayon-level
 //! parallelism + `catch_unwind` provides the critical safety guarantees.
 
-use std::path::Path;
 use std::panic::AssertUnwindSafe;
+use std::path::Path;
 use std::sync::Mutex;
 
-use crate::types::{ExtractionError, FailureCategory, FileFacts, IndexReport};
+use crate::types::ExtractionError;
+use crate::types::FailureCategory;
+use crate::types::FileFacts;
+use crate::types::IndexReport;
 use crate::types::ids::FileId;
 
 use super::extract_file;
-use super::languages::LanguageAdapter;
+use super::frontend::LanguageFrontend;
 
 // ---------------------------------------------------------------------------
 // WorkerConfig
@@ -83,7 +86,7 @@ impl ParseWorkerPool {
     /// Failures are also recorded internally for the final `IndexReport`.
     pub fn extract_one(
         &self,
-        adapter: &dyn LanguageAdapter,
+        frontend: &LanguageFrontend,
         file_id: FileId,
         file_path: &Path,
         source: &str,
@@ -111,7 +114,7 @@ impl ParseWorkerPool {
 
         // 2. Extract with panic isolation
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            extract_file(adapter, file_id, file_path, source, content_hash)
+            extract_file(frontend, file_id, file_path, source, content_hash)
         }));
 
         match result {
@@ -177,6 +180,8 @@ impl ParseWorkerPool {
             references_resolved: 0, // caller fills
             resolution_rate: 0.0,   // caller fills via finalize()
             duration_ms,
+            phase_timings: Default::default(),
+            per_language: Default::default(),
         }
     }
 
@@ -251,16 +256,10 @@ mod tests {
         let fid = FileId::generate("test.ts");
         let source = "x".repeat(100); // 100 bytes > 10 byte limit
 
-        let adapter = crate::extraction::create_adapter(crate::types::Language::TypeScript)
-            .expect("TypeScript adapter available");
+        let frontend = crate::extraction::create_frontend(crate::types::Language::TypeScript)
+            .expect("TypeScript frontend available");
 
-        let result = pool.extract_one(
-            adapter.as_ref(),
-            fid,
-            Path::new("test.ts"),
-            &source,
-            "abc",
-        );
+        let result = pool.extract_one(&frontend, fid, Path::new("test.ts"), &source, "abc");
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.category, FailureCategory::MaxFileSizeExceeded);

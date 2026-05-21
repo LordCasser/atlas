@@ -136,8 +136,11 @@ pub enum TraceCmd {
     /// Trace how a function gets invoked — reverse call-graph from target upward
     CallerPath {
         /// Symbol ID in hex (from atlas_search or atlas_symbol)
-        #[arg(short, long)]
-        symbol: String,
+        #[arg(short, long, required_unless_present = "name")]
+        symbol: Option<String>,
+        /// Symbol name for lookup (e.g. "inner" instead of hex)
+        #[arg(short, long, required_unless_present = "symbol")]
+        name: Option<String>,
         /// Maximum backward call depth (default: 20)
         #[arg(long, default_value = "20")]
         max_depth: usize,

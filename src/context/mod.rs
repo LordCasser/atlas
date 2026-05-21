@@ -31,10 +31,7 @@ impl ContextBuilder {
 
     /// Build a context view around a specific symbol: its callers, callees,
     /// containing scope, and adjacent symbols.
-    pub fn build_context_for_symbol(
-        &self,
-        symbol_id: &SymbolId,
-    ) -> anyhow::Result<ContextView> {
+    pub fn build_context_for_symbol(&self, symbol_id: &SymbolId) -> anyhow::Result<ContextView> {
         let sym = self.store.find_symbol_by_id(symbol_id)?;
         let Some(ref sym) = sym else {
             anyhow::bail!("symbol not found: {}", symbol_id);
@@ -53,8 +50,14 @@ impl ContextBuilder {
 
         let view = ContextView {
             subject: sym.clone(),
-            callers: resolve_symbols(&self.store, &self.graph.resolve_node_ids(&caller_view.callers))?,
-            callees: resolve_symbols(&self.store, &self.graph.resolve_node_ids(&callee_view.callees))?,
+            callers: resolve_symbols(
+                &self.store,
+                &self.graph.resolve_node_ids(&caller_view.callers),
+            )?,
+            callees: resolve_symbols(
+                &self.store,
+                &self.graph.resolve_node_ids(&callee_view.callees),
+            )?,
             file_peers: file_symbols,
             importers: resolve_symbols_to_paths(&self.store, &importer_symbols)?,
             dependencies: resolve_files(&self.store, &dep_files)?,
@@ -64,10 +67,7 @@ impl ContextBuilder {
     }
 
     /// Build a context slice — lightweight neighbor-only view (no full file listing).
-    pub fn build_context_slice(
-        &self,
-        symbol_id: &SymbolId,
-    ) -> anyhow::Result<ContextSlice> {
+    pub fn build_context_slice(&self, symbol_id: &SymbolId) -> anyhow::Result<ContextSlice> {
         let sym = self.store.find_symbol_by_id(symbol_id)?;
         let Some(sym) = sym else {
             anyhow::bail!("symbol not found: {}", symbol_id);
@@ -78,18 +78,21 @@ impl ContextBuilder {
 
         let slice = ContextSlice {
             subject: sym,
-            callers: resolve_symbols(&self.store, &self.graph.resolve_node_ids(&caller_view.callers))?,
-            callees: resolve_symbols(&self.store, &self.graph.resolve_node_ids(&callee_view.callees))?,
+            callers: resolve_symbols(
+                &self.store,
+                &self.graph.resolve_node_ids(&caller_view.callers),
+            )?,
+            callees: resolve_symbols(
+                &self.store,
+                &self.graph.resolve_node_ids(&callee_view.callees),
+            )?,
         };
 
         Ok(slice)
     }
 
     /// Build context from a search query — finds the top match, then builds context.
-    pub fn build_context_for_query(
-        &self,
-        query: &str,
-    ) -> anyhow::Result<Option<ContextView>> {
+    pub fn build_context_for_query(&self, query: &str) -> anyhow::Result<Option<ContextView>> {
         let results = self.store.search_symbols(query)?;
         if let Some(top) = results.first() {
             self.build_context_for_symbol(&top.id).map(Some)

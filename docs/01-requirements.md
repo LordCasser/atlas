@@ -32,9 +32,10 @@ MVP 固定支持：
 | C | `.c`, `.h` | tree-sitter-c，头文件按启发式区分 C/C++ |
 | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | tree-sitter-cpp |
 | ArkTS | `.ets`, `.sts` | MVP 复用 TypeScript grammar，但 language 存为 `arkts` |
-| Cangjie | `.cj`, `.cangjie` | 先 grammar spike，再 minimal adapter |
 
-非 MVP 语言可以作为 opt-in/future features，但不纳入当前验收。
+Cangjie 暂时作为不完善支持语言保留，必须显式启用 `cangjie` feature，不进入默认 features、`all-languages` 或 MVP 验收。
+
+非 MVP 语言可以作为 opt-in/future/experimental features，但不纳入当前验收。
 
 ## 3. 非目标
 
@@ -49,7 +50,7 @@ Atlas 不做：
 - Java classpath/Maven/Gradle 完整解析。
 - 完整 framework resolver 生态。
 - 自动漏洞发现、自动漏洞枚举或完整 SAST 引擎。
-- 污点分析引擎、taint rule engine、source/sink/sanitizer 规则系统。
+- 污点分析引擎、taint rule engine 或内置漏洞规则系统。
 - 基于漏洞模式自动扫描项目并产出 finding。
 - 把大型多版本源码索引系统直接并入 Atlas 主体。
 
@@ -57,7 +58,7 @@ MVP 可以 best-effort：
 
 - C/C++ include-aware direct call graph。
 - ArkTS via TypeScript grammar。
-- Cangjie grammar-based minimal extraction。
+- Cangjie grammar-based minimal extraction（仅显式启用 `cangjie` feature 时）。
 - 低置信度 name-based resolution。
 
 ## 4. 功能需求
@@ -163,7 +164,7 @@ target argument / variable
   -> caller chain / entry candidate
 ```
 
-Atlas 不做 taint rule / finding 产品能力。已有 taint 相关代码和 schema 只视为历史原型，不进入当前需求、路线图或验收门槛。当前阶段不要求、也不规划 source/sink/sanitizer 规则、自动 source-to-sink 扫描、全项目 finding 或内置漏洞规则生态。
+Atlas 不做 taint rule / finding 产品能力。Atlas 不包含 taint 代码、taint schema、taint rule/finding 产品能力——这些已从源码和 schema 中完全删除。不进入当前需求、路线图或验收门槛。当前阶段不要求、也不规划漏洞规则三元组、自动端到端漏洞传播扫描、全项目 finding 或内置漏洞规则生态。
 
 解析侧必须提供的基础 facts：
 
@@ -180,7 +181,7 @@ Level 0: parse/index only, trace unsupported
 Level 1: symbols + references + calls
 Level 2: bindings + simple assignments
 Level 3: field access + call args + returns
-Level 4: CFG
+Level 4: CFG (未来精度增强层，不作为当前 trace MVP 前置门槛)
 Level 5: lightweight interprocedural summaries
 ```
 
@@ -195,7 +196,7 @@ Level 5: lightweight interprocedural summaries
 | C | 当前 include-aware Level 1/2 best-effort；宏、preprocessing、函数指针不保证 | 调用路径可低置信度展示；宏展开、函数指针、复杂指针别名必须显示 limitation |
 | C++ | 当前 include-aware Level 1/2 best-effort；模板、重载、ADL、复杂类型不保证 | 调用路径和局部来源必须标注 best-effort；不能把重载解析结果伪装成精确 |
 | ArkTS | 复用 TypeScript grammar 的 Level 1/2 best-effort；ArkTS 特有语义不保证 | 必须显示 `arkts via TypeScript grammar` 或等价 provenance |
-| Cangjie | Level 0/1 grammar spike / minimal facts；trace 默认不宣称可用 | trace 查询应返回 unsupported 或 minimal capability，不应静默给空结果 |
+| Cangjie | 不属于 MVP；仅显式启用 `cangjie` feature 时提供 experimental minimal facts | 默认/all-languages binary 不发现 `.cj/.cangjie`；启用后 trace 默认不宣称可用 |
 
 CLI、MCP 和 context 输出都必须包含语言能力信息。最小字段：
 
@@ -227,7 +228,7 @@ MCP 使用 JSON-RPC over stdio。核心工具：
 - `atlas_path`
 - `atlas_context`
 - `atlas_explore`
-- future/analysis tools: `atlas_trace_variable`, `atlas_trace_point`, `atlas_dataflow_path` where implemented
+- trace tools: `atlas_trace_point`, `atlas_trace_variable`, `atlas_trace_caller_path` where implemented
 
 工具输出必须 bounded、结构化，并在涉及启发式关系时暴露 confidence/provenance。
 
@@ -258,7 +259,7 @@ MCP 使用 JSON-RPC over stdio。核心工具：
 
 MVP 完成标准：
 
-1. 8 种 MVP 语言能进入解析路径；Cangjie 至少完成 grammar spike 和 minimal adapter。
+1. 7 种 MVP 语言能进入解析路径；Cangjie 不进入 MVP 验收，仅作为显式 opt-in experimental 语言。
 2. `atlas index` 能生成 `.atlas/atlas.db`。
 3. `atlas search` 能检索符号。
 4. CLI 或 MCP 能查询基本 callers/callees。
@@ -277,7 +278,7 @@ MVP 完成标准：
 
 1. MVP 语言按能力等级补齐 trace 所需 facts：symbols、references、callsites、bindings、data_nodes、dataflow_edges，CFG where applicable。
 2. TypeScript/JavaScript/Python 至少有真实源码 fixture 覆盖“指定位置 -> 变量来源 -> caller path”。
-3. Java/C/C++/ArkTS/Cangjie 至少能提供 Level 1 调用图和 Level 2/3 的 best-effort 局部来源追踪，不能支持的能力必须显式标记。
+3. Java/C/C++/ArkTS 至少能提供 Level 1 调用图和 Level 2/3 的 best-effort 局部来源追踪，不能支持的能力必须显式标记；Cangjie 启用时只要求明确 experimental capability 和 unsupported diagnostics。
 4. CLI、MCP 或等价 public API 能按 file/line、function+variable、callsite+argument 查询 backward trace。
 5. 输出包含 path steps、源码 range、相关代码片段、confidence/provenance、截断说明。
 6. 测试覆盖真实 extraction -> store -> resolution -> dataflow/call graph -> trace 查询链路，而不只覆盖类型和单个 builder。

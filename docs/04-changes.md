@@ -15,7 +15,7 @@
 
 - Atlas 是 CodeGraph-inspired 的 Rust-native 本地代码知识图谱引擎。
 - CodeGraph 只作为产品形态和经验参考。
-- MVP 聚焦 8 种语言。
+- MVP 聚焦 7 种语言；Cangjie 暂时降级为显式 opt-in 的不完善支持语言。
 - schema 为 Atlas 自有模型，保留 scopes、references、callsites、dataflow、CFG 和 trace 基础事实。
 - extraction 使用 tree-sitter queries + LanguageAdapter。
 - SQLite 是 source of truth，GraphSnapshot 是查询加速层。
@@ -80,32 +80,27 @@
 - callsite args、return、field access、local variable 都应能定位到数据流节点。
 - 变量来源追踪与调用路径查询基于 dataflow facts，而不是 symbol edge。
 
-## 6. 从自动 taint 扫描改为变量来源追踪与调用路径查询
+## 6. 从自动扫描改为变量来源追踪与调用路径查询
 
-旧方向一度把 P5 定义为自动 source-to-sink taint MVP：
+旧方向一度把 P5 定义为自动漏洞传播扫描：
 
-- 通过规则识别 source、sink、sanitizer。
+- 通过规则识别外部输入点、危险操作点和清洗函数。
 - 全项目 forward propagation。
 - 输出 finding、severity、path steps。
 
 当前决策：
 
-- 自动 taint engine 不进入当前产品线。
+- 自动扫描引擎不进入当前产品线。
 - 产品主线改为用户指定入口驱动的变量来源追踪器和调用路径查询器。
 - 用户或 AI 先指定代码位置、目标变量、函数、调用点或代码模式，Atlas 负责找变量来源、调用者链路和可能调用路径。
 - Atlas 不判断这些路径是否构成漏洞；AI 或用户基于 Atlas 返回的结构化证据继续分析。
 
-当前已有状态：
-
-- taint rules、findings、path steps 已进入 schema。
-- `analysis/taint` 已提供规则加载、forward propagation 和 path tracing。
-- 这些内容视为历史原型事实，不作为当前需求、路线图或验收门槛。
+Atlas 不包含污点分析（taint analysis），不维护对应规则、finding 或路径步骤表。
 
 新增阶段门禁：
 
 - 当前主线优先完成变量来源追踪与调用路径查询端到端测试。
 - 端到端测试必须覆盖指定位置、变量来源、跨函数参数/返回追踪、caller path、bounded CLI/MCP 输出。
-- taint fixture 只能作为历史原型测试存在，不能替代变量来源追踪与调用路径查询的验收。
 - 只有当路径追踪作为产品能力稳定后，才把语法解析和 trace engine 抽出为可复用 crate。
 
 ## 7. 阶段实施记录

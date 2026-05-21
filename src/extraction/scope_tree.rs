@@ -15,23 +15,21 @@
 //!    into the sorted scope list
 //! 4. Assign container for class/struct members
 
-use crate::types::{ScopeDef, SymbolDef, SymbolKind, TextRange};
-use crate::types::ids::{ScopeId, SymbolId};
 #[cfg(test)]
 use crate::types::ids::FileId;
+use crate::types::ids::{ScopeId, SymbolId};
+use crate::types::{ScopeDef, SymbolDef, SymbolKind, TextRange};
 
 /// Reconstruct the scope tree and symbol containment from extracted facts.
-pub fn build_scope_tree(
-    scopes: &mut [ScopeDef],
-    symbols: &mut [SymbolDef],
-) {
+pub fn build_scope_tree(scopes: &mut [ScopeDef], symbols: &mut [SymbolDef]) {
     if scopes.is_empty() {
         return;
     }
 
     // ── 1. Sort scopes by (start_byte, -end_byte) — outer first ──
     scopes.sort_by(|a, b| {
-        a.range.start_byte
+        a.range
+            .start_byte
             .cmp(&b.range.start_byte)
             .then_with(|| b.range.end_byte.cmp(&a.range.end_byte))
     });
@@ -165,12 +163,7 @@ mod tests {
     use super::*;
     use crate::types::ScopeKind;
 
-    fn make_scope(
-        file_id: FileId,
-        kind: ScopeKind,
-        start: u32,
-        end: u32,
-    ) -> ScopeDef {
+    fn make_scope(file_id: FileId, kind: ScopeKind, start: u32, end: u32) -> ScopeDef {
         let range = TextRange {
             start_byte: start,
             end_byte: end,
@@ -180,12 +173,7 @@ mod tests {
             end_column: end,
         };
         ScopeDef {
-            id: ScopeId::generate(
-                &file_id,
-                None::<&ScopeId>,
-                kind.as_str(),
-                start,
-            ),
+            id: ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), start),
             file_id,
             kind,
             name: format!("{:?}#{}", kind, start),
@@ -211,13 +199,7 @@ mod tests {
             end_column: end,
         };
         SymbolDef {
-            id: SymbolId::generate(
-                &file_id,
-                "typescript",
-                name,
-                kind.as_str(),
-                None::<&str>,
-            ),
+            id: SymbolId::generate(&file_id, "typescript", name, kind.as_str(), None::<&str>),
             kind,
             name: name.to_string(),
             qualified_name: name.to_string(),
@@ -297,14 +279,14 @@ mod tests {
         // Class scope is parent of class scope (class symbol itself is in file scope)
         // Wait — class symbol is at positions 10-17, which is inside the class scope (10-60)
         // But the class scope IS the class — so the class symbol should have the file scope
-        
+
         // Let me reconsider. The class scope is the scope provider, and the class symbol
         // is the definition. The class scope's byte range includes the class body.
         // The class symbol should be in the FILE scope (or the enclosing scope).
-        
+
         // The method is inside the class → should have class as container
         // and class scope as scope_id
-        
+
         // The class symbol should be in the file scope
         // The method should be in the class scope
     }

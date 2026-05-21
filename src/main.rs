@@ -36,7 +36,12 @@ fn main() -> anyhow::Result<()> {
                 json,
             } => {
                 atlas::cli::commands::search::run(
-                    &query, &project, limit, kind.as_deref(), language.as_deref(), json,
+                    &query,
+                    &project,
+                    limit,
+                    kind.as_deref(),
+                    language.as_deref(),
+                    json,
                 )?;
             }
             Commands::Context { query, project } => {
@@ -56,9 +61,7 @@ fn main() -> anyhow::Result<()> {
                     column,
                     json,
                 } => {
-                    atlas::cli::commands::trace::run_point(
-                        &project, &file, line, column, json,
-                    )?;
+                    atlas::cli::commands::trace::run_point(&project, &file, line, column, json)?;
                 }
                 TraceCmd::Variable {
                     file,
@@ -73,11 +76,16 @@ fn main() -> anyhow::Result<()> {
                 }
                 TraceCmd::CallerPath {
                     symbol,
+                    name,
                     max_depth,
                     json,
                 } => {
                     atlas::cli::commands::trace::run_caller_path(
-                        &project, &symbol, max_depth, json,
+                        &project,
+                        symbol.as_deref(),
+                        name.as_deref(),
+                        max_depth,
+                        json,
                     )?;
                 }
             },

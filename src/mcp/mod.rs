@@ -14,31 +14,35 @@
 
 use std::sync::Arc;
 
+use crate::context::ContextBuilder;
 use crate::db::Store;
 use crate::graph::GraphEngine;
 use crate::search::SearchEngine;
-use crate::context::ContextBuilder;
 
 use self::protocol::{Response, ServerCapabilities, ServerInfo, ToolsCapability};
 use self::tools::ToolRouter;
 
-pub mod transport;
-pub mod tools;
 pub mod protocol;
+pub mod tools;
+pub mod transport;
 
 // Re-export for integration tests and diagnostics
-pub use tools::make_all_tools;
 pub use protocol::Tool;
+pub use tools::make_all_tools;
 
 /// The MCP server orchestrator.
 pub struct McpServer {
     store: Arc<Store>,
+    project_root: std::path::PathBuf,
 }
 
 impl McpServer {
     /// Create a new MCP server backed by the given store.
-    pub fn new(store: Arc<Store>) -> Self {
-        Self { store }
+    pub fn new(store: Arc<Store>, project_root: std::path::PathBuf) -> Self {
+        Self {
+            store,
+            project_root,
+        }
     }
 
     /// Start the MCP server loop (blocking).
@@ -62,17 +66,27 @@ impl McpServer {
         // Build the tool router with fresh graph engine per request.
         // This ensures that after sync/index operations, MCP tools see the latest data.
         let store = self.store;
-        let search = SearchEngine::new(Arc::clone(&store), Arc::new(
-            GraphEngine::from_store(&store, 0.3)?,
-        ));
-        let context = ContextBuilder::new(Arc::clone(&store), Arc::new(
-            GraphEngine::from_store(&store, 0.3)?,
-        ));
+        let search = SearchEngine::new(
+            Arc::clone(&store),
+            Arc::new(GraphEngine::from_store(&store, 0.3)?),
+        );
+        let context = ContextBuilder::new(
+            Arc::clone(&store),
+            Arc::new(GraphEngine::from_store(&store, 0.3)?),
+        );
         // graph_fn rebuilds from store on every call to avoid staleness
         let store_for_graph = Arc::clone(&store);
-        let graph_fn = move || GraphEngine::from_store(&store_for_graph, 0.3)
-            .expect("Failed to reload graph snapshot from store");
-        let router = ToolRouter::new(Arc::clone(&store), search, context, graph_fn);
+        let graph_fn = move || {
+            GraphEngine::from_store(&store_for_graph, 0.3)
+                .expect("Failed to reload graph snapshot from store")
+        };
+        let router = ToolRouter::new(
+            Arc::clone(&store),
+            search,
+            context,
+            graph_fn,
+            self.project_root.clone(),
+        );
 
         loop {
             let request = match transport::read_request(&mut reader).await? {
@@ -100,7 +114,8 @@ impl McpServer {
                         name: "atlas-mcp".into(),
                         version: env!("CARGO_PKG_VERSION").into(),
                     },
-                })).ok();
+                }))
+                .ok();
 
                 Response {
                     jsonrpc: protocol::JSONRPC_VERSION,
@@ -124,23 +139,30 @@ impl McpServer {
             "tools/call" => {
                 let params = match request.params.as_ref() {
                     Some(p) => p,
-                    None => return Response::error(
-                        request.id.clone(),
-                        protocol::INVALID_PARAMS,
-                        "Missing params".into(),
-                    ),
+                    None => {
+                        return Response::error(
+                            request.id.clone(),
+                            protocol::INVALID_PARAMS,
+                            "Missing params".into(),
+                        );
+                    }
                 };
 
                 let name = match params.get("name").and_then(|v| v.as_str()) {
                     Some(n) => n,
-                    None => return Response::error(
-                        request.id.clone(),
-                        protocol::INVALID_PARAMS,
-                        "Missing tool name".into(),
-                    ),
+                    None => {
+                        return Response::error(
+                            request.id.clone(),
+                            protocol::INVALID_PARAMS,
+                            "Missing tool name".into(),
+                        );
+                    }
                 };
 
-                let args = params.get("arguments").cloned().unwrap_or(serde_json::Value::Null);
+                let args = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
                 let tool_result = router.call_tool(name, &args);
                 let result = serde_json::to_value(tool_result).ok();
 

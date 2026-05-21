@@ -7,7 +7,7 @@
 ```text
 src/
   types/        ID、enum、IR、binding、dataflow、CFG、trace 查询类型
-  db/           SQLite schema、store API、迁移入口
+  db/           SQLite schema、store API、schema 初始化
   extraction/   tree-sitter 解析、query、scope、semantic binder、lexical binder、dataflow、CFG
   resolution/   builtin filter、import/export/include/path alias/name matching
   graph/        GraphBuilder、GraphSnapshot、GraphEngine
@@ -46,7 +46,7 @@ Source files
 
 ## 3. Schema 状态
 
-当前 `CURRENT_SCHEMA_VERSION` 为 `7`。
+当前 `CURRENT_SCHEMA_VERSION` 为 `1`。项目仍处于快速开发阶段，当前不维护部署迁移或旧库兼容承诺。
 
 主要表：
 
@@ -62,12 +62,9 @@ bindings
 binding_uses
 data_nodes
 dataflow_edges
-callsite_args
+callsite_args (deprecated table; call arguments are currently stored inline on callsites)
 cfg_nodes
 cfg_edges
-taint_rules
-taint_findings
-taint_path_steps
 project_metadata
 symbols_fts
 schema_versions
@@ -79,8 +76,6 @@ schema_versions
 - symbol-level edges 已使用 `symbol_edges`。
 - dataflow facts 已使用 `data_nodes` 和 `dataflow_edges`。
 - CFG facts 已使用 `cfg_nodes` 和 `cfg_edges`。
-- taint rules/findings/path persistence 已进入 schema v7，但这些表只属于历史原型状态，不参与当前主线能力。
-
 ## 4. Extraction
 
 当前抽取层包含：
@@ -164,26 +159,10 @@ CLI：
 - `mcp`
 - `doctor`
 
-当前代码里还存在 `taint` 命令和相关模块，但它只作为历史原型实现记录，不列为当前产品主线命令。
 
 ## 7. Analysis / Trace
 
-当前代码中曾引入 `src/analysis/taint/`：
-
-- `TaintRuleLoader`
-- `TaintEngine`
-- `TaintPathTracer`
-- finding storage module
-
-当前实现状态：
-
-- 规则来自内置默认规则和 `.atlas/rules/*.yaml`。
-- 默认规则覆盖 TypeScript/JavaScript 和 Python 的常见 source/sink/sanitizer。
-- TaintEngine 基于 `DataNode` 和 `DataFlowEdge` 做 worklist forward propagation。
-- TaintPathTracer 基于 reverse BFS 生成 source-to-sink path steps。
-- 当前 taint 能力属于历史原型，不作为产品能力、路线图目标或验收目标。后续分析主线只围绕用户指定位置后的变量来源追踪与调用路径查询。
-
-当前产品主线调整为变量来源追踪与调用路径查询：
+Atlas 不包含污点分析（taint analysis）。当前产品主线为变量来源追踪与调用路径查询：
 
 ```text
 用户指定位置 / callsite / 问题变量
@@ -193,14 +172,14 @@ CLI：
   -> 输出 bounded evidence 给 Agent 分析
 ```
 
-该能力不依赖 source/sink/sanitizer 规则，也不做全项目自动 finding。外部工具或用户可以把疑似问题点作为入口传给 Atlas，但 Atlas 只返回程序结构证据，不负责判定漏洞。
+该能力不依赖内置漏洞规则系统，也不做全项目自动 finding。外部工具或用户可以把疑似问题点作为入口传给 Atlas，但 Atlas 只返回程序结构证据，不负责判定漏洞。
 
 当前架构需要补齐显式语言能力边界：
 
 - analysis 层应提供 `LanguageCapabilityProfile` 或等价结构，描述每种语言当前支持的 trace level、supported features、unsupported features、known limitations 和 confidence floor。
 - CLI/MCP/context 不能自行推断语言能力，只能展示 analysis/engine 返回的 capability。
 - trace 查询即使返回 partial result，也必须同时返回 capability 和 diagnostics，说明哪些路径是完整证据、哪些只是 best-effort、哪些请求超出当前语言能力。
-- 当前默认边界：TypeScript/JavaScript/Python 作为 Level 3 主目标推进；Java/C/C++/ArkTS 以 Level 1/2 best-effort 输出；Cangjie 以 Level 0/1 minimal facts 输出，trace 默认不宣称可用。
+- 当前默认边界：TypeScript/JavaScript/Python 作为 Level 3 主目标推进；Java/C/C++/ArkTS 以 Level 1/2 best-effort 输出；Cangjie 不属于默认或 `all-languages` 编译，仅在显式启用 `cangjie` feature 时作为 experimental minimal support。
 
 ## 8. Cargo Features
 
@@ -223,14 +202,30 @@ java
 c
 cpp
 arkts
+```
+
+不完善/实验语言 features 目前是 opt-in，不计入 MVP 验收：
+
+```text
 cangjie
 ```
 
-未来语言 features 目前是 opt-in，不计入 MVP 验收。
+未来语言 features 目前也是 opt-in，不计入 MVP 验收。
 
 ## 9. 当前演进决策
 
 当前阶段继续基于本文件描述的现有架构推进，不先拆分 workspace/crate，也不先开启 Corpus 分支。
+
+已完成增强（P6: 索引性能优化）：
+
+- **P0**: 阶段耗时与语言级统计 (`PhaseTimings` / `PerLanguageStats`)
+- **P1**: Hash-based 脏文件集增量索引 (dirty set, 干净文件跳过)
+- **P2**: Thread-local Parser + LanguageFrontend 缓存
+- **P3**: 批量事务 DB 写入 (`insert_file_facts_batch`)
+- **P4**: 全局内存符号索引 (`GlobalSymbolIndex`) + in-memory resolution
+- **P5**: Graph edge 并行构建 (Rayon)
+- **P6**: Dataflow/CFG 按需加载 (trace 查询已按需)
+- **P7**: 语言能力驱动的 extraction 跳过策略
 
 当前主线目标：
 

@@ -3,7 +3,7 @@
 //! Uses tree-sitter-typescript grammar and embedded query files.
 //! JavaScript is treated as a subset of TypeScript for extraction purposes.
 
-use crate::extraction::languages::{node_range, node_text, LanguageAdapter};
+use crate::extraction::languages::{LanguageAdapter, node_range, node_text};
 
 use crate::types::*;
 
@@ -170,12 +170,8 @@ impl LanguageAdapter for TypeScriptAdapter {
         let name = format!("{:?}#{}", kind, range.start_byte);
         let scope_path = name.clone();
 
-        let scope_id = ScopeId::generate(
-            &file_id,
-            None::<&ScopeId>,
-            kind.as_str(),
-            range.start_byte,
-        );
+        let scope_id =
+            ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
 
         Some(ScopeDef {
             id: scope_id,
@@ -284,45 +280,68 @@ impl LanguageAdapter for TypeScriptAdapter {
         let range = node_range(node);
 
         match capture_name {
-            "df.parameter" => {
-                node_text(node, source).map(|name| {
+            "df.parameter" => node_text(node, source)
+                .map(|name| {
                     let node_id = DataNodeId::generate(
-                        &file_id, None::<&crate::types::ids::SymbolId>,
-                        "parameter", Some(&name), Some(&name), range.start_byte,
+                        &file_id,
+                        None::<&crate::types::ids::SymbolId>,
+                        "parameter",
+                        Some(&name),
+                        Some(&name),
+                        range.start_byte,
                     );
                     let dn = DataNode::parameter(node_id, file_id, None, None, &name, range);
                     (Some(dn), None)
-                }).unwrap_or((None, None))
-            }
+                })
+                .unwrap_or((None, None)),
             "df.assign_target" => {
-                node_text(node, source).map(|name| {
-                    let node_id = DataNodeId::generate(
-                        &file_id, None::<&crate::types::ids::SymbolId>,
-                        "local", Some(&name), Some(&name), range.start_byte,
-                    );
-                    // FK fields are None at extraction — resolved post-extraction
-                    let dn = DataNode::local(node_id, file_id, None, None, &name, range);
-                    (Some(dn), None)
-                }).unwrap_or((None, None))
+                node_text(node, source)
+                    .map(|name| {
+                        let node_id = DataNodeId::generate(
+                            &file_id,
+                            None::<&crate::types::ids::SymbolId>,
+                            "local",
+                            Some(&name),
+                            Some(&name),
+                            range.start_byte,
+                        );
+                        // FK fields are None at extraction — resolved post-extraction
+                        let dn = DataNode::local(node_id, file_id, None, None, &name, range);
+                        (Some(dn), None)
+                    })
+                    .unwrap_or((None, None))
             }
             "df.assign_value" => {
                 let text = node_text(node, source).unwrap_or_default();
                 let node_id = DataNodeId::generate(
-                    &file_id, None::<&crate::types::ids::SymbolId>,
-                    "expr", Some(&text), None, range.start_byte,
+                    &file_id,
+                    None::<&crate::types::ids::SymbolId>,
+                    "expr",
+                    Some(&text),
+                    None,
+                    range.start_byte,
                 );
                 let dn = DataNode {
-                    id: node_id, file_id, function_id: None,
-                    kind: crate::types::enums::DataNodeKind::Expr, binding_id: None,
-                    callsite_id: None, name: Some(text),
-                    access_path: None, range,
+                    id: node_id,
+                    file_id,
+                    function_id: None,
+                    kind: crate::types::enums::DataNodeKind::Expr,
+                    binding_id: None,
+                    callsite_id: None,
+                    name: Some(text),
+                    access_path: None,
+                    range,
                 };
                 (Some(dn), None)
             }
             "df.return_value" => {
                 let node_id = DataNodeId::generate(
-                    &file_id, None::<&crate::types::ids::SymbolId>,
-                    "return", None, None, range.start_byte,
+                    &file_id,
+                    None::<&crate::types::ids::SymbolId>,
+                    "return",
+                    None,
+                    None,
+                    range.start_byte,
                 );
                 let dn = DataNode::return_(node_id, file_id, None, range);
                 (Some(dn), None)
@@ -330,55 +349,90 @@ impl LanguageAdapter for TypeScriptAdapter {
             "df.call_arg" => {
                 let text = node_text(node, source).unwrap_or_default();
                 let node_id = DataNodeId::generate(
-                    &file_id, None::<&crate::types::ids::SymbolId>,
-                    "call_arg", Some(&text), None, range.start_byte,
+                    &file_id,
+                    None::<&crate::types::ids::SymbolId>,
+                    "call_arg",
+                    Some(&text),
+                    None,
+                    range.start_byte,
                 );
                 let dn = DataNode::call_arg(node_id, file_id, None, None, Some(&text), range);
                 (Some(dn), None)
             }
             "df.call_target" => {
-                node_text(node, source).map(|name| {
-                    // Build full access_path from parent member_expression
-                    // e.g. for "child_process.exec" → access_path = "child_process.exec"
-                    let access_path = node.parent()
-                        .filter(|p| p.kind() == "member_expression")
-                        .and_then(|p| node_text(p, source))
-                        .unwrap_or_else(|| name.clone());
-                    let node_id = DataNodeId::generate(
-                        &file_id, None::<&crate::types::ids::SymbolId>,
-                        "call_target", Some(&name), Some(&access_path), range.start_byte,
-                    );
-                    let dn = DataNode::call_target(node_id, file_id, None, &name, &access_path, range);
-                    (Some(dn), None)
-                }).unwrap_or((None, None))
+                node_text(node, source)
+                    .map(|name| {
+                        // Build full access_path from parent member_expression
+                        // e.g. for "child_process.exec" → access_path = "child_process.exec"
+                        let access_path = node
+                            .parent()
+                            .filter(|p| p.kind() == "member_expression")
+                            .and_then(|p| node_text(p, source))
+                            .unwrap_or_else(|| name.clone());
+                        let node_id = DataNodeId::generate(
+                            &file_id,
+                            None::<&crate::types::ids::SymbolId>,
+                            "call_target",
+                            Some(&name),
+                            Some(&access_path),
+                            range.start_byte,
+                        );
+                        let dn = DataNode::call_target(
+                            node_id,
+                            file_id,
+                            None,
+                            &name,
+                            &access_path,
+                            range,
+                        );
+                        (Some(dn), None)
+                    })
+                    .unwrap_or((None, None))
             }
             "df.field_name" => {
-                node_text(node, source).map(|name| {
-                    // Build full access_path from parent member_expression
-                    // e.g. for "req.query" → access_path = "req.query"
-                    let access_path = node.parent()
-                        .filter(|p| p.kind() == "member_expression")
-                        .and_then(|p| node_text(p, source))
-                        .unwrap_or_else(|| name.clone());
-                    let node_id = DataNodeId::generate(
-                        &file_id, None::<&crate::types::ids::SymbolId>,
-                        "field", Some(&name), Some(&access_path), range.start_byte,
-                    );
-                    let dn = DataNode::field(node_id, file_id, None, &name, &access_path, range);
-                    (Some(dn), None)
-                }).unwrap_or((None, None))
+                node_text(node, source)
+                    .map(|name| {
+                        // Build full access_path from parent member_expression
+                        // e.g. for "req.query" → access_path = "req.query"
+                        let access_path = node
+                            .parent()
+                            .filter(|p| p.kind() == "member_expression")
+                            .and_then(|p| node_text(p, source))
+                            .unwrap_or_else(|| name.clone());
+                        let node_id = DataNodeId::generate(
+                            &file_id,
+                            None::<&crate::types::ids::SymbolId>,
+                            "field",
+                            Some(&name),
+                            Some(&access_path),
+                            range.start_byte,
+                        );
+                        let dn =
+                            DataNode::field(node_id, file_id, None, &name, &access_path, range);
+                        (Some(dn), None)
+                    })
+                    .unwrap_or((None, None))
             }
             "df.literal" | "df.await_value" | "df.receiver" => {
                 let text = node_text(node, source).unwrap_or_default();
                 let node_id = DataNodeId::generate(
-                    &file_id, None::<&crate::types::ids::SymbolId>,
-                    "literal", Some(&text), None, range.start_byte,
+                    &file_id,
+                    None::<&crate::types::ids::SymbolId>,
+                    "literal",
+                    Some(&text),
+                    None,
+                    range.start_byte,
                 );
                 let dn = DataNode {
-                    id: node_id, file_id, function_id: None,
-                    kind: crate::types::enums::DataNodeKind::Literal, binding_id: None,
-                    callsite_id: None, name: Some(text),
-                    access_path: None, range,
+                    id: node_id,
+                    file_id,
+                    function_id: None,
+                    kind: crate::types::enums::DataNodeKind::Literal,
+                    binding_id: None,
+                    callsite_id: None,
+                    name: Some(text),
+                    access_path: None,
+                    range,
                 };
                 (Some(dn), None)
             }
@@ -500,7 +554,9 @@ fn ts_import_info(
     match capture {
         "import.module" => {
             let module_path = node_text(node, source)?;
-            let cleaned = module_path.trim_matches(|c| c == '"' || c == '\'').to_string();
+            let cleaned = module_path
+                .trim_matches(|c| c == '"' || c == '\'')
+                .to_string();
             Some((ImportKind::Import, cleaned, String::new()))
         }
         "import.name" | "import.alias" => {
@@ -526,7 +582,9 @@ fn extract_module_from_ancestor(node: tree_sitter::Node, source: &str) -> String
         if parent.kind() == "import_statement" {
             if let Some(source_child) = parent.child_by_field_name("source") {
                 if let Some(module_path) = node_text(source_child, source) {
-                    return module_path.trim_matches(|c| c == '"' || c == '\'').to_string();
+                    return module_path
+                        .trim_matches(|c| c == '"' || c == '\'')
+                        .to_string();
                 }
             }
             break;
@@ -585,11 +643,7 @@ mod tests {
         let adapter = TypeScriptAdapter;
         let lang = adapter.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, adapter.scope_query());
-        assert!(
-            query.is_ok(),
-            "scope query must compile: {:?}",
-            query.err()
-        );
+        assert!(query.is_ok(), "scope query must compile: {:?}", query.err());
     }
 
     #[test]

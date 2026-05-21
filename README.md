@@ -2,7 +2,7 @@
 
 **Local-first semantic knowledge graph builder for codebases.**
 
-Atlas parses your source code with tree-sitter, extracts symbols, scopes, references, calls, and dataflow edges, stores them in SQLite, resolves cross-file links, and exposes the knowledge graph via CLI and MCP (Model Context Protocol) for LLM agents.
+Atlas parses your source code with tree-sitter, extracts symbols, scopes, references, calls, callsites, bindings, and dataflow facts, stores them in SQLite, resolves cross-file links, and exposes graph plus trace queries via CLI and MCP (Model Context Protocol) for LLM agents.
 
 ```
 Source Code                 Atlas Engine                  LLM Agent
@@ -17,13 +17,14 @@ Source Code                 Atlas Engine                  LLM Agent
 
 ## Features
 
-- **8 languages**: TypeScript, JavaScript, Python, Java, C, C++, ArkTS, Cangjie
+- **7 MVP languages**: TypeScript, JavaScript, Python, Java, C, C++, ArkTS
 - **Deterministic**: tree-sitter AST/query extraction, no AI guessing
 - **Local-first**: all data in `.atlas/` per project, no remote services
 - **Incremental**: content-hash change detection re-indexes only modified files
 - **Rich graph**: symbols, scopes, references, calls, dataflow, imports, container edges
-- **MCP native**: 12 tools for LLM agents — search, callers, callees, call graph, path finding, impact analysis, context
-- **CLI**: `init`, `index`, `sync`, `search`, `status`, `doctor`
+- **Trace mainline**: user-specified variable provenance and caller-path queries for AI analysis
+- **MCP native**: graph, search, context, and trace tools for LLM agents
+- **CLI**: `init`, `index`, `sync`, `search`, `status`, `doctor`, `trace`
 
 ---
 
@@ -92,7 +93,7 @@ atlas search "User" --limit 20
 
 ## MCP Server
 
-Atlas provides a built-in MCP JSON-RPC 2.0 server over stdio, exposing 12 tools for LLM agents:
+Atlas provides a built-in MCP JSON-RPC 2.0 server over stdio, exposing bounded tools for LLM agents:
 
 | Tool | Description |
 |------|-------------|
@@ -108,6 +109,9 @@ Atlas provides a built-in MCP JSON-RPC 2.0 server over stdio, exposing 12 tools 
 | `atlas_explore` | Symbol details + all neighbor edges with kinds |
 | `atlas_impact` | Impact analysis: what depends on this symbol? |
 | `atlas_context` | AI context: callers + callees + peers as markdown |
+| `atlas_trace_point` | Resolve facts at a code position |
+| `atlas_trace_variable` | Trace where a value at a code position comes from |
+| `atlas_trace_caller_path` | Trace the farthest caller chain for a target function |
 
 ### Configuring MCP (Claude Desktop / Cursor)
 
@@ -139,7 +143,7 @@ The `mcp` subcommand starts a persistent MCP server process that the LLM agent q
 | C | `.c`, `.h` | `c` | tree-sitter-c |
 | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` | `cpp` | tree-sitter-cpp |
 | ArkTS | `.ets` | `arkts` | tree-sitter-typescript (delegated) |
-| Cangjie ⚠️ | `.cj` | `cangjie` | tree-sitter-cangjie (git dep) — see [Limitations](#limitations) |
+| Cangjie ⚠️ | `.cj`, `.cangjie` | `cangjie` | Experimental opt-in, not included in `all-languages` |
 
 Default features: `typescript`, `javascript`, `python`, `cli`. Enable additional languages with `--features`:
 
@@ -190,7 +194,7 @@ Name matching uses 6-tier similarity: exact → case-insensitive → camelCase/s
 
 ```
 .atlas/                          # Per-project Atlas state
-├── atlas.db                     # SQLite database (schema v3)
+├── atlas.db                     # SQLite database (schema v1 during rapid development)
 └── file_hashes.json             # Incremental sync hash store
 
 src/
@@ -204,6 +208,7 @@ src/
 ├── search/                      # FTS5 + LIKE + fuzzy + camelCase normalization
 ├── context/                     # AI context builder (callers/callees/peers)
 ├── sync/                        # Incremental sync (git-aware discovery + hash detection)
+├── analysis/                    # Variable provenance and caller-path analysis layer
 ├── mcp/                         # MCP JSON-RPC 2.0 server (feature-gated)
 ├── cli/                         # Clap CLI commands (feature-gated)
 └── lib.rs                       # Module declarations
@@ -238,18 +243,15 @@ cargo build --release --features all-languages,cli
 ./target/release/atlas index --project /tmp/test-project
 ```
 
-Test coverage:
-- **144 unit tests** (default features) — all pass
-- **176 unit tests** (full features) — all pass
-- **9 integration tests** — cross-file resolution, graph queries, scope tree, language detection
-- **0 build warnings**
+The full verification target is `cargo test --features "all-languages,mcp,sync"`.
 
 ---
 
 ## Known Limitations
 
+- **Trace capability is language-specific**: CLI and MCP responses include capability metadata; unsupported trace features return partial results with diagnostics.
 - **ArkTS**: delegates to TypeScript grammar; some ArkTS-specific syntax may not parse
-- **Cangjie ⚠️**: three-level issue prevents indexing despite functional adapter code:
+- **Cangjie ⚠️**: experimental opt-in support. It is not part of MVP, default features, or `all-languages`; enable explicitly with `--features cangjie`. Known issues:
   1. tree-sitter-cangjie grammar ABI 15 pre-dates Atlas tree-sitter 0.24.7 (max ABI 14)
   2. grammar.js has been rewritten (using modern node types like `functionDefinition`, `classDefinition`, `postfixExpression`) but parser.c was stale — regeneration with tree-sitter CLI 0.24.7 resolved ABI + naming but revealed:
   3. Atlas `.scm` queries reference node types (e.g. `typeAnnotation`) that don't exist in the current grammar, requiring query-level fixes
@@ -264,13 +266,13 @@ Test coverage:
 
 ## Roadmap
 
-- [ ] C/C++ preprocessor expansion for accurate include resolution
-- [ ] Framework-specific resolvers (React, Django, Spring)
-- [ ] Taint analysis pipeline (dataflow edge tracking)
-- [ ] Parallel indexing with rayon
-- [ ] Support for Rust, Go, C#, Ruby, Swift, Kotlin, PHP
-- [ ] Fix Cangjie `.scm` queries to match tree-sitter-cangjie grammar node types
-- [ ] MCP Server concurrency with connection pool
+The active roadmap is in [`docs/05-roadmap.md`](docs/05-roadmap.md). Current priority is:
+
+- Stabilize facts needed for variable provenance and caller-path queries.
+- Complete TypeScript/JavaScript/Python Level 3 trace fixtures.
+- Keep Java/C/C++/ArkTS capability boundaries explicit in CLI and MCP output; keep Cangjie marked experimental when explicitly enabled.
+- Add lightweight function summaries for bounded cross-function provenance.
+- Defer crate/workspace splitting until trace E2E behavior is stable.
 
 ---
 
@@ -284,5 +286,5 @@ MIT
 
 1. Run `cargo test` and `cargo test --features all-languages,mcp,sync` before submitting
 2. All new extraction logic should have a corresponding integration test
-3. Schema changes require bumping `CURRENT_SCHEMA_VERSION` and adding migration SQL
+3. During rapid development, schema changes update the v1 schema and tests; deployment migrations are not a current requirement
 4. Language adapters follow the `LanguageAdapter` trait in `src/extraction/languages/mod.rs`

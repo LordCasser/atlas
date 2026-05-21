@@ -3,9 +3,9 @@
 //! ## Core concept
 //!
 //! Trace queries let users ask "where does this value come from?" by clicking
-//! a source position and walking backward through dataflow edges. Unlike taint
-//! analysis (which does forward propagation from pre-defined sources), trace
-//! starts from a user-chosen point and slices backward.
+//! a source position and walking backward through dataflow edges (use-def chain).
+//! Unlike forward propagation from pre-defined sources, trace starts from a
+//! user-chosen point and slices backward.
 //!
 //! ## Key types
 //!
@@ -47,18 +47,50 @@ pub struct TraceDiagnostic {
 
 impl TraceDiagnostic {
     pub fn info(message: &str) -> Self {
-        Self { level: DiagnosticLevel::Info, message: message.to_string(), code: None }
+        Self {
+            level: DiagnosticLevel::Info,
+            message: message.to_string(),
+            code: None,
+        }
     }
     pub fn warning(message: &str) -> Self {
-        Self { level: DiagnosticLevel::Warning, message: message.to_string(), code: None }
+        Self {
+            level: DiagnosticLevel::Warning,
+            message: message.to_string(),
+            code: None,
+        }
     }
     pub fn error(message: &str) -> Self {
-        Self { level: DiagnosticLevel::Error, message: message.to_string(), code: None }
+        Self {
+            level: DiagnosticLevel::Error,
+            message: message.to_string(),
+            code: None,
+        }
     }
     pub fn with_code(mut self, code: &str) -> Self {
         self.code = Some(code.to_string());
         self
     }
+}
+
+// ---------------------------------------------------------------------------
+// Evidence — human-readable context for trace response consumers
+// ---------------------------------------------------------------------------
+
+/// Human-readable evidence attached to a trace response.
+///
+/// Provides file path, code snippet, and symbol name so that agent/AI consumers
+/// can present contextual information without additional database queries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Evidence {
+    /// The file path this evidence points to.
+    pub file_path: String,
+    /// A small code snippet (read from the file).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    /// The primary symbol name for this evidence point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -164,18 +196,15 @@ pub struct TracePath {
     /// The number of dataflow nodes visited during the trace.
     pub nodes_visited: usize,
     /// Language capability profile. Always present for MCP consumers.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(default)]
     pub capability: Option<LanguageCapabilityProfile>,
     /// Best-effort / incomplete result flag.
-    #[serde(skip_serializing_if = "is_false", default)]
+    #[serde(default)]
     pub partial_result: bool,
     /// Structured diagnostics.
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    #[serde(default)]
     pub diagnostics: Vec<TraceDiagnostic>,
 }
-
-/// serde skip helper
-fn is_false(b: &bool) -> bool { !b }
 
 /// A single step in a trace path — connects two data nodes via a dataflow edge.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,7 +223,19 @@ pub struct TracePathStep {
     pub file_id: FileId,
     /// The source range of the edge (if available).
     pub range: Option<TextRange>,
+    /// Human-readable evidence (file path, symbol name) for agent consumption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<Evidence>,
 }
+
+// ---------------------------------------------------------------------------
+// Document-stable type aliases (for agent contract compatibility)
+// ---------------------------------------------------------------------------
+
+/// Document-stable alias for [`TracePath`], used in MCP tool schemas and
+/// JSON external contracts.
+#[allow(non_camel_case_types)]
+pub type VariableTracePath = TracePath;
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -219,6 +260,7 @@ impl TracePathStep {
             description: description.to_string(),
             file_id,
             range,
+            evidence: None,
         }
     }
 }
@@ -246,14 +288,7 @@ mod tests {
             end_line: 1,
             end_column: 2,
         };
-        let node = DataNode::local(
-            node_id,
-            file_id.clone(),
-            None,
-            None,
-            "x",
-            range,
-        );
+        let node = DataNode::local(node_id, file_id.clone(), None, None, "x", range);
         let ref_ = TraceDataNodeRef::from_data_node(&node);
         assert_eq!(ref_.name, "x");
         assert_eq!(ref_.kind, "local");

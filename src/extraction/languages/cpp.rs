@@ -1,6 +1,6 @@
 //! C++ LanguageAdapter.
 
-use crate::extraction::languages::{node_range, node_text, LanguageAdapter};
+use crate::extraction::languages::{LanguageAdapter, node_range, node_text};
 use crate::types::*;
 use std::path::Path;
 
@@ -150,12 +150,8 @@ impl LanguageAdapter for CppAdapter {
         let name = node_text(node, source).unwrap_or_default();
         let range = node_range(node);
 
-        let scope_id = ScopeId::generate(
-            &file_id,
-            None::<&ScopeId>,
-            kind.as_str(),
-            range.start_byte,
-        );
+        let scope_id =
+            ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
 
         Some(ScopeDef {
             id: scope_id,
@@ -295,7 +291,11 @@ mod tests {
         let adapter = CppAdapter;
         let lang = adapter.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, adapter.definition_query());
-        assert!(query.is_ok(), "definition query must compile: {:?}", query.err());
+        assert!(
+            query.is_ok(),
+            "definition query must compile: {:?}",
+            query.err()
+        );
     }
 
     #[test]
@@ -303,7 +303,11 @@ mod tests {
         let adapter = CppAdapter;
         let lang = adapter.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, adapter.reference_query());
-        assert!(query.is_ok(), "reference query must compile: {:?}", query.err());
+        assert!(
+            query.is_ok(),
+            "reference query must compile: {:?}",
+            query.err()
+        );
     }
 
     #[test]
@@ -311,7 +315,11 @@ mod tests {
         let adapter = CppAdapter;
         let lang = adapter.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, adapter.import_query());
-        assert!(query.is_ok(), "import query must compile: {:?}", query.err());
+        assert!(
+            query.is_ok(),
+            "import query must compile: {:?}",
+            query.err()
+        );
     }
 
     #[test]

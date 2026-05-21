@@ -101,7 +101,10 @@ impl SemanticBinder {
     }
 
     /// Delegate: resolve source for an arbitrary range.
-    pub fn source_for_range(&self, range: crate::types::TextRange) -> Option<crate::types::ids::SymbolId> {
+    pub fn source_for_range(
+        &self,
+        range: crate::types::TextRange,
+    ) -> Option<crate::types::ids::SymbolId> {
         self.registry.source_for_range(range)
     }
 }
@@ -112,18 +115,23 @@ fn contains_range(outer: crate::types::TextRange, inner: crate::types::TextRange
 
 #[cfg(test)]
 mod tests {
+    use crate::extraction::SemanticBinder;
     use crate::types::ids::{FileId, ScopeId, SymbolId};
     use crate::types::{
         Language, ReferenceKind, ReferenceUse, ScopeDef, ScopeKind, SymbolDef, SymbolKind,
         TextRange,
     };
-    use crate::extraction::SemanticBinder;
 
     fn make_file_id() -> FileId {
         FileId::generate("test.ts")
     }
 
-    fn make_symbol(name: &str, kind: SymbolKind, range: TextRange, scope_id: Option<ScopeId>) -> SymbolDef {
+    fn make_symbol(
+        name: &str,
+        kind: SymbolKind,
+        range: TextRange,
+        scope_id: Option<ScopeId>,
+    ) -> SymbolDef {
         SymbolDef {
             id: SymbolId::generate(&make_file_id(), "typescript", name, kind.as_str(), None),
             kind,
@@ -146,10 +154,20 @@ mod tests {
         }
     }
 
-    fn make_scope(kind: ScopeKind, name: &str, range: TextRange, parent_id: Option<ScopeId>) -> ScopeDef {
+    fn make_scope(
+        kind: ScopeKind,
+        name: &str,
+        range: TextRange,
+        parent_id: Option<ScopeId>,
+    ) -> ScopeDef {
         let file_id = make_file_id();
         ScopeDef {
-            id: ScopeId::generate(&file_id, parent_id.as_ref(), kind.as_str(), range.start_byte),
+            id: ScopeId::generate(
+                &file_id,
+                parent_id.as_ref(),
+                kind.as_str(),
+                range.start_byte,
+            ),
             file_id,
             kind,
             name: name.to_string(),
@@ -162,7 +180,14 @@ mod tests {
     fn make_reference(text: &str, kind: ReferenceKind, range: TextRange) -> ReferenceUse {
         let file_id = make_file_id();
         ReferenceUse {
-            id: crate::types::ids::ReferenceId::generate(&file_id, None, range.start_byte, range.end_byte, text, kind),
+            id: crate::types::ids::ReferenceId::generate(
+                &file_id,
+                None,
+                range.start_byte,
+                range.end_byte,
+                text,
+                kind,
+            ),
             file_id,
             source_symbol: None,
             scope_id: None,
@@ -179,9 +204,30 @@ mod tests {
 
     #[test]
     fn test_bind_scope_fills_scope_id() {
-        let file_range = TextRange { start_byte: 0, end_byte: 100, start_line: 1, start_column: 0, end_line: 10, end_column: 0 };
-        let func_range = TextRange { start_byte: 10, end_byte: 80, start_line: 2, start_column: 0, end_line: 8, end_column: 0 };
-        let ref_range = TextRange { start_byte: 30, end_byte: 35, start_line: 3, start_column: 5, end_line: 3, end_column: 10 };
+        let file_range = TextRange {
+            start_byte: 0,
+            end_byte: 100,
+            start_line: 1,
+            start_column: 0,
+            end_line: 10,
+            end_column: 0,
+        };
+        let func_range = TextRange {
+            start_byte: 10,
+            end_byte: 80,
+            start_line: 2,
+            start_column: 0,
+            end_line: 8,
+            end_column: 0,
+        };
+        let ref_range = TextRange {
+            start_byte: 30,
+            end_byte: 35,
+            start_line: 3,
+            start_column: 5,
+            end_line: 3,
+            end_column: 10,
+        };
 
         let file_scope = make_scope(ScopeKind::File, "test.ts", file_range, None);
         let func_scope = make_scope(ScopeKind::Function, "foo", func_range, Some(file_scope.id));
@@ -199,9 +245,30 @@ mod tests {
 
     #[test]
     fn test_bind_source_and_scope_together() {
-        let file_range = TextRange { start_byte: 0, end_byte: 100, start_line: 1, start_column: 0, end_line: 10, end_column: 0 };
-        let func_range = TextRange { start_byte: 10, end_byte: 80, start_line: 2, start_column: 0, end_line: 8, end_column: 0 };
-        let ref_range = TextRange { start_byte: 30, end_byte: 35, start_line: 3, start_column: 5, end_line: 3, end_column: 10 };
+        let file_range = TextRange {
+            start_byte: 0,
+            end_byte: 100,
+            start_line: 1,
+            start_column: 0,
+            end_line: 10,
+            end_column: 0,
+        };
+        let func_range = TextRange {
+            start_byte: 10,
+            end_byte: 80,
+            start_line: 2,
+            start_column: 0,
+            end_line: 8,
+            end_column: 0,
+        };
+        let ref_range = TextRange {
+            start_byte: 30,
+            end_byte: 35,
+            start_line: 3,
+            start_column: 5,
+            end_line: 3,
+            end_column: 10,
+        };
 
         let file_scope = make_scope(ScopeKind::File, "test.ts", file_range, None);
         let func_scope = make_scope(ScopeKind::Function, "foo", func_range, Some(file_scope.id));

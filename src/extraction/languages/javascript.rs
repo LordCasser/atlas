@@ -51,8 +51,13 @@ impl LanguageAdapter for JavaScriptAdapter {
         file_id: FileId,
         file_path: &Path,
     ) -> Option<SymbolDef> {
-        let mut def = super::typescript::TypeScriptAdapter
-            .normalize_definition(capture_name, node, source, file_id, file_path)?;
+        let mut def = super::typescript::TypeScriptAdapter.normalize_definition(
+            capture_name,
+            node,
+            source,
+            file_id,
+            file_path,
+        )?;
         def.language = Language::JavaScript;
         Some(def)
     }
@@ -65,8 +70,13 @@ impl LanguageAdapter for JavaScriptAdapter {
         file_id: FileId,
         file_path: &Path,
     ) -> Option<ReferenceUse> {
-        super::typescript::TypeScriptAdapter
-            .normalize_reference(capture_name, node, source, file_id, file_path)
+        super::typescript::TypeScriptAdapter.normalize_reference(
+            capture_name,
+            node,
+            source,
+            file_id,
+            file_path,
+        )
     }
 
     fn normalize_import(
@@ -77,8 +87,13 @@ impl LanguageAdapter for JavaScriptAdapter {
         file_id: FileId,
         file_path: &Path,
     ) -> Option<ImportDef> {
-        super::typescript::TypeScriptAdapter
-            .normalize_import(capture_name, node, source, file_id, file_path)
+        super::typescript::TypeScriptAdapter.normalize_import(
+            capture_name,
+            node,
+            source,
+            file_id,
+            file_path,
+        )
     }
 
     fn normalize_scope(
@@ -89,8 +104,13 @@ impl LanguageAdapter for JavaScriptAdapter {
         file_id: FileId,
         file_path: &Path,
     ) -> Option<ScopeDef> {
-        super::typescript::TypeScriptAdapter
-            .normalize_scope(capture_name, node, source, file_id, file_path)
+        super::typescript::TypeScriptAdapter.normalize_scope(
+            capture_name,
+            node,
+            source,
+            file_id,
+            file_path,
+        )
     }
 
     fn detect_package(&self, source: &str, file_path: &Path) -> Option<String> {

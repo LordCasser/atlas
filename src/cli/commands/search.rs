@@ -61,9 +61,8 @@ pub fn run(
         let json_results: Vec<JsonSearchResult> = results
             .iter()
             .map(|r| {
-                let snippet = read_source_snippet(
-                    store_ref, root, &r.file_path, r.symbol.range.start_line,
-                );
+                let snippet =
+                    read_source_snippet(store_ref, root, &r.file_path, r.symbol.range.start_line);
                 JsonSearchResult {
                     name: r.symbol.name.clone(),
                     kind: r.symbol.kind.as_str().to_string(),
@@ -97,9 +96,7 @@ pub fn run(
                 println!("      sig:   {}", sig);
             }
             // Source code snippet (the definition line + next line for context)
-            if let Some(snippet) = read_source_snippet(
-                store_ref, root, &r.file_path, line,
-            ) {
+            if let Some(snippet) = read_source_snippet(store_ref, root, &r.file_path, line) {
                 println!("      code:  {}", snippet.trim());
             }
             if !r.matched_field.is_empty() {
@@ -150,9 +147,26 @@ struct JsonSearchResult {
 /// List all valid symbol kind strings for error messages.
 fn valid_kinds() -> Vec<&'static str> {
     vec![
-        "file", "module", "class", "struct", "interface", "trait",
-        "enum", "enum_member", "function", "method", "property",
-        "field", "variable", "constant", "type_alias", "namespace",
-        "parameter", "constructor", "macro", "decorator", "package",
+        "file",
+        "module",
+        "class",
+        "struct",
+        "interface",
+        "trait",
+        "enum",
+        "enum_member",
+        "function",
+        "method",
+        "property",
+        "field",
+        "variable",
+        "constant",
+        "type_alias",
+        "namespace",
+        "parameter",
+        "constructor",
+        "macro",
+        "decorator",
+        "package",
     ]
 }

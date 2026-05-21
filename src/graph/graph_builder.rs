@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use crate::db::Store;
 use crate::types::*;
+use rayon::prelude::*;
 
 /// Builds symbol-level edges from resolved references.
 ///
@@ -32,33 +33,42 @@ impl GraphBuilder {
 
     /// Build all symbol-level edges from a batch of resolved references.
     ///
-    /// This is the primary entry point: takes the output of
-    /// `ReferenceResolver::resolve_all()` and produces edges.
-    ///
-    /// Returns `GraphBuilderStats` with edge count and any non-fatal warnings.
-    pub fn build_all(
-        &self,
-        resolved: &[(ReferenceUse, ResolvedTarget)],
-    ) -> GraphBuilderStats {
-        let mut edges = Vec::new();
-        let mut warnings = Vec::new();
+    /// P5: Edge creation is parallelized — each reference produces edges independently
+    /// via Rayon. Results are collected and batch-inserted.
+    pub fn build_all(&self, resolved: &[(ReferenceUse, ResolvedTarget)]) -> GraphBuilderStats {
+        // P5: Parallel edge creation (each reference is independent).
+        // Warnings are collected into a Mutex-protected Vec.
+        let warnings: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-        for (reference, target) in resolved {
-            match self.create_edges_for_reference(reference, target) {
-                Ok(mut new_edges) => edges.append(&mut new_edges),
-                Err(e) => warnings.push(format!(
-                    "failed to create edges for reference {:?}: {}",
-                    reference.id, e
-                )),
-            }
-        }
+        let edges: Vec<RawEdge> = resolved
+            .par_iter()
+            .filter_map(|(reference, target)| {
+                match self.create_edges_for_reference(reference, target) {
+                    Ok(edges) => Some(edges),
+                    Err(e) => {
+                        if let Ok(mut w) = warnings.lock() {
+                            w.push(format!(
+                                "failed to create edges for reference {:?}: {}",
+                                reference.id, e
+                            ));
+                        }
+                        None
+                    }
+                }
+            })
+            .flatten()
+            .collect();
 
         let edge_count = edges.len();
+        let mut warnings: Vec<String> = warnings.into_inner().unwrap_or_default();
 
         // Write edges to store
         if !edges.is_empty() {
             if let Err(e) = self.store.batch_insert_edges(&edges) {
-                warnings.push(format!("batch edge insert failed ({} edges): {}", edge_count, e));
+                warnings.push(format!(
+                    "batch edge insert failed ({} edges): {}",
+                    edge_count, e
+                ));
             }
         }
 
@@ -131,6 +141,29 @@ impl GraphBuilder {
         edge.ref_id = Some(reference.id);
         edge.resolved_by = Some(target.strategy);
 
+        // For call/instantiation edges, store the reference range as the edge
+        // location so that caller-path steps can point to the actual call site.
+        if matches!(
+            edge_kind,
+            EdgeKind::Calls | EdgeKind::Instantiates | EdgeKind::Implements
+        ) {
+            edge.location = Some(reference.range);
+
+            // Connect the callsite to the resolved callee symbol.
+            // The callsite was created during extraction with callee: None;
+            // now that resolution has determined the target, update it.
+            if let Err(e) = self
+                .store
+                .update_callsite_callee(&reference.id, &target.symbol_id)
+            {
+                tracing::warn!(
+                    "Failed to update callsite callee for ref {:?}: {:?}",
+                    reference.id,
+                    e,
+                );
+            }
+        }
+
         edges.push(edge);
 
         // Also create Contains edges from container symbols during resolution
@@ -172,10 +205,15 @@ pub struct GraphBuilderStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extraction::LanguageFrontend;
     use crate::extraction::extract_file;
     use crate::extraction::languages::typescript::TypeScriptAdapter;
     use crate::resolution::ReferenceResolver;
     use std::path::PathBuf;
+
+    fn ts_frontend() -> LanguageFrontend {
+        LanguageFrontend::from_adapter(Box::new(TypeScriptAdapter))
+    }
 
     /// Test that GraphBuilder produces edges from resolved references.
     #[test]
@@ -185,14 +223,9 @@ mod tests {
 }
 "#;
         let lib_id = FileId::generate("lib.ts");
-        let lib_facts = extract_file(
-            &TypeScriptAdapter,
-            lib_id,
-            &PathBuf::from("lib.ts"),
-            lib_src,
-            "abc",
-        )
-        .expect("lib.ts extraction failed");
+        let frontend = ts_frontend();
+        let lib_facts = extract_file(&frontend, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc")
+            .expect("lib.ts extraction failed");
 
         let main_src = r#"import { greet } from './lib';
 
@@ -203,7 +236,7 @@ main();
 "#;
         let main_id = FileId::generate("main.ts");
         let main_facts = extract_file(
-            &TypeScriptAdapter,
+            &frontend,
             main_id,
             &PathBuf::from("main.ts"),
             main_src,
@@ -214,13 +247,13 @@ main();
         let store = Arc::new(Store::open_in_memory().unwrap());
         store.init_schema().unwrap();
         store.insert_file_facts(&lib_facts).expect("insert lib.ts");
-        store.insert_file_facts(&main_facts).expect("insert main.ts");
+        store
+            .insert_file_facts(&main_facts)
+            .expect("insert main.ts");
 
         // Resolve
-        let resolver = ReferenceResolver::new(store.clone());
-        let (resolved, _res_stats) = resolver
-            .resolve_all()
-            .expect("resolution failed");
+        let mut resolver = ReferenceResolver::new(store.clone());
+        let (resolved, _res_stats) = resolver.resolve_all().expect("resolution failed");
 
         // Build edges
         let builder = GraphBuilder::new(store.clone());

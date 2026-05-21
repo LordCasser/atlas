@@ -76,7 +76,10 @@ impl LexicalBinder {
     ) -> anyhow::Result<LexicalBindingResult> {
         let query_src = adapter.lexical_query();
         if query_src.trim().is_empty() {
-            return Ok(LexicalBindingResult { bindings: vec![], uses: vec![] });
+            return Ok(LexicalBindingResult {
+                bindings: vec![],
+                uses: vec![],
+            });
         }
 
         // Collect raw captures
@@ -97,8 +100,7 @@ impl LexicalBinder {
         // Resolve scope containment for each binding:
         // Replace placeholder scope_id with the actual innermost scope.
         for binding in &mut bindings {
-            binding.scope_id = innermost_scope(scopes, binding.range)
-                .unwrap_or(binding.scope_id);
+            binding.scope_id = innermost_scope(scopes, binding.range).unwrap_or(binding.scope_id);
             // Re-generate BindingId now that scope_id is correct
             binding.id = BindingId::generate(
                 &file_id,
@@ -141,8 +143,7 @@ fn innermost_scope(scopes: &[ScopeDef], range: TextRange) -> Option<ScopeId> {
     scopes
         .iter()
         .filter(|scope| {
-            scope.range.start_byte <= range.start_byte
-                && scope.range.end_byte >= range.end_byte
+            scope.range.start_byte <= range.start_byte && scope.range.end_byte >= range.end_byte
         })
         .min_by_key(|scope| scope.range.byte_len())
         .map(|scope| scope.id)
@@ -166,7 +167,14 @@ mod tests {
             name: "file".into(),
             scope_path: "file".into(),
             parent_id: None,
-            range: TextRange { start_byte: 0, end_byte: 100, start_line: 1, start_column: 0, end_line: 10, end_column: 0 },
+            range: TextRange {
+                start_byte: 0,
+                end_byte: 100,
+                start_line: 1,
+                start_column: 0,
+                end_line: 10,
+                end_column: 0,
+            },
         };
         let inner = ScopeDef {
             id: ScopeId::generate(&file_id, Some(&outer.id), "function", 10),
@@ -175,11 +183,25 @@ mod tests {
             name: "func".into(),
             scope_path: "func".into(),
             parent_id: Some(outer.id),
-            range: TextRange { start_byte: 10, end_byte: 80, start_line: 2, start_column: 0, end_line: 8, end_column: 0 },
+            range: TextRange {
+                start_byte: 10,
+                end_byte: 80,
+                start_line: 2,
+                start_column: 0,
+                end_line: 8,
+                end_column: 0,
+            },
         };
 
         let scopes = vec![outer, inner.clone()];
-        let target = TextRange { start_byte: 30, end_byte: 35, start_line: 3, start_column: 5, end_line: 3, end_column: 10 };
+        let target = TextRange {
+            start_byte: 30,
+            end_byte: 35,
+            start_line: 3,
+            start_column: 5,
+            end_line: 3,
+            end_column: 10,
+        };
         let result = innermost_scope(&scopes, target);
         assert_eq!(result, Some(inner.id));
     }
@@ -190,7 +212,8 @@ mod tests {
         use crate::extraction::languages::typescript::TypeScriptAdapter;
         use tree_sitter::Parser;
 
-        let source = "function handler(req: any) {\n  const name = req.body.name;\n  return name;\n}";
+        let source =
+            "function handler(req: any) {\n  const name = req.body.name;\n  return name;\n}";
         let file_id = FileId::generate("test.ts");
         let adapter = TypeScriptAdapter;
         let ts_lang = adapter.tree_sitter_language();
@@ -205,22 +228,42 @@ mod tests {
         let symbols: Vec<SymbolDef> = vec![];
 
         let result = LexicalBinder::extract(
-            &adapter, &ts_lang, root, source, source.as_bytes(),
-            file_id, &PathBuf::from("test.ts"), &scopes, &symbols,
-        ).unwrap();
+            &adapter,
+            &ts_lang,
+            root,
+            source,
+            source.as_bytes(),
+            file_id,
+            &PathBuf::from("test.ts"),
+            &scopes,
+            &symbols,
+        )
+        .unwrap();
 
         assert!(!result.bindings.is_empty(), "Should have lexical bindings");
         // Should have at least 'req' (parameter) and 'name' (local)
-        let param_names: Vec<_> = result.bindings.iter()
+        let param_names: Vec<_> = result
+            .bindings
+            .iter()
             .filter(|b| b.kind == BindingKind::Parameter)
             .map(|b| b.name.as_str())
             .collect();
-        let local_names: Vec<_> = result.bindings.iter()
+        let local_names: Vec<_> = result
+            .bindings
+            .iter()
             .filter(|b| b.kind == BindingKind::Local)
             .map(|b| b.name.as_str())
             .collect();
 
-        assert!(param_names.contains(&"req"), "Expected parameter 'req', got: {:?}", param_names);
-        assert!(local_names.contains(&"name"), "Expected local 'name', got: {:?}", local_names);
+        assert!(
+            param_names.contains(&"req"),
+            "Expected parameter 'req', got: {:?}",
+            param_names
+        );
+        assert!(
+            local_names.contains(&"name"),
+            "Expected local 'name', got: {:?}",
+            local_names
+        );
     }
 }

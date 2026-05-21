@@ -9,8 +9,8 @@ pub mod snapshot;
 
 use std::sync::Arc;
 
-use crate::types::ids::SymbolId;
 use crate::types::EdgeKind;
+use crate::types::ids::SymbolId;
 
 pub use graph_builder::{GraphBuilder, GraphBuilderStats};
 pub use snapshot::{
@@ -62,8 +62,7 @@ impl GraphEngine {
 
     /// Total degree (in + out) for a symbol. 0 if not found.
     pub fn degree(&self, id: &SymbolId) -> usize {
-        self
-            .snapshot
+        self.snapshot
             .id_to_idx
             .get(id)
             .map(|&ix| {
@@ -84,11 +83,7 @@ impl GraphEngine {
     // ── neighbors ────────────────────────────────────────────────────────
 
     /// Direct neighbors of a symbol, optionally filtered by edge kinds.
-    pub fn neighbors(
-        &self,
-        id: &SymbolId,
-        config: TraversalConfig,
-    ) -> Subgraph {
+    pub fn neighbors(&self, id: &SymbolId, config: TraversalConfig) -> Subgraph {
         let Some(&node_ix) = self.snapshot.id_to_idx.get(id) else {
             return Subgraph::default();
         };
@@ -104,7 +99,11 @@ impl GraphEngine {
     }
 
     /// Kinds of edges that represent "calls" — includes promoted constructor/interface edges.
-    const CALL_EDGES: &[EdgeKind] = &[EdgeKind::Calls, EdgeKind::Instantiates, EdgeKind::Implements];
+    const CALL_EDGES: &[EdgeKind] = &[
+        EdgeKind::Calls,
+        EdgeKind::Instantiates,
+        EdgeKind::Implements,
+    ];
 
     // ── callers / callees / callgraph ────────────────────────────────────
 
@@ -174,7 +173,10 @@ impl GraphEngine {
     }
 
     /// Find all exports (outgoing Exports edges).
-    pub fn dependencies(&self, file_id: &crate::types::ids::FileId) -> Vec<crate::types::ids::FileId> {
+    pub fn dependencies(
+        &self,
+        file_id: &crate::types::ids::FileId,
+    ) -> Vec<crate::types::ids::FileId> {
         let node_ixs = self.snapshot.nodes_by_file(file_id);
         let mut deps = std::collections::HashSet::new();
         for &nix in node_ixs {
@@ -250,7 +252,12 @@ impl GraphEngine {
     // ── shortest path ────────────────────────────────────────────────────
 
     /// Find the shortest path between two symbols (follows all edge kinds).
-    pub fn shortest_path(&self, from: &SymbolId, to: &SymbolId, max_depth: usize) -> Option<GraphPath> {
+    pub fn shortest_path(
+        &self,
+        from: &SymbolId,
+        to: &SymbolId,
+        max_depth: usize,
+    ) -> Option<GraphPath> {
         let from_ix = self.snapshot.id_to_idx.get(from)?;
         let to_ix = self.snapshot.id_to_idx.get(to)?;
         let path = self.snapshot.shortest_path(*from_ix, *to_ix, max_depth)?;
@@ -291,17 +298,19 @@ impl GraphEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{
-        Confidence, Language, Provenance,
-        SymbolKind, Visibility,
-    };
     use crate::types::ids::{FileId, SymbolId};
+    use crate::types::{Confidence, Language, Provenance, SymbolKind, Visibility};
 
     fn make_file_id(name: &str) -> FileId {
         FileId::generate(name)
     }
 
-    fn make_symbol(file_id: FileId, name: &str, qname: &str, kind: SymbolKind) -> crate::types::SymbolDef {
+    fn make_symbol(
+        file_id: FileId,
+        name: &str,
+        qname: &str,
+        kind: SymbolKind,
+    ) -> crate::types::SymbolDef {
         let id = SymbolId::generate(&file_id, "typescript", qname, kind.as_str(), None);
         crate::types::SymbolDef {
             id,
@@ -327,7 +336,13 @@ mod tests {
 
     fn make_edge(source: SymbolId, target: SymbolId, kind: EdgeKind) -> crate::types::RawEdge {
         use crate::types::ids::EdgeId;
-        let id = EdgeId::generate(&source, &target, kind.as_str(), None, Provenance::TreeSitter.as_str());
+        let id = EdgeId::generate(
+            &source,
+            &target,
+            kind.as_str(),
+            None,
+            Provenance::TreeSitter.as_str(),
+        );
         crate::types::RawEdge::new(
             id,
             source,
@@ -345,12 +360,7 @@ mod tests {
         let c = make_symbol(fid, "log", "log", SymbolKind::Function);
         let e1 = make_edge(a.id, b.id, EdgeKind::Calls);
         let e2 = make_edge(b.id, c.id, EdgeKind::Calls);
-        GraphSnapshot::from_parts(
-            vec![a, b, c],
-            vec![e1, e2],
-            0.0,
-        )
-        .unwrap()
+        GraphSnapshot::from_parts(vec![a, b, c], vec![e1, e2], 0.0).unwrap()
     }
 
     #[test]

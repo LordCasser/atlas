@@ -24,10 +24,12 @@
 //! - **Capability** determines whether dataflow tracing is available for a
 //!   given language, or only symbolic lookup.
 
+mod caller_path;
+mod engine;
 mod locator;
 mod slicer;
-mod caller_path;
 
+pub use caller_path::CallerPathExplorer;
+pub use engine::{TraceEngine, TraceQueryResponse};
 pub use locator::Locator;
 pub use slicer::Slicer;
-pub use caller_path::CallerPathExplorer;

@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use super::enums::EdgeKind;
 use super::ids::{FileId, SymbolId};
 use super::structs::{Callsite, SymbolDef, TextRange};
+use super::trace::Evidence;
 
 // ---------------------------------------------------------------------------
 // CallerChain — reverse call-graph path
@@ -75,7 +76,19 @@ pub struct CallerChainStep {
     pub range: Option<TextRange>,
     /// Human-readable description.
     pub description: String,
+    /// Human-readable evidence (file path, symbol name) for agent consumption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<Evidence>,
 }
+
+// ---------------------------------------------------------------------------
+// Document-stable type alias (for agent contract compatibility)
+// ---------------------------------------------------------------------------
+
+/// Document-stable alias for [`CallerChain`], used in MCP tool schemas and
+/// JSON external contracts.
+#[allow(non_camel_case_types)]
+pub type CallerPath = CallerChain;
 
 // ---------------------------------------------------------------------------
 // constructors
@@ -100,6 +113,7 @@ impl CallerChainStep {
             file_id,
             range,
             description: description.to_string(),
+            evidence: None,
         }
     }
 }

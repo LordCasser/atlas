@@ -4,7 +4,7 @@
 //! AST uses aliased node names (className, funcName, etc.) rather than
 //! generic `identifier` nodes, so all queries must match the aliased names.
 
-use crate::extraction::languages::{node_range, node_text, LanguageAdapter};
+use crate::extraction::languages::{LanguageAdapter, node_range, node_text};
 use crate::types::*;
 use std::path::Path;
 
@@ -150,7 +150,8 @@ impl LanguageAdapter for CangjieAdapter {
             _ => node_text(node, source).unwrap_or_default(),
         };
         let range = node_range(node);
-        let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
+        let scope_id =
+            ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
 
         Some(ScopeDef {
             id: scope_id,
@@ -270,9 +271,19 @@ mod tests {
         // incompatible with tree-sitter 0.24 (max version 14).
         // Query compilation will succeed once tree-sitter is upgraded to 0.25+.
         let def_q = tree_sitter::Query::new(&lang, adapter.definition_query());
-        assert!(def_q.is_ok() || def_q.as_ref().unwrap_err().message.contains("language version"),
-            "definitions query: {:?}", def_q.err());
-        if def_q.is_err() { return; }
+        assert!(
+            def_q.is_ok()
+                || def_q
+                    .as_ref()
+                    .unwrap_err()
+                    .message
+                    .contains("language version"),
+            "definitions query: {:?}",
+            def_q.err()
+        );
+        if def_q.is_err() {
+            return;
+        }
 
         let ref_q = tree_sitter::Query::new(&lang, adapter.reference_query());
         assert!(ref_q.is_ok(), "references query: {:?}", ref_q.err());
@@ -286,15 +297,27 @@ mod tests {
 
     #[test]
     fn test_cj_definition_kind_mapping() {
-        assert_eq!(cj_definition_kind("definition.class"), Some(SymbolKind::Class));
-        assert_eq!(cj_definition_kind("definition.function"), Some(SymbolKind::Function));
+        assert_eq!(
+            cj_definition_kind("definition.class"),
+            Some(SymbolKind::Class)
+        );
+        assert_eq!(
+            cj_definition_kind("definition.function"),
+            Some(SymbolKind::Function)
+        );
         assert_eq!(cj_definition_kind("unknown"), None);
     }
 
     #[test]
     fn test_cj_reference_kind_mapping() {
-        assert_eq!(cj_reference_kind("reference.call"), Some(ReferenceKind::Call));
-        assert_eq!(cj_reference_kind("reference.field"), Some(ReferenceKind::FieldAccess));
+        assert_eq!(
+            cj_reference_kind("reference.call"),
+            Some(ReferenceKind::Call)
+        );
+        assert_eq!(
+            cj_reference_kind("reference.field"),
+            Some(ReferenceKind::FieldAccess)
+        );
         assert_eq!(cj_reference_kind("unknown"), None);
     }
 

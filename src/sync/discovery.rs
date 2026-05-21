@@ -46,8 +46,7 @@ pub fn discover_files(root: &Path, config: &DiscoveryConfig) -> anyhow::Result<V
         .filter(|p| !matches_any_glob(p, &atlasignore_patterns))
         .filter(|p| !matches_any_glob(p, &config.exclude_patterns))
         .filter(|p| {
-            config.include_patterns.is_empty()
-                || matches_any_glob(p, &config.include_patterns)
+            config.include_patterns.is_empty() || matches_any_glob(p, &config.include_patterns)
         })
         .collect();
 
@@ -69,7 +68,13 @@ fn is_git_repo(root: &Path) -> bool {
 
 fn discover_via_git(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let output = match Command::new("git")
-        .args(["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
+        .args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ])
         .current_dir(root)
         .output()
     {
@@ -100,10 +105,25 @@ fn discover_via_git(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
 // ── filesystem walk (fallback) ─────────────────────────────────────────
 
 const ALWAYS_EXCLUDE_DIRS: &[&str] = &[
-    ".git", ".atlas", "node_modules", "target", "__pycache__",
-    "venv", ".venv", ".env", "dist", "build", ".next", ".nuxt",
-    ".cache", ".mypy_cache", ".pytest_cache", ".tox", ".eggs",
-    "bower_components", "vendor",
+    ".git",
+    ".atlas",
+    "node_modules",
+    "target",
+    "__pycache__",
+    "venv",
+    ".venv",
+    ".env",
+    "dist",
+    "build",
+    ".next",
+    ".nuxt",
+    ".cache",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".tox",
+    ".eggs",
+    "bower_components",
+    "vendor",
 ];
 
 fn discover_via_walk(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
@@ -187,7 +207,11 @@ fn glob_match(path: &str, pattern: &str) -> bool {
         if !prefix.is_empty() && !path.starts_with(prefix) {
             return false;
         }
-        let rest = if prefix.is_empty() { path } else { &path[prefix.len()..] };
+        let rest = if prefix.is_empty() {
+            path
+        } else {
+            &path[prefix.len()..]
+        };
         // Try each path segment against the suffix glob
         return rest.split('/').any(|segment| glob_match(segment, suffix));
     }
