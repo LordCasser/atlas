@@ -38,10 +38,7 @@ thread_local! {
 
 /// Get (or create) a thread-local parser set to the given language.
 /// The parser is reset and ready for a new parse.
-fn tl_parse(
-    ts_lang: &tree_sitter::Language,
-    source_bytes: &[u8],
-) -> Result<tree_sitter::Tree> {
+fn tl_parse(ts_lang: &tree_sitter::Language, source_bytes: &[u8]) -> Result<tree_sitter::Tree> {
     TL_PARSER.with(|cell| {
         let mut opt = cell.borrow_mut();
         if opt.is_none() {
@@ -51,11 +48,11 @@ fn tl_parse(
         parser
             .set_language(ts_lang)
             .map_err(|e| anyhow!("Failed to set tree-sitter language: {}", e))?;
-        parser.parse(source_bytes, None)
+        parser
+            .parse(source_bytes, None)
             .context("Failed to parse source")
     })
 }
-
 
 /// Extract a single file's facts using the given language frontend.
 pub fn extract_file(
@@ -151,8 +148,10 @@ pub fn extract_file(
     //     but resolve_dataflow_function_ids() needs the full function body range
     //     to assign function_id to DataNodes inside the body.
     for sym in symbols.iter_mut() {
-        if matches!(sym.kind, SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor)
-        {
+        if matches!(
+            sym.kind,
+            SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+        ) {
             // Find the innermost function/method scope that contains this symbol.
             let containing = scopes
                 .iter()
@@ -192,7 +191,10 @@ pub fn extract_file(
                 message: format!("Lexical binding extraction failed: {}", e),
                 range: None,
             });
-            LexicalBindingResult { bindings: vec![], uses: vec![] }
+            LexicalBindingResult {
+                bindings: vec![],
+                uses: vec![],
+            }
         });
         (lexical_result.bindings, lexical_result.uses)
     } else {
@@ -238,15 +240,20 @@ pub fn extract_file(
     };
 
     // 7e. Build per-function control-flow graphs (P7: skip if CFG unsupported)
-    let (cfg_nodes, cfg_edges) = if frontend.capability.supported_features.contains(&"cfg".to_string()) {
-        let cfg_result = super::cfg_builder::build_cfg_for_functions(root, &symbols, source_bytes).unwrap_or_else(|e| {
-            diagnostics.push(ExtractDiagnostic {
-                level: DiagnosticLevel::Warning,
-                message: format!("CFG builder failed: {}", e),
-                range: None,
+    let (cfg_nodes, cfg_edges) = if frontend
+        .capability
+        .supported_features
+        .contains(&"cfg".to_string())
+    {
+        let cfg_result = super::cfg_builder::build_cfg_for_functions(root, &symbols, source_bytes)
+            .unwrap_or_else(|e| {
+                diagnostics.push(ExtractDiagnostic {
+                    level: DiagnosticLevel::Warning,
+                    message: format!("CFG builder failed: {}", e),
+                    range: None,
+                });
+                CfgResult::default()
             });
-            CfgResult::default()
-        });
         (cfg_result.nodes, cfg_result.edges)
     } else {
         (vec![], vec![])
@@ -409,10 +416,7 @@ pub fn extract_file(
         .iter()
         .map(|cs| {
             (
-                atlas_types::ids::CallsiteId::from_file_byte(
-                    &file_id,
-                    cs.range.start_byte,
-                ),
+                atlas_types::ids::CallsiteId::from_file_byte(&file_id, cs.range.start_byte),
                 cs.id,
             )
         })
@@ -445,10 +449,12 @@ pub fn extract_file(
         ParseStatus::Success
     };
 
+    let file_path_str = file_path.display().to_string().replace('\\', "/");
+
     Ok(FileFacts {
         file: FileInfo {
             file_id,
-            path: file_path.display().to_string(),
+            path: file_path_str,
             language,
             content_hash: content_hash.to_string(),
             status,
@@ -461,12 +467,12 @@ pub fn extract_file(
         raw_edges, // Symbol-level dataflow edges from normalize_dataflow (old path)
         callsites, // Derived from Call references (resolved later)
         diagnostics,
-        bindings,              // lexical binding definitions
-        binding_uses,          // lexical binding use sites
-        data_nodes,            // per-function dataflow nodes
-        dataflow_edges,        // DataNode→DataNode dataflow edges
-        cfg_nodes,             // per-function control-flow graph nodes
-        cfg_edges,             // per-function control-flow graph edges
+        bindings,       // lexical binding definitions
+        binding_uses,   // lexical binding use sites
+        data_nodes,     // per-function dataflow nodes
+        dataflow_edges, // DataNode→DataNode dataflow edges
+        cfg_nodes,      // per-function control-flow graph nodes
+        cfg_edges,      // per-function control-flow graph edges
     })
 }
 
@@ -494,7 +500,12 @@ fn build_reference_binding_uses(
     let source_bytes = source.as_bytes();
 
     // Capture every identifier node in the tree
-    let captures = super::query_helpers::collect_captures(ts_lang, "(identifier) @binding.use", root, source_bytes)?;
+    let captures = super::query_helpers::collect_captures(
+        ts_lang,
+        "(identifier) @binding.use",
+        root,
+        source_bytes,
+    )?;
 
     // Build scope → bindings map
     let mut scope_bindings: HashMap<ScopeId, Vec<&BindingDef>> = HashMap::new();
@@ -534,7 +545,9 @@ fn build_reference_binding_uses(
         // Find innermost scope containing this identifier
         let containing_scope: Option<ScopeId> = scopes
             .iter()
-            .filter(|s| s.range.start_byte <= range.start_byte && s.range.end_byte >= range.end_byte)
+            .filter(|s| {
+                s.range.start_byte <= range.start_byte && s.range.end_byte >= range.end_byte
+            })
             .min_by_key(|s| s.range.byte_len())
             .map(|s| s.id);
 
@@ -544,8 +557,9 @@ fn build_reference_binding_uses(
                 let mut found = None;
                 loop {
                     if let Some(bindings_in_scope) = scope_bindings.get(&sid) {
-                        if let Some(b) =
-                            bindings_in_scope.iter().find(|b| b.name.as_str() == name.as_str())
+                        if let Some(b) = bindings_in_scope
+                            .iter()
+                            .find(|b| b.name.as_str() == name.as_str())
                         {
                             found = Some(b.id);
                             break;
@@ -563,12 +577,9 @@ fn build_reference_binding_uses(
         };
 
         // Use containing scope or fall back to the first (file-level) scope
-        let scope_id = match containing_scope.or_else(|| {
-            scopes
-                .iter()
-                .find(|s| s.parent_id.is_none())
-                .map(|s| s.id)
-        }) {
+        let scope_id = match containing_scope
+            .or_else(|| scopes.iter().find(|s| s.parent_id.is_none()).map(|s| s.id))
+        {
             Some(sid) => sid,
             None => continue,
         };

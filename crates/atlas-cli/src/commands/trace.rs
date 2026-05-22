@@ -8,11 +8,11 @@
 //! - `trace caller-path` — trace the call chain backward from a target
 //!   function to its farthest caller.
 
+use anyhow::Context;
 use atlas_analysis::trace::{TraceEngine, TraceQueryResponse};
 use atlas_db::Store;
 use atlas_types::ids::SymbolId;
 use atlas_workspace::Workspace;
-use anyhow::Context;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -44,7 +44,10 @@ pub fn run_point(
     let ws = Workspace::open(Path::new(project))
         .with_context(|| format!("Invalid project path: {}", project))?;
     if !ws.db_path().is_file() {
-        anyhow::bail!("Not an initialized Atlas project. Run `atlas init {}` first.", project);
+        anyhow::bail!(
+            "Not an initialized Atlas project. Run `atlas init {}` first.",
+            project
+        );
     }
     let store = Arc::new(Store::open_db(ws.db_path()).context("Failed to open Atlas database")?);
     let engine = TraceEngine::new_with_root(store.clone(), ws.root().to_path_buf());
@@ -156,7 +159,10 @@ pub fn run_variable(
     let ws = Workspace::open(Path::new(project))
         .with_context(|| format!("Invalid project path: {}", project))?;
     if !ws.db_path().is_file() {
-        anyhow::bail!("Not an initialized Atlas project. Run `atlas init {}` first.", project);
+        anyhow::bail!(
+            "Not an initialized Atlas project. Run `atlas init {}` first.",
+            project
+        );
     }
     let store = Arc::new(Store::open_db(ws.db_path()).context("Failed to open Atlas database")?);
     let engine = TraceEngine::new_with_root(store.clone(), ws.root().to_path_buf());
@@ -242,7 +248,10 @@ pub fn run_caller_path(
     let ws = Workspace::open(Path::new(project))
         .with_context(|| format!("Invalid project path: {}", project))?;
     if !ws.db_path().is_file() {
-        anyhow::bail!("Not an initialized Atlas project. Run `atlas init {}` first.", project);
+        anyhow::bail!(
+            "Not an initialized Atlas project. Run `atlas init {}` first.",
+            project
+        );
     }
     let store = Arc::new(Store::open_db(ws.db_path()).context("Failed to open Atlas database")?);
     let engine = TraceEngine::new_with_root(store.clone(), ws.root().to_path_buf());

@@ -170,7 +170,9 @@ where
         refs = edges
             .iter()
             .filter_map(|edge| {
-                nodes.get(id_fn(edge)).map(|n| TraceDataNodeRef::from_data_node(n))
+                nodes
+                    .get(id_fn(edge))
+                    .map(|n| TraceDataNodeRef::from_data_node(n))
             })
             .collect();
     }

@@ -12,8 +12,8 @@
 //! Run with default features:  `cargo test --test trace_e2e`
 //! Run with all languages:    `cargo test --test trace_e2e --features all-languages`
 
-use atlas_analysis::trace::{CallerPathExplorer, Locator, Slicer, TraceEngine};
 use atlas_analysis::trace::virtual_edges::TraceEdgeProvider;
+use atlas_analysis::trace::{CallerPathExplorer, Locator, Slicer, TraceEngine};
 use atlas_db::Store;
 use atlas_extraction::extract_file;
 use atlas_graph::GraphBuilder;
@@ -464,8 +464,7 @@ function run(): void {
         .iter()
         .find(|dn| dn.name.as_deref() == Some("input"))
         .expect("should find input parameter");
-    let provider =
-        atlas_analysis::trace::virtual_edges::SummaryEdgeProvider;
+    let provider = atlas_analysis::trace::virtual_edges::SummaryEdgeProvider;
     let edges = provider
         .virtual_incoming(&input_param.id, store.as_ref())
         .expect("virtual_incoming should succeed");
@@ -537,10 +536,7 @@ function run(): void {
     let data_nodes = store.find_data_nodes_by_file(&caller_file_id).unwrap();
     let call_exprs: Vec<_> = data_nodes
         .iter()
-        .filter(|dn| {
-            dn.kind == atlas_types::enums::DataNodeKind::Expr
-                && dn.callsite_id.is_some()
-        })
+        .filter(|dn| dn.kind == atlas_types::enums::DataNodeKind::Expr && dn.callsite_id.is_some())
         .collect();
     assert!(
         !call_exprs.is_empty(),
@@ -556,8 +552,7 @@ function run(): void {
     );
 
     // ── Verify SummaryEdgeProvider produces ReturnToCall edges ──
-    let provider =
-        atlas_analysis::trace::virtual_edges::SummaryEdgeProvider;
+    let provider = atlas_analysis::trace::virtual_edges::SummaryEdgeProvider;
     let edges = provider
         .virtual_incoming(&call_result_expr.id, store.as_ref())
         .expect("virtual_incoming should succeed");
@@ -1396,7 +1391,10 @@ fn p5_ts_param_slice_caller_evidence_combined() {
         .as_ref()
         .expect("caller chain should exist");
     assert!(!chain.steps.is_empty(), "should have caller steps");
-    assert_eq!(chain.target.name, "compute", "chain target should be compute");
+    assert_eq!(
+        chain.target.name, "compute",
+        "chain target should be compute"
+    );
 
     for (i, step) in chain.steps.iter().enumerate() {
         let ev = step
@@ -1551,11 +1549,17 @@ fn p5_py_param_slice_caller_evidence_combined() {
         20,
     );
     assert!(resp.ok, "Python trace_variable should succeed");
-    assert!(resp.capability.is_some(), "Python capability must be present");
+    assert!(
+        resp.capability.is_some(),
+        "Python capability must be present"
+    );
 
     // Python dataflow may be partial — assert envelope is well-formed.
     if let Some(ref path) = resp.result {
-        assert!(path.confidence > 0.0, "Python confidence should be positive");
+        assert!(
+            path.confidence > 0.0,
+            "Python confidence should be positive"
+        );
         assert!(path.nodes_visited > 0, "Python nodes_visited should be > 0");
 
         for (i, step) in path.steps.iter().enumerate() {
@@ -1606,9 +1610,7 @@ fn p5_py_param_slice_caller_evidence_combined() {
                 let ev = step
                     .evidence
                     .as_ref()
-                    .unwrap_or_else(|| {
-                        panic!("Python caller step {}: evidence must exist", i)
-                    });
+                    .unwrap_or_else(|| panic!("Python caller step {}: evidence must exist", i));
                 assert!(
                     !ev.file_path.is_empty(),
                     "Python caller step {}: file_path must be set",

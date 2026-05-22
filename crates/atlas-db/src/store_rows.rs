@@ -1,11 +1,28 @@
 //! Row-mapping helpers: convert SQLite rows into Atlas domain types.
 //!
 //! Each `row_to_*` function deserialises a `rusqlite::Row` into the
-//! corresponding type from `crate::types`.  These are called from
+//! corresponding type from `atlas_types`.  These are called from
 //! `StoreReader` and `Store` query methods.
+//!
+//! ## Error handling
+//! Enum and JSON deserialisation failures are NOT silently defaulted —
+//! they propagate as `rusqlite::Error` so callers can detect DB corruption
+//! or schema drift instead of silently returning wrong results.
 
 use atlas_types::*;
 use rusqlite::Row;
+
+/// Build a `rusqlite::Error` from a parsing failure at a column index.
+fn parse_err(idx: usize, value: &str, target: &str) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        idx,
+        rusqlite::types::Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("cannot parse '{}' as {}", value, target),
+        )),
+    )
+}
 
 /// Shared SELECT column list for the `references` table (without WHERE clause).
 pub(crate) const REFERENCE_SELECT_NO_WHERE: &str = r#"
@@ -28,26 +45,39 @@ pub(crate) const REFERENCE_SELECT_WHERE: &str = r#"
     FROM "references" WHERE file_id = ?1"#;
 
 pub(crate) fn row_to_file_info(row: &Row) -> rusqlite::Result<FileInfo> {
+    let lang_str: String = row.get(2)?;
+    let language =
+        Language::from_str(&lang_str).ok_or_else(|| parse_err(2, &lang_str, "Language"))?;
+    let status_str: String = row.get(4)?;
+    let status = ParseStatus::from_str(&status_str)
+        .ok_or_else(|| parse_err(4, &status_str, "ParseStatus"))?;
     Ok(FileInfo {
         file_id: row.get(0)?,
         path: row.get(1)?,
-        language: Language::from_str(row.get::<_, String>(2)?.as_str()).unwrap_or_default(),
+        language,
         content_hash: row.get(3)?,
-        status: ParseStatus::from_str(row.get::<_, String>(4)?.as_str()).unwrap_or_default(),
+        status,
     })
 }
 
 pub(crate) fn row_to_symbol(row: &Row) -> rusqlite::Result<SymbolDef> {
     let symbol_path_json: String = row.get(5)?;
     let ns_json: String = row.get(27)?;
+    let kind_str: String = row.get(2)?;
+    let kind =
+        SymbolKind::from_str(&kind_str).ok_or_else(|| parse_err(2, &kind_str, "SymbolKind"))?;
+    let lang_str: String = row.get(6)?;
+    let language =
+        Language::from_str(&lang_str).ok_or_else(|| parse_err(6, &lang_str, "Language"))?;
     Ok(SymbolDef {
         id: row.get(0)?,
         file_id: row.get(1)?,
-        kind: SymbolKind::from_str(row.get::<_, String>(2)?.as_str()).unwrap_or(SymbolKind::File),
+        kind,
         name: row.get(3)?,
         qualified_name: row.get(4)?,
-        symbol_path: serde_json::from_str(&symbol_path_json).unwrap_or_default(),
-        language: Language::from_str(row.get::<_, String>(6)?.as_str()).unwrap_or_default(),
+        symbol_path: serde_json::from_str(&symbol_path_json)
+            .map_err(|e| parse_err(5, &symbol_path_json, &format!("symbol_path JSON: {e}")))?,
+        language,
         range: TextRange {
             start_byte: row.get(7)?,
             end_byte: row.get(8)?,
@@ -65,16 +95,23 @@ pub(crate) fn row_to_symbol(row: &Row) -> rusqlite::Result<SymbolDef> {
             end_column: row.get(18)?,
         },
         signature: row.get(19)?,
-        visibility: row
-            .get::<_, Option<String>>(20)?
-            .and_then(|v| Visibility::from_str(&v)),
+        visibility: {
+            let vis_str: Option<String> = row.get(20)?;
+            match vis_str {
+                Some(ref v) => {
+                    Some(Visibility::from_str(v).ok_or_else(|| parse_err(20, v, "Visibility"))?)
+                }
+                None => None,
+            }
+        },
         exported: row.get::<_, i32>(21)? != 0,
         static_: row.get::<_, i32>(22)? != 0,
         async_: row.get::<_, i32>(23)? != 0,
         container: row.get(24)?,
         scope_id: row.get(25)?,
         package_name: row.get(26)?,
-        namespace_path: serde_json::from_str(&ns_json).unwrap_or_default(),
+        namespace_path: serde_json::from_str(&ns_json)
+            .map_err(|e| parse_err(27, &ns_json, &format!("namespace_path JSON: {e}")))?,
     })
 }
 
@@ -86,25 +123,36 @@ pub(crate) fn row_to_reference(row: &Row) -> rusqlite::Result<ReferenceUse> {
                 let conf: Option<f32> = row.get(16)?;
                 let strat_s: Option<String> = row.get(17)?;
                 let prov_s: Option<String> = row.get(18)?;
+                let strategy = match strat_s {
+                    Some(ref s) => ResolutionStrategy::from_str(s)
+                        .ok_or_else(|| parse_err(17, s, "ResolutionStrategy"))?,
+                    None => ResolutionStrategy::ExactMatch,
+                };
+                let provenance = match prov_s {
+                    Some(ref s) => {
+                        Provenance::from_str(s).ok_or_else(|| parse_err(18, s, "Provenance"))?
+                    }
+                    None => Provenance::default(),
+                };
                 Some(ResolvedTarget {
                     symbol_id: sid,
                     confidence: Confidence::new(conf.unwrap_or(0.5)),
-                    strategy: ResolutionStrategy::from_str(strat_s.as_deref().unwrap_or(""))
-                        .unwrap_or(ResolutionStrategy::ExactMatch),
-                    provenance: Provenance::from_str(prov_s.as_deref().unwrap_or(""))
-                        .unwrap_or_default(),
+                    strategy,
+                    provenance,
                 })
             }
             None => None,
         }
     };
+    let ref_kind_str: String = row.get(4)?;
+    let ref_kind = ReferenceKind::from_str(&ref_kind_str)
+        .ok_or_else(|| parse_err(4, &ref_kind_str, "ReferenceKind"))?;
     Ok(ReferenceUse {
         id: row.get(0)?,
         file_id: row.get(1)?,
         source_symbol: row.get(2)?,
         scope_id: row.get(3)?,
-        kind: ReferenceKind::from_str(row.get::<_, String>(4)?.as_str())
-            .unwrap_or(ReferenceKind::Usage),
+        kind: ref_kind,
         text: row.get(5)?,
         name: row.get(6)?,
         receiver: row.get(7)?,
@@ -137,17 +185,26 @@ pub(crate) fn row_to_edge(row: &Row) -> rusqlite::Result<RawEdge> {
     };
     let metadata: Option<String> = row.get(13)?;
     let resolved_by_str: Option<String> = row.get(14)?;
-    let resolved_by = resolved_by_str
-        .as_deref()
-        .and_then(|s| ResolutionStrategy::from_str(s));
+    let resolved_by = match resolved_by_str {
+        Some(ref s) => Some(
+            ResolutionStrategy::from_str(s)
+                .ok_or_else(|| parse_err(14, s, "ResolutionStrategy (resolved_by)"))?,
+        ),
+        None => None,
+    };
+    let kind_str: String = row.get(3)?;
+    let kind = EdgeKind::from_str(&kind_str).ok_or_else(|| parse_err(3, &kind_str, "EdgeKind"))?;
+    let prov_str: String = row.get(5)?;
+    let provenance =
+        Provenance::from_str(&prov_str).ok_or_else(|| parse_err(5, &prov_str, "Provenance"))?;
 
     Ok(RawEdge {
         id: row.get(0)?,
         source: row.get(1)?,
         target: row.get(2)?,
-        kind: EdgeKind::from_str(row.get::<_, String>(3)?.as_str()).unwrap_or(EdgeKind::References),
+        kind,
         confidence: Confidence::new(row.get(4)?),
-        provenance: Provenance::from_str(row.get::<_, String>(5)?.as_str()).unwrap_or_default(),
+        provenance,
         ref_id,
         location,
         metadata,
@@ -156,13 +213,15 @@ pub(crate) fn row_to_edge(row: &Row) -> rusqlite::Result<RawEdge> {
 }
 
 pub(crate) fn row_to_binding(row: &Row) -> rusqlite::Result<BindingDef> {
+    let kind_str: String = row.get(4)?;
+    let kind =
+        BindingKind::from_str(&kind_str).ok_or_else(|| parse_err(4, &kind_str, "BindingKind"))?;
     Ok(BindingDef {
         id: row.get(0)?,
         file_id: row.get(1)?,
         function_id: row.get(2)?,
         scope_id: row.get(3)?,
-        kind: BindingKind::from_str(row.get::<_, String>(4)?.as_str())
-            .unwrap_or(BindingKind::Local),
+        kind,
         name: row.get(5)?,
         symbol_id: row.get(6)?,
         range: TextRange {
@@ -196,12 +255,14 @@ pub(crate) fn row_to_binding_use(row: &Row) -> rusqlite::Result<BindingUse> {
 }
 
 pub(crate) fn row_to_data_node(row: &Row) -> rusqlite::Result<DataNode> {
+    let kind_str: String = row.get(3)?;
+    let kind =
+        DataNodeKind::from_str(&kind_str).ok_or_else(|| parse_err(3, &kind_str, "DataNodeKind"))?;
     Ok(DataNode {
         id: row.get(0)?,
         file_id: row.get(1)?,
         function_id: row.get(2)?,
-        kind: DataNodeKind::from_str(row.get::<_, String>(3)?.as_str())
-            .unwrap_or(DataNodeKind::Unknown),
+        kind,
         binding_id: row.get(4)?,
         callsite_id: row.get(5)?,
         name: row.get(6)?,
@@ -227,12 +288,14 @@ pub(crate) fn row_to_dataflow_edge(row: &Row) -> rusqlite::Result<DataFlowEdge> 
         end_column: row.get::<_, u32>(9).unwrap_or(0),
     };
     let conf: Option<f64> = row.get(10)?;
+    let kind_str: String = row.get(3)?;
+    let kind =
+        DataFlowKind::from_str(&kind_str).ok_or_else(|| parse_err(3, &kind_str, "DataFlowKind"))?;
     Ok(DataFlowEdge {
         id: row.get(0)?,
         source: row.get(1)?,
         target: row.get(2)?,
-        kind: DataFlowKind::from_str(row.get::<_, String>(3)?.as_str())
-            .unwrap_or(DataFlowKind::Assign),
+        kind,
         location,
         confidence: conf.unwrap_or(0.8),
     })
@@ -240,7 +303,8 @@ pub(crate) fn row_to_dataflow_edge(row: &Row) -> rusqlite::Result<DataFlowEdge> 
 
 pub(crate) fn row_to_callsite(row: &Row) -> rusqlite::Result<Callsite> {
     let args_str: String = row.get(5)?;
-    let args: Vec<ArgumentFact> = serde_json::from_str(&args_str).unwrap_or_default();
+    let args: Vec<ArgumentFact> = serde_json::from_str(&args_str)
+        .map_err(|e| parse_err(5, &args_str, &format!("Callsite args JSON: {e}")))?;
     let callee_start_line: Option<u32> = row.get(12).ok();
     let callee_start_column: Option<u32> = row.get(13).ok();
     let callee_end_line: Option<u32> = row.get(14).ok();
@@ -287,7 +351,8 @@ pub(crate) fn row_to_callsite(row: &Row) -> rusqlite::Result<Callsite> {
 pub(crate) fn row_to_cfg_node(row: &Row) -> rusqlite::Result<CfgNode> {
     use atlas_types::enums::CfgNodeKind;
     let kind_str: String = row.get(2)?;
-    let kind = CfgNodeKind::from_str(&kind_str).unwrap_or(CfgNodeKind::Statement);
+    let kind =
+        CfgNodeKind::from_str(&kind_str).ok_or_else(|| parse_err(2, &kind_str, "CfgNodeKind"))?;
     Ok(CfgNode {
         id: row.get(0)?,
         function_id: row.get(1)?,
@@ -306,7 +371,8 @@ pub(crate) fn row_to_cfg_node(row: &Row) -> rusqlite::Result<CfgNode> {
 pub(crate) fn row_to_cfg_edge(row: &Row) -> rusqlite::Result<CfgEdge> {
     use atlas_types::enums::CfgEdgeKind;
     let kind_str: String = row.get(3)?;
-    let kind = CfgEdgeKind::from_str(&kind_str).unwrap_or(CfgEdgeKind::Normal);
+    let kind =
+        CfgEdgeKind::from_str(&kind_str).ok_or_else(|| parse_err(3, &kind_str, "CfgEdgeKind"))?;
     Ok(CfgEdge {
         id: row.get(0)?,
         source: row.get(1)?,

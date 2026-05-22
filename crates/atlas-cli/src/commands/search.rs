@@ -1,11 +1,11 @@
 //! `atlas search` command — full-text + graph-aware symbol search.
 
+use anyhow::Context;
 use atlas_db::Store;
 use atlas_search::SearchEngine;
 use atlas_search::SearchOptions;
 use atlas_types::{Language, SymbolKind};
 use atlas_workspace::Workspace;
-use anyhow::Context;
 use serde::Serialize;
 use std::sync::Arc;
 

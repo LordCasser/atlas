@@ -17,15 +17,16 @@
 //! the database. Clean (unchanged) files are skipped. Only dirty (new or modified)
 //! files are re-extracted. Deleted files (in DB but not on disk) are cleaned up.
 
+use anyhow::Context;
 use atlas_db::Store;
-use atlas_extraction::{self, LanguageRegistry, ParseWorkerPool, WorkerConfig};
 use atlas_extraction::frontend::LanguageFrontend;
+use atlas_extraction::{self, LanguageRegistry, ParseWorkerPool, WorkerConfig};
 use atlas_sync::discovery::{DiscoveryConfig, discover_files};
 use atlas_types::FailureCategory;
 use atlas_types::Language;
 use atlas_types::{PerLanguageStats, PhaseTimer, PhaseTiming, PhaseTimings};
+use atlas_workspace::SourcePath;
 use atlas_workspace::Workspace;
-use anyhow::Context;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -99,7 +100,9 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     if !hash_result.deleted.is_empty() {
         let del_timer = PhaseTimer::start("Delete stale");
         for rel_path in &hash_result.deleted {
-            let file_id = atlas_types::FileId::generate(&rel_path.to_string_lossy());
+            let sp = SourcePath::try_from_relative(&rel_path.to_string_lossy())
+                .with_context(|| format!("invalid deleted path: {}", rel_path.display()))?;
+            let file_id = atlas_types::FileId::generate(sp.as_str());
             let _ = store.delete_edges_for_file_references(&file_id);
             let _ = store.delete_file_data(&file_id);
         }
@@ -126,9 +129,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     // P2: Build frontend cache — one LanguageFrontend per language, reused across all files.
     let frontend_cache: HashMap<Language, LanguageFrontend> = languages
         .iter()
-        .filter_map(|&lang| {
-            atlas_extraction::create_frontend(lang).map(|fe| (lang, fe))
-        })
+        .filter_map(|&lang| atlas_extraction::create_frontend(lang).map(|fe| (lang, fe)))
         .collect();
     let lang_timing = lang_timer.items(languages.len() as u64).finish();
     phase_timings.push(lang_timing);
@@ -295,45 +296,20 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     // jsconfig.json is NOT checked for invalidation because the resolver only
     // loads tsconfig.json for path alias resolution.  JS projects requiring
     // path aliases should use tsconfig.json (supported by tsc/TypeScript parser).
-    {
-        for name in &["tsconfig.json"] {
-            let config_path = root.join(name);
-            let current_hash = std::fs::read(&config_path)
-                .ok()
-                .map(|c| blake3::hash(&c).to_hex().to_string());
-            let meta_key = format!("{}_hash", name);
-            let prev_hash = store.get_metadata(&meta_key).ok().flatten();
-
-            match (&prev_hash, &current_hash) {
-                (Some(prev), Some(curr)) if prev == curr => {
-                    // Unchanged
-                    continue;
-                }
-                (None, None) => {
-                    // No config file before or now
-                    continue;
-                }
-                _ => {
-                    // Config appeared, disappeared, or changed — invalidate
-                    let inv_refs = store.invalidate_all_references().unwrap_or(0);
-                    let inv_edges = store.delete_all_edges().unwrap_or(0);
-                    tracing::info!(
-                        "{} changed — invalidated {} references and {} edges for re-resolution",
-                        name, inv_refs, inv_edges
-                    );
-                    match &current_hash {
-                        Some(hash) => {
-                            let _ = store.set_metadata(&meta_key, hash);
-                        }
-                        None => {
-                            // Config deleted — clear stored hash to avoid
-                            // repeated invalidation on every run
-                            let _ = store.delete_metadata(&meta_key);
-                        }
-                    }
-                }
-            }
-        }
+    let tsconfig_changed =
+        atlas_resolution::detect_config_change(&store, &root, &["tsconfig.json"])?;
+    if tsconfig_changed {
+        let inv_refs = store
+            .invalidate_all_references()
+            .context("Failed to invalidate references for tsconfig change")?;
+        let inv_edges = store
+            .delete_all_edges()
+            .context("Failed to delete edges for tsconfig change")?;
+        tracing::info!(
+            "tsconfig.json changed — invalidated {} references and {} edges for re-resolution",
+            inv_refs,
+            inv_edges
+        );
     }
 
     let mut resolver =
@@ -397,6 +373,13 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     });
     println!("  Edges built:         {}", build_stats.edges_built);
 
+    // Commit tsconfig hash baseline AFTER the full pipeline succeeded
+    // (extraction + resolution + graph build).  Committing earlier would
+    // leave the hash updated on partial failure, preventing retry.
+    if tsconfig_changed {
+        atlas_resolution::commit_config_hashes(&store, &root, &["tsconfig.json"])?;
+    }
+
     // Show final stats
     let db_stats = store.get_stats()?;
     println!();
@@ -450,7 +433,8 @@ fn build_dirty_set(
             let abs_path = root.join(rel_path);
             let content = std::fs::read(&abs_path).ok()?;
             let hash = blake3::hash(&content).to_hex().to_string();
-            Some((rel_path.to_string_lossy().to_string(), hash))
+            let key = SourcePath::try_from_relative(&rel_path.to_string_lossy()).ok()?;
+            Some((key.as_str().to_string(), hash))
         })
         .collect();
 
@@ -468,7 +452,10 @@ fn build_dirty_set(
     let discovered_set: HashSet<String> = current_hashes.keys().cloned().collect();
 
     for rel_path in discovered {
-        let key = rel_path.to_string_lossy().to_string();
+        let key = match SourcePath::try_from_relative(&rel_path.to_string_lossy()) {
+            Ok(sp) => sp.as_str().to_string(),
+            Err(_) => continue,
+        };
         match db_hashes.get(&key) {
             None => {
                 // Not in DB — new file
@@ -530,7 +517,8 @@ fn extract_one_with_frontend(
 
     let content_hash = blake3::hash(source.as_bytes()).to_hex();
     let relative = path.strip_prefix(root).unwrap_or(path);
-    let file_id = atlas_types::FileId::generate(&relative.to_string_lossy());
+    let sp = SourcePath::try_from_relative(&relative.to_string_lossy()).map_err(|_| ())?;
+    let file_id = atlas_types::FileId::generate(sp.as_str());
 
     pool.extract_one(frontend, file_id, relative, &source, &content_hash)
         .map_err(|_| ())

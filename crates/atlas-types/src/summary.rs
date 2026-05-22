@@ -113,7 +113,9 @@ pub struct CallArgFlow {
 impl FunctionSummary {
     /// Quick check: does this summary contain no usable data?
     pub fn is_empty(&self) -> bool {
-        self.param_flows.is_empty() && self.return_flows.is_empty() && self.call_arg_flows.is_empty()
+        self.param_flows.is_empty()
+            && self.return_flows.is_empty()
+            && self.call_arg_flows.is_empty()
     }
 }
 

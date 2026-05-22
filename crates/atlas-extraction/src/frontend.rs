@@ -508,8 +508,8 @@ mod tests {
     #[cfg(feature = "java")]
     #[test]
     fn test_frontend_from_adapter_java() {
-        let adapter = crate::languages::create_adapter(Language::Java)
-            .expect("Java adapter should exist");
+        let adapter =
+            crate::languages::create_adapter(Language::Java).expect("Java adapter should exist");
         let frontend = LanguageFrontend::from_adapter(adapter);
 
         assert_eq!(frontend.language(), Language::Java);

@@ -162,13 +162,11 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                 };
 
                 // Try summary-based bridge first
-                if let Ok(summary) =
-                    crate::summary::SummaryBuilder::build(
-                        store,
-                        &callee_sym_id,
-                        Some((callee_sym.range.start_byte, callee_sym.range.end_byte)),
-                    )
-                {
+                if let Ok(summary) = crate::summary::SummaryBuilder::build(
+                    store,
+                    &callee_sym_id,
+                    Some((callee_sym.range.start_byte, callee_sym.range.end_byte)),
+                ) {
                     for rf in &summary.return_flows {
                         for src_id in &rf.sources {
                             edges.push(TraceEdge {

@@ -11,6 +11,7 @@ atlas-db = { path = "../atlas-db" }
 atlas-extraction = { path = "../atlas-extraction" }
 atlas-graph = { path = "../atlas-graph" }
 atlas-resolution = { path = "../atlas-resolution" }
+atlas-workspace = { path = "../atlas-workspace" }
 anyhow = "1"
 blake3 = "1"
 serde = { version = "1", features = ["derive"] }

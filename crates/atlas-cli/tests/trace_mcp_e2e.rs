@@ -1015,7 +1015,11 @@ fn p7a_mcp_trace_variable_truncation_diagnostic() {
     assert!(!is_error, "truncated trace should not error");
 
     // Check that diagnostics mentions truncation if partial_result is true
-    if json.get("partial_result").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if json
+        .get("partial_result")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         let diags = json
             .get("diagnostics")
             .and_then(|d| d.as_array())

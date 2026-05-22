@@ -85,7 +85,8 @@ impl DataFlowBuilder {
         }
 
         // Collect captures
-        let captures = super::query_helpers::collect_captures(ts_lang, query_src, root, source_bytes)?;
+        let captures =
+            super::query_helpers::collect_captures(ts_lang, query_src, root, source_bytes)?;
 
         let mut nodes: Vec<DataNode> = Vec::new();
         let mut edges: Vec<DataFlowEdge> = Vec::new();
@@ -140,11 +141,7 @@ impl DataFlowBuilder {
 ///
 /// Falls back to a flat name-based lookup when the node's range is not
 /// contained by any scope.
-fn resolve_bindings_to_nodes(
-    nodes: &mut [DataNode],
-    bindings: &[BindingDef],
-    scopes: &[ScopeDef],
-) {
+fn resolve_bindings_to_nodes(nodes: &mut [DataNode], bindings: &[BindingDef], scopes: &[ScopeDef]) {
     // Build scope → bindings map (bindings indexed by their scope_id)
     let mut scope_bindings: HashMap<ScopeId, Vec<&BindingDef>> = HashMap::new();
     for binding in bindings {
@@ -187,9 +184,7 @@ fn resolve_bindings_to_nodes(
                             break;
                         }
                     }
-                    current = parent_map
-                        .get(&sid)
-                        .and_then(|&maybe_parent| maybe_parent);
+                    current = parent_map.get(&sid).and_then(|&maybe_parent| maybe_parent);
                 }
                 found.or_else(|| flat_map.get(name.as_str()).copied())
             }
@@ -206,9 +201,7 @@ fn resolve_bindings_to_nodes(
 fn innermost_scope_by_range(scopes: &[ScopeDef], range: TextRange) -> Option<ScopeId> {
     scopes
         .iter()
-        .filter(|s| {
-            s.range.start_byte <= range.start_byte && s.range.end_byte >= range.end_byte
-        })
+        .filter(|s| s.range.start_byte <= range.start_byte && s.range.end_byte >= range.end_byte)
         .min_by_key(|s| s.range.byte_len())
         .map(|s| s.id)
 }
@@ -418,11 +411,8 @@ fn build_dataflow_edges(
                         | DataNodeKind::Field
                 )
         }) {
-            let edge_id = DataFlowEdgeId::generate(
-                &source.id,
-                &ret.id,
-                DataFlowKind::ReturnToCall.as_str(),
-            );
+            let edge_id =
+                DataFlowEdgeId::generate(&source.id, &ret.id, DataFlowKind::ReturnToCall.as_str());
             edges.push(DataFlowEdge::new(
                 edge_id,
                 source.id,

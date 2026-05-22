@@ -28,13 +28,15 @@ crates/
 atlas-cli → atlas-mcp, atlas-sync, atlas-search, atlas-context, atlas-analysis, atlas-graph,
             atlas-resolution, atlas-extraction, atlas-db, atlas-types, atlas-workspace
 atlas-mcp → atlas-context, atlas-search, atlas-graph, atlas-analysis, atlas-db, atlas-types, atlas-workspace
-atlas-sync → atlas-graph, atlas-resolution, atlas-extraction, atlas-db, atlas-types
+atlas-sync → atlas-graph, atlas-resolution, atlas-extraction, atlas-db, atlas-types, atlas-workspace
 atlas-search / atlas-context → atlas-graph, atlas-db, atlas-types
 atlas-analysis → atlas-db, atlas-types, atlas-workspace
-atlas-graph / atlas-resolution → atlas-db, atlas-types
+atlas-graph → atlas-db, atlas-types
+atlas-resolution → atlas-db, atlas-types, atlas-workspace
 atlas-extraction → atlas-types
 atlas-db → atlas-types
-atlas-workspace / atlas-types → (stdlib only)
+atlas-workspace → (stdlib + anyhow)
+atlas-types → (anyhow, blake3, hex, rusqlite, serde)
 ```
 
 ## 2. 当前数据流

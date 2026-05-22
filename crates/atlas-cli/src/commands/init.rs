@@ -1,9 +1,9 @@
 //! `atlas init` — create `.atlas/` directory and initialize the database.
 
+use anyhow::Context;
 use atlas_db::Store;
 use atlas_types::Language;
 use atlas_workspace::Workspace;
-use anyhow::Context;
 
 pub fn run(project: &str) -> anyhow::Result<()> {
     let ws = Workspace::open(std::path::Path::new(project))
@@ -20,7 +20,8 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     }
 
     // Create .atlas/ directory and initialize DB
-    ws.ensure_atlas_dir().context("Failed to create .atlas directory")?;
+    ws.ensure_atlas_dir()
+        .context("Failed to create .atlas directory")?;
     let store = Store::open_db(ws.db_path()).context("Failed to open Atlas database")?;
     store
         .init_schema()

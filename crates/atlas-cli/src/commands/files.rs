@@ -1,8 +1,8 @@
 //! `atlas files` command — list indexed files with symbol counts.
 
+use anyhow::Context;
 use atlas_db::Store;
 use atlas_workspace::Workspace;
-use anyhow::Context;
 
 pub fn run(project: &str) -> anyhow::Result<()> {
     let ws = Workspace::open(std::path::Path::new(project))

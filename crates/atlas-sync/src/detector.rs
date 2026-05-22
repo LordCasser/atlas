@@ -269,8 +269,8 @@ mod tests {
         use atlas_db::Store;
         use atlas_extraction::create_frontend;
         use atlas_extraction::extract_file;
-        use atlas_types::ids::FileId;
         use atlas_types::Language;
+        use atlas_types::ids::FileId;
 
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open_in_memory().unwrap();

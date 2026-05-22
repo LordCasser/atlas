@@ -1,7 +1,7 @@
 //! `atlas sync` — incremental sync for changed files.
 
-use atlas_workspace::Workspace;
 use anyhow::{Context, Result};
+use atlas_workspace::Workspace;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -17,9 +17,8 @@ pub fn run(project: &str) -> Result<()> {
     }
 
     let root = ws.root().to_path_buf();
-    let store = Arc::new(
-        atlas_db::Store::open_db(ws.db_path()).context("Failed to open .atlas database")?,
-    );
+    let store =
+        Arc::new(atlas_db::Store::open_db(ws.db_path()).context("Failed to open .atlas database")?);
 
     let engine = atlas_sync::SyncEngine::new(store.clone(), root);
 

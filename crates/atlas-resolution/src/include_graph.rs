@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use atlas_db::Store;
 use atlas_types::*;
+use atlas_workspace::SourcePath;
 
 /// Resolves C/C++ `#include` directives to project files.
 pub struct IncludeGraph {
@@ -53,7 +54,8 @@ impl IncludeGraph {
         let relative = candidate
             .strip_prefix(&self.project_root)
             .unwrap_or(&candidate);
-        let file_id = FileId::generate(&relative.to_string_lossy());
+        let sp = SourcePath::try_from_relative(&relative.to_string_lossy()).ok()?;
+        let file_id = FileId::generate(sp.as_str());
 
         // Check if the file exists in the DB
         if self.store.get_file(&file_id).ok().flatten().is_some() {

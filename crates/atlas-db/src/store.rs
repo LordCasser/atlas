@@ -77,8 +77,10 @@ impl StoreReader {
             placeholders.join(","),
         );
         let mut stmt = conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::types::ToSql> =
-            ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
         let rows = stmt.query_map(params.as_slice(), row_to_symbol)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -966,10 +968,7 @@ impl Store {
     /// Find all callsites that target a specific callee symbol.
     ///
     /// Used by summary-bridge trace to find callers of a function.
-    pub fn find_callsites_by_callee(
-        &self,
-        callee: &SymbolId,
-    ) -> anyhow::Result<Vec<Callsite>> {
+    pub fn find_callsites_by_callee(&self, callee: &SymbolId) -> anyhow::Result<Vec<Callsite>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT callsite_id, reference_id, caller, callee, receiver, args_json,
@@ -984,10 +983,7 @@ impl Store {
     }
 
     /// Find a single callsite by its ID.
-    pub fn find_callsites_by_id(
-        &self,
-        callsite_id: &CallsiteId,
-    ) -> anyhow::Result<Vec<Callsite>> {
+    pub fn find_callsites_by_id(&self, callsite_id: &CallsiteId) -> anyhow::Result<Vec<Callsite>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT callsite_id, reference_id, caller, callee, receiver, args_json,
@@ -1116,8 +1112,10 @@ impl Store {
             placeholders.join(","),
         );
         let mut stmt = conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::types::ToSql> =
-            ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
         let rows = stmt.query_map(params.as_slice(), |row| {
             let node: DataNode = row_to_data_node(row)?;
             Ok((node.id, node))
@@ -1213,8 +1211,10 @@ impl Store {
             placeholders.join(","),
         );
         let mut stmt = conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::types::ToSql> =
-            sources.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = sources
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
         let rows = stmt.query_map(params.as_slice(), row_to_dataflow_edge)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -1409,10 +1409,7 @@ impl Store {
     /// Delete a project metadata key.
     pub fn delete_metadata(&self, key: &str) -> anyhow::Result<()> {
         let conn = self.lock();
-        conn.execute(
-            "DELETE FROM project_metadata WHERE key = ?1",
-            params![key],
-        )?;
+        conn.execute("DELETE FROM project_metadata WHERE key = ?1", params![key])?;
         Ok(())
     }
 
@@ -1513,11 +1510,7 @@ impl Store {
     /// Tries exact match on `path = ?`, then suffix match on
     /// `path LIKE '%/' || ?`. Falls back to Rust path normalization for the
     /// suffix case. This replaces the old `list_files()` → linear scan pattern.
-    pub fn resolve_file_id(
-        &self,
-        root: &Path,
-        rel_path: &str,
-    ) -> anyhow::Result<Option<FileId>> {
+    pub fn resolve_file_id(&self, root: &Path, rel_path: &str) -> anyhow::Result<Option<FileId>> {
         let conn = self.lock();
 
         // 1. Exact path match.
@@ -1528,9 +1521,8 @@ impl Store {
 
         // 2. Suffix match (e.g. "helper.ts" matches "src/lib/helper.ts").
         let pattern = format!("%/{}", rel_path);
-        let mut stmt = conn.prepare(
-            "SELECT file_id, path FROM files WHERE path LIKE ?1 LIMIT 5",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT file_id, path FROM files WHERE path LIKE ?1 LIMIT 5")?;
         let rows: Vec<_> = stmt
             .query_map(params![&pattern], |row| {
                 Ok((row.get::<_, FileId>(0)?, row.get::<_, String>(1)?))
@@ -1609,10 +1601,21 @@ impl SymbolReader for Store {
     fn search_symbols(&self, query: &str) -> anyhow::Result<Vec<SymbolDef>> {
         Store::search_symbols(self, query)
     }
-    fn search_symbols_with_limit(&self, query: &str, limit: usize, kind_filter: Option<&SymbolKind>) -> anyhow::Result<Vec<SymbolDef>> {
+    fn search_symbols_with_limit(
+        &self,
+        query: &str,
+        limit: usize,
+        kind_filter: Option<&SymbolKind>,
+    ) -> anyhow::Result<Vec<SymbolDef>> {
         Store::search_symbols_with_limit(self, query, limit, kind_filter)
     }
-    fn search_symbols_by_name_like(&self, pattern: &str, language: Option<&Language>, limit: usize, kind_filter: Option<&SymbolKind>) -> anyhow::Result<Vec<SymbolDef>> {
+    fn search_symbols_by_name_like(
+        &self,
+        pattern: &str,
+        language: Option<&Language>,
+        limit: usize,
+        kind_filter: Option<&SymbolKind>,
+    ) -> anyhow::Result<Vec<SymbolDef>> {
         Store::search_symbols_by_name_like(self, pattern, language, limit, kind_filter)
     }
     fn count_symbols(&self) -> anyhow::Result<usize> {
@@ -1657,13 +1660,22 @@ impl DataflowReader for Store {
     fn find_data_nodes_by_function(&self, function_id: &SymbolId) -> anyhow::Result<Vec<DataNode>> {
         Store::find_data_nodes_by_function(self, function_id)
     }
-    fn find_data_nodes_by_callsite(&self, callsite_id: &CallsiteId) -> anyhow::Result<Vec<DataNode>> {
+    fn find_data_nodes_by_callsite(
+        &self,
+        callsite_id: &CallsiteId,
+    ) -> anyhow::Result<Vec<DataNode>> {
         Store::find_data_nodes_by_callsite(self, callsite_id)
     }
-    fn find_dataflow_edges_by_source(&self, source: &DataNodeId) -> anyhow::Result<Vec<DataFlowEdge>> {
+    fn find_dataflow_edges_by_source(
+        &self,
+        source: &DataNodeId,
+    ) -> anyhow::Result<Vec<DataFlowEdge>> {
         Store::find_dataflow_edges_by_source(self, source)
     }
-    fn find_dataflow_edges_by_target(&self, target: &DataNodeId) -> anyhow::Result<Vec<DataFlowEdge>> {
+    fn find_dataflow_edges_by_target(
+        &self,
+        target: &DataNodeId,
+    ) -> anyhow::Result<Vec<DataFlowEdge>> {
         Store::find_dataflow_edges_by_target(self, target)
     }
 }
@@ -1678,7 +1690,10 @@ impl CallGraphReader for Store {
     fn find_callsites_by_id(&self, id: &CallsiteId) -> anyhow::Result<Vec<Callsite>> {
         Store::find_callsites_by_id(self, id)
     }
-    fn find_callsite_by_reference_id(&self, reference_id: &ReferenceId) -> anyhow::Result<Option<Callsite>> {
+    fn find_callsite_by_reference_id(
+        &self,
+        reference_id: &ReferenceId,
+    ) -> anyhow::Result<Option<Callsite>> {
         Store::find_callsite_by_reference_id(self, reference_id)
     }
     fn find_bindings_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<BindingDef>> {
@@ -1690,7 +1705,10 @@ impl CallGraphReader for Store {
     fn find_binding_uses_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<BindingUse>> {
         Store::find_binding_uses_by_file(self, file_id)
     }
-    fn find_binding_uses_by_binding(&self, binding_id: &BindingId) -> anyhow::Result<Vec<BindingUse>> {
+    fn find_binding_uses_by_binding(
+        &self,
+        binding_id: &BindingId,
+    ) -> anyhow::Result<Vec<BindingUse>> {
         Store::find_binding_uses_by_binding(self, binding_id)
     }
     fn find_cfg_nodes_by_function(&self, function_id: &SymbolId) -> anyhow::Result<Vec<CfgNode>> {

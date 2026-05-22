@@ -3,8 +3,8 @@
 //! The MVP compile set excludes incomplete/experimental languages such as
 //! Cangjie. Those languages must be enabled explicitly with their own feature.
 
-use atlas_types::Language;
 use anyhow::{Result, bail};
+use atlas_types::Language;
 use std::collections::HashMap;
 use std::path::Path;
 

@@ -29,9 +29,9 @@ impl ProjectRoot {
     /// The path is canonicalized (resolving symlinks and `..` components).
     /// Returns an error if the path does not exist or is not a directory.
     pub fn new(path: &Path) -> anyhow::Result<Self> {
-        let canonical = path.canonicalize().map_err(|e| {
-            anyhow::anyhow!("Project path not found: {} ({})", path.display(), e)
-        })?;
+        let canonical = path
+            .canonicalize()
+            .map_err(|e| anyhow::anyhow!("Project path not found: {} ({})", path.display(), e))?;
         if !canonical.is_dir() {
             anyhow::bail!("Not a directory: {}", canonical.display());
         }
@@ -244,10 +244,10 @@ impl SourcePath {
     /// Fallible constructor that validates the path is relative and safe.
     ///
     /// Returns an error if:
-    /// - The path is empty
-    /// - The path is absolute (starts with `/`)
+    /// - The path is empty or reduces to empty after `./` stripping
+    /// - The path is absolute (starts with `/` on Unix, or drive letter on Windows)
     /// - The path contains `..` components (directory traversal)
-    /// - The path contains bare `.` components (except as a single leading `./` prefix)
+    /// - The path contains bare `.` components (except as a leading `./` prefix)
     ///
     /// # Examples
     ///
@@ -256,7 +256,9 @@ impl SourcePath {
     /// assert!(SourcePath::try_from_relative("src/lib.ts").is_ok());
     /// assert!(SourcePath::try_from_relative("./foo/bar.ts").is_ok());
     /// assert!(SourcePath::try_from_relative("").is_err());
+    /// assert!(SourcePath::try_from_relative("./").is_err());       // strips to empty
     /// assert!(SourcePath::try_from_relative("/abs/path").is_err());
+    /// assert!(SourcePath::try_from_relative("C:\\foo").is_err());  // Windows absolute
     /// assert!(SourcePath::try_from_relative("../escape").is_err());
     /// ```
     pub fn try_from_relative(path: &str) -> anyhow::Result<Self> {
@@ -269,6 +271,13 @@ impl SourcePath {
             anyhow::bail!("source path must be relative, got absolute path: {path}");
         }
 
+        // Reject Windows absolute paths (e.g. C:\..., D:/..., \\server\share)
+        // A colon in a path component indicates a drive letter or alternate
+        // data stream — neither is valid in a project-relative source path.
+        if path.contains(':') {
+            anyhow::bail!("source path must be relative, got Windows-style path: {path}");
+        }
+
         let normalized = path.replace('\\', "/");
 
         // Strip leading ./ prefix (allow ./foo but not foo/./bar)
@@ -276,6 +285,11 @@ impl SourcePath {
             Some(s) => s,
             None => normalized.as_str(),
         };
+
+        // Reject paths that reduce to empty after stripping (e.g. "./").
+        if stripped.is_empty() {
+            anyhow::bail!("source path reduces to empty after normalization: {path}");
+        }
 
         // Validate no remaining path traversal or weirdness
         for component in stripped.split('/') {
@@ -456,6 +470,21 @@ mod tests {
     fn source_path_rejects_bare_dot_in_middle() {
         // Leading ./ is ok, but foo/./bar is not
         assert!(SourcePath::try_from_relative("foo/./bar").is_err());
+    }
+
+    #[test]
+    fn source_path_rejects_empty_after_stripping() {
+        // "./" strips to empty — should be rejected
+        assert!(SourcePath::try_from_relative("./").is_err());
+        // "./" with backslash
+        assert!(SourcePath::try_from_relative(".\\").is_err());
+    }
+
+    #[test]
+    fn source_path_rejects_colon_paths() {
+        // Colon (e.g. "C:\foo") is rejected on all platforms.
+        assert!(SourcePath::try_from_relative("C:\\foo\\bar").is_err());
+        assert!(SourcePath::try_from_relative("D:/foo/bar").is_err());
     }
 
     #[test]

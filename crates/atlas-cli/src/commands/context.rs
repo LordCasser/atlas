@@ -1,11 +1,11 @@
 //! `atlas context` command — build AI context around a symbol or query.
 
+use anyhow::Context;
 use atlas_context::ContextBuilder;
 use atlas_db::Store;
 use atlas_graph::GraphEngine;
 use atlas_types::SymbolDef;
 use atlas_workspace::Workspace;
-use anyhow::Context;
 use std::sync::Arc;
 
 pub fn run(query: &str, project: &str) -> anyhow::Result<()> {

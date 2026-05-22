@@ -333,7 +333,10 @@ pub(crate) fn write_data_nodes(conn: &Connection, nodes: &[DataNode]) -> anyhow:
     Ok(())
 }
 
-pub(crate) fn write_dataflow_edges(conn: &Connection, edges: &[DataFlowEdge]) -> anyhow::Result<()> {
+pub(crate) fn write_dataflow_edges(
+    conn: &Connection,
+    edges: &[DataFlowEdge],
+) -> anyhow::Result<()> {
     let mut stmt = conn.prepare(
         r#"INSERT OR REPLACE INTO dataflow_edges
            (dataflow_edge_id, source, target, kind,

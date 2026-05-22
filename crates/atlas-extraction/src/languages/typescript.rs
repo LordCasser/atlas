@@ -316,11 +316,9 @@ impl LanguageAdapter for TypeScriptAdapter {
                 // If the assigned value is a call expression, assign the
                 // enclosing callsite_id so the return-value bridge can connect
                 // callee return → caller call-result.
-                let callsite_id = find_call_expression(node)
-                    .map(|ce| atlas_types::ids::CallsiteId::from_file_byte(
-                        &file_id,
-                        ce.start_byte() as u32,
-                    ));
+                let callsite_id = find_call_expression(node).map(|ce| {
+                    atlas_types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+                });
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&atlas_types::ids::SymbolId>,
@@ -368,11 +366,9 @@ impl LanguageAdapter for TypeScriptAdapter {
             "df.call_arg" => {
                 let text = node_text(node, source).unwrap_or_default();
                 // Group with CallTarget from the same call_expression
-                let callsite_id = find_call_expression(node)
-                    .map(|ce| atlas_types::ids::CallsiteId::from_file_byte(
-                        &file_id,
-                        ce.start_byte() as u32,
-                    ));
+                let callsite_id = find_call_expression(node).map(|ce| {
+                    atlas_types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+                });
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&atlas_types::ids::SymbolId>,
@@ -381,7 +377,8 @@ impl LanguageAdapter for TypeScriptAdapter {
                     None,
                     range.start_byte,
                 );
-                let dn = DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range);
+                let dn =
+                    DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range);
                 (Some(dn), None)
             }
             "df.call_target" => {
@@ -395,11 +392,12 @@ impl LanguageAdapter for TypeScriptAdapter {
                             .and_then(|p| node_text(p, source))
                             .unwrap_or_else(|| name.clone());
                         // Group with CallArgs from the same call_expression
-                        let callsite_id = find_call_expression(node)
-                            .map(|ce| atlas_types::ids::CallsiteId::from_file_byte(
+                        let callsite_id = find_call_expression(node).map(|ce| {
+                            atlas_types::ids::CallsiteId::from_file_byte(
                                 &file_id,
                                 ce.start_byte() as u32,
-                            ));
+                            )
+                        });
                         let node_id = DataNodeId::generate(
                             &file_id,
                             None::<&atlas_types::ids::SymbolId>,

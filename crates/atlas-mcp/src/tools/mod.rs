@@ -13,8 +13,8 @@ use atlas_context::ContextBuilder;
 use atlas_db::Store;
 use atlas_graph::GraphEngine;
 use atlas_search::SearchEngine;
-use atlas_types::ids::FileId;
 use atlas_types::SymbolId;
+use atlas_types::ids::FileId;
 
 use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolInputSchema};
 
@@ -24,12 +24,12 @@ use serde_json::{Value, json};
 // Sub-modules — one per capability category
 // -------------------------------------------------------------------
 
-pub(crate) mod status;
-pub(crate) mod search;
-pub(crate) mod graph;
-pub(crate) mod context;
-pub(crate) mod trace;
 pub(crate) mod capability;
+pub(crate) mod context;
+pub(crate) mod graph;
+pub(crate) mod search;
+pub(crate) mod status;
+pub(crate) mod trace;
 
 // -------------------------------------------------------------------
 // ToolRouter
@@ -131,7 +131,10 @@ impl ToolRouter {
 
     /// Generate a structured JSON error for graph rebuild failures.
     pub(crate) fn graph_error_result(err: &str) -> (String, bool) {
-        (json!({ "ok": false, "error": "graph_reload_failed", "message": err }).to_string(), true)
+        (
+            json!({ "ok": false, "error": "graph_reload_failed", "message": err }).to_string(),
+            true,
+        )
     }
 
     /// Resolve a qualified name to a SymbolId, returning error string on failure.

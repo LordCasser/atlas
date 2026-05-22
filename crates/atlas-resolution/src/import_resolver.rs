@@ -65,8 +65,7 @@ impl ImportResolver {
                     })
                     .unwrap_or("");
                 if !target_name.is_empty() {
-                    let file_results =
-                        self.resolve_by_module_path(&resolved_module, target_name);
+                    let file_results = self.resolve_by_module_path(&resolved_module, target_name);
                     if !file_results.is_empty() {
                         return Ok(file_results);
                     }
@@ -211,13 +210,7 @@ mod tests {
             end_column: 0,
         };
         SymbolDef {
-            id: SymbolId::generate(
-                &file_id,
-                "typescript",
-                name,
-                kind.as_str(),
-                None::<&str>,
-            ),
+            id: SymbolId::generate(&file_id, "typescript", name, kind.as_str(), None::<&str>),
             kind,
             name: name.to_string(),
             qualified_name: name.to_string(),

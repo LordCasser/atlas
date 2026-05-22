@@ -138,7 +138,11 @@ impl LanguageAdapter for JavaScriptAdapter {
         file_path: &Path,
     ) -> Option<atlas_types::bindings::BindingDef> {
         super::typescript::TypeScriptAdapter.normalize_lexical(
-            capture_name, node, source, file_id, file_path,
+            capture_name,
+            node,
+            source,
+            file_id,
+            file_path,
         )
     }
 
@@ -154,7 +158,11 @@ impl LanguageAdapter for JavaScriptAdapter {
         Option<atlas_types::dataflow::DataFlowEdge>,
     ) {
         super::typescript::TypeScriptAdapter.normalize_dataflow_builder(
-            capture_name, node, source, file_id, file_path,
+            capture_name,
+            node,
+            source,
+            file_id,
+            file_path,
         )
     }
 }

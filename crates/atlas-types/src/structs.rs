@@ -635,10 +635,7 @@ pub struct IndexReport {
     #[serde(default, skip_serializing_if = "crate::PhaseTimings::is_empty")]
     pub phase_timings: crate::PhaseTimings,
     /// Per-language file/timing/error statistics (P0: performance observability).
-    #[serde(
-        default,
-        skip_serializing_if = "crate::PerLanguageStats::is_empty"
-    )]
+    #[serde(default, skip_serializing_if = "crate::PerLanguageStats::is_empty")]
     pub per_language: crate::PerLanguageStats,
 }
 

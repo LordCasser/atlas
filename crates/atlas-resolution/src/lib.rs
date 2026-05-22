@@ -23,6 +23,7 @@ use self::import_resolver::ImportResolver;
 use self::name_matcher::NameMatcher;
 
 pub mod builtins;
+pub mod config;
 pub mod context;
 pub mod frameworks;
 pub mod import_resolver;
@@ -30,6 +31,7 @@ pub mod include_graph;
 pub mod name_matcher;
 pub mod path_alias;
 
+pub use config::{commit_config_hashes, detect_config_change};
 pub use include_graph::IncludeGraph;
 pub use path_alias::PathAliasResolver;
 

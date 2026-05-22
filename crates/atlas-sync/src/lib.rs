@@ -11,13 +11,14 @@ pub mod file_lock;
 #[cfg(feature = "sync")]
 pub mod watcher;
 
+use anyhow::{Context, Result};
 use atlas_db::Store;
 use atlas_extraction::LanguageRegistry;
 use atlas_extraction::create_frontend;
 use atlas_extraction::extract_file;
 use atlas_graph::{GraphBuilder, GraphEngine, GraphSnapshot};
 use atlas_types::{PhaseTimer, PhaseTimings};
-use anyhow::{Context, Result};
+use atlas_workspace::SourcePath;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -76,7 +77,9 @@ impl SyncEngine {
         // matching the path used during extraction (reindex_file).
         for path in &changed.deleted {
             let relative = path.strip_prefix(&self.project_root).unwrap_or(path);
-            let file_id = atlas_types::ids::FileId::generate(&relative.to_string_lossy());
+            let sp = SourcePath::try_from_relative(&relative.to_string_lossy())
+                .with_context(|| format!("invalid deleted path: {}", relative.display()))?;
+            let file_id = atlas_types::ids::FileId::generate(sp.as_str());
             // P2: Invalidate edges derived from this file's references before
             // deleting the file (CASCADE handles the rest).
             let _ = self.store.delete_edges_for_file_references(&file_id);
@@ -86,7 +89,9 @@ impl SyncEngine {
 
         for path in &changed.modified {
             let relative = path.strip_prefix(&self.project_root).unwrap_or(path);
-            let file_id = atlas_types::ids::FileId::generate(&relative.to_string_lossy());
+            let sp = SourcePath::try_from_relative(&relative.to_string_lossy())
+                .with_context(|| format!("invalid modified path: {}", relative.display()))?;
+            let file_id = atlas_types::ids::FileId::generate(sp.as_str());
             // P2: Invalidate resolved facts and derived edges for modified files.
             // This ensures stale resolution targets don't persist after re-extraction.
             let _ = self.store.invalidate_references_for_file(&file_id);
@@ -100,22 +105,25 @@ impl SyncEngine {
         // P2: tsconfig.json change invalidation
         // When path aliases change, all import resolutions and derived edges
         // become stale. Invalidate everything so re-resolution uses the new aliases.
-        if changed.tsconfig_changed {
+        let tsconfig_was_changed = changed.tsconfig_changed;
+        if tsconfig_was_changed {
             let inv_timer = PhaseTimer::start("Tsconfig invalidation");
             let inv_refs = self
                 .store
                 .invalidate_all_references()
-                .unwrap_or(0);
+                .context("Failed to invalidate references for tsconfig change")?;
             let inv_edges = self
                 .store
                 .delete_all_edges()
-                .unwrap_or(0);
+                .context("Failed to delete edges for tsconfig change")?;
             tracing::info!(
                 "tsconfig.json changed — invalidated {} references and {} edges",
                 inv_refs,
                 inv_edges
             );
-            let inv_timing = inv_timer.note(format!("{} refs + {} edges", inv_refs, inv_edges)).finish();
+            let inv_timing = inv_timer
+                .note(format!("{} refs + {} edges", inv_refs, inv_edges))
+                .finish();
             phase_timings.push(inv_timing);
         }
 
@@ -145,9 +153,10 @@ impl SyncEngine {
         // 4. Re-resolve all unresolved references (P2: two-step pipeline)
         let res_timer = PhaseTimer::start("Resolution");
         // P2: Load tsconfig.json path aliases if present
-        let path_alias =
-            atlas_resolution::PathAliasResolver::from_tsconfig(&self.project_root.join("tsconfig.json"))
-                .unwrap_or_else(atlas_resolution::PathAliasResolver::empty);
+        let path_alias = atlas_resolution::PathAliasResolver::from_tsconfig(
+            &self.project_root.join("tsconfig.json"),
+        )
+        .unwrap_or_else(atlas_resolution::PathAliasResolver::empty);
         let mut resolver =
             atlas_resolution::ReferenceResolver::with_path_alias(self.store.clone(), path_alias);
         let (resolved, res_stats) = resolver.resolve_all()?;
@@ -164,6 +173,17 @@ impl SyncEngine {
         stats.new_edges = build_stats.edges_built;
         let edge_timing = edge_timer.items(build_stats.edges_built as u64).finish();
         phase_timings.push(edge_timing);
+
+        // Commit tsconfig hash baseline AFTER the full pipeline succeeded.
+        // Committing earlier means a partial failure would leave the hash
+        // updated, preventing retry on the next sync.
+        if tsconfig_was_changed {
+            atlas_resolution::commit_config_hashes(
+                &self.store,
+                &self.project_root,
+                &["tsconfig.json"],
+            )?;
+        }
 
         stats.duration = start.elapsed();
         phase_timings.set_total(stats.duration);
@@ -183,48 +203,21 @@ impl SyncEngine {
         };
 
         // ── P2: tsconfig.json change detection ──
-        changes.tsconfig_changed = self.detect_tsconfig_change();
+        changes.tsconfig_changed = self.detect_tsconfig_change()?;
 
         Ok(changes)
     }
 
     /// Check whether tsconfig.json has changed since the last sync.
     ///
-    /// Stores the current content hash in `project_metadata` for comparison on
-    /// the next run. Returns `true` if the config changed (path aliases may differ).
+    /// **Read-only** — does not write to `project_metadata`.  After the
+    /// caller completes invalidation, call
+    /// `atlas_resolution::commit_config_hashes` to record the new baseline.
     ///
     /// jsconfig.json is NOT checked — the resolver only loads tsconfig.json.
     /// JS projects requiring path aliases should use tsconfig.json.
-    fn detect_tsconfig_change(&self) -> bool {
-        for name in &["tsconfig.json"] {
-            let config_path = self.project_root.join(name);
-            let meta_key = format!("{}_hash", name);
-            let prev_hash = self.store.get_metadata(&meta_key).ok().flatten();
-            let current_hash = std::fs::read(&config_path)
-                .ok()
-                .map(|c| blake3::hash(&c).to_hex().to_string());
-
-            match (&prev_hash, &current_hash) {
-                (Some(prev), Some(curr)) if prev == curr => {
-                    continue;
-                }
-                (None, None) => {
-                    continue;
-                }
-                _ => {
-                    // Config appeared, disappeared, or changed
-                    if let Some(hash) = &current_hash {
-                        let _ = self.store.set_metadata(&meta_key, hash);
-                    } else {
-                        // Config deleted — clear stored hash to avoid
-                        // repeated invalidation on every run
-                        let _ = self.store.delete_metadata(&meta_key);
-                    }
-                    return true;
-                }
-            }
-        }
-        false
+    fn detect_tsconfig_change(&self) -> anyhow::Result<bool> {
+        atlas_resolution::detect_config_change(&self.store, &self.project_root, &["tsconfig.json"])
     }
 
     // --- internal ---
@@ -240,7 +233,9 @@ impl SyncEngine {
         let source = std::fs::read_to_string(path)
             .with_context(|| format!("Cannot read {}", path.display()))?;
 
-        let file_id = atlas_types::ids::FileId::generate(&relative.to_string_lossy());
+        let sp = SourcePath::try_from_relative(&relative.to_string_lossy())
+            .with_context(|| format!("invalid file path: {}", relative.display()))?;
+        let file_id = atlas_types::ids::FileId::generate(sp.as_str());
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
 
         let facts = extract_file(&frontend, file_id, relative, &source, &content_hash)?;

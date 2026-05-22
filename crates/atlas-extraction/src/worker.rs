@@ -189,17 +189,23 @@ impl ParseWorkerPool {
     ///
     /// Use this for failures that happen before `extract_one()` is called.
     pub fn push_failure(&self, file_path: &str, category: FailureCategory, message: String) {
-        self.errors.lock().unwrap_or_else(|e| e.into_inner()).push(ExtractionError {
-            file_path: file_path.to_string(),
-            category,
-            message,
-        });
+        self.errors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(ExtractionError {
+                file_path: file_path.to_string(),
+                category,
+                message,
+            });
     }
 
     // --- internal ---
 
     fn record_error(&self, err: ExtractionError) {
-        self.errors.lock().unwrap_or_else(|e| e.into_inner()).push(err);
+        self.errors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(err);
     }
 }
 

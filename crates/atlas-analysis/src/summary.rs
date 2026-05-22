@@ -140,14 +140,10 @@ impl SummaryBuilder {
                                 .unwrap_or(DataNodeKind::Unknown);
 
                             match kind {
-                                DataNodeKind::Return
-                                | DataNodeKind::CallReturn => {
+                                DataNodeKind::Return | DataNodeKind::CallReturn => {
                                     returns.push(target_id);
                                     all_return_contributors.insert(current);
-                                    return_flows_map
-                                        .entry(target_id)
-                                        .or_default()
-                                        .push(current);
+                                    return_flows_map.entry(target_id).or_default().push(current);
                                 }
                                 DataNodeKind::CallArg => {
                                     call_args.push(target_id);
@@ -238,12 +234,17 @@ impl SummaryBuilder {
                 .entry((*cs_id, *arg_node))
                 .or_default()
                 .push(*source);
-            call_arg_indices.entry((*cs_id, *arg_node)).or_insert(*arg_idx);
+            call_arg_indices
+                .entry((*cs_id, *arg_node))
+                .or_insert(*arg_idx);
         }
         let call_arg_flows: Vec<CallArgFlow> = call_arg_flows_map
             .into_iter()
             .map(|((cs_id, arg_node_id), sources)| {
-                let arg_index = call_arg_indices.get(&(cs_id, arg_node_id)).copied().unwrap_or(0);
+                let arg_index = call_arg_indices
+                    .get(&(cs_id, arg_node_id))
+                    .copied()
+                    .unwrap_or(0);
                 CallArgFlow {
                     callsite_id: cs_id,
                     arg_index,
@@ -281,9 +282,9 @@ mod tests {
     #[cfg(feature = "typescript")]
     use atlas_extraction::extract_file;
     #[cfg(feature = "typescript")]
-    use atlas_types::enums::SymbolKind;
-    #[cfg(feature = "typescript")]
     use atlas_types::Language;
+    #[cfg(feature = "typescript")]
+    use atlas_types::enums::SymbolKind;
 
     /// Helper: find the tree-sitter node for a function by name, and return
     /// its full byte range (function declaration including body).
@@ -293,7 +294,9 @@ mod tests {
         use tree_sitter_typescript::LANGUAGE_TYPESCRIPT;
         let ts_lang: tree_sitter::Language = LANGUAGE_TYPESCRIPT.into();
         let mut parser = Parser::new();
-        parser.set_language(&ts_lang).expect("failed to set TS language");
+        parser
+            .set_language(&ts_lang)
+            .expect("failed to set TS language");
         let tree = parser.parse(source, None).expect("failed to parse");
         let root = tree.root_node();
 
@@ -307,10 +310,7 @@ mod tests {
                     if gc.kind() == "identifier" {
                         let gc_text = &source[gc.start_byte() as usize..gc.end_byte() as usize];
                         if gc_text == name {
-                            return (
-                                child.start_byte() as u32,
-                                child.end_byte() as u32,
-                            );
+                            return (child.start_byte() as u32, child.end_byte() as u32);
                         }
                     }
                 }
@@ -436,4 +436,3 @@ function noop() {
         assert!(summary.is_empty());
     }
 }
-

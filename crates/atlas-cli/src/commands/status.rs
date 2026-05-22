@@ -1,9 +1,9 @@
 //! `atlas status` — display project indexing status and language capability summary.
 
+use anyhow::Context;
 use atlas_db::Store;
 use atlas_types::{FeatureSupport, Language, LanguageCapabilityProfile};
 use atlas_workspace::Workspace;
-use anyhow::Context;
 use std::path::Path;
 
 pub fn run(project: &str) -> anyhow::Result<()> {

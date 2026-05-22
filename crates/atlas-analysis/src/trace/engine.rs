@@ -294,11 +294,13 @@ impl TraceEngine {
                 self.enrich_caller_chain_steps(&mut chain);
                 let partial = chain.truncated;
                 let diagnostics = if partial {
-                    vec![TraceDiagnostic::warning(&format!(
-                        "Caller path truncated at max_depth={} (reached depth {})",
-                        max_depth, chain.max_depth_reached
-                    ))
-                    .with_code("max_depth_truncated")]
+                    vec![
+                        TraceDiagnostic::warning(&format!(
+                            "Caller path truncated at max_depth={} (reached depth {})",
+                            max_depth, chain.max_depth_reached
+                        ))
+                        .with_code("max_depth_truncated"),
+                    ]
                 } else {
                     vec![]
                 };
@@ -327,7 +329,8 @@ impl TraceEngine {
     ///
     /// Uses indexed `symbols.name` lookup — O(log n) per lookup.
     pub fn find_symbol_ids_by_name(&self, name: &str) -> anyhow::Result<Vec<SymbolId>> {
-        Ok(self.store
+        Ok(self
+            .store
             .find_symbols_by_name(name)?
             .into_iter()
             .map(|s| s.id)

@@ -304,10 +304,7 @@ pub(crate) fn build_cfg_for_functions<'a>(
 }
 
 /// Walk up from the symbol's name position to find the enclosing function node.
-fn find_function_node<'a>(
-    root: Node<'a>,
-    symbol: &SymbolDef,
-) -> Option<Node<'a>> {
+fn find_function_node<'a>(root: Node<'a>, symbol: &SymbolDef) -> Option<Node<'a>> {
     let pos = symbol.name_range.start_byte as usize;
     let mut node = root.descendant_for_byte_range(pos, pos)?;
     // Walk up parent chain to find the enclosing function node

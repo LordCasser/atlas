@@ -748,11 +748,7 @@ fn ts_binding_use_captures_identifier_references() {
         "binding names: {:?}",
         binding_names
     );
-    assert!(
-        !use_names.is_empty(),
-        "use names: {:?}",
-        use_names
-    );
+    assert!(!use_names.is_empty(), "use names: {:?}", use_names);
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -766,21 +762,24 @@ fn ts_binding_use_captures_identifier_references() {
 #[test]
 fn ts_callsite_args_link_to_datanode_callarg() {
     let _ = tracing_subscriber::fmt::try_init();
-    let files = &[(
-        "app.ts",
-        r#"import { helper } from './helper';
+    let files = &[
+        (
+            "app.ts",
+            r#"import { helper } from './helper';
 function main() {
     const result = helper(42, "text");
     return result;
 }
 "#,
-    ), (
-        "helper.ts",
-        r#"export function helper(a: number, b: string): any {
+        ),
+        (
+            "helper.ts",
+            r#"export function helper(a: number, b: string): any {
     return { value: a, label: b };
 }
 "#,
-    )];
+        ),
+    ];
 
     let (store, _stats) = index_files(files);
     let main_id = FileId::generate("app.ts");
@@ -801,10 +800,7 @@ function main() {
         main_callsites.len(),
         main_callsites
             .iter()
-            .map(|cs| format!(
-                "callee_sym={:?} receiver={:?}",
-                cs.callee, cs.receiver
-            ))
+            .map(|cs| format!("callee_sym={:?} receiver={:?}", cs.callee, cs.receiver))
             .collect::<Vec<_>>()
     );
     let call_cs = call_cs.unwrap();
@@ -948,7 +944,8 @@ function main(): number {
         }
     }
     assert_eq!(
-        mismatches, 0,
+        mismatches,
+        0,
         "ArgToParam edges should have matching callsite_id between source and target. \
          Found {} mismatches out of {} edges.",
         mismatches,
@@ -961,9 +958,7 @@ function main(): number {
         .iter()
         .find(|ca| {
             // "20" is the literal at line 8 (0-indexed line 7), column ~26
-            ca.access_path.is_none()
-                && ca.range.start_line == 7
-                && ca.range.start_byte > 95
+            ca.access_path.is_none() && ca.range.start_line == 7 && ca.range.start_byte > 95
         })
         .cloned();
     if let Some(ref arg_20) = arg_20 {
@@ -1039,9 +1034,10 @@ function main(): number {
         // whose callsite_id matches the real Callsite.id (post-backfill rewrite).
         for (i, arg) in cs.args.iter().enumerate() {
             if let Some(dn_id) = &arg.data_node_id {
-                let dn = store.get_data_node(dn_id).unwrap().unwrap_or_else(|| {
-                    panic!("arg[{}].data_node_id → DataNode not in DB", i)
-                });
+                let dn = store
+                    .get_data_node(dn_id)
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("arg[{}].data_node_id → DataNode not in DB", i));
 
                 assert_eq!(
                     dn.kind,
@@ -1140,10 +1136,8 @@ function bar() {
     assert!(!nodes.is_empty(), "expected data nodes in fns.ts");
 
     // Build a quick lookup: DataNodeId → function_id
-    let node_fn: std::collections::HashMap<_, _> = nodes
-        .iter()
-        .map(|n| (n.id, n.function_id))
-        .collect();
+    let node_fn: std::collections::HashMap<_, _> =
+        nodes.iter().map(|n| (n.id, n.function_id)).collect();
 
     // Collect all dataflow edges
     let mut cross_fn_edges: Vec<(atlas_types::ids::DataNodeId, atlas_types::ids::DataNodeId)> =

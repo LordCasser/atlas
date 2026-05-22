@@ -32,8 +32,8 @@ use atlas_types::ids::{BindingId, BindingUseId, FileId, ScopeId};
 use atlas_types::structs::TextRange;
 use atlas_types::{ScopeDef, SymbolDef};
 
-use super::query_helpers::collect_captures;
 use super::languages::LanguageAdapter;
+use super::query_helpers::collect_captures;
 
 /// Result of lexical binding extraction.
 #[derive(Debug, Clone)]

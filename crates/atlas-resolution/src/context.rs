@@ -67,7 +67,11 @@ impl GlobalSymbolIndex {
             .iter()
             .filter_map(|s| {
                 let d = atlas_types::levenshtein(&lower, &s.name.to_lowercase());
-                if d <= max_distance { Some((d, s.clone())) } else { None }
+                if d <= max_distance {
+                    Some((d, s.clone()))
+                } else {
+                    None
+                }
             })
             .collect();
         candidates.sort_by_key(|(d, _)| *d);
