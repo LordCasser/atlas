@@ -27,9 +27,12 @@ pub struct ChangedFiles {
     pub added: Vec<PathBuf>,
     pub modified: Vec<PathBuf>,
     pub deleted: Vec<PathBuf>,
-    /// Whether `tsconfig.json` (or `jsconfig.json`) has changed since the last
-    /// sync. When true, the sync engine invalidates all import resolutions and
+    /// Whether `tsconfig.json` has changed since the last sync.
+    /// When true, the sync engine invalidates all import resolutions and
     /// rebuilds edges, because path aliases may have changed.
+    ///
+    /// Note: only `tsconfig.json` is currently supported; `jsconfig.json`
+    /// is not checked (the resolver loads tsconfig only).
     pub tsconfig_changed: bool,
 }
 

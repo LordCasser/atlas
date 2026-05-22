@@ -232,7 +232,10 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
         let clean_timer = PhaseTimer::start("Clean stale");
         let file_ids: Vec<_> = extracted.iter().map(|ef| ef.facts.file.file_id).collect();
         if let Err(e) = store.delete_files_batch(&file_ids) {
-            tracing::warn!("Failed to clean stale facts for dirty files: {:#}", e);
+            return Err(anyhow::anyhow!(
+                "Failed to clean stale facts before indexing: {:#}",
+                e
+            ));
         }
         let clean_timing = clean_timer.items(file_ids.len() as u64).finish();
         phase_timings.push(clean_timing);
