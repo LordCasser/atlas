@@ -10,8 +10,8 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     let ws = Workspace::open(Path::new(project))
         .with_context(|| format!("Invalid project path: {}", project))?;
 
-    // Check if .atlas/ exists
-    if !ws.atlas_dir().is_dir() {
+    // Check if atlas.db exists (read-only — must not create empty db)
+    if !ws.db_path().is_file() {
         println!("No Atlas database found in {}", ws.root().display());
         println!("Run `atlas init` to initialize this project.");
         return Ok(());

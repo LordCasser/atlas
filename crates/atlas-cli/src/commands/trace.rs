@@ -43,7 +43,7 @@ pub fn run_point(
 ) -> anyhow::Result<()> {
     let ws = Workspace::open(Path::new(project))
         .with_context(|| format!("Invalid project path: {}", project))?;
-    if !ws.atlas_dir().is_dir() {
+    if !ws.db_path().is_file() {
         anyhow::bail!("Not an initialized Atlas project. Run `atlas init {}` first.", project);
     }
     let store = Arc::new(Store::open_db(ws.db_path()).context("Failed to open Atlas database")?);
@@ -155,7 +155,7 @@ pub fn run_variable(
 ) -> anyhow::Result<()> {
     let ws = Workspace::open(Path::new(project))
         .with_context(|| format!("Invalid project path: {}", project))?;
-    if !ws.atlas_dir().is_dir() {
+    if !ws.db_path().is_file() {
         anyhow::bail!("Not an initialized Atlas project. Run `atlas init {}` first.", project);
     }
     let store = Arc::new(Store::open_db(ws.db_path()).context("Failed to open Atlas database")?);
@@ -241,7 +241,7 @@ pub fn run_caller_path(
 ) -> anyhow::Result<()> {
     let ws = Workspace::open(Path::new(project))
         .with_context(|| format!("Invalid project path: {}", project))?;
-    if !ws.atlas_dir().is_dir() {
+    if !ws.db_path().is_file() {
         anyhow::bail!("Not an initialized Atlas project. Run `atlas init {}` first.", project);
     }
     let store = Arc::new(Store::open_db(ws.db_path()).context("Failed to open Atlas database")?);

@@ -222,6 +222,11 @@ impl SourcePath {
     /// Strips leading `./` and `.\` prefixes. Accepts paths with either separator,
     /// always stores with forward slashes.
     ///
+    /// # Panics
+    ///
+    /// Panics if the path is invalid (absolute, empty, contains `..` or bare `.`).
+    /// Use [`SourcePath::try_from_relative`] for fallible construction.
+    ///
     /// # Examples
     ///
     /// ```
@@ -233,15 +238,56 @@ impl SourcePath {
     /// assert_eq!(p.as_str(), "foo/bar.ts");
     /// ```
     pub fn from_relative(path: &str) -> Self {
+        Self::try_from_relative(path).expect("invalid source path")
+    }
+
+    /// Fallible constructor that validates the path is relative and safe.
+    ///
+    /// Returns an error if:
+    /// - The path is empty
+    /// - The path is absolute (starts with `/`)
+    /// - The path contains `..` components (directory traversal)
+    /// - The path contains bare `.` components (except as a single leading `./` prefix)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use atlas_workspace::SourcePath;
+    /// assert!(SourcePath::try_from_relative("src/lib.ts").is_ok());
+    /// assert!(SourcePath::try_from_relative("./foo/bar.ts").is_ok());
+    /// assert!(SourcePath::try_from_relative("").is_err());
+    /// assert!(SourcePath::try_from_relative("/abs/path").is_err());
+    /// assert!(SourcePath::try_from_relative("../escape").is_err());
+    /// ```
+    pub fn try_from_relative(path: &str) -> anyhow::Result<Self> {
+        if path.is_empty() {
+            anyhow::bail!("source path cannot be empty");
+        }
+
+        // Reject absolute paths early
+        if path.starts_with('/') {
+            anyhow::bail!("source path must be relative, got absolute path: {path}");
+        }
+
         let normalized = path.replace('\\', "/");
-        // Strip leading ./ (which may itself have been .\ before normalization)
+
+        // Strip leading ./ prefix (allow ./foo but not foo/./bar)
         let stripped = match normalized.strip_prefix("./") {
             Some(s) => s,
             None => normalized.as_str(),
         };
-        // Trim leading slashes (not a valid relative path)
-        let trimmed = stripped.trim_start_matches('/');
-        Self(trimmed.to_string())
+
+        // Validate no remaining path traversal or weirdness
+        for component in stripped.split('/') {
+            if component == ".." {
+                anyhow::bail!("source path cannot contain '..': {path}");
+            }
+            if component == "." {
+                anyhow::bail!("source path cannot contain bare '.': {path}");
+            }
+        }
+
+        Ok(Self(stripped.to_string()))
     }
 
     /// The normalized relative path with forward slashes.
@@ -271,10 +317,11 @@ impl From<SourcePath> for String {
 /// Derive a workspace-relative [`SourcePath`] from an absolute file path.
 ///
 /// Strips the `root` prefix from `abs_path`, normalizing separators to
-/// forward slashes. Returns `None` if `abs_path` is not under `root`.
+/// forward slashes. Returns `None` if `abs_path` is not under `root` or
+/// the resulting path is not a valid relative source path.
 pub fn relative_source_path(root: &Path, abs_path: &Path) -> Option<SourcePath> {
     let rel = abs_path.strip_prefix(root).ok()?;
-    Some(SourcePath::from_relative(&rel.to_string_lossy()))
+    SourcePath::try_from_relative(&rel.to_string_lossy()).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -369,5 +416,52 @@ mod tests {
         // Idempotent: second call should not fail
         ws.ensure_atlas_dir().unwrap();
         assert!(ws.atlas_dir().is_dir());
+    }
+
+    // ── SourcePath validation ────────────────────────────────────────────────
+
+    #[test]
+    fn source_path_accepts_valid_relative() {
+        assert!(SourcePath::try_from_relative("src/lib.ts").is_ok());
+        assert!(SourcePath::try_from_relative("foo/bar/baz.js").is_ok());
+        assert!(SourcePath::try_from_relative("single.py").is_ok());
+        assert!(SourcePath::try_from_relative("./leading/ok.ts").is_ok());
+    }
+
+    #[test]
+    fn source_path_normalizes_backslashes() {
+        let p = SourcePath::try_from_relative("src\\lib\\file.ts").unwrap();
+        assert_eq!(p.as_str(), "src/lib/file.ts");
+    }
+
+    #[test]
+    fn source_path_rejects_empty() {
+        assert!(SourcePath::try_from_relative("").is_err());
+    }
+
+    #[test]
+    fn source_path_rejects_absolute() {
+        assert!(SourcePath::try_from_relative("/absolute/path").is_err());
+        assert!(SourcePath::try_from_relative("/").is_err());
+    }
+
+    #[test]
+    fn source_path_rejects_dotdot() {
+        assert!(SourcePath::try_from_relative("../escape").is_err());
+        assert!(SourcePath::try_from_relative("foo/../bar").is_err());
+        assert!(SourcePath::try_from_relative("foo/bar/..").is_err());
+    }
+
+    #[test]
+    fn source_path_rejects_bare_dot_in_middle() {
+        // Leading ./ is ok, but foo/./bar is not
+        assert!(SourcePath::try_from_relative("foo/./bar").is_err());
+    }
+
+    #[test]
+    fn source_path_relative_source_path_returns_none_for_invalid() {
+        let root = Path::new("/tmp/project");
+        // Path doesn't start with root, should return None
+        assert!(relative_source_path(root, Path::new("/other/file")).is_none());
     }
 }

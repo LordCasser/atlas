@@ -19,7 +19,7 @@ pub fn run(
 ) -> anyhow::Result<()> {
     let ws = Workspace::open(std::path::Path::new(project))
         .with_context(|| format!("Invalid project path: {}", project))?;
-    if !ws.atlas_dir().is_dir() {
+    if !ws.db_path().is_file() {
         anyhow::bail!(
             "Not an initialized Atlas project. Run `atlas init {}` first.",
             project

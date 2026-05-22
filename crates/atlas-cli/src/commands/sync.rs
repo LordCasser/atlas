@@ -9,9 +9,9 @@ pub fn run(project: &str) -> Result<()> {
     let ws = Workspace::open(Path::new(project))
         .with_context(|| format!("Project directory not found: {}", project))?;
 
-    if !ws.atlas_dir().is_dir() {
+    if !ws.db_path().is_file() {
         anyhow::bail!(
-            "No .atlas directory found in '{}'. Run `atlas init` first.",
+            "No Atlas database found in '{}'. Run `atlas init` first.",
             ws.root().display()
         );
     }
