@@ -112,6 +112,7 @@ Atlas provides a built-in MCP JSON-RPC 2.0 server over stdio, exposing bounded t
 | `atlas_trace_point` | Resolve facts at a code position |
 | `atlas_trace_variable` | Trace where a value at a code position comes from |
 | `atlas_trace_caller_path` | Trace the farthest caller chain for a target function |
+| `atlas_language_capabilities` | Report per-language trace/search/graph capability metadata |
 
 ### Configuring MCP (Claude Desktop / Cursor)
 
@@ -169,13 +170,15 @@ Each source file is parsed with tree-sitter. Per-language `.scm` queries capture
 - **Callsite Derivation**: `Call` references with source symbols generate callsites
 
 ### 3. Resolution
-A 6-strategy cascade resolves cross-file references:
+The current resolver uses a bounded best-effort cascade:
 1. **Builtin Filter**: excludes known stdlib names (100+ per language)
 2. **Scope-local**: walks lexical scope chain for exact name match
 3. **Container-local**: searches enclosing class scope for method references
 4. **Same-file**: exact name match within the file
-5. **Import**: resolves imported symbols from cross-file modules
-6. **FTS5 Search**: project-wide fuzzy search as fallback
+5. **Import/include**: resolves imported symbols and C/C++ local includes where facts exist
+6. **Project search fallback**: exact/proximity/fuzzy matching through indexed symbols
+
+Path alias and re-export/barrel resolver components exist, but they are not yet exposed as fully stable project-config-driven resolution in the main path.
 
 ### 4. Graph
 Resolved references create structural edges (`Calls`, `Instantiates`, `Implements`, `References`, `Contains`). The full graph is loaded in-memory for querying (`callers`, `callees`, `callgraph`, `shortest_path`, `impact`).
@@ -195,15 +198,15 @@ Name matching uses 6-tier similarity: exact → case-insensitive → camelCase/s
 ```
 .atlas/                          # Per-project Atlas state
 ├── atlas.db                     # SQLite database (schema v1 during rapid development)
-└── file_hashes.json             # Incremental sync hash store
+└── file_hashes.json             # Sync hash store; index also uses DB content hashes
 
 src/
 ├── types/                       # Core type system (7 ID types, 11 enums, IR structs)
 ├── db/                          # SQLite persistence (schema + store)
-├── extraction/                  # Tree-sitter parsing + 7 language adapters
-│   ├── queries/                 # Per-language .scm query files (6 × 5 = 30 files)
+├── extraction/                  # Tree-sitter parsing + language frontends/adapters
+│   ├── queries/                 # Per-language .scm query files
 │   └── languages/               # LanguageAdapter implementations
-├── resolution/                  # 6-strategy reference resolution
+├── resolution/                  # Reference resolution + include/path/export helper components
 ├── graph/                       # In-memory GraphSnapshot + GraphEngine (BFS/DFS)
 ├── search/                      # FTS5 + LIKE + fuzzy + camelCase normalization
 ├── context/                     # AI context builder (callers/callees/peers)
@@ -250,6 +253,8 @@ The full verification target is `cargo test --features "all-languages,mcp,sync"`
 ## Known Limitations
 
 - **Trace capability is language-specific**: CLI and MCP responses include capability metadata; unsupported trace features return partial results with diagnostics.
+- **Call arguments**: `callsites.args_json` + call-arg `DataNode` is the single source of truth; the deprecated `callsite_args` table has been removed.
+- **Path aliases**: tsconfig path aliases are wired into the resolver; barrel/re-export chains remain name-based (no AST-level re-export graph).
 - **ArkTS**: delegates to TypeScript grammar; some ArkTS-specific syntax may not parse
 - **Cangjie ⚠️**: experimental opt-in support. It is not part of MVP, default features, or `all-languages`; enable explicitly with `--features cangjie`. Known issues:
   1. tree-sitter-cangjie grammar ABI 15 pre-dates Atlas tree-sitter 0.24.7 (max ABI 14)
@@ -287,4 +292,4 @@ MIT
 1. Run `cargo test` and `cargo test --features all-languages,mcp,sync` before submitting
 2. All new extraction logic should have a corresponding integration test
 3. During rapid development, schema changes update the v1 schema and tests; deployment migrations are not a current requirement
-4. Language adapters follow the `LanguageAdapter` trait in `src/extraction/languages/mod.rs`
+4. Language adapters follow the query/normalization `LanguageAdapter` trait in `src/extraction/languages/mod.rs`

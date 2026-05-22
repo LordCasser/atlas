@@ -161,11 +161,18 @@ fn resolve_data_node_refs<F>(
 where
     F: Fn(&crate::types::dataflow::DataFlowEdge) -> &DataNodeId,
 {
-    let mut refs = Vec::new();
-    for edge in edges {
-        if let Some(node) = store.get_data_node(id_fn(edge))? {
-            refs.push(TraceDataNodeRef::from_data_node(&node));
-        }
+    let refs: Vec<TraceDataNodeRef>;
+    if edges.is_empty() {
+        refs = Vec::new();
+    } else {
+        let ids: Vec<DataNodeId> = edges.iter().map(|e| *id_fn(e)).collect();
+        let nodes = store.get_data_nodes(&ids)?;
+        refs = edges
+            .iter()
+            .filter_map(|edge| {
+                nodes.get(id_fn(edge)).map(|n| TraceDataNodeRef::from_data_node(n))
+            })
+            .collect();
     }
     Ok(refs)
 }

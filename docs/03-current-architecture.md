@@ -9,7 +9,7 @@ src/
   types/        ID、enum、IR、binding、dataflow、CFG、trace 查询类型
   db/           SQLite schema、store API、schema 初始化
   extraction/   tree-sitter 解析、query、scope、semantic binder、lexical binder、dataflow、CFG
-  resolution/   builtin filter、import/export/include/path alias/name matching
+  resolution/   builtin filter、scope/container/import/include/name matching；PathAliasResolver 已接入主路径
   graph/        GraphBuilder、GraphSnapshot、GraphEngine
   search/       FTS、LIKE/fuzzy、query parser、scoring
   context/      Agent context builder
@@ -62,7 +62,6 @@ bindings
 binding_uses
 data_nodes
 dataflow_edges
-callsite_args (deprecated table; call arguments are currently stored inline on callsites)
 cfg_nodes
 cfg_edges
 project_metadata
@@ -76,6 +75,8 @@ schema_versions
 - symbol-level edges 已使用 `symbol_edges`。
 - dataflow facts 已使用 `data_nodes` 和 `dataflow_edges`。
 - CFG facts 已使用 `cfg_nodes` 和 `cfg_edges`。
+- `dataflow_edges` 已持久化完整 6 字段 TextRange（包含 start/end line+column），trace evidence 精确 line/column 往返可用。
+
 ## 4. Extraction
 
 当前抽取层包含：
@@ -115,7 +116,6 @@ schema_versions
 - `builtins.rs`
 - `context.rs`
 - `import_resolver.rs`
-- `export_resolver.rs`
 - `include_graph.rs`
 - `path_alias.rs`
 - `name_matcher.rs`
@@ -125,8 +125,7 @@ schema_versions
 - Resolver 与 GraphBuilder 分离。
 - Resolver 返回 resolved facts 并更新 `"references"` 的 resolved fields。
 - GraphBuilder 从 resolved references 创建 symbol-level edges。
-- TS/JS path alias 支持 `tsconfig.json` 的 `paths/baseUrl`。
-- ExportResolver 支持 re-export/barrel chain。
+- `PathAliasResolver` 已接入主解析路径（index 和 sync 在项目根存在 tsconfig.json 时自动加载 path aliases）。
 - IncludeGraph 支持 C/C++ local include、system include 过滤和 includer 查询。
 - Sync 集成 resolved fact invalidation，删除/修改文件时清理相关 references/edges。
 
@@ -144,8 +143,8 @@ Context：
 MCP：
 
 - JSON-RPC stdio。
-- 工具集中在 `src/mcp/tools.rs`。
-- 当前 README 中定义 12 个 Agent-facing 工具。
+- 工具按能力分类组织在 `src/mcp/tools/` 目录。
+- 当前 MCP 注册 16 个 Agent-facing 工具：status、files、search、symbol、neighbors、callers、callees、callgraph、path、explore、impact、context、trace_point、trace_variable、trace_caller_path、language_capabilities。
 
 CLI：
 
@@ -174,9 +173,9 @@ Atlas 不包含污点分析（taint analysis）。当前产品主线为变量来
 
 该能力不依赖内置漏洞规则系统，也不做全项目自动 finding。外部工具或用户可以把疑似问题点作为入口传给 Atlas，但 Atlas 只返回程序结构证据，不负责判定漏洞。
 
-当前架构需要补齐显式语言能力边界：
+当前架构已经落地显式语言能力边界，但仍需要持续校准事实精度和文档宣称：
 
-- analysis 层应提供 `LanguageCapabilityProfile` 或等价结构，描述每种语言当前支持的 trace level、supported features、unsupported features、known limitations 和 confidence floor。
+- analysis/types 层提供 capability profile / feature matrix，描述每种语言当前支持的 trace level、supported features、unsupported features、known limitations 和 confidence floor。
 - CLI/MCP/context 不能自行推断语言能力，只能展示 analysis/engine 返回的 capability。
 - trace 查询即使返回 partial result，也必须同时返回 capability 和 diagnostics，说明哪些路径是完整证据、哪些只是 best-effort、哪些请求超出当前语言能力。
 - 当前默认边界：TypeScript/JavaScript/Python 作为 Level 3 主目标推进；Java/C/C++/ArkTS 以 Level 1/2 best-effort 输出；Cangjie 不属于默认或 `all-languages` 编译，仅在显式启用 `cangjie` feature 时作为 experimental minimal support。

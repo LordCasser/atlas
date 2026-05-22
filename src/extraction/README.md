@@ -61,21 +61,22 @@ Each query returns `Vec<QueryCapture>` containing capture name + node byte range
 
 ```rust
 pub fn extract_file(
-    registry: &LanguageRegistry,
+    frontend: &LanguageFrontend,
+    file_id: FileId,
     file_path: &Path,
     source: &str,
+    content_hash: &str,
 ) -> anyhow::Result<FileFacts>
 ```
 
 Steps:
-1. Detect language + look up adapter
-2. Compute `FileId` via `blake3(path)`
-3. Parse source → tree-sitter `Tree`
-4. Run per-language queries for definitions, references, imports, scopes, callsites, data nodes, and CFG captures where available
-5. Normalize captures through adapter/front-end hooks
-6. Build scope, lexical binding, callsite, dataflow, and CFG facts within the current file
-7. Apply `SemanticBinder` so source/scope/binding ownership is centralized
-8. Assemble `FileFacts`; cross-file resolution is deferred to `resolution`
+1. Receive a preselected `LanguageFrontend`, deterministic `FileId`, source path, source text, and content hash
+2. Parse source with the frontend's thread-local tree-sitter parser
+3. Run per-language queries for definitions, references, imports, scopes, lexical bindings, dataflow, and CFG captures where available
+4. Normalize captures through adapter/front-end hooks
+5. Build scope, lexical binding, callsite, dataflow, and CFG facts within the current file
+6. Apply `SemanticBinder` so source/scope/binding ownership is centralized
+7. Assemble `FileFacts`; cross-file resolution is deferred to `resolution`
 
 ## LanguageAdapter Trait (`languages/mod.rs`)
 
@@ -84,27 +85,27 @@ pub trait LanguageAdapter: Send + Sync {
     /// Which language this adapter handles
     fn language(&self) -> Language;
 
-    /// File extensions (with dot, e.g. ".ts")
+    /// File extensions (without dot, e.g. "ts")
     fn extensions(&self) -> &[&str];
 
     /// The tree-sitter Language grammar
     fn tree_sitter_language(&self) -> tree_sitter::Language;
-
-    /// Parse a source file, returning all extraction facts
-    fn parse(&self, file_id: FileId, path: &Path,
-             content: &str) -> Result<FileFacts, ExtractError>;
 
     // Query methods (one per fact kind):
     fn definition_query(&self) -> &str;
     fn reference_query(&self) -> &str;
     fn import_query(&self) -> &str;
     fn scope_query(&self) -> &str;
-    fn callsite_query(&self) -> &str;
+    fn lexical_query(&self) -> &str { "" }
+    fn dataflow_builder_query(&self) -> &str { "" }
 
     // Normalization hooks:
     fn normalize_definition(...) -> Option<SymbolDef>;
     fn normalize_reference(...) -> Option<ReferenceUse>;
     fn normalize_import(...) -> Option<ImportDef>;
+    fn normalize_scope(...) -> Option<ScopeDef> { None }
+    fn normalize_lexical(...) -> Option<BindingDef> { None }
+    fn normalize_dataflow_builder(...) -> (Option<DataNode>, Option<DataFlowEdge>) { (None, None) }
 }
 ```
 
@@ -112,10 +113,10 @@ pub trait LanguageAdapter: Send + Sync {
 
 Each `LanguageAdapter` provides **tree-sitter S-expression queries** that produce capture groups. The generic extraction engine runs these queries and calls normalization hooks to produce typed facts.
 
-This is a departure from the CodeGraph model (which had `extract_nodes(tree)'', `extract_edges(tree, nodes)`). Instead:
+This is a departure from the CodeGraph model (which had `extract_nodes(tree)` and `extract_edges(tree, nodes)`). Instead:
 
-- One `parse()` call runs all queries at once
-- Normalization hooks convert query captures into `FileFacts`
+- The shared `extract_file()` pipeline runs the selected frontend queries
+- Normalization hooks convert query captures into typed facts
 - No central `GenericExtractor` — each language owns its extraction logic
 
 ## LanguageRegistry (`grammar.rs`)

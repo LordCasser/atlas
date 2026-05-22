@@ -55,6 +55,8 @@ pub struct CallerChain {
     pub nodes_visited: usize,
     /// Depth of the root from the target (number of call edges traversed).
     pub max_depth_reached: usize,
+    /// Whether the traversal was truncated by the max_depth budget.
+    pub truncated: bool,
 }
 
 /// A single step in a caller chain: `caller` calls `callee`.

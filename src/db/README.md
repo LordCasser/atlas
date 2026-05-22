@@ -19,7 +19,6 @@ SQLite-backed persistence layer for Atlas semantic graph data.
 | `binding_uses` | `binding_use_id BLOB(32)` | Lexical binding references |
 | `data_nodes` | `data_node_id BLOB(32)` | Local dataflow nodes |
 | `dataflow_edges` | `dataflow_edge_id BLOB(32)` | DataNode-to-DataNode provenance edges |
-| `callsite_args` | composite | Deprecated table; current call args are stored inline on callsites |
 | `cfg_nodes` | `cfg_node_id BLOB(32)` | Function-local CFG nodes |
 | `cfg_edges` | `cfg_edge_id BLOB(32)` | Function-local CFG edges |
 | `symbols_fts` | (FTS5) | Full-text search over symbol names and qualified names |

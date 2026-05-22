@@ -318,16 +318,17 @@ Same pattern for `atlas_trace_variable` (+ `max_depth`) and
 
 ## 9. What Is NOT in This Contract
 
-These are explicitly excluded from the current frozen contract:
+These are explicitly excluded from the current frozen trace contract:
 
 - ❌ **Taint analysis** — Atlas does not include taint analysis. No scanner rules, finding tables, or scanner engine.
 - ❌ **Multi-path caller chain** — single farthest chain only.
-- ❌ **Interprocedural dataflow** — slicing is intra-procedural, with limited
-  ArgToParam bridging.
+- ❌ **Full interprocedural dataflow** — slicing is primarily intra-procedural,
+  with limited call-argument/caller-path evidence where facts exist.
 - ❌ **CFG-based feasibility** — dataflow slicing is use-def chain based,
   not control-flow-graph reachability.
 - ❌ **Multi-language union types** — each file assumes a single language.
-- ❌ **Incremental/targeted re-indexing** — full project re-index only.
+- ❌ **Indexing semantics** — incremental indexing/sync is an indexing concern,
+  not part of the trace JSON contract.
 
 ---
 

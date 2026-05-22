@@ -56,8 +56,10 @@ fn build_router(files: &[(&str, &str)]) -> (TempDir, ToolRouter) {
     let search = SearchEngine::new(store.clone(), graph.clone());
     let context = ContextBuilder::new(store.clone(), graph.clone());
     let store_for_graph = store.clone();
-    let graph_fn =
-        move || GraphEngine::from_store(&store_for_graph, 0.3).expect("reload graph engine");
+    let graph_fn = move || -> Result<GraphEngine, String> {
+        GraphEngine::from_store(&store_for_graph, 0.3)
+            .map_err(|e| format!("graph engine init failed: {}", e))
+    };
 
     let router = ToolRouter::new(store, search, context, graph_fn, tmp.path().to_path_buf());
     (tmp, router)
@@ -917,5 +919,164 @@ fn p12_mcp_trace_point_out_of_bounds() {
     assert!(
         json.get("diagnostics").is_some(),
         "envelope must have 'diagnostics' field"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────
+// P12a: Graph error handling (Task 3 — no panic on graph failure)
+// ────────────────────────────────────────────────────────────────
+
+/// Verify that graph-related tools return structured errors (not panics)
+/// when graph_fn returns an error. This validates the fix from Task 3,
+/// where `graph_fn` was changed from `Fn() -> GraphEngine` (panicking)
+/// to `Fn() -> Result<GraphEngine, String>` (structured error).
+#[test]
+fn p12a_mcp_graph_error_returns_structured_response() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // Build a minimal project with one file
+    let (tmp, _router) = build_router(&[("app.ts", "function f() {}\n")]);
+
+    let store = Arc::new(Store::open(tmp.path()).expect("open store"));
+
+    let graph = Arc::new(GraphEngine::from_store(&store, 0.3).expect("graph engine"));
+    let search = SearchEngine::new(store.clone(), graph.clone());
+    let context = ContextBuilder::new(store.clone(), graph.clone());
+
+    // graph_fn that always fails — simulates a corrupted or missing DB/state
+    let graph_fn = || -> Result<GraphEngine, String> {
+        Err("graph engine initialization failed: simulated error".to_string())
+    };
+
+    let router = ToolRouter::new(store, search, context, graph_fn, tmp.path().to_path_buf());
+
+    // atlas_callgraph requires graph access — should return structured error
+    let (json, is_error) = call_tool(
+        &router,
+        "atlas_callgraph",
+        json!({
+            "symbol": "f",
+            "depth": 2,
+        }),
+    );
+
+    // Must be marked as error
+    assert!(is_error, "graph error must set isError=true");
+    // The error response should have the graph_reload_failed format
+    assert_eq!(
+        json.get("ok").and_then(|v| v.as_bool()),
+        Some(false),
+        "error response must have ok=false"
+    );
+    assert_eq!(
+        json.get("error").and_then(|v| v.as_str()),
+        Some("graph_reload_failed"),
+        "error response must have error='graph_reload_failed'"
+    );
+    assert!(
+        json.get("message").and_then(|v| v.as_str()).is_some(),
+        "error response must have a message field"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────
+// P7: Truncation diagnostics (Item 7 — trace output polish)
+// ────────────────────────────────────────────────────────────────
+
+/// Variable trace with max_depth=1 forces truncation — verify diagnostics.
+#[test]
+fn p7a_mcp_trace_variable_truncation_diagnostic() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "chain.ts",
+        r#"function foo(): void {
+    const a = 1;
+    const b = a + 2;
+    const c = b * 3;
+    console.log(c);
+}
+"#,
+    )];
+    let (_tmp, router) = build_router(files);
+
+    // Trace from `c` on the console.log line — BFS will hit max_depth=1 quickly
+    let (json, is_error) = call_tool(
+        &router,
+        "atlas_trace_variable",
+        json!({
+            "file_path": "chain.ts",
+            "line": 5,
+            "column": 15,
+            "max_depth": 1,
+        }),
+    );
+
+    // Must not crash — either partial with truncation diagnostic or empty
+    assert!(!is_error, "truncated trace should not error");
+
+    // Check that diagnostics mentions truncation if partial_result is true
+    if json.get("partial_result").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let diags = json
+            .get("diagnostics")
+            .and_then(|d| d.as_array())
+            .map(|a| a.to_vec())
+            .unwrap_or_default();
+        let has_truncation = diags
+            .iter()
+            .any(|d| d.get("code").and_then(|c| c.as_str()) == Some("max_depth_truncated"));
+        assert!(
+            has_truncation,
+            "truncated trace should include max_depth_truncated diagnostic, got: {:?}",
+            diags
+        );
+    }
+}
+
+/// Caller path with max_depth=1 forces truncation — verify partial_result + diagnostic.
+#[test]
+fn p7b_mcp_caller_path_truncation_diagnostic() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "deep.ts",
+        r#"function a(): number { return b(); }
+function b(): number { return c(); }
+function c(): number { return d(); }
+function d(): number { return 42; }
+"#,
+    )];
+    let (_tmp, router) = build_router(files);
+    let store = router.store();
+    let file_id = find_file_id(&store, _tmp.path(), "deep.ts");
+    let target_id = find_symbol(&store, &file_id, "d");
+
+    let (json, is_error) = call_tool(
+        &router,
+        "atlas_trace_caller_path",
+        json!({
+            "symbol": target_id.to_hex(),
+            "max_depth": 1,
+        }),
+    );
+
+    // Must not crash — partial with truncation diagnostic
+    assert!(!is_error, "truncated caller path should not error");
+    assert_eq!(
+        json.get("partial_result").and_then(|v| v.as_bool()),
+        Some(true),
+        "max_depth=1 with 3-level chain should set partial_result=true"
+    );
+
+    let diags = json
+        .get("diagnostics")
+        .and_then(|d| d.as_array())
+        .map(|a| a.to_vec())
+        .unwrap_or_default();
+    let has_truncation = diags
+        .iter()
+        .any(|d| d.get("code").and_then(|c| c.as_str()) == Some("max_depth_truncated"));
+    assert!(
+        has_truncation,
+        "truncated caller path should include max_depth_truncated diagnostic, got: {:?}",
+        diags
     );
 }

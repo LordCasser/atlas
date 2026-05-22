@@ -8,10 +8,14 @@ use crate::db::schema::{CURRENT_SCHEMA_VERSION, SCHEMA_DDL};
 
 use crate::types::*;
 use rusqlite::{Connection, Transaction, params};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+use super::store_fts::{chrono_now_ms, is_process_alive, sanitize_fts5_query};
+use super::store_rows::*;
+use super::store_writers::*;
 
 // ---------------------------------------------------------------------------
 // StoreReader — read-only query interface
@@ -28,7 +32,7 @@ pub struct StoreReader {
 impl StoreReader {
     /// Lock the underlying SQLite connection for read access.
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap()
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Find a symbol by its deterministic SymbolId.
@@ -52,6 +56,32 @@ impl StoreReader {
             None => Ok(None),
         }
     }
+
+    /// Batch-lookup symbols by IDs in a single query.
+    pub fn find_symbols_by_ids(&self, ids: &[SymbolId]) -> anyhow::Result<Vec<SymbolDef>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let placeholders: Vec<String> = (0..ids.len()).map(|i| format!("?{}", i + 1)).collect();
+        let sql = format!(
+            "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
+                    language,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column,
+                    name_start_byte, name_end_byte, name_start_line, name_start_column,
+                    name_end_line, name_end_column,
+                    signature, visibility, exported, static_, async_,
+                    container_id, scope_id, package_name, namespace_path_json
+             FROM symbols WHERE symbol_id IN ({})",
+            placeholders.join(","),
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::types::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let rows = stmt.query_map(params.as_slice(), row_to_symbol)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -60,8 +90,10 @@ impl StoreReader {
 
 /// Thread-safe SQLite persistence layer.
 ///
-/// Derefs to `StoreReader` for all read operations. Write operations
-/// are defined directly on `Store`.
+/// Derefs to `StoreReader` for foundational read operations (`find_symbol_by_id`,
+/// `find_symbols_by_ids`).  Most query methods still live on `Store` directly;
+/// the full split into `StoreWriter` / `StoreReader` is deferred to crate
+/// workspace restructuring (Item 10).
 pub struct Store {
     reader: StoreReader,
     #[allow(dead_code)]
@@ -83,7 +115,7 @@ impl Store {
 
     /// Lock the underlying SQLite connection for read or write access.
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.reader.conn.lock().unwrap()
+        self.reader.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     // -----------------------------------------------------------------------
@@ -282,6 +314,18 @@ impl Store {
     pub fn delete_file_data(&self, file_id: &FileId) -> anyhow::Result<()> {
         let conn = self.lock();
         conn.execute("DELETE FROM files WHERE file_id = ?1", params![file_id])?;
+        Ok(())
+    }
+
+    /// Delete all data for multiple files in a single transaction.
+    ///
+    /// Used before re-indexing modified files to ensure stale rows
+    /// (symbols, references, dataflow, CFG, etc.) are removed.
+    pub fn delete_files_batch(&self, file_ids: &[FileId]) -> anyhow::Result<()> {
+        let conn = self.lock();
+        for file_id in file_ids {
+            conn.execute("DELETE FROM files WHERE file_id = ?1", params![file_id])?;
+        }
         Ok(())
     }
 
@@ -633,6 +677,38 @@ impl Store {
         Ok(count)
     }
 
+    /// Invalidate ALL resolved references (clear resolution columns).
+    ///
+    /// Used when project-level configuration (e.g. tsconfig.json) changes,
+    /// which can affect import resolution across all files.
+    ///
+    /// Returns the number of references invalidated.
+    pub fn invalidate_all_references(&self) -> anyhow::Result<usize> {
+        let conn = self.lock();
+        let count = conn.execute(
+            r#"UPDATE "references" SET
+                resolved_symbol_id = NULL,
+                resolved_confidence = NULL,
+                resolved_strategy = NULL,
+                resolved_provenance = NULL
+             WHERE resolved_symbol_id IS NOT NULL"#,
+            [],
+        )?;
+        Ok(count)
+    }
+
+    /// Delete ALL edges from the symbol graph.
+    ///
+    /// Used together with `invalidate_all_references` when project configuration
+    /// changes require a full re-resolution and edge rebuild.
+    ///
+    /// Returns the number of edges deleted.
+    pub fn delete_all_edges(&self) -> anyhow::Result<usize> {
+        let conn = self.lock();
+        let count = conn.execute("DELETE FROM symbol_edges", [])?;
+        Ok(count)
+    }
+
     // -----------------------------------------------------------------------
     // Scopes
     // -----------------------------------------------------------------------
@@ -857,14 +933,6 @@ impl Store {
         self.with_transaction(|tx| write_dataflow_edges(tx, edges))
     }
 
-    /// Batch-insert callsite args.
-    pub fn insert_callsite_args(&self, args: &[CallsiteArg]) -> anyhow::Result<()> {
-        if args.is_empty() {
-            return Ok(());
-        }
-        self.with_transaction(|tx| write_callsite_args(tx, args))
-    }
-
     /// Batch-insert CFG nodes.
     pub fn insert_cfg_nodes(&self, nodes: &[CfgNode]) -> anyhow::Result<()> {
         if nodes.is_empty() {
@@ -896,6 +964,44 @@ impl Store {
              )",
         )?;
         let rows = stmt.query_map(params![file_id], row_to_callsite)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find all callsites that target a specific callee symbol.
+    ///
+    /// Used by summary-bridge trace to find callers of a function.
+    pub fn find_callsites_by_callee(
+        &self,
+        callee: &SymbolId,
+    ) -> anyhow::Result<Vec<Callsite>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT callsite_id, reference_id, caller, callee, receiver, args_json,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column,
+                    callee_start_line, callee_start_column, callee_end_line, callee_end_column,
+                    callee_start_byte, callee_end_byte
+             FROM callsites WHERE callee = ?1",
+        )?;
+        let rows = stmt.query_map(params![callee], row_to_callsite)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find a single callsite by its ID.
+    pub fn find_callsites_by_id(
+        &self,
+        callsite_id: &CallsiteId,
+    ) -> anyhow::Result<Vec<Callsite>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT callsite_id, reference_id, caller, callee, receiver, args_json,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column,
+                    callee_start_line, callee_start_column, callee_end_line, callee_end_column,
+                    callee_start_byte, callee_end_byte
+             FROM callsites WHERE callsite_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![callsite_id], row_to_callsite)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -995,6 +1101,39 @@ impl Store {
         }
     }
 
+    /// Batch-lookup data nodes by IDs in a single query.
+    pub(crate) fn get_data_nodes(
+        &self,
+        ids: &[DataNodeId],
+    ) -> anyhow::Result<HashMap<DataNodeId, DataNode>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let conn = self.lock();
+        let placeholders: Vec<String> = (0..ids.len()).map(|i| format!("?{}", i + 1)).collect();
+        let sql = format!(
+            "SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id,
+                    name, access_path,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column
+             FROM data_nodes WHERE data_node_id IN ({})",
+            placeholders.join(","),
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::types::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let rows = stmt.query_map(params.as_slice(), |row| {
+            let node: DataNode = row_to_data_node(row)?;
+            Ok((node.id, node))
+        })?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let (id, node) = row?;
+            map.insert(id, node);
+        }
+        Ok(map)
+    }
+
     /// Find all data nodes in a file.
     pub fn find_data_nodes_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<DataNode>> {
         let conn = self.lock();
@@ -1009,6 +1148,25 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Find data nodes associated with a specific callsite (e.g. CallArg nodes).
+    ///
+    /// Used by summary-bridge trace to find call-arg data nodes for a given callsite.
+    pub fn find_data_nodes_by_callsite(
+        &self,
+        callsite_id: &CallsiteId,
+    ) -> anyhow::Result<Vec<DataNode>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id,
+                    name, access_path,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column
+             FROM data_nodes WHERE callsite_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![callsite_id], row_to_data_node)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Find dataflow edges originating from a data node.
     pub fn find_dataflow_edges_by_source(
         &self,
@@ -1016,7 +1174,9 @@ impl Store {
     ) -> anyhow::Result<Vec<DataFlowEdge>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT dataflow_edge_id, source, target, kind, location_0, location_1, location_2, confidence
+            "SELECT dataflow_edge_id, source, target, kind,
+                    location_0, location_1, location_2,
+                    location_3, location_4, location_5, confidence
              FROM dataflow_edges WHERE source = ?1",
         )?;
         let rows = stmt.query_map(params![source], row_to_dataflow_edge)?;
@@ -1030,10 +1190,36 @@ impl Store {
     ) -> anyhow::Result<Vec<DataFlowEdge>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT dataflow_edge_id, source, target, kind, location_0, location_1, location_2, confidence
+            "SELECT dataflow_edge_id, source, target, kind,
+                    location_0, location_1, location_2,
+                    location_3, location_4, location_5, confidence
              FROM dataflow_edges WHERE target = ?1",
         )?;
         let rows = stmt.query_map(params![target], row_to_dataflow_edge)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Batch-lookup dataflow edges by source IDs in a single query.
+    pub(crate) fn find_dataflow_edges_by_sources(
+        &self,
+        sources: &[DataNodeId],
+    ) -> anyhow::Result<Vec<DataFlowEdge>> {
+        if sources.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.lock();
+        let placeholders: Vec<String> = (0..sources.len()).map(|i| format!("?{}", i + 1)).collect();
+        let sql = format!(
+            "SELECT dataflow_edge_id, source, target, kind,
+                    location_0, location_1, location_2,
+                    location_3, location_4, location_5, confidence
+             FROM dataflow_edges WHERE source IN ({})",
+            placeholders.join(","),
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::types::ToSql> =
+            sources.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let rows = stmt.query_map(params.as_slice(), row_to_dataflow_edge)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -1198,9 +1384,6 @@ impl Store {
             if !facts.dataflow_edges.is_empty() {
                 write_dataflow_edges(&tx, &facts.dataflow_edges)?;
             }
-            if !facts.callsite_args.is_empty() {
-                write_callsite_args(&tx, &facts.callsite_args)?;
-            }
             if !facts.cfg_nodes.is_empty() {
                 write_cfg_nodes(&tx, &facts.cfg_nodes)?;
             }
@@ -1295,6 +1478,89 @@ impl Store {
             files_by_language,
         })
     }
+
+    // ── Optimized indexed queries ─────────────────────────────────────────
+
+    /// Find symbols by exact `name` match (uses index on `symbols.name`).
+    ///
+    /// Faster than `search_symbols_by_name_like` for exact-match lookups,
+    /// avoiding FTS5 overhead and LIKE scans.
+    pub fn find_symbols_by_name(&self, name: &str) -> anyhow::Result<Vec<SymbolDef>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
+                    language,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column,
+                    name_start_byte, name_end_byte, name_start_line, name_start_column,
+                    name_end_line, name_end_column,
+                    signature, visibility, exported, static_, async_,
+                    container_id, scope_id, package_name, namespace_path_json
+             FROM symbols WHERE name = ?1 ORDER BY qualified_name",
+        )?;
+        let rows = stmt.query_map(params![name], row_to_symbol)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Resolve a user-facing path to a [`FileId`] using indexed `files.path`.
+    ///
+    /// Tries exact match on `path = ?`, then suffix match on
+    /// `path LIKE '%/' || ?`. Falls back to Rust path normalization for the
+    /// suffix case. This replaces the old `list_files()` → linear scan pattern.
+    pub fn resolve_file_id(
+        &self,
+        root: &Path,
+        rel_path: &str,
+    ) -> anyhow::Result<Option<FileId>> {
+        let conn = self.lock();
+
+        // 1. Exact path match.
+        let mut stmt = conn.prepare("SELECT file_id FROM files WHERE path = ?1")?;
+        if let Some(row) = stmt.query(params![rel_path])?.next()? {
+            return Ok(Some(row.get(0)?));
+        }
+
+        // 2. Suffix match (e.g. "helper.ts" matches "src/lib/helper.ts").
+        let pattern = format!("%/{}", rel_path);
+        let mut stmt = conn.prepare(
+            "SELECT file_id, path FROM files WHERE path LIKE ?1 LIMIT 5",
+        )?;
+        let rows: Vec<_> = stmt
+            .query_map(params![&pattern], |row| {
+                Ok((row.get::<_, FileId>(0)?, row.get::<_, String>(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for (fid, db_path) in &rows {
+            if db_path.ends_with(rel_path) {
+                return Ok(Some(*fid));
+            }
+        }
+
+        // 3. Normalized absolute path fallback (for CLI absolute-path queries).
+        let normalized = {
+            let p = if Path::new(rel_path).is_absolute() {
+                rel_path.to_string()
+            } else {
+                root.join(rel_path).to_string_lossy().to_string()
+            };
+            if let Ok(stripped) = Path::new(&p).strip_prefix(root) {
+                stripped.to_string_lossy().to_string()
+            } else {
+                p
+            }
+        };
+
+        if normalized != rel_path {
+            let mut stmt = conn.prepare("SELECT file_id FROM files WHERE path = ?1")?;
+            if let Some(row) = stmt.query(params![normalized])?.next()? {
+                return Ok(Some(row.get(0)?));
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1316,794 +1582,132 @@ pub struct StoreStats {
     pub files_by_language: Vec<(String, i64)>,
 }
 
-// ---------------------------------------------------------------------------
-// Row mapping helpers
-// ---------------------------------------------------------------------------
+// ── Reader trait implementations ────────────────────────────────────────────
+//
+// The 4 reader traits (SymbolReader, DataflowReader, CallGraphReader,
+// FileReader) are defined in [crate::db::readers] and implemented on Store
+// below.  Each delegates via UFCS to the store's inherent method.
+//
+// trace/analysis code can accept `impl SymbolReader + DataflowReader +
+// CallGraphReader + FileReader` instead of `&Store` for layered access.
 
-const REFERENCE_SELECT_NO_WHERE: &str = r#"
-    SELECT reference_id, file_id, source_symbol, scope_id, kind,
-           text, name, receiver, arity,
-           range_start_byte, range_end_byte, range_start_line,
-           range_start_column, range_end_line, range_end_column,
-           resolved_symbol_id, resolved_confidence, resolved_strategy,
-           resolved_provenance, binding_id
-    FROM "references""#;
+use super::readers::*;
 
-const REFERENCE_SELECT_WHERE: &str = r#"
-    SELECT reference_id, file_id, source_symbol, scope_id, kind,
-           text, name, receiver, arity,
-           range_start_byte, range_end_byte, range_start_line,
-           range_start_column, range_end_line, range_end_column,
-           resolved_symbol_id, resolved_confidence, resolved_strategy,
-           resolved_provenance, binding_id
-    FROM "references" WHERE file_id = ?1"#;
-
-fn row_to_file_info(row: &rusqlite::Row) -> rusqlite::Result<FileInfo> {
-    Ok(FileInfo {
-        file_id: row.get(0)?,
-        path: row.get(1)?,
-        language: Language::from_str(row.get::<_, String>(2)?.as_str()).unwrap_or_default(),
-        content_hash: row.get(3)?,
-        status: ParseStatus::from_str(row.get::<_, String>(4)?.as_str()).unwrap_or_default(),
-    })
-}
-
-fn row_to_symbol(row: &rusqlite::Row) -> rusqlite::Result<SymbolDef> {
-    let symbol_path_json: String = row.get(5)?;
-    let ns_json: String = row.get(27)?;
-    Ok(SymbolDef {
-        id: row.get(0)?,
-        file_id: row.get(1)?,
-        kind: SymbolKind::from_str(row.get::<_, String>(2)?.as_str()).unwrap_or(SymbolKind::File),
-        name: row.get(3)?,
-        qualified_name: row.get(4)?,
-        symbol_path: serde_json::from_str(&symbol_path_json).unwrap_or_default(),
-        language: Language::from_str(row.get::<_, String>(6)?.as_str()).unwrap_or_default(),
-        range: TextRange {
-            start_byte: row.get(7)?,
-            end_byte: row.get(8)?,
-            start_line: row.get(9)?,
-            start_column: row.get(10)?,
-            end_line: row.get(11)?,
-            end_column: row.get(12)?,
-        },
-        name_range: TextRange {
-            start_byte: row.get(13)?,
-            end_byte: row.get(14)?,
-            start_line: row.get(15)?,
-            start_column: row.get(16)?,
-            end_line: row.get(17)?,
-            end_column: row.get(18)?,
-        },
-        signature: row.get(19)?,
-        visibility: row
-            .get::<_, Option<String>>(20)?
-            .and_then(|v| Visibility::from_str(&v)),
-        exported: row.get::<_, i32>(21)? != 0,
-        static_: row.get::<_, i32>(22)? != 0,
-        async_: row.get::<_, i32>(23)? != 0,
-        container: row.get(24)?,
-        scope_id: row.get(25)?,
-        package_name: row.get(26)?,
-        namespace_path: serde_json::from_str(&ns_json).unwrap_or_default(),
-    })
-}
-
-fn row_to_reference(row: &rusqlite::Row) -> rusqlite::Result<ReferenceUse> {
-    // Gather resolved-target fields outside any map closure so `?` is valid.
-    let resolved = {
-        let sym: Option<SymbolId> = row.get(15)?;
-        match sym {
-            Some(sid) => {
-                let conf: Option<f32> = row.get(16)?;
-                let strat_s: Option<String> = row.get(17)?;
-                let prov_s: Option<String> = row.get(18)?;
-                Some(ResolvedTarget {
-                    symbol_id: sid,
-                    confidence: Confidence::new(conf.unwrap_or(0.5)),
-                    strategy: ResolutionStrategy::from_str(strat_s.as_deref().unwrap_or(""))
-                        .unwrap_or(ResolutionStrategy::ExactMatch),
-                    provenance: Provenance::from_str(prov_s.as_deref().unwrap_or(""))
-                        .unwrap_or_default(),
-                })
-            }
-            None => None,
-        }
-    };
-    Ok(ReferenceUse {
-        id: row.get(0)?,
-        file_id: row.get(1)?,
-        source_symbol: row.get(2)?,
-        scope_id: row.get(3)?,
-        kind: ReferenceKind::from_str(row.get::<_, String>(4)?.as_str())
-            .unwrap_or(ReferenceKind::Usage),
-        text: row.get(5)?,
-        name: row.get(6)?,
-        receiver: row.get(7)?,
-        arity: row.get(8)?,
-        range: TextRange {
-            start_byte: row.get(9)?,
-            end_byte: row.get(10)?,
-            start_line: row.get(11)?,
-            start_column: row.get(12)?,
-            end_line: row.get(13)?,
-            end_column: row.get(14)?,
-        },
-        resolved,
-        binding_id: row.get(19)?,
-    })
-}
-
-fn row_to_edge(row: &rusqlite::Row) -> rusqlite::Result<RawEdge> {
-    let ref_id: Option<ReferenceId> = row.get(6)?;
-    let location: Option<TextRange> = {
-        let sb: Option<u32> = row.get(7)?;
-        sb.map(|start_byte| TextRange {
-            start_byte,
-            end_byte: row.get::<_, u32>(8).unwrap_or(0),
-            start_line: row.get::<_, u32>(9).unwrap_or(0),
-            start_column: row.get::<_, u32>(10).unwrap_or(0),
-            end_line: row.get::<_, u32>(11).unwrap_or(0),
-            end_column: row.get::<_, u32>(12).unwrap_or(0),
-        })
-    };
-    let metadata: Option<String> = row.get(13)?;
-    let resolved_by_str: Option<String> = row.get(14)?;
-    let resolved_by = resolved_by_str
-        .as_deref()
-        .and_then(|s| ResolutionStrategy::from_str(s));
-
-    Ok(RawEdge {
-        id: row.get(0)?,
-        source: row.get(1)?,
-        target: row.get(2)?,
-        kind: EdgeKind::from_str(row.get::<_, String>(3)?.as_str()).unwrap_or(EdgeKind::References),
-        confidence: Confidence::new(row.get(4)?),
-        provenance: Provenance::from_str(row.get::<_, String>(5)?.as_str()).unwrap_or_default(),
-        ref_id,
-        location,
-        metadata,
-        resolved_by,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Strip FTS5 special characters to prevent syntax errors.
-fn sanitize_fts5_query(raw: &str) -> String {
-    let sanitized: String = raw
-        .chars()
-        .filter(|c| c.is_alphanumeric() || c.is_whitespace() || *c == '_' || *c == '.' || *c == '-')
-        .collect();
-    if sanitized.is_empty() {
-        "*".to_string()
-    } else {
-        sanitized
+impl SymbolReader for Store {
+    fn find_symbol_by_id(&self, id: &SymbolId) -> anyhow::Result<Option<SymbolDef>> {
+        StoreReader::find_symbol_by_id(self.deref(), id)
+    }
+    fn find_symbols_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<SymbolDef>> {
+        Store::find_symbols_by_file(self, file_id)
+    }
+    fn search_symbols(&self, query: &str) -> anyhow::Result<Vec<SymbolDef>> {
+        Store::search_symbols(self, query)
+    }
+    fn search_symbols_with_limit(&self, query: &str, limit: usize, kind_filter: Option<&SymbolKind>) -> anyhow::Result<Vec<SymbolDef>> {
+        Store::search_symbols_with_limit(self, query, limit, kind_filter)
+    }
+    fn search_symbols_by_name_like(&self, pattern: &str, language: Option<&Language>, limit: usize, kind_filter: Option<&SymbolKind>) -> anyhow::Result<Vec<SymbolDef>> {
+        Store::search_symbols_by_name_like(self, pattern, language, limit, kind_filter)
+    }
+    fn count_symbols(&self) -> anyhow::Result<usize> {
+        Store::count_symbols(self)
+    }
+    fn find_symbols_by_qname(&self, qname: &str) -> anyhow::Result<Vec<SymbolDef>> {
+        Store::find_symbols_by_qname(self, qname)
+    }
+    fn get_all_symbols(&self) -> anyhow::Result<Vec<SymbolDef>> {
+        Store::get_all_symbols(self)
+    }
+    fn find_symbols_by_name(&self, name: &str) -> anyhow::Result<Vec<SymbolDef>> {
+        Store::find_symbols_by_name(self, name)
+    }
+    fn find_references_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<ReferenceUse>> {
+        Store::find_references_by_file(self, file_id)
+    }
+    fn find_scopes_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<ScopeDef>> {
+        Store::find_scopes_by_file(self, file_id)
+    }
+    fn find_imports_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<ImportDef>> {
+        Store::find_imports_by_file(self, file_id)
+    }
+    fn find_edges_by_source(&self, source: &SymbolId) -> anyhow::Result<Vec<RawEdge>> {
+        Store::find_edges_by_source(self, source)
+    }
+    fn find_edges_by_target(&self, target: &SymbolId) -> anyhow::Result<Vec<RawEdge>> {
+        Store::find_edges_by_target(self, target)
+    }
+    fn get_all_edges(&self) -> anyhow::Result<Vec<RawEdge>> {
+        Store::get_all_edges(self)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers for exclusive lock
-// ---------------------------------------------------------------------------
-
-/// Current time in milliseconds since Unix epoch.
-fn chrono_now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
-
-/// Check whether a process with the given PID is still alive.
-///
-/// Uses `kill -0` on Unix (no signal sent, just checks existence).
-/// On non-Unix, assumes alive (conservative — won't steal locks).
-fn is_process_alive(pid: i64) -> bool {
-    #[cfg(unix)]
-    {
-        // `kill -0 <pid>` checks process existence without sending a signal.
-        // This uses the system `kill` command — no external crate needed.
-        std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(true) // conservative: assume alive if check fails
+impl DataflowReader for Store {
+    fn get_data_node(&self, id: &DataNodeId) -> anyhow::Result<Option<DataNode>> {
+        Store::get_data_node(self, id)
     }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        true // conservative: assume alive
+    fn find_data_nodes_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<DataNode>> {
+        Store::find_data_nodes_by_file(self, file_id)
+    }
+    fn find_data_nodes_by_function(&self, function_id: &SymbolId) -> anyhow::Result<Vec<DataNode>> {
+        Store::find_data_nodes_by_function(self, function_id)
+    }
+    fn find_data_nodes_by_callsite(&self, callsite_id: &CallsiteId) -> anyhow::Result<Vec<DataNode>> {
+        Store::find_data_nodes_by_callsite(self, callsite_id)
+    }
+    fn find_dataflow_edges_by_source(&self, source: &DataNodeId) -> anyhow::Result<Vec<DataFlowEdge>> {
+        Store::find_dataflow_edges_by_source(self, source)
+    }
+    fn find_dataflow_edges_by_target(&self, target: &DataNodeId) -> anyhow::Result<Vec<DataFlowEdge>> {
+        Store::find_dataflow_edges_by_target(self, target)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Private write helpers (take `&Connection` to enable single-transaction bulk writes)
-// ---------------------------------------------------------------------------
-
-fn write_symbols(conn: &Connection, symbols: &[SymbolDef]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO symbols
-           (symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
-            language,
-            range_start_byte, range_end_byte, range_start_line, range_start_column,
-            range_end_line, range_end_column,
-            name_start_byte, name_end_byte, name_start_line, name_start_column,
-            name_end_line, name_end_column,
-            signature, visibility, exported, static_, async_,
-            container_id, scope_id, package_name, namespace_path_json)
-        VALUES (
-            ?1,?2,?3,?4,?5,?6,?7,
-            ?8,?9,?10,?11,?12,?13,
-            ?14,?15,?16,?17,?18,?19,
-            ?20,?21,?22,?23,?24,
-            ?25,?26,?27,?28
-        )"#,
-    )?;
-    for s in symbols {
-        let path_json = serde_json::to_string(&s.symbol_path)?;
-        let ns_json = serde_json::to_string(&s.namespace_path)?;
-        stmt.execute(params![
-            s.id,
-            s.file_id,
-            s.kind.as_str(),
-            s.name,
-            s.qualified_name,
-            path_json,
-            s.language.as_str(),
-            s.range.start_byte,
-            s.range.end_byte,
-            s.range.start_line,
-            s.range.start_column,
-            s.range.end_line,
-            s.range.end_column,
-            s.name_range.start_byte,
-            s.name_range.end_byte,
-            s.name_range.start_line,
-            s.name_range.start_column,
-            s.name_range.end_line,
-            s.name_range.end_column,
-            s.signature,
-            s.visibility.map(|v| v.as_str()),
-            s.exported as i32,
-            s.static_ as i32,
-            s.async_ as i32,
-            s.container,
-            s.scope_id,
-            s.package_name,
-            ns_json,
-        ])?;
+impl CallGraphReader for Store {
+    fn find_callsites_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<Callsite>> {
+        Store::find_callsites_by_file(self, file_id)
     }
-    Ok(())
-}
-
-fn write_scopes(conn: &Connection, scopes: &[ScopeDef]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO scopes
-            (scope_id, file_id, kind, name, scope_path, parent_id,
-            range_start_byte, range_end_byte, range_start_line, range_start_column,
-            range_end_line, range_end_column)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"#,
-    )?;
-    for sc in scopes {
-        stmt.execute(params![
-            sc.id,
-            sc.file_id,
-            sc.kind.as_str(),
-            sc.name,
-            sc.scope_path,
-            sc.parent_id,
-            sc.range.start_byte,
-            sc.range.end_byte,
-            sc.range.start_line,
-            sc.range.start_column,
-            sc.range.end_line,
-            sc.range.end_column,
-        ])?;
+    fn find_callsites_by_callee(&self, callee: &SymbolId) -> anyhow::Result<Vec<Callsite>> {
+        Store::find_callsites_by_callee(self, callee)
     }
-    Ok(())
-}
-
-fn write_references(conn: &Connection, refs: &[ReferenceUse]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO "references"
-            (reference_id, file_id, source_symbol, scope_id, kind, text, name,
-            receiver, arity,
-            range_start_byte, range_end_byte, range_start_line, range_start_column,
-            range_end_line, range_end_column,
-            resolved_symbol_id, resolved_confidence, resolved_strategy, resolved_provenance,
-            binding_id)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)"#,
-    )?;
-    for r in refs {
-        stmt.execute(params![
-            r.id,
-            r.file_id,
-            r.source_symbol,
-            r.scope_id,
-            r.kind.as_str(),
-            r.text,
-            r.name,
-            r.receiver,
-            r.arity,
-            r.range.start_byte,
-            r.range.end_byte,
-            r.range.start_line,
-            r.range.start_column,
-            r.range.end_line,
-            r.range.end_column,
-            r.resolved.as_ref().map(|rt| &rt.symbol_id),
-            r.resolved.as_ref().map(|rt| rt.confidence.as_f32()),
-            r.resolved.as_ref().map(|rt| rt.strategy.as_str()),
-            r.resolved.as_ref().map(|rt| rt.provenance.as_str()),
-            r.binding_id,
-        ])?;
+    fn find_callsites_by_id(&self, id: &CallsiteId) -> anyhow::Result<Vec<Callsite>> {
+        Store::find_callsites_by_id(self, id)
     }
-    Ok(())
-}
-
-fn write_imports(conn: &Connection, imports: &[ImportDef]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO imports
-           (import_id, file_id, kind, module, imported_name, local_name, alias,
-            is_wildcard, is_relative,
-            range_start_byte, range_end_byte, range_start_line, range_start_column,
-            range_end_line, range_end_column)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"#,
-    )?;
-    for imp in imports {
-        stmt.execute(params![
-            imp.id,
-            imp.file_id,
-            imp.kind.as_str(),
-            imp.module,
-            imp.imported_name,
-            imp.local_name,
-            imp.alias,
-            imp.is_wildcard as i32,
-            imp.is_relative as i32,
-            imp.range.start_byte,
-            imp.range.end_byte,
-            imp.range.start_line,
-            imp.range.start_column,
-            imp.range.end_line,
-            imp.range.end_column,
-        ])?;
+    fn find_callsite_by_reference_id(&self, reference_id: &ReferenceId) -> anyhow::Result<Option<Callsite>> {
+        Store::find_callsite_by_reference_id(self, reference_id)
     }
-    Ok(())
-}
-
-fn write_edges(conn: &Connection, edges: &[RawEdge]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO symbol_edges
-           (edge_id, source, target, kind, confidence, provenance,
-            ref_id, location_0, location_1, location_2, location_3, location_4, location_5,
-            metadata, resolved_by)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"#,
-    )?;
-    for e in edges {
-        let (loc_0, loc_1, loc_2, loc_3, loc_4, loc_5) = match &e.location {
-            Some(loc) => (
-                Some(loc.start_byte),
-                Some(loc.end_byte),
-                Some(loc.start_line),
-                Some(loc.start_column),
-                Some(loc.end_line),
-                Some(loc.end_column),
-            ),
-            None => (None, None, None, None, None, None),
-        };
-        stmt.execute(params![
-            e.id,
-            e.source,
-            e.target,
-            e.kind.as_str(),
-            e.confidence.as_f32(),
-            e.provenance.as_str(),
-            e.ref_id,
-            loc_0,
-            loc_1,
-            loc_2,
-            loc_3,
-            loc_4,
-            loc_5,
-            e.metadata,
-            e.resolved_by.as_ref().map(|s| s.as_str()),
-        ])?;
+    fn find_bindings_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<BindingDef>> {
+        Store::find_bindings_by_file(self, file_id)
     }
-    Ok(())
-}
-
-fn write_callsites(conn: &Connection, callsites: &[Callsite]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO callsites
-           (callsite_id, reference_id, caller, callee, receiver, args_json,
-            range_start_byte, range_end_byte, range_start_line, range_start_column,
-            range_end_line, range_end_column,
-            callee_start_line, callee_start_column, callee_end_line, callee_end_column,
-            callee_start_byte, callee_end_byte)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)"#,
-    )?;
-    for cs in callsites {
-        let args_json = serde_json::to_string(&cs.args)?;
-        let (cs_sl, cs_sc, cs_el, cs_ec, cs_sb, cs_eb) = match &cs.callee_range {
-            Some(r) => (
-                Some(r.start_line as i64),
-                Some(r.start_column as i64),
-                Some(r.end_line as i64),
-                Some(r.end_column as i64),
-                Some(r.start_byte as i64),
-                Some(r.end_byte as i64),
-            ),
-            None => (None, None, None, None, None, None),
-        };
-        stmt.execute(params![
-            cs.id,
-            cs.reference_id,
-            cs.caller,
-            cs.callee,
-            cs.receiver,
-            args_json,
-            cs.range.start_byte,
-            cs.range.end_byte,
-            cs.range.start_line,
-            cs.range.start_column,
-            cs.range.end_line,
-            cs.range.end_column,
-            cs_sl,
-            cs_sc,
-            cs_el,
-            cs_ec,
-            cs_sb,
-            cs_eb,
-        ])?;
+    fn find_bindings_by_function(&self, function_id: &SymbolId) -> anyhow::Result<Vec<BindingDef>> {
+        Store::find_bindings_by_function(self, function_id)
     }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// ── Binding + Dataflow — row mappers ──
-// ---------------------------------------------------------------------------
-
-fn row_to_binding(row: &rusqlite::Row) -> rusqlite::Result<BindingDef> {
-    Ok(BindingDef {
-        id: row.get(0)?,
-        file_id: row.get(1)?,
-        function_id: row.get(2)?,
-        scope_id: row.get(3)?,
-        kind: BindingKind::from_str(row.get::<_, String>(4)?.as_str())
-            .unwrap_or(BindingKind::Local),
-        name: row.get(5)?,
-        symbol_id: row.get(6)?,
-        range: TextRange {
-            start_byte: row.get(7)?,
-            end_byte: row.get(8)?,
-            start_line: row.get(9)?,
-            start_column: row.get(10)?,
-            end_line: row.get(11)?,
-            end_column: row.get(12)?,
-        },
-    })
-}
-
-fn row_to_binding_use(row: &rusqlite::Row) -> rusqlite::Result<BindingUse> {
-    Ok(BindingUse {
-        id: row.get(0)?,
-        file_id: row.get(1)?,
-        scope_id: row.get(2)?,
-        binding_id: row.get(3)?,
-        reference_id: row.get(4)?,
-        name: row.get(5)?,
-        range: TextRange {
-            start_byte: row.get(6)?,
-            end_byte: row.get(7)?,
-            start_line: row.get(8)?,
-            start_column: row.get(9)?,
-            end_line: row.get(10)?,
-            end_column: row.get(11)?,
-        },
-    })
-}
-
-fn row_to_data_node(row: &rusqlite::Row) -> rusqlite::Result<DataNode> {
-    Ok(DataNode {
-        id: row.get(0)?,
-        file_id: row.get(1)?,
-        function_id: row.get(2)?,
-        kind: DataNodeKind::from_str(row.get::<_, String>(3)?.as_str())
-            .unwrap_or(DataNodeKind::Unknown),
-        binding_id: row.get(4)?,
-        callsite_id: row.get(5)?,
-        name: row.get(6)?,
-        access_path: row.get(7)?,
-        range: TextRange {
-            start_byte: row.get(8)?,
-            end_byte: row.get(9)?,
-            start_line: row.get(10)?,
-            start_column: row.get(11)?,
-            end_line: row.get(12)?,
-            end_column: row.get(13)?,
-        },
-    })
-}
-
-fn row_to_dataflow_edge(row: &rusqlite::Row) -> rusqlite::Result<DataFlowEdge> {
-    let location = TextRange {
-        start_byte: row.get::<_, u32>(4).unwrap_or(0),
-        end_byte: row.get::<_, u32>(5).unwrap_or(0),
-        start_line: row.get::<_, u32>(6).unwrap_or(0),
-        start_column: 0,
-        end_line: 0,
-        end_column: 0,
-    };
-    let conf: Option<f64> = row.get(7)?;
-    Ok(DataFlowEdge {
-        id: row.get(0)?,
-        source: row.get(1)?,
-        target: row.get(2)?,
-        kind: DataFlowKind::from_str(row.get::<_, String>(3)?.as_str())
-            .unwrap_or(DataFlowKind::Assign),
-        location,
-        confidence: conf.unwrap_or(0.8),
-    })
-}
-
-// ── Callsite row mapper ───────────────────────────────────────────────────
-
-fn row_to_callsite(row: &rusqlite::Row) -> rusqlite::Result<Callsite> {
-    let args_str: String = row.get(5)?;
-    let args: Vec<ArgumentFact> = serde_json::from_str(&args_str).unwrap_or_default();
-    let callee_start_line: Option<u32> = row.get(12).ok();
-    let callee_start_column: Option<u32> = row.get(13).ok();
-    let callee_end_line: Option<u32> = row.get(14).ok();
-    let callee_end_column: Option<u32> = row.get(15).ok();
-    let callee_start_byte: Option<i64> = row.get(16).ok();
-    let callee_end_byte: Option<i64> = row.get(17).ok();
-    let callee_range = match (
-        callee_start_line,
-        callee_start_column,
-        callee_end_line,
-        callee_end_column,
-        callee_start_byte,
-        callee_end_byte,
-    ) {
-        (Some(sl), Some(sc), Some(el), Some(ec), Some(sb), Some(eb)) => Some(TextRange {
-            start_line: sl,
-            start_column: sc,
-            end_line: el,
-            end_column: ec,
-            start_byte: sb as u32,
-            end_byte: eb as u32,
-        }),
-        _ => None,
-    };
-    Ok(Callsite {
-        id: row.get(0)?,
-        reference_id: row.get(1)?,
-        caller: row.get(2)?,
-        callee: row.get(3)?,
-        receiver: row.get(4)?,
-        args,
-        range: TextRange {
-            start_byte: row.get(6)?,
-            end_byte: row.get(7)?,
-            start_line: row.get(8)?,
-            start_column: row.get(9)?,
-            end_line: row.get(10)?,
-            end_column: row.get(11)?,
-        },
-        callee_range,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// ── Binding + Dataflow — write helpers ──
-// ---------------------------------------------------------------------------
-
-fn write_bindings(conn: &Connection, bindings: &[BindingDef]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO bindings
-           (binding_id, file_id, function_id, scope_id, kind, name, symbol_id,
-            range_start_byte, range_end_byte, range_start_line, range_start_column,
-            range_end_line, range_end_column)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"#,
-    )?;
-    for b in bindings {
-        stmt.execute(params![
-            b.id,
-            b.file_id,
-            b.function_id,
-            b.scope_id,
-            b.kind.as_str(),
-            b.name,
-            b.symbol_id,
-            b.range.start_byte,
-            b.range.end_byte,
-            b.range.start_line,
-            b.range.start_column,
-            b.range.end_line,
-            b.range.end_column,
-        ])?;
+    fn find_binding_uses_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<BindingUse>> {
+        Store::find_binding_uses_by_file(self, file_id)
     }
-    Ok(())
-}
-
-fn write_binding_uses(conn: &Connection, uses: &[BindingUse]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO binding_uses
-           (binding_use_id, file_id, scope_id, binding_id, reference_id, name,
-            range_start_byte, range_end_byte, range_start_line, range_start_column,
-            range_end_line, range_end_column)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"#,
-    )?;
-    for u in uses {
-        stmt.execute(params![
-            u.id,
-            u.file_id,
-            u.scope_id,
-            u.binding_id,
-            u.reference_id,
-            u.name,
-            u.range.start_byte,
-            u.range.end_byte,
-            u.range.start_line,
-            u.range.start_column,
-            u.range.end_line,
-            u.range.end_column,
-        ])?;
+    fn find_binding_uses_by_binding(&self, binding_id: &BindingId) -> anyhow::Result<Vec<BindingUse>> {
+        Store::find_binding_uses_by_binding(self, binding_id)
     }
-    Ok(())
-}
-
-fn write_data_nodes(conn: &Connection, nodes: &[DataNode]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO data_nodes
-           (data_node_id, file_id, function_id, kind, binding_id, callsite_id,
-            name, access_path,
-            range_start_byte, range_end_byte, range_start_line, range_start_column,
-            range_end_line, range_end_column)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"#,
-    )?;
-    for n in nodes {
-        stmt.execute(params![
-            n.id,
-            n.file_id,
-            n.function_id,
-            n.kind.as_str(),
-            n.binding_id,
-            n.callsite_id,
-            n.name,
-            n.access_path,
-            n.range.start_byte,
-            n.range.end_byte,
-            n.range.start_line,
-            n.range.start_column,
-            n.range.end_line,
-            n.range.end_column,
-        ])?;
+    fn find_cfg_nodes_by_function(&self, function_id: &SymbolId) -> anyhow::Result<Vec<CfgNode>> {
+        Store::find_cfg_nodes_by_function(self, function_id)
     }
-    Ok(())
-}
-
-fn write_dataflow_edges(conn: &Connection, edges: &[DataFlowEdge]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO dataflow_edges
-           (dataflow_edge_id, source, target, kind, location_0, location_1, location_2, confidence)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8)"#,
-    )?;
-    for e in edges {
-        stmt.execute(params![
-            e.id,
-            e.source,
-            e.target,
-            e.kind.as_str(),
-            e.location.start_byte,
-            e.location.end_byte,
-            e.location.start_line,
-            e.confidence,
-        ])?;
+    fn find_cfg_edges_by_source(&self, source: &CfgNodeId) -> anyhow::Result<Vec<CfgEdge>> {
+        Store::find_cfg_edges_by_source(self, source)
     }
-    Ok(())
 }
 
-fn write_callsite_args(conn: &Connection, args: &[CallsiteArg]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO callsite_args
-           (callsite_id, index_, name, expr_text, data_node_id,
-            range_start_byte, range_end_byte, range_start_line, range_start_column,
-            range_end_line, range_end_column)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)"#,
-    )?;
-    for a in args {
-        stmt.execute(params![
-            a.callsite_id,
-            a.index,
-            a.name,
-            a.expr_text,
-            a.data_node,
-            a.range.start_byte,
-            a.range.end_byte,
-            a.range.start_line,
-            a.range.start_column,
-            a.range.end_line,
-            a.range.end_column,
-        ])?;
+impl FileReader for Store {
+    fn get_file(&self, file_id: &FileId) -> anyhow::Result<Option<FileInfo>> {
+        Store::get_file(self, file_id)
     }
-    Ok(())
-}
-
-// ── CFG — row converters and low-level writers ──────────────────────────
-
-fn row_to_cfg_node(row: &rusqlite::Row) -> rusqlite::Result<CfgNode> {
-    use crate::types::enums::CfgNodeKind;
-    let kind_str: String = row.get(2)?;
-    let kind = CfgNodeKind::from_str(&kind_str).unwrap_or(CfgNodeKind::Statement);
-    Ok(CfgNode {
-        id: row.get(0)?,
-        function_id: row.get(1)?,
-        kind,
-        stmt_range: TextRange {
-            start_byte: row.get::<_, u32>(3)? as u32,
-            end_byte: row.get::<_, u32>(4)? as u32,
-            start_line: row.get::<_, u32>(5)? as u32,
-            start_column: row.get::<_, u32>(6)? as u32,
-            end_line: row.get::<_, u32>(7)? as u32,
-            end_column: row.get::<_, u32>(8)? as u32,
-        },
-    })
-}
-
-fn row_to_cfg_edge(row: &rusqlite::Row) -> rusqlite::Result<CfgEdge> {
-    use crate::types::enums::CfgEdgeKind;
-    let kind_str: String = row.get(3)?;
-    let kind = CfgEdgeKind::from_str(&kind_str).unwrap_or(CfgEdgeKind::Normal);
-    Ok(CfgEdge {
-        id: row.get(0)?,
-        source: row.get(1)?,
-        target: row.get(2)?,
-        kind,
-    })
-}
-
-fn write_cfg_nodes(conn: &Connection, nodes: &[CfgNode]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO cfg_nodes
-           (cfg_node_id, function_id, kind,
-            range_start_byte, range_end_byte, range_start_line, range_start_column,
-            range_end_line, range_end_column)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"#,
-    )?;
-    for n in nodes {
-        stmt.execute(params![
-            n.id,
-            n.function_id,
-            n.kind.as_str(),
-            n.stmt_range.start_byte,
-            n.stmt_range.end_byte,
-            n.stmt_range.start_line,
-            n.stmt_range.start_column,
-            n.stmt_range.end_line,
-            n.stmt_range.end_column,
-        ])?;
+    fn list_files(&self) -> anyhow::Result<Vec<FileInfo>> {
+        Store::list_files(self)
     }
-    Ok(())
-}
-
-fn write_cfg_edges(conn: &Connection, edges: &[CfgEdge]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO cfg_edges
-           (cfg_edge_id, source_node, target_node, kind)
-        VALUES (?1,?2,?3,?4)"#,
-    )?;
-    for e in edges {
-        stmt.execute(params![e.id, e.source, e.target, e.kind.as_str()])?;
+    fn resolve_file_id(&self, root: &Path, rel_path: &str) -> anyhow::Result<Option<FileId>> {
+        Store::resolve_file_id(self, root, rel_path)
     }
-    Ok(())
+    fn get_metadata(&self, key: &str) -> anyhow::Result<Option<String>> {
+        Store::get_metadata(self, key)
+    }
 }
 
 #[cfg(test)]

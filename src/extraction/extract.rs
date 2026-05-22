@@ -7,22 +7,23 @@
 //! 4. Assembles FileFacts (structural edges left to resolver phase)
 
 use anyhow::{Context, Result, anyhow};
+use std::collections::HashMap;
 use std::path::Path;
-use tree_sitter::{Parser, Query, QueryCursor};
+use tree_sitter::Parser;
 
-use crate::types::dataflow::DataNode;
-use crate::types::enums::SymbolKind;
-use crate::types::ids::{CallsiteId, FileId};
+use crate::types::bindings::{BindingDef, BindingUse};
+use crate::types::ids::{BindingUseId, CallsiteId, FileId, ScopeId};
 use crate::types::{
-    ArgumentFact, Callsite, DiagnosticLevel, ExtractDiagnostic, FileFacts, FileInfo, ParseStatus,
-    ReferenceKind, SymbolDef, TextRange,
+    ArgumentFact, Callsite, DataNode, DataNodeKind, DiagnosticLevel, ExtractDiagnostic, FileFacts,
+    FileInfo, ParseStatus, ReferenceKind, ScopeDef, ScopeKind, SymbolKind, TextRange,
 };
 
 use super::callsite_spec::CallsiteParts;
-use super::cfg_builder::{CfgBuilder, CfgResult};
+use super::cfg_builder::CfgResult;
 use super::dataflow_builder::{DataFlowBuilder, DataFlowResult};
 use super::frontend::LanguageFrontend;
 use super::languages::LanguageAdapter;
+use super::languages::node_range;
 use super::lexical_binder::LexicalBindingResult;
 use super::semantic_binder::SemanticBinder;
 
@@ -46,7 +47,7 @@ fn tl_parse(
         if opt.is_none() {
             *opt = Some(Parser::new());
         }
-        let parser = opt.as_mut().unwrap();
+        let parser = opt.as_mut().expect("TL_PARSER was just initialized above");
         parser
             .set_language(ts_lang)
             .map_err(|e| anyhow!("Failed to set tree-sitter language: {}", e))?;
@@ -145,6 +146,33 @@ pub fn extract_file(
     // 7. Build scope tree and assign containers
     super::build_scope_tree(&mut scopes, &mut symbols);
 
+    // 7z. Expand function-like symbol ranges to match their function scope.
+    //     definitions.scm captures only the name identifier (e.g. "compute"),
+    //     but resolve_dataflow_function_ids() needs the full function body range
+    //     to assign function_id to DataNodes inside the body.
+    for sym in symbols.iter_mut() {
+        if matches!(sym.kind, SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor)
+        {
+            // Find the innermost function/method scope that contains this symbol.
+            let containing = scopes
+                .iter()
+                .filter(|s| {
+                    matches!(s.kind, ScopeKind::Function | ScopeKind::Method)
+                        && s.range.start_byte <= sym.range.end_byte
+                        && s.range.end_byte >= sym.range.start_byte
+                })
+                .min_by_key(|s| s.range.end_byte - s.range.start_byte); // tightest scope
+            if let Some(scope) = containing {
+                sym.range.start_byte = scope.range.start_byte;
+                sym.range.end_byte = scope.range.end_byte;
+                sym.range.start_line = scope.range.start_line;
+                sym.range.end_line = scope.range.end_line;
+                sym.range.start_column = scope.range.start_column;
+                sym.range.end_column = scope.range.end_column;
+            }
+        }
+    }
+
     // 7a. Extract lexical bindings (P7: skip if unsupported)
     let (bindings, binding_uses) = if frontend.lexical.capability().is_supported() {
         let lexical_result = super::lexical_binder::LexicalBinder::extract(
@@ -192,8 +220,12 @@ pub fn extract_file(
             });
             DataFlowResult::default()
         });
-        let nodes = dataflow_result.nodes;
+        let mut nodes = dataflow_result.nodes;
         let edges = dataflow_result.edges;
+
+        // 7d. Resolve DataNode function_ids BEFORE use-def so
+        //     UseDefKey(function_id, binding_id?, name) groups correctly.
+        super::dataflow_builder::resolve_dataflow_function_ids(&mut nodes, &symbols);
 
         // 7c. Build use-def edges (only if dataflow succeeded)
         let use_def_edges = DataFlowBuilder::resolve_use_def(&nodes);
@@ -205,12 +237,9 @@ pub fn extract_file(
         (vec![], vec![])
     };
 
-    // 7d. Resolve DataNode function_ids (only if dataflow was built)
-    resolve_dataflow_function_ids(&mut data_nodes, &symbols);
-
     // 7e. Build per-function control-flow graphs (P7: skip if CFG unsupported)
     let (cfg_nodes, cfg_edges) = if frontend.capability.supported_features.contains(&"cfg".to_string()) {
-        let cfg_result = build_cfg_for_functions(root, &symbols, source_bytes).unwrap_or_else(|e| {
+        let cfg_result = super::cfg_builder::build_cfg_for_functions(root, &symbols, source_bytes).unwrap_or_else(|e| {
             diagnostics.push(ExtractDiagnostic {
                 level: DiagnosticLevel::Warning,
                 message: format!("CFG builder failed: {}", e),
@@ -230,6 +259,31 @@ pub fn extract_file(
     let binder = SemanticBinder::new(&symbols, &scopes);
     binder.bind_all(file_id, &mut references, &mut raw_edges);
 
+    // 8a. Build identifier-use BindingUse records from the AST.
+    //
+    // The LexicalBinder (step 7a) only creates BindingUse records at
+    // binding *declaration* sites.  This step scans all `(identifier)`
+    // nodes and creates additional BindingUse records for usage sites,
+    // resolved against the lexical binding table via scope-chain-aware
+    // name lookup.  Declaration sites are skipped to avoid duplicates.
+    let reference_binding_uses: Vec<BindingUse> =
+        build_reference_binding_uses(file_id, root, source, &ts_lang, &bindings, &scopes)
+            .unwrap_or_else(|e| {
+                diagnostics.push(ExtractDiagnostic {
+                    level: DiagnosticLevel::Warning,
+                    message: format!("Identifier-use binding scan failed: {}", e),
+                    range: None,
+                });
+                vec![]
+            });
+
+    // Merge declaration-site uses with identifier-use uses.
+    let binding_uses: Vec<BindingUse> = {
+        let mut all = binding_uses;
+        all.extend(reference_binding_uses);
+        all
+    };
+
     // 9. Derive callsites from Call references
     //
     //    The reference range only covers the callee name (e.g. `inner`),
@@ -242,7 +296,7 @@ pub fn extract_file(
     //    all AST walking internally (including universal fallback for
     //    edge cases).  If the spec returns None, we fall back to using
     //    the reference range as the callsite range.
-    let callsites: Vec<Callsite> = references
+    let mut callsites: Vec<Callsite> = references
         .iter()
         .filter(|r| r.kind == ReferenceKind::Call && r.source_symbol.is_some())
         .map(|r| {
@@ -311,6 +365,67 @@ pub fn extract_file(
         })
         .collect();
 
+    // 9a. Backfill ArgumentFact.data_node_id from DataNodes.
+    //
+    // During extraction, DataNodes of kind CallArg receive a provisional
+    // `callsite_id` (from_file_byte) and a TextRange.  Callsites carry
+    // `args: Vec<ArgumentFact>` where each arg also has a TextRange.
+    // We match each callsite's args to the DataNode at the same byte
+    // offset within the same call expression, then set data_node_id.
+    // This creates the join: callsites.args[*].data_node_id → DataNode.
+    for cs in &mut callsites {
+        let provisional_cs_id = CallsiteId::from_file_byte(&file_id, cs.range.start_byte);
+        let call_arg_nodes: Vec<&DataNode> = data_nodes
+            .iter()
+            .filter(|dn| {
+                dn.kind == DataNodeKind::CallArg
+                    && dn.callsite_id.as_ref() == Some(&provisional_cs_id)
+            })
+            .collect();
+        if call_arg_nodes.is_empty() {
+            continue;
+        }
+        for arg in &mut cs.args {
+            if let Some(arg_range) = arg.range {
+                for dn in &call_arg_nodes {
+                    if dn.range.start_byte == arg_range.start_byte {
+                        arg.data_node_id = Some(dn.id.clone());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // After backfill, rewrite all DataNode callsite_ids that used
+    // provisional from_file_byte IDs to the real CallsiteId so
+    // query-time joins (e.g., return-value bridge) work.
+    //
+    // Build a map: provisional from_file_byte ID → real Callsite.id
+    let cs_id_map: std::collections::HashMap<
+        crate::types::ids::CallsiteId,
+        crate::types::ids::CallsiteId,
+    > = callsites
+        .iter()
+        .map(|cs| {
+            (
+                crate::types::ids::CallsiteId::from_file_byte(
+                    &file_id,
+                    cs.range.start_byte,
+                ),
+                cs.id,
+            )
+        })
+        .collect();
+
+    for dn in data_nodes.iter_mut() {
+        if let Some(ref provisional) = dn.callsite_id {
+            if let Some(real) = cs_id_map.get(provisional) {
+                dn.callsite_id = Some(*real);
+            }
+        }
+    }
+
     // 10. Collect exported symbol IDs
     let exports: Vec<_> = symbols
         .iter()
@@ -350,7 +465,6 @@ pub fn extract_file(
         binding_uses,          // lexical binding use sites
         data_nodes,            // per-function dataflow nodes
         dataflow_edges,        // DataNode→DataNode dataflow edges
-        callsite_args: vec![], // filled later by post-processing
         cfg_nodes,             // per-function control-flow graph nodes
         cfg_edges,             // per-function control-flow graph edges
     })
@@ -359,6 +473,127 @@ pub fn extract_file(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Scan all `(identifier)` nodes in the AST and create [`BindingUse`] records
+/// for usage sites (not declarations).
+///
+/// The LexicalBinder only creates `BindingUse` records at binding *declaration*
+/// sites.  This function fills the gap by capturing every identifier node,
+/// resolving it against the lexical binding table via scope-chain-aware name
+/// lookup, and creating a `BindingUse` record.  Declaration-site identifiers
+/// (those whose range is contained by a `BindingDef` range) are skipped to
+/// avoid duplicates.
+fn build_reference_binding_uses(
+    file_id: FileId,
+    root: tree_sitter::Node,
+    source: &str,
+    ts_lang: &tree_sitter::Language,
+    bindings: &[BindingDef],
+    scopes: &[ScopeDef],
+) -> Result<Vec<BindingUse>> {
+    let source_bytes = source.as_bytes();
+
+    // Capture every identifier node in the tree
+    let captures = super::query_helpers::collect_captures(ts_lang, "(identifier) @binding.use", root, source_bytes)?;
+
+    // Build scope → bindings map
+    let mut scope_bindings: HashMap<ScopeId, Vec<&BindingDef>> = HashMap::new();
+    for binding in bindings {
+        scope_bindings
+            .entry(binding.scope_id)
+            .or_default()
+            .push(binding);
+    }
+
+    // Build scope parent map from the scope tree
+    let parent_map: HashMap<ScopeId, Option<ScopeId>> =
+        scopes.iter().map(|s| (s.id, s.parent_id)).collect();
+
+    // Collect binding declaration ranges (for filtering out decl sites)
+    let binding_ranges: Vec<TextRange> = bindings.iter().map(|b| b.range).collect();
+
+    let mut uses: Vec<BindingUse> = Vec::new();
+
+    for (_capture_name, node) in captures {
+        let range = node_range(node);
+
+        // Skip declaration sites — these are already handled by LexicalBinder
+        if binding_ranges
+            .iter()
+            .any(|br| br.start_byte <= range.start_byte && br.end_byte >= range.end_byte)
+        {
+            continue;
+        }
+
+        // Extract the identifier text
+        let name = match super::languages::node_text(node, source) {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+
+        // Find innermost scope containing this identifier
+        let containing_scope: Option<ScopeId> = scopes
+            .iter()
+            .filter(|s| s.range.start_byte <= range.start_byte && s.range.end_byte >= range.end_byte)
+            .min_by_key(|s| s.range.byte_len())
+            .map(|s| s.id);
+
+        // Resolve the binding by walking the scope chain
+        let binding_id = match containing_scope {
+            Some(mut sid) => {
+                let mut found = None;
+                loop {
+                    if let Some(bindings_in_scope) = scope_bindings.get(&sid) {
+                        if let Some(b) =
+                            bindings_in_scope.iter().find(|b| b.name.as_str() == name.as_str())
+                        {
+                            found = Some(b.id);
+                            break;
+                        }
+                    }
+                    let parent = parent_map.get(&sid).and_then(|&maybe_p| maybe_p);
+                    match parent {
+                        Some(pid) => sid = pid,
+                        None => break,
+                    }
+                }
+                found
+            }
+            None => None,
+        };
+
+        // Use containing scope or fall back to the first (file-level) scope
+        let scope_id = match containing_scope.or_else(|| {
+            scopes
+                .iter()
+                .find(|s| s.parent_id.is_none())
+                .map(|s| s.id)
+        }) {
+            Some(sid) => sid,
+            None => continue,
+        };
+
+        let use_id = BindingUseId::generate(
+            &file_id,
+            binding_id.as_ref(),
+            None::<&crate::types::ids::ReferenceId>,
+            &name,
+            range.start_byte,
+        );
+
+        uses.push(BindingUse {
+            id: use_id,
+            file_id,
+            scope_id,
+            binding_id,
+            reference_id: None,
+            name,
+            range,
+        });
+    }
+
+    Ok(uses)
+}
 
 /// Run a query and normalize each capture through the provided function.
 fn extract_and_normalize<'a, T>(
@@ -380,7 +615,7 @@ fn extract_and_normalize<'a, T>(
         &Path,
     ) -> Option<T>,
 ) -> Result<Vec<T>> {
-    let captures = collect_captures(ts_lang, query_src, root, source_bytes)?;
+    let captures = super::query_helpers::collect_captures(ts_lang, query_src, root, source_bytes)?;
     let mut results = Vec::new();
 
     for (name, node) in captures {
@@ -409,154 +644,6 @@ fn extract_and_normalize<'a, T>(
     }
 
     Ok(results)
-}
-
-/// Collect raw (capture_name, node) pairs from a single query.
-pub(crate) fn collect_captures<'a>(
-    ts_lang: &tree_sitter::Language,
-    query_src: &str,
-    root: tree_sitter::Node<'a>,
-    source_bytes: &[u8],
-) -> Result<Vec<(String, tree_sitter::Node<'a>)>> {
-    use streaming_iterator::StreamingIterator;
-
-    let trimmed = query_src.trim();
-    if trimmed.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let query = Query::new(ts_lang, trimmed).map_err(|e| anyhow!("Query compile error: {}", e))?;
-    let capture_names: Vec<String> = query
-        .capture_names()
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-
-    let mut cursor = QueryCursor::new();
-    let mut captures_result = Vec::new();
-
-    let mut captures = cursor.captures(&query, root, source_bytes);
-    while let Some((m, capture_index)) = captures.next() {
-        if let Some(cap) = m.captures.get(*capture_index) {
-            let name = capture_names
-                .get(cap.index as usize)
-                .cloned()
-                .unwrap_or_else(|| format!("capture_{}", cap.index));
-            captures_result.push((name, cap.node));
-        }
-    }
-    Ok(captures_result)
-}
-
-// ── CFG Helper ────────────────────────────────────────────────────────────
-
-/// Function node kinds that CfgBuilder handles across languages.
-const FUNCTION_NODE_KINDS: &[&str] = &[
-    "function_declaration",
-    "method_definition",
-    "arrow_function",
-    "generator_function_declaration",
-    "generator_function",
-    "function_definition",
-    "async_function_definition",
-    "method_declaration",
-    "constructor_declaration",
-];
-
-/// Build per-function control-flow graphs by matching function symbols
-/// to tree-sitter nodes.
-fn build_cfg_for_functions<'a>(
-    root: tree_sitter::Node<'a>,
-    symbols: &[SymbolDef],
-    source_bytes: &[u8],
-) -> anyhow::Result<CfgResult> {
-    let function_symbols: Vec<&SymbolDef> = symbols
-        .iter()
-        .filter(|s| {
-            matches!(
-                s.kind,
-                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
-            )
-        })
-        .collect();
-
-    let mut all_nodes = Vec::new();
-    let mut all_edges = Vec::new();
-
-    for sym in &function_symbols {
-        if let Some(func_node) = find_function_node(root, sym) {
-            let result = CfgBuilder::build(&sym.id, func_node, source_bytes);
-            all_nodes.extend(result.nodes);
-            all_edges.extend(result.edges);
-        }
-    }
-
-    Ok(CfgResult {
-        nodes: all_nodes,
-        edges: all_edges,
-    })
-}
-
-/// Resolve DataNode function_ids by matching each node to its enclosing
-/// function symbol.
-///
-/// For each DataNode with `function_id: None`, finds the function symbol
-/// whose range contains the node's start position, and sets the id.
-fn resolve_dataflow_function_ids(nodes: &mut [DataNode], symbols: &[SymbolDef]) {
-    // Build (start_byte, end_byte, symbol_id) for all function symbols
-    let function_ranges: Vec<(u32, u32, crate::types::ids::SymbolId)> = symbols
-        .iter()
-        .filter(|s| {
-            matches!(
-                s.kind,
-                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
-            )
-        })
-        .map(|s| (s.range.start_byte, s.range.end_byte, s.id))
-        .collect();
-
-    if function_ranges.is_empty() {
-        return;
-    }
-
-    for node in nodes.iter_mut() {
-        if node.function_id.is_some() {
-            continue;
-        }
-        // Find the innermost function that contains this node's start position
-        let pos = node.range.start_byte;
-        let mut best: Option<(u32, u32, crate::types::ids::SymbolId)> = None;
-        for (start, end, id) in &function_ranges {
-            if pos >= *start && pos <= *end {
-                match best {
-                    Some((bs, be, _)) if (*end - *start) < (be - bs) => {
-                        best = Some((*start, *end, *id));
-                    }
-                    None => best = Some((*start, *end, *id)),
-                    _ => {}
-                }
-            }
-        }
-        if let Some((_, _, id)) = best {
-            node.function_id = Some(id);
-        }
-    }
-}
-
-/// Walk up from the symbol's name position to find the enclosing function node.
-fn find_function_node<'a>(
-    root: tree_sitter::Node<'a>,
-    symbol: &SymbolDef,
-) -> Option<tree_sitter::Node<'a>> {
-    let pos = symbol.name_range.start_byte as usize;
-    let mut node = root.descendant_for_byte_range(pos, pos)?;
-    // Walk up parent chain to find the enclosing function node
-    loop {
-        if FUNCTION_NODE_KINDS.contains(&node.kind()) {
-            return Some(node);
-        }
-        node = node.parent()?;
-    }
 }
 
 #[cfg(test)]

@@ -1,4 +1,8 @@
 //! Incremental sync engine: detect changes, re-extract, re-resolve, reload graph.
+//!
+//! Change detection uses git status as the primary strategy, with a DB content-hash
+//! fallback for non-git projects. Both paths compare against the single source of truth
+//! in `files.content_hash`.
 
 pub mod detector;
 pub mod discovery;
@@ -12,7 +16,6 @@ use crate::extraction::LanguageRegistry;
 use crate::extraction::create_frontend;
 use crate::extraction::extract_file;
 use crate::graph::{GraphBuilder, GraphEngine, GraphSnapshot};
-use crate::resolution::ReferenceResolver;
 use crate::types::{PhaseTimer, PhaseTimings};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -34,18 +37,17 @@ impl SyncEngine {
     }
 
     /// Perform a full incremental sync:
-    /// 1. Detect changed files (git status → content-hash fallback)
+    /// 1. Detect changed files (git status → DB content-hash fallback)
     /// 2. Delete stale data for removed/changed files
     /// 3. Re-extract changed/added files
     /// 4. Re-resolve all unresolved references
-    /// 5. Persist file hashes for next sync
     pub fn sync(&self) -> Result<SyncStats> {
         let start = Instant::now();
         let mut phase_timings = PhaseTimings::new();
 
-        // 1. Detect changes (with hash store persistence)
+        // 1. Detect changes
         let det_timer = PhaseTimer::start("Detection");
-        let (changed, hash_store) = self.detect_changes_with_hash()?;
+        let changed = self.detect_changes()?;
         let mut stats = SyncStats {
             files_changed: changed.total(),
             ..Default::default()
@@ -95,6 +97,28 @@ impl SyncEngine {
         let del_timing = del_timer.items(del_count as u64).finish();
         phase_timings.push(del_timing);
 
+        // P2: tsconfig.json change invalidation
+        // When path aliases change, all import resolutions and derived edges
+        // become stale. Invalidate everything so re-resolution uses the new aliases.
+        if changed.tsconfig_changed {
+            let inv_timer = PhaseTimer::start("Tsconfig invalidation");
+            let inv_refs = self
+                .store
+                .invalidate_all_references()
+                .unwrap_or(0);
+            let inv_edges = self
+                .store
+                .delete_all_edges()
+                .unwrap_or(0);
+            tracing::info!(
+                "tsconfig.json changed — invalidated {} references and {} edges",
+                inv_refs,
+                inv_edges
+            );
+            let inv_timing = inv_timer.note(format!("{} refs + {} edges", inv_refs, inv_edges)).finish();
+            phase_timings.push(inv_timing);
+        }
+
         // 3. Re-extract modified and new files
         let ext_timer = PhaseTimer::start("Re-extract");
         let to_reindex: Vec<&PathBuf> = changed
@@ -120,7 +144,12 @@ impl SyncEngine {
 
         // 4. Re-resolve all unresolved references (P2: two-step pipeline)
         let res_timer = PhaseTimer::start("Resolution");
-        let mut resolver = ReferenceResolver::new(self.store.clone());
+        // P2: Load tsconfig.json path aliases if present
+        let path_alias =
+            crate::resolution::PathAliasResolver::from_tsconfig(&self.project_root.join("tsconfig.json"))
+                .unwrap_or_else(crate::resolution::PathAliasResolver::empty);
+        let mut resolver =
+            crate::resolution::ReferenceResolver::with_path_alias(self.store.clone(), path_alias);
         let (resolved, res_stats) = resolver.resolve_all()?;
         let res_timing = res_timer
             .items(res_stats.total_refs as u64)
@@ -136,47 +165,68 @@ impl SyncEngine {
         let edge_timing = edge_timer.items(build_stats.edges_built as u64).finish();
         phase_timings.push(edge_timing);
 
-        // 5. Persist file hashes for the next incremental sync
-        let persist_timer = PhaseTimer::start("Persist hashes");
-        let atlas_dir = self.project_root.join(".atlas");
-        std::fs::create_dir_all(&atlas_dir).ok();
-        hash_store.save(&atlas_dir)?;
-        let _ = persist_timer.finish(); // optional, not critical
-
         stats.duration = start.elapsed();
         phase_timings.set_total(stats.duration);
         stats.phase_timings = phase_timings;
         Ok(stats)
     }
 
-    /// Reload the GraphSnapshot from the store (after sync completes).
-    pub fn reload_graph(&self, confidence_threshold: f32) -> Result<GraphEngine> {
-        GraphEngine::from_store(&self.store, confidence_threshold)
-    }
-
-    /// Detect changed files: tries git status first, falls back to content-hash comparison.
-    /// Returns changes only (backward-compatible wrapper).
+    /// Detect changed files: tries git status first, falls back to DB content-hash comparison.
+    /// Also detects `tsconfig.json` changes for import resolution invalidation.
     pub fn detect_changes(&self) -> Result<detector::ChangedFiles> {
-        self.detect_changes_with_hash().map(|(changes, _)| changes)
+        // Try git first (primary strategy — fastest and most reliable)
+        let mut changes = if let Some(changes) = detector::detect_git_changes(&self.project_root) {
+            changes
+        } else {
+            // Fallback: compare current file hashes against DB-stored hashes
+            detector::detect_db_hash_changes(&self.project_root, &self.store)?
+        };
+
+        // ── P2: tsconfig.json change detection ──
+        changes.tsconfig_changed = self.detect_tsconfig_change();
+
+        Ok(changes)
     }
 
-    /// Detect changed files: tries git status first, falls back to content-hash comparison.
-    /// Returns changes + the hash store for persistence after sync completes.
-    pub fn detect_changes_with_hash(
-        &self,
-    ) -> Result<(detector::ChangedFiles, detector::FileHashStore)> {
-        let atlas_dir = self.project_root.join(".atlas");
-        std::fs::create_dir_all(&atlas_dir).ok();
+    /// Check whether tsconfig.json (or jsconfig.json) has changed since the last sync.
+    ///
+    /// Stores the current content hash in `project_metadata` for comparison on
+    /// the next run. Returns `true` if the config changed (path aliases may differ).
+    fn detect_tsconfig_change(&self) -> bool {
+        // Check tsconfig.json first, then jsconfig.json
+        // Only return false after checking ALL config files.
+        let mut any_changed = false;
+        for name in &["tsconfig.json", "jsconfig.json"] {
+            let config_path = self.project_root.join(name);
+            let meta_key = format!("{}_hash", name);
+            let prev_hash = self.store.get_metadata(&meta_key).ok().flatten();
+            let current_hash = std::fs::read(&config_path)
+                .ok()
+                .map(|c| blake3::hash(&c).to_hex().to_string());
 
-        // Try git first (primary strategy — fastest and most reliable)
-        if let Some(changes) = detector::detect_git_changes(&self.project_root) {
-            return Ok((changes, detector::FileHashStore::default()));
+            match (&prev_hash, &current_hash) {
+                (Some(prev), Some(curr)) if prev == curr => {
+                    // Unchanged — check next config file
+                    continue;
+                }
+                (None, None) => {
+                    // No config file before or now — check next config file
+                    continue;
+                }
+                _ => {
+                    // Config appeared, disappeared, or changed
+                    any_changed = true;
+                    let new_hash = current_hash.clone();
+                    if let Some(hash) = new_hash {
+                        let _ = self.store.set_metadata(&meta_key, &hash);
+                    } else {
+                        // Config was deleted — clear stored hash
+                        let _ = self.store.set_metadata(&meta_key, "");
+                    }
+                }
+            }
         }
-
-        // Fallback: content-hash comparison using .atlas/file_hashes.json
-        let mut hash_store = detector::FileHashStore::load(&atlas_dir)?;
-        let changes = detector::detect_hash_changes(&self.project_root, &mut hash_store)?;
-        Ok((changes, hash_store))
+        any_changed
     }
 
     // --- internal ---

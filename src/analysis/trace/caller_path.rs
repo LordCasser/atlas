@@ -70,12 +70,9 @@ impl CallerPathExplorer {
 
         let mut farthest_id = target_id.clone();
         let mut farthest_depth: usize = 0;
+        let mut truncated = false;
 
         while let Some((current_id, depth)) = queue.pop_front() {
-            if depth >= max_depth {
-                continue;
-            }
-
             let edges = store.find_edges_by_target(&current_id)?;
             for edge in &edges {
                 // Only follow call-related edges
@@ -88,6 +85,20 @@ impl CallerPathExplorer {
 
                 if !visited.contains_key(&caller_key) {
                     let new_depth = depth + 1;
+                    if new_depth >= max_depth {
+                        // Budget exhausted — check if this caller has unexplored
+                        // callers of its own (not just the edge we already followed).
+                        let caller_edges = store.find_edges_by_target(caller)?;
+                        if caller_edges.iter().any(|e| is_call_edge(&e.kind)) {
+                            truncated = true;
+                            // Track this frontier node as the farthest known point.
+                            if new_depth > farthest_depth {
+                                farthest_depth = new_depth;
+                                farthest_id = caller.clone();
+                            }
+                        }
+                        continue;
+                    }
                     let current_key = hex::encode(current_id.as_bytes());
                     visited.insert(caller_key.clone(), new_depth);
                     // Store current→caller so reconstruct_call_path can walk
@@ -131,6 +142,7 @@ impl CallerPathExplorer {
             target,
             nodes_visited: visited.len(),
             max_depth_reached: farthest_depth,
+            truncated,
         }))
     }
 }

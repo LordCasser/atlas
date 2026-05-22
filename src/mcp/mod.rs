@@ -78,7 +78,7 @@ impl McpServer {
         let store_for_graph = Arc::clone(&store);
         let graph_fn = move || {
             GraphEngine::from_store(&store_for_graph, 0.3)
-                .expect("Failed to reload graph snapshot from store")
+                .map_err(|e| format!("Failed to reload graph snapshot from store: {}", e))
         };
         let router = ToolRouter::new(
             Arc::clone(&store),

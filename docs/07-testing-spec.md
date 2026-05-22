@@ -170,7 +170,7 @@
 
 最低要求：
 
-- 从 file/line/column 定位 ReferenceUse、BindingUse、CallsiteArg 或 DataNode。
+- 从 file/line/column 定位 ReferenceUse、BindingUse、DataNode，以及当前实现中的 callsite inline argument / call-arg DataNode。
 - backward slicer 单元测试可以使用手写 `DataNode` 和 `DataFlowEdge`。
 - caller path explorer 单元测试可以使用手写 symbol graph。
 - path formatter 测试必须覆盖 bounded JSON 和 Markdown evidence。
@@ -239,8 +239,8 @@ cargo test --features "all-languages,mcp,sync"
 
 当前已知缺口应优先修复：
 
-1. `mcp` feature 必须可编译，并纳入默认验证矩阵。
-2. 变量来源追踪与调用路径查询需要真实源码端到端 fixture，而不是只依赖 canned `DataNode` 测试。
-3. `DataNode.function_id`、`callsite_args`、binding use scanning 需要补齐，否则 trace 查询无法可靠定位变量来源和调用实参。
-4. `ParseWorkerPool` 需要接入 `atlas index` 和 `sync` 的生产路径。
-5. 旧 `RawEdge` dataflow 路径需要清理或明确降级，避免和 `DataFlowEdge` 双轨腐化。
+1. 调用实参事实源已统一为 `callsites.args_json` + call-arg `DataNode`；`callsite_args` 表已移除。需要补 DataNode/callsite arg 的 insert/query/delete/cascade 测试。
+2. `dataflow_edges` 的 `TextRange` 持久化已补全（6 字段完整 byte/line/column），需补 trace evidence 完整往返的 golden 测试。
+3. 变量来源追踪与调用路径查询仍需要更多真实源码端到端 fixture，尤其是跨文件调用、参数位置和 unsupported/partial 结果。
+4. path alias 已通过 `resolve_by_module_path()` 接入主解析路径并可接 E2E 测试；barrel re-export 仍需要结构化实现（ExportResolver 已移除）。
+5. 旧 `RawEdge` dataflow 路径已移除，不再需要双轨隔离。

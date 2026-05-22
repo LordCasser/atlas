@@ -153,8 +153,7 @@ LanguageCapabilityProfile
 - symbol_edges
 - callsites
 - bindings / binding_uses
-- data_nodes / dataflow_edges
-- callsite_args (deprecated persistence surface unless reactivated as the single source of truth)
+- data_nodes / dataflow_edges (6 字段完整 TextRange)
 - cfg_nodes / cfg_edges
 - project metadata
 - FTS indexes

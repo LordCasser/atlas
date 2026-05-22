@@ -20,10 +20,6 @@
 //! - `binding_uses`   — references to bindings
 //! - `data_nodes`     — dataflow nodes
 //! - `dataflow_edges` — dataflow edges between DataNodes
-//! - `callsite_args`  — [DEPRECATED] individual arguments at callsites.
-//!   Call argument facts are now stored inline in `callsites.args_json`.
-//!   This table is retained for future structured queries but is currently
-//!   not populated.
 //! - `cfg_nodes`      — control-flow graph nodes per function
 //! - `cfg_edges`      — control-flow graph edges
 //! - `project_metadata` — key-value project configuration
@@ -215,7 +211,7 @@ CREATE TABLE IF NOT EXISTS data_nodes (
     function_id          BLOB REFERENCES symbols(symbol_id) ON DELETE CASCADE,
     kind                 TEXT NOT NULL,
     binding_id           BLOB REFERENCES bindings(binding_id) ON DELETE SET NULL,
-    callsite_id          BLOB REFERENCES callsites(callsite_id) ON DELETE SET NULL,
+    callsite_id          BLOB,
     name                 TEXT,
     access_path          TEXT,
     range_start_byte     INTEGER NOT NULL,
@@ -234,22 +230,10 @@ CREATE TABLE IF NOT EXISTS dataflow_edges (
     location_0           INTEGER,
     location_1           INTEGER,
     location_2           INTEGER,
+    location_3           INTEGER,
+    location_4           INTEGER,
+    location_5           INTEGER,
     confidence           REAL NOT NULL DEFAULT 0.8
-);
-
-CREATE TABLE IF NOT EXISTS callsite_args (
-    callsite_id          BLOB NOT NULL REFERENCES callsites(callsite_id) ON DELETE CASCADE,
-    index_               INTEGER NOT NULL,
-    name                 TEXT,
-    expr_text            TEXT,
-    data_node_id         BLOB REFERENCES data_nodes(data_node_id) ON DELETE SET NULL,
-    range_start_byte     INTEGER NOT NULL,
-    range_end_byte       INTEGER NOT NULL,
-    range_start_line     INTEGER NOT NULL,
-    range_start_column   INTEGER NOT NULL,
-    range_end_line       INTEGER NOT NULL,
-    range_end_column     INTEGER NOT NULL,
-    PRIMARY KEY (callsite_id, index_)
 );
 
 -- cfg_nodes: per-function control-flow graph nodes
@@ -373,9 +357,6 @@ CREATE INDEX IF NOT EXISTS idx_dataflow_edges_target
 CREATE INDEX IF NOT EXISTS idx_dataflow_edges_kind
     ON dataflow_edges(kind);
 
-CREATE INDEX IF NOT EXISTS idx_callsite_args_data_node
-    ON callsite_args(data_node_id);
-
 CREATE INDEX IF NOT EXISTS idx_cfg_nodes_function
     ON cfg_nodes(function_id);
 CREATE INDEX IF NOT EXISTS idx_cfg_nodes_kind
@@ -387,6 +368,12 @@ CREATE INDEX IF NOT EXISTS idx_cfg_edges_target
     ON cfg_edges(target_node);
 CREATE INDEX IF NOT EXISTS idx_cfg_edges_kind
     ON cfg_edges(kind);
+
+-- Optimized lookups for reader traits (trace/analysis hot paths).
+CREATE INDEX IF NOT EXISTS idx_symbols_name
+    ON symbols(name);
+CREATE INDEX IF NOT EXISTS idx_files_path
+    ON files(path);
 
 -- --- FTS Triggers ---
 
@@ -437,7 +424,6 @@ mod tests {
         assert!(tables.contains(&"binding_uses".to_string()));
         assert!(tables.contains(&"data_nodes".to_string()));
         assert!(tables.contains(&"dataflow_edges".to_string()));
-        assert!(tables.contains(&"callsite_args".to_string()));
         assert!(tables.contains(&"cfg_nodes".to_string()));
         assert!(tables.contains(&"cfg_edges".to_string()));
         assert!(tables.contains(&"symbols_fts".to_string()));

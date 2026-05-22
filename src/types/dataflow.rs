@@ -14,13 +14,11 @@
 //!
 //! - [`DataNode`] — a point where data exists (parameter, local, field, return, …)
 //! - [`DataFlowEdge`] — a directed flow between two data nodes
-//! - [`CallsiteArg`] — an actual argument at a call-site, linked to its data node
 //!
 //! ## Relationship with other types
 //!
 //! - [`DataNode::binding_id`] → [`super::bindings::BindingDef`]
 //! - [`DataNode::callsite_id`] → [`super::structs::Callsite`]
-//! - [`CallsiteArg::data_node`] → [`DataNode`]
 //!
 //! ## Invariants
 //!
@@ -193,6 +191,7 @@ impl DataNode {
         id: DataNodeId,
         file_id: FileId,
         function_id: Option<SymbolId>,
+        callsite_id: Option<CallsiteId>,
         name: &str,
         access_path: &str,
         range: TextRange,
@@ -203,7 +202,7 @@ impl DataNode {
             function_id,
             kind: DataNodeKind::CallTarget,
             binding_id: None,
-            callsite_id: None,
+            callsite_id,
             name: Some(name.to_string()),
             access_path: Some(access_path.to_string()),
             range,
@@ -262,43 +261,11 @@ impl DataFlowEdge {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CallsiteArg — a single argument at a call-site
-// ---------------------------------------------------------------------------
-
-/// A named or positional argument at a call-site, linked to its data node.
-///
-/// This replaces the ad-hoc [`super::structs::ArgumentFact`] that is
-/// currently stored as JSON in the `callsites` table.  `CallsiteArg`
-/// lives in its own table so that dataflow analysis can efficiently
-/// query argument → parameter flows.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CallsiteArg {
-    /// The call-site this argument belongs to.
-    pub callsite_id: CallsiteId,
-
-    /// 0-based argument index.
-    pub index: u32,
-
-    /// Parameter name if named argument (e.g. `fn(x=1)`), otherwise None.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-
-    /// Source text of the argument expression.
-    pub expr_text: String,
-
-    /// Data node for this argument expression.
-    pub data_node: DataNodeId,
-
-    /// Source range of the argument expression.
-    pub range: TextRange,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::enums::*;
-    use crate::types::ids::{BindingId, CallsiteId, FileId, ScopeId};
+    use crate::types::ids::{BindingId, FileId, ScopeId};
 
     fn make_file_id() -> FileId {
         FileId::generate("test.ts")
@@ -387,40 +354,5 @@ mod tests {
         let parsed: DataFlowEdge = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.kind, DataFlowKind::Assign);
         assert_eq!(parsed.confidence, 0.9);
-    }
-
-    #[test]
-    fn test_callsite_arg_constructor() {
-        let file_id = make_file_id();
-        let func_id = SymbolId::generate(&file_id, "typescript", "handler", "function", None);
-        let data_node = DataNodeId::generate(
-            &file_id,
-            Some(&func_id),
-            "call_arg",
-            Some("req"),
-            Some("req"),
-            200,
-        );
-        let arg = CallsiteArg {
-            callsite_id: CallsiteId::generate(
-                &crate::types::ids::ReferenceId::generate(
-                    &file_id,
-                    None,
-                    200,
-                    210,
-                    "sink",
-                    ReferenceKind::Call,
-                ),
-                Some(&func_id),
-                200,
-            ),
-            index: 0,
-            name: None,
-            expr_text: "req".to_string(),
-            data_node,
-            range: make_range(205, 208),
-        };
-        assert_eq!(arg.index, 0);
-        assert_eq!(arg.expr_text, "req");
     }
 }

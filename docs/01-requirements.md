@@ -110,7 +110,9 @@ MVP 至少抽取：
 
 ### Resolution
 
-Resolution pipeline 顺序：
+目标 Resolution pipeline 顺序如下。当前已落地实现状态以
+[`03-current-architecture.md`](./03-current-architecture.md) 为准；未接入主路径的
+resolver 组件不得在用户文档中描述为已完成能力。
 
 1. builtin/external filter
 2. scope-local exact lookup
@@ -152,7 +154,8 @@ Resolution 结果必须写回引用事实，并包含 target、confidence、stra
 - 某个目标变量是否来自函数参数、字段访问、返回值、import alias 或上游 caller 实参。
 - 从指定位置向上游回溯数据来源和调用路径，并返回相关代码片段、range、confidence 和 provenance。
 
-核心能力是 backward slice / provenance trace：
+目标核心能力是 backward slice / provenance trace。当前实现以 local dataflow
+和 caller path 为主，跨函数参数/返回传播只有在对应 facts、summary 和测试存在时才能宣称支持：
 
 ```text
 target argument / variable
@@ -166,13 +169,14 @@ target argument / variable
 
 Atlas 不做 taint rule / finding 产品能力。Atlas 不包含 taint 代码、taint schema、taint rule/finding 产品能力——这些已从源码和 schema 中完全删除。不进入当前需求、路线图或验收门槛。当前阶段不要求、也不规划漏洞规则三元组、自动端到端漏洞传播扫描、全项目 finding 或内置漏洞规则生态。
 
-解析侧必须提供的基础 facts：
+解析侧需要提供的基础 facts 分为“当前 trace 主路径事实”和“后续恢复/增强事实”：
 
 - `BindingDef` / `BindingUse`：区分定义和使用，记录作用域、range、shadowing 关系。
-- `Callsite` / `CallsiteArg`：记录 callee、receiver、argument index、named/keyword argument、spread/varargs where applicable。
+- `Callsite`：记录 callee、receiver、callee range、call range，并保存当前实现使用的 inline argument facts。
 - `DataNode`：覆盖参数、局部变量、字面量、字段访问、调用结果、返回值、表达式和 import alias。
 - `DataFlowEdge`：覆盖简单赋值、字段读取/写入、实参到形参、返回值到调用结果、变量到返回值等关系。
-- `FunctionSummary`：用轻量摘要表达参数、返回值、关键调用实参和字段访问之间的关系，供 query-time 跨函数回溯使用。
+- `CallsiteArg`：已移除。`callsites.args_json` + call-arg `DataNode` 为当前唯一调用实参事实源；如未来需结构化实参表，应在 schema 中新增替代设计并同步测试。
+- `FunctionSummary`：已实现 query-time 基础版（参数→return/call_arg/field BFS 可达性）；完整跨函数摘要仍需增强。当前 trace 不得把它宣称为已实现。
 
 语言能力按等级验收，不要求所有语言一次性达到同等精度：
 
@@ -229,6 +233,7 @@ MCP 使用 JSON-RPC over stdio。核心工具：
 - `atlas_context`
 - `atlas_explore`
 - trace tools: `atlas_trace_point`, `atlas_trace_variable`, `atlas_trace_caller_path` where implemented
+- `atlas_language_capabilities`
 
 工具输出必须 bounded、结构化，并在涉及启发式关系时暴露 confidence/provenance。
 

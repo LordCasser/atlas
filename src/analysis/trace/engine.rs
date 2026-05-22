@@ -29,6 +29,8 @@ use crate::types::capability::{CapabilityLevel, FeatureSupport, LanguageCapabili
 use crate::types::ids::{FileId, SymbolId};
 use crate::types::trace::{Evidence, TraceDiagnostic, TracePath, TracePoint};
 
+use super::virtual_edges::SummaryEdgeProvider;
+
 // ─── Response envelope ────────────────────────────────────────────────────
 
 /// Uniform response for every trace query.
@@ -222,7 +224,7 @@ impl TraceEngine {
             );
         }
 
-        match Slicer::slice(&self.store, &sink, max_depth) {
+        match Slicer::slice(&self.store, &sink, max_depth, Some(&SummaryEdgeProvider)) {
             Ok(Some(mut path)) => {
                 path.capability = cap.clone();
                 self.enrich_trace_path_steps(&mut path);
@@ -279,7 +281,24 @@ impl TraceEngine {
         match CallerPathExplorer::explore(&self.store, target_id, max_depth) {
             Ok(Some(mut chain)) => {
                 self.enrich_caller_chain_steps(&mut chain);
-                TraceQueryResponse::ok("trace_callers", chain, cap)
+                let partial = chain.truncated;
+                let diagnostics = if partial {
+                    vec![TraceDiagnostic::warning(&format!(
+                        "Caller path truncated at max_depth={} (reached depth {})",
+                        max_depth, chain.max_depth_reached
+                    ))
+                    .with_code("max_depth_truncated")]
+                } else {
+                    vec![]
+                };
+                TraceQueryResponse {
+                    ok: true,
+                    kind: "trace_callers".to_string(),
+                    capability: cap,
+                    partial_result: partial,
+                    diagnostics,
+                    result: Some(chain),
+                }
             }
             Ok(None) => TraceQueryResponse::partial(
                 "trace_callers",
@@ -295,21 +314,13 @@ impl TraceEngine {
 
     /// Find all symbol IDs matching a name across all indexed files.
     ///
-    /// Performs a linear scan — acceptable for CLI/MCP one-shot lookups.
-    /// Returns an empty Vec if no symbols match.
+    /// Uses indexed `symbols.name` lookup — O(log n) per lookup.
     pub fn find_symbol_ids_by_name(&self, name: &str) -> anyhow::Result<Vec<SymbolId>> {
-        let files = self.store.list_files()?;
-        let mut ids = Vec::new();
-        for f in &files {
-            if let Ok(syms) = self.store.find_symbols_by_file(&f.file_id) {
-                for s in &syms {
-                    if s.name == name {
-                        ids.push(s.id);
-                    }
-                }
-            }
-        }
-        Ok(ids)
+        Ok(self.store
+            .find_symbols_by_name(name)?
+            .into_iter()
+            .map(|s| s.id)
+            .collect())
     }
 
     /// Trace callers by symbol name (human-friendly lookup).
@@ -340,38 +351,15 @@ impl TraceEngine {
     // ── File resolution ────────────────────────────────────────────────
 
     /// Resolve a user-facing file path to a [`FileId`], or `Ok(None)` if not
-    /// found. The path is tried as-is, then as a suffix match, then resolved
-    /// against the given `project_root`.
+    /// found. Uses indexed `files.path` lookup — O(log n) for exact match,
+    /// O(suffix matches) for suffix scan.
     pub fn resolve_file_id_with_root(
         &self,
         project_root: &Path,
         file_path: &str,
     ) -> anyhow::Result<Option<FileId>> {
         let clean = file_path.trim_start_matches("./").trim_start_matches('/');
-        let files = self.store.list_files()?;
-
-        // 1. Exact path match
-        for f in &files {
-            if f.path == clean {
-                return Ok(Some(f.file_id.clone()));
-            }
-        }
-        // 2. Suffix match (e.g. "src/foo.ts" matches ".../src/foo.ts")
-        for f in &files {
-            if f.path.ends_with(clean) && f.path.len() > clean.len() {
-                return Ok(Some(f.file_id.clone()));
-            }
-        }
-        // 3. Absolute path match
-        let abs = project_root.join(clean);
-        let abs_str = abs.to_string_lossy();
-        for f in &files {
-            let file_abs = project_root.join(&f.path);
-            if file_abs.to_string_lossy() == abs_str {
-                return Ok(Some(f.file_id.clone()));
-            }
-        }
-        Ok(None)
+        self.store.resolve_file_id(project_root, clean)
     }
 
     // ── Internal ───────────────────────────────────────────────────────
@@ -469,7 +457,6 @@ impl TraceEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{capability::CapabilityLevel, enums::Language};
 
     #[test]
     fn response_ok() {

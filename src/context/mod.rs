@@ -107,13 +107,7 @@ impl ContextBuilder {
 // ------------------------------------------------------------------
 
 fn resolve_symbols(store: &Store, ids: &[SymbolId]) -> anyhow::Result<Vec<SymbolDef>> {
-    let mut symbols = Vec::with_capacity(ids.len());
-    for id in ids {
-        if let Some(sym) = store.find_symbol_by_id(id)? {
-            symbols.push(sym);
-        }
-    }
-    Ok(symbols)
+    store.find_symbols_by_ids(ids)
 }
 
 fn resolve_files(store: &Store, ids: &[FileId]) -> anyhow::Result<Vec<String>> {
@@ -127,12 +121,11 @@ fn resolve_files(store: &Store, ids: &[FileId]) -> anyhow::Result<Vec<String>> {
 }
 
 fn resolve_symbols_to_paths(store: &Store, ids: &[SymbolId]) -> anyhow::Result<Vec<String>> {
+    let symbols = store.find_symbols_by_ids(ids)?;
     let mut paths = std::collections::BTreeSet::new();
-    for id in ids {
-        if let Some(sym) = store.find_symbol_by_id(id)? {
-            if let Some(info) = store.get_file(&sym.file_id)? {
-                paths.insert(info.path);
-            }
+    for sym in &symbols {
+        if let Some(info) = store.get_file(&sym.file_id)? {
+            paths.insert(info.path.clone());
         }
     }
     Ok(paths.into_iter().collect())

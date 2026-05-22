@@ -100,7 +100,7 @@ Atlas 不包含污点分析（taint analysis），不维护对应规则、findin
 新增阶段门禁：
 
 - 当前主线优先完成变量来源追踪与调用路径查询端到端测试。
-- 端到端测试必须覆盖指定位置、变量来源、跨函数参数/返回追踪、caller path、bounded CLI/MCP 输出。
+- 端到端测试必须覆盖指定位置、变量来源、caller path、bounded CLI/MCP 输出；跨函数参数/返回追踪只有在 function summary 或等价事实接入后才能作为完成项验收。
 - 只有当路径追踪作为产品能力稳定后，才把语法解析和 trace engine 抽出为可复用 crate。
 
 ## 7. 阶段实施记录

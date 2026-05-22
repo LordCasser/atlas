@@ -25,9 +25,13 @@ use crate::db::Store;
 use crate::types::dataflow::DataNode;
 use crate::types::enums::DataFlowKind;
 use crate::types::ids::DataNodeId;
-use crate::types::trace::{TracePath, TracePathStep, TracePoint};
+use crate::types::trace::{TraceDiagnostic, TracePath, TracePathStep, TracePoint};
 
-/// Default maximum depth for backward dataflow slicing.
+use super::virtual_edges::TraceEdgeProvider;
+
+/// Default maximum depth for backward dataflow slicing (used by callers
+/// and tests; current call sites pass `max_depth` explicitly).
+#[allow(dead_code)]
 pub const DEFAULT_MAX_DEPTH: usize = 30;
 
 /// Produces a backward dataflow trace from a [`TracePoint`].
@@ -48,6 +52,7 @@ impl Slicer {
         store: &Store,
         sink_point: &TracePoint,
         max_depth: usize,
+        edge_provider: Option<&dyn TraceEdgeProvider>,
     ) -> anyhow::Result<Option<TracePath>> {
         let sink_node = match &sink_point.data_node {
             Some(dn) => dn,
@@ -65,17 +70,27 @@ impl Slicer {
 
         let mut farthest_node_id = sink_node.id.clone();
         let mut farthest_depth: usize = 0;
+        let mut truncated = false;
 
         while let Some((current_id, depth)) = queue.pop_front() {
-            if depth >= max_depth {
-                continue;
-            }
-
             let edges = store
                 .find_dataflow_edges_by_target(&current_id)
                 .unwrap_or_default();
 
-            for edge in &edges {
+            // Inter-procedural: also query virtual edges across call boundaries
+            let virtual_edges = if let Some(provider) = edge_provider {
+                provider
+                    .virtual_incoming(&current_id, store)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|ve| ve.to_dataflow_edge())
+                    .collect::<Vec<_>>()
+            } else {
+                vec![]
+            };
+
+            // Process both real and virtual edges
+            for edge in edges.iter().chain(virtual_edges.iter()) {
                 // Only follow dataflow edges that represent value movement
                 if !should_trace_backward(&edge.kind) {
                     continue;
@@ -86,6 +101,22 @@ impl Slicer {
 
                 if !visited.contains_key(&source_key) {
                     let new_depth = depth + 1;
+                    if new_depth >= max_depth {
+                        // Budget exhausted — check if this source has unexplored
+                        // predecessors (not just the edge we already followed).
+                        let source_edges = store
+                            .find_dataflow_edges_by_target(source_id)
+                            .unwrap_or_default();
+                        if source_edges.iter().any(|e| should_trace_backward(&e.kind)) {
+                            truncated = true;
+                            // Track this frontier node as the farthest known point.
+                            if new_depth > farthest_depth {
+                                farthest_depth = new_depth;
+                                farthest_node_id = source_id.clone();
+                            }
+                        }
+                        continue;
+                    }
                     let current_key = hex::encode(current_id.as_bytes());
                     visited.insert(source_key.clone(), new_depth);
                     // Store current→source so reconstruct_path can walk
@@ -134,15 +165,28 @@ impl Slicer {
             diagnostics: vec![],
         };
 
+        let mut diagnostics = Vec::new();
+        let partial = truncated;
+        if truncated {
+            diagnostics.push(
+                TraceDiagnostic::warning(&format!(
+                    "Backward trace truncated at max_depth={} (reached depth {})",
+                    max_depth, farthest_depth
+                ))
+                .with_code("max_depth_truncated"),
+            );
+        }
+
         Ok(Some(TracePath {
             source: source_point,
             steps,
             sink: sink_point.clone(),
-            confidence: compute_confidence(farthest_depth),
+            confidence: compute_confidence(farthest_depth, truncated),
             nodes_visited: visited.len(),
+            max_depth_reached: farthest_depth,
             capability: sink_point.capability.clone(),
-            partial_result: false,
-            diagnostics: vec![],
+            partial_result: partial,
+            diagnostics,
         }))
     }
 }
@@ -225,17 +269,18 @@ fn reconstruct_path(
     Ok(steps)
 }
 
-/// Compute path confidence based on depth and exploration exhaustiveness.
-/// Shorter paths are more confident; paths that hit max depth get lower
-/// confidence.
-fn compute_confidence(depth: usize) -> f64 {
+/// Compute path confidence based on depth and truncation status.
+/// Shorter paths are more confident; truncated paths get a penalty.
+fn compute_confidence(depth: usize, truncated: bool) -> f64 {
     if depth == 0 {
         1.0
-    } else if depth >= DEFAULT_MAX_DEPTH {
-        0.3
     } else {
-        // Decay with depth: 1.0 → 0.5 at depth 15
-        (1.0 - depth as f64 * 0.033).max(0.3)
+        let base = (1.0 - depth as f64 * 0.033).max(0.3);
+        if truncated {
+            (base - 0.2).max(0.1)
+        } else {
+            base
+        }
     }
 }
 
@@ -291,9 +336,23 @@ mod tests {
 
     #[test]
     fn compute_confidence_decays_with_depth() {
-        assert!((compute_confidence(0) - 1.0).abs() < 0.01);
-        assert!(compute_confidence(5) < 1.0);
-        assert!(compute_confidence(5) > compute_confidence(15));
-        assert!((compute_confidence(DEFAULT_MAX_DEPTH) - 0.3).abs() < 0.01);
+        assert!((compute_confidence(0, false) - 1.0).abs() < 0.01);
+        assert!(compute_confidence(5, false) < 1.0);
+        assert!(compute_confidence(5, false) > compute_confidence(15, false));
+        assert!((compute_confidence(DEFAULT_MAX_DEPTH, false) - 0.3).abs() < 0.01);
+    }
+
+    #[test]
+    fn compute_confidence_truncated_penalty() {
+        // Non-truncated at depth 10 — should be higher than truncated at same depth
+        assert!(
+            compute_confidence(10, false) > compute_confidence(10, true),
+            "truncated paths should have lower confidence"
+        );
+        // Truncated at max depth — should not go below floor 0.1
+        assert!(
+            compute_confidence(DEFAULT_MAX_DEPTH, true) >= 0.1,
+            "confidence floor is 0.1"
+        );
     }
 }

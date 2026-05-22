@@ -13,6 +13,7 @@
 //! Run with all languages:    `cargo test --test trace_e2e --features all-languages`
 
 use atlas::analysis::trace::{CallerPathExplorer, Locator, Slicer, TraceEngine};
+use atlas::analysis::trace::virtual_edges::TraceEdgeProvider;
 use atlas::db::Store;
 use atlas::extraction::extract_file;
 use atlas::graph::GraphBuilder;
@@ -275,7 +276,7 @@ fn ts_slicer_traces_backward_dataflow_from_variable() {
     );
 
     // Slice backward from the result variable.
-    let path = Slicer::slice(&store, &sink_point, 20)
+    let path = Slicer::slice(&store, &sink_point, 20, None)
         .unwrap()
         .expect("backward slice should produce a path");
 
@@ -314,7 +315,7 @@ fn ts_slicer_returns_none_for_position_without_data_node() {
     let point = Locator::locate(&store, &file_id, 1, 1).unwrap();
 
     // Slicer should return None when there is no data node.
-    let path = Slicer::slice(&store, &point, 10).unwrap();
+    let path = Slicer::slice(&store, &point, 10, None).unwrap();
     assert!(
         path.is_none(),
         "slicer should return None for positions without data nodes"
@@ -410,6 +411,184 @@ fn ts_caller_path_returns_none_for_root_function() {
         chain.is_none(),
         "standalone function with no callers should return None"
     );
+}
+
+/// Interproc bridge: verify that SummaryEdgeProvider connects a callee
+/// Parameter node to the caller's call-arg DataNode via ArgToParam edge.
+///
+/// This test directly exercises the SummaryEdgeProvider (not the full slicer
+/// pipeline) because the current TS dataflow model captures expression-level
+/// DataNodes (e.g. `x + y` as one Expr), so the slicer BFS doesn't naturally
+/// reach Parameter nodes from use-sites.  The bridge itself is the critical
+/// invariant — once per-identifier edges exist (P3), the slicer will
+/// automatically use it.
+#[test]
+fn ts_interproc_param_bridges_to_caller_arg() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "interproc.ts",
+        r#"
+// callee: takes two parameters
+function multiply(input: number, factor: number): number {
+    return input * factor;
+}
+// caller: invokes multiply with literal arguments
+function run(): void {
+    const x = multiply(42, 7);
+}
+"#,
+    )];
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("interproc.ts");
+
+    // ── Verify function_id is set on Parameter DataNodes ──
+    let data_nodes = store.find_data_nodes_by_file(&file_id).unwrap();
+    let params: Vec<_> = data_nodes
+        .iter()
+        .filter(|dn| dn.kind == atlas::types::enums::DataNodeKind::Parameter)
+        .collect();
+    assert!(
+        params.len() >= 2,
+        "should have at least 2 Parameter DataNodes (input, factor)"
+    );
+    for param in &params {
+        assert!(
+            param.function_id.is_some(),
+            "Parameter {} should have function_id set (Fix 1: range expansion)",
+            param.name.as_deref().unwrap_or("?"),
+        );
+    }
+
+    // ── Verify SummaryEdgeProvider produces ArgToParam edges ──
+    let input_param = params
+        .iter()
+        .find(|dn| dn.name.as_deref() == Some("input"))
+        .expect("should find input parameter");
+    let provider =
+        atlas::analysis::trace::virtual_edges::SummaryEdgeProvider;
+    let edges = provider
+        .virtual_incoming(&input_param.id, store.as_ref())
+        .expect("virtual_incoming should succeed");
+
+    // Check that at least one edge bridges from caller arg to callee param
+    let arg_edges: Vec<_> = edges
+        .iter()
+        .filter(|e| e.kind == atlas::types::enums::DataFlowKind::ArgToParam)
+        .collect();
+    assert!(
+        !arg_edges.is_empty(),
+        "SummaryEdgeProvider should produce ArgToParam edges from caller arg \
+         to callee param; found {} edges total, {} ArgToParam",
+        edges.len(),
+        arg_edges.len(),
+    );
+
+    for edge in &arg_edges {
+        assert!(
+            edge.confidence < 0.7,
+            "virtual ArgToParam edge should have confidence 0.67"
+        );
+        assert!(
+            edge.provenance.contains("caller arg"),
+            "virtual edge provenance should mention 'caller arg': {}",
+            edge.provenance,
+        );
+        assert_eq!(
+            edge.target_id, input_param.id,
+            "virtual edge should target the input parameter"
+        );
+    }
+}
+
+/// Interproc return bridge: verify that SummaryEdgeProvider connects a caller's
+/// call-result Expr (assign_value with callsite_id) to the callee's return
+/// sources via ReturnToCall edges.
+///
+/// This test directly exercises the SummaryEdgeProvider (not the full slicer
+/// pipeline).  The bridge matches callee return→caller call-result.
+#[test]
+fn ts_interproc_return_bridges_to_caller_call_result() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[
+        (
+            "callee.ts",
+            r#"
+export function compute(base: number, factor: number): number {
+    const result = base * factor;
+    return result;
+}
+"#,
+        ),
+        (
+            "caller.ts",
+            r#"
+import { compute } from './callee';
+function run(): void {
+    const x = compute(10, 3);
+    console.log(x);
+}
+"#,
+        ),
+    ];
+    let (store, _stats) = index_files(files);
+    let caller_file_id = FileId::generate("caller.ts");
+
+    // ── Find the assign_value Expr in caller that IS the call result ──
+    let data_nodes = store.find_data_nodes_by_file(&caller_file_id).unwrap();
+    let call_exprs: Vec<_> = data_nodes
+        .iter()
+        .filter(|dn| {
+            dn.kind == atlas::types::enums::DataNodeKind::Expr
+                && dn.callsite_id.is_some()
+        })
+        .collect();
+    assert!(
+        !call_exprs.is_empty(),
+        "should have at least one Expr DataNode with callsite_id \
+         (assign_value of call expression in caller.ts); Fix: df.assign_value \
+         now gets callsite_id from enclosing call_expression"
+    );
+
+    let call_result_expr = call_exprs[0];
+    assert!(
+        call_result_expr.callsite_id.is_some(),
+        "call_result Expr must have callsite_id for return bridge"
+    );
+
+    // ── Verify SummaryEdgeProvider produces ReturnToCall edges ──
+    let provider =
+        atlas::analysis::trace::virtual_edges::SummaryEdgeProvider;
+    let edges = provider
+        .virtual_incoming(&call_result_expr.id, store.as_ref())
+        .expect("virtual_incoming should succeed");
+
+    let return_edges: Vec<_> = edges
+        .iter()
+        .filter(|e| e.kind == atlas::types::enums::DataFlowKind::ReturnToCall)
+        .collect();
+    assert!(
+        !return_edges.is_empty(),
+        "SummaryEdgeProvider should produce ReturnToCall edges from callee \
+         return to caller call-result Expr; found {} edges total, {} ReturnToCall",
+        edges.len(),
+        return_edges.len(),
+    );
+
+    for edge in &return_edges {
+        assert!(
+            edge.confidence > 0.5,
+            "ReturnToCall virtual edge should have confidence > 0.5"
+        );
+        assert!(
+            edge.provenance.contains("callee return"),
+            "virtual edge provenance should mention 'callee return': {}",
+            edge.provenance,
+        );
+        assert_eq!(
+            edge.target_id, call_result_expr.id,
+            "virtual edge should target the caller's call-result Expr"
+        );
+    }
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -803,7 +982,7 @@ function outer(z: number): number {
         .iter()
         .find(|s| s.name == "inner")
         .expect("inner symbol not found");
-    let middle_sym = syms
+    let _middle_sym = syms
         .iter()
         .find(|s| s.name == "middle")
         .expect("middle symbol not found");
@@ -1126,6 +1305,321 @@ function middle(y: number): number {
                 ev.symbol_name.is_some(),
                 "evidence.symbol_name must be the caller symbol"
             );
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// P5: Combined trace — variable slice + caller path + evidence
+//     (TS / JS / Python)
+// ────────────────────────────────────────────────────────────────
+
+/// TS combined: param flows to result, result returned, called from handler.
+/// trace_variable from `result` backward → slice steps with evidence,
+/// trace_callers from `compute` → caller chain with provenance.
+#[test]
+fn p5_ts_param_slice_caller_evidence_combined() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[
+        (
+            "helper.ts",
+            "export function compute(base: number, factor: number): number {\n    const result = base * factor;\n    return result;\n}\n",
+        ),
+        (
+            "main.ts",
+            "import { compute } from './helper';\n\nfunction handler(input: number): string {\n    const value = compute(input, 3);\n    return `Result: ${value}`;\n}\n",
+        ),
+    ];
+    let (store, stats) = index_files(files);
+    assert!(stats.resolution.resolved > 0, "expected resolved refs");
+    assert!(stats.edges_built > 0, "expected structural edges");
+
+    let engine = TraceEngine::new(store.clone());
+    let helper_id = FileId::generate("helper.ts");
+
+    // ── trace_variable from 'result' ──
+    let data_nodes = store.find_data_nodes_by_file(&helper_id).unwrap();
+    let result_node = data_nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("result"))
+        .expect("'result' data node not found");
+
+    let resp = engine.trace_variable(
+        &helper_id,
+        result_node.range.start_line + 1,
+        result_node.range.start_column + 1,
+        20,
+    );
+    assert!(resp.ok, "trace_variable should succeed");
+    assert!(resp.capability.is_some(), "capability must be present");
+
+    let path = resp.result.as_ref().expect("trace path should exist");
+    assert!(path.confidence > 0.0, "confidence should be positive");
+    assert!(path.nodes_visited > 0, "nodes_visited should be > 0");
+
+    for (i, step) in path.steps.iter().enumerate() {
+        assert!(
+            !step.file_id.as_bytes().is_empty(),
+            "step {}: file_id should be populated",
+            i
+        );
+        let ev = step
+            .evidence
+            .as_ref()
+            .unwrap_or_else(|| panic!("step {}: evidence must exist", i));
+        assert!(
+            !ev.file_path.is_empty(),
+            "step {}: evidence.file_path must be set",
+            i
+        );
+    }
+
+    // Verify sink identity
+    assert_eq!(
+        path.sink.data_node.as_ref().map(|n| &n.id),
+        Some(&result_node.id),
+        "sink should be the result node"
+    );
+
+    // ── trace_callers from 'compute' ──
+    let helper_syms = store.find_symbols_by_file(&helper_id).unwrap();
+    let compute_sym = helper_syms
+        .iter()
+        .find(|s| s.name == "compute")
+        .expect("compute symbol not found");
+
+    let caller_resp = engine.trace_callers(&compute_sym.id, 10);
+    assert!(caller_resp.ok, "trace_callers should succeed");
+
+    let chain = caller_resp
+        .result
+        .as_ref()
+        .expect("caller chain should exist");
+    assert!(!chain.steps.is_empty(), "should have caller steps");
+    assert_eq!(chain.target.name, "compute", "chain target should be compute");
+
+    for (i, step) in chain.steps.iter().enumerate() {
+        let ev = step
+            .evidence
+            .as_ref()
+            .unwrap_or_else(|| panic!("caller step {}: evidence must exist", i));
+        assert!(
+            !ev.file_path.is_empty(),
+            "caller step {}: file_path must be set",
+            i
+        );
+        assert!(
+            ev.symbol_name.is_some(),
+            "caller step {}: symbol_name must be set (provenance)",
+            i
+        );
+    }
+}
+
+/// JS combined: same structure as TS but without type annotations.
+/// Validates that JavaScript extraction produces the same trace artifacts.
+#[test]
+fn p5_js_param_slice_caller_evidence_combined() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[
+        (
+            "helper.js",
+            "export function compute(base, factor) {\n    const result = base * factor;\n    return result;\n}\n",
+        ),
+        (
+            "main.js",
+            "import { compute } from './helper.js';\n\nfunction handler(input) {\n    const value = compute(input, 3);\n    return `Result: ${value}`;\n}\n",
+        ),
+    ];
+    let (store, stats) = index_files(files);
+    assert!(stats.resolution.resolved > 0, "expected resolved refs");
+
+    let engine = TraceEngine::new(store.clone());
+    let helper_id = FileId::generate("helper.js");
+
+    // ── trace_variable from 'result' ──
+    let data_nodes = store.find_data_nodes_by_file(&helper_id).unwrap();
+    let result_node = data_nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("result"))
+        .expect("'result' data node not found in JS");
+
+    let resp = engine.trace_variable(
+        &helper_id,
+        result_node.range.start_line + 1,
+        result_node.range.start_column + 1,
+        20,
+    );
+    assert!(resp.ok, "JS trace_variable should succeed");
+    assert!(resp.capability.is_some(), "JS capability must be present");
+
+    let path = resp.result.as_ref().expect("JS trace path should exist");
+    assert!(path.confidence > 0.0, "JS confidence should be positive");
+    assert!(path.nodes_visited > 0, "JS nodes_visited should be > 0");
+
+    for (i, step) in path.steps.iter().enumerate() {
+        assert!(
+            !step.file_id.as_bytes().is_empty(),
+            "JS step {}: file_id should be populated",
+            i
+        );
+        let ev = step
+            .evidence
+            .as_ref()
+            .unwrap_or_else(|| panic!("JS step {}: evidence must exist", i));
+        assert!(
+            !ev.file_path.is_empty(),
+            "JS step {}: evidence.file_path must be set",
+            i
+        );
+    }
+
+    assert_eq!(
+        path.sink.data_node.as_ref().map(|n| &n.id),
+        Some(&result_node.id),
+        "JS sink should be the result node"
+    );
+
+    // ── trace_callers from 'compute' ──
+    let helper_syms = store.find_symbols_by_file(&helper_id).unwrap();
+    let compute_sym = helper_syms
+        .iter()
+        .find(|s| s.name == "compute")
+        .expect("JS compute symbol not found");
+
+    let caller_resp = engine.trace_callers(&compute_sym.id, 10);
+    assert!(caller_resp.ok, "JS trace_callers should succeed");
+
+    let chain = caller_resp
+        .result
+        .as_ref()
+        .expect("JS caller chain should exist");
+    assert!(!chain.steps.is_empty(), "JS should have caller steps");
+    assert_eq!(
+        chain.target.name, "compute",
+        "JS chain target should be compute"
+    );
+
+    for (i, step) in chain.steps.iter().enumerate() {
+        let ev = step
+            .evidence
+            .as_ref()
+            .unwrap_or_else(|| panic!("JS caller step {}: evidence must exist", i));
+        assert!(
+            !ev.file_path.is_empty(),
+            "JS caller step {}: file_path must be set",
+            i
+        );
+        assert!(
+            ev.symbol_name.is_some(),
+            "JS caller step {}: symbol_name must be set",
+            i
+        );
+    }
+}
+
+/// Python combined: param flows to result, cross-file caller chain, evidence.
+#[test]
+fn p5_py_param_slice_caller_evidence_combined() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[
+        (
+            "helper.py",
+            "def compute(base, factor):\n    result = base * factor\n    return result\n",
+        ),
+        (
+            "main.py",
+            "from helper import compute\n\ndef handler(input_val):\n    value = compute(input_val, 3)\n    return f\"Result: {value}\"\n",
+        ),
+    ];
+    let (store, _stats) = index_files(files);
+
+    let engine = TraceEngine::new(store.clone());
+    let helper_id = FileId::generate("helper.py");
+
+    // ── trace_variable from 'result' ──
+    let data_nodes = store.find_data_nodes_by_file(&helper_id).unwrap();
+    let result_node = data_nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("result"))
+        .expect("'result' data node not found in Python");
+
+    let resp = engine.trace_variable(
+        &helper_id,
+        result_node.range.start_line + 1,
+        result_node.range.start_column + 1,
+        20,
+    );
+    assert!(resp.ok, "Python trace_variable should succeed");
+    assert!(resp.capability.is_some(), "Python capability must be present");
+
+    // Python dataflow may be partial — assert envelope is well-formed.
+    if let Some(ref path) = resp.result {
+        assert!(path.confidence > 0.0, "Python confidence should be positive");
+        assert!(path.nodes_visited > 0, "Python nodes_visited should be > 0");
+
+        for (i, step) in path.steps.iter().enumerate() {
+            assert!(
+                !step.file_id.as_bytes().is_empty(),
+                "Python step {}: file_id should be populated",
+                i
+            );
+            let ev = step
+                .evidence
+                .as_ref()
+                .unwrap_or_else(|| panic!("Python step {}: evidence must exist", i));
+            assert!(
+                !ev.file_path.is_empty(),
+                "Python step {}: evidence.file_path must be set",
+                i
+            );
+        }
+
+        assert_eq!(
+            path.sink.data_node.as_ref().map(|n| &n.id),
+            Some(&result_node.id),
+            "Python sink should be the result node"
+        );
+    } else {
+        assert!(
+            resp.partial_result || !resp.diagnostics.is_empty(),
+            "empty Python result should be partial or diagnostic"
+        );
+    }
+
+    // ── trace_callers from 'compute' ──
+    let helper_syms = store.find_symbols_by_file(&helper_id).unwrap();
+    let compute_sym = helper_syms
+        .iter()
+        .find(|s| s.name == "compute")
+        .expect("Python compute symbol not found");
+
+    let caller_resp = engine.trace_callers(&compute_sym.id, 10);
+    if caller_resp.ok {
+        if let Some(ref chain) = caller_resp.result {
+            assert!(!chain.steps.is_empty(), "Python should have caller steps");
+            assert_eq!(
+                chain.target.name, "compute",
+                "Python chain target should be compute"
+            );
+            for (i, step) in chain.steps.iter().enumerate() {
+                let ev = step
+                    .evidence
+                    .as_ref()
+                    .unwrap_or_else(|| {
+                        panic!("Python caller step {}: evidence must exist", i)
+                    });
+                assert!(
+                    !ev.file_path.is_empty(),
+                    "Python caller step {}: file_path must be set",
+                    i
+                );
+                assert!(
+                    ev.symbol_name.is_some(),
+                    "Python caller step {}: symbol_name must be set",
+                    i
+                );
+            }
         }
     }
 }

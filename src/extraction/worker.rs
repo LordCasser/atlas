@@ -107,7 +107,7 @@ impl ParseWorkerPool {
                     ),
                 };
                 self.record_error(err.clone());
-                *self.skipped.lock().unwrap() += 1;
+                *self.skipped.lock().unwrap_or_else(|e| e.into_inner()) += 1;
                 return Err(err);
             }
         }
@@ -119,7 +119,7 @@ impl ParseWorkerPool {
 
         match result {
             Ok(Ok(facts)) => {
-                *self.indexed.lock().unwrap() += 1;
+                *self.indexed.lock().unwrap_or_else(|e| e.into_inner()) += 1;
                 Ok(facts)
             }
             Ok(Err(extraction_err)) => {
@@ -189,7 +189,7 @@ impl ParseWorkerPool {
     ///
     /// Use this for failures that happen before `extract_one()` is called.
     pub(crate) fn push_failure(&self, file_path: &str, category: FailureCategory, message: String) {
-        self.errors.lock().unwrap().push(ExtractionError {
+        self.errors.lock().unwrap_or_else(|e| e.into_inner()).push(ExtractionError {
             file_path: file_path.to_string(),
             category,
             message,
@@ -199,7 +199,7 @@ impl ParseWorkerPool {
     // --- internal ---
 
     fn record_error(&self, err: ExtractionError) {
-        self.errors.lock().unwrap().push(err);
+        self.errors.lock().unwrap_or_else(|e| e.into_inner()).push(err);
     }
 }
 

@@ -348,6 +348,7 @@ impl LanguageAdapter for PythonAdapter {
                             node_id,
                             file_id,
                             None,
+                            None,
                             &name,
                             &access_path,
                             range,

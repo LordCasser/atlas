@@ -968,3 +968,106 @@ fn p12_trace_variable_file_not_found() {
         "non-existent file should return either ok=false or partial_result=true"
     );
 }
+
+// ────────────────────────────────────────────────────────────────
+// P13: PathAliasResolver E2E (Task 4)
+// ────────────────────────────────────────────────────────────────
+
+/// Verify that tsconfig path aliases are resolved during index (Task 4).
+/// Before Task 4, PathAliasResolver was always initialized as empty(),
+/// so project-level tsconfig path mappings were ignored during import resolution.
+#[test]
+fn p13_tsconfig_path_alias_resolves_imports() {
+    use atlas::db::Store;
+    use atlas::types::enums::EdgeKind;
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let tmp = TempDir::new().expect("create temp dir");
+
+    // ── Write tsconfig.json with path aliases ──
+    let tsconfig = serde_json::json!({
+        "compilerOptions": {
+            "baseUrl": ".",
+            "paths": {
+                "@lib/*": ["lib/*"]
+            }
+        }
+    });
+    std::fs::write(
+        tmp.path().join("tsconfig.json"),
+        serde_json::to_string_pretty(&tsconfig).unwrap(),
+    )
+    .expect("write tsconfig");
+
+    // ── Write lib/helper.ts (exported function — alias target) ──
+    std::fs::create_dir_all(tmp.path().join("lib")).expect("create lib dir");
+    std::fs::write(
+        tmp.path().join("lib/helper.ts"),
+        r#"export function compute(x: number): number { return x + 1; }
+"#,
+    )
+    .expect("write helper.ts");
+
+    // ── Write src/other/utils.ts (duplicate compute — NOT aliased) ──
+    // This proves aliased routing: without PathAliasResolver, the resolver may
+    // pick this compute instead of lib/helper.ts::compute via global name search.
+    std::fs::create_dir_all(tmp.path().join("src/other")).expect("create other dir");
+    std::fs::write(
+        tmp.path().join("src/other/utils.ts"),
+        r#"export function compute(x: number): number { return x * 2; }
+"#,
+    )
+    .expect("write utils.ts");
+
+    // ── Write src/app.ts (imports via path alias) ──
+    std::fs::create_dir_all(tmp.path().join("src")).expect("create src dir");
+    std::fs::write(
+        tmp.path().join("src/app.ts"),
+        r#"import { compute } from '@lib/helper';
+export function run(): number { return compute(5); }
+"#,
+    )
+    .expect("write app.ts");
+
+    // ── Run init + index ──
+    let project = tmp.path().to_string_lossy().to_string();
+    atlas::cli::commands::init::run(&project).expect("atlas init");
+    atlas::cli::commands::index::run(&project, None, None).expect("atlas index");
+
+    // ── Verify resolution ──
+    let store = Arc::new(Store::open(tmp.path()).expect("open store"));
+
+    // Find the compute function in lib/helper.ts
+    let lib_file_id = FileId::generate("lib/helper.ts");
+    let lib_syms = store.find_symbols_by_file(&lib_file_id).unwrap();
+    let compute_sym = lib_syms
+        .iter()
+        .find(|s| s.name == "compute")
+        .expect("compute symbol not found in lib/helper.ts");
+
+    // Find the run function in src/app.ts
+    let app_file_id = FileId::generate("src/app.ts");
+    let app_syms = store.find_symbols_by_file(&app_file_id).unwrap();
+    let _run_sym = app_syms
+        .iter()
+        .find(|s| s.name == "run")
+        .expect("run symbol not found in src/app.ts");
+
+    // Verify that a Calls edge exists from the import to the aliased compute
+    // (NOT the duplicate compute in src/other/utils.ts, which would be picked
+    // by global name fallback without path alias support).
+    let all_edges = store.get_all_edges().unwrap();
+    let call_edges: Vec<_> = all_edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Calls && e.target == compute_sym.id)
+        .collect();
+    assert!(
+        !call_edges.is_empty(),
+        "expected Calls edge from import site to lib/helper.ts::compute via @lib/helper alias. \
+         Got {} total edges, {} Calls edges to compute. \
+         A duplicate compute exists in src/other/utils.ts — if the edge targets \
+         that symbol instead, PathAliasResolver did not narrow the resolution.",
+        all_edges.len(),
+        call_edges.len()
+    );
+}

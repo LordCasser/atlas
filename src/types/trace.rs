@@ -195,6 +195,9 @@ pub struct TracePath {
     pub confidence: f64,
     /// The number of dataflow nodes visited during the trace.
     pub nodes_visited: usize,
+    /// How far backward the trace was able to go (number of BFS levels).
+    /// Compare against the requested `max_depth` to detect truncation.
+    pub max_depth_reached: usize,
     /// Language capability profile. Always present for MCP consumers.
     #[serde(default)]
     pub capability: Option<LanguageCapabilityProfile>,

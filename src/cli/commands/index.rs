@@ -221,6 +221,23 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     };
     phase_timings.push(extract_timing);
 
+    // ── Phase: Clean stale facts for modified files ─────────────────────────
+    // When re-indexing modified files, old rows (symbols, references,
+    // dataflow, CFG, callsites) must be removed before inserting new
+    // facts.  INSERT OR REPLACE only handles primary-key conflicts;
+    // rows whose source code disappeared from the file persist as
+    // "ghost" facts.  `delete_files_batch` uses FOREIGN KEY CASCADE
+    // to wipe all related rows.
+    {
+        let clean_timer = PhaseTimer::start("Clean stale");
+        let file_ids: Vec<_> = extracted.iter().map(|ef| ef.facts.file.file_id).collect();
+        if let Err(e) = store.delete_files_batch(&file_ids) {
+            tracing::warn!("Failed to clean stale facts for dirty files: {:#}", e);
+        }
+        let clean_timing = clean_timer.items(file_ids.len() as u64).finish();
+        phase_timings.push(clean_timing);
+    }
+
     // ── Phase 2: Batch insertion (P3: single transaction per chunk) ──────
     let insert_timer = PhaseTimer::start("DB write");
     let mut insert_failures = 0usize;
@@ -259,7 +276,56 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     println!("\nResolving references...");
     let res_timer = PhaseTimer::start("Resolution");
     let store = Arc::new(store);
-    let mut resolver = crate::resolution::ReferenceResolver::new(Arc::clone(&store));
+    // P2: Load tsconfig.json path aliases if present
+    let path_alias =
+        crate::resolution::PathAliasResolver::from_tsconfig(&root.join("tsconfig.json"))
+            .unwrap_or_else(crate::resolution::PathAliasResolver::empty);
+
+    // P2: Detect tsconfig.json change and invalidate all import resolutions
+    // if the path alias config differs from the previous run.
+    {
+        for name in &["tsconfig.json", "jsconfig.json"] {
+            let config_path = root.join(name);
+            let current_hash = std::fs::read(&config_path)
+                .ok()
+                .map(|c| blake3::hash(&c).to_hex().to_string());
+            let meta_key = format!("{}_hash", name);
+            let prev_hash = store.get_metadata(&meta_key).ok().flatten();
+
+            match (&prev_hash, &current_hash) {
+                (Some(prev), Some(curr)) if prev == curr => {
+                    // Unchanged — try next config file
+                    continue;
+                }
+                (None, None) => {
+                    // No config file before or now — try next config file
+                    continue;
+                }
+                _ => {
+                    // tsconfig.json appeared, disappeared, or changed
+                    let inv_refs = store.invalidate_all_references().unwrap_or(0);
+                    let inv_edges = store.delete_all_edges().unwrap_or(0);
+                    tracing::info!(
+                        "{} changed — invalidated {} references and {} edges for re-resolution",
+                        name, inv_refs, inv_edges
+                    );
+                    // Persist new hash or clear when config file was deleted
+                    match &current_hash {
+                        Some(hash) => {
+                            let _ = store.set_metadata(&meta_key, hash);
+                        }
+                        None => {
+                            let _ = store.set_metadata(&meta_key, "");
+                        }
+                    }
+                    break; // Found a change — no need to check further configs
+                }
+            }
+        }
+    }
+
+    let mut resolver =
+        crate::resolution::ReferenceResolver::with_path_alias(Arc::clone(&store), path_alias);
     let (resolved, stats) = resolver.resolve_all()?;
     let res_elapsed = res_timer
         .items(stats.total_refs as u64)

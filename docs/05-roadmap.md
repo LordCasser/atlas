@@ -4,7 +4,7 @@
 
 ## 1. 近期优先级
 
-1. 基于当前架构稳定变量来源追踪和调用路径查询所需 facts：bindings、binding uses、callsite args、data nodes、dataflow edges、function summaries、call graph。
+1. 基于当前架构稳定变量来源追踪和调用路径查询所需 facts：bindings、binding uses、callsites、inline call arguments、data nodes、dataflow edges、call graph；`callsite_args` 表已移除，调用实参统一使用 `callsites.args_json` + call-arg DataNode；FunctionSummary 已实现 query-time 基础版。
 2. 优先补齐 TypeScript/JavaScript/Python 的 backward slice 能力，再为 Java/C/C++/ArkTS 标注能力等级；Cangjie 只在显式启用时展示 experimental capability。
 3. 建立“指定位置 -> 变量来源 -> caller path -> Agent evidence”的端到端 fixture。
 4. 将 trace CLI/MCP 输出打磨为 Agent 可消费格式。
@@ -23,9 +23,9 @@
 
 需要补齐：
 
-- 从 file/line/column 定位 ReferenceUse、CallsiteArg、BindingUse、DataNode。
+- 从 file/line/column 定位 ReferenceUse、BindingUse、DataNode，以及当前 callsite inline argument / call-arg DataNode。
 - BindingUse 扫描和 shadowing，避免同名变量误连。
-- CallsiteArg 可靠落库，支持 argument index、keyword/named argument、receiver。
+- 统一调用实参事实源已实现：`callsites.args_json` + call-arg `DataNode` 为单一事实源；`callsite_args` 表已移除。
 - DataFlowBuilder 从 capture 顺序启发式升级为 AST 结构建边。
 - BackwardSlicer：从 DataNode/BindingUse 反向追 `Assign`、`FieldLoad`、`CallArg`、`Return`、`ArgToParam` 等来源边。
 - CallerPathExplorer：沿 symbol call graph 向上游展开 caller chain，带 depth/limit/confidence。
@@ -37,9 +37,9 @@
 2. LanguageAdapter 只做语言归一化，把 AST capture 转成统一 facts，不在 adapter 内做跨文件推理。
 3. ScopeTree 和 LexicalBinder 先建立作用域、定义、使用和 shadowing，确保同名变量不会误连。
 4. DataFlowBuilder 基于 AST 父子关系建边，避免只依赖 capture 顺序；同一语法结构必须能说明为何产生 `Assign`、`CallArg`、`Return` 或 `FieldLoad`。
-5. CallsiteArg 必须从真实 call expression 生成，保留 receiver、callee text、argument index、named/keyword argument 和 range。
-6. FunctionSummary 从函数内 facts 生成轻量摘要，只表达“参数/字段/调用结果/返回值之间可能有关”，不做漏洞语义判断。
-7. Trace 查询在 query-time 组合 local dataflow、summary 和 call graph，按深度、预算和 confidence 截断。
+5. 调用实参 facts 必须从真实 call expression 生成，保留 receiver、callee text、argument index、named/keyword argument 和 range；调用实参事实源已统一为 `callsites.args_json` + call-arg DataNode。
+6. FunctionSummary 已实现 query-time 基础版（`SummaryBuilder`），从函数内 facts 生成轻量摘要（parameter reachability via BFS），跨函数传播仍硬依赖 dataflow_edges；不做漏洞语义判断。
+7. Trace 查询当前组合 local dataflow 和 call graph；引入 summary 后再按深度、预算和 confidence 做跨过程截断。
 
 MVP 语言端到端验收：
 
@@ -51,7 +51,7 @@ MVP 语言端到端验收：
 
 ## 3. 函数摘要与轻量跨函数追踪
 
-当前 CFG 和 local dataflow 已有基础，但从指定位置回溯到 caller 仍需轻量函数摘要。先做 query-time summary 即可。CFG 是未来精度增强能力，不是 P5 MVP 的前置门槛；P5 优先完成 Level 3 facts + 轻量 summary bridge。
+当前 CFG 和 local dataflow 已有基础；从指定位置回溯到 caller 现在主要依赖调用图和有限的参数/调用点事实。轻量函数摘要已有 query-time 基础版（参数→return/call_arg/field BFS 可达性）。先做 query-time summary 即可。CFG 是未来精度增强能力，不是 P5 MVP 的前置门槛；P5 优先完成 Level 3 facts，并在事实源统一后再接入 summary bridge。
 
 建议新增：
 

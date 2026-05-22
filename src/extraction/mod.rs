@@ -20,6 +20,7 @@ pub mod frontend;
 mod grammar;
 pub mod languages;
 mod lexical_binder;
+mod query_helpers;
 mod scope_tree;
 mod semantic_binder;
 mod symbol_registry;

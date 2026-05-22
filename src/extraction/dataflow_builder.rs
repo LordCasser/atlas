@@ -12,6 +12,20 @@
 //! 3. Creates [`DataFlowEdge`]s connecting related nodes (Assign, Read, Write,
 //!    FieldLoad, FieldStore, ArgToParam, ReturnToCall).
 //!
+//! # Edge-building rules
+//!
+//! - **Assign**: position-based value → target (Expr nodes between consecutive
+//!   Local/Parameter targets).
+//! - **FieldLoad**: name-based base → field (looks up the base of an access path
+//!   among known locals/params).
+//! - **ArgToParam**: callsite-grouped call_arg → call_target.  CallArg and
+//!   CallTarget nodes from the same `call_expression` share a `callsite_id`
+//!   (set during extraction by walking the AST).  Falls back to "most recent
+//!   preceding target" heuristic when `callsite_id` is not set.
+//! - **ReturnToCall**: contained-node → Return.  Nodes whose range falls fully
+//!   inside a Return node's range (e.g. `CallTarget` in `return foo()`) are
+//!   linked to the Return.
+//!
 //! # Invariants
 //!
 //! - Source/Target of [`DataFlowEdge`] are **always** [`DataNodeId`], never
@@ -25,11 +39,13 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::types::CallsiteId;
 use crate::types::ScopeDef;
 use crate::types::bindings::BindingDef;
 use crate::types::dataflow::{DataFlowEdge, DataNode};
-use crate::types::enums::{DataFlowKind, DataNodeKind};
-use crate::types::ids::{BindingId, DataFlowEdgeId, DataNodeId, FileId, SymbolId};
+use crate::types::enums::{DataFlowKind, DataNodeKind, SymbolKind};
+use crate::types::ids::{BindingId, DataFlowEdgeId, DataNodeId, FileId, ScopeId, SymbolId};
+use crate::types::structs::{SymbolDef, TextRange};
 
 use super::languages::LanguageAdapter;
 
@@ -61,7 +77,7 @@ impl DataFlowBuilder {
         file_id: FileId,
         file_path: &Path,
         bindings: &[BindingDef],
-        _scopes: &[ScopeDef],
+        scopes: &[ScopeDef],
     ) -> anyhow::Result<DataFlowResult> {
         let query_src = adapter.dataflow_builder_query();
         if query_src.trim().is_empty() {
@@ -69,7 +85,7 @@ impl DataFlowBuilder {
         }
 
         // Collect captures
-        let captures = super::extract::collect_captures(ts_lang, query_src, root, source_bytes)?;
+        let captures = super::query_helpers::collect_captures(ts_lang, query_src, root, source_bytes)?;
 
         let mut nodes: Vec<DataNode> = Vec::new();
         let mut edges: Vec<DataFlowEdge> = Vec::new();
@@ -87,7 +103,7 @@ impl DataFlowBuilder {
         }
 
         // Post-process: resolve bindings to nodes
-        resolve_bindings_to_nodes(&mut nodes, bindings);
+        resolve_bindings_to_nodes(&mut nodes, bindings, scopes);
 
         // Post-process: create dataflow edges from assignments
         build_dataflow_edges(&nodes, &bindings, file_id, &mut edges);
@@ -115,20 +131,86 @@ impl DataFlowBuilder {
     }
 }
 
-/// For each data node that has a binding_id placeholder, try to match it
-/// to an actual binding definition by name.
-fn resolve_bindings_to_nodes(nodes: &mut [DataNode], bindings: &[BindingDef]) {
-    // Build a lookup: name → binding_id (within a scope)
-    let binding_by_name: HashMap<&str, &BindingId> =
+/// Resolve `binding_id` on data nodes using scope-chain-aware lookup.
+///
+/// For each DataNode with a `name`, finds the innermost scope containing its
+/// range, then walks the scope chain upward looking for a `BindingDef` with
+/// a matching name.  This properly handles variable shadowing: same-named
+/// vars in nested scopes receive distinct binding_ids.
+///
+/// Falls back to a flat name-based lookup when the node's range is not
+/// contained by any scope.
+fn resolve_bindings_to_nodes(
+    nodes: &mut [DataNode],
+    bindings: &[BindingDef],
+    scopes: &[ScopeDef],
+) {
+    // Build scope → bindings map (bindings indexed by their scope_id)
+    let mut scope_bindings: HashMap<ScopeId, Vec<&BindingDef>> = HashMap::new();
+    for binding in bindings {
+        scope_bindings
+            .entry(binding.scope_id)
+            .or_default()
+            .push(binding);
+    }
+
+    // Build parent map from the scope tree
+    let parent_map: HashMap<ScopeId, Option<ScopeId>> =
+        scopes.iter().map(|s| (s.id, s.parent_id)).collect();
+
+    // Flat fallback: name → binding_id (used when no scope contains the node)
+    let flat_map: HashMap<&str, &BindingId> =
         bindings.iter().map(|b| (b.name.as_str(), &b.id)).collect();
 
     for node in nodes.iter_mut() {
-        if let Some(ref name) = node.name {
-            if let Some(binding_id) = binding_by_name.get(name.as_str()) {
-                node.binding_id = Some(**binding_id);
+        let name = match &node.name {
+            Some(n) => n,
+            None => continue,
+        };
+
+        // Find the innermost scope containing this DataNode's range
+        let containing_scope = innermost_scope_by_range(scopes, node.range);
+
+        let binding_id = match containing_scope {
+            Some(scope_id) => {
+                // Walk the scope chain upward looking for a binding with
+                // the matching name
+                let mut found: Option<&BindingId> = None;
+                let mut current = Some(scope_id);
+                while let Some(sid) = current {
+                    if let Some(bindings_in_scope) = scope_bindings.get(&sid) {
+                        if let Some(b) = bindings_in_scope
+                            .iter()
+                            .find(|b| b.name.as_str() == name.as_str())
+                        {
+                            found = Some(&b.id);
+                            break;
+                        }
+                    }
+                    current = parent_map
+                        .get(&sid)
+                        .and_then(|&maybe_parent| maybe_parent);
+                }
+                found.or_else(|| flat_map.get(name.as_str()).copied())
             }
+            None => flat_map.get(name.as_str()).copied(),
+        };
+
+        if let Some(&bid) = binding_id {
+            node.binding_id = Some(bid);
         }
     }
+}
+
+/// Find the innermost scope that fully contains the given range.
+fn innermost_scope_by_range(scopes: &[ScopeDef], range: TextRange) -> Option<ScopeId> {
+    scopes
+        .iter()
+        .filter(|s| {
+            s.range.start_byte <= range.start_byte && s.range.end_byte >= range.end_byte
+        })
+        .min_by_key(|s| s.range.byte_len())
+        .map(|s| s.id)
 }
 
 /// Build intra-function dataflow edges between related nodes.
@@ -228,10 +310,17 @@ fn build_dataflow_edges(
         }
     }
 
-    // Create ArgToParam edges: call_arg → call_target
-    // Associates each call argument with its call target (callee).
-    // Logic: within each function, associate each CallArg with the most recent
-    // preceding CallTarget in byte position.
+    // ── ArgToParam edges ────────────────────────────────────────────────
+    // Group CallArgs and CallTargets by their `callsite_id` (set during
+    // extraction by walking up to the enclosing `call_expression`).
+    // This correctly handles nested calls like `foo(bar(a), b)` where
+    // a simple "most recent preceding target" heuristic would mis-assign
+    // `b` to `bar` instead of `foo`.
+    //
+    // Fallback: when callsite_id is None (languages/adapters that don't
+    // set it), use the position-based "most recent preceding target"
+    // heuristic as before.
+
     let call_targets: Vec<&DataNode> = nodes
         .iter()
         .filter(|n| n.kind == DataNodeKind::CallTarget)
@@ -243,7 +332,39 @@ fn build_dataflow_edges(
         .collect();
 
     if !call_targets.is_empty() && !call_args.is_empty() {
+        // Build: callsite_id → Vec<CallTarget> for group-based matching
+        let mut targets_by_group: HashMap<Option<CallsiteId>, Vec<&DataNode>> = HashMap::new();
+        for t in &call_targets {
+            targets_by_group.entry(t.callsite_id).or_default().push(t);
+        }
+
         for arg in &call_args {
+            // Primary strategy: match by callsite_id group
+            if let Some(cid) = arg.callsite_id {
+                if let Some(matching_targets) = targets_by_group.get(&Some(cid)) {
+                    for target in matching_targets {
+                        if target.function_id == arg.function_id {
+                            let edge_id = DataFlowEdgeId::generate(
+                                &arg.id,
+                                &target.id,
+                                DataFlowKind::ArgToParam.as_str(),
+                            );
+                            edges.push(DataFlowEdge::new(
+                                edge_id,
+                                arg.id,
+                                target.id,
+                                DataFlowKind::ArgToParam,
+                                arg.range,
+                                0.75,
+                            ));
+                        }
+                    }
+                    continue; // matched by group — skip fallback
+                }
+            }
+
+            // Fallback: "most recent preceding target" heuristic
+            // (for languages that don't set callsite_id)
             let best_target = call_targets
                 .iter()
                 .filter(|t| t.function_id == arg.function_id)
@@ -256,16 +377,60 @@ fn build_dataflow_edges(
                     &target.id,
                     DataFlowKind::ArgToParam.as_str(),
                 );
-                let edge = DataFlowEdge::new(
+                edges.push(DataFlowEdge::new(
                     edge_id,
                     arg.id,
                     target.id,
                     DataFlowKind::ArgToParam,
                     arg.range,
                     0.75,
-                );
-                edges.push(edge);
+                ));
             }
+        }
+    }
+
+    // ── ReturnToCall edges ──────────────────────────────────────────────
+    // Link return-value expression nodes to their enclosing Return nodes.
+    // When `return compute()` is captured, the CallTarget `compute` is
+    // inside the Return node's range.  Create a dataflow edge so that
+    // slicers can follow the value flow from call result to return site.
+    let return_nodes: Vec<&DataNode> = nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Return)
+        .collect();
+
+    for ret in &return_nodes {
+        // Find nodes whose range is contained within the Return's range
+        // and are in the same function.  These are the value-producing
+        // nodes of the return expression (e.g. CallTarget, Expr, Literal,
+        // CallArg, Field).
+        for source in nodes.iter().filter(|n| {
+            n.id != ret.id
+                && n.function_id == ret.function_id
+                && n.range.start_byte >= ret.range.start_byte
+                && n.range.end_byte <= ret.range.end_byte
+                && matches!(
+                    n.kind,
+                    DataNodeKind::CallTarget
+                        | DataNodeKind::Expr
+                        | DataNodeKind::Literal
+                        | DataNodeKind::CallArg
+                        | DataNodeKind::Field
+                )
+        }) {
+            let edge_id = DataFlowEdgeId::generate(
+                &source.id,
+                &ret.id,
+                DataFlowKind::ReturnToCall.as_str(),
+            );
+            edges.push(DataFlowEdge::new(
+                edge_id,
+                source.id,
+                ret.id,
+                DataFlowKind::ReturnToCall,
+                ret.range,
+                0.85,
+            ));
         }
     }
 }
@@ -375,6 +540,52 @@ fn use_def_key(node: &DataNode) -> Option<UseDefKey> {
         binding_id: node.binding_id,
         name,
     })
+}
+
+/// Resolve DataNode function_ids by matching each node to its enclosing
+/// function symbol.
+///
+/// For each DataNode with `function_id: None`, finds the function symbol
+/// whose range contains the node's start position, and sets the id.
+pub(crate) fn resolve_dataflow_function_ids(nodes: &mut [DataNode], symbols: &[SymbolDef]) {
+    // Build (start_byte, end_byte, symbol_id) for all function symbols
+    let function_ranges: Vec<(u32, u32, SymbolId)> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .map(|s| (s.range.start_byte, s.range.end_byte, s.id))
+        .collect();
+
+    if function_ranges.is_empty() {
+        return;
+    }
+
+    for node in nodes.iter_mut() {
+        if node.function_id.is_some() {
+            continue;
+        }
+        // Find the innermost function that contains this node's start position
+        let pos = node.range.start_byte;
+        let mut best: Option<(u32, u32, SymbolId)> = None;
+        for (start, end, id) in &function_ranges {
+            if pos >= *start && pos <= *end {
+                match best {
+                    Some((bs, be, _)) if (*end - *start) < (be - bs) => {
+                        best = Some((*start, *end, *id));
+                    }
+                    None => best = Some((*start, *end, *id)),
+                    _ => {}
+                }
+            }
+        }
+        if let Some((_, _, id)) = best {
+            node.function_id = Some(id);
+        }
+    }
 }
 
 #[cfg(test)]

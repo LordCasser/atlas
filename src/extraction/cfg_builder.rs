@@ -27,9 +27,9 @@
 //! - CfgNodeId and CfgEdgeId are deterministic (blake3).
 
 use crate::types::cfg::{CfgEdge, CfgNode};
-use crate::types::enums::{CfgEdgeKind, CfgNodeKind};
+use crate::types::enums::{CfgEdgeKind, CfgNodeKind, SymbolKind};
 use crate::types::ids::SymbolId;
-use crate::types::structs::TextRange;
+use crate::types::structs::{SymbolDef, TextRange};
 use tree_sitter::Node;
 
 // ── CfgBuilder ──────────────────────────────────────────────────────────────
@@ -251,6 +251,71 @@ fn node_text_range(node: &Node, _source: &[u8]) -> TextRange {
         start_column: node.start_position().column as u32,
         end_line: node.end_position().row as u32,
         end_column: node.end_position().column as u32,
+    }
+}
+
+// ── CFG extraction helpers (used by extract.rs) ─────────────────────────
+
+/// Function node kinds that CfgBuilder handles across languages.
+const FUNCTION_NODE_KINDS: &[&str] = &[
+    "function_declaration",
+    "method_definition",
+    "arrow_function",
+    "generator_function_declaration",
+    "generator_function",
+    "function_definition",
+    "async_function_definition",
+    "method_declaration",
+    "constructor_declaration",
+];
+
+/// Build per-function control-flow graphs by matching function symbols
+/// to tree-sitter nodes.
+pub(crate) fn build_cfg_for_functions<'a>(
+    root: Node<'a>,
+    symbols: &[SymbolDef],
+    source_bytes: &[u8],
+) -> anyhow::Result<CfgResult> {
+    let function_symbols: Vec<&SymbolDef> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .collect();
+
+    let mut all_nodes = Vec::new();
+    let mut all_edges = Vec::new();
+
+    for sym in &function_symbols {
+        if let Some(func_node) = find_function_node(root, sym) {
+            let result = CfgBuilder::build(&sym.id, func_node, source_bytes);
+            all_nodes.extend(result.nodes);
+            all_edges.extend(result.edges);
+        }
+    }
+
+    Ok(CfgResult {
+        nodes: all_nodes,
+        edges: all_edges,
+    })
+}
+
+/// Walk up from the symbol's name position to find the enclosing function node.
+fn find_function_node<'a>(
+    root: Node<'a>,
+    symbol: &SymbolDef,
+) -> Option<Node<'a>> {
+    let pos = symbol.name_range.start_byte as usize;
+    let mut node = root.descendant_for_byte_range(pos, pos)?;
+    // Walk up parent chain to find the enclosing function node
+    loop {
+        if FUNCTION_NODE_KINDS.contains(&node.kind()) {
+            return Some(node);
+        }
+        node = node.parent()?;
     }
 }
 

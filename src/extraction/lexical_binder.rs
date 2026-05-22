@@ -32,7 +32,7 @@ use crate::types::ids::{BindingId, BindingUseId, FileId, ScopeId};
 use crate::types::structs::TextRange;
 use crate::types::{ScopeDef, SymbolDef};
 
-use super::extract::collect_captures;
+use super::query_helpers::collect_captures;
 use super::languages::LanguageAdapter;
 
 /// Result of lexical binding extraction.

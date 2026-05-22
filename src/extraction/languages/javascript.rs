@@ -120,6 +120,43 @@ impl LanguageAdapter for JavaScriptAdapter {
     fn detect_frameworks(&self, source: &str) -> Vec<String> {
         super::typescript::TypeScriptAdapter.detect_frameworks(source)
     }
+
+    fn lexical_query(&self) -> &str {
+        super::typescript::TypeScriptAdapter.lexical_query()
+    }
+
+    fn dataflow_builder_query(&self) -> &str {
+        super::typescript::TypeScriptAdapter.dataflow_builder_query()
+    }
+
+    fn normalize_lexical(
+        &self,
+        capture_name: &str,
+        node: tree_sitter::Node,
+        source: &str,
+        file_id: FileId,
+        file_path: &Path,
+    ) -> Option<crate::types::bindings::BindingDef> {
+        super::typescript::TypeScriptAdapter.normalize_lexical(
+            capture_name, node, source, file_id, file_path,
+        )
+    }
+
+    fn normalize_dataflow_builder(
+        &self,
+        capture_name: &str,
+        node: tree_sitter::Node,
+        source: &str,
+        file_id: FileId,
+        file_path: &Path,
+    ) -> (
+        Option<crate::types::dataflow::DataNode>,
+        Option<crate::types::dataflow::DataFlowEdge>,
+    ) {
+        super::typescript::TypeScriptAdapter.normalize_dataflow_builder(
+            capture_name, node, source, file_id, file_path,
+        )
+    }
 }
 
 #[cfg(test)]

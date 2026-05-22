@@ -24,14 +24,12 @@ use self::name_matcher::NameMatcher;
 
 pub mod builtins;
 pub mod context;
-pub mod export_resolver;
 pub mod frameworks;
 pub mod import_resolver;
 pub mod include_graph;
 pub mod name_matcher;
 pub mod path_alias;
 
-pub use export_resolver::ExportResolver;
 pub use include_graph::IncludeGraph;
 pub use path_alias::PathAliasResolver;
 
@@ -55,6 +53,20 @@ impl ReferenceResolver {
     pub fn new(store: Arc<Store>) -> Self {
         Self {
             import_resolver: ImportResolver::new(store.clone()),
+            name_matcher: NameMatcher::new(),
+            store,
+            global_index: None,
+        }
+    }
+
+    /// Create a ReferenceResolver with tsconfig.json path alias support.
+    ///
+    /// When `PathAliasResolver` is configured (e.g. `@/utils` → `src/utils`),
+    /// import path resolution will apply aliases before generating candidate
+    /// qualified names.
+    pub fn with_path_alias(store: Arc<Store>, path_alias: PathAliasResolver) -> Self {
+        Self {
+            import_resolver: ImportResolver::with_path_alias(store.clone(), path_alias),
             name_matcher: NameMatcher::new(),
             store,
             global_index: None,

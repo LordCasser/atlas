@@ -10,6 +10,7 @@
 //! - `capability` — per-language analysis capability profiles.
 //! - `trace` — location-driven trace types (TracePoint, TracePath).
 //! - `caller_path` — reverse call-graph traversal types (CallerChain/CallerPath).
+//! - `summary` — lightweight intraprocedural function summaries.
 //! - `timing` — phase timing and per-language statistics for index pipeline.
 //!
 //! ## Invariants
@@ -27,6 +28,7 @@ pub mod dataflow;
 pub mod enums;
 pub mod ids;
 pub mod structs;
+pub mod summary;
 pub mod timing;
 pub mod trace;
 
@@ -55,7 +57,7 @@ pub use structs::{
 pub use bindings::{BindingDef, BindingUse};
 
 // --- Dataflow types ---
-pub use dataflow::{CallsiteArg, DataFlowEdge, DataNode};
+pub use dataflow::{DataFlowEdge, DataNode};
 
 // --- CFG types ---
 pub use cfg::{CfgEdge, CfgNode};
@@ -71,6 +73,9 @@ pub use trace::{
 
 // --- Caller path types ---
 pub use caller_path::{CallerChain, CallerChainStep, CallerPath};
+
+// --- Summary types ---
+pub use summary::{CallArgFlow, FunctionSummary, ParameterFlow, ReturnFlow};
 
 // --- Timing types ---
 pub use timing::{LanguageEntry, PerLanguageStats, PhaseTimer, PhaseTiming, PhaseTimings};

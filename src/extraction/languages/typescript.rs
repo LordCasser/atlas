@@ -313,6 +313,14 @@ impl LanguageAdapter for TypeScriptAdapter {
             }
             "df.assign_value" => {
                 let text = node_text(node, source).unwrap_or_default();
+                // If the assigned value is a call expression, assign the
+                // enclosing callsite_id so the return-value bridge can connect
+                // callee return → caller call-result.
+                let callsite_id = find_call_expression(node)
+                    .map(|ce| crate::types::ids::CallsiteId::from_file_byte(
+                        &file_id,
+                        ce.start_byte() as u32,
+                    ));
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&crate::types::ids::SymbolId>,
@@ -327,7 +335,7 @@ impl LanguageAdapter for TypeScriptAdapter {
                     function_id: None,
                     kind: crate::types::enums::DataNodeKind::Expr,
                     binding_id: None,
-                    callsite_id: None,
+                    callsite_id,
                     name: Some(text),
                     access_path: None,
                     range,
@@ -335,19 +343,36 @@ impl LanguageAdapter for TypeScriptAdapter {
                 (Some(dn), None)
             }
             "df.return_value" => {
+                let text = node_text(node, source).unwrap_or_default();
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&crate::types::ids::SymbolId>,
                     "return",
-                    None,
+                    Some(&text),
                     None,
                     range.start_byte,
                 );
-                let dn = DataNode::return_(node_id, file_id, None, range);
+                let dn = DataNode {
+                    id: node_id,
+                    file_id,
+                    function_id: None,
+                    kind: crate::types::enums::DataNodeKind::Return,
+                    binding_id: None,
+                    callsite_id: None,
+                    name: Some(text),
+                    access_path: None,
+                    range,
+                };
                 (Some(dn), None)
             }
             "df.call_arg" => {
                 let text = node_text(node, source).unwrap_or_default();
+                // Group with CallTarget from the same call_expression
+                let callsite_id = find_call_expression(node)
+                    .map(|ce| crate::types::ids::CallsiteId::from_file_byte(
+                        &file_id,
+                        ce.start_byte() as u32,
+                    ));
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&crate::types::ids::SymbolId>,
@@ -356,7 +381,7 @@ impl LanguageAdapter for TypeScriptAdapter {
                     None,
                     range.start_byte,
                 );
-                let dn = DataNode::call_arg(node_id, file_id, None, None, Some(&text), range);
+                let dn = DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range);
                 (Some(dn), None)
             }
             "df.call_target" => {
@@ -369,6 +394,12 @@ impl LanguageAdapter for TypeScriptAdapter {
                             .filter(|p| p.kind() == "member_expression")
                             .and_then(|p| node_text(p, source))
                             .unwrap_or_else(|| name.clone());
+                        // Group with CallArgs from the same call_expression
+                        let callsite_id = find_call_expression(node)
+                            .map(|ce| crate::types::ids::CallsiteId::from_file_byte(
+                                &file_id,
+                                ce.start_byte() as u32,
+                            ));
                         let node_id = DataNodeId::generate(
                             &file_id,
                             None::<&crate::types::ids::SymbolId>,
@@ -381,6 +412,7 @@ impl LanguageAdapter for TypeScriptAdapter {
                             node_id,
                             file_id,
                             None,
+                            callsite_id,
                             &name,
                             &access_path,
                             range,
@@ -444,6 +476,27 @@ impl LanguageAdapter for TypeScriptAdapter {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Walk up the AST to find the enclosing `call_expression`, if any.
+///
+/// Used to group `CallArg` and `CallTarget` nodes that belong to the same
+/// call site — this enables correct ArgToParam edge creation even in the
+/// presence of nested calls like `foo(bar(a), b)`.
+fn find_call_expression(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    // A call expression can be captured directly (e.g., @df.assign_value
+    // on a call_expression) or as a child (e.g., @df.call_arg).
+    let mut current = node;
+    if current.kind() == "call_expression" {
+        return Some(current);
+    }
+    while let Some(parent) = current.parent() {
+        if parent.kind() == "call_expression" {
+            return Some(parent);
+        }
+        current = parent;
+    }
+    None
+}
 
 /// Map lexical capture name to BindingKind.
 fn ts_binding_kind(capture_name: &str) -> Option<crate::types::enums::BindingKind> {

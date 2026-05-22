@@ -8,7 +8,7 @@
 
 use crate::types::bindings::{BindingDef, BindingUse};
 use crate::types::cfg::{CfgEdge, CfgNode};
-use crate::types::dataflow::{CallsiteArg, DataFlowEdge, DataNode};
+use crate::types::dataflow::{DataFlowEdge, DataNode};
 use crate::types::enums::*;
 use crate::types::ids::*;
 use serde::{Deserialize, Serialize};
@@ -525,10 +525,6 @@ pub struct FileFacts {
     /// Dataflow edges between DataNodes (DataNodeId → DataNodeId).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dataflow_edges: Vec<DataFlowEdge>,
-
-    /// Per-argument detail at callsites.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub callsite_args: Vec<CallsiteArg>,
 
     /// Control-flow graph nodes (per-function CFG).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
