@@ -320,12 +320,14 @@ impl Store {
     /// Delete all data for multiple files in a single transaction.
     ///
     /// Used before re-indexing modified files to ensure stale rows
-    /// (symbols, references, dataflow, CFG, etc.) are removed.
+    /// (symbols, references, dataflow, CFG, etc.) are removed atomically.
     pub fn delete_files_batch(&self, file_ids: &[FileId]) -> anyhow::Result<()> {
         let conn = self.lock();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
         for file_id in file_ids {
             conn.execute("DELETE FROM files WHERE file_id = ?1", params![file_id])?;
         }
+        conn.execute_batch("COMMIT")?;
         Ok(())
     }
 
@@ -1406,6 +1408,16 @@ impl Store {
         conn.execute(
             "INSERT OR REPLACE INTO project_metadata (key, value) VALUES (?1, ?2)",
             params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Delete a project metadata key.
+    pub fn delete_metadata(&self, key: &str) -> anyhow::Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "DELETE FROM project_metadata WHERE key = ?1",
+            params![key],
         )?;
         Ok(())
     }

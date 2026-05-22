@@ -188,15 +188,15 @@ impl SyncEngine {
         Ok(changes)
     }
 
-    /// Check whether tsconfig.json (or jsconfig.json) has changed since the last sync.
+    /// Check whether tsconfig.json has changed since the last sync.
     ///
     /// Stores the current content hash in `project_metadata` for comparison on
     /// the next run. Returns `true` if the config changed (path aliases may differ).
+    ///
+    /// jsconfig.json is NOT checked — the resolver only loads tsconfig.json.
+    /// JS projects requiring path aliases should use tsconfig.json.
     fn detect_tsconfig_change(&self) -> bool {
-        // Check tsconfig.json first, then jsconfig.json
-        // Only return false after checking ALL config files.
-        let mut any_changed = false;
-        for name in &["tsconfig.json", "jsconfig.json"] {
+        for name in &["tsconfig.json"] {
             let config_path = self.project_root.join(name);
             let meta_key = format!("{}_hash", name);
             let prev_hash = self.store.get_metadata(&meta_key).ok().flatten();
@@ -206,27 +206,25 @@ impl SyncEngine {
 
             match (&prev_hash, &current_hash) {
                 (Some(prev), Some(curr)) if prev == curr => {
-                    // Unchanged — check next config file
                     continue;
                 }
                 (None, None) => {
-                    // No config file before or now — check next config file
                     continue;
                 }
                 _ => {
                     // Config appeared, disappeared, or changed
-                    any_changed = true;
-                    let new_hash = current_hash.clone();
-                    if let Some(hash) = new_hash {
-                        let _ = self.store.set_metadata(&meta_key, &hash);
+                    if let Some(hash) = &current_hash {
+                        let _ = self.store.set_metadata(&meta_key, hash);
                     } else {
-                        // Config was deleted — clear stored hash
-                        let _ = self.store.set_metadata(&meta_key, "");
+                        // Config deleted — clear stored hash to avoid
+                        // repeated invalidation on every run
+                        let _ = self.store.delete_metadata(&meta_key);
                     }
+                    return true;
                 }
             }
         }
-        any_changed
+        false
     }
 
     // --- internal ---

@@ -283,8 +283,12 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
 
     // P2: Detect tsconfig.json change and invalidate all import resolutions
     // if the path alias config differs from the previous run.
+    //
+    // jsconfig.json is NOT checked for invalidation because the resolver only
+    // loads tsconfig.json for path alias resolution.  JS projects requiring
+    // path aliases should use tsconfig.json (supported by tsc/TypeScript parser).
     {
-        for name in &["tsconfig.json", "jsconfig.json"] {
+        for name in &["tsconfig.json"] {
             let config_path = root.join(name);
             let current_hash = std::fs::read(&config_path)
                 .ok()
@@ -294,31 +298,31 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
 
             match (&prev_hash, &current_hash) {
                 (Some(prev), Some(curr)) if prev == curr => {
-                    // Unchanged — try next config file
+                    // Unchanged
                     continue;
                 }
                 (None, None) => {
-                    // No config file before or now — try next config file
+                    // No config file before or now
                     continue;
                 }
                 _ => {
-                    // tsconfig.json appeared, disappeared, or changed
+                    // Config appeared, disappeared, or changed — invalidate
                     let inv_refs = store.invalidate_all_references().unwrap_or(0);
                     let inv_edges = store.delete_all_edges().unwrap_or(0);
                     tracing::info!(
                         "{} changed — invalidated {} references and {} edges for re-resolution",
                         name, inv_refs, inv_edges
                     );
-                    // Persist new hash or clear when config file was deleted
                     match &current_hash {
                         Some(hash) => {
                             let _ = store.set_metadata(&meta_key, hash);
                         }
                         None => {
-                            let _ = store.set_metadata(&meta_key, "");
+                            // Config deleted — clear stored hash to avoid
+                            // repeated invalidation on every run
+                            let _ = store.delete_metadata(&meta_key);
                         }
                     }
-                    break; // Found a change — no need to check further configs
                 }
             }
         }
