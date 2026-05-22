@@ -252,3 +252,34 @@ impl TraceEdge {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use atlas_db::Store;
+
+    #[test]
+    fn provider_returns_empty_on_missing_data() -> anyhow::Result<()> {
+        use atlas_types::ids::FileId;
+
+        let store = Store::open_in_memory()?;
+        store.init_schema()?;
+        let provider = SummaryEdgeProvider;
+
+        // Parameter without function_id or callers — DB has nothing
+        let file_id = FileId::generate("test.ts");
+        let param_id = DataNodeId::generate(&file_id, None, "param", None, None, 0);
+        let edges = provider.virtual_incoming(&param_id, &store)?;
+        assert!(edges.is_empty(), "non-existent param should yield no edges");
+
+        // CallReturn without callsite_id
+        let cr_id = DataNodeId::generate(&file_id, None, "call_return", None, None, 0);
+        let edges = provider.virtual_incoming(&cr_id, &store)?;
+        assert!(
+            edges.is_empty(),
+            "non-existent call return should yield no edges"
+        );
+
+        Ok(())
+    }
+}

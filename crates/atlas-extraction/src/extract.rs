@@ -1,16 +1,17 @@
-//! Extractor: orchestrates tree-sitter parsing + LanguageAdapter normalization → FileFacts.
+//! Extractor: orchestrates tree-sitter parsing + slot-based normalization → FileFacts.
 //!
 //! The extractor:
 //! 1. Parses source code with tree-sitter
-//! 2. Runs the 4 queries (definitions, references, imports, scopes)
-//! 3. Calls `normalize_*()` on each capture — adapter converts raw nodes into Atlas IR
+//! 2. Runs the queries (definitions, references, imports, scopes)
+//! 3. Calls `normalize()` on each capture via the frontend slots
 //! 4. Assembles FileFacts (structural edges left to resolver phase)
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::Parser;
 
+use atlas_types::Language;
 use atlas_types::bindings::{BindingDef, BindingUse};
 use atlas_types::ids::{BindingUseId, CallsiteId, FileId, ScopeId};
 use atlas_types::{
@@ -21,11 +22,16 @@ use atlas_types::{
 use super::callsite_spec::CallsiteParts;
 use super::cfg_builder::CfgResult;
 use super::dataflow_builder::{DataFlowBuilder, DataFlowResult};
-use super::frontend::LanguageFrontend;
-use super::languages::LanguageAdapter;
+use super::error::{ExtractionFailure, ExtractionFailureKind};
+use super::frontend::{Capture, LanguageFrontend, NormalizeCtx};
 use super::languages::node_range;
 use super::lexical_binder::LexicalBindingResult;
 use super::semantic_binder::SemanticBinder;
+
+// ── Per-file extraction context ───────────────────────────────────────────
+// Imported from extraction_ctx.rs to avoid reverse-dependency issues.
+
+use crate::extraction_ctx::ExtractionCtx;
 
 // ── P2: Thread-local tree-sitter parser ──────────────────────────────────
 //
@@ -38,19 +44,36 @@ thread_local! {
 
 /// Get (or create) a thread-local parser set to the given language.
 /// The parser is reset and ready for a new parse.
-fn tl_parse(ts_lang: &tree_sitter::Language, source_bytes: &[u8]) -> Result<tree_sitter::Tree> {
+fn tl_parse(
+    ts_lang: &tree_sitter::Language,
+    source_bytes: &[u8],
+    file_path: &Path,
+    language: Language,
+) -> Result<tree_sitter::Tree> {
     TL_PARSER.with(|cell| {
         let mut opt = cell.borrow_mut();
         if opt.is_none() {
             *opt = Some(Parser::new());
         }
         let parser = opt.as_mut().expect("TL_PARSER was just initialized above");
-        parser
-            .set_language(ts_lang)
-            .map_err(|e| anyhow!("Failed to set tree-sitter language: {}", e))?;
-        parser
-            .parse(source_bytes, None)
-            .context("Failed to parse source")
+        parser.set_language(ts_lang).map_err(|e| {
+            anyhow::Error::new(ExtractionFailure {
+                kind: ExtractionFailureKind::ParserInit,
+                file_path: file_path.to_string_lossy().to_string(),
+                language,
+                slot: None,
+                message: format!("Failed to set tree-sitter language: {e}"),
+            })
+        })?;
+        parser.parse(source_bytes, None).ok_or_else(|| {
+            anyhow::Error::new(ExtractionFailure {
+                kind: ExtractionFailureKind::ParserInit,
+                file_path: file_path.to_string_lossy().to_string(),
+                language,
+                slot: None,
+                message: "Failed to parse source (returned None)".into(),
+            })
+        })
     })
 }
 
@@ -66,8 +89,9 @@ pub fn extract_file(
 
     // 1. Parse (P2: uses thread-local parser to avoid per-file alloc)
     let ts_lang = frontend.parser.tree_sitter_language();
+    let language = frontend.language();
     let source_bytes = source.as_bytes();
-    let tree = tl_parse(&ts_lang, source_bytes)?;
+    let tree = tl_parse(&ts_lang, source_bytes, file_path, language)?;
     let root = tree.root_node();
 
     if root.has_error() {
@@ -78,62 +102,50 @@ pub fn extract_file(
         });
     }
 
-    let language = frontend.language();
+    // Bundle per-file context so helpers take one struct instead of 6-9 args.
+    let ectx = ExtractionCtx {
+        ts_lang: &ts_lang,
+        root,
+        source,
+        file_id,
+        file_path,
+        language,
+    };
 
     // 2. Extract and normalize definitions
     let mut symbols = extract_and_normalize(
-        frontend.adapter(),
-        &ts_lang,
+        &ectx,
         frontend.symbols.definition_query(),
-        root,
-        source,
-        source_bytes,
-        file_id,
-        file_path,
         &mut diagnostics,
-        |adapter, name, node, src, fid, fp| adapter.normalize_definition(&name, node, src, fid, fp),
+        "symbols",
+        |ctx, capture| frontend.symbols.normalize(ctx, capture),
     )?;
 
     // 3. Extract and normalize references
     let mut references = extract_and_normalize(
-        frontend.adapter(),
-        &ts_lang,
+        &ectx,
         frontend.references.reference_query(),
-        root,
-        source,
-        source_bytes,
-        file_id,
-        file_path,
         &mut diagnostics,
-        |adapter, name, node, src, fid, fp| adapter.normalize_reference(&name, node, src, fid, fp),
+        "references",
+        |ctx, capture| frontend.references.normalize(ctx, capture),
     )?;
 
     // 4. Extract and normalize imports
     let imports = extract_and_normalize(
-        frontend.adapter(),
-        &ts_lang,
+        &ectx,
         frontend.imports.import_query(),
-        root,
-        source,
-        source_bytes,
-        file_id,
-        file_path,
         &mut diagnostics,
-        |adapter, name, node, src, fid, fp| adapter.normalize_import(&name, node, src, fid, fp),
+        "imports",
+        |ctx, capture| frontend.imports.normalize(ctx, capture),
     )?;
 
     // 5. Extract and normalize scopes
     let mut scopes = extract_and_normalize(
-        frontend.adapter(),
-        &ts_lang,
+        &ectx,
         frontend.scopes.scope_query(),
-        root,
-        source,
-        source_bytes,
-        file_id,
-        file_path,
         &mut diagnostics,
-        |adapter, name, node, src, fid, fp| adapter.normalize_scope(&name, node, src, fid, fp),
+        "scopes",
+        |ctx, capture| frontend.scopes.normalize(ctx, capture),
     )?;
 
     // 6. Raw edges are now populated downstream by GraphBuilder (new P3 path).
@@ -175,20 +187,15 @@ pub fn extract_file(
     // 7a. Extract lexical bindings (P7: skip if unsupported)
     let (bindings, binding_uses) = if frontend.lexical.capability().is_supported() {
         let lexical_result = super::lexical_binder::LexicalBinder::extract(
-            frontend.adapter(),
-            &ts_lang,
-            root,
-            source,
-            source_bytes,
-            file_id,
-            file_path,
+            frontend.lexical.as_ref(),
+            &ectx,
             &scopes,
             &symbols,
         )
         .unwrap_or_else(|e| {
             diagnostics.push(ExtractDiagnostic {
                 level: DiagnosticLevel::Warning,
-                message: format!("Lexical binding extraction failed: {}", e),
+                message: format!("Lexical binding extraction failed: {e}"),
                 range: None,
             });
             LexicalBindingResult {
@@ -204,20 +211,15 @@ pub fn extract_file(
     // 7b. Build dataflow graph (P7: skip if unsupported)
     let (mut data_nodes, dataflow_edges) = if frontend.dataflow.capability().is_supported() {
         let dataflow_result = super::dataflow_builder::DataFlowBuilder::extract(
-            frontend.adapter(),
-            &ts_lang,
-            root,
-            source,
-            source_bytes,
-            file_id,
-            file_path,
+            frontend.dataflow.as_ref(),
+            &ectx,
             &bindings,
             &scopes,
         )
         .unwrap_or_else(|e| {
             diagnostics.push(ExtractDiagnostic {
                 level: DiagnosticLevel::Warning,
-                message: format!("DataFlow builder failed: {}", e),
+                message: format!("DataFlow builder failed: {e}"),
                 range: None,
             });
             DataFlowResult::default()
@@ -249,7 +251,7 @@ pub fn extract_file(
             .unwrap_or_else(|e| {
                 diagnostics.push(ExtractDiagnostic {
                     level: DiagnosticLevel::Warning,
-                    message: format!("CFG builder failed: {}", e),
+                    message: format!("CFG builder failed: {e}"),
                     range: None,
                 });
                 CfgResult::default()
@@ -274,15 +276,14 @@ pub fn extract_file(
     // resolved against the lexical binding table via scope-chain-aware
     // name lookup.  Declaration sites are skipped to avoid duplicates.
     let reference_binding_uses: Vec<BindingUse> =
-        build_reference_binding_uses(file_id, root, source, &ts_lang, &bindings, &scopes)
-            .unwrap_or_else(|e| {
-                diagnostics.push(ExtractDiagnostic {
-                    level: DiagnosticLevel::Warning,
-                    message: format!("Identifier-use binding scan failed: {}", e),
-                    range: None,
-                });
-                vec![]
+        build_reference_binding_uses(&ectx, &bindings, &scopes).unwrap_or_else(|e| {
+            diagnostics.push(ExtractDiagnostic {
+                level: DiagnosticLevel::Warning,
+                message: format!("Identifier-use binding scan failed: {e}"),
+                range: None,
             });
+            vec![]
+        });
 
     // Merge declaration-site uses with identifier-use uses.
     let binding_uses: Vec<BindingUse> = {
@@ -396,7 +397,7 @@ pub fn extract_file(
             if let Some(arg_range) = arg.range {
                 for dn in &call_arg_nodes {
                     if dn.range.start_byte == arg_range.start_byte {
-                        arg.data_node_id = Some(dn.id.clone());
+                        arg.data_node_id = Some(dn.id);
                         break;
                     }
                 }
@@ -490,22 +491,26 @@ pub fn extract_file(
 /// (those whose range is contained by a `BindingDef` range) are skipped to
 /// avoid duplicates.
 fn build_reference_binding_uses(
-    file_id: FileId,
-    root: tree_sitter::Node,
-    source: &str,
-    ts_lang: &tree_sitter::Language,
+    ctx: &ExtractionCtx<'_>,
     bindings: &[BindingDef],
     scopes: &[ScopeDef],
 ) -> Result<Vec<BindingUse>> {
-    let source_bytes = source.as_bytes();
-
     // Capture every identifier node in the tree
     let captures = super::query_helpers::collect_captures(
-        ts_lang,
+        ctx.ts_lang,
         "(identifier) @binding.use",
-        root,
-        source_bytes,
-    )?;
+        ctx.root,
+        ctx.source_bytes(),
+        "binding_uses",
+    )
+    .map_err(|failure| {
+        let filled = ExtractionFailure {
+            file_path: ctx.file_path.to_string_lossy().to_string(),
+            language: ctx.language,
+            ..failure
+        };
+        anyhow::Error::new(filled)
+    })?;
 
     // Build scope → bindings map
     let mut scope_bindings: HashMap<ScopeId, Vec<&BindingDef>> = HashMap::new();
@@ -537,7 +542,7 @@ fn build_reference_binding_uses(
         }
 
         // Extract the identifier text
-        let name = match super::languages::node_text(node, source) {
+        let name = match super::languages::node_text(node, ctx.source) {
             Some(n) if !n.is_empty() => n,
             _ => continue,
         };
@@ -585,7 +590,7 @@ fn build_reference_binding_uses(
         };
 
         let use_id = BindingUseId::generate(
-            &file_id,
+            &ctx.file_id,
             binding_id.as_ref(),
             None::<&atlas_types::ids::ReferenceId>,
             &name,
@@ -594,7 +599,7 @@ fn build_reference_binding_uses(
 
         uses.push(BindingUse {
             id: use_id,
-            file_id,
+            file_id: ctx.file_id,
             scope_id,
             binding_id,
             reference_id: None,
@@ -608,29 +613,37 @@ fn build_reference_binding_uses(
 
 /// Run a query and normalize each capture through the provided function.
 fn extract_and_normalize<'a, T>(
-    adapter: &dyn LanguageAdapter,
-    ts_lang: &tree_sitter::Language,
+    ctx: &ExtractionCtx<'a>,
     query_src: &str,
-    root: tree_sitter::Node<'a>,
-    source: &str,
-    source_bytes: &[u8],
-    file_id: FileId,
-    file_path: &Path,
     diagnostics: &mut Vec<ExtractDiagnostic>,
-    mut normalize: impl FnMut(
-        &dyn LanguageAdapter,
-        String,
-        tree_sitter::Node<'a>,
-        &str,
-        FileId,
-        &Path,
-    ) -> Option<T>,
+    slot_name: &'static str,
+    mut normalize: impl FnMut(NormalizeCtx<'a>, Capture<'a>) -> Option<T>,
 ) -> Result<Vec<T>> {
-    let captures = super::query_helpers::collect_captures(ts_lang, query_src, root, source_bytes)?;
+    let captures = super::query_helpers::collect_captures(
+        ctx.ts_lang,
+        query_src,
+        ctx.root,
+        ctx.source_bytes(),
+        slot_name,
+    )
+    .map_err(|failure| {
+        // Fill in file-level context that query_helpers doesn't have.
+        let filled = ExtractionFailure {
+            file_path: ctx.file_path.to_string_lossy().to_string(),
+            language: ctx.language,
+            ..failure
+        };
+        anyhow::Error::new(filled)
+    })?;
     let mut results = Vec::new();
+    let nctx = ctx.normalize_ctx();
 
     for (name, node) in captures {
-        match normalize(adapter, name.clone(), node, source, file_id, file_path) {
+        let capture = Capture {
+            name: name.clone(),
+            node,
+        };
+        match normalize(nctx, capture) {
             Some(item) => results.push(item),
             None => {
                 let pos = node.start_position();
@@ -660,19 +673,20 @@ fn extract_and_normalize<'a, T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::create_frontend;
-    use crate::languages::python::PythonAdapter;
-    use crate::languages::typescript::TypeScriptAdapter;
+    use crate::frontend::LanguageFrontend;
+    use crate::languages::create_frontend;
     use atlas_types::Language;
     use std::path::PathBuf;
 
     /// Helper: create a TypeScript LanguageFrontend for tests.
+    #[cfg(feature = "typescript")]
     fn ts_frontend() -> LanguageFrontend {
-        LanguageFrontend::from_adapter(Box::new(TypeScriptAdapter))
+        crate::languages::typescript::typescript_frontend()
     }
     /// Helper: create a Python LanguageFrontend for tests.
+    #[cfg(feature = "python")]
     fn py_frontend() -> LanguageFrontend {
-        LanguageFrontend::from_adapter(Box::new(PythonAdapter))
+        crate::languages::python::python_frontend()
     }
 
     fn assert_sources_are_known(facts: &FileFacts) {
@@ -680,23 +694,20 @@ mod tests {
         for edge in &facts.raw_edges {
             assert!(
                 known.contains(&edge.source),
-                "raw edge has ghost source: {:?}",
-                edge
+                "raw edge has ghost source: {edge:?}"
             );
         }
         for callsite in &facts.callsites {
             assert!(
                 known.contains(&callsite.caller),
-                "callsite has ghost caller: {:?}",
-                callsite
+                "callsite has ghost caller: {callsite:?}"
             );
         }
         for reference in &facts.references {
             if let Some(source) = reference.source_symbol {
                 assert!(
                     known.contains(&source),
-                    "reference has ghost source: {:?}",
-                    reference
+                    "reference has ghost source: {reference:?}"
                 );
             }
         }

@@ -1,474 +1,494 @@
-//! TypeScript / JavaScript LanguageAdapter implementation.
+//! TypeScript / JavaScript frontend spec (slot-based).
 //!
 //! Uses tree-sitter-typescript grammar and embedded query files.
 //! JavaScript is treated as a subset of TypeScript for extraction purposes.
+//!
+//! `TypeScriptFrontendSpec` implements every slot trait (ParserSpec through
+//! DataflowSpec) via shared private normalize helpers.
 
-use crate::languages::{LanguageAdapter, node_range, node_text};
+use crate::languages::{node_range, node_text};
+
+use crate::frontend::{
+    Capture, DataflowSpec, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, NormalizeCtx,
+    ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec, SymbolExtractorSpec,
+};
 
 use atlas_types::*;
 
-use std::path::Path;
-
 // ---------------------------------------------------------------------------
-// Adapter struct
+// Spec struct
 // ---------------------------------------------------------------------------
 
-/// TypeScript LanguageAdapter (also covers JavaScript).
-pub struct TypeScriptAdapter;
+/// TypeScript frontend spec that implements every slot trait (ParserSpec
+/// through DataflowSpec).
+pub(crate) struct TypeScriptFrontendSpec;
 
-impl LanguageAdapter for TypeScriptAdapter {
+// ---------------------------------------------------------------------------
+// Slot trait implementations — each calls the private normalize_ts_* helpers.
+// ---------------------------------------------------------------------------
+
+impl ParserSpec for TypeScriptFrontendSpec {
     fn language(&self) -> Language {
         Language::TypeScript
     }
-
-    fn extensions(&self) -> &[&str] {
-        &["ts", "mts", "cts", "tsx", "js", "mjs", "cjs", "jsx"]
-    }
-
     fn tree_sitter_language(&self) -> tree_sitter::Language {
         tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
     }
+}
 
+impl SymbolExtractorSpec for TypeScriptFrontendSpec {
     fn definition_query(&self) -> &str {
         include_str!("../../queries/typescript/definitions.scm")
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
+    }
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<SymbolDef> {
+        normalize_ts_definition(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+}
 
+impl ReferenceExtractorSpec for TypeScriptFrontendSpec {
     fn reference_query(&self) -> &str {
         include_str!("../../queries/typescript/references.scm")
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
+    }
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ReferenceUse> {
+        normalize_ts_reference(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+}
 
+impl ImportExtractorSpec for TypeScriptFrontendSpec {
     fn import_query(&self) -> &str {
         include_str!("../../queries/typescript/imports.scm")
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
+    }
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ImportDef> {
+        normalize_ts_import(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+}
 
+impl ScopeExtractorSpec for TypeScriptFrontendSpec {
     fn scope_query(&self) -> &str {
         include_str!("../../queries/typescript/scopes.scm")
     }
-
-    fn normalize_definition(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        _file_path: &Path,
-    ) -> Option<SymbolDef> {
-        use super::shared::SymbolDefBuilder;
-
-        let kind = ts_definition_kind(capture_name)?;
-        let name = node_text(node, source)?;
-        let range = node_range(node);
-
-        let qualified_name = qualified_name_from_node("", &name, node, source);
-        let lang = self.language();
-        let exported = is_exported_in_tree(node);
-
-        Some(
-            SymbolDefBuilder::new(file_id, lang, kind, name, qualified_name, range)
-                .exported(exported)
-                .build(),
-        )
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
     }
-
-    fn normalize_reference(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        _file_path: &Path,
-    ) -> Option<ReferenceUse> {
-        let kind = ts_reference_kind(capture_name)?;
-        let text = node_text(node, source)?;
-        let name = text.clone();
-        let range = node_range(node);
-
-        let ref_id = ReferenceId::generate(
-            &file_id,
-            None::<&SymbolId>,
-            range.start_byte,
-            range.end_byte,
-            &text,
-            kind,
-        );
-
-        // source_symbol is resolved by SemanticBinder after extraction.
-        Some(ReferenceUse {
-            id: ref_id,
-            file_id,
-            source_symbol: None,
-            scope_id: None,
-            kind,
-            text,
-            name,
-            receiver: None,
-            arity: None,
-            range,
-            resolved: None,
-            binding_id: None,
-        })
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ScopeDef> {
+        normalize_ts_scope(&capture.name, capture.node, ctx.file_id)
     }
+}
 
-    fn normalize_import(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        _file_path: &Path,
-    ) -> Option<ImportDef> {
-        let (kind, module, imported_name) = ts_import_info(capture_name, node, source)?;
-        let range = node_range(node);
-        let local_name = imported_name.clone();
-        let is_relative = module.starts_with('.');
-        let is_wildcard = capture_name.contains("wildcard");
-
-        let import_id = ImportId::generate(
-            &file_id,
-            kind.as_str(),
-            &module,
-            Some(imported_name.as_str()),
-            range.start_byte,
-        );
-
-        Some(ImportDef {
-            id: import_id,
-            file_id,
-            kind,
-            module,
-            imported_name,
-            local_name: Some(local_name),
-            is_wildcard,
-            is_relative,
-            range,
-            alias: None,
-        })
-    }
-
-    fn normalize_scope(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        _source: &str,
-        file_id: FileId,
-        _file_path: &Path,
-    ) -> Option<ScopeDef> {
-        let kind = match capture_name {
-            "scope.file" => ScopeKind::File,
-            "scope.function" => ScopeKind::Function,
-            "scope.method" => ScopeKind::Method,
-            "scope.class" => ScopeKind::Class,
-            "scope.interface" => ScopeKind::Interface,
-            "scope.enum" => ScopeKind::Enum,
-            "scope.namespace" => ScopeKind::Namespace,
-            "scope.block" => ScopeKind::Block,
-            "scope.conditional" => ScopeKind::Conditional,
-            "scope.loop" => ScopeKind::Loop,
-            _ => return None,
-        };
-        let range = node_range(node);
-        let name = format!("{:?}#{}", kind, range.start_byte);
-        let scope_path = name.clone();
-
-        let scope_id =
-            ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
-
-        Some(ScopeDef {
-            id: scope_id,
-            file_id,
-            kind,
-            name,
-            scope_path,
-            parent_id: None,
-            range,
-        })
-    }
-
-    fn detect_package(&self, _source: &str, file_path: &Path) -> Option<String> {
-        // For TypeScript, check package.json in parent directories
-        let mut current = file_path.parent()?;
-        loop {
-            let pkg_json = current.join("package.json");
-            if let Ok(content) = std::fs::read_to_string(&pkg_json) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(name) = json["name"].as_str() {
-                        return Some(name.to_string());
-                    }
-                }
-            }
-            current = current.parent()?;
-        }
-    }
-
-    fn detect_frameworks(&self, source: &str) -> Vec<String> {
-        let mut frameworks = Vec::new();
-        // Quick heuristic detection based on import patterns
-        if source.contains("react") {
-            frameworks.push("react".into());
-        }
-        if source.contains("@angular") {
-            frameworks.push("angular".into());
-        }
-        if source.contains("vue") {
-            frameworks.push("vue".into());
-        }
-        if source.contains("express") {
-            frameworks.push("express".into());
-        }
-        if source.contains("next") {
-            frameworks.push("next".into());
-        }
-        frameworks
-    }
-
+impl LexicalBindingSpec for TypeScriptFrontendSpec {
     fn lexical_query(&self) -> &str {
         include_str!("../../queries/typescript/lexical.scm")
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported_with_limitations(
+            0.55,
+            vec!["name-based binding (no proper shadowing)"],
+        )
+    }
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
+        normalize_ts_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+}
 
+impl DataflowSpec for TypeScriptFrontendSpec {
     fn dataflow_builder_query(&self) -> &str {
         include_str!("../../queries/typescript/dataflow_builder.scm")
     }
-
-    fn normalize_lexical(
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported_with_limitations(
+            0.55,
+            vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
+        )
+    }
+    fn normalize(
         &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        _file_path: &Path,
-    ) -> Option<BindingDef> {
-        let kind = ts_binding_kind(capture_name)?;
-        let name = node_text(node, source)?;
-        let range = node_range(node);
-        // Use a zero-based scope_id placeholder; scope_id is resolved post-extraction
-        // when we know the parent scope relationships.
-        let scope_id = atlas_types::ids::ScopeId::generate(
-            &file_id,
-            None::<&atlas_types::ids::ScopeId>,
-            kind.as_str(),
-            range.start_byte,
-        );
-        let id = atlas_types::ids::BindingId::generate(
-            &file_id,
-            &scope_id,
-            kind.as_str(),
-            &name,
-            range.start_byte,
-        );
-        Some(BindingDef {
-            id,
+        ctx: NormalizeCtx<'_>,
+        capture: Capture<'_>,
+    ) -> (Option<DataNode>, Option<DataFlowEdge>) {
+        normalize_ts_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Private normalize helpers — shared by all slot trait impls.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn normalize_ts_definition(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> Option<SymbolDef> {
+    use super::shared::SymbolDefBuilder;
+
+    let kind = ts_definition_kind(capture_name)?;
+    let name = node_text(node, source)?;
+    let range = node_range(node);
+
+    let qualified_name = qualified_name_from_node("", &name, node, source);
+    let exported = is_exported_in_tree(node);
+
+    Some(
+        SymbolDefBuilder::new(
             file_id,
-            function_id: None, // not resolved here; filled by post-extraction
-            scope_id,
+            Language::TypeScript,
             kind,
             name,
-            symbol_id: None,
+            qualified_name,
             range,
-        })
-    }
+        )
+        .exported(exported)
+        .build(),
+    )
+}
 
-    fn normalize_dataflow_builder(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        _file_path: &Path,
-    ) -> (Option<DataNode>, Option<DataFlowEdge>) {
-        use atlas_types::ids::DataNodeId;
+pub(crate) fn normalize_ts_reference(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> Option<ReferenceUse> {
+    let kind = ts_reference_kind(capture_name)?;
+    let text = node_text(node, source)?;
+    let name = text.clone();
+    let range = node_range(node);
 
-        let range = node_range(node);
+    let ref_id = ReferenceId::generate(
+        &file_id,
+        None::<&SymbolId>,
+        range.start_byte,
+        range.end_byte,
+        &text,
+        kind,
+    );
 
-        match capture_name {
-            "df.parameter" => node_text(node, source)
-                .map(|name| {
-                    let node_id = DataNodeId::generate(
-                        &file_id,
-                        None::<&atlas_types::ids::SymbolId>,
-                        "parameter",
-                        Some(&name),
-                        Some(&name),
-                        range.start_byte,
-                    );
-                    let dn = DataNode::parameter(node_id, file_id, None, None, &name, range);
-                    (Some(dn), None)
-                })
-                .unwrap_or((None, None)),
-            "df.assign_target" => {
-                node_text(node, source)
-                    .map(|name| {
-                        let node_id = DataNodeId::generate(
-                            &file_id,
-                            None::<&atlas_types::ids::SymbolId>,
-                            "local",
-                            Some(&name),
-                            Some(&name),
-                            range.start_byte,
-                        );
-                        // FK fields are None at extraction — resolved post-extraction
-                        let dn = DataNode::local(node_id, file_id, None, None, &name, range);
-                        (Some(dn), None)
-                    })
-                    .unwrap_or((None, None))
-            }
-            "df.assign_value" => {
-                let text = node_text(node, source).unwrap_or_default();
-                // If the assigned value is a call expression, assign the
-                // enclosing callsite_id so the return-value bridge can connect
-                // callee return → caller call-result.
-                let callsite_id = find_call_expression(node).map(|ce| {
-                    atlas_types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
-                });
+    Some(ReferenceUse {
+        id: ref_id,
+        file_id,
+        source_symbol: None,
+        scope_id: None,
+        kind,
+        text,
+        name,
+        receiver: None,
+        arity: None,
+        range,
+        resolved: None,
+        binding_id: None,
+    })
+}
+
+pub(crate) fn normalize_ts_import(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> Option<ImportDef> {
+    let (kind, module, imported_name) = ts_import_info(capture_name, node, source)?;
+    let range = node_range(node);
+    let local_name = imported_name.clone();
+    let is_relative = module.starts_with('.');
+    let is_wildcard = capture_name.contains("wildcard");
+
+    let import_id = ImportId::generate(
+        &file_id,
+        kind.as_str(),
+        &module,
+        Some(imported_name.as_str()),
+        range.start_byte,
+    );
+
+    Some(ImportDef {
+        id: import_id,
+        file_id,
+        kind,
+        module,
+        imported_name,
+        local_name: Some(local_name),
+        is_wildcard,
+        is_relative,
+        range,
+        alias: None,
+    })
+}
+
+pub(crate) fn normalize_ts_scope(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    file_id: FileId,
+) -> Option<ScopeDef> {
+    let kind = match capture_name {
+        "scope.file" => ScopeKind::File,
+        "scope.function" => ScopeKind::Function,
+        "scope.method" => ScopeKind::Method,
+        "scope.class" => ScopeKind::Class,
+        "scope.interface" => ScopeKind::Interface,
+        "scope.enum" => ScopeKind::Enum,
+        "scope.namespace" => ScopeKind::Namespace,
+        "scope.block" => ScopeKind::Block,
+        "scope.conditional" => ScopeKind::Conditional,
+        "scope.loop" => ScopeKind::Loop,
+        _ => return None,
+    };
+    let range = node_range(node);
+    let name = format!("{:?}#{}", kind, range.start_byte);
+    let scope_path = name.clone();
+
+    let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
+
+    Some(ScopeDef {
+        id: scope_id,
+        file_id,
+        kind,
+        name,
+        scope_path,
+        parent_id: None,
+        range,
+    })
+}
+
+pub(crate) fn normalize_ts_lexical(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> Option<BindingDef> {
+    let kind = ts_binding_kind(capture_name)?;
+    let name = node_text(node, source)?;
+    let range = node_range(node);
+    let scope_id = atlas_types::ids::ScopeId::generate(
+        &file_id,
+        None::<&atlas_types::ids::ScopeId>,
+        kind.as_str(),
+        range.start_byte,
+    );
+    let id = atlas_types::ids::BindingId::generate(
+        &file_id,
+        &scope_id,
+        kind.as_str(),
+        &name,
+        range.start_byte,
+    );
+    Some(BindingDef {
+        id,
+        file_id,
+        function_id: None,
+        scope_id,
+        kind,
+        name,
+        symbol_id: None,
+        range,
+    })
+}
+
+pub(crate) fn normalize_ts_dataflow_builder(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> (Option<DataNode>, Option<DataFlowEdge>) {
+    use atlas_types::ids::DataNodeId;
+
+    let range = node_range(node);
+
+    match capture_name {
+        "df.parameter" => node_text(node, source)
+            .map(|name| {
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&atlas_types::ids::SymbolId>,
-                    "expr",
-                    Some(&text),
-                    None,
+                    "parameter",
+                    Some(&name),
+                    Some(&name),
                     range.start_byte,
                 );
-                let dn = DataNode {
-                    id: node_id,
-                    file_id,
-                    function_id: None,
-                    kind: atlas_types::enums::DataNodeKind::Expr,
-                    binding_id: None,
-                    callsite_id,
-                    name: Some(text),
-                    access_path: None,
-                    range,
-                };
+                let dn = DataNode::parameter(node_id, file_id, None, None, &name, range);
                 (Some(dn), None)
-            }
-            "df.return_value" => {
-                let text = node_text(node, source).unwrap_or_default();
+            })
+            .unwrap_or((None, None)),
+        "df.assign_target" => node_text(node, source)
+            .map(|name| {
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&atlas_types::ids::SymbolId>,
-                    "return",
-                    Some(&text),
-                    None,
+                    "local",
+                    Some(&name),
+                    Some(&name),
                     range.start_byte,
                 );
-                let dn = DataNode {
-                    id: node_id,
-                    file_id,
-                    function_id: None,
-                    kind: atlas_types::enums::DataNodeKind::Return,
-                    binding_id: None,
-                    callsite_id: None,
-                    name: Some(text),
-                    access_path: None,
-                    range,
-                };
+                let dn = DataNode::local(node_id, file_id, None, None, &name, range);
                 (Some(dn), None)
-            }
-            "df.call_arg" => {
-                let text = node_text(node, source).unwrap_or_default();
-                // Group with CallTarget from the same call_expression
-                let callsite_id = find_call_expression(node).map(|ce| {
-                    atlas_types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
-                });
-                let node_id = DataNodeId::generate(
-                    &file_id,
-                    None::<&atlas_types::ids::SymbolId>,
-                    "call_arg",
-                    Some(&text),
-                    None,
-                    range.start_byte,
-                );
-                let dn =
-                    DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range);
-                (Some(dn), None)
-            }
-            "df.call_target" => {
-                node_text(node, source)
-                    .map(|name| {
-                        // Build full access_path from parent member_expression
-                        // e.g. for "child_process.exec" → access_path = "child_process.exec"
-                        let access_path = node
-                            .parent()
-                            .filter(|p| p.kind() == "member_expression")
-                            .and_then(|p| node_text(p, source))
-                            .unwrap_or_else(|| name.clone());
-                        // Group with CallArgs from the same call_expression
-                        let callsite_id = find_call_expression(node).map(|ce| {
-                            atlas_types::ids::CallsiteId::from_file_byte(
-                                &file_id,
-                                ce.start_byte() as u32,
-                            )
-                        });
-                        let node_id = DataNodeId::generate(
-                            &file_id,
-                            None::<&atlas_types::ids::SymbolId>,
-                            "call_target",
-                            Some(&name),
-                            Some(&access_path),
-                            range.start_byte,
-                        );
-                        let dn = DataNode::call_target(
-                            node_id,
-                            file_id,
-                            None,
-                            callsite_id,
-                            &name,
-                            &access_path,
-                            range,
-                        );
-                        (Some(dn), None)
-                    })
-                    .unwrap_or((None, None))
-            }
-            "df.field_name" => {
-                node_text(node, source)
-                    .map(|name| {
-                        // Build full access_path from parent member_expression
-                        // e.g. for "req.query" → access_path = "req.query"
-                        let access_path = node
-                            .parent()
-                            .filter(|p| p.kind() == "member_expression")
-                            .and_then(|p| node_text(p, source))
-                            .unwrap_or_else(|| name.clone());
-                        let node_id = DataNodeId::generate(
-                            &file_id,
-                            None::<&atlas_types::ids::SymbolId>,
-                            "field",
-                            Some(&name),
-                            Some(&access_path),
-                            range.start_byte,
-                        );
-                        let dn =
-                            DataNode::field(node_id, file_id, None, &name, &access_path, range);
-                        (Some(dn), None)
-                    })
-                    .unwrap_or((None, None))
-            }
-            "df.literal" | "df.await_value" | "df.receiver" => {
-                let text = node_text(node, source).unwrap_or_default();
-                let node_id = DataNodeId::generate(
-                    &file_id,
-                    None::<&atlas_types::ids::SymbolId>,
-                    "literal",
-                    Some(&text),
-                    None,
-                    range.start_byte,
-                );
-                let dn = DataNode {
-                    id: node_id,
-                    file_id,
-                    function_id: None,
-                    kind: atlas_types::enums::DataNodeKind::Literal,
-                    binding_id: None,
-                    callsite_id: None,
-                    name: Some(text),
-                    access_path: None,
-                    range,
-                };
-                (Some(dn), None)
-            }
-            _ => (None, None),
+            })
+            .unwrap_or((None, None)),
+        "df.assign_value" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let callsite_id = find_call_expression(node).map(|ce| {
+                atlas_types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+            });
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&atlas_types::ids::SymbolId>,
+                "expr",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: atlas_types::enums::DataNodeKind::Expr,
+                binding_id: None,
+                callsite_id,
+                name: Some(text),
+                access_path: None,
+                range,
+            };
+            (Some(dn), None)
         }
+        "df.return_value" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&atlas_types::ids::SymbolId>,
+                "return",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: atlas_types::enums::DataNodeKind::Return,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text),
+                access_path: None,
+                range,
+            };
+            (Some(dn), None)
+        }
+        "df.call_arg" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let callsite_id = find_call_expression(node).map(|ce| {
+                atlas_types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+            });
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&atlas_types::ids::SymbolId>,
+                "call_arg",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range);
+            (Some(dn), None)
+        }
+        "df.call_target" => node_text(node, source)
+            .map(|name| {
+                let access_path = node
+                    .parent()
+                    .filter(|p| p.kind() == "member_expression")
+                    .and_then(|p| node_text(p, source))
+                    .unwrap_or_else(|| name.clone());
+                let callsite_id = find_call_expression(node).map(|ce| {
+                    atlas_types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+                });
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&atlas_types::ids::SymbolId>,
+                    "call_target",
+                    Some(&name),
+                    Some(&access_path),
+                    range.start_byte,
+                );
+                let dn = DataNode::call_target(
+                    node_id,
+                    file_id,
+                    None,
+                    callsite_id,
+                    &name,
+                    &access_path,
+                    range,
+                );
+                (Some(dn), None)
+            })
+            .unwrap_or((None, None)),
+        "df.field_name" => node_text(node, source)
+            .map(|name| {
+                let access_path = node
+                    .parent()
+                    .filter(|p| p.kind() == "member_expression")
+                    .and_then(|p| node_text(p, source))
+                    .unwrap_or_else(|| name.clone());
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&atlas_types::ids::SymbolId>,
+                    "field",
+                    Some(&name),
+                    Some(&access_path),
+                    range.start_byte,
+                );
+                let dn = DataNode::field(node_id, file_id, None, &name, &access_path, range);
+                (Some(dn), None)
+            })
+            .unwrap_or((None, None)),
+        "df.literal" | "df.await_value" | "df.receiver" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&atlas_types::ids::SymbolId>,
+                "literal",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: atlas_types::enums::DataNodeKind::Literal,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text),
+                access_path: None,
+                range,
+            };
+            (Some(dn), None)
+        }
+        _ => (None, None),
     }
+}
+
+/// Construct a [`LanguageFrontend`] directly from TypeScript-specific slot
+/// implementations — no adapter wrapper needed.
+/// This is the canonical TypeScript frontend factory.
+pub fn typescript_frontend() -> LanguageFrontend {
+    use crate::callsite_spec::create_extractor;
+    use crate::frontend::FrontendParts;
+    use atlas_types::capability::LanguageCapabilityProfile;
+
+    LanguageFrontend::from_parts(FrontendParts {
+        parser: Box::new(TypeScriptFrontendSpec),
+        symbols: Box::new(TypeScriptFrontendSpec),
+        references: Box::new(TypeScriptFrontendSpec),
+        imports: Box::new(TypeScriptFrontendSpec),
+        scopes: Box::new(TypeScriptFrontendSpec),
+        callsites: create_extractor(Language::TypeScript),
+        lexical: Box::new(TypeScriptFrontendSpec),
+        dataflow: Box::new(TypeScriptFrontendSpec),
+        capability: LanguageCapabilityProfile::for_language(Language::TypeScript),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -650,38 +670,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_adapter_metadata() {
-        let adapter = TypeScriptAdapter;
-        assert_eq!(adapter.language(), Language::TypeScript);
-        assert!(adapter.extensions().contains(&"ts"));
-        assert!(adapter.extensions().contains(&"js"));
-        assert!(!adapter.definition_query().is_empty());
-        assert!(!adapter.reference_query().is_empty());
-        assert!(!adapter.import_query().is_empty());
-        assert!(!adapter.scope_query().is_empty());
+    fn test_frontend_metadata() {
+        let spec = TypeScriptFrontendSpec;
+        let ts_lang = spec.tree_sitter_language();
+        assert!(!spec.definition_query().is_empty());
+        assert!(!spec.reference_query().is_empty());
+        assert!(!spec.import_query().is_empty());
+        assert!(!spec.scope_query().is_empty());
+        // Grammar must be valid
+        tree_sitter::Parser::new().set_language(&ts_lang).unwrap();
     }
 
     #[test]
     fn test_def_query_parses() {
-        let adapter = TypeScriptAdapter;
-        let lang = adapter.tree_sitter_language();
-        let query = tree_sitter::Query::new(&lang, adapter.definition_query());
+        let spec = TypeScriptFrontendSpec;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.definition_query());
         assert!(query.is_ok(), "definition query must compile");
     }
 
     #[test]
     fn test_ref_query_parses() {
-        let adapter = TypeScriptAdapter;
-        let lang = adapter.tree_sitter_language();
-        let query = tree_sitter::Query::new(&lang, adapter.reference_query());
+        let spec = TypeScriptFrontendSpec;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.reference_query());
         assert!(query.is_ok(), "reference query must compile");
     }
 
     #[test]
     fn test_import_query_parses() {
-        let adapter = TypeScriptAdapter;
-        let lang = adapter.tree_sitter_language();
-        let query = tree_sitter::Query::new(&lang, adapter.import_query());
+        let spec = TypeScriptFrontendSpec;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.import_query());
         assert!(
             query.is_ok(),
             "import query must compile: {:?}",
@@ -691,9 +711,9 @@ mod tests {
 
     #[test]
     fn test_scope_query_parses() {
-        let adapter = TypeScriptAdapter;
-        let lang = adapter.tree_sitter_language();
-        let query = tree_sitter::Query::new(&lang, adapter.scope_query());
+        let spec = TypeScriptFrontendSpec;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.scope_query());
         assert!(query.is_ok(), "scope query must compile: {:?}", query.err());
     }
 

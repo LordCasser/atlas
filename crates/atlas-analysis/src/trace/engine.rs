@@ -159,7 +159,7 @@ impl TraceEngine {
     ) -> TraceQueryResponse<TracePoint> {
         let cap = self.resolve_capability(file_id);
 
-        match Locator::locate(&self.store, file_id, line, column) {
+        match Locator::locate(self.store.as_ref(), file_id, line, column) {
             Ok(mut point) => {
                 point.capability = cap.clone();
                 TraceQueryResponse::ok("trace_point", point, cap)
@@ -222,7 +222,7 @@ impl TraceEngine {
             );
         }
 
-        let sink = match Locator::locate(&self.store, file_id, line, column) {
+        let sink = match Locator::locate(self.store.as_ref(), file_id, line, column) {
             Ok(p) => p,
             Err(e) => return TraceQueryResponse::err("trace_variable", &format!("{}", e)),
         };
@@ -235,7 +235,12 @@ impl TraceEngine {
             );
         }
 
-        match Slicer::slice(&self.store, &sink, max_depth, Some(&SummaryEdgeProvider)) {
+        match Slicer::slice(
+            self.store.as_ref(),
+            &sink,
+            max_depth,
+            Some(&SummaryEdgeProvider),
+        ) {
             Ok(Some(mut path)) => {
                 path.capability = cap.clone();
                 self.enrich_trace_path_steps(&mut path);
@@ -289,7 +294,7 @@ impl TraceEngine {
             );
         }
 
-        match CallerPathExplorer::explore(&self.store, target_id, max_depth) {
+        match CallerPathExplorer::explore(self.store.as_ref(), target_id, max_depth) {
             Ok(Some(mut chain)) => {
                 self.enrich_caller_chain_steps(&mut chain);
                 let partial = chain.truncated;

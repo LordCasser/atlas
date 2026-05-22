@@ -1,412 +1,441 @@
-//! Python LanguageAdapter implementation.
+//! Python frontend spec (slot-based).
 //!
 //! Uses tree-sitter-python grammar and embedded query files.
 
-use crate::languages::{LanguageAdapter, node_range, node_text};
+use crate::languages::{node_range, node_text};
 use atlas_types::*;
-use std::path::Path;
+
+use crate::frontend::{
+    Capture, DataflowSpec, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, NormalizeCtx,
+    ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec, SymbolExtractorSpec,
+};
+use atlas_types::capability::FeatureSupport;
 
 // ---------------------------------------------------------------------------
-// Adapter struct
+// Frontend spec struct
 // ---------------------------------------------------------------------------
 
-/// Python LanguageAdapter.
-pub struct PythonAdapter;
+/// Python frontend spec.
+pub(crate) struct PythonAdapter;
 
-impl LanguageAdapter for PythonAdapter {
+// ---------------------------------------------------------------------------
+// Private normalize helpers — shared by all slot trait impls.
+// ---------------------------------------------------------------------------
+
+fn normalize_py_definition(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> Option<SymbolDef> {
+    use super::shared::SymbolDefBuilder;
+
+    let kind = py_definition_kind(capture_name, node)?;
+    let name = node_text(node, source)?;
+    let range = node_range(node);
+
+    let qualified_name = qualified_name_from_node_py("", &name, node, source);
+    let exported = is_exported_in_tree_py(node, &name);
+    let signature = py_extract_signature(capture_name, node, source);
+
+    Some(
+        SymbolDefBuilder::new(file_id, Language::Python, kind, name, qualified_name, range)
+            .signature(signature)
+            .exported(exported)
+            .build(),
+    )
+}
+
+fn normalize_py_reference(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> Option<ReferenceUse> {
+    let kind = py_reference_kind(capture_name)?;
+    let text = node_text(node, source)?;
+    let name = text.clone();
+    let range = node_range(node);
+
+    let ref_id = ReferenceId::generate(
+        &file_id,
+        None::<&SymbolId>,
+        range.start_byte,
+        range.end_byte,
+        &text,
+        kind,
+    );
+
+    // source_symbol is resolved by SemanticBinder after extraction.
+    Some(ReferenceUse {
+        id: ref_id,
+        file_id,
+        source_symbol: None,
+        scope_id: None,
+        kind,
+        text,
+        name,
+        receiver: None,
+        arity: None,
+        range,
+        resolved: None,
+        binding_id: None,
+    })
+}
+
+fn normalize_py_import(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> Option<ImportDef> {
+    let (kind, module, imported_name, is_relative) = py_import_info(capture_name, node, source)?;
+    let range = node_range(node);
+    let local_name = imported_name.clone();
+    let is_wildcard = capture_name.contains("wildcard");
+
+    let import_id = ImportId::generate(
+        &file_id,
+        kind.as_str(),
+        &module,
+        Some(imported_name.as_str()),
+        range.start_byte,
+    );
+
+    Some(ImportDef {
+        id: import_id,
+        file_id,
+        kind,
+        module,
+        imported_name,
+        local_name: Some(local_name),
+        is_wildcard,
+        is_relative,
+        range,
+        alias: None,
+    })
+}
+
+fn normalize_py_scope(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    _source: &str,
+    file_id: FileId,
+) -> Option<ScopeDef> {
+    let kind = match capture_name {
+        "scope.file" => ScopeKind::File,
+        "scope.function" => ScopeKind::Function,
+        "scope.class" => ScopeKind::Class,
+        "scope.block" => ScopeKind::Block,
+        "scope.conditional" => ScopeKind::Conditional,
+        "scope.loop" => ScopeKind::Loop,
+        _ => return None,
+    };
+    let range = node_range(node);
+    let name = format!("{:?}#{}", kind, range.start_byte);
+    let scope_path = name.clone();
+
+    let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
+
+    Some(ScopeDef {
+        id: scope_id,
+        file_id,
+        kind,
+        name,
+        scope_path,
+        parent_id: None,
+        range,
+    })
+}
+
+fn normalize_py_dataflow_builder(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> (Option<DataNode>, Option<DataFlowEdge>) {
+    use atlas_types::ids::DataNodeId;
+
+    let range = node_range(node);
+
+    match capture_name {
+        "df.parameter" => node_text(node, source)
+            .map(|name| {
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&atlas_types::ids::SymbolId>,
+                    "parameter",
+                    Some(&name),
+                    Some(&name),
+                    range.start_byte,
+                );
+                let dn = DataNode::parameter(node_id, file_id, None, None, &name, range);
+                (Some(dn), None)
+            })
+            .unwrap_or((None, None)),
+        "df.assign_target" => node_text(node, source)
+            .map(|name| {
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&atlas_types::ids::SymbolId>,
+                    "local",
+                    Some(&name),
+                    Some(&name),
+                    range.start_byte,
+                );
+                let dn = DataNode::local(node_id, file_id, None, None, &name, range);
+                (Some(dn), None)
+            })
+            .unwrap_or((None, None)),
+        "df.assign_value" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&atlas_types::ids::SymbolId>,
+                "expr",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: atlas_types::enums::DataNodeKind::Expr,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text),
+                access_path: None,
+                range,
+            };
+            (Some(dn), None)
+        }
+        "df.return_value" => {
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&atlas_types::ids::SymbolId>,
+                "return",
+                None,
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode::return_(node_id, file_id, None, range);
+            (Some(dn), None)
+        }
+        "df.call_arg" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&atlas_types::ids::SymbolId>,
+                "call_arg",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode::call_arg(node_id, file_id, None, None, Some(&text), range);
+            (Some(dn), None)
+        }
+        "df.call_target" => {
+            node_text(node, source)
+                .map(|name| {
+                    // Build full access_path from parent attribute node
+                    // e.g. for "os.system" → access_path = "os.system"
+                    let access_path = node
+                        .parent()
+                        .filter(|p| p.kind() == "attribute")
+                        .and_then(|p| node_text(p, source))
+                        .unwrap_or_else(|| name.clone());
+                    let node_id = DataNodeId::generate(
+                        &file_id,
+                        None::<&atlas_types::ids::SymbolId>,
+                        "call_target",
+                        Some(&name),
+                        Some(&access_path),
+                        range.start_byte,
+                    );
+                    let dn = DataNode::call_target(
+                        node_id,
+                        file_id,
+                        None,
+                        None,
+                        &name,
+                        &access_path,
+                        range,
+                    );
+                    (Some(dn), None)
+                })
+                .unwrap_or((None, None))
+        }
+        "df.field_name" => {
+            node_text(node, source)
+                .map(|name| {
+                    // Build full access_path from parent attribute node
+                    // e.g. for "request.args" → access_path = "request.args"
+                    let access_path = node
+                        .parent()
+                        .filter(|p| p.kind() == "attribute")
+                        .and_then(|p| node_text(p, source))
+                        .unwrap_or_else(|| name.clone());
+                    let node_id = DataNodeId::generate(
+                        &file_id,
+                        None::<&atlas_types::ids::SymbolId>,
+                        "field",
+                        Some(&name),
+                        Some(&access_path),
+                        range.start_byte,
+                    );
+                    let dn = DataNode::field(node_id, file_id, None, &name, &access_path, range);
+                    (Some(dn), None)
+                })
+                .unwrap_or((None, None))
+        }
+        "df.literal" | "df.receiver" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&atlas_types::ids::SymbolId>,
+                "literal",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: atlas_types::enums::DataNodeKind::Literal,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text),
+                access_path: None,
+                range,
+            };
+            (Some(dn), None)
+        }
+        _ => (None, None),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Slot trait implementations — each calls the private normalize_py_* helpers.
+// ---------------------------------------------------------------------------
+
+impl ParserSpec for PythonAdapter {
     fn language(&self) -> Language {
         Language::Python
     }
-
-    fn extensions(&self) -> &[&str] {
-        &["py", "pyi"]
-    }
-
     fn tree_sitter_language(&self) -> tree_sitter::Language {
         tree_sitter_python::LANGUAGE.into()
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
+    }
+}
 
+impl SymbolExtractorSpec for PythonAdapter {
     fn definition_query(&self) -> &str {
         include_str!("../../queries/python/definitions.scm")
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
+    }
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<SymbolDef> {
+        normalize_py_definition(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+}
 
+impl ReferenceExtractorSpec for PythonAdapter {
     fn reference_query(&self) -> &str {
         include_str!("../../queries/python/references.scm")
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
+    }
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ReferenceUse> {
+        normalize_py_reference(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+}
 
+impl ImportExtractorSpec for PythonAdapter {
     fn import_query(&self) -> &str {
         include_str!("../../queries/python/imports.scm")
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
+    }
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ImportDef> {
+        normalize_py_import(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+}
 
+impl ScopeExtractorSpec for PythonAdapter {
     fn scope_query(&self) -> &str {
         include_str!("../../queries/python/scopes.scm")
     }
-
-    fn normalize_definition(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        _file_path: &Path,
-    ) -> Option<SymbolDef> {
-        use super::shared::SymbolDefBuilder;
-
-        let kind = py_definition_kind(capture_name, node)?;
-        let name = node_text(node, source)?;
-        let range = node_range(node);
-
-        let qualified_name = qualified_name_from_node_py("", &name, node, source);
-        let lang = self.language();
-        let exported = is_exported_in_tree_py(node, &name);
-        let signature = py_extract_signature(capture_name, node, source);
-
-        Some(
-            SymbolDefBuilder::new(file_id, lang, kind, name, qualified_name, range)
-                .signature(signature)
-                .exported(exported)
-                .build(),
-        )
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
     }
-
-    fn normalize_reference(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        _file_path: &Path,
-    ) -> Option<ReferenceUse> {
-        let kind = py_reference_kind(capture_name)?;
-        let text = node_text(node, source)?;
-        let name = text.clone();
-        let range = node_range(node);
-
-        let ref_id = ReferenceId::generate(
-            &file_id,
-            None::<&SymbolId>,
-            range.start_byte,
-            range.end_byte,
-            &text,
-            kind,
-        );
-
-        // source_symbol is resolved by SemanticBinder after extraction.
-        Some(ReferenceUse {
-            id: ref_id,
-            file_id,
-            source_symbol: None,
-            scope_id: None,
-            kind,
-            text,
-            name,
-            receiver: None,
-            arity: None,
-            range,
-            resolved: None,
-            binding_id: None,
-        })
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ScopeDef> {
+        normalize_py_scope(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
+}
 
-    fn normalize_import(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        _file_path: &Path,
-    ) -> Option<ImportDef> {
-        let (kind, module, imported_name, is_relative) =
-            py_import_info(capture_name, node, source)?;
-        let range = node_range(node);
-        let local_name = imported_name.clone();
-        let is_wildcard = capture_name.contains("wildcard");
-
-        let import_id = ImportId::generate(
-            &file_id,
-            kind.as_str(),
-            &module,
-            Some(imported_name.as_str()),
-            range.start_byte,
-        );
-
-        Some(ImportDef {
-            id: import_id,
-            file_id,
-            kind,
-            module,
-            imported_name,
-            local_name: Some(local_name),
-            is_wildcard,
-            is_relative,
-            range,
-            alias: None,
-        })
+impl LexicalBindingSpec for PythonAdapter {
+    fn lexical_query(&self) -> &str {
+        ""
     }
-
-    fn normalize_scope(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        _source: &str,
-        file_id: FileId,
-        _file_path: &Path,
-    ) -> Option<ScopeDef> {
-        let kind = match capture_name {
-            "scope.file" => ScopeKind::File,
-            "scope.function" => ScopeKind::Function,
-            "scope.class" => ScopeKind::Class,
-            "scope.block" => ScopeKind::Block,
-            "scope.conditional" => ScopeKind::Conditional,
-            "scope.loop" => ScopeKind::Loop,
-            _ => return None,
-        };
-        let range = node_range(node);
-        let name = format!("{:?}#{}", kind, range.start_byte);
-        let scope_path = name.clone();
-
-        let scope_id =
-            ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
-
-        Some(ScopeDef {
-            id: scope_id,
-            file_id,
-            kind,
-            name,
-            scope_path,
-            parent_id: None,
-            range,
-        })
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::unsupported("Python does not support lexical binding extraction")
     }
-
-    fn detect_package(&self, _source: &str, file_path: &Path) -> Option<String> {
-        // For Python, look for setup.py, pyproject.toml, or __init__.py
-        let mut current = file_path.parent()?;
-        loop {
-            // Check for pyproject.toml
-            let pyproject = current.join("pyproject.toml");
-            if let Ok(content) = std::fs::read_to_string(&pyproject) {
-                if let Some(name) = extract_toml_project_name(&content) {
-                    return Some(name);
-                }
-            }
-            // Check for setup.cfg
-            let setup_cfg = current.join("setup.cfg");
-            if let Ok(content) = std::fs::read_to_string(&setup_cfg) {
-                for line in content.lines() {
-                    if let Some(name) = line.strip_prefix("name = ") {
-                        return Some(name.trim().to_string());
-                    }
-                }
-            }
-            // If we found __init__.py, this is a package
-            if current.join("__init__.py").is_file() {
-                if let Some(name) = current.file_name().and_then(|n| n.to_str()) {
-                    return Some(name.to_string());
-                }
-            }
-            current = current.parent()?;
-        }
+    fn normalize(&self, _ctx: NormalizeCtx<'_>, _capture: Capture<'_>) -> Option<BindingDef> {
+        None
     }
+}
 
-    fn detect_frameworks(&self, source: &str) -> Vec<String> {
-        let mut frameworks = Vec::new();
-        if source.contains("django") {
-            frameworks.push("django".into());
-        }
-        if source.contains("flask") {
-            frameworks.push("flask".into());
-        }
-        if source.contains("fastapi") {
-            frameworks.push("fastapi".into());
-        }
-        if source.contains("sqlalchemy") {
-            frameworks.push("sqlalchemy".into());
-        }
-        if source.contains("pytest") {
-            frameworks.push("pytest".into());
-        }
-        frameworks
-    }
-
+impl DataflowSpec for PythonAdapter {
     fn dataflow_builder_query(&self) -> &str {
         include_str!("../../queries/python/dataflow_builder.scm")
     }
-
-    fn normalize_dataflow_builder(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        _file_path: &Path,
-    ) -> (
-        Option<atlas_types::dataflow::DataNode>,
-        Option<atlas_types::dataflow::DataFlowEdge>,
-    ) {
-        use atlas_types::dataflow::DataNode;
-        use atlas_types::ids::DataNodeId;
-
-        let range = node_range(node);
-
-        match capture_name {
-            "df.parameter" => node_text(node, source)
-                .map(|name| {
-                    let node_id = DataNodeId::generate(
-                        &file_id,
-                        None::<&atlas_types::ids::SymbolId>,
-                        "parameter",
-                        Some(&name),
-                        Some(&name),
-                        range.start_byte,
-                    );
-                    let dn = DataNode::parameter(node_id, file_id, None, None, &name, range);
-                    (Some(dn), None)
-                })
-                .unwrap_or((None, None)),
-            "df.assign_target" => node_text(node, source)
-                .map(|name| {
-                    let node_id = DataNodeId::generate(
-                        &file_id,
-                        None::<&atlas_types::ids::SymbolId>,
-                        "local",
-                        Some(&name),
-                        Some(&name),
-                        range.start_byte,
-                    );
-                    let dn = DataNode::local(node_id, file_id, None, None, &name, range);
-                    (Some(dn), None)
-                })
-                .unwrap_or((None, None)),
-            "df.assign_value" => {
-                let text = node_text(node, source).unwrap_or_default();
-                let node_id = DataNodeId::generate(
-                    &file_id,
-                    None::<&atlas_types::ids::SymbolId>,
-                    "expr",
-                    Some(&text),
-                    None,
-                    range.start_byte,
-                );
-                let dn = DataNode {
-                    id: node_id,
-                    file_id,
-                    function_id: None,
-                    kind: atlas_types::enums::DataNodeKind::Expr,
-                    binding_id: None,
-                    callsite_id: None,
-                    name: Some(text),
-                    access_path: None,
-                    range,
-                };
-                (Some(dn), None)
-            }
-            "df.return_value" => {
-                let node_id = DataNodeId::generate(
-                    &file_id,
-                    None::<&atlas_types::ids::SymbolId>,
-                    "return",
-                    None,
-                    None,
-                    range.start_byte,
-                );
-                let dn = DataNode::return_(node_id, file_id, None, range);
-                (Some(dn), None)
-            }
-            "df.call_arg" => {
-                let text = node_text(node, source).unwrap_or_default();
-                let node_id = DataNodeId::generate(
-                    &file_id,
-                    None::<&atlas_types::ids::SymbolId>,
-                    "call_arg",
-                    Some(&text),
-                    None,
-                    range.start_byte,
-                );
-                let dn = DataNode::call_arg(node_id, file_id, None, None, Some(&text), range);
-                (Some(dn), None)
-            }
-            "df.call_target" => {
-                node_text(node, source)
-                    .map(|name| {
-                        // Build full access_path from parent attribute node
-                        // e.g. for "os.system" → access_path = "os.system"
-                        let access_path = node
-                            .parent()
-                            .filter(|p| p.kind() == "attribute")
-                            .and_then(|p| node_text(p, source))
-                            .unwrap_or_else(|| name.clone());
-                        let node_id = DataNodeId::generate(
-                            &file_id,
-                            None::<&atlas_types::ids::SymbolId>,
-                            "call_target",
-                            Some(&name),
-                            Some(&access_path),
-                            range.start_byte,
-                        );
-                        let dn = DataNode::call_target(
-                            node_id,
-                            file_id,
-                            None,
-                            None,
-                            &name,
-                            &access_path,
-                            range,
-                        );
-                        (Some(dn), None)
-                    })
-                    .unwrap_or((None, None))
-            }
-            "df.field_name" => {
-                node_text(node, source)
-                    .map(|name| {
-                        // Build full access_path from parent attribute node
-                        // e.g. for "request.args" → access_path = "request.args"
-                        let access_path = node
-                            .parent()
-                            .filter(|p| p.kind() == "attribute")
-                            .and_then(|p| node_text(p, source))
-                            .unwrap_or_else(|| name.clone());
-                        let node_id = DataNodeId::generate(
-                            &file_id,
-                            None::<&atlas_types::ids::SymbolId>,
-                            "field",
-                            Some(&name),
-                            Some(&access_path),
-                            range.start_byte,
-                        );
-                        let dn =
-                            DataNode::field(node_id, file_id, None, &name, &access_path, range);
-                        (Some(dn), None)
-                    })
-                    .unwrap_or((None, None))
-            }
-            "df.literal" | "df.receiver" => {
-                let text = node_text(node, source).unwrap_or_default();
-                let node_id = DataNodeId::generate(
-                    &file_id,
-                    None::<&atlas_types::ids::SymbolId>,
-                    "literal",
-                    Some(&text),
-                    None,
-                    range.start_byte,
-                );
-                let dn = DataNode {
-                    id: node_id,
-                    file_id,
-                    function_id: None,
-                    kind: atlas_types::enums::DataNodeKind::Literal,
-                    binding_id: None,
-                    callsite_id: None,
-                    name: Some(text),
-                    access_path: None,
-                    range,
-                };
-                (Some(dn), None)
-            }
-            _ => (None, None),
-        }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported_with_limitations(
+            0.55,
+            vec!["Dataflow extraction for Python is experimental"],
+        )
     }
+    fn normalize(
+        &self,
+        ctx: NormalizeCtx<'_>,
+        capture: Capture<'_>,
+    ) -> (Option<DataNode>, Option<DataFlowEdge>) {
+        normalize_py_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Factory — direct slot construction, no adapter wrapper needed.
+// ---------------------------------------------------------------------------
+
+/// Construct a [`LanguageFrontend`] directly from Python-specific slot
+/// implementations — no adapter wrapper needed.
+/// This is the canonical Python frontend factory.
+pub(crate) fn python_frontend() -> LanguageFrontend {
+    use crate::callsite_spec::create_extractor;
+    use crate::frontend::{FrontendParts, UnsupportedSpec};
+    use atlas_types::capability::LanguageCapabilityProfile;
+
+    LanguageFrontend::from_parts(FrontendParts {
+        parser: Box::new(PythonAdapter),
+        symbols: Box::new(PythonAdapter),
+        references: Box::new(PythonAdapter),
+        imports: Box::new(PythonAdapter),
+        scopes: Box::new(PythonAdapter),
+        callsites: create_extractor(Language::Python),
+        lexical: Box::new(UnsupportedSpec::new(
+            "Python does not support lexical binding extraction",
+        )),
+        dataflow: Box::new(PythonAdapter),
+        capability: LanguageCapabilityProfile::for_language(Language::Python),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -424,19 +453,16 @@ fn qualified_name_from_node_py(
     let mut current = node;
 
     while let Some(parent) = current.parent() {
-        match parent.kind() {
-            "class_definition" => {
-                if let Some(child) = parent.child_by_field_name("name") {
-                    if let Ok(class_name) = child.utf8_text(source.as_bytes()) {
-                        // Skip if the class name equals the current segment's name
-                        // to avoid double-counting when starting from the name child.
-                        if class_name != name {
-                            parts.push(class_name.to_string());
-                        }
+        if parent.kind() == "class_definition" {
+            if let Some(child) = parent.child_by_field_name("name") {
+                if let Ok(class_name) = child.utf8_text(source.as_bytes()) {
+                    // Skip if the class name equals the current segment's name
+                    // to avoid double-counting when starting from the name child.
+                    if class_name != name {
+                        parts.push(class_name.to_string());
                     }
                 }
             }
-            _ => {}
         }
         current = parent;
     }
@@ -450,6 +476,7 @@ fn qualified_name_from_node_py(
 }
 
 /// Extract project name from pyproject.toml (simple parser for MVP).
+#[allow(dead_code)]
 fn extract_toml_project_name(content: &str) -> Option<String> {
     for line in content.lines() {
         let trimmed = line.trim();
@@ -607,27 +634,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_adapter_metadata() {
-        let adapter = PythonAdapter;
-        assert_eq!(adapter.language(), Language::Python);
-        assert!(adapter.extensions().contains(&"py"));
-        assert!(!adapter.definition_query().is_empty());
-        assert!(!adapter.reference_query().is_empty());
+    fn test_frontend_metadata() {
+        let spec = PythonAdapter;
+        let ts_lang = spec.tree_sitter_language();
+        assert!(!spec.definition_query().is_empty());
+        assert!(!spec.reference_query().is_empty());
+        // Grammar must be valid
+        tree_sitter::Parser::new().set_language(&ts_lang).unwrap();
     }
 
     #[test]
     fn test_def_query_parses() {
-        let adapter = PythonAdapter;
-        let lang = adapter.tree_sitter_language();
-        let query = tree_sitter::Query::new(&lang, adapter.definition_query());
+        let spec = PythonAdapter;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.definition_query());
         assert!(query.is_ok(), "Python def query must compile");
     }
 
     #[test]
     fn test_ref_query_parses() {
-        let adapter = PythonAdapter;
-        let lang = adapter.tree_sitter_language();
-        let query = tree_sitter::Query::new(&lang, adapter.reference_query());
+        let spec = PythonAdapter;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.reference_query());
         assert!(query.is_ok(), "Python ref query must compile");
     }
 

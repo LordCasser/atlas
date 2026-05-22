@@ -21,7 +21,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use atlas_db::Store;
+use atlas_db::{DataflowReader, Store};
 use atlas_types::dataflow::DataNode;
 use atlas_types::enums::DataFlowKind;
 use atlas_types::ids::DataNodeId;
@@ -219,7 +219,7 @@ fn reconstruct_path(
     predecessors: &HashMap<String, (DataNodeId, DataFlowKind)>,
     farthest_node_id: &DataNodeId,
     sink_node_id: &DataNodeId,
-    store: &Store,
+    store: &impl DataflowReader,
 ) -> anyhow::Result<Vec<TracePathStep>> {
     // Walk from sink backward to farthest, collecting steps in reverse
     let mut raw_steps: Vec<(DataNodeId, DataNodeId, DataFlowKind)> = Vec::new();

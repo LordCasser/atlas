@@ -1,128 +1,198 @@
-//! ArkTS LanguageAdapter — thin wrapper around TypeScript.
+//! ArkTS frontend spec — thin wrapper around TypeScript.
 //!
 //! ArkTS (HarmonyOS) uses TypeScript-compatible syntax with `.ets`/`.sts` extensions.
-//! The adapter delegates all normalization to `TypeScriptAdapter`, only overriding
-//! `language()` and `extensions()`.
+//! Delegates all normalization to `TypeScriptFrontendSpec`, only overriding `language()`.
 
-use crate::languages::LanguageAdapter;
+use crate::frontend::{
+    Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
+    LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
+    SymbolExtractorSpec,
+};
+use atlas_types::capability::FeatureSupport;
 use atlas_types::*;
 use std::path::Path;
 
 /// ArkTS adapter — delegates to TypeScript internally.
-pub struct ArkTsAdapter;
+pub(crate) struct ArkTsAdapter;
 
-impl LanguageAdapter for ArkTsAdapter {
+// ---------------------------------------------------------------------------
+// Private normalize helpers — shared by all slot trait impls.
+// ---------------------------------------------------------------------------
+
+fn normalize_arkts_definition(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+    _file_path: &Path,
+) -> Option<SymbolDef> {
+    let mut def = super::typescript::normalize_ts_definition(capture_name, node, source, file_id)?;
+    def.language = Language::ArkTS;
+    Some(def)
+}
+
+fn normalize_arkts_reference(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+    _file_path: &Path,
+) -> Option<ReferenceUse> {
+    super::typescript::normalize_ts_reference(capture_name, node, source, file_id)
+}
+
+fn normalize_arkts_import(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+    _file_path: &Path,
+) -> Option<ImportDef> {
+    super::typescript::normalize_ts_import(capture_name, node, source, file_id)
+}
+
+fn normalize_arkts_scope(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    _source: &str,
+    file_id: FileId,
+    _file_path: &Path,
+) -> Option<ScopeDef> {
+    super::typescript::normalize_ts_scope(capture_name, node, file_id)
+}
+
+// ── Slot trait implementations ──────────────────────────────────────────
+
+impl ParserSpec for ArkTsAdapter {
     fn language(&self) -> Language {
         Language::ArkTS
     }
-
-    fn extensions(&self) -> &[&str] {
-        &["ets", "sts"]
-    }
-
     fn tree_sitter_language(&self) -> tree_sitter::Language {
         tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
     }
+}
 
+impl SymbolExtractorSpec for ArkTsAdapter {
     fn definition_query(&self) -> &str {
         include_str!("../../queries/typescript/definitions.scm")
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
+    }
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<SymbolDef> {
+        normalize_arkts_definition(
+            &capture.name,
+            capture.node,
+            ctx.source,
+            ctx.file_id,
+            ctx.file_path,
+        )
+    }
+}
 
+impl ReferenceExtractorSpec for ArkTsAdapter {
     fn reference_query(&self) -> &str {
         include_str!("../../queries/typescript/references.scm")
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
+    }
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ReferenceUse> {
+        normalize_arkts_reference(
+            &capture.name,
+            capture.node,
+            ctx.source,
+            ctx.file_id,
+            ctx.file_path,
+        )
+    }
+}
 
+impl ImportExtractorSpec for ArkTsAdapter {
     fn import_query(&self) -> &str {
         include_str!("../../queries/typescript/imports.scm")
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
+    }
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ImportDef> {
+        normalize_arkts_import(
+            &capture.name,
+            capture.node,
+            ctx.source,
+            ctx.file_id,
+            ctx.file_path,
+        )
+    }
+}
 
+impl ScopeExtractorSpec for ArkTsAdapter {
     fn scope_query(&self) -> &str {
         include_str!("../../queries/typescript/scopes.scm")
     }
-
-    fn normalize_definition(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        file_path: &Path,
-    ) -> Option<SymbolDef> {
-        let mut def = super::typescript::TypeScriptAdapter.normalize_definition(
-            capture_name,
-            node,
-            source,
-            file_id,
-            file_path,
-        )?;
-        def.language = Language::ArkTS;
-        Some(def)
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
     }
-
-    fn normalize_reference(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        file_path: &Path,
-    ) -> Option<ReferenceUse> {
-        super::typescript::TypeScriptAdapter.normalize_reference(
-            capture_name,
-            node,
-            source,
-            file_id,
-            file_path,
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ScopeDef> {
+        normalize_arkts_scope(
+            &capture.name,
+            capture.node,
+            ctx.source,
+            ctx.file_id,
+            ctx.file_path,
         )
     }
+}
 
-    fn normalize_import(
+impl LexicalBindingSpec for ArkTsAdapter {
+    fn lexical_query(&self) -> &str {
+        ""
+    }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::unsupported("ArkTS does not support lexical binding extraction")
+    }
+    fn normalize(&self, _ctx: NormalizeCtx<'_>, _capture: Capture<'_>) -> Option<BindingDef> {
+        None
+    }
+}
+
+impl DataflowSpec for ArkTsAdapter {
+    fn dataflow_builder_query(&self) -> &str {
+        ""
+    }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::unsupported("ArkTS does not support dataflow extraction")
+    }
+    fn normalize(
         &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        file_path: &Path,
-    ) -> Option<ImportDef> {
-        super::typescript::TypeScriptAdapter.normalize_import(
-            capture_name,
-            node,
-            source,
-            file_id,
-            file_path,
-        )
+        _ctx: NormalizeCtx<'_>,
+        _capture: Capture<'_>,
+    ) -> (Option<DataNode>, Option<DataFlowEdge>) {
+        (None, None)
     }
+}
 
-    fn normalize_scope(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        file_path: &Path,
-    ) -> Option<ScopeDef> {
-        super::typescript::TypeScriptAdapter.normalize_scope(
-            capture_name,
-            node,
-            source,
-            file_id,
-            file_path,
-        )
-    }
+// ---------------------------------------------------------------------------
+// Factory — direct slot construction, no adapter wrapper needed.
+// ---------------------------------------------------------------------------
 
-    fn detect_package(&self, source: &str, file_path: &Path) -> Option<String> {
-        // ArkTS uses the same package.json convention
-        super::typescript::TypeScriptAdapter.detect_package(source, file_path)
-    }
+/// Construct a [`LanguageFrontend`] directly from ArkTS-specific slot
+/// implementations — no adapter wrapper needed.
+pub(crate) fn arkts_frontend() -> LanguageFrontend {
+    use crate::callsite_spec::create_extractor;
+    use atlas_types::capability::LanguageCapabilityProfile;
 
-    fn detect_frameworks(&self, source: &str) -> Vec<String> {
-        let mut frameworks = super::typescript::TypeScriptAdapter.detect_frameworks(source);
-        // Add ArkTS-specific framework detection
-        if source.contains("@ohos") || source.contains("arkui") {
-            frameworks.push("harmonyos".into());
-        }
-        frameworks
-    }
+    LanguageFrontend::from_parts(FrontendParts {
+        parser: Box::new(ArkTsAdapter),
+        symbols: Box::new(ArkTsAdapter),
+        references: Box::new(ArkTsAdapter),
+        imports: Box::new(ArkTsAdapter),
+        scopes: Box::new(ArkTsAdapter),
+        callsites: create_extractor(Language::ArkTS),
+        lexical: Box::new(ArkTsAdapter),
+        dataflow: Box::new(ArkTsAdapter),
+        capability: LanguageCapabilityProfile::for_language(Language::ArkTS),
+    })
 }
 
 #[cfg(test)]
@@ -131,26 +201,26 @@ mod tests {
 
     #[test]
     fn test_arkts_adapter_metadata() {
-        let adapter = ArkTsAdapter;
-        assert_eq!(adapter.language(), Language::ArkTS);
-        assert!(adapter.extensions().contains(&"ets"));
-        assert!(adapter.extensions().contains(&"sts"));
-        assert!(!adapter.definition_query().is_empty());
+        let spec = ArkTsAdapter;
+        let ts_lang = spec.tree_sitter_language();
+        assert!(!spec.definition_query().is_empty());
+        // Grammar must be valid
+        tree_sitter::Parser::new().set_language(&ts_lang).unwrap();
     }
 
     #[test]
     fn test_arkts_def_query_parses() {
-        let adapter = ArkTsAdapter;
-        let lang = adapter.tree_sitter_language();
-        let query = tree_sitter::Query::new(&lang, adapter.definition_query());
+        let spec = ArkTsAdapter;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.definition_query());
         assert!(query.is_ok(), "definition query must compile");
     }
 
     #[test]
     fn test_arkts_scope_query_parses() {
-        let adapter = ArkTsAdapter;
-        let lang = adapter.tree_sitter_language();
-        let query = tree_sitter::Query::new(&lang, adapter.scope_query());
+        let spec = ArkTsAdapter;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.scope_query());
         assert!(query.is_ok(), "scope query must compile: {:?}", query.err());
     }
 }

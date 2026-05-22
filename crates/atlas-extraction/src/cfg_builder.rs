@@ -59,7 +59,7 @@ impl CfgBuilder {
     /// Scans the function body for statements and produces CFG nodes/edges.
     pub fn build(function_id: &SymbolId, function_node: Node, source_bytes: &[u8]) -> CfgResult {
         let mut ctx = CfgContext {
-            function_id: function_id.clone(),
+            function_id: *function_id,
             nodes: Vec::new(),
             edges: Vec::new(),
             source: source_bytes,

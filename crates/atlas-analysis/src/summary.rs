@@ -22,7 +22,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use atlas_db::Store;
+use atlas_db::{DataflowReader, SymbolReader};
 use atlas_types::enums::{DataFlowKind, DataNodeKind};
 use atlas_types::ids::{CallsiteId, DataNodeId, SymbolId};
 use atlas_types::summary::{CallArgFlow, FunctionSummary, ParameterFlow, ReturnFlow};
@@ -37,8 +37,9 @@ impl SummaryBuilder {
     /// When `function_range` is `Some(start_byte, end_byte)`, only DataNodes
     /// whose range is contained within it are included.  This handles the
     /// case where the function symbol's own range only covers the name.
+    #[allow(deprecated)]
     pub fn build(
-        store: &Store,
+        store: &(impl SymbolReader + DataflowReader),
         function_id: &SymbolId,
         function_range: Option<(u32, u32)>,
     ) -> anyhow::Result<FunctionSummary> {
@@ -276,7 +277,7 @@ impl SummaryBuilder {
 mod tests {
     use super::*;
     #[cfg(feature = "typescript")]
-    use atlas_db::Store;
+    use atlas_db::{DataflowReader, Store, SymbolReader};
     #[cfg(feature = "typescript")]
     use atlas_extraction::create_frontend;
     #[cfg(feature = "typescript")]
@@ -408,6 +409,7 @@ function process(data: string): string {
 
     #[cfg(feature = "typescript")]
     #[test]
+    #[allow(deprecated)]
     fn empty_summary_for_function_without_dataflow() {
         let source = r#"
 function noop() {

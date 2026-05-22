@@ -176,7 +176,7 @@ mod tests {
             id: ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), start),
             file_id,
             kind,
-            name: format!("{:?}#{}", kind, start),
+            name: format!("{kind:?}#{start}"),
             scope_path: String::new(),
             parent_id: None,
             range,

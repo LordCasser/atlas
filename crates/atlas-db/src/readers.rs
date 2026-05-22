@@ -14,6 +14,7 @@
 //! | File | `FileReader` | file info, path resolution, metadata |
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
@@ -61,11 +62,15 @@ pub trait SymbolReader {
 /// Read-only access to data nodes and dataflow edges.
 pub trait DataflowReader {
     fn get_data_node(&self, id: &DataNodeId) -> Result<Option<DataNode>>;
+    /// Batch lookup of multiple data nodes by ID.
+    fn get_data_nodes(&self, ids: &[DataNodeId]) -> Result<HashMap<DataNodeId, DataNode>>;
     fn find_data_nodes_by_file(&self, file_id: &FileId) -> Result<Vec<DataNode>>;
     fn find_data_nodes_by_function(&self, function_id: &SymbolId) -> Result<Vec<DataNode>>;
     fn find_data_nodes_by_callsite(&self, callsite_id: &CallsiteId) -> Result<Vec<DataNode>>;
     fn find_dataflow_edges_by_source(&self, source: &DataNodeId) -> Result<Vec<DataFlowEdge>>;
     fn find_dataflow_edges_by_target(&self, target: &DataNodeId) -> Result<Vec<DataFlowEdge>>;
+    /// Batch lookup of dataflow edges with sources in the given set.
+    fn find_dataflow_edges_by_sources(&self, sources: &[DataNodeId]) -> Result<Vec<DataFlowEdge>>;
 }
 
 // ── Call Graph Reader ──────────────────────────────────────────────────────

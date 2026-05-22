@@ -51,6 +51,7 @@ impl SymbolDefBuilder {
 
     /// Set the name-only range (for precise go-to-definition).
     /// If not set, falls back to `range`.
+    #[allow(dead_code)]
     pub fn name_range(mut self, r: TextRange) -> Self {
         self.name_range = Some(r);
         self
@@ -110,6 +111,7 @@ impl SymbolDefBuilder {
 /// go-to-definition highlight the entire declaration. This helper extracts
 /// just the name token's range by finding the first child that matches the
 /// symbol name text.
+#[allow(dead_code)]
 pub fn node_name_range(node: tree_sitter::Node, name: &str, source: &str) -> Option<TextRange> {
     // For simple cases where the name is the first identifier child
     for i in 0..node.child_count() {

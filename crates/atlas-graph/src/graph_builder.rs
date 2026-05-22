@@ -206,13 +206,14 @@ pub struct GraphBuilderStats {
 mod tests {
     use super::*;
     use atlas_extraction::LanguageFrontend;
+    use atlas_extraction::create_frontend;
     use atlas_extraction::extract_file;
-    use atlas_extraction::languages::typescript::TypeScriptAdapter;
     use atlas_resolution::ReferenceResolver;
+    use atlas_types::Language;
     use std::path::PathBuf;
 
     fn ts_frontend() -> LanguageFrontend {
-        LanguageFrontend::from_adapter(Box::new(TypeScriptAdapter))
+        create_frontend(Language::TypeScript).unwrap()
     }
 
     /// Test that GraphBuilder produces edges from resolved references.

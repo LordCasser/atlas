@@ -224,12 +224,7 @@ fn extract_argument_ranges(call_node: &tree_sitter::Node, _source: &str) -> Vec<
             for arg_child in child.children(&mut arg_cursor) {
                 let arg_kind = arg_child.kind();
                 // Skip punctuation (commas, parens)
-                if arg_kind == ","
-                    || arg_kind == "("
-                    || arg_kind == ")"
-                    || arg_kind == ")"
-                    || arg_kind.is_empty()
-                {
+                if arg_kind == "," || arg_kind == "(" || arg_kind == ")" || arg_kind.is_empty() {
                     continue;
                 }
                 args.push(crate::languages::node_range(arg_child));
@@ -325,7 +320,7 @@ pub fn cangjie_callsite_extractor() -> GenericCallsiteExtractor {
 /// Always returns a spec — uses a no-op fallback (`GenericCallsiteExtractor`)
 /// for unknown languages instead of returning `None`.
 ///
-/// This is the canonical factory used by `LanguageFrontend::from_adapter()`.
+/// This is the canonical factory used by the per-language frontend factories.
 /// It lives in `callsite_spec.rs` (not `extract.rs`) so that both `frontend`
 /// and `extract` depend on the same lower-level spec layer.
 pub fn create_extractor(lang: atlas_types::enums::Language) -> Box<dyn CallsiteExtractorSpec> {

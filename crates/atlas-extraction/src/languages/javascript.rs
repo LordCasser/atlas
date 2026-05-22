@@ -1,170 +1,236 @@
-//! JavaScript LanguageAdapter — thin wrapper around TypeScript.
+//! JavaScript frontend spec — thin wrapper around TypeScript.
 //!
-//! JavaScript shares TypeScript's tree-sitter grammar and query files,
-//! but reports a distinct Language::JavaScript identity so database
-//! records reflect the actual source language of each file.
-//!
-//! The adapter delegates all normalization to `TypeScriptAdapter`,
-//! only overriding `language()` and `extensions()`.
+//! Uses tree-sitter-typescript grammar and embedded query files.
+//! Delegates all normalization to `TypeScriptFrontendSpec`, only overriding `language()`.
 
-use crate::languages::LanguageAdapter;
+use crate::frontend::{
+    Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
+    LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
+    SymbolExtractorSpec,
+};
+use atlas_types::capability::FeatureSupport;
 use atlas_types::*;
 use std::path::Path;
 
 /// JavaScript adapter — delegates to TypeScript internally.
-pub struct JavaScriptAdapter;
+pub(crate) struct JavaScriptAdapter;
 
-impl LanguageAdapter for JavaScriptAdapter {
+// ---------------------------------------------------------------------------
+// Private normalize helpers — shared by all slot trait impls.
+// ---------------------------------------------------------------------------
+
+fn normalize_js_definition(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+    _file_path: &Path,
+) -> Option<SymbolDef> {
+    let mut def = super::typescript::normalize_ts_definition(capture_name, node, source, file_id)?;
+    def.language = Language::JavaScript;
+    Some(def)
+}
+
+fn normalize_js_reference(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+    _file_path: &Path,
+) -> Option<ReferenceUse> {
+    super::typescript::normalize_ts_reference(capture_name, node, source, file_id)
+}
+
+fn normalize_js_import(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+    _file_path: &Path,
+) -> Option<ImportDef> {
+    super::typescript::normalize_ts_import(capture_name, node, source, file_id)
+}
+
+fn normalize_js_scope(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    _source: &str,
+    file_id: FileId,
+    _file_path: &Path,
+) -> Option<ScopeDef> {
+    super::typescript::normalize_ts_scope(capture_name, node, file_id)
+}
+
+fn normalize_js_lexical(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+    _file_path: &Path,
+) -> Option<BindingDef> {
+    super::typescript::normalize_ts_lexical(capture_name, node, source, file_id)
+}
+
+fn normalize_js_dataflow_builder(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+    _file_path: &Path,
+) -> (Option<DataNode>, Option<DataFlowEdge>) {
+    super::typescript::normalize_ts_dataflow_builder(capture_name, node, source, file_id)
+}
+
+// ── Slot trait implementations ──────────────────────────────────────────
+
+impl ParserSpec for JavaScriptAdapter {
     fn language(&self) -> Language {
         Language::JavaScript
     }
-
-    fn extensions(&self) -> &[&str] {
-        &["js", "mjs", "cjs"]
-    }
-
     fn tree_sitter_language(&self) -> tree_sitter::Language {
         tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
     }
+}
 
+impl SymbolExtractorSpec for JavaScriptAdapter {
     fn definition_query(&self) -> &str {
         include_str!("../../queries/typescript/definitions.scm")
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
+    }
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<SymbolDef> {
+        normalize_js_definition(
+            &capture.name,
+            capture.node,
+            ctx.source,
+            ctx.file_id,
+            ctx.file_path,
+        )
+    }
+}
 
+impl ReferenceExtractorSpec for JavaScriptAdapter {
     fn reference_query(&self) -> &str {
         include_str!("../../queries/typescript/references.scm")
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
+    }
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ReferenceUse> {
+        normalize_js_reference(
+            &capture.name,
+            capture.node,
+            ctx.source,
+            ctx.file_id,
+            ctx.file_path,
+        )
+    }
+}
 
+impl ImportExtractorSpec for JavaScriptAdapter {
     fn import_query(&self) -> &str {
         include_str!("../../queries/typescript/imports.scm")
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
+    }
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ImportDef> {
+        normalize_js_import(
+            &capture.name,
+            capture.node,
+            ctx.source,
+            ctx.file_id,
+            ctx.file_path,
+        )
+    }
+}
 
+impl ScopeExtractorSpec for JavaScriptAdapter {
     fn scope_query(&self) -> &str {
         include_str!("../../queries/typescript/scopes.scm")
     }
-
-    fn normalize_definition(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        file_path: &Path,
-    ) -> Option<SymbolDef> {
-        let mut def = super::typescript::TypeScriptAdapter.normalize_definition(
-            capture_name,
-            node,
-            source,
-            file_id,
-            file_path,
-        )?;
-        def.language = Language::JavaScript;
-        Some(def)
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
     }
-
-    fn normalize_reference(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        file_path: &Path,
-    ) -> Option<ReferenceUse> {
-        super::typescript::TypeScriptAdapter.normalize_reference(
-            capture_name,
-            node,
-            source,
-            file_id,
-            file_path,
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ScopeDef> {
+        normalize_js_scope(
+            &capture.name,
+            capture.node,
+            ctx.source,
+            ctx.file_id,
+            ctx.file_path,
         )
     }
+}
 
-    fn normalize_import(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        file_path: &Path,
-    ) -> Option<ImportDef> {
-        super::typescript::TypeScriptAdapter.normalize_import(
-            capture_name,
-            node,
-            source,
-            file_id,
-            file_path,
-        )
-    }
-
-    fn normalize_scope(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        file_path: &Path,
-    ) -> Option<ScopeDef> {
-        super::typescript::TypeScriptAdapter.normalize_scope(
-            capture_name,
-            node,
-            source,
-            file_id,
-            file_path,
-        )
-    }
-
-    fn detect_package(&self, source: &str, file_path: &Path) -> Option<String> {
-        super::typescript::TypeScriptAdapter.detect_package(source, file_path)
-    }
-
-    fn detect_frameworks(&self, source: &str) -> Vec<String> {
-        super::typescript::TypeScriptAdapter.detect_frameworks(source)
-    }
-
+impl LexicalBindingSpec for JavaScriptAdapter {
     fn lexical_query(&self) -> &str {
-        super::typescript::TypeScriptAdapter.lexical_query()
+        include_str!("../../queries/typescript/lexical.scm")
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported_with_limitations(
+            0.55,
+            vec!["name-based binding (no proper shadowing)"],
+        )
+    }
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
+        normalize_js_lexical(
+            &capture.name,
+            capture.node,
+            ctx.source,
+            ctx.file_id,
+            ctx.file_path,
+        )
+    }
+}
 
+impl DataflowSpec for JavaScriptAdapter {
     fn dataflow_builder_query(&self) -> &str {
-        super::typescript::TypeScriptAdapter.dataflow_builder_query()
+        include_str!("../../queries/typescript/dataflow_builder.scm")
     }
-
-    fn normalize_lexical(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        file_path: &Path,
-    ) -> Option<atlas_types::bindings::BindingDef> {
-        super::typescript::TypeScriptAdapter.normalize_lexical(
-            capture_name,
-            node,
-            source,
-            file_id,
-            file_path,
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported_with_limitations(
+            0.55,
+            vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
         )
     }
-
-    fn normalize_dataflow_builder(
+    fn normalize(
         &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        file_path: &Path,
-    ) -> (
-        Option<atlas_types::dataflow::DataNode>,
-        Option<atlas_types::dataflow::DataFlowEdge>,
-    ) {
-        super::typescript::TypeScriptAdapter.normalize_dataflow_builder(
-            capture_name,
-            node,
-            source,
-            file_id,
-            file_path,
+        ctx: NormalizeCtx<'_>,
+        capture: Capture<'_>,
+    ) -> (Option<DataNode>, Option<DataFlowEdge>) {
+        normalize_js_dataflow_builder(
+            &capture.name,
+            capture.node,
+            ctx.source,
+            ctx.file_id,
+            ctx.file_path,
         )
     }
+}
+
+// ---------------------------------------------------------------------------
+// Factory — direct slot construction, no adapter wrapper needed.
+// ---------------------------------------------------------------------------
+
+/// Construct a [`LanguageFrontend`] directly from JavaScript-specific slot
+/// implementations — no adapter wrapper needed.
+pub(crate) fn javascript_frontend() -> LanguageFrontend {
+    use crate::callsite_spec::create_extractor;
+    use atlas_types::capability::LanguageCapabilityProfile;
+
+    LanguageFrontend::from_parts(FrontendParts {
+        parser: Box::new(JavaScriptAdapter),
+        symbols: Box::new(JavaScriptAdapter),
+        references: Box::new(JavaScriptAdapter),
+        imports: Box::new(JavaScriptAdapter),
+        scopes: Box::new(JavaScriptAdapter),
+        callsites: create_extractor(Language::JavaScript),
+        lexical: Box::new(JavaScriptAdapter),
+        dataflow: Box::new(JavaScriptAdapter),
+        capability: LanguageCapabilityProfile::for_language(Language::JavaScript),
+    })
 }
 
 #[cfg(test)]
@@ -173,10 +239,10 @@ mod tests {
 
     #[test]
     fn test_js_adapter_metadata() {
-        let adapter = JavaScriptAdapter;
-        assert_eq!(adapter.language(), Language::JavaScript);
-        assert!(adapter.extensions().contains(&"js"));
-        assert!(adapter.extensions().contains(&"mjs"));
-        assert!(!adapter.definition_query().is_empty());
+        let spec = JavaScriptAdapter;
+        let ts_lang = spec.tree_sitter_language();
+        assert!(!spec.definition_query().is_empty());
+        // Grammar must be valid
+        tree_sitter::Parser::new().set_language(&ts_lang).unwrap();
     }
 }

@@ -1,26 +1,12 @@
 //! `atlas sync` — incremental sync for changed files.
 
-use anyhow::{Context, Result};
-use atlas_workspace::Workspace;
-use std::path::Path;
-use std::sync::Arc;
+use crate::runtime::{CommandContext, DbMode};
+use anyhow::Result;
 
 pub fn run(project: &str) -> Result<()> {
-    let ws = Workspace::open(Path::new(project))
-        .with_context(|| format!("Project directory not found: {}", project))?;
+    let ctx = CommandContext::open(project, DbMode::ExistingReadWrite)?;
 
-    if !ws.db_path().is_file() {
-        anyhow::bail!(
-            "No Atlas database found in '{}'. Run `atlas init` first.",
-            ws.root().display()
-        );
-    }
-
-    let root = ws.root().to_path_buf();
-    let store =
-        Arc::new(atlas_db::Store::open_db(ws.db_path()).context("Failed to open .atlas database")?);
-
-    let engine = atlas_sync::SyncEngine::new(store.clone(), root);
+    let engine = atlas_sync::SyncEngine::new(ctx.store.clone(), ctx.root);
 
     // Detect and report changes
     let changed = engine.detect_changes()?;

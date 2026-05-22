@@ -4,16 +4,22 @@
 //! (lexical_binder, dataflow_builder, etc.) that need to run tree-sitter queries
 //! independent of the main extractor pipeline.
 
-use anyhow::{Result, anyhow};
 use tree_sitter::{Node, Query, QueryCursor};
 
+use crate::error::{ExtractionFailure, ExtractionFailureKind};
+
 /// Collect raw (capture_name, node) pairs from a single query.
+///
+/// `slot` identifies the query that failed (e.g. `"symbols"`, `"lexical"`)
+/// and is attached to the typed [`ExtractionFailure`] on error so the worker
+/// can report which query phase triggered the failure.
 pub(crate) fn collect_captures<'a>(
     ts_lang: &tree_sitter::Language,
     query_src: &str,
     root: Node<'a>,
     source_bytes: &[u8],
-) -> Result<Vec<(String, Node<'a>)>> {
+    slot: &'static str,
+) -> Result<Vec<(String, Node<'a>)>, ExtractionFailure> {
     use streaming_iterator::StreamingIterator;
 
     let trimmed = query_src.trim();
@@ -21,7 +27,19 @@ pub(crate) fn collect_captures<'a>(
         return Ok(Vec::new());
     }
 
-    let query = Query::new(ts_lang, trimmed).map_err(|e| anyhow!("Query compile error: {}", e))?;
+    let query = match Query::new(ts_lang, trimmed) {
+        Ok(q) => q,
+        Err(e) => {
+            return Err(ExtractionFailure {
+                kind: ExtractionFailureKind::QueryCompile,
+                file_path: String::new(), // caller fills if needed
+                language: atlas_types::Language::TypeScript, // placeholder — caller fills
+                slot: Some(slot),
+                message: format!("{e}"),
+            });
+        }
+    };
+
     let capture_names: Vec<String> = query
         .capture_names()
         .iter()

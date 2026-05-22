@@ -1,24 +1,16 @@
 //! `atlas status` — display project indexing status and language capability summary.
 
+use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
-use atlas_db::Store;
 use atlas_types::{FeatureSupport, Language, LanguageCapabilityProfile};
-use atlas_workspace::Workspace;
-use std::path::Path;
 
 pub fn run(project: &str) -> anyhow::Result<()> {
-    let ws = Workspace::open(Path::new(project))
-        .with_context(|| format!("Invalid project path: {}", project))?;
-
-    // Check if atlas.db exists (read-only — must not create empty db)
-    if !ws.db_path().is_file() {
-        println!("No Atlas database found in {}", ws.root().display());
-        println!("Run `atlas init` to initialize this project.");
-        return Ok(());
-    }
-
-    let store = Store::open_db(ws.db_path()).context("Failed to open Atlas database")?;
-    let stats = store.get_stats().context("Failed to read database stats")?;
+    let ctx = CommandContext::open(project, DbMode::ExistingReadOnly)?;
+    let stats = ctx
+        .store
+        .get_stats()
+        .context("Failed to read database stats")?;
+    let ws = &ctx.workspace;
 
     println!("Atlas Project Status");
     println!("====================");
@@ -56,7 +48,7 @@ pub fn run(project: &str) -> anyhow::Result<()> {
 
     // List indexed files if any
     if stats.total_files > 0 && stats.total_files <= 20 {
-        let files = store.list_files().context("Failed to list files")?;
+        let files = ctx.store.list_files().context("Failed to list files")?;
         println!();
         println!("  Indexed files:");
         for f in &files {

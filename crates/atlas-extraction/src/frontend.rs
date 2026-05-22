@@ -1,12 +1,4 @@
-//! LanguageFrontend — slot-based language frontend replacing the monolithic
-//! `LanguageAdapter` trait.
-//!
-//! ## Motivation
-//!
-//! The old `LanguageAdapter` trait has 17 methods: identity (3), queries (6),
-//! normalize (6), hooks (2). Default impls return `""` / `None` / `Vec::new()`
-//! for unsupported features, making it impossible for consumers to distinguish
-//! "not supported" from "supported but no matches".
+//! LanguageFrontend — slot-based language frontend.
 //!
 //! ## Design
 //!
@@ -14,21 +6,57 @@
 //! trait object (`Box<dyn SomeSpec>`) with a `capability()` method that
 //! returns `FeatureSupport` instead of silently returning empty data.
 //!
+//! Slots use a unified `NormalizeCtx`/`Capture` API for all normalizations,
+//! passing file context and raw tree-sitter captures without requiring
+//! per-method parameter lists.
+//!
 //! Unsupported slots are filled with typed `Unsupported*Spec` structs that
 //! return `FeatureSupport::Unsupported(reason)`.
 //!
-//! ## Migration
+//! ## Construction
 //!
-//! `LanguageFrontend` wraps the old `LanguageAdapter` for now. Slots are
-//! populated one at a time; the adapter's query/normalize methods are used
-//! as the fallback until all slots are migrated. This allows incremental
-//! migration without breaking existing functionality.
+//! Use the `*_frontend()` factory for each language (e.g.
+//! `typescript_frontend()`). These construct slots directly via
+//! `LanguageFrontend::from_parts()`.
 
 use crate::callsite_spec::CallsiteExtractorSpec;
+use atlas_types::bindings::BindingDef;
 use atlas_types::capability::{FeatureMatrix, FeatureSupport, LanguageCapabilityProfile};
+use atlas_types::dataflow::{DataFlowEdge, DataNode};
 use atlas_types::enums::Language;
+use atlas_types::ids::FileId;
+use atlas_types::structs::{ImportDef, ReferenceUse, ScopeDef, SymbolDef};
 
-use super::languages::LanguageAdapter;
+use std::path::Path;
+
+// ---------------------------------------------------------------------------
+// Normalize context / capture (replaces multi-param normalize signatures)
+// ---------------------------------------------------------------------------
+
+/// Context available during capture normalization.
+///
+/// Bundles everything a normalize method needs — file identity, source text,
+/// and language — into a single value that is shared across all captures for
+/// a given file extraction.
+#[derive(Clone, Copy)]
+pub struct NormalizeCtx<'a> {
+    /// The language being extracted.
+    pub language: Language,
+    /// File identifier for the source file.
+    pub file_id: FileId,
+    /// Path of the source file on disk.
+    pub file_path: &'a Path,
+    /// Raw source text of the file.
+    pub source: &'a str,
+}
+
+/// A single tree-sitter query capture pending normalization.
+pub struct Capture<'a> {
+    /// Capture name from the tree-sitter query (e.g. `"function"`, `"call"`).
+    pub name: String,
+    /// The captured syntax node.
+    pub node: tree_sitter::Node<'a>,
+}
 
 // ---------------------------------------------------------------------------
 // Spec traits
@@ -52,6 +80,9 @@ pub trait SymbolExtractorSpec: Send + Sync {
     fn definition_query(&self) -> &str;
     /// Feature support for symbol extraction.
     fn capability(&self) -> FeatureSupport;
+    /// Normalize a definition capture into a [`SymbolDef`], or `None`
+    /// if the capture isn't a valid definition.
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<SymbolDef>;
 }
 
 /// Reference extraction spec: tree-sitter query + normalization.
@@ -60,6 +91,8 @@ pub trait ReferenceExtractorSpec: Send + Sync {
     fn reference_query(&self) -> &str;
     /// Feature support for reference extraction.
     fn capability(&self) -> FeatureSupport;
+    /// Normalize a reference-use capture into a [`ReferenceUse`], or `None`.
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ReferenceUse>;
 }
 
 /// Import extraction spec: tree-sitter query + normalization.
@@ -68,6 +101,8 @@ pub trait ImportExtractorSpec: Send + Sync {
     fn import_query(&self) -> &str;
     /// Feature support for import extraction.
     fn capability(&self) -> FeatureSupport;
+    /// Normalize an import capture into an [`ImportDef`], or `None`.
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ImportDef>;
 }
 
 /// Scope extraction spec: tree-sitter query + normalization.
@@ -76,6 +111,8 @@ pub trait ScopeExtractorSpec: Send + Sync {
     fn scope_query(&self) -> &str;
     /// Feature support for scope extraction.
     fn capability(&self) -> FeatureSupport;
+    /// Normalize a scope capture into a [`ScopeDef`], or `None`.
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ScopeDef>;
 }
 
 /// Lexical binding extraction spec.
@@ -84,6 +121,8 @@ pub trait LexicalBindingSpec: Send + Sync {
     fn lexical_query(&self) -> &str;
     /// Feature support for lexical binding extraction.
     fn capability(&self) -> FeatureSupport;
+    /// Normalize a lexical capture into a [`BindingDef`], or `None`.
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef>;
 }
 
 /// Dataflow extraction spec.
@@ -92,6 +131,13 @@ pub trait DataflowSpec: Send + Sync {
     fn dataflow_builder_query(&self) -> &str;
     /// Feature support for dataflow extraction.
     fn capability(&self) -> FeatureSupport;
+    /// Normalize a dataflow capture into a ([`DataNode`], [`DataFlowEdge`]), or
+    /// `(None, None)`.
+    fn normalize(
+        &self,
+        ctx: NormalizeCtx<'_>,
+        capture: Capture<'_>,
+    ) -> (Option<DataNode>, Option<DataFlowEdge>);
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +164,9 @@ impl LexicalBindingSpec for UnsupportedSpec {
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::unsupported(&self.reason)
     }
+    fn normalize(&self, _ctx: NormalizeCtx<'_>, _capture: Capture<'_>) -> Option<BindingDef> {
+        None
+    }
 }
 
 impl DataflowSpec for UnsupportedSpec {
@@ -126,6 +175,13 @@ impl DataflowSpec for UnsupportedSpec {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::unsupported(&self.reason)
+    }
+    fn normalize(
+        &self,
+        _ctx: NormalizeCtx<'_>,
+        _capture: Capture<'_>,
+    ) -> (Option<DataNode>, Option<DataFlowEdge>) {
+        (None, None)
     }
 }
 
@@ -136,208 +192,43 @@ impl ScopeExtractorSpec for UnsupportedSpec {
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::unsupported(&self.reason)
     }
+    fn normalize(&self, _ctx: NormalizeCtx<'_>, _capture: Capture<'_>) -> Option<ScopeDef> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Adapter-backed spec implementations
+// FrontendParts
 // ---------------------------------------------------------------------------
 
-/// Parser spec backed by a `LanguageAdapter`.
-pub struct AdapterParserSpec {
-    language: Language,
-    ts_lang: tree_sitter::Language,
-}
-
-impl AdapterParserSpec {
-    pub fn from_adapter(adapter: &dyn LanguageAdapter) -> Self {
-        Self {
-            language: adapter.language(),
-            ts_lang: adapter.tree_sitter_language(),
-        }
-    }
-}
-
-impl ParserSpec for AdapterParserSpec {
-    fn language(&self) -> Language {
-        self.language
-    }
-    fn tree_sitter_language(&self) -> tree_sitter::Language {
-        self.ts_lang.clone()
-    }
-}
-
-/// Symbol spec backed by a `LanguageAdapter`.
-pub struct AdapterSymbolSpec {
-    query: String,
-    cap: FeatureSupport,
-}
-
-impl AdapterSymbolSpec {
-    pub fn from_adapter(adapter: &dyn LanguageAdapter) -> Self {
-        Self {
-            query: adapter.definition_query().to_string(),
-            cap: FeatureSupport::supported(),
-        }
-    }
-}
-
-impl SymbolExtractorSpec for AdapterSymbolSpec {
-    fn definition_query(&self) -> &str {
-        &self.query
-    }
-    fn capability(&self) -> FeatureSupport {
-        self.cap.clone()
-    }
-}
-
-/// Reference spec backed by a `LanguageAdapter`.
-pub struct AdapterReferenceSpec {
-    query: String,
-    cap: FeatureSupport,
-}
-
-impl AdapterReferenceSpec {
-    pub fn from_adapter(adapter: &dyn LanguageAdapter) -> Self {
-        Self {
-            query: adapter.reference_query().to_string(),
-            cap: FeatureSupport::supported(),
-        }
-    }
-}
-
-impl ReferenceExtractorSpec for AdapterReferenceSpec {
-    fn reference_query(&self) -> &str {
-        &self.query
-    }
-    fn capability(&self) -> FeatureSupport {
-        self.cap.clone()
-    }
-}
-
-/// Import spec backed by a `LanguageAdapter`.
-pub struct AdapterImportSpec {
-    query: String,
-    cap: FeatureSupport,
-}
-
-impl AdapterImportSpec {
-    pub fn from_adapter(adapter: &dyn LanguageAdapter) -> Self {
-        Self {
-            query: adapter.import_query().to_string(),
-            cap: FeatureSupport::supported(),
-        }
-    }
-}
-
-impl ImportExtractorSpec for AdapterImportSpec {
-    fn import_query(&self) -> &str {
-        &self.query
-    }
-    fn capability(&self) -> FeatureSupport {
-        self.cap.clone()
-    }
-}
-
-/// Scope spec backed by a `LanguageAdapter`.
-pub struct AdapterScopeSpec {
-    query: String,
-    cap: FeatureSupport,
-}
-
-impl AdapterScopeSpec {
-    pub fn from_adapter(adapter: &dyn LanguageAdapter) -> Self {
-        let query = adapter.scope_query().to_string();
-        let cap = if query.is_empty() {
-            FeatureSupport::unsupported("scope query not provided by adapter")
-        } else {
-            FeatureSupport::supported()
-        };
-        Self { query, cap }
-    }
-}
-
-impl ScopeExtractorSpec for AdapterScopeSpec {
-    fn scope_query(&self) -> &str {
-        &self.query
-    }
-    fn capability(&self) -> FeatureSupport {
-        self.cap.clone()
-    }
-}
-
-/// Lexical spec backed by a `LanguageAdapter`.
-pub struct AdapterLexicalSpec {
-    query: String,
-    cap: FeatureSupport,
-}
-
-impl AdapterLexicalSpec {
-    pub fn from_adapter(adapter: &dyn LanguageAdapter) -> Self {
-        let query = adapter.lexical_query().to_string();
-        let cap = if query.is_empty() {
-            FeatureSupport::unsupported("lexical query not provided by adapter")
-        } else {
-            FeatureSupport::supported_with_limitations(
-                0.55,
-                vec!["name-based binding (no proper shadowing)"],
-            )
-        };
-        Self { query, cap }
-    }
-}
-
-impl LexicalBindingSpec for AdapterLexicalSpec {
-    fn lexical_query(&self) -> &str {
-        &self.query
-    }
-    fn capability(&self) -> FeatureSupport {
-        self.cap.clone()
-    }
-}
-
-/// Dataflow spec backed by a `LanguageAdapter`.
-pub struct AdapterDataflowSpec {
-    query: String,
-    cap: FeatureSupport,
-}
-
-impl AdapterDataflowSpec {
-    pub fn from_adapter(adapter: &dyn LanguageAdapter) -> Self {
-        let query = adapter.dataflow_builder_query().to_string();
-        let cap = if query.is_empty() {
-            FeatureSupport::unsupported("dataflow query not provided by adapter")
-        } else {
-            FeatureSupport::supported_with_limitations(
-                0.55,
-                vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
-            )
-        };
-        Self { query, cap }
-    }
-}
-
-impl DataflowSpec for AdapterDataflowSpec {
-    fn dataflow_builder_query(&self) -> &str {
-        &self.query
-    }
-    fn capability(&self) -> FeatureSupport {
-        self.cap.clone()
-    }
+/// Named slot bundle for constructing a [`LanguageFrontend`] directly.
+///
+/// Used by per-language `*_frontend()` factories to pass all slot
+/// implementations in a single struct, avoiding long positional argument lists.
+pub struct FrontendParts {
+    pub parser: Box<dyn ParserSpec>,
+    pub symbols: Box<dyn SymbolExtractorSpec>,
+    pub references: Box<dyn ReferenceExtractorSpec>,
+    pub imports: Box<dyn ImportExtractorSpec>,
+    pub scopes: Box<dyn ScopeExtractorSpec>,
+    pub callsites: Box<dyn CallsiteExtractorSpec>,
+    pub lexical: Box<dyn LexicalBindingSpec>,
+    pub dataflow: Box<dyn DataflowSpec>,
+    pub capability: LanguageCapabilityProfile,
 }
 
 // ---------------------------------------------------------------------------
 // LanguageFrontend
 // ---------------------------------------------------------------------------
 
-/// Slot-based language frontend replacing the monolithic `LanguageAdapter`.
+/// Slot-based language frontend.
 ///
 /// Each slot is a trait object with a `capability()` method, enabling
-/// type-safe feature queries instead of string-contains probes.
+/// type-safe feature queries.
 ///
 /// ## Construction
 ///
-/// Use [`LanguageFrontend::from_adapter`] to wrap an existing `LanguageAdapter`
-/// (migration path), or construct directly with typed slots.
+/// Use [`FrontendParts`] and the per-language `*_frontend()` factories.
 pub struct LanguageFrontend {
     /// Parser identity + tree-sitter grammar.
     pub parser: Box<dyn ParserSpec>,
@@ -357,43 +248,25 @@ pub struct LanguageFrontend {
     pub dataflow: Box<dyn DataflowSpec>,
     /// Language capability profile (used by TraceEngine for gating).
     pub capability: LanguageCapabilityProfile,
-    /// Backward-compatible adapter reference (used for normalize_* methods
-    /// until those are migrated to spec traits).
-    adapter: Box<dyn LanguageAdapter>,
 }
 
 impl LanguageFrontend {
-    /// Create a `LanguageFrontend` wrapping an existing `LanguageAdapter`.
+    /// Construct from pre-built slot implementations.
     ///
-    /// This is the migration path: the adapter is used for `normalize_*`
-    /// methods, while the slot-based specs provide typed feature queries.
-    pub fn from_adapter(adapter: Box<dyn LanguageAdapter>) -> Self {
-        let lang = adapter.language();
-        let cap = LanguageCapabilityProfile::for_language(lang);
-
-        // Build callsite extractor from language
-        let callsite_extractor = super::callsite_spec::create_extractor(lang);
-
+    /// This is the direct-construction path used by per-language `*_frontend()`
+    /// factories.
+    pub fn from_parts(parts: FrontendParts) -> Self {
         Self {
-            parser: Box::new(AdapterParserSpec::from_adapter(adapter.as_ref())),
-            symbols: Box::new(AdapterSymbolSpec::from_adapter(adapter.as_ref())),
-            references: Box::new(AdapterReferenceSpec::from_adapter(adapter.as_ref())),
-            imports: Box::new(AdapterImportSpec::from_adapter(adapter.as_ref())),
-            scopes: Box::new(AdapterScopeSpec::from_adapter(adapter.as_ref())),
-            callsites: callsite_extractor,
-            lexical: Box::new(AdapterLexicalSpec::from_adapter(adapter.as_ref())),
-            dataflow: Box::new(AdapterDataflowSpec::from_adapter(adapter.as_ref())),
-            capability: cap,
-            adapter,
+            parser: parts.parser,
+            symbols: parts.symbols,
+            references: parts.references,
+            imports: parts.imports,
+            scopes: parts.scopes,
+            callsites: parts.callsites,
+            lexical: parts.lexical,
+            dataflow: parts.dataflow,
+            capability: parts.capability,
         }
-    }
-
-    /// Access the underlying adapter for `normalize_*` calls.
-    ///
-    /// This exists for the migration period. Once normalize methods are
-    /// moved to spec traits, this accessor will be removed.
-    pub fn adapter(&self) -> &dyn LanguageAdapter {
-        self.adapter.as_ref()
     }
 
     /// Convenience: the Language variant.
@@ -478,11 +351,9 @@ mod tests {
 
     #[cfg(feature = "typescript")]
     #[test]
-    fn test_frontend_from_adapter_ts() {
-        let adapter = crate::languages::create_adapter(Language::TypeScript)
-            .expect("TS adapter should exist");
-        let frontend = LanguageFrontend::from_adapter(adapter);
-
+    fn test_frontend_ts_capabilities() {
+        let frontend = crate::languages::create_frontend(Language::TypeScript)
+            .expect("TS frontend should exist");
         assert_eq!(frontend.language(), Language::TypeScript);
         assert!(frontend.symbols.capability().is_supported());
         assert!(frontend.references.capability().is_supported());
@@ -492,11 +363,9 @@ mod tests {
 
     #[cfg(feature = "python")]
     #[test]
-    fn test_frontend_from_adapter_python() {
-        let adapter = crate::languages::create_adapter(Language::Python)
-            .expect("Python adapter should exist");
-        let frontend = LanguageFrontend::from_adapter(adapter);
-
+    fn test_frontend_python_capabilities() {
+        let frontend = crate::languages::create_frontend(Language::Python)
+            .expect("Python frontend should exist");
         assert_eq!(frontend.language(), Language::Python);
         assert!(frontend.dataflow.capability().is_supported());
         assert!(
@@ -507,11 +376,9 @@ mod tests {
 
     #[cfg(feature = "java")]
     #[test]
-    fn test_frontend_from_adapter_java() {
-        let adapter =
-            crate::languages::create_adapter(Language::Java).expect("Java adapter should exist");
-        let frontend = LanguageFrontend::from_adapter(adapter);
-
+    fn test_frontend_java_capabilities() {
+        let frontend =
+            crate::languages::create_frontend(Language::Java).expect("Java frontend should exist");
         assert_eq!(frontend.language(), Language::Java);
         assert!(
             !frontend.dataflow.capability().is_supported(),
@@ -526,9 +393,8 @@ mod tests {
     #[cfg(feature = "typescript")]
     #[test]
     fn test_frontend_feature_matrix_ts() {
-        let adapter = crate::languages::create_adapter(Language::TypeScript)
-            .expect("TS adapter should exist");
-        let frontend = LanguageFrontend::from_adapter(adapter);
+        let frontend = crate::languages::create_frontend(Language::TypeScript)
+            .expect("TS frontend should exist");
         let matrix = frontend.feature_matrix();
 
         assert!(matrix.local_dataflow.is_supported());
@@ -542,5 +408,173 @@ mod tests {
         let frontend = crate::languages::create_frontend(Language::TypeScript)
             .expect("create_frontend should return TS frontend");
         assert_eq!(frontend.language(), Language::TypeScript);
+
+        // Verify that all slot queries compile against tree-sitter grammar
+        let ts_lang = frontend.parser.tree_sitter_language();
+        for (name, query_src) in [
+            ("definitions", frontend.symbols.definition_query()),
+            ("references", frontend.references.reference_query()),
+            ("imports", frontend.imports.import_query()),
+            ("scopes", frontend.scopes.scope_query()),
+        ] {
+            let result = tree_sitter::Query::new(&ts_lang, query_src);
+            assert!(
+                result.is_ok(),
+                "{name} query should parse: {:?}",
+                result.err()
+            );
+        }
+
+        // When capability is supported, query must also compile
+        if frontend.lexical.capability().is_supported() {
+            let q = tree_sitter::Query::new(&ts_lang, frontend.lexical.lexical_query());
+            assert!(q.is_ok(), "lexical query should parse: {:?}", q.err());
+        }
+        if frontend.dataflow.capability().is_supported() {
+            let q = tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query());
+            assert!(
+                q.is_ok(),
+                "dataflow_builder query should parse: {:?}",
+                q.err()
+            );
+        }
+    }
+
+    #[cfg(feature = "typescript")]
+    #[test]
+    fn test_create_frontend_slot_normalize() {
+        use atlas_types::ids::FileId;
+        use std::path::Path;
+        use streaming_iterator::StreamingIterator;
+
+        let frontend = crate::languages::create_frontend(Language::TypeScript)
+            .expect("create_frontend should return TS frontend");
+        let ts_lang = frontend.parser.tree_sitter_language();
+
+        // Parse a small TS snippet
+        let source = "function greet(name: string) { return name; }";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        // Run definition query, normalize first capture
+        let query = tree_sitter::Query::new(&ts_lang, frontend.symbols.definition_query()).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let file_id = FileId::generate("test.ts");
+        let file_path = Path::new("test.ts");
+        let ctx = NormalizeCtx {
+            language: Language::TypeScript,
+            file_id,
+            file_path,
+            source,
+        };
+
+        let mut matched = false;
+        let mut captures = cursor.captures(&query, root, source.as_bytes());
+        while let Some((m, idx)) = captures.next() {
+            let cap = m.captures[*idx];
+            let name = query.capture_names()[cap.index as usize].to_string();
+            let capture = Capture {
+                name,
+                node: cap.node,
+            };
+            if let Some(sym) = frontend.symbols.normalize(ctx, capture) {
+                assert!(!sym.name.is_empty());
+                assert!(!sym.qualified_name.is_empty());
+                matched = true;
+                break;
+            }
+        }
+        assert!(
+            matched,
+            "definition query should match at least one symbol in TS source"
+        );
+    }
+
+    /// Covers lexical and dataflow slot normalize paths that are easy to miss
+    /// when only definition/reference/import are tested.
+    #[cfg(feature = "typescript")]
+    #[test]
+    fn test_create_frontend_slot_normalize_lexical_dataflow() {
+        use atlas_types::ids::FileId;
+        use std::path::Path;
+        use streaming_iterator::StreamingIterator;
+
+        let frontend = crate::languages::create_frontend(Language::TypeScript)
+            .expect("create_frontend should return TS frontend");
+        let ts_lang = frontend.parser.tree_sitter_language();
+
+        // Source with lexical bindings (let/const/var) and a dataflow pattern
+        // (assignment + return) so we exercise both slots.
+        let source = "function f(x: number) { let y = x + 1; return y; }";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        let file_id = FileId::generate("test.ts");
+        let file_path = Path::new("test.ts");
+        let ctx = NormalizeCtx {
+            language: Language::TypeScript,
+            file_id,
+            file_path,
+            source,
+        };
+
+        // -- lexical slot --
+        if frontend.lexical.capability().is_supported() {
+            let q = tree_sitter::Query::new(&ts_lang, frontend.lexical.lexical_query()).unwrap();
+            let mut cursor = tree_sitter::QueryCursor::new();
+            let mut hits = 0;
+            let mut captures = cursor.captures(&q, root, source.as_bytes());
+            while let Some((m, idx)) = captures.next() {
+                let cap = m.captures[*idx];
+                let name = q.capture_names()[cap.index as usize].to_string();
+                if frontend
+                    .lexical
+                    .normalize(
+                        ctx,
+                        Capture {
+                            name,
+                            node: cap.node,
+                        },
+                    )
+                    .is_some()
+                {
+                    hits += 1;
+                }
+            }
+            assert!(
+                hits > 0,
+                "lexical query should produce at least one normalized BindingDef"
+            );
+        }
+
+        // -- dataflow slot --
+        if frontend.dataflow.capability().is_supported() {
+            let q = tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query())
+                .unwrap();
+            let mut cursor = tree_sitter::QueryCursor::new();
+            let mut node_hits = 0usize;
+            let mut captures = cursor.captures(&q, root, source.as_bytes());
+            while let Some((m, idx)) = captures.next() {
+                let cap = m.captures[*idx];
+                let name = q.capture_names()[cap.index as usize].to_string();
+                let (dn, _de) = frontend.dataflow.normalize(
+                    ctx,
+                    Capture {
+                        name,
+                        node: cap.node,
+                    },
+                );
+                if dn.is_some() {
+                    node_hits += 1;
+                }
+            }
+            assert!(
+                node_hits > 0,
+                "dataflow query should produce at least one normalized DataNode"
+            );
+        }
     }
 }

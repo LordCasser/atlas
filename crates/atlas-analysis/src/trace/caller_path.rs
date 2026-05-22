@@ -21,7 +21,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use atlas_db::Store;
+use atlas_db::{CallGraphReader, SymbolReader};
 use atlas_types::caller_path::{CallerChain, CallerChainStep};
 use atlas_types::enums::EdgeKind;
 use atlas_types::ids::{ReferenceId, SymbolId};
@@ -47,7 +47,7 @@ impl CallerPathExplorer {
     /// * `target_id` — the function to trace callers for.
     /// * `max_depth` — maximum number of backward steps (default: [`DEFAULT_MAX_DEPTH`]).
     pub fn explore(
-        store: &Store,
+        store: &(impl SymbolReader + CallGraphReader),
         target_id: &SymbolId,
         max_depth: usize,
     ) -> anyhow::Result<Option<CallerChain>> {
@@ -165,7 +165,7 @@ fn reconstruct_call_path(
     predecessors: &HashMap<String, (SymbolId, EdgeKind, Option<ReferenceId>, Option<TextRange>)>,
     root_id: &SymbolId,
     target_id: &SymbolId,
-    store: &Store,
+    store: &(impl SymbolReader + CallGraphReader),
 ) -> anyhow::Result<Vec<CallerChainStep>> {
     // Walk from target upward to root, collecting steps in reverse
     let mut raw_steps: Vec<(

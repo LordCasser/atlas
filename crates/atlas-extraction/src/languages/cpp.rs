@@ -1,168 +1,251 @@
-//! C++ LanguageAdapter.
+//! C++ frontend spec (slot-based).
+//!
+//! Provides query-driven extraction for C++ source files.
 
-use crate::languages::{LanguageAdapter, node_range, node_text};
+use crate::languages::{node_range, node_text};
+
+use crate::frontend::{
+    Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
+    LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
+    SymbolExtractorSpec,
+};
+use crate::languages::shared::SymbolDefBuilder;
+use atlas_types::capability::FeatureSupport;
 use atlas_types::*;
-use std::path::Path;
 
 // ---------------------------------------------------------------------------
 // Adapter struct
 // ---------------------------------------------------------------------------
 
-/// C++ LanguageAdapter.
-pub struct CppAdapter;
+/// C++ frontend spec.
+pub(crate) struct CppAdapter;
 
-impl LanguageAdapter for CppAdapter {
+// ---------------------------------------------------------------------------
+// Private normalize helpers — shared by all slot trait impls.
+// ---------------------------------------------------------------------------
+
+fn normalize_cpp_definition(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> Option<SymbolDef> {
+    let kind = cpp_definition_kind(capture_name)?;
+    let name = node_text(node, source)?;
+    let range = node_range(node);
+
+    let qualified_name = qualified_name_from_node_cpp(&name, node, source);
+    let signature = cpp_extract_signature(capture_name, node, source);
+
+    Some(
+        SymbolDefBuilder::new(file_id, Language::Cpp, kind, name, qualified_name, range)
+            .signature(signature)
+            .build(),
+    )
+}
+
+fn normalize_cpp_reference(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> Option<ReferenceUse> {
+    let kind = cpp_reference_kind(capture_name)?;
+    let text = node_text(node, source)?;
+    let name = text.clone();
+    let range = node_range(node);
+
+    let ref_id = ReferenceId::generate(
+        &file_id,
+        None::<&SymbolId>,
+        range.start_byte,
+        range.end_byte,
+        &text,
+        kind,
+    );
+
+    // source_symbol is resolved by SemanticBinder after extraction.
+    Some(ReferenceUse {
+        id: ref_id,
+        file_id,
+        source_symbol: None,
+        scope_id: None,
+        kind,
+        text,
+        name,
+        receiver: None,
+        arity: None,
+        range,
+        resolved: None,
+        binding_id: None,
+    })
+}
+
+fn normalize_cpp_import(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> Option<ImportDef> {
+    let (kind, module, imported_name) = cpp_import_info(capture_name, node, source)?;
+    let range = node_range(node);
+    let is_relative = !module.starts_with('<');
+
+    let import_id = ImportId::generate(
+        &file_id,
+        kind.as_str(),
+        &module,
+        Some(imported_name.as_str()),
+        range.start_byte,
+    );
+
+    Some(ImportDef {
+        id: import_id,
+        file_id,
+        kind,
+        module,
+        imported_name,
+        local_name: None,
+        is_wildcard: false,
+        is_relative,
+        range,
+        alias: None,
+    })
+}
+
+fn normalize_cpp_scope(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> Option<ScopeDef> {
+    let kind = cpp_scope_kind(capture_name)?;
+    let name = node_text(node, source).unwrap_or_default();
+    let range = node_range(node);
+
+    let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
+
+    Some(ScopeDef {
+        id: scope_id,
+        file_id,
+        kind,
+        name,
+        scope_path: String::new(),
+        parent_id: None,
+        range,
+    })
+}
+
+// ── Slot trait implementations ──────────────────────────────────────────
+
+impl ParserSpec for CppAdapter {
     fn language(&self) -> Language {
         Language::Cpp
     }
-
-    fn extensions(&self) -> &[&str] {
-        &["cpp", "cxx", "cc", "hpp", "hxx", "hh", "h"]
-    }
-
     fn tree_sitter_language(&self) -> tree_sitter::Language {
         tree_sitter_cpp::LANGUAGE.into()
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
+    }
+}
 
+impl SymbolExtractorSpec for CppAdapter {
     fn definition_query(&self) -> &str {
         include_str!("../../queries/cpp/definitions.scm")
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
+    }
+    fn normalize(&self, _ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<SymbolDef> {
+        normalize_cpp_definition(&capture.name, capture.node, _ctx.source, _ctx.file_id)
+    }
+}
 
+impl ReferenceExtractorSpec for CppAdapter {
     fn reference_query(&self) -> &str {
         include_str!("../../queries/cpp/references.scm")
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
+    }
+    fn normalize(&self, _ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ReferenceUse> {
+        normalize_cpp_reference(&capture.name, capture.node, _ctx.source, _ctx.file_id)
+    }
+}
 
+impl ImportExtractorSpec for CppAdapter {
     fn import_query(&self) -> &str {
         include_str!("../../queries/cpp/imports.scm")
     }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
+    }
+    fn normalize(&self, _ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ImportDef> {
+        normalize_cpp_import(&capture.name, capture.node, _ctx.source, _ctx.file_id)
+    }
+}
 
+impl ScopeExtractorSpec for CppAdapter {
     fn scope_query(&self) -> &str {
         include_str!("../../queries/cpp/scopes.scm")
     }
-
-    fn normalize_definition(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        _file_path: &Path,
-    ) -> Option<SymbolDef> {
-        use super::shared::SymbolDefBuilder;
-
-        let kind = cpp_definition_kind(capture_name)?;
-        let name = node_text(node, source)?;
-        let range = node_range(node);
-
-        let qualified_name = qualified_name_from_node_cpp(&name, node, source);
-        let lang = self.language();
-        let signature = cpp_extract_signature(capture_name, node, source);
-
-        Some(
-            SymbolDefBuilder::new(file_id, lang, kind, name, qualified_name, range)
-                .signature(signature)
-                .build(),
-        )
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::supported()
     }
-
-    fn normalize_reference(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        _file_path: &Path,
-    ) -> Option<ReferenceUse> {
-        let kind = cpp_reference_kind(capture_name)?;
-        let text = node_text(node, source)?;
-        let name = text.clone();
-        let range = node_range(node);
-
-        let ref_id = ReferenceId::generate(
-            &file_id,
-            None::<&SymbolId>,
-            range.start_byte,
-            range.end_byte,
-            &text,
-            kind,
-        );
-
-        // source_symbol is resolved by SemanticBinder after extraction.
-        Some(ReferenceUse {
-            id: ref_id,
-            file_id,
-            source_symbol: None,
-            scope_id: None,
-            kind,
-            text,
-            name,
-            receiver: None,
-            arity: None,
-            range,
-            resolved: None,
-            binding_id: None,
-        })
+    fn normalize(&self, _ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ScopeDef> {
+        normalize_cpp_scope(&capture.name, capture.node, _ctx.source, _ctx.file_id)
     }
+}
 
-    fn normalize_import(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        _file_path: &Path,
-    ) -> Option<ImportDef> {
-        let (kind, module, imported_name) = cpp_import_info(capture_name, node, source)?;
-        let range = node_range(node);
-        let is_relative = !module.starts_with('<');
-
-        let import_id = ImportId::generate(
-            &file_id,
-            kind.as_str(),
-            &module,
-            Some(imported_name.as_str()),
-            range.start_byte,
-        );
-
-        Some(ImportDef {
-            id: import_id,
-            file_id,
-            kind,
-            module,
-            imported_name,
-            local_name: None,
-            is_wildcard: false,
-            is_relative,
-            range,
-            alias: None,
-        })
+impl LexicalBindingSpec for CppAdapter {
+    fn lexical_query(&self) -> &str {
+        ""
     }
-
-    fn normalize_scope(
-        &self,
-        capture_name: &str,
-        node: tree_sitter::Node,
-        source: &str,
-        file_id: FileId,
-        _file_path: &Path,
-    ) -> Option<ScopeDef> {
-        let kind = cpp_scope_kind(capture_name)?;
-        let name = node_text(node, source).unwrap_or_default();
-        let range = node_range(node);
-
-        let scope_id =
-            ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
-
-        Some(ScopeDef {
-            id: scope_id,
-            file_id,
-            kind,
-            name,
-            scope_path: String::new(),
-            parent_id: None,
-            range,
-        })
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::unsupported("C++ does not support lexical binding extraction")
     }
+    fn normalize(&self, _ctx: NormalizeCtx<'_>, _capture: Capture<'_>) -> Option<BindingDef> {
+        None
+    }
+}
+
+impl DataflowSpec for CppAdapter {
+    fn dataflow_builder_query(&self) -> &str {
+        ""
+    }
+    fn capability(&self) -> FeatureSupport {
+        FeatureSupport::unsupported("C++ does not support dataflow extraction")
+    }
+    fn normalize(
+        &self,
+        _ctx: NormalizeCtx<'_>,
+        _capture: Capture<'_>,
+    ) -> (Option<DataNode>, Option<DataFlowEdge>) {
+        (None, None)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Factory — direct slot construction, no adapter wrapper needed.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn cpp_frontend() -> LanguageFrontend {
+    let lang = Language::Cpp;
+    let callsite_extractor = crate::callsite_spec::create_extractor(lang);
+    let cap = LanguageCapabilityProfile::for_language(lang);
+
+    LanguageFrontend::from_parts(FrontendParts {
+        parser: Box::new(CppAdapter),
+        symbols: Box::new(CppAdapter),
+        references: Box::new(CppAdapter),
+        imports: Box::new(CppAdapter),
+        scopes: Box::new(CppAdapter),
+        callsites: callsite_extractor,
+        lexical: Box::new(CppAdapter),
+        dataflow: Box::new(CppAdapter),
+        capability: cap,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +354,7 @@ fn cpp_extract_signature(
         return None;
     }
     let params = node.child_by_field_name("parameters")?;
-    Some(node_text(params, source)?)
+    node_text(params, source)
 }
 
 #[cfg(test)]
@@ -280,17 +363,18 @@ mod tests {
 
     #[test]
     fn test_adapter_metadata() {
-        let adapter = CppAdapter;
-        assert_eq!(adapter.language(), Language::Cpp);
-        assert!(adapter.extensions().contains(&"cpp"));
-        assert!(adapter.extensions().contains(&"hpp"));
+        let spec = CppAdapter;
+        let ts_lang = spec.tree_sitter_language();
+        assert!(!spec.definition_query().is_empty());
+        // Grammar must be valid
+        tree_sitter::Parser::new().set_language(&ts_lang).unwrap();
     }
 
     #[test]
     fn test_def_query_parses() {
-        let adapter = CppAdapter;
-        let lang = adapter.tree_sitter_language();
-        let query = tree_sitter::Query::new(&lang, adapter.definition_query());
+        let spec = CppAdapter;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.definition_query());
         assert!(
             query.is_ok(),
             "definition query must compile: {:?}",
@@ -300,9 +384,9 @@ mod tests {
 
     #[test]
     fn test_ref_query_parses() {
-        let adapter = CppAdapter;
-        let lang = adapter.tree_sitter_language();
-        let query = tree_sitter::Query::new(&lang, adapter.reference_query());
+        let spec = CppAdapter;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.reference_query());
         assert!(
             query.is_ok(),
             "reference query must compile: {:?}",
@@ -312,9 +396,9 @@ mod tests {
 
     #[test]
     fn test_import_query_parses() {
-        let adapter = CppAdapter;
-        let lang = adapter.tree_sitter_language();
-        let query = tree_sitter::Query::new(&lang, adapter.import_query());
+        let spec = CppAdapter;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.import_query());
         assert!(
             query.is_ok(),
             "import query must compile: {:?}",
@@ -324,9 +408,9 @@ mod tests {
 
     #[test]
     fn test_scope_query_parses() {
-        let adapter = CppAdapter;
-        let lang = adapter.tree_sitter_language();
-        let query = tree_sitter::Query::new(&lang, adapter.scope_query());
+        let spec = CppAdapter;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.scope_query());
         assert!(query.is_ok(), "scope query must compile: {:?}", query.err());
     }
 }

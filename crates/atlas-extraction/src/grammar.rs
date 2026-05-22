@@ -93,10 +93,9 @@ impl LanguageRegistry {
                 self.register(lang, Language::Cangjie);
             }
             #[allow(unreachable_patterns)]
-            _ => bail!(
-                "Language {:?} not enabled (missing feature flag or not yet implemented)",
-                lang
-            ),
+            _ => {
+                bail!("Language {lang:?} not enabled (missing feature flag or not yet implemented)",)
+            }
         }
         Ok(())
     }

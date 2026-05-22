@@ -37,7 +37,6 @@
 //! - Per-function dataflow only (interprocedural deferred to analysis layer).
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use atlas_types::CallsiteId;
 use atlas_types::ScopeDef;
@@ -47,7 +46,8 @@ use atlas_types::enums::{DataFlowKind, DataNodeKind, SymbolKind};
 use atlas_types::ids::{BindingId, DataFlowEdgeId, DataNodeId, FileId, ScopeId, SymbolId};
 use atlas_types::structs::{SymbolDef, TextRange};
 
-use super::languages::LanguageAdapter;
+use super::frontend::{Capture, DataflowSpec};
+use crate::extraction_ctx::ExtractionCtx;
 
 /// Result of dataflow builder extraction.
 #[derive(Debug, Clone, Default)]
@@ -68,33 +68,43 @@ impl DataFlowBuilder {
     /// capture.  Intra-function dataflow edges are created by matching
     /// assignment targets to values, return expressions to return nodes,
     /// and call argument expressions to call argument nodes.
-    pub fn extract(
-        adapter: &dyn LanguageAdapter,
-        ts_lang: &tree_sitter::Language,
-        root: tree_sitter::Node,
-        source: &str,
-        source_bytes: &[u8],
-        file_id: FileId,
-        file_path: &Path,
+    pub(crate) fn extract(
+        dataflow_spec: &dyn DataflowSpec,
+        ctx: &ExtractionCtx<'_>,
         bindings: &[BindingDef],
         scopes: &[ScopeDef],
     ) -> anyhow::Result<DataFlowResult> {
-        let query_src = adapter.dataflow_builder_query();
+        let query_src = dataflow_spec.dataflow_builder_query();
         if query_src.trim().is_empty() {
             return Ok(DataFlowResult::default());
         }
 
         // Collect captures
-        let captures =
-            super::query_helpers::collect_captures(ts_lang, query_src, root, source_bytes)?;
+        let captures = super::query_helpers::collect_captures(
+            ctx.ts_lang,
+            query_src,
+            ctx.root,
+            ctx.source_bytes(),
+            "dataflow",
+        )
+        .map_err(|failure| {
+            use crate::error::ExtractionFailure;
+            let filled = ExtractionFailure {
+                file_path: ctx.file_path.to_string_lossy().to_string(),
+                language: ctx.language,
+                ..failure
+            };
+            anyhow::Error::new(filled)
+        })?;
 
         let mut nodes: Vec<DataNode> = Vec::new();
         let mut edges: Vec<DataFlowEdge> = Vec::new();
 
         // Create data nodes from captures
+        let nctx = ctx.normalize_ctx();
         for (name, node) in captures {
-            let (dn_opt, de_opt) =
-                adapter.normalize_dataflow_builder(&name, node, source, file_id, file_path);
+            let capture = Capture { name, node };
+            let (dn_opt, de_opt) = dataflow_spec.normalize(nctx, capture);
             if let Some(dn) = dn_opt {
                 nodes.push(dn);
             }
@@ -107,7 +117,7 @@ impl DataFlowBuilder {
         resolve_bindings_to_nodes(&mut nodes, bindings, scopes);
 
         // Post-process: create dataflow edges from assignments
-        build_dataflow_edges(&nodes, &bindings, file_id, &mut edges);
+        build_dataflow_edges(&nodes, bindings, ctx.file_id, &mut edges);
 
         Ok(DataFlowResult { nodes, edges })
     }
@@ -286,7 +296,7 @@ fn build_dataflow_edges(
                 .or_else(|| node_by_name.get(&(base_name, DataNodeKind::Parameter)))
             {
                 let edge_id = DataFlowEdgeId::generate(
-                    *base_id,
+                    base_id,
                     &field_node.id,
                     DataFlowKind::FieldLoad.as_str(),
                 );
@@ -586,14 +596,16 @@ mod tests {
     #[cfg(feature = "typescript")]
     #[test]
     fn test_dataflow_builder_creates_nodes() {
-        use crate::languages::typescript::TypeScriptAdapter;
+        use crate::frontend::ParserSpec;
+        use crate::languages::typescript::TypeScriptFrontendSpec;
         use tree_sitter::Parser;
 
         let source =
             "function handler(req: any) {\n  const name = req.body.name;\n  return name;\n}";
         let file_id = FileId::generate("test.ts");
-        let adapter = TypeScriptAdapter;
-        let ts_lang = adapter.tree_sitter_language();
+        let spec = TypeScriptFrontendSpec;
+        let ts_lang = spec.tree_sitter_language();
+        let dataflow_spec: &dyn DataflowSpec = &spec;
 
         let mut parser = Parser::new();
         parser.set_language(&ts_lang).unwrap();
@@ -602,19 +614,18 @@ mod tests {
 
         let bindings: Vec<BindingDef> = vec![];
         let scopes: Vec<ScopeDef> = vec![];
+        let file_path = PathBuf::from("test.ts");
 
-        let result = DataFlowBuilder::extract(
-            &adapter,
-            &ts_lang,
+        let ctx = ExtractionCtx {
+            ts_lang: &ts_lang,
             root,
             source,
-            source.as_bytes(),
             file_id,
-            &PathBuf::from("test.ts"),
-            &bindings,
-            &scopes,
-        )
-        .unwrap();
+            file_path: &file_path,
+            language: atlas_types::Language::TypeScript,
+        };
+
+        let result = DataFlowBuilder::extract(dataflow_spec, &ctx, &bindings, &scopes).unwrap();
 
         // We should have some data nodes (at minimum, the variable declarations and returns)
         assert!(!result.nodes.is_empty(), "Should have data nodes");
@@ -762,10 +773,10 @@ mod tests {
             },
         };
 
-        let outer_def_id = outer_def.id.clone();
-        let outer_use_id = outer_use.id.clone();
-        let inner_def_id = inner_def.id.clone();
-        let inner_use_id = inner_use.id.clone();
+        let outer_def_id = outer_def.id;
+        let outer_use_id = outer_use.id;
+        let inner_def_id = inner_def.id;
+        let inner_use_id = inner_use.id;
 
         let nodes = vec![outer_def, inner_def, outer_use, inner_use];
         let edges = resolve_use_def(&nodes);

@@ -1,11 +1,10 @@
 //! `atlas search` command — full-text + graph-aware symbol search.
 
+use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
-use atlas_db::Store;
 use atlas_search::SearchEngine;
 use atlas_search::SearchOptions;
 use atlas_types::{Language, SymbolKind};
-use atlas_workspace::Workspace;
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -17,18 +16,9 @@ pub fn run(
     language: Option<&str>,
     json: bool,
 ) -> anyhow::Result<()> {
-    let ws = Workspace::open(std::path::Path::new(project))
-        .with_context(|| format!("Invalid project path: {}", project))?;
-    if !ws.db_path().is_file() {
-        anyhow::bail!(
-            "Not an initialized Atlas project. Run `atlas init {}` first.",
-            project
-        );
-    }
-    let store = Store::open_db(ws.db_path()).context("Failed to open Atlas database")?;
-    let store_arc = Arc::new(store);
-    let store_ref = &*store_arc; // for borrow later
-    let root = ws.root();
+    let ctx = CommandContext::open(project, DbMode::ExistingReadOnly)?;
+    let store_arc = ctx.store;
+    let root = &ctx.root;
 
     // Build graph and search engine
     let graph = atlas_graph::GraphEngine::from_store(&store_arc, 0.3)
@@ -70,8 +60,7 @@ pub fn run(
         let json_results: Vec<JsonSearchResult> = results
             .iter()
             .map(|r| {
-                let snippet =
-                    read_source_snippet(store_ref, root, &r.file_path, r.symbol.range.start_line);
+                let snippet = read_source_snippet(root, &r.file_path, r.symbol.range.start_line);
                 JsonSearchResult {
                     name: r.symbol.name.clone(),
                     kind: r.symbol.kind.as_str().to_string(),
@@ -105,7 +94,7 @@ pub fn run(
                 println!("      sig:   {}", sig);
             }
             // Source code snippet (the definition line + next line for context)
-            if let Some(snippet) = read_source_snippet(store_ref, root, &r.file_path, line) {
+            if let Some(snippet) = read_source_snippet(root, &r.file_path, line) {
                 println!("      code:  {}", snippet.trim());
             }
             if !r.matched_field.is_empty() {
@@ -122,7 +111,6 @@ pub fn run(
 /// Read a source line from the file for snippet display.
 /// Returns the line at `line_num` (1-indexed) with at most 1 trailing line for context.
 fn read_source_snippet(
-    _store: &Store,
     project_root: &std::path::Path,
     file_path: &Option<String>,
     line_num: u32,

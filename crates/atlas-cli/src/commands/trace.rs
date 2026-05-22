@@ -8,13 +8,9 @@
 //! - `trace caller-path` — trace the call chain backward from a target
 //!   function to its farthest caller.
 
-use anyhow::Context;
+use crate::runtime::{CommandContext, DbMode};
 use atlas_analysis::trace::{TraceEngine, TraceQueryResponse};
-use atlas_db::Store;
 use atlas_types::ids::SymbolId;
-use atlas_workspace::Workspace;
-use std::path::Path;
-use std::sync::Arc;
 
 /// Helper: in JSON mode, always output a TraceQueryResponse envelope, even for
 /// pre-engine errors like missing file or invalid symbol.  In human-readable
@@ -41,18 +37,10 @@ pub fn run_point(
     column: u32,
     json: bool,
 ) -> anyhow::Result<()> {
-    let ws = Workspace::open(Path::new(project))
-        .with_context(|| format!("Invalid project path: {}", project))?;
-    if !ws.db_path().is_file() {
-        anyhow::bail!(
-            "Not an initialized Atlas project. Run `atlas init {}` first.",
-            project
-        );
-    }
-    let store = Arc::new(Store::open_db(ws.db_path()).context("Failed to open Atlas database")?);
-    let engine = TraceEngine::new_with_root(store.clone(), ws.root().to_path_buf());
+    let ctx = CommandContext::open(project, DbMode::ExistingReadOnly)?;
+    let engine = TraceEngine::new_with_root(ctx.store.clone(), ctx.root.clone());
 
-    let file_id = match engine.resolve_file_id_with_root(ws.root(), file_path)? {
+    let file_id = match engine.resolve_file_id_with_root(ctx.workspace.root(), file_path)? {
         Some(fid) => fid,
         None => {
             let resp: TraceQueryResponse<atlas_types::trace::TracePoint> = TraceQueryResponse::err(
@@ -156,18 +144,10 @@ pub fn run_variable(
     max_depth: usize,
     json: bool,
 ) -> anyhow::Result<()> {
-    let ws = Workspace::open(Path::new(project))
-        .with_context(|| format!("Invalid project path: {}", project))?;
-    if !ws.db_path().is_file() {
-        anyhow::bail!(
-            "Not an initialized Atlas project. Run `atlas init {}` first.",
-            project
-        );
-    }
-    let store = Arc::new(Store::open_db(ws.db_path()).context("Failed to open Atlas database")?);
-    let engine = TraceEngine::new_with_root(store.clone(), ws.root().to_path_buf());
+    let ctx = CommandContext::open(project, DbMode::ExistingReadOnly)?;
+    let engine = TraceEngine::new_with_root(ctx.store.clone(), ctx.root.clone());
 
-    let file_id = match engine.resolve_file_id_with_root(ws.root(), file_path)? {
+    let file_id = match engine.resolve_file_id_with_root(ctx.workspace.root(), file_path)? {
         Some(fid) => fid,
         None => {
             let resp: TraceQueryResponse<atlas_types::trace::TracePath> = TraceQueryResponse::err(
@@ -245,16 +225,8 @@ pub fn run_caller_path(
     max_depth: usize,
     json: bool,
 ) -> anyhow::Result<()> {
-    let ws = Workspace::open(Path::new(project))
-        .with_context(|| format!("Invalid project path: {}", project))?;
-    if !ws.db_path().is_file() {
-        anyhow::bail!(
-            "Not an initialized Atlas project. Run `atlas init {}` first.",
-            project
-        );
-    }
-    let store = Arc::new(Store::open_db(ws.db_path()).context("Failed to open Atlas database")?);
-    let engine = TraceEngine::new_with_root(store.clone(), ws.root().to_path_buf());
+    let ctx = CommandContext::open(project, DbMode::ExistingReadOnly)?;
+    let engine = TraceEngine::new_with_root(ctx.store.clone(), ctx.root.clone());
 
     let resp = if let Some(hex) = symbol_hex.filter(|h| !h.is_empty()) {
         let target_id: SymbolId = match hex.parse() {

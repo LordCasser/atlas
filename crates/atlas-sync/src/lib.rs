@@ -82,7 +82,9 @@ impl SyncEngine {
             let file_id = atlas_types::ids::FileId::generate(sp.as_str());
             // P2: Invalidate edges derived from this file's references before
             // deleting the file (CASCADE handles the rest).
-            let _ = self.store.delete_edges_for_file_references(&file_id);
+            self.store
+                .delete_edges_for_file_references(&file_id)
+                .with_context(|| format!("failed to delete edges for {}", path.display()))?;
             self.store.delete_file_data(&file_id)?;
             stats.files_removed += 1;
         }
@@ -94,8 +96,12 @@ impl SyncEngine {
             let file_id = atlas_types::ids::FileId::generate(sp.as_str());
             // P2: Invalidate resolved facts and derived edges for modified files.
             // This ensures stale resolution targets don't persist after re-extraction.
-            let _ = self.store.invalidate_references_for_file(&file_id);
-            let _ = self.store.delete_edges_for_file_references(&file_id);
+            self.store
+                .invalidate_references_for_file(&file_id)
+                .with_context(|| format!("failed to invalidate refs for {}", path.display()))?;
+            self.store
+                .delete_edges_for_file_references(&file_id)
+                .with_context(|| format!("failed to delete edges for {}", path.display()))?;
             self.store.delete_file_data(&file_id)?;
         }
         let del_count = changed.deleted.len() + changed.modified.len();
@@ -135,7 +141,10 @@ impl SyncEngine {
             .chain(changed.modified.iter())
             .collect();
 
-        let before_symbols = self.store.count_symbols().unwrap_or(0);
+        let before_symbols = self
+            .store
+            .count_symbols()
+            .context("failed to count symbols before re-extract")?;
 
         for path in &to_reindex {
             if let Err(e) = self.reindex_file(path) {
@@ -145,7 +154,10 @@ impl SyncEngine {
             }
         }
 
-        let after_symbols = self.store.count_symbols().unwrap_or(0);
+        let after_symbols = self
+            .store
+            .count_symbols()
+            .context("failed to count symbols after re-extract")?;
         stats.new_nodes = after_symbols.saturating_sub(before_symbols);
         let ext_timing = ext_timer.items(stats.files_reindexed as u64).finish();
         phase_timings.push(ext_timing);

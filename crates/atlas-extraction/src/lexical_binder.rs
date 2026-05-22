@@ -25,14 +25,13 @@
 //! - `BindingUse::binding_id` may be `None` if unresolved (e.g. external reference).
 //! - `function_id` is always `None` at this stage; downstream consumers should fill it.
 
-use std::path::Path;
-
+use crate::extraction_ctx::ExtractionCtx;
+use crate::frontend::{Capture, LexicalBindingSpec};
 use atlas_types::bindings::{BindingDef, BindingUse};
-use atlas_types::ids::{BindingId, BindingUseId, FileId, ScopeId};
+use atlas_types::ids::{BindingId, BindingUseId, ScopeId};
 use atlas_types::structs::TextRange;
 use atlas_types::{ScopeDef, SymbolDef};
 
-use super::languages::LanguageAdapter;
 use super::query_helpers::collect_captures;
 
 /// Result of lexical binding extraction.
@@ -63,18 +62,13 @@ impl LexicalBinder {
     /// Runs the adapter's `lexical_query()`, normalizes captures into
     /// `BindingDef` structs, resolves scope containment, and creates
     /// one `BindingUse` per binding definition.
-    pub fn extract(
-        adapter: &dyn LanguageAdapter,
-        ts_lang: &tree_sitter::Language,
-        root: tree_sitter::Node,
-        source: &str,
-        source_bytes: &[u8],
-        file_id: FileId,
-        file_path: &Path,
+    pub(crate) fn extract(
+        lexical_spec: &dyn LexicalBindingSpec,
+        ctx: &ExtractionCtx<'_>,
         scopes: &[ScopeDef],
         _symbols: &[SymbolDef],
     ) -> anyhow::Result<LexicalBindingResult> {
-        let query_src = adapter.lexical_query();
+        let query_src = lexical_spec.lexical_query();
         if query_src.trim().is_empty() {
             return Ok(LexicalBindingResult {
                 bindings: vec![],
@@ -83,12 +77,29 @@ impl LexicalBinder {
         }
 
         // Collect raw captures
-        let captures = collect_captures(ts_lang, query_src, root, source_bytes)?;
+        let captures = collect_captures(
+            ctx.ts_lang,
+            query_src,
+            ctx.root,
+            ctx.source_bytes(),
+            "lexical",
+        )
+        .map_err(|failure| {
+            use crate::error::ExtractionFailure;
+            let filled = ExtractionFailure {
+                file_path: ctx.file_path.to_string_lossy().to_string(),
+                language: ctx.language,
+                ..failure
+            };
+            anyhow::Error::new(filled)
+        })?;
 
         // Normalize each capture into a BindingDef
         let mut bindings: Vec<BindingDef> = Vec::new();
+        let nctx = ctx.normalize_ctx();
         for (name, node) in captures {
-            match adapter.normalize_lexical(&name, node, source, file_id, file_path) {
+            let capture = Capture { name, node };
+            match lexical_spec.normalize(nctx, capture) {
                 Some(binding) => bindings.push(binding),
                 None => {
                     // Non-fatal: captures that don't produce a binding are normal
@@ -103,7 +114,7 @@ impl LexicalBinder {
             binding.scope_id = innermost_scope(scopes, binding.range).unwrap_or(binding.scope_id);
             // Re-generate BindingId now that scope_id is correct
             binding.id = BindingId::generate(
-                &file_id,
+                &ctx.file_id,
                 &binding.scope_id,
                 binding.kind.as_str(),
                 &binding.name,
@@ -117,7 +128,7 @@ impl LexicalBinder {
         let mut uses: Vec<BindingUse> = Vec::new();
         for binding in &bindings {
             let use_id = BindingUseId::generate(
-                &file_id,
+                &ctx.file_id,
                 Some(&binding.id),
                 None::<&atlas_types::ids::ReferenceId>,
                 &binding.name,
@@ -125,7 +136,7 @@ impl LexicalBinder {
             );
             uses.push(BindingUse {
                 id: use_id,
-                file_id,
+                file_id: ctx.file_id,
                 scope_id: binding.scope_id,
                 binding_id: Some(binding.id),
                 reference_id: None,
@@ -152,6 +163,7 @@ fn innermost_scope(scopes: &[ScopeDef], range: TextRange) -> Option<ScopeId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use atlas_types::Language;
     use atlas_types::enums::BindingKind;
     use atlas_types::ids::FileId;
     use atlas_types::{ScopeKind, TextRange};
@@ -209,14 +221,16 @@ mod tests {
     #[cfg(feature = "typescript")]
     #[test]
     fn test_lexical_binder_extracts_ts_bindings() {
-        use crate::languages::typescript::TypeScriptAdapter;
+        use crate::frontend::ParserSpec;
+        use crate::languages::typescript::TypeScriptFrontendSpec;
         use tree_sitter::Parser;
 
         let source =
             "function handler(req: any) {\n  const name = req.body.name;\n  return name;\n}";
         let file_id = FileId::generate("test.ts");
-        let adapter = TypeScriptAdapter;
-        let ts_lang = adapter.tree_sitter_language();
+        let spec = TypeScriptFrontendSpec;
+        let ts_lang = spec.tree_sitter_language();
+        let lexical_spec: &dyn LexicalBindingSpec = &spec;
 
         let mut parser = Parser::new();
         parser.set_language(&ts_lang).unwrap();
@@ -226,19 +240,18 @@ mod tests {
         // Need scopes for scope resolution
         let scopes: Vec<ScopeDef> = vec![];
         let symbols: Vec<SymbolDef> = vec![];
+        let file_path = PathBuf::from("test.ts");
 
-        let result = LexicalBinder::extract(
-            &adapter,
-            &ts_lang,
+        let ctx = ExtractionCtx {
+            ts_lang: &ts_lang,
             root,
             source,
-            source.as_bytes(),
             file_id,
-            &PathBuf::from("test.ts"),
-            &scopes,
-            &symbols,
-        )
-        .unwrap();
+            file_path: &file_path,
+            language: Language::TypeScript,
+        };
+
+        let result = LexicalBinder::extract(lexical_spec, &ctx, &scopes, &symbols).unwrap();
 
         assert!(!result.bindings.is_empty(), "Should have lexical bindings");
         // Should have at least 'req' (parameter) and 'name' (local)
@@ -257,13 +270,11 @@ mod tests {
 
         assert!(
             param_names.contains(&"req"),
-            "Expected parameter 'req', got: {:?}",
-            param_names
+            "Expected parameter 'req', got: {param_names:?}"
         );
         assert!(
             local_names.contains(&"name"),
-            "Expected local 'name', got: {:?}",
-            local_names
+            "Expected local 'name', got: {local_names:?}"
         );
     }
 }

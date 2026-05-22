@@ -127,7 +127,7 @@ main();
         helper_ref.range.end_line,
         helper_ref.range.end_column,
     );
-    let point = Locator::locate(&store, &file_id, line, col).unwrap();
+    let point = Locator::locate(store.as_ref(), &file_id, line, col).unwrap();
 
     // The reference should be found and resolved to the helper symbol.
     assert!(
@@ -180,7 +180,7 @@ fn ts_locate_finds_data_node_at_variable_assignment() {
         result_node.range.end_line,
         result_node.range.end_column,
     );
-    let point = Locator::locate(&store, &file_id, line, col).unwrap();
+    let point = Locator::locate(store.as_ref(), &file_id, line, col).unwrap();
 
     // The locator should find the data node at this position.
     assert!(
@@ -220,7 +220,7 @@ fn ts_locate_finds_scope_at_function_body() {
 
     // Locate inside the function body (line 2, inside `return`).
     // The locator should find a scope even if the exact position varies.
-    let point = Locator::locate(&store, &file_id, 2, 5).unwrap();
+    let point = Locator::locate(store.as_ref(), &file_id, 2, 5).unwrap();
 
     assert!(
         point.scope.is_some(),
@@ -269,14 +269,14 @@ fn ts_slicer_traces_backward_dataflow_from_variable() {
         result_node.range.end_line,
         result_node.range.end_column,
     );
-    let sink_point = Locator::locate(&store, &file_id, line, col).unwrap();
+    let sink_point = Locator::locate(store.as_ref(), &file_id, line, col).unwrap();
     assert!(
         sink_point.data_node.is_some(),
         "sink point must have a data node"
     );
 
     // Slice backward from the result variable.
-    let path = Slicer::slice(&store, &sink_point, 20, None)
+    let path = Slicer::slice(store.as_ref(), &sink_point, 20, None)
         .unwrap()
         .expect("backward slice should produce a path");
 
@@ -312,10 +312,10 @@ fn ts_slicer_returns_none_for_position_without_data_node() {
     let file_id = FileId::generate("empty.ts");
 
     // Locate at a known position inside the type (e.g., character 0 of line 1).
-    let point = Locator::locate(&store, &file_id, 1, 1).unwrap();
+    let point = Locator::locate(store.as_ref(), &file_id, 1, 1).unwrap();
 
     // Slicer should return None when there is no data node.
-    let path = Slicer::slice(&store, &point, 10, None).unwrap();
+    let path = Slicer::slice(store.as_ref(), &point, 10, None).unwrap();
     assert!(
         path.is_none(),
         "slicer should return None for positions without data nodes"
@@ -357,7 +357,7 @@ function outer(z: number): void {
         .expect("inner symbol not found");
 
     // Explore callers of inner.
-    let chain = CallerPathExplorer::explore(&store, &inner_sym.id, 10)
+    let chain = CallerPathExplorer::explore(store.as_ref(), &inner_sym.id, 10)
         .unwrap()
         .expect("expected caller chain for inner");
 
@@ -406,7 +406,7 @@ fn ts_caller_path_returns_none_for_root_function() {
         .expect("standalone symbol not found");
 
     // Root function should have no callers.
-    let chain = CallerPathExplorer::explore(&store, &standalone_sym.id, 10).unwrap();
+    let chain = CallerPathExplorer::explore(store.as_ref(), &standalone_sym.id, 10).unwrap();
     assert!(
         chain.is_none(),
         "standalone function with no callers should return None"
@@ -645,7 +645,7 @@ run()
         calc_ref.range.end_line,
         calc_ref.range.end_column,
     );
-    let point = Locator::locate(&store, &main_id, line, col).unwrap();
+    let point = Locator::locate(store.as_ref(), &main_id, line, col).unwrap();
 
     assert!(
         point.reference.is_some(),
@@ -708,7 +708,7 @@ int main() {
         add_ref.range.end_line,
         add_ref.range.end_column,
     );
-    let point = Locator::locate(&store, &file_id, line, col).unwrap();
+    let point = Locator::locate(store.as_ref(), &file_id, line, col).unwrap();
 
     assert!(point.reference.is_some(), "expected a reference");
     assert!(point.resolved_symbol.is_some(), "expected resolved symbol");
@@ -780,7 +780,7 @@ fn java_locate_finds_reference_at_class_usage() {
         greeter_ref.range.end_line,
         greeter_ref.range.end_column,
     );
-    let point = Locator::locate(&store, &main_id, line, col).unwrap();
+    let point = Locator::locate(store.as_ref(), &main_id, line, col).unwrap();
 
     assert!(point.reference.is_some(), "expected a reference");
     assert!(point.resolved_symbol.is_some(), "expected resolved symbol");
@@ -836,7 +836,7 @@ function outer(val: number): void {
         arg_node.range.end_line,
         arg_node.range.end_column,
     );
-    let point = Locator::locate(&store, &file_id, line, col).unwrap();
+    let point = Locator::locate(store.as_ref(), &file_id, line, col).unwrap();
 
     // ── Step 3: Assert data_node.kind == CallArg ──
     assert!(
@@ -910,7 +910,7 @@ function check(v: number): void {
         call_ref.range.end_line,
         call_ref.range.end_column,
     );
-    let point = Locator::locate(&store, &file_id, line, col).unwrap();
+    let point = Locator::locate(store.as_ref(), &file_id, line, col).unwrap();
 
     // Should resolve to isPositive
     assert!(point.resolved_symbol.is_some());
@@ -983,7 +983,7 @@ function outer(z: number): number {
         .expect("middle symbol not found");
 
     // Get caller chain for inner
-    let chain = CallerPathExplorer::explore(&store, &inner_sym.id, 10)
+    let chain = CallerPathExplorer::explore(store.as_ref(), &inner_sym.id, 10)
         .unwrap()
         .expect("expected caller chain for inner");
 
@@ -1085,7 +1085,7 @@ function top(x: number): number { return mid(x); }
         .expect("deepest symbol not found");
 
     // Farthest chain should be: top → mid → deep → deepest (3 steps)
-    let chain = CallerPathExplorer::explore(&store, &deepest_sym.id, 10)
+    let chain = CallerPathExplorer::explore(store.as_ref(), &deepest_sym.id, 10)
         .unwrap()
         .expect("expected caller chain for deepest");
 

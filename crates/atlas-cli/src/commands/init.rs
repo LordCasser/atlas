@@ -1,13 +1,12 @@
 //! `atlas init` — create `.atlas/` directory and initialize the database.
 
+use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
-use atlas_db::Store;
 use atlas_types::Language;
-use atlas_workspace::Workspace;
 
 pub fn run(project: &str) -> anyhow::Result<()> {
-    let ws = Workspace::open(std::path::Path::new(project))
-        .with_context(|| format!("Invalid project path: {}", project))?;
+    let ctx = CommandContext::open(project, DbMode::InitOrCreate)?;
+    let ws = &ctx.workspace;
 
     // Validate it looks like a code project (has at least one source file)
     let has_code = has_source_files(ws.root());
@@ -19,19 +18,14 @@ pub fn run(project: &str) -> anyhow::Result<()> {
         );
     }
 
-    // Create .atlas/ directory and initialize DB
-    ws.ensure_atlas_dir()
-        .context("Failed to create .atlas directory")?;
-    let store = Store::open_db(ws.db_path()).context("Failed to open Atlas database")?;
-    store
-        .init_schema()
-        .context("Failed to initialize database schema")?;
-
     println!("Atlas initialized successfully!");
     println!("  Database: {}/atlas.db", ws.atlas_dir().display());
 
     // Show loaded language support
-    let store_stats = store.get_stats().context("Failed to read database stats")?;
+    let store_stats = ctx
+        .store
+        .get_stats()
+        .context("Failed to read database stats")?;
     println!("  SQLite:   {}", store_stats.sqlite_version);
     println!("  Schema:   v{}", atlas_db::CURRENT_SCHEMA_VERSION);
 

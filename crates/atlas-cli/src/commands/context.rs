@@ -1,25 +1,17 @@
 //! `atlas context` command — build AI context around a symbol or query.
 
+use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
 use atlas_context::ContextBuilder;
 use atlas_db::Store;
 use atlas_graph::GraphEngine;
 use atlas_types::SymbolDef;
-use atlas_workspace::Workspace;
 use std::sync::Arc;
 
 pub fn run(query: &str, project: &str) -> anyhow::Result<()> {
-    let ws = Workspace::open(std::path::Path::new(project))
-        .with_context(|| format!("Invalid project path: {}", project))?;
-    if !ws.db_path().is_file() {
-        anyhow::bail!(
-            "Not an initialized Atlas project. Run `atlas init {}` first.",
-            project
-        );
-    }
-    let store = Store::open_db(ws.db_path()).context("Failed to open Atlas database")?;
-    let store = Arc::new(store);
-    let root = ws.root();
+    let ctx = CommandContext::open(project, DbMode::ExistingReadOnly)?;
+    let store = ctx.store;
+    let root = &ctx.root;
 
     let graph = GraphEngine::from_store(&store, 0.3).context("Failed to load graph snapshot")?;
     let graph = Arc::new(graph);
@@ -32,12 +24,12 @@ pub fn run(query: &str, project: &str) -> anyhow::Result<()> {
             println!("{}", view.to_markdown());
 
             // Append source code excerpts for the subject and its callers/callees
-            print_source_excerpt(&root, &store, &view.subject);
+            print_source_excerpt(root, store.as_ref(), &view.subject);
             for sym in view.callers.iter().take(3) {
-                print_source_excerpt(&root, &store, sym);
+                print_source_excerpt(root, store.as_ref(), sym);
             }
             for sym in view.callees.iter().take(3) {
-                print_source_excerpt(&root, &store, sym);
+                print_source_excerpt(root, store.as_ref(), sym);
             }
         }
         None => {

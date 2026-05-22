@@ -5,7 +5,7 @@
 //! resolved symbol, the data node, incident dataflow edges, the lexical
 //! binding, and the enclosing scope.
 
-use atlas_db::Store;
+use atlas_db::{CallGraphReader, DataflowReader, SymbolReader};
 use atlas_types::bindings::{BindingDef, BindingUse};
 use atlas_types::enums::ReferenceKind;
 use atlas_types::ids::{DataNodeId, FileId};
@@ -29,7 +29,7 @@ impl Locator {
     /// The locator finds the innermost reference, data node, scope, and binding
     /// whose byte range contains the given position.
     pub fn locate(
-        store: &Store,
+        store: &(impl DataflowReader + CallGraphReader + SymbolReader),
         file_id: &FileId,
         line: u32,
         column: u32,
@@ -154,7 +154,7 @@ fn extract_ref_range(r: &ReferenceUse) -> &TextRange {
 /// Resolve a set of dataflow edges to `TraceDataNodeRef`s, looking up each
 /// node ID in the Store.
 fn resolve_data_node_refs<F>(
-    store: &Store,
+    store: &impl DataflowReader,
     edges: &[atlas_types::dataflow::DataFlowEdge],
     id_fn: F,
 ) -> anyhow::Result<Vec<TraceDataNodeRef>>
@@ -189,7 +189,7 @@ where
 /// and find one whose range contains the position.  This handles the common
 /// case where the user clicks on a call argument, not the call target itself.
 fn find_callsite_for_position(
-    store: &Store,
+    store: &impl CallGraphReader,
     reference: &Option<&ReferenceUse>,
     file_id: &FileId,
     line: u32,
@@ -215,7 +215,7 @@ fn find_callsite_for_position(
 /// Looks through all bindings and binding uses in the file, returning the
 /// one whose byte range most tightly contains the position.
 fn find_binding_at_position(
-    store: &Store,
+    store: &impl CallGraphReader,
     file_id: &FileId,
     line: u32,
     column: u32,

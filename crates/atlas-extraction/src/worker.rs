@@ -5,10 +5,9 @@
 //! - max file size check before parsing
 //! - structured `ExtractionError` collection for the `IndexReport`
 //!
-//! **Note on timeout**: per-file timeout is not yet implemented because
-//! `LanguageAdapter` is not `Send`.  It will be added once the adapter
-//! trait gains `Send + Sync` bounds (P2).  For now, Rayon-level
-//! parallelism + `catch_unwind` provides the critical safety guarantees.
+//! **Note on timeout**: per-file timeout is not yet implemented (P2).
+//! For now, Rayon-level parallelism + `catch_unwind` provides the
+//! critical safety guarantees.
 
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
@@ -22,6 +21,8 @@ use atlas_types::ids::FileId;
 
 use super::extract_file;
 use super::frontend::LanguageFrontend;
+
+use crate::error::{ExtractionFailure, ExtractionFailureKind};
 
 // ---------------------------------------------------------------------------
 // WorkerConfig
@@ -123,11 +124,32 @@ impl ParseWorkerPool {
                 Ok(facts)
             }
             Ok(Err(extraction_err)) => {
+                // Phase 4.1: emit structured tracing before classification
+                if let Some(ef) = extraction_err.downcast_ref::<ExtractionFailure>() {
+                    tracing::warn!(
+                        file = %ef.file_path,
+                        language = %ef.language.as_str(),
+                        kind = %ef.kind,
+                        slot = ef.slot.unwrap_or("unknown"),
+                        message = %ef.message,
+                        "extraction failed"
+                    );
+                } else {
+                    // Untyped error — fall back to string classification
+                    let fallback_msg = format!("{extraction_err}");
+                    let cat = classify_anyhow(&extraction_err);
+                    tracing::warn!(
+                        file = %file_path_str,
+                        category = ?cat,
+                        message = %fallback_msg,
+                        "extraction failed (untyped)"
+                    );
+                }
                 let category = classify_anyhow(&extraction_err);
                 let err = ExtractionError {
                     file_path: file_path_str,
                     category,
-                    message: format!("{}", extraction_err),
+                    message: format!("{extraction_err}"),
                 };
                 self.record_error(err.clone());
                 Err(err)
@@ -141,6 +163,10 @@ impl ParseWorkerPool {
                 } else {
                     "unknown panic".to_string()
                 };
+                tracing::error!(
+                    file = %file_path_str,
+                    "grammar panic in extraction: {message}"
+                );
                 let err = ExtractionError {
                     file_path: file_path_str,
                     category: FailureCategory::GrammarPanic,
@@ -214,8 +240,26 @@ impl ParseWorkerPool {
 // ---------------------------------------------------------------------------
 
 /// Classify an `anyhow::Error` from `extract_file` into a `FailureCategory`.
+///
+/// Phase 4: tries to downcast to [`ExtractionFailure`] first for precise
+/// classification via [`ExtractionFailureKind`].  Falls back to legacy
+/// string-matching for errors that haven't been migrated yet.
 fn classify_anyhow(err: &anyhow::Error) -> FailureCategory {
-    let msg = format!("{}", err).to_lowercase();
+    // 1. Downcast to typed error (Phase 4 migration)
+    if let Some(ef) = err.downcast_ref::<ExtractionFailure>() {
+        return match ef.kind {
+            ExtractionFailureKind::ParseTimeout => FailureCategory::ParseTimeout,
+            ExtractionFailureKind::MaxFileSizeExceeded => FailureCategory::MaxFileSizeExceeded,
+            ExtractionFailureKind::GrammarPanic => FailureCategory::GrammarPanic,
+            ExtractionFailureKind::Io => FailureCategory::IoError,
+            ExtractionFailureKind::ParserInit
+            | ExtractionFailureKind::QueryCompile
+            | ExtractionFailureKind::Normalization => FailureCategory::QueryError,
+        };
+    }
+
+    // 2. Legacy string-based fallback
+    let msg = format!("{err}").to_lowercase();
     if msg.contains("timeout") || msg.contains("timed out") {
         FailureCategory::ParseTimeout
     } else if msg.contains("io") || msg.contains("read") || msg.contains("utf8") {
@@ -290,5 +334,46 @@ mod tests {
             classify_anyhow(&anyhow::anyhow!("operation timed out")),
             FailureCategory::ParseTimeout
         );
+    }
+
+    #[test]
+    fn test_classify_anyhow_downcast() {
+        // Phase 4: ExtractionFailure downcast path
+        use crate::error::{ExtractionFailure, ExtractionFailureKind};
+        use atlas_types::Language;
+
+        let ef = ExtractionFailure::new(
+            ExtractionFailureKind::ParseTimeout,
+            "test.ts",
+            Language::TypeScript,
+        )
+        .with_slot("symbols")
+        .with_message("timed out after 30s");
+        let err = anyhow::Error::from(ef);
+        assert_eq!(classify_anyhow(&err), FailureCategory::ParseTimeout);
+
+        let ef = ExtractionFailure::new(
+            ExtractionFailureKind::MaxFileSizeExceeded,
+            "large.ts",
+            Language::TypeScript,
+        )
+        .with_message("file too large");
+        let err = anyhow::Error::from(ef);
+        assert_eq!(classify_anyhow(&err), FailureCategory::MaxFileSizeExceeded);
+
+        let ef = ExtractionFailure::new(
+            ExtractionFailureKind::QueryCompile,
+            "test.java",
+            Language::Java,
+        )
+        .with_slot("references")
+        .with_message("syntax error in query");
+        let err = anyhow::Error::from(ef);
+        assert_eq!(classify_anyhow(&err), FailureCategory::QueryError);
+
+        let ef = ExtractionFailure::new(ExtractionFailureKind::Io, "test.py", Language::Python)
+            .with_message("permission denied");
+        let err = anyhow::Error::from(ef);
+        assert_eq!(classify_anyhow(&err), FailureCategory::IoError);
     }
 }

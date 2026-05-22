@@ -300,9 +300,8 @@ impl ResolutionStats {
 mod tests {
     use super::*;
     use atlas_db::Store;
-    use atlas_extraction::LanguageFrontend;
+    use atlas_extraction::create_frontend;
     use atlas_extraction::extract_file;
-    use atlas_extraction::languages::typescript::TypeScriptAdapter;
     use atlas_graph::{GraphBuilder, GraphEngine};
     use std::path::PathBuf;
 
@@ -316,7 +315,7 @@ mod tests {
 }
 "#;
         let lib_id = FileId::generate("lib.ts");
-        let ts_frontend = LanguageFrontend::from_adapter(Box::new(TypeScriptAdapter));
+        let ts_frontend = create_frontend(Language::TypeScript).unwrap();
         let lib_facts = extract_file(
             &ts_frontend,
             lib_id,
@@ -386,7 +385,7 @@ export function farewell(name: string): string {
 }
 "#;
         let lib_id = FileId::generate("lib.ts");
-        let ts_frontend = LanguageFrontend::from_adapter(Box::new(TypeScriptAdapter));
+        let ts_frontend = create_frontend(Language::TypeScript).unwrap();
         let lib_facts = extract_file(
             &ts_frontend,
             lib_id,

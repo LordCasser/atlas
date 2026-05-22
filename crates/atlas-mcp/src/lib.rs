@@ -92,15 +92,43 @@ impl McpServer {
                 None => break, // EOF
             };
 
-            let response = Self::dispatch(&request, &router);
+            let response = {
+                let start = std::time::Instant::now();
+                let outcome = Self::dispatch(&request, &router);
+                let duration_ms = start.elapsed().as_millis() as u64;
+                let ok = outcome.response.error.is_none() && !outcome.tool_error;
+                let _span = tracing::info_span!(
+                    "mcp_request",
+                    method = %request.method,
+                    id = ?request.id,
+                    tool_name = outcome.tool_name.as_deref().unwrap_or(""),
+                    tool_error = outcome.tool_error,
+                    duration_ms = duration_ms,
+                    ok = ok,
+                );
+                tracing::info!(parent: &_span, "request handled");
+                outcome.response
+            };
             transport::write_response(&mut stdout, &response).await?;
         }
 
         Ok(())
     }
+}
 
+/// Internal result of `dispatch` carrying tool-level error state in
+/// addition to the JSON-RPC response, so the `serve_async` tracing span
+/// can correctly report `ok = false` for MCP tool errors (which live in
+/// `CallToolResult.is_error`, not `Response.error`).
+struct DispatchOutcome {
+    response: Response,
+    tool_name: Option<String>,
+    tool_error: bool,
+}
+
+impl McpServer {
     /// Dispatch a single JSON-RPC request.
-    fn dispatch(request: &protocol::Request, router: &ToolRouter) -> Response {
+    fn dispatch(request: &protocol::Request, router: &ToolRouter) -> DispatchOutcome {
         match request.method.as_str() {
             "initialize" => {
                 let result = serde_json::to_value(serde_json::json!({
@@ -115,22 +143,30 @@ impl McpServer {
                 }))
                 .ok();
 
-                Response {
-                    jsonrpc: protocol::JSONRPC_VERSION,
-                    id: request.id.clone(),
-                    result,
-                    error: None,
+                DispatchOutcome {
+                    response: Response {
+                        jsonrpc: protocol::JSONRPC_VERSION,
+                        id: request.id.clone(),
+                        result,
+                        error: None,
+                    },
+                    tool_name: None,
+                    tool_error: false,
                 }
             }
 
             "tools/list" => {
                 let list_result = router.list_tools();
                 let result = serde_json::to_value(list_result).ok();
-                Response {
-                    jsonrpc: protocol::JSONRPC_VERSION,
-                    id: request.id.clone(),
-                    result,
-                    error: None,
+                DispatchOutcome {
+                    response: Response {
+                        jsonrpc: protocol::JSONRPC_VERSION,
+                        id: request.id.clone(),
+                        result,
+                        error: None,
+                    },
+                    tool_name: None,
+                    tool_error: false,
                 }
             }
 
@@ -138,22 +174,30 @@ impl McpServer {
                 let params = match request.params.as_ref() {
                     Some(p) => p,
                     None => {
-                        return Response::error(
-                            request.id.clone(),
-                            protocol::INVALID_PARAMS,
-                            "Missing params".into(),
-                        );
+                        return DispatchOutcome {
+                            response: Response::error(
+                                request.id.clone(),
+                                protocol::INVALID_PARAMS,
+                                "Missing params".into(),
+                            ),
+                            tool_name: None,
+                            tool_error: true,
+                        };
                     }
                 };
 
                 let name = match params.get("name").and_then(|v| v.as_str()) {
                     Some(n) => n,
                     None => {
-                        return Response::error(
-                            request.id.clone(),
-                            protocol::INVALID_PARAMS,
-                            "Missing tool name".into(),
-                        );
+                        return DispatchOutcome {
+                            response: Response::error(
+                                request.id.clone(),
+                                protocol::INVALID_PARAMS,
+                                "Missing tool name".into(),
+                            ),
+                            tool_name: None,
+                            tool_error: true,
+                        };
                     }
                 };
 
@@ -162,21 +206,30 @@ impl McpServer {
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
                 let tool_result = router.call_tool(name, &args);
+                let tool_error = tool_result.is_error.unwrap_or(false);
                 let result = serde_json::to_value(tool_result).ok();
 
-                Response {
-                    jsonrpc: protocol::JSONRPC_VERSION,
-                    id: request.id.clone(),
-                    result,
-                    error: None,
+                DispatchOutcome {
+                    response: Response {
+                        jsonrpc: protocol::JSONRPC_VERSION,
+                        id: request.id.clone(),
+                        result,
+                        error: None,
+                    },
+                    tool_name: Some(name.to_string()),
+                    tool_error,
                 }
             }
 
-            _ => Response::error(
-                request.id.clone(),
-                protocol::METHOD_NOT_FOUND,
-                format!("Method not found: {}", request.method),
-            ),
+            _ => DispatchOutcome {
+                response: Response::error(
+                    request.id.clone(),
+                    protocol::METHOD_NOT_FOUND,
+                    format!("Method not found: {}", request.method),
+                ),
+                tool_name: None,
+                tool_error: true,
+            },
         }
     }
 }

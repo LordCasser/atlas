@@ -17,16 +17,16 @@
 //! the database. Clean (unchanged) files are skipped. Only dirty (new or modified)
 //! files are re-extracted. Deleted files (in DB but not on disk) are cleaned up.
 
+use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
-use atlas_db::Store;
 use atlas_extraction::frontend::LanguageFrontend;
 use atlas_extraction::{self, LanguageRegistry, ParseWorkerPool, WorkerConfig};
 use atlas_sync::discovery::{DiscoveryConfig, discover_files};
+use atlas_types::ExtractionError;
 use atlas_types::FailureCategory;
 use atlas_types::Language;
 use atlas_types::{PerLanguageStats, PhaseTimer, PhaseTiming, PhaseTimings};
 use atlas_workspace::SourcePath;
-use atlas_workspace::Workspace;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -53,18 +53,12 @@ struct HashCheckResult {
 }
 
 pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyhow::Result<()> {
-    let ws = Workspace::open(Path::new(project))
-        .with_context(|| format!("Invalid project path: {}", project))?;
-    let root = ws.root();
-    let pipeline_start = Instant::now();
-    let mut phase_timings = PhaseTimings::new();
-
     // ── Phase: Open store ──────────────────────────────────────────────────
     let _store_timer = PhaseTimer::start("Open store");
-    ws.ensure_atlas_dir()
-        .context("Failed to create .atlas directory")?;
-    let store = Store::open_db(ws.db_path()).context("Failed to open Atlas database")?;
-    store.init_schema().context("Failed to initialize schema")?;
+    let ctx = CommandContext::open(project, DbMode::CreateOrOpenReadWrite)?;
+    let root = ctx.root.as_path();
+    let pipeline_start = Instant::now();
+    let mut phase_timings = PhaseTimings::new();
 
     // ── Phase: Discovery ───────────────────────────────────────────────────
     let disc_timer = PhaseTimer::start("Discovery");
@@ -82,19 +76,29 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     }
     let total = discovered.len();
     let disc_timing = disc_timer.items(total as u64).finish();
+    let disc_ms = disc_timing.duration_ms;
     phase_timings.push(disc_timing);
+    tracing::info!(phase = "discovery", files = total, duration_ms = disc_ms,);
 
     // ── Phase: Hash check (P1) ─────────────────────────────────────────────
     // Compute current hashes in parallel, compare with DB, classify files.
     let hash_timer = PhaseTimer::start("Hash check");
-    let hash_result = build_dirty_set(&store, &discovered, root)?;
+    let hash_result = build_dirty_set(&ctx.store, &discovered, root)?;
     let dirty = &hash_result.dirty;
     let reused = hash_result.clean_count;
     let hash_timing = hash_timer
         .items(dirty.len() as u64)
         .note(format!("{} reused, {} dirty", reused, dirty.len()))
         .finish();
+    let hash_ms = hash_timing.duration_ms;
     phase_timings.push(hash_timing);
+    tracing::info!(
+        phase = "hash_check",
+        dirty = dirty.len(),
+        reused = reused,
+        deleted = hash_result.deleted.len(),
+        duration_ms = hash_ms,
+    );
 
     // ── Phase: Delete stale data for deleted files ─────────────────────────
     if !hash_result.deleted.is_empty() {
@@ -103,8 +107,8 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
             let sp = SourcePath::try_from_relative(&rel_path.to_string_lossy())
                 .with_context(|| format!("invalid deleted path: {}", rel_path.display()))?;
             let file_id = atlas_types::FileId::generate(sp.as_str());
-            let _ = store.delete_edges_for_file_references(&file_id);
-            let _ = store.delete_file_data(&file_id);
+            let _ = ctx.store.delete_edges_for_file_references(&file_id);
+            let _ = ctx.store.delete_file_data(&file_id);
         }
         let del_timing = del_timer.items(hash_result.deleted.len() as u64).finish();
         phase_timings.push(del_timing);
@@ -185,7 +189,16 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
             // Record per-language stats (thread-safe)
             let (facts_opt, failed, fail_cat) = match result {
                 Ok(facts) => (Some(facts), false, None),
-                Err(()) => (None, true, Some("extraction_error")),
+                Err(ref e) => {
+                    tracing::warn!(
+                        file = %rel_path.display(),
+                        lang = %lang.as_str(),
+                        category = ?e.category,
+                        message = %e.message,
+                        "extraction failed"
+                    );
+                    (None, true, Some("extraction_error"))
+                }
             };
             {
                 per_lang_mutex
@@ -226,6 +239,13 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
         note: Some(format!("avg {}ms/file", avg_ms)),
     };
     phase_timings.push(extract_timing);
+    tracing::info!(
+        phase = "extract",
+        files = extracted_count,
+        failed = dirty_total.saturating_sub(extracted_count),
+        duration_ms = extract_elapsed.as_millis() as u64,
+        avg_ms = avg_ms,
+    );
 
     // ── Phase: Clean stale facts for modified files ─────────────────────────
     // When re-indexing modified files, old rows (symbols, references,
@@ -237,14 +257,20 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     {
         let clean_timer = PhaseTimer::start("Clean stale");
         let file_ids: Vec<_> = extracted.iter().map(|ef| ef.facts.file.file_id).collect();
-        if let Err(e) = store.delete_files_batch(&file_ids) {
+        if let Err(e) = ctx.store.delete_files_batch(&file_ids) {
             return Err(anyhow::anyhow!(
                 "Failed to clean stale facts before indexing: {:#}",
                 e
             ));
         }
         let clean_timing = clean_timer.items(file_ids.len() as u64).finish();
+        let clean_ms = clean_timing.duration_ms;
         phase_timings.push(clean_timing);
+        tracing::info!(
+            phase = "db_clean",
+            files = file_ids.len(),
+            duration_ms = clean_ms,
+        );
     }
 
     // ── Phase 2: Batch insertion (P3: single transaction per chunk) ──────
@@ -255,10 +281,10 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     const BATCH_SIZE: usize = 200;
     for chunk in extracted.chunks(BATCH_SIZE) {
         let facts: Vec<_> = chunk.iter().map(|ef| ef.facts.clone()).collect();
-        if let Err(e) = store.insert_file_facts_batch(&facts) {
+        if let Err(e) = ctx.store.insert_file_facts_batch(&facts) {
             // Fall back to per-file insert on batch failure
             for ef in chunk {
-                if let Err(e2) = store.insert_file_facts(&ef.facts) {
+                if let Err(e2) = ctx.store.insert_file_facts(&ef.facts) {
                     pool.push_failure(
                         &ef.rel_path.to_string_lossy(),
                         FailureCategory::QueryError,
@@ -275,7 +301,14 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     let insert_timing = insert_timer
         .items((extracted_count - insert_failures) as u64)
         .finish();
+    let insert_ms = insert_timing.duration_ms;
     phase_timings.push(insert_timing);
+    tracing::info!(
+        phase = "db_insert",
+        files = extracted_count.saturating_sub(insert_failures),
+        failures = insert_failures,
+        duration_ms = insert_ms,
+    );
 
     // Build index report from pool
     let mut index_report = pool.into_report(dirty_total, 0);
@@ -284,7 +317,6 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     // ── Phase 3: Resolve all references ───────────────────────────────────
     println!("\nResolving references...");
     let res_timer = PhaseTimer::start("Resolution");
-    let store = Arc::new(store);
     // P2: Load tsconfig.json path aliases if present
     let path_alias =
         atlas_resolution::PathAliasResolver::from_tsconfig(&root.join("tsconfig.json"))
@@ -297,12 +329,14 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     // loads tsconfig.json for path alias resolution.  JS projects requiring
     // path aliases should use tsconfig.json (supported by tsc/TypeScript parser).
     let tsconfig_changed =
-        atlas_resolution::detect_config_change(&store, &root, &["tsconfig.json"])?;
+        atlas_resolution::detect_config_change(&ctx.store, &root, &["tsconfig.json"])?;
     if tsconfig_changed {
-        let inv_refs = store
+        let inv_refs = ctx
+            .store
             .invalidate_all_references()
             .context("Failed to invalidate references for tsconfig change")?;
-        let inv_edges = store
+        let inv_edges = ctx
+            .store
             .delete_all_edges()
             .context("Failed to delete edges for tsconfig change")?;
         tracing::info!(
@@ -313,7 +347,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     }
 
     let mut resolver =
-        atlas_resolution::ReferenceResolver::with_path_alias(Arc::clone(&store), path_alias);
+        atlas_resolution::ReferenceResolver::with_path_alias(Arc::clone(&ctx.store), path_alias);
     let (resolved, stats) = resolver.resolve_all()?;
     let res_elapsed = res_timer
         .items(stats.total_refs as u64)
@@ -325,6 +359,13 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
         items: Some(stats.total_refs as u64),
         note: Some(format!("{} resolved", stats.resolved)),
     });
+    tracing::info!(
+        phase = "resolution",
+        total_refs = stats.total_refs,
+        resolved = stats.resolved,
+        unresolved = stats.unresolved,
+        duration_ms = res_elapsed,
+    );
 
     index_report.references_total = stats.total_refs;
     index_report.references_resolved = stats.resolved;
@@ -359,7 +400,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     // ── Phase 3b: Build edges ────────────────────────────────────────────
     println!("\nBuilding edges...");
     let edge_timer = PhaseTimer::start("Graph build");
-    let builder = atlas_graph::GraphBuilder::new(Arc::clone(&store));
+    let builder = atlas_graph::GraphBuilder::new(Arc::clone(&ctx.store));
     let build_stats = builder.build_all(&resolved);
     let edge_elapsed = edge_timer
         .items(build_stats.edges_built as u64)
@@ -371,17 +412,22 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
         items: Some(build_stats.edges_built as u64),
         note: None,
     });
+    tracing::info!(
+        phase = "graph_build",
+        edges_built = build_stats.edges_built,
+        duration_ms = edge_elapsed,
+    );
     println!("  Edges built:         {}", build_stats.edges_built);
 
     // Commit tsconfig hash baseline AFTER the full pipeline succeeded
     // (extraction + resolution + graph build).  Committing earlier would
     // leave the hash updated on partial failure, preventing retry.
     if tsconfig_changed {
-        atlas_resolution::commit_config_hashes(&store, &root, &["tsconfig.json"])?;
+        atlas_resolution::commit_config_hashes(&ctx.store, &root, &["tsconfig.json"])?;
     }
 
     // Show final stats
-    let db_stats = store.get_stats()?;
+    let db_stats = ctx.store.get_stats()?;
     println!();
     println!("Database status:");
     println!("  Files:    {}", db_stats.total_files);
@@ -394,8 +440,9 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
         .unwrap_or_default()
         .as_secs()
         .to_string();
-    store.set_metadata("last_index_time", &now)?;
-    store.set_metadata("last_index_root", &root.display().to_string())?;
+    ctx.store.set_metadata("last_index_time", &now)?;
+    ctx.store
+        .set_metadata("last_index_root", &root.display().to_string())?;
 
     // ── Phase timing summary ─────────────────────────────────────────────
     let total_elapsed = pipeline_start.elapsed();
@@ -422,7 +469,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
 /// 3. Classify each file: New, Dirty, or Clean.
 /// 4. Detect deleted files (in DB but not on disk).
 fn build_dirty_set(
-    store: &Store,
+    store: &atlas_db::Store,
     discovered: &[PathBuf],
     root: &Path,
 ) -> anyhow::Result<HashCheckResult> {
@@ -501,27 +548,36 @@ fn extract_one_with_frontend(
     root: &Path,
     _lang: Language,
     frontend: &LanguageFrontend,
-) -> Result<atlas_types::FileFacts, ()> {
+) -> Result<atlas_types::FileFacts, ExtractionError> {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
             let relative = path.strip_prefix(root).unwrap_or(path);
+            let rel_str = relative.to_string_lossy().to_string();
             pool.push_failure(
-                &relative.to_string_lossy(),
+                &rel_str,
                 FailureCategory::IoError,
                 format!("Failed to read {}: {}", path.display(), e),
             );
-            return Err(());
+            return Err(ExtractionError {
+                file_path: rel_str,
+                category: FailureCategory::IoError,
+                message: format!("Failed to read {}: {}", path.display(), e),
+            });
         }
     };
 
     let content_hash = blake3::hash(source.as_bytes()).to_hex();
     let relative = path.strip_prefix(root).unwrap_or(path);
-    let sp = SourcePath::try_from_relative(&relative.to_string_lossy()).map_err(|_| ())?;
+    let rel_str = relative.to_string_lossy().to_string();
+    let sp = SourcePath::try_from_relative(&rel_str).map_err(|_| ExtractionError {
+        file_path: rel_str.clone(),
+        category: FailureCategory::IoError,
+        message: format!("invalid source path: {}", relative.display()),
+    })?;
     let file_id = atlas_types::FileId::generate(sp.as_str());
 
     pool.extract_one(frontend, file_id, relative, &source, &content_hash)
-        .map_err(|_| ())
 }
 
 // ── Timing output formatting ──────────────────────────────────────────────
