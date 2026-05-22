@@ -241,7 +241,7 @@ cargo test --features "all-languages,mcp,sync"
 cargo test --test integration
 
 # Run with release build
-cargo build --release --features all-languages,cli
+cargo build --release -p atlas-cli --features all-languages
 ./target/release/atlas index --project /tmp/test-project
 ```
 

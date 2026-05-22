@@ -155,7 +155,7 @@ Context：
 MCP：
 
 - JSON-RPC stdio。
-- 工具按能力分类组织在 `src/mcp/tools/` 目录。
+- 工具按能力分类组织在 `crates/atlas-mcp/src/tools/` 目录。
 - 当前 MCP 注册 16 个 Agent-facing 工具：status、files、search、symbol、neighbors、callers、callees、callgraph、path、explore、impact、context、trace_point、trace_variable、trace_caller_path、language_capabilities。
 
 CLI：
