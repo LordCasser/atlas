@@ -307,10 +307,10 @@ pub(crate) fn write_data_nodes(conn: &Connection, nodes: &[DataNode]) -> anyhow:
     let mut stmt = conn.prepare(
         r#"INSERT OR REPLACE INTO data_nodes
            (data_node_id, file_id, function_id, kind, binding_id, callsite_id,
-            name, access_path,
+            name, access_path, arg_index,
             range_start_byte, range_end_byte, range_start_line, range_start_column,
             range_end_line, range_end_column)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"#,
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"#,
     )?;
     for n in nodes {
         stmt.execute(params![
@@ -322,6 +322,7 @@ pub(crate) fn write_data_nodes(conn: &Connection, nodes: &[DataNode]) -> anyhow:
             n.callsite_id,
             n.name,
             n.access_path,
+            n.arg_index,
             n.range.start_byte,
             n.range.end_byte,
             n.range.start_line,

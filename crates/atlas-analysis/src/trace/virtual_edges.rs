@@ -18,6 +18,7 @@
 //! match call-arg DataNode → callee param by index).
 
 use atlas_db::Store;
+use atlas_db::TraceStore;
 use atlas_types::dataflow::DataFlowEdge;
 use atlas_types::enums::{DataFlowKind, DataNodeKind};
 use atlas_types::ids::DataNodeId;
@@ -60,7 +61,7 @@ pub trait TraceEdgeProvider: Send + Sync {
     fn virtual_incoming(
         &self,
         target_id: &DataNodeId,
-        store: &Store,
+        store: &dyn TraceStore,
     ) -> anyhow::Result<Vec<TraceEdge>>;
 }
 
@@ -86,7 +87,7 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
     fn virtual_incoming(
         &self,
         target_id: &DataNodeId,
-        store: &Store,
+        store: &dyn TraceStore,
     ) -> anyhow::Result<Vec<TraceEdge>> {
         let target_node = match store.get_data_node(target_id)? {
             Some(n) => n,
@@ -212,7 +213,7 @@ impl TraceEdgeProvider for CompositeProvider {
     fn virtual_incoming(
         &self,
         target_id: &DataNodeId,
-        store: &Store,
+        store: &dyn TraceStore,
     ) -> anyhow::Result<Vec<TraceEdge>> {
         let mut all_edges: Vec<TraceEdge> = Vec::new();
         for p in &self.providers {

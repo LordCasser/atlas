@@ -8,7 +8,7 @@
 use atlas_db::Store;
 use atlas_graph::GraphEngine;
 use atlas_types::{FileId, SymbolDef, SymbolId};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 mod builder;
 
@@ -17,12 +17,20 @@ pub use builder::{ContextSlice, ContextView};
 /// AI context builder: constructs symbol-rich context from the codebase graph.
 pub struct ContextBuilder {
     store: Arc<Store>,
-    graph: Arc<GraphEngine>,
+    graph: RwLock<Arc<GraphEngine>>,
 }
 
 impl ContextBuilder {
     pub fn new(store: Arc<Store>, graph: Arc<GraphEngine>) -> Self {
-        Self { store, graph }
+        Self {
+            store,
+            graph: RwLock::new(graph),
+        }
+    }
+
+    /// Replace the internal graph snapshot with a fresh one.
+    pub fn refresh_graph(&self, graph: Arc<GraphEngine>) {
+        *self.graph.write().unwrap() = graph;
     }
 
     // ------------------------------------------------------------------
@@ -37,26 +45,34 @@ impl ContextBuilder {
             anyhow::bail!("symbol not found: {}", symbol_id);
         };
 
-        let caller_view = self.graph.callers(symbol_id);
-        let callee_view = self.graph.callees(symbol_id);
+        let caller_view = self.graph.read().unwrap().callers(symbol_id);
+        let callee_view = self.graph.read().unwrap().callees(symbol_id);
         let file_id = sym.file_id;
 
         // Peers: symbols in the same file
         let file_symbols = self.store.find_symbols_by_file(&file_id)?;
 
         // Importers are symbols; dependencies are files
-        let importer_symbols = self.graph.importers(&file_id);
-        let dep_files = self.graph.dependencies(&file_id);
+        let importer_symbols = self.graph.read().unwrap().importers(&file_id);
+        let dep_files = self.graph.read().unwrap().dependencies(&file_id);
 
         let view = ContextView {
             subject: sym.clone(),
             callers: resolve_symbols(
                 &self.store,
-                &self.graph.resolve_node_ids(&caller_view.callers),
+                &self
+                    .graph
+                    .read()
+                    .unwrap()
+                    .resolve_node_ids(&caller_view.callers),
             )?,
             callees: resolve_symbols(
                 &self.store,
-                &self.graph.resolve_node_ids(&callee_view.callees),
+                &self
+                    .graph
+                    .read()
+                    .unwrap()
+                    .resolve_node_ids(&callee_view.callees),
             )?,
             file_peers: file_symbols,
             importers: resolve_symbols_to_paths(&self.store, &importer_symbols)?,
@@ -73,18 +89,26 @@ impl ContextBuilder {
             anyhow::bail!("symbol not found: {}", symbol_id);
         };
 
-        let caller_view = self.graph.callers(symbol_id);
-        let callee_view = self.graph.callees(symbol_id);
+        let caller_view = self.graph.read().unwrap().callers(symbol_id);
+        let callee_view = self.graph.read().unwrap().callees(symbol_id);
 
         let slice = ContextSlice {
             subject: sym,
             callers: resolve_symbols(
                 &self.store,
-                &self.graph.resolve_node_ids(&caller_view.callers),
+                &self
+                    .graph
+                    .read()
+                    .unwrap()
+                    .resolve_node_ids(&caller_view.callers),
             )?,
             callees: resolve_symbols(
                 &self.store,
-                &self.graph.resolve_node_ids(&callee_view.callees),
+                &self
+                    .graph
+                    .read()
+                    .unwrap()
+                    .resolve_node_ids(&callee_view.callees),
             )?,
         };
 

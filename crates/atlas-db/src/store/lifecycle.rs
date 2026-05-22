@@ -64,7 +64,7 @@ impl Store {
         conn.execute(
             "INSERT OR IGNORE INTO schema_versions (version, description)
              VALUES (?1, ?2)",
-            params![CURRENT_SCHEMA_VERSION, "v1: initial schema"],
+            params![CURRENT_SCHEMA_VERSION, "v2: add arg_index to data_nodes"],
         )?;
 
         Ok(())

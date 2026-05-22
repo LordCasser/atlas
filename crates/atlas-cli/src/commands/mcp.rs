@@ -8,7 +8,7 @@
 use crate::runtime::{CommandContext, DbMode};
 
 pub fn run(project: &str) -> anyhow::Result<()> {
-    let ctx = CommandContext::find_or_open(project, DbMode::ExistingReadOnly)?;
+    let ctx = CommandContext::find_and_open(project, DbMode::ExistingReadOnly)?;
 
     tracing::info!("Starting Atlas MCP server...");
     tracing::info!("Project: {}", ctx.workspace.root().display());

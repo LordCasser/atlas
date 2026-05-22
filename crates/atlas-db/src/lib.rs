@@ -10,6 +10,6 @@ pub(crate) mod store_fts;
 pub(crate) mod store_rows;
 pub(crate) mod store_writers;
 
-pub use readers::{CallGraphReader, DataflowReader, FileReader, SymbolReader};
+pub use readers::{CallGraphReader, DataflowReader, FileReader, SymbolReader, TraceStore};
 pub use schema::{CURRENT_SCHEMA_VERSION, SCHEMA_DDL};
 pub use store::{Store, StoreStats};

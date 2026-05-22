@@ -26,9 +26,7 @@ fn normalize_arkts_definition(
     file_id: FileId,
     _file_path: &Path,
 ) -> Option<SymbolDef> {
-    let mut def = super::typescript::normalize_ts_definition(capture_name, node, source, file_id)?;
-    def.language = Language::ArkTS;
-    Some(def)
+    super::typescript::normalize_ts_definition(capture_name, node, source, file_id)
 }
 
 fn normalize_arkts_reference(

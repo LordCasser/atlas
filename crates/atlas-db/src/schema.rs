@@ -28,7 +28,7 @@
 
 /// Current schema version — always 1 during rapid development.
 /// There is no migration system; schema changes are made in-place.
-pub const CURRENT_SCHEMA_VERSION: i64 = 1;
+pub const CURRENT_SCHEMA_VERSION: i64 = 2;
 /// Complete DDL for a fresh database.
 pub const SCHEMA_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -214,6 +214,7 @@ CREATE TABLE IF NOT EXISTS data_nodes (
     callsite_id          BLOB,
     name                 TEXT,
     access_path          TEXT,
+    arg_index            INTEGER,
     range_start_byte     INTEGER NOT NULL,
     range_end_byte       INTEGER NOT NULL,
     range_start_line     INTEGER NOT NULL,

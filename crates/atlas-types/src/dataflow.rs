@@ -73,6 +73,11 @@ pub struct DataNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_path: Option<String>,
 
+    /// Position index within the enclosing call expression's argument list
+    /// (0-based). Only populated for `CallArg` nodes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arg_index: Option<u32>,
+
     /// Source range of the data entity.
     pub range: TextRange,
 }
@@ -96,6 +101,7 @@ impl DataNode {
             callsite_id: None,
             name: Some(name.to_string()),
             access_path: Some(name.to_string()),
+            arg_index: None,
             range,
         }
     }
@@ -118,6 +124,7 @@ impl DataNode {
             callsite_id: None,
             name: Some(name.to_string()),
             access_path: Some(name.to_string()),
+            arg_index: None,
             range,
         }
     }
@@ -140,6 +147,7 @@ impl DataNode {
             callsite_id: None,
             name: Some(name.to_string()),
             access_path: Some(access_path.to_string()),
+            arg_index: None,
             range,
         }
     }
@@ -160,6 +168,7 @@ impl DataNode {
             callsite_id: None,
             name: None,
             access_path: None,
+            arg_index: None,
             range,
         }
     }
@@ -182,6 +191,7 @@ impl DataNode {
             callsite_id,
             name: name.map(String::from),
             access_path: name.map(String::from),
+            arg_index: None,
             range,
         }
     }
@@ -205,6 +215,7 @@ impl DataNode {
             callsite_id,
             name: Some(name.to_string()),
             access_path: Some(access_path.to_string()),
+            arg_index: None,
             range,
         }
     }

@@ -9,7 +9,7 @@
 //!
 //! ## Factory methods
 //! - `CommandContext::open(project, mode)` — standard `Workspace::open` path.
-//! - `CommandContext::find_or_open(project, mode)` — for MCP: uses
+//! - `CommandContext::find_and_open(project, mode)` — for MCP: uses
 //!   `Workspace::find()` when `project == "."` (walks up from cwd).
 
 use std::path::{Path, PathBuf};
@@ -35,7 +35,7 @@ pub enum DbMode {
 /// Unified CLI bootstrapping context.
 ///
 /// Holds an open workspace, the canonical project root, and an `Arc<Store>`.
-/// Commands should obtain a context via `open()` or `find_or_open()` instead of
+/// Commands should obtain a context via `open()` or `find_and_open()` instead of
 /// manually wiring `Workspace::open` + `Store::open_db` + `init_schema`.
 pub struct CommandContext {
     pub workspace: Workspace,
@@ -96,7 +96,11 @@ impl CommandContext {
     ///
     /// This preserves the MCP server's ability to start from a non-project
     /// working directory while still finding the nearest Atlas project root.
-    pub fn find_or_open(project: &str, _mode: DbMode) -> anyhow::Result<Self> {
+    ///
+    /// Respects `DbMode` identically to `open()` — creator modes will
+    /// `ensure_atlas_dir()` + `init_schema()`, consumer modes will bail
+    /// if the database does not exist.
+    pub fn find_and_open(project: &str, mode: DbMode) -> anyhow::Result<Self> {
         let ws = if project == "." {
             Workspace::find().context("No .atlas directory found. Run `atlas init` first.")?
         } else {
@@ -104,11 +108,26 @@ impl CommandContext {
                 .with_context(|| format!("Invalid project path: {}", project))?
         };
 
-        if !ws.db_path().is_file() {
-            anyhow::bail!("Not an initialized Atlas project. Run `atlas init` first.");
+        let is_creator = matches!(mode, DbMode::InitOrCreate | DbMode::CreateOrOpenReadWrite);
+
+        if is_creator {
+            ws.ensure_atlas_dir()
+                .context("Failed to create .atlas directory")?;
+        } else {
+            let db_exists = ws.db_path().is_file();
+            if !db_exists {
+                anyhow::bail!("Not an initialized Atlas project. Run `atlas init` first.");
+            }
         }
 
-        let store = Arc::new(Store::open_db(ws.db_path())?); // bare ? matches original MCP boot
+        let store =
+            Arc::new(Store::open_db(ws.db_path()).context("Failed to open Atlas database")?);
+
+        if is_creator {
+            store
+                .init_schema()
+                .context("Failed to initialize database schema")?;
+        }
 
         Ok(Self {
             root: ws.root().to_path_buf(),
@@ -162,24 +181,25 @@ mod tests {
         assert!(ctx.store.get_stats().is_ok(), "store should be usable");
     }
 
-    /// `find_or_open` with "." should walk up and fail when no .atlas/ ancestor exists.
+    /// `find_and_open` with "." should walk up and fail when no .atlas/ ancestor exists.
     #[test]
-    fn find_or_open_rejects_no_ancestor() {
+    fn find_and_open_rejects_no_ancestor() {
         let dir = TempDir::new().unwrap();
         let result =
-            CommandContext::find_or_open(dir.path().to_str().unwrap(), DbMode::ExistingReadOnly);
-        assert!(result.is_err(), "find_or_open should reject missing DB");
+            CommandContext::find_and_open(dir.path().to_str().unwrap(), DbMode::ExistingReadOnly);
+        assert!(result.is_err(), "find_and_open should reject missing DB");
     }
 
-    /// Using a non-"." project should still work with find_or_open.
+    /// Using a non-"." project should still work with find_and_open.
     #[test]
-    fn find_or_open_with_explicit_project() {
+    fn find_and_open_with_explicit_project() {
         let dir = TempDir::new().unwrap();
-        // Create DB
-        CommandContext::open(dir.path().to_str().unwrap(), DbMode::InitOrCreate).unwrap();
-        // Open with explicit path via find_or_open
+        // First create via creator mode
+        let _ctx =
+            CommandContext::open(dir.path().to_str().unwrap(), DbMode::InitOrCreate).unwrap();
+        // Open with explicit path via find_and_open
         let ctx =
-            CommandContext::find_or_open(dir.path().to_str().unwrap(), DbMode::ExistingReadOnly)
+            CommandContext::find_and_open(dir.path().to_str().unwrap(), DbMode::ExistingReadOnly)
                 .unwrap();
         assert!(ctx.store.get_stats().is_ok());
     }

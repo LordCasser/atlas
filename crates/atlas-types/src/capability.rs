@@ -640,28 +640,28 @@ mod profiles {
     // ---- ArkTS ------------------------------------------------------------
 
     fn arkts_profile() -> LanguageCapabilityProfile {
-        // ArkTS delegates to the TypeScript adapter — same dataflow path.
+        // ArkTS delegates to the TypeScript frontend for structural extraction.
+        // Lexical bindings and dataflow are NOT supported by the delegate.
         LanguageCapabilityProfile {
             language: "arkts".into(),
-            capability_level: CapabilityLevel::DataflowBasic,
+            capability_level: CapabilityLevel::Symbolic,
             supported_features: vec![
                 "symbol_extraction".into(),
                 "reference_extraction".into(),
                 "import_resolution".into(),
                 "call_graph".into(),
+            ],
+            unsupported_features: vec![
+                "scope_aware_binding".into(),
+                "interprocedural_dataflow".into(),
                 "lexical_bindings".into(),
                 "intra_statement_dataflow".into(),
                 "use_def_heuristic".into(),
                 "access_path".into(),
                 "cfg".into(),
             ],
-            unsupported_features: vec![
-                "scope_aware_binding".into(),
-                "interprocedural_dataflow".into(),
-            ],
             limitations: vec![
-                "delegates to TypeScript adapter (ArkTS-specific constructs may be missed)".into(),
-                "name-based binding (no proper shadowing)".into(),
+                "delegates to TypeScript frontend (ArkTS-specific constructs may be missed)".into(),
             ],
             confidence_floor: 0.50,
             features: Some(FeatureMatrix {
@@ -670,22 +670,23 @@ mod profiles {
                 imports: FeatureSupport::supported_with_confidence(0.50),
                 scopes: FeatureSupport::supported_with_confidence(0.50),
                 call_graph: FeatureSupport::supported_with_confidence(0.50),
-                lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.50,
-                    vec!["name-based binding (no proper shadowing)"],
+                lexical_bindings: FeatureSupport::unsupported(
+                    "ArkTS does not support lexical binding extraction",
                 ),
-                local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.50,
-                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
+                local_dataflow: FeatureSupport::unsupported(
+                    "ArkTS does not support dataflow extraction",
                 ),
-                use_def: FeatureSupport::supported_with_limitations(
-                    0.50,
-                    vec!["name-based binding (no proper shadowing)"],
+                use_def: FeatureSupport::unsupported("ArkTS does not support dataflow extraction"),
+                field_access: FeatureSupport::unsupported(
+                    "ArkTS does not support dataflow extraction",
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.50),
-                call_arguments: FeatureSupport::supported_with_confidence(0.50),
-                returns_flow: FeatureSupport::supported_with_confidence(0.50),
-                cfg: FeatureSupport::supported_with_confidence(0.50),
+                call_arguments: FeatureSupport::unsupported(
+                    "ArkTS does not support dataflow extraction",
+                ),
+                returns_flow: FeatureSupport::unsupported(
+                    "ArkTS does not support dataflow extraction",
+                ),
+                cfg: FeatureSupport::unsupported("ArkTS does not support dataflow extraction"),
                 interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
             }),
         }
@@ -812,7 +813,8 @@ mod tests {
             Language::TypeScript,
             Language::JavaScript,
             Language::Python,
-            Language::ArkTS,
+            // ArkTS delegates to the TypeScript frontend but does NOT support
+            // dataflow extraction, so access_path is unavailable.
         ] {
             let p = LanguageCapabilityProfile::for_language(*lang);
             assert!(

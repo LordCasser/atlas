@@ -351,6 +351,7 @@ pub(crate) fn normalize_ts_dataflow_builder(
                 callsite_id,
                 name: Some(text),
                 access_path: None,
+                arg_index: None,
                 range,
             };
             (Some(dn), None)
@@ -374,6 +375,7 @@ pub(crate) fn normalize_ts_dataflow_builder(
                 callsite_id: None,
                 name: Some(text),
                 access_path: None,
+                arg_index: None,
                 range,
             };
             (Some(dn), None)
@@ -462,6 +464,7 @@ pub(crate) fn normalize_ts_dataflow_builder(
                 callsite_id: None,
                 name: Some(text),
                 access_path: None,
+                arg_index: None,
                 range,
             };
             (Some(dn), None)

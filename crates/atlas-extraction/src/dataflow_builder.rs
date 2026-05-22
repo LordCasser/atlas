@@ -648,6 +648,7 @@ mod tests {
             callsite_id: None,
             name: Some("x".into()),
             access_path: None,
+            arg_index: None,
             range: TextRange {
                 start_byte: 10,
                 end_byte: 11,
@@ -666,6 +667,7 @@ mod tests {
             callsite_id: None,
             name: Some("x".into()),
             access_path: None,
+            arg_index: None,
             range: TextRange {
                 start_byte: 40,
                 end_byte: 41,
@@ -708,6 +710,7 @@ mod tests {
             callsite_id: None,
             name: Some("x".into()),
             access_path: None,
+            arg_index: None,
             range: TextRange {
                 start_byte: 10,
                 end_byte: 11,
@@ -726,6 +729,7 @@ mod tests {
             callsite_id: None,
             name: Some("x".into()),
             access_path: None,
+            arg_index: None,
             range: TextRange {
                 start_byte: 40,
                 end_byte: 41,
@@ -745,6 +749,7 @@ mod tests {
             callsite_id: None,
             name: Some("x".into()),
             access_path: None,
+            arg_index: None,
             range: TextRange {
                 start_byte: 60,
                 end_byte: 61,
@@ -763,6 +768,7 @@ mod tests {
             callsite_id: None,
             name: Some("x".into()),
             access_path: None,
+            arg_index: None,
             range: TextRange {
                 start_byte: 80,
                 end_byte: 81,

@@ -80,7 +80,17 @@ impl ToolRouter {
     }
 
     /// Handle tools/call — dispatch by tool name.
+    ///
+    /// Refreshes the graph snapshot before execution so that search/context
+    /// tools see the latest indexed state without server restart.
     pub fn call_tool(&self, name: &str, arguments: &Value) -> CallToolResult {
+        // Refresh graph-backed engines so they see fresh data
+        if let Ok(graph) = self.get_graph() {
+            let graph = Arc::new(graph);
+            self.search.refresh_graph(graph.clone());
+            self.context.refresh_graph(graph);
+        }
+        // NOTE: if get_graph fails, engines keep their last-good graph
         // Each handler returns (result_text, is_error).
         // is_error=true only for genuine failures (lookup errors, I/O errors, unknown tool).
         let (result, is_error) = match name {

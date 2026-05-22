@@ -206,6 +206,7 @@ fn normalize_py_dataflow_builder(
                 callsite_id: None,
                 name: Some(text),
                 access_path: None,
+                arg_index: None,
                 range,
             };
             (Some(dn), None)
@@ -308,6 +309,7 @@ fn normalize_py_dataflow_builder(
                 callsite_id: None,
                 name: Some(text),
                 access_path: None,
+                arg_index: None,
                 range,
             };
             (Some(dn), None)

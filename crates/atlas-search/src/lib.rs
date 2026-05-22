@@ -15,7 +15,7 @@ pub mod scoring;
 use atlas_db::Store;
 use atlas_graph::GraphEngine;
 use atlas_types::{FileId, Language, SymbolDef, SymbolKind};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use self::scoring::SearchScore;
 
@@ -76,12 +76,20 @@ pub struct SearchResult {
 /// Unified search engine powered by FTS5 + graph signals.
 pub struct SearchEngine {
     store: Arc<Store>,
-    graph: Arc<GraphEngine>,
+    graph: RwLock<Arc<GraphEngine>>,
 }
 
 impl SearchEngine {
     pub fn new(store: Arc<Store>, graph: Arc<GraphEngine>) -> Self {
-        Self { store, graph }
+        Self {
+            store,
+            graph: RwLock::new(graph),
+        }
+    }
+
+    /// Replace the internal graph snapshot with a fresh one.
+    pub fn refresh_graph(&self, graph: Arc<GraphEngine>) {
+        *self.graph.write().unwrap() = graph;
     }
 
     // ------------------------------------------------------------------
@@ -171,7 +179,7 @@ impl SearchEngine {
         let matching_symbols = raw_results.len();
         let max_degree = raw_results
             .iter()
-            .map(|s| self.graph.degree(&s.id))
+            .map(|s| self.graph.read().unwrap().degree(&s.id))
             .max()
             .unwrap_or(1);
 
@@ -182,7 +190,7 @@ impl SearchEngine {
                 .qualified_name
                 .to_lowercase()
                 .contains(&query.to_lowercase());
-            let degree = self.graph.degree(&sym.id);
+            let degree = self.graph.read().unwrap().degree(&sym.id);
             let idf = scoring::idf_weight(total_symbols, matching_symbols);
 
             let score = SearchScore::new(
@@ -418,7 +426,7 @@ mod tests {
     use atlas_db::Store;
     use atlas_graph::GraphEngine;
     use atlas_types::{FileInfo, Language, ParseStatus, SymbolDef};
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     fn test_store() -> Arc<Store> {
         let store = Store::open_in_memory().unwrap();

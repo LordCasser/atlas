@@ -107,8 +107,12 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
             let sp = SourcePath::try_from_relative(&rel_path.to_string_lossy())
                 .with_context(|| format!("invalid deleted path: {}", rel_path.display()))?;
             let file_id = atlas_types::FileId::generate(sp.as_str());
-            let _ = ctx.store.delete_edges_for_file_references(&file_id);
-            let _ = ctx.store.delete_file_data(&file_id);
+            ctx.store
+                .delete_edges_for_file_references(&file_id)
+                .with_context(|| format!("Failed to delete edges for stale file: {}", sp))?;
+            ctx.store
+                .delete_file_data(&file_id)
+                .with_context(|| format!("Failed to delete stale file data: {}", sp))?;
         }
         let del_timing = del_timer.items(hash_result.deleted.len() as u64).finish();
         phase_timings.push(del_timing);

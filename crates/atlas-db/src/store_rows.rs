@@ -267,13 +267,14 @@ pub(crate) fn row_to_data_node(row: &Row) -> rusqlite::Result<DataNode> {
         callsite_id: row.get(5)?,
         name: row.get(6)?,
         access_path: row.get(7)?,
+        arg_index: row.get(8)?,
         range: TextRange {
-            start_byte: row.get(8)?,
-            end_byte: row.get(9)?,
-            start_line: row.get(10)?,
-            start_column: row.get(11)?,
-            end_line: row.get(12)?,
-            end_column: row.get(13)?,
+            start_byte: row.get(9)?,
+            end_byte: row.get(10)?,
+            start_line: row.get(11)?,
+            start_column: row.get(12)?,
+            end_line: row.get(13)?,
+            end_column: row.get(14)?,
         },
     })
 }

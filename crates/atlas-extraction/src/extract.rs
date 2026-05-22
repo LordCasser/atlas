@@ -373,31 +373,29 @@ pub fn extract_file(
         })
         .collect();
 
-    // 9a. Backfill ArgumentFact.data_node_id from DataNodes.
-    //
-    // During extraction, DataNodes of kind CallArg receive a provisional
-    // `callsite_id` (from_file_byte) and a TextRange.  Callsites carry
-    // `args: Vec<ArgumentFact>` where each arg also has a TextRange.
-    // We match each callsite's args to the DataNode at the same byte
-    // offset within the same call expression, then set data_node_id.
-    // This creates the join: callsites.args[*].data_node_id → DataNode.
+    // 9a. Backfill ArgumentFact.data_node_id from DataNodes,
+    //     and set DataNode.arg_index from ArgumentFact.index.
     for cs in &mut callsites {
         let provisional_cs_id = CallsiteId::from_file_byte(&file_id, cs.range.start_byte);
-        let call_arg_nodes: Vec<&DataNode> = data_nodes
+        let call_arg_node_indices: Vec<usize> = data_nodes
             .iter()
-            .filter(|dn| {
+            .enumerate()
+            .filter(|(_, dn)| {
                 dn.kind == DataNodeKind::CallArg
                     && dn.callsite_id.as_ref() == Some(&provisional_cs_id)
             })
+            .map(|(i, _)| i)
             .collect();
-        if call_arg_nodes.is_empty() {
+        if call_arg_node_indices.is_empty() {
             continue;
         }
         for arg in &mut cs.args {
             if let Some(arg_range) = arg.range {
-                for dn in &call_arg_nodes {
-                    if dn.range.start_byte == arg_range.start_byte {
-                        arg.data_node_id = Some(dn.id);
+                let arg_index = arg.index;
+                for &idx in &call_arg_node_indices {
+                    if data_nodes[idx].range.start_byte == arg_range.start_byte {
+                        arg.data_node_id = Some(data_nodes[idx].id);
+                        data_nodes[idx].arg_index = Some(arg_index);
                         break;
                     }
                 }

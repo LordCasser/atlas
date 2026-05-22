@@ -112,7 +112,7 @@ impl Store {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id,
-                    name, access_path,
+                    name, access_path, arg_index,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
                     range_end_line, range_end_column
              FROM data_nodes WHERE function_id = ?1",
@@ -126,7 +126,7 @@ impl Store {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id,
-                    name, access_path,
+                    name, access_path, arg_index,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
                     range_end_line, range_end_column
              FROM data_nodes WHERE data_node_id = ?1",
@@ -151,7 +151,7 @@ impl Store {
         let placeholders: Vec<String> = (0..ids.len()).map(|i| format!("?{}", i + 1)).collect();
         let sql = format!(
             "SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id,
-                    name, access_path,
+                    name, access_path, arg_index,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
                     range_end_line, range_end_column
              FROM data_nodes WHERE data_node_id IN ({})",
@@ -179,7 +179,7 @@ impl Store {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id,
-                    name, access_path,
+                    name, access_path, arg_index,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
                     range_end_line, range_end_column
              FROM data_nodes WHERE file_id = ?1",
@@ -198,7 +198,7 @@ impl Store {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id,
-                    name, access_path,
+                    name, access_path, arg_index,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
                     range_end_line, range_end_column
              FROM data_nodes WHERE callsite_id = ?1",

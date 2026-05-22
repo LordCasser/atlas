@@ -92,6 +92,17 @@ pub trait CallGraphReader {
     fn find_cfg_edges_by_source(&self, source: &CfgNodeId) -> Result<Vec<CfgEdge>>;
 }
 
+// ── Composite Traits ────────────────────────────────────────────────────────
+
+/// Composite reader bound for trace/analysis operations that need
+/// symbol, dataflow, and call-graph access in a single trait object.
+///
+/// This is implemented for any type that satisfies all three component
+/// reader traits, including [`Store`](crate::Store).
+pub trait TraceStore: SymbolReader + DataflowReader + CallGraphReader {}
+
+impl<T: SymbolReader + DataflowReader + CallGraphReader> TraceStore for T {}
+
 // ── File Reader ────────────────────────────────────────────────────────────
 
 /// Read-only access to file metadata and path resolution.

@@ -577,4 +577,74 @@ mod tests {
             );
         }
     }
+
+    /// B4: capability profile must agree with slot capabilities for every language.
+    ///
+    /// For each language reachable via `create_frontend()`:
+    /// - If a slot declares itself unsupported, the capability profile must NOT
+    ///   claim that category as supported.
+    /// - Specific checks: dataflow, lexical, scopes.
+    #[test]
+    fn test_capability_profile_matches_slot_capabilities() {
+        let mut languages: Vec<Language> = Vec::new();
+        #[cfg(feature = "typescript")]
+        languages.push(Language::TypeScript);
+        #[cfg(feature = "javascript")]
+        languages.push(Language::JavaScript);
+        #[cfg(feature = "python")]
+        languages.push(Language::Python);
+        #[cfg(feature = "java")]
+        languages.push(Language::Java);
+        #[cfg(feature = "c")]
+        languages.push(Language::C);
+        #[cfg(feature = "cpp")]
+        languages.push(Language::Cpp);
+        #[cfg(feature = "arkts")]
+        languages.push(Language::ArkTS);
+        #[cfg(feature = "cangjie")]
+        languages.push(Language::Cangjie);
+
+        assert!(
+            !languages.is_empty(),
+            "expected at least one language feature enabled"
+        );
+
+        for lang in languages {
+            let frontend = crate::languages::create_frontend(lang)
+                .unwrap_or_else(|| panic!("create_frontend failed for {:?}", lang));
+
+            let profile = frontend.capability;
+            let fm = profile
+                .features
+                .as_ref()
+                .expect("profile must have FeatureMatrix");
+
+            // dataflow: slot says unsupported → profile must not claim main dataflow support
+            if !frontend.dataflow.capability().is_supported() {
+                assert!(
+                    !fm.local_dataflow.is_supported(),
+                    "{:?}: dataflow slot unsupported but profile claims local_dataflow",
+                    lang
+                );
+            }
+
+            // lexical: slot says unsupported → profile must not claim lexical_bindings
+            if !frontend.lexical.capability().is_supported() {
+                assert!(
+                    !fm.lexical_bindings.is_supported(),
+                    "{:?}: lexical slot unsupported but profile claims lexical_bindings",
+                    lang
+                );
+            }
+
+            // scopes: slot says unsupported → profile must not claim scopes
+            if !frontend.scopes.capability().is_supported() {
+                assert!(
+                    !fm.scopes.is_supported(),
+                    "{:?}: scope slot unsupported but profile claims scopes",
+                    lang
+                );
+            }
+        }
+    }
 }

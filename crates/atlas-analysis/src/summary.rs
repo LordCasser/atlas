@@ -22,7 +22,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use atlas_db::{DataflowReader, SymbolReader};
+use atlas_db::{DataflowReader, SymbolReader, TraceStore};
 use atlas_types::enums::{DataFlowKind, DataNodeKind};
 use atlas_types::ids::{CallsiteId, DataNodeId, SymbolId};
 use atlas_types::summary::{CallArgFlow, FunctionSummary, ParameterFlow, ReturnFlow};
@@ -39,7 +39,7 @@ impl SummaryBuilder {
     /// case where the function symbol's own range only covers the name.
     #[allow(deprecated)]
     pub fn build(
-        store: &(impl SymbolReader + DataflowReader),
+        store: &dyn TraceStore,
         function_id: &SymbolId,
         function_range: Option<(u32, u32)>,
     ) -> anyhow::Result<FunctionSummary> {
@@ -148,14 +148,18 @@ impl SummaryBuilder {
                                 }
                                 DataNodeKind::CallArg => {
                                     call_args.push(target_id);
-                                    // Record call-arg flow if callsite info available
-                                    let callsite_id = nodes
-                                        .iter()
-                                        .find(|n| n.id == target_id)
-                                        .and_then(|n| n.callsite_id);
-                                    if let Some(cs_id) = callsite_id {
-                                        let arg_idx = call_args.len() - 1;
-                                        call_arg_entries.push((cs_id, arg_idx, target_id, current));
+                                    // Record call-arg flow if callsite info available.
+                                    // Use stored arg_index from DataNode (populated during
+                                    // extraction backfill) instead of deriving positionally.
+                                    if let Some(target_node) =
+                                        nodes.iter().find(|n| n.id == target_id)
+                                    {
+                                        if let Some(cs_id) = target_node.callsite_id {
+                                            let arg_idx =
+                                                target_node.arg_index.unwrap_or(0) as usize;
+                                            call_arg_entries
+                                                .push((cs_id, arg_idx, target_id, current));
+                                        }
                                     }
                                 }
                                 DataNodeKind::Field => {
