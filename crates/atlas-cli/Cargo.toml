@@ -1,0 +1,55 @@
+[package]
+name = "atlas-cli"
+version = "0.1.0"
+edition = "2024"
+description = "Atlas CLI — command-line interface and binary entry point"
+license = "MIT"
+
+[[bin]]
+name = "atlas"
+path = "src/main.rs"
+
+[dependencies]
+atlas-types = { path = "../atlas-types" }
+atlas-db = { path = "../atlas-db" }
+atlas-workspace = { path = "../atlas-workspace" }
+atlas-extraction = { path = "../atlas-extraction" }
+atlas-resolution = { path = "../atlas-resolution" }
+atlas-graph = { path = "../atlas-graph" }
+atlas-analysis = { path = "../atlas-analysis" }
+atlas-search = { path = "../atlas-search" }
+atlas-context = { path = "../atlas-context" }
+atlas-sync = { path = "../atlas-sync" }
+atlas-mcp = { path = "../atlas-mcp", optional = true }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+rayon = "1"
+rusqlite = { version = "0.39", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+blake3 = "1"
+hex = "0.4"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread"], optional = true }
+
+[dev-dependencies]
+atlas-mcp = { path = "../atlas-mcp" }  # tests need full mcp
+tempfile = "3"
+
+[features]
+default = ["typescript", "javascript", "python"]
+mcp = ["atlas-mcp", "dep:tokio"]
+typescript = ["atlas-types/typescript", "atlas-extraction/typescript", "atlas-analysis/typescript"]
+javascript = ["atlas-extraction/javascript"]
+python = ["atlas-types/python", "atlas-extraction/python"]
+java = ["atlas-types/java", "atlas-extraction/java"]
+c = ["atlas-types/c", "atlas-extraction/c"]
+cpp = ["atlas-types/cpp", "atlas-extraction/cpp"]
+arkts = ["typescript", "atlas-types/arkts", "atlas-extraction/arkts"]
+cangjie = ["atlas-types/cangjie", "atlas-extraction/cangjie"]
+all-languages = [
+    "typescript", "javascript", "python", "java",
+    "c", "cpp", "arkts",
+]

@@ -1,0 +1,12 @@
+[package]
+name = "atlas-context"
+version = "0.1.0"
+edition = "2024"
+description = "Atlas context builder — assembles code context views from graph + store"
+license = "MIT"
+
+[dependencies]
+atlas-types = { path = "../atlas-types" }
+atlas-db = { path = "../atlas-db" }
+atlas-graph = { path = "../atlas-graph" }
+anyhow = "1"
