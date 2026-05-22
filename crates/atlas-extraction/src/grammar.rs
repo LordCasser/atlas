@@ -92,6 +92,7 @@ impl LanguageRegistry {
                 let lang: tree_sitter::Language = tree_sitter_cangjie::LANGUAGE.into();
                 self.register(lang, Language::Cangjie);
             }
+            #[allow(unreachable_patterns)]
             _ => bail!(
                 "Language {:?} not enabled (missing feature flag or not yet implemented)",
                 lang

@@ -8,10 +8,7 @@ mod store;
 pub(crate) mod store_fts;
 pub(crate) mod store_rows;
 pub(crate) mod store_writers;
-pub(crate) mod readers;
-
-// Reader traits deferred — inherent StoreReader methods used directly.
-// pub use readers::{...} will be added when crate boundary requires trait dispatch.
+pub mod readers;
 
 pub use schema::{CURRENT_SCHEMA_VERSION, SCHEMA_DDL};
 pub use store::{Store, StoreStats};

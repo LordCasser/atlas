@@ -7,8 +7,12 @@ use anyhow::Context;
 pub fn run(project: &str) -> anyhow::Result<()> {
     let ws = Workspace::open(std::path::Path::new(project))
         .with_context(|| format!("Invalid project path: {}", project))?;
-    ws.ensure_atlas_dir()
-        .context("Failed to create .atlas directory")?;
+    if !ws.atlas_dir().is_dir() {
+        anyhow::bail!(
+            "Not an initialized Atlas project. Run `atlas init {}` first.",
+            project
+        );
+    }
     let store = Store::open_db(ws.db_path()).context("Failed to open Atlas database")?;
     let stats = store.get_stats().context("Failed to read database stats")?;
 

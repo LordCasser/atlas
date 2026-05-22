@@ -227,6 +227,7 @@ pub fn create_adapter(lang: Language) -> Option<Box<dyn LanguageAdapter>> {
         Language::Cpp => Some(Box::new(cpp::CppAdapter)),
         #[cfg(feature = "cangjie")]
         Language::Cangjie => Some(Box::new(cangjie::CangjieAdapter)),
+        #[allow(unreachable_patterns)]
         _ => None,
     }
 }

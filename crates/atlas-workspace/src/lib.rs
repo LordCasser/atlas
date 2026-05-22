@@ -203,12 +203,79 @@ impl Workspace {
 // SourcePath
 // ---------------------------------------------------------------------------
 
-/// A file path within the workspace, always stored as a relative path from
-/// project root (using forward slashes, POSIX-style).
+/// A file path relative to workspace root, always normalized with forward slashes.
 ///
-/// This is currently a type alias for [`String`]. In later phases it will gain
-/// validation and normalization logic.
-pub type SourcePath = String;
+/// This is a proper newtype (not a bare `String`) to prevent accidental
+/// creation with backslashes or absolute paths. Use [`SourcePath::from_relative`]
+/// or [`relative_source_path`] to obtain instances.
+///
+/// # Slash normalization
+///
+/// Construction replaces all `\` with `/` and strips leading `./` and `.\` prefixes.
+/// Relative paths (`foo/bar.ts`) and single-file names (`index.ts`) are valid.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SourcePath(String);
+
+impl SourcePath {
+    /// Create a [`SourcePath`] from a relative path string, normalizing separators.
+    ///
+    /// Strips leading `./` and `.\` prefixes. Accepts paths with either separator,
+    /// always stores with forward slashes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use atlas_workspace::SourcePath;
+    /// let p = SourcePath::from_relative("src\\lib.ts");
+    /// assert_eq!(p.as_str(), "src/lib.ts");
+    ///
+    /// let p = SourcePath::from_relative("./foo/bar.ts");
+    /// assert_eq!(p.as_str(), "foo/bar.ts");
+    /// ```
+    pub fn from_relative(path: &str) -> Self {
+        let normalized = path.replace('\\', "/");
+        // Strip leading ./ (which may itself have been .\ before normalization)
+        let stripped = match normalized.strip_prefix("./") {
+            Some(s) => s,
+            None => normalized.as_str(),
+        };
+        // Trim leading slashes (not a valid relative path)
+        let trimmed = stripped.trim_start_matches('/');
+        Self(trimmed.to_string())
+    }
+
+    /// The normalized relative path with forward slashes.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SourcePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl AsRef<str> for SourcePath {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<SourcePath> for String {
+    fn from(p: SourcePath) -> String {
+        p.0
+    }
+}
+
+/// Derive a workspace-relative [`SourcePath`] from an absolute file path.
+///
+/// Strips the `root` prefix from `abs_path`, normalizing separators to
+/// forward slashes. Returns `None` if `abs_path` is not under `root`.
+pub fn relative_source_path(root: &Path, abs_path: &Path) -> Option<SourcePath> {
+    let rel = abs_path.strip_prefix(root).ok()?;
+    Some(SourcePath::from_relative(&rel.to_string_lossy()))
+}
 
 // ---------------------------------------------------------------------------
 // Tests

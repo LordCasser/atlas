@@ -85,15 +85,13 @@ impl Language {
 
     /// All file extensions (without dot) for enabled discovery languages.
     pub fn all_extensions() -> Vec<&'static str> {
-        let extensions = vec![
+        let mut extensions = vec![
             "ts", "mts", "cts", "tsx", "js", "mjs", "cjs", "jsx", "py", "pyi", "pyx", "java", "c",
             "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "ets", "sts",
         ];
         #[cfg(feature = "cangjie")]
         {
-            let mut extensions = extensions;
             extensions.extend(["cj", "cangjie"]);
-            return extensions;
         }
         extensions
     }

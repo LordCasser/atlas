@@ -344,6 +344,7 @@ pub fn create_extractor(lang: atlas_types::enums::Language) -> Box<dyn CallsiteE
         atlas_types::enums::Language::Cpp => Box::new(c_callsite_extractor()),
         #[cfg(feature = "cangjie")]
         atlas_types::enums::Language::Cangjie => Box::new(cangjie_callsite_extractor()),
+        #[allow(unreachable_patterns)]
         _ => Box::new(GenericCallsiteExtractor::new(
             &["call_expression"],
             &[],

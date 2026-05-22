@@ -43,8 +43,9 @@ pub fn run_point(
 ) -> anyhow::Result<()> {
     let ws = Workspace::open(Path::new(project))
         .with_context(|| format!("Invalid project path: {}", project))?;
-    ws.ensure_atlas_dir()
-        .context("Failed to create .atlas directory")?;
+    if !ws.atlas_dir().is_dir() {
+        anyhow::bail!("Not an initialized Atlas project. Run `atlas init {}` first.", project);
+    }
     let store = Arc::new(Store::open_db(ws.db_path()).context("Failed to open Atlas database")?);
     let engine = TraceEngine::new_with_root(store.clone(), ws.root().to_path_buf());
 
@@ -154,8 +155,9 @@ pub fn run_variable(
 ) -> anyhow::Result<()> {
     let ws = Workspace::open(Path::new(project))
         .with_context(|| format!("Invalid project path: {}", project))?;
-    ws.ensure_atlas_dir()
-        .context("Failed to create .atlas directory")?;
+    if !ws.atlas_dir().is_dir() {
+        anyhow::bail!("Not an initialized Atlas project. Run `atlas init {}` first.", project);
+    }
     let store = Arc::new(Store::open_db(ws.db_path()).context("Failed to open Atlas database")?);
     let engine = TraceEngine::new_with_root(store.clone(), ws.root().to_path_buf());
 
@@ -239,8 +241,9 @@ pub fn run_caller_path(
 ) -> anyhow::Result<()> {
     let ws = Workspace::open(Path::new(project))
         .with_context(|| format!("Invalid project path: {}", project))?;
-    ws.ensure_atlas_dir()
-        .context("Failed to create .atlas directory")?;
+    if !ws.atlas_dir().is_dir() {
+        anyhow::bail!("Not an initialized Atlas project. Run `atlas init {}` first.", project);
+    }
     let store = Arc::new(Store::open_db(ws.db_path()).context("Failed to open Atlas database")?);
     let engine = TraceEngine::new_with_root(store.clone(), ws.root().to_path_buf());
 

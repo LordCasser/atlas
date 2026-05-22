@@ -198,23 +198,22 @@ Name matching uses 6-tier similarity: exact → case-insensitive → camelCase/s
 ```
 .atlas/                          # Per-project Atlas state
 ├── atlas.db                     # SQLite database (schema v1 during rapid development)
-└── file_hashes.json             # Sync hash store; index also uses DB content hashes
 
-src/
-├── types/                       # Core type system (7 ID types, 11 enums, IR structs)
-├── db/                          # SQLite persistence (schema + store)
-├── extraction/                  # Tree-sitter parsing + language frontends/adapters
+crates/
+├── atlas-types/                 # Core type system (7 ID types, 11 enums, IR structs)
+├── atlas-db/                    # SQLite persistence (schema + store + readers)
+├── atlas-workspace/             # ProjectRoot, WorkspacePaths, SourcePath
+├── atlas-extraction/            # Tree-sitter parsing + language frontends/adapters
 │   ├── queries/                 # Per-language .scm query files
 │   └── languages/               # LanguageAdapter implementations
-├── resolution/                  # Reference resolution + include/path/export helper components
-├── graph/                       # In-memory GraphSnapshot + GraphEngine (BFS/DFS)
-├── search/                      # FTS5 + LIKE + fuzzy + camelCase normalization
-├── context/                     # AI context builder (callers/callees/peers)
-├── sync/                        # Incremental sync (git-aware discovery + hash detection)
-├── analysis/                    # Variable provenance and caller-path analysis layer
-├── mcp/                         # MCP JSON-RPC 2.0 server (feature-gated)
-├── cli/                         # Clap CLI commands (feature-gated)
-└── lib.rs                       # Module declarations
+├── atlas-resolution/            # Reference resolution + include/path/export helper components
+├── atlas-graph/                 # In-memory GraphSnapshot + GraphEngine (BFS/DFS)
+├── atlas-analysis/              # Variable provenance and caller-path analysis layer
+├── atlas-search/                # FTS5 + LIKE + fuzzy + camelCase normalization
+├── atlas-context/               # AI context builder (callers/callees/peers)
+├── atlas-sync/                  # Incremental sync (git-aware discovery + hash detection)
+├── atlas-mcp/                   # MCP JSON-RPC 2.0 server
+└── atlas-cli/                   # CLI binary + commands + all tests
 ```
 
 ---

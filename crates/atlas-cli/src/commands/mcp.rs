@@ -19,10 +19,10 @@ pub fn run(project: &str) -> anyhow::Result<()> {
         Workspace::open(Path::new(project))
             .with_context(|| format!("Invalid project path: {}", project))?
     };
-    ws.ensure_atlas_dir()
-        .context("Failed to create .atlas directory")?;
+    if !ws.atlas_dir().is_dir() {
+        anyhow::bail!("Not an initialized Atlas project. Run `atlas init` first.");
+    }
     let store = Store::open_db(ws.db_path())?;
-    store.init_schema()?;
 
     let store = Arc::new(store);
     tracing::info!("Starting Atlas MCP server...");

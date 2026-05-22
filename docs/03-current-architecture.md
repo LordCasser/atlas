@@ -4,25 +4,37 @@
 
 ## 1. 代码结构
 
+项目已拆分为 Cargo workspace（12 crates），根 `Cargo.toml` 为纯 workspace (members = `["crates/*"]`)。
+
 ```text
-src/
-  types/        ID、enum、IR、binding、dataflow、CFG、trace 查询类型
-  db/           SQLite schema、store API、schema 初始化
-  extraction/   tree-sitter 解析、query、scope、semantic binder、lexical binder、dataflow、CFG
-  resolution/   builtin filter、scope/container/import/include/name matching；PathAliasResolver 已接入主路径
-  graph/        GraphBuilder、GraphSnapshot、GraphEngine
-  search/       FTS、LIKE/fuzzy、query parser、scoring
-  context/      Agent context builder
-  sync/         file discovery、change detection、file lock、watcher
-  analysis/     变量来源追踪与调用路径查询分析层
-  mcp/          MCP protocol、transport、tools
-  cli/          CLI commands
+crates/
+  atlas-types/        ID、enum、IR、binding、dataflow、CFG、trace 查询类型
+  atlas-db/           SQLite schema、store API、readers、schema 初始化
+  atlas-workspace/    ProjectRoot、WorkspacePaths、SourcePath
+  atlas-extraction/   tree-sitter 解析、query、scope、semantic binder、lexical binder、dataflow、CFG
+  atlas-resolution/   builtin filter、scope/container/import/include/name matching；PathAliasResolver 已接入主路径
+  atlas-graph/        GraphBuilder、GraphSnapshot、GraphEngine
+  atlas-analysis/     变量来源追踪与调用路径查询分析层
+  atlas-search/       FTS、LIKE/fuzzy、query parser、scoring
+  atlas-context/      Agent context builder
+  atlas-sync/         file discovery、change detection、file lock、watcher
+  atlas-mcp/          MCP protocol、transport、tools
+  atlas-cli/          CLI binary + commands + all tests
 ```
 
-`src/lib.rs` 当前声明的高层方向：
+依赖方向（严格无环）：
 
 ```text
-CLI > MCP > Context/Graph/Search/Sync > Analysis > Resolution > Extraction > Database > Types
+atlas-cli → atlas-mcp, atlas-sync, atlas-search, atlas-context, atlas-analysis, atlas-graph,
+            atlas-resolution, atlas-extraction, atlas-db, atlas-types, atlas-workspace
+atlas-mcp → atlas-context, atlas-search, atlas-graph, atlas-analysis, atlas-db, atlas-types, atlas-workspace
+atlas-sync → atlas-graph, atlas-resolution, atlas-extraction, atlas-db, atlas-types
+atlas-search / atlas-context → atlas-graph, atlas-db, atlas-types
+atlas-analysis → atlas-db, atlas-types, atlas-workspace
+atlas-graph / atlas-resolution → atlas-db, atlas-types
+atlas-extraction → atlas-types
+atlas-db → atlas-types
+atlas-workspace / atlas-types → (stdlib only)
 ```
 
 ## 2. 当前数据流
@@ -213,9 +225,10 @@ cangjie
 
 ## 9. 当前演进决策
 
-当前阶段继续基于本文件描述的现有架构推进，不先拆分 workspace/crate，也不先开启 Corpus 分支。
+**Item 10 (workspace/crate 拆分) 已完成。** 项目已从单 crate 拆分为 12 个 Cargo workspace crate，
+严格遵循 types → db → workspace → extraction → resolution → graph → analysis → search → context → sync → mcp → cli 的依赖方向。
 
-已完成增强（P6: 索引性能优化）：
+已完成演进（P6: 索引性能优化）：
 
 - **P0**: 阶段耗时与语言级统计 (`PhaseTimings` / `PerLanguageStats`)
 - **P1**: Hash-based 脏文件集增量索引 (dirty set, 干净文件跳过)
@@ -232,12 +245,19 @@ cangjie
 2. 为 MVP 语言按能力等级补齐 trace 所需 facts 和端到端测试。
 3. 稳定 CLI/MCP 的 trace 查询输出。
 
-完成上述目标后，再把核心能力拆成可复用 engine crate：
+完成 Item 10 拆分后，crate 边界已建立：
 
 ```text
-engine: 语法解析 + facts + binding/dataflow/CFG + variable provenance trace / caller path query
-cli: command-line interaction
-mcp: JSON-RPC transport and tools
+atlas-cli: CLI binary + commands (编排所有能力)
+atlas-mcp: JSON-RPC transport and tools
+atlas-sync: 增量索引引擎 (file discovery, hash detection, watcher)
+atlas-search/context: 查询和 AI 上下文构建
+atlas-analysis: 变量来源追踪与调用路径查询引擎
+atlas-graph/resolution: 图构建与符号解析
+atlas-extraction: 语法解析 + facts + binding/dataflow/CFG
+atlas-db: SQLite 持久化层
+atlas-types: 核心类型系统
+atlas-workspace: 项目根目录与路径抽象
 ```
 
-拆分完成后，后续演进才分叉为 Atlas 单仓库单版本索引和 Corpus 多版本源码索引。
+后续演进可在此边界上分叉为 Atlas 单仓库单版本索引和 Corpus 多版本源码索引。

@@ -23,4 +23,4 @@ tempfile = "3"
 tree-sitter = "0.24"
 
 [features]
-typescript = ["dep:tree-sitter-typescript", "atlas-extraction/typescript"]
+typescript = ["dep:tree-sitter-typescript", "atlas-types/typescript", "atlas-extraction/typescript"]

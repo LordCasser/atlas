@@ -38,13 +38,13 @@
 - Atlas 查询图谱关系；Corpus 查询版本化源码、函数实现、first-seen、diff/timeline。
 - 强行统一会污染两个产品的数据模型。
 
-当前补充决策：
+当前补充决策（已更新—Item 10 完成）：
 
-- 不立即拆分 crate。
-- 不立即开启 Corpus 分支。
-- 先基于当前架构完成变量来源追踪与调用路径查询端到端测试。
-- trace 能力稳定后，先拆出包含语法解析、变量来源追踪和调用路径查询能力的 engine crate，以及交互用 CLI/MCP 层。
-- 只有完成 engine/CLI/MCP 边界拆分后，后续演进才分叉为 Atlas 单仓库单版本索引和 Corpus 多版本源码索引。
+- ✅ Item 10 已完成：项目已从单 crate 拆分为 12 个 Cargo workspace crate。
+- 不立即开启 Corpus 分支（crate 边界已建立，后续演进可在此边界上分叉）。
+- ✅ 已基于当前架构完成变量来源追踪与调用路径查询端到端测试。
+- ✅ trace 能力稳定后，完成 engine/CLI/MCP crate 边界拆分。
+- 后续演进：Atlas 单仓库单版本索引 和 Corpus 多版本源码索引 可在现有 crate 边界上并行推进。
 
 ## 3. 从 symbol-only graph 演进到 facts-first graph
 
