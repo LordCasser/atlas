@@ -1,0 +1,52 @@
+{
+  "references": [
+    {
+      "text": "require",
+      "kind": "call"
+    },
+    {
+      "text": "require_relative",
+      "kind": "call"
+    },
+    {
+      "text": "include",
+      "kind": "call"
+    },
+    {
+      "text": "Enumerable",
+      "kind": "type_reference"
+    },
+    {
+      "text": "puts",
+      "kind": "call"
+    },
+    {
+      "text": "JSON",
+      "kind": "type_reference"
+    },
+    {
+      "text": "generate",
+      "kind": "call"
+    }
+  ],
+  "imports": [
+    {
+      "module": "json",
+      "imported_name": "json"
+    },
+    {
+      "module": "helper",
+      "imported_name": "helper"
+    },
+    {
+      "module": "Enumerable",
+      "imported_name": "Enumerable"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    }
+  ]
+}

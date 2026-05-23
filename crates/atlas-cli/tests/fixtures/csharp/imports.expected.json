@@ -1,0 +1,107 @@
+{
+  "symbols": [
+    {
+      "name": "Program",
+      "kind": "class"
+    },
+    {
+      "name": "Main",
+      "kind": "method"
+    },
+    {
+      "name": "list",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "System",
+      "kind": "type_reference"
+    },
+    {
+      "text": "System",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Collections",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Generic",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Program",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Main",
+      "kind": "type_reference"
+    },
+    {
+      "text": "list",
+      "kind": "type_reference"
+    },
+    {
+      "text": "List",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Console",
+      "kind": "type_reference"
+    },
+    {
+      "text": "WriteLine",
+      "kind": "call"
+    },
+    {
+      "text": "WriteLine",
+      "kind": "field_access"
+    },
+    {
+      "text": "WriteLine",
+      "kind": "type_reference"
+    },
+    {
+      "text": "list",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Count",
+      "kind": "field_access"
+    },
+    {
+      "text": "Count",
+      "kind": "type_reference"
+    }
+  ],
+  "imports": [
+    {
+      "module": "System.Collections.Generic",
+      "imported_name": "Generic"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Class#49",
+      "kind": "class"
+    },
+    {
+      "name": "Method#69",
+      "kind": "method"
+    },
+    {
+      "name": "Block#88",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "Main"
+    }
+  ]
+}

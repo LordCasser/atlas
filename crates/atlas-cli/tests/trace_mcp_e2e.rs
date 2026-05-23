@@ -55,13 +55,8 @@ fn build_router(files: &[(&str, &str)]) -> (TempDir, ToolRouter) {
 
     let search = SearchEngine::new(store.clone(), graph.clone());
     let context = ContextBuilder::new(store.clone(), graph.clone());
-    let store_for_graph = store.clone();
-    let graph_fn = move || -> Result<GraphEngine, String> {
-        GraphEngine::from_store(&store_for_graph, 0.3)
-            .map_err(|e| format!("graph engine init failed: {}", e))
-    };
 
-    let router = ToolRouter::new(store, search, context, graph_fn, tmp.path().to_path_buf());
+    let router = ToolRouter::new(store, search, context, tmp.path().to_path_buf());
     (tmp, router)
 }
 
@@ -651,6 +646,66 @@ fn p1_mcp_java_trace_variable_is_partial() {
 }
 
 // ────────────────────────────────────────────────────────────────
+// P1: Capability boundary — Go trace_variable is partial
+// ────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "go")]
+#[test]
+fn p1_mcp_go_trace_variable_is_partial() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "main.go",
+        r#"package main
+
+func add(a, b int) int {
+    return a + b
+}
+
+func main() {
+    x := add(1, 2)
+    _ = x
+}
+"#,
+    )];
+    let (_tmp, router) = build_router(files);
+    let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
+    let file_id = find_file_id(&store, _tmp.path(), "main.go");
+
+    let args = json!({ "file_id": file_id.to_hex(), "line": 6, "column": 8 });
+    let (content_json, is_error) = call_tool(&router, "atlas_trace_variable", args);
+
+    assert!(!is_error, "Go variable trace must not be an error");
+    assert!(
+        content_json
+            .get("partial_result")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        "Go variable trace must be partial (no dataflow)"
+    );
+    let diags = content_json.get("diagnostics").and_then(|d| d.as_array());
+    assert!(diags.is_some(), "must have diagnostics array");
+    let diags = diags.unwrap();
+    assert!(!diags.is_empty(), "must have at least one diagnostic");
+    let has_unsupported = diags
+        .iter()
+        .any(|d| d.get("code").and_then(|c| c.as_str()) == Some("unsupported_language"));
+    assert!(
+        has_unsupported,
+        "must contain unsupported_language diagnostic"
+    );
+    assert!(
+        content_json.get("capability").is_some(),
+        "Go capability must be present"
+    );
+    let cap = content_json.get("capability").unwrap();
+    assert_eq!(
+        cap.get("language").and_then(|v| v.as_str()).unwrap_or(""),
+        "go",
+        "capability language must be 'go'"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────
 // P5: MCP caller path by symbol_name (human-friendly entry point)
 // ────────────────────────────────────────────────────────────────
 
@@ -926,10 +981,8 @@ fn p12_mcp_trace_point_out_of_bounds() {
 // P12a: Graph error handling (Task 3 — no panic on graph failure)
 // ────────────────────────────────────────────────────────────────
 
-/// Verify that graph-related tools return structured errors (not panics)
-/// when graph_fn returns an error. This validates the fix from Task 3,
-/// where `graph_fn` was changed from `Fn() -> GraphEngine` (panicking)
-/// to `Fn() -> Result<GraphEngine, String>` (structured error).
+/// Verify that graph-related tools return results when graph is valid
+/// (built once at startup from DB snapshot, never rebuilt per-request).
 #[test]
 fn p12a_mcp_graph_error_returns_structured_response() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -943,14 +996,11 @@ fn p12a_mcp_graph_error_returns_structured_response() {
     let search = SearchEngine::new(store.clone(), graph.clone());
     let context = ContextBuilder::new(store.clone(), graph.clone());
 
-    // graph_fn that always fails — simulates a corrupted or missing DB/state
-    let graph_fn = || -> Result<GraphEngine, String> {
-        Err("graph engine initialization failed: simulated error".to_string())
-    };
+    // Graph is built once at startup; engine holds the valid snapshot.
+    // Per-request rebuild was removed — graph queries use the static snapshot.
+    let router = ToolRouter::new(store, search, context, tmp.path().to_path_buf());
 
-    let router = ToolRouter::new(store, search, context, graph_fn, tmp.path().to_path_buf());
-
-    // atlas_callgraph requires graph access — should return structured error
+    // atlas_callgraph with a valid pre-built graph should succeed
     let (json, is_error) = call_tool(
         &router,
         "atlas_callgraph",
@@ -960,22 +1010,20 @@ fn p12a_mcp_graph_error_returns_structured_response() {
         }),
     );
 
-    // Must be marked as error
-    assert!(is_error, "graph error must set isError=true");
-    // The error response should have the graph_reload_failed format
-    assert_eq!(
-        json.get("ok").and_then(|v| v.as_bool()),
-        Some(false),
-        "error response must have ok=false"
+    // With pre-built graph, graph operations should succeed
+    assert!(
+        !is_error,
+        "graph operation should succeed with pre-built snapshot"
     );
+    // callgraph response has the standard tool result fields (not error envelope)
     assert_eq!(
-        json.get("error").and_then(|v| v.as_str()),
-        Some("graph_reload_failed"),
-        "error response must have error='graph_reload_failed'"
+        json.get("symbol").and_then(|v| v.as_str()),
+        Some("f"),
+        "response must have symbol field"
     );
     assert!(
-        json.get("message").and_then(|v| v.as_str()).is_some(),
-        "error response must have a message field"
+        json.get("nodes_found").and_then(|v| v.as_u64()).is_some(),
+        "response must have nodes_found field"
     );
 }
 

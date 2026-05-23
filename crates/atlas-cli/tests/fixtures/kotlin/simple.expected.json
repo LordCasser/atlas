@@ -1,0 +1,52 @@
+{
+  "symbols": [
+    {
+      "name": "greet",
+      "kind": "function"
+    },
+    {
+      "name": "main",
+      "kind": "function"
+    }
+  ],
+  "references": [
+    {
+      "text": "String",
+      "kind": "type_reference"
+    },
+    {
+      "text": "String",
+      "kind": "type_reference"
+    },
+    {
+      "text": "println",
+      "kind": "call"
+    },
+    {
+      "text": "greet",
+      "kind": "call"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Block#32",
+      "kind": "block"
+    },
+    {
+      "name": "Block#74",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "main"
+    },
+    {
+      "caller": "main"
+    }
+  ]
+}

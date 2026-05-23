@@ -1,6 +1,6 @@
 //! Store lifecycle: database open, schema init, cross-process locking.
 
-use crate::schema::{CURRENT_SCHEMA_VERSION, SCHEMA_DDL};
+use crate::schema::{CURRENT_SCHEMA_VERSION, SCHEMA_DDL, SchemaStatus, check_and_migrate};
 use crate::store_fts::{chrono_now_ms, is_process_alive};
 
 use rusqlite::{Connection, params};
@@ -35,9 +35,21 @@ impl Store {
             "#,
         )?;
 
+        // Open a dedicated read connection.  query_only = ON ensures
+        // accidental writes through this connection fail at the SQLite
+        // level instead of silently corrupting data.
+        let read_conn = Connection::open(db_path)?;
+        read_conn.execute_batch(
+            r#"
+            PRAGMA query_only = ON;
+            PRAGMA cache_size = -20000;
+            "#,
+        )?;
+
         Ok(Self {
             reader: StoreReader {
                 conn: Mutex::new(conn),
+                read_conn: Some(Mutex::new(read_conn)),
             },
             db_path: db_path.to_path_buf(),
         })
@@ -50,24 +62,43 @@ impl Store {
         Ok(Self {
             reader: StoreReader {
                 conn: Mutex::new(conn),
+                read_conn: None,
             },
             db_path: PathBuf::from(":memory:"),
         })
     }
 
     /// Initialize the schema (idempotent).
-    pub fn init_schema(&self) -> anyhow::Result<()> {
+    ///
+    /// On a fresh database creates all tables and records V1.
+    /// On an existing database runs pending migrations via [`check_and_migrate`].
+    /// Returns the schema status for the caller to report.
+    pub fn init_schema(&self) -> anyhow::Result<SchemaStatus> {
         let conn = self.lock();
         conn.execute_batch(SCHEMA_DDL)?;
 
-        // Record current version (always V1 during rapid development)
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_versions (version, description)
-             VALUES (?1, ?2)",
-            params![CURRENT_SCHEMA_VERSION, "v2: add arg_index to data_nodes"],
-        )?;
+        // Run migration check — handles fresh, current, upgradable, and incompatible
+        let status = check_and_migrate(&conn)?;
 
-        Ok(())
+        // Record current version if schema_versions is empty (fresh DB)
+        if matches!(status, SchemaStatus::Current) {
+            let existing: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM schema_versions",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if existing == 0 {
+                conn.execute(
+                    "INSERT INTO schema_versions (version, description)
+                     VALUES (?1, ?2)",
+                    params![CURRENT_SCHEMA_VERSION, "v1: initial schema"],
+                )?;
+            }
+        }
+
+        Ok(status)
     }
 
     // ── Exclusive lock (cross-process, via project_metadata table) ─────────

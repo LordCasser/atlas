@@ -1,0 +1,65 @@
+{
+  "symbols": [
+    {
+      "name": "Program",
+      "kind": "class"
+    },
+    {
+      "name": "Main",
+      "kind": "method"
+    }
+  ],
+  "references": [
+    {
+      "text": "System",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Program",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Main",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Console",
+      "kind": "type_reference"
+    },
+    {
+      "text": "WriteLine",
+      "kind": "call"
+    },
+    {
+      "text": "WriteLine",
+      "kind": "field_access"
+    },
+    {
+      "text": "WriteLine",
+      "kind": "type_reference"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Class#15",
+      "kind": "class"
+    },
+    {
+      "name": "Method#35",
+      "kind": "method"
+    },
+    {
+      "name": "Block#54",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "Main"
+    }
+  ]
+}

@@ -1,0 +1,137 @@
+{
+  "symbols": [
+    {
+      "name": "IGreeter",
+      "kind": "interface"
+    },
+    {
+      "name": "Greet",
+      "kind": "method"
+    },
+    {
+      "name": "Greeter",
+      "kind": "class"
+    },
+    {
+      "name": "Name",
+      "kind": "property"
+    },
+    {
+      "name": "Greet",
+      "kind": "method"
+    },
+    {
+      "name": "Main",
+      "kind": "method"
+    },
+    {
+      "name": "g",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "IGreeter",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Greet",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Greeter",
+      "kind": "type_reference"
+    },
+    {
+      "text": "IGreeter",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Name",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Greet",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Name",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Main",
+      "kind": "type_reference"
+    },
+    {
+      "text": "g",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Greeter",
+      "kind": "instantiation"
+    },
+    {
+      "text": "Greeter",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Name",
+      "kind": "type_reference"
+    },
+    {
+      "text": "g",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Greet",
+      "kind": "call"
+    },
+    {
+      "text": "Greet",
+      "kind": "field_access"
+    },
+    {
+      "text": "Greet",
+      "kind": "type_reference"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Interface#0",
+      "kind": "interface"
+    },
+    {
+      "name": "Method#25",
+      "kind": "method"
+    },
+    {
+      "name": "Class#44",
+      "kind": "class"
+    },
+    {
+      "name": "Method#113",
+      "kind": "method"
+    },
+    {
+      "name": "Block#135",
+      "kind": "block"
+    },
+    {
+      "name": "Method#181",
+      "kind": "method"
+    },
+    {
+      "name": "Block#200",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "Main"
+    }
+  ]
+}

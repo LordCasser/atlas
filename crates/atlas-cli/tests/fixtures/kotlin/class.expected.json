@@ -1,0 +1,107 @@
+{
+  "symbols": [
+    {
+      "name": "Greeter",
+      "kind": "class"
+    },
+    {
+      "name": "greet",
+      "kind": "function"
+    },
+    {
+      "name": "Person",
+      "kind": "class"
+    },
+    {
+      "name": "greet",
+      "kind": "function"
+    },
+    {
+      "name": "main",
+      "kind": "function"
+    },
+    {
+      "name": "p",
+      "kind": "property"
+    },
+    {
+      "name": "p",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "Greeter",
+      "kind": "type_reference"
+    },
+    {
+      "text": "String",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Person",
+      "kind": "type_reference"
+    },
+    {
+      "text": "String",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Greeter",
+      "kind": "type_reference"
+    },
+    {
+      "text": "String",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Person",
+      "kind": "call"
+    },
+    {
+      "text": "println",
+      "kind": "call"
+    },
+    {
+      "text": "p",
+      "kind": "call"
+    },
+    {
+      "text": "p",
+      "kind": "field_access"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Class#0",
+      "kind": "class"
+    },
+    {
+      "name": "Class#47",
+      "kind": "class"
+    },
+    {
+      "name": "Block#123",
+      "kind": "block"
+    },
+    {
+      "name": "Block#154",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "main"
+    },
+    {
+      "caller": "main"
+    },
+    {
+      "caller": "main"
+    }
+  ]
+}

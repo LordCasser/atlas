@@ -1,0 +1,102 @@
+{
+  "symbols": [
+    {
+      "name": "Greetable",
+      "kind": "module"
+    },
+    {
+      "name": "greet",
+      "kind": "method"
+    },
+    {
+      "name": "Person",
+      "kind": "class"
+    },
+    {
+      "name": "name",
+      "kind": "field"
+    },
+    {
+      "name": "initialize",
+      "kind": "method"
+    },
+    {
+      "name": "@name",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "Greetable",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Person",
+      "kind": "type_reference"
+    },
+    {
+      "text": "include",
+      "kind": "call"
+    },
+    {
+      "text": "Greetable",
+      "kind": "type_reference"
+    },
+    {
+      "text": "attr_accessor",
+      "kind": "call"
+    },
+    {
+      "text": "Person",
+      "kind": "type_reference"
+    },
+    {
+      "text": "new",
+      "kind": "call"
+    },
+    {
+      "text": "puts",
+      "kind": "call"
+    },
+    {
+      "text": "greet",
+      "kind": "call"
+    }
+  ],
+  "imports": [
+    {
+      "module": "Greetable",
+      "imported_name": "Greetable"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Module#0",
+      "kind": "module"
+    },
+    {
+      "name": "Method#19",
+      "kind": "method"
+    },
+    {
+      "name": "Class#52",
+      "kind": "class"
+    },
+    {
+      "name": "Method#110",
+      "kind": "method"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "Person"
+    },
+    {
+      "caller": "Person"
+    }
+  ]
+}

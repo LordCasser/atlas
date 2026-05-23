@@ -1,0 +1,22 @@
+{
+  "symbols": [
+    {
+      "name": "greet",
+      "kind": "function"
+    },
+    {
+      "name": "name",
+      "kind": "variable"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#13",
+      "kind": "function"
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "symbols": [
+    {
+      "name": "GreeterInterface",
+      "kind": "interface"
+    },
+    {
+      "name": "greet",
+      "kind": "method"
+    },
+    {
+      "name": "Greeter",
+      "kind": "class"
+    },
+    {
+      "name": "name",
+      "kind": "property"
+    },
+    {
+      "name": "greet",
+      "kind": "method"
+    }
+  ],
+  "references": [
+    {
+      "text": "name",
+      "kind": "field_access"
+    },
+    {
+      "text": "Greeter",
+      "kind": "instantiation"
+    },
+    {
+      "text": "name",
+      "kind": "field_access"
+    },
+    {
+      "text": "greet",
+      "kind": "call"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Interface#7",
+      "kind": "interface"
+    },
+    {
+      "name": "Method#40",
+      "kind": "method"
+    },
+    {
+      "name": "Class#68",
+      "kind": "class"
+    },
+    {
+      "name": "Method#135",
+      "kind": "method"
+    },
+    {
+      "name": "Block#159",
+      "kind": "block"
+    }
+  ]
+}

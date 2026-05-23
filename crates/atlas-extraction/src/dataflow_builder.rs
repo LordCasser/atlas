@@ -43,11 +43,16 @@ use atlas_types::ScopeDef;
 use atlas_types::bindings::BindingDef;
 use atlas_types::dataflow::{DataFlowEdge, DataNode};
 use atlas_types::enums::{DataFlowKind, DataNodeKind, SymbolKind};
-use atlas_types::ids::{BindingId, DataFlowEdgeId, DataNodeId, FileId, ScopeId, SymbolId};
+use atlas_types::ids::{BindingId, DataFlowEdgeId, DataNodeId, ScopeId, SymbolId};
 use atlas_types::structs::{SymbolDef, TextRange};
 
 use super::frontend::{Capture, DataflowSpec};
 use crate::extraction_ctx::ExtractionCtx;
+
+/// Key for mapping tree-sitter capture positions to DataNodeIds.
+/// (start_byte, end_byte, DataNodeKind) uniquely identifies a data node
+/// within a file.
+type NodePosKey = (u32, u32, atlas_types::enums::DataNodeKind);
 
 /// Result of dataflow builder extraction.
 #[derive(Debug, Clone, Default)]
@@ -100,24 +105,36 @@ impl DataFlowBuilder {
         let mut nodes: Vec<DataNode> = Vec::new();
         let mut edges: Vec<DataFlowEdge> = Vec::new();
 
-        // Create data nodes from captures
+        // Create data nodes from captures, collecting a position→id lookup
+        // for later AST-driven edge creation.
         let nctx = ctx.normalize_ctx();
+        let mut node_pos_map: HashMap<NodePosKey, DataNodeId> = HashMap::new();
         for (name, node) in captures {
+            let start_byte = node.start_byte() as u32;
+            let end_byte = node.end_byte() as u32;
             let capture = Capture { name, node };
             let (dn_opt, de_opt) = dataflow_spec.normalize(nctx, capture);
-            if let Some(dn) = dn_opt {
-                nodes.push(dn);
+            if let Some(ref dn) = dn_opt {
+                let key = (start_byte, end_byte, dn.kind);
+                node_pos_map.insert(key, dn.id);
+                nodes.push(dn.clone());
             }
             if let Some(de) = de_opt {
                 edges.push(de);
             }
         }
 
-        // Post-process: resolve bindings to nodes
-        resolve_bindings_to_nodes(&mut nodes, bindings, scopes);
+    // Post-process: resolve bindings to nodes
+    resolve_bindings_to_nodes(&mut nodes, bindings, scopes);
 
-        // Post-process: create dataflow edges from assignments
-        build_dataflow_edges(&nodes, bindings, ctx.file_id, &mut edges);
+    // Post-process: create dataflow edges from AST structure
+    build_dataflow_edges(
+        &nodes,
+        bindings,
+        ctx,
+        &node_pos_map,
+        &mut edges,
+    );
 
         Ok(DataFlowResult { nodes, edges })
     }
@@ -165,10 +182,14 @@ fn resolve_bindings_to_nodes(nodes: &mut [DataNode], bindings: &[BindingDef], sc
     let parent_map: HashMap<ScopeId, Option<ScopeId>> =
         scopes.iter().map(|s| (s.id, s.parent_id)).collect();
 
-    // Flat fallback: name → binding_id (used when no scope contains the node)
-    let flat_map: HashMap<&str, &BindingId> =
-        bindings.iter().map(|b| (b.name.as_str(), &b.id)).collect();
-
+    // Flat fallback: for nodes not contained by any scope, find the
+    // binding whose range most closely precedes or contains the node's
+    // start byte (for the same name).  This replaces the former HashMap
+    // which had "last writer wins" collision for same-named bindings.
+    //
+    // We iterate bindings sorted by range and pick the best match;
+    // a binding whose range contains the node is preferred over one
+    // whose range precedes it.
     for node in nodes.iter_mut() {
         let name = match &node.name {
             Some(n) => n,
@@ -196,9 +217,14 @@ fn resolve_bindings_to_nodes(nodes: &mut [DataNode], bindings: &[BindingDef], sc
                     }
                     current = parent_map.get(&sid).and_then(|&maybe_parent| maybe_parent);
                 }
-                found.or_else(|| flat_map.get(name.as_str()).copied())
+                if found.is_some() {
+                    found
+                } else {
+                    // Fallback: find closest binding by range for this name
+                    closest_binding_by_range(bindings, name, node.range)
+                }
             }
-            None => flat_map.get(name.as_str()).copied(),
+            None => closest_binding_by_range(bindings, name, node.range),
         };
 
         if let Some(&bid) = binding_id {
@@ -216,71 +242,178 @@ fn innermost_scope_by_range(scopes: &[ScopeDef], range: TextRange) -> Option<Sco
         .map(|s| s.id)
 }
 
-/// Build intra-function dataflow edges between related nodes.
+/// Find the closest binding with the given name to the given DataNode range.
 ///
-/// Currently creates:
-/// - FieldLoad: receiver → field for member access chains (when receiver node exists)
-/// - Assign: value → target for assignment/variable declaration captures
-fn build_dataflow_edges(
-    nodes: &[DataNode],
-    _bindings: &[BindingDef],
-    _file_id: FileId,
+/// Prefers a binding whose range contains the node's range (same scope).
+/// Falls back to the closest preceding binding (by byte distance from the
+/// node's start byte to the binding's end byte).
+fn closest_binding_by_range<'a>(
+    bindings: &'a [BindingDef],
+    name: &str,
+    node_range: TextRange,
+) -> Option<&'a BindingId> {
+    let candidates: Vec<&BindingDef> = bindings
+        .iter()
+        .filter(|b| b.name.as_str() == name)
+        .collect();
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    // Prefer a binding whose range fully contains the node's range.
+    if let Some(containing) = candidates.iter().find(|b| {
+        b.range.start_byte <= node_range.start_byte && b.range.end_byte >= node_range.end_byte
+    }) {
+        return Some(&containing.id);
+    }
+
+    // Fallback: closest preceding binding by byte distance.
+    candidates
+        .iter()
+        .filter(|b| b.range.end_byte <= node_range.start_byte)
+        .min_by_key(|b| node_range.start_byte.saturating_sub(b.range.end_byte))
+        .map(|b| &b.id)
+        .or_else(|| {
+            // If no preceding binding, closest following binding.
+            candidates
+                .iter()
+                .filter(|b| b.range.start_byte >= node_range.end_byte)
+                .min_by_key(|b| b.range.start_byte.saturating_sub(node_range.end_byte))
+                .map(|b| &b.id)
+        })
+}
+
+/// AST‑driven assignment edge creation.
+///
+/// Walks the tree-sitter AST looking for `variable_declarator` and
+/// `assignment_expression` (TS/JS) or `assignment` (Python) nodes.  For
+/// each, looks up the DataNodeIds of the left‑hand target and right‑hand
+/// value by their byte range + kind, and creates an Assign edge between
+/// them.
+///
+/// This replaces the former position‑based heuristic (sort‑by‑start_byte
+/// then gap‑fill).
+fn walk_for_assign_edges(
+    node: tree_sitter::Node,
+    _source: &str,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    _all_nodes: &[DataNode],
     edges: &mut Vec<DataFlowEdge>,
 ) {
-    // Build a lookup: name+kind → DataNodeId for quick matching
-    let node_by_name: HashMap<(&str, DataNodeKind), &DataNodeId> = nodes
-        .iter()
-        .filter_map(|n| n.name.as_ref().map(|name| ((name.as_str(), n.kind), &n.id)))
-        .collect();
+    let kind = node.kind();
 
-    // Range-based assignment matching: each assign target groups with
-    // value nodes that sit between it and the next assignment target (or
-    // the end of the function).  This replaces Nth≈Nth heuristic with
-    // position-based grouping.
-    //
-    // In typical code like `let result = a + b`, "result" is the target
-    // and "a", "b" are the values (which come AFTER the target in source
-    // order).
-    let mut assign_targets: Vec<&DataNode> = nodes
-        .iter()
-        .filter(|n| n.kind == DataNodeKind::Local || n.kind == DataNodeKind::Parameter)
-        .collect();
-    assign_targets.sort_by_key(|n| n.range.start_byte);
-
-    let mut expr_nodes: Vec<&DataNode> = nodes
-        .iter()
-        .filter(|n| n.kind == DataNodeKind::Expr)
-        .collect();
-    expr_nodes.sort_by_key(|n| n.range.start_byte);
-
-    for (idx, target) in assign_targets.iter().enumerate() {
-        // Values for this target: those between this target and the next
-        // target (or end of function if this is the last target).
-        let next_target_start = assign_targets
-            .get(idx + 1)
-            .map(|t| t.range.start_byte)
-            .unwrap_or(u32::MAX);
-
-        for value in &expr_nodes {
-            if value.range.start_byte > target.range.start_byte
-                && value.range.start_byte < next_target_start
+    // variable_declarator: name (Local) ← value (Expr)
+    if kind == "variable_declarator" {
+        if let (Some(name_node), Some(value_node)) = (
+            node.child_by_field_name("name"),
+            node.child_by_field_name("value"),
+        ) {
+            let name_key = (
+                name_node.start_byte() as u32,
+                name_node.end_byte() as u32,
+                DataNodeKind::Local,
+            );
+            let value_key = (
+                value_node.start_byte() as u32,
+                value_node.end_byte() as u32,
+                DataNodeKind::Expr,
+            );
+            if let (Some(&target_id), Some(&source_id)) =
+                (pos_map.get(&name_key), pos_map.get(&value_key))
             {
                 let edge_id =
-                    DataFlowEdgeId::generate(&value.id, &target.id, DataFlowKind::Assign.as_str());
-                let edge = DataFlowEdge::new(
+                    DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+                edges.push(DataFlowEdge::new(
                     edge_id,
-                    value.id,
-                    target.id,
+                    source_id,
+                    target_id,
                     DataFlowKind::Assign,
-                    target.range,
-                    0.9,
-                );
-                edges.push(edge);
+                    ts_node_range(&name_node),
+                    0.95,
+                ));
             }
         }
     }
 
-    // Create FieldLoad edges for member access chains
+    // assignment_expression (TS/JS): left (Local) ← right (Expr)
+    // assignment (Python):           left (Local) ← right (Expr)
+    if kind == "assignment_expression" || kind == "assignment" {
+        if let (Some(left_node), Some(right_node)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) {
+            let left_key = (
+                left_node.start_byte() as u32,
+                left_node.end_byte() as u32,
+                DataNodeKind::Local,
+            );
+            let right_key = (
+                right_node.start_byte() as u32,
+                right_node.end_byte() as u32,
+                DataNodeKind::Expr,
+            );
+            if let (Some(&target_id), Some(&source_id)) =
+                (pos_map.get(&left_key), pos_map.get(&right_key))
+            {
+                let edge_id =
+                    DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+                edges.push(DataFlowEdge::new(
+                    edge_id,
+                    source_id,
+                    target_id,
+                    DataFlowKind::Assign,
+                    ts_node_range(&left_node),
+                    0.95,
+                ));
+            }
+        }
+    }
+
+    // Recurse into children
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            walk_for_assign_edges(child, _source, pos_map, _all_nodes, edges);
+        }
+    }
+}
+
+/// Extract a TextRange from a tree-sitter node.
+fn ts_node_range(ts_node: &tree_sitter::Node) -> TextRange {
+    TextRange {
+        start_byte: ts_node.start_byte() as u32,
+        end_byte: ts_node.end_byte() as u32,
+        start_line: ts_node.start_position().row as u32,
+        start_column: ts_node.start_position().column as u32,
+        end_line: ts_node.end_position().row as u32,
+        end_column: ts_node.end_position().column as u32,
+    }
+}
+
+/// Build intra-function dataflow edges between related nodes.
+///
+/// Assignment edges are AST‑driven: variable_declarator (name/value) and
+/// assignment_expression (left/right) provide explicit parent‑child structure.
+/// This replaces the former position‑based heuristic (Nth≈Nth target grouping).
+///
+/// Other edge types (FieldLoad, ArgToParam, containment, ReturnToCall) are
+/// constrained by function scope and (where available) binding_id to avoid
+/// false connections across same-named variables in different scopes.
+fn build_dataflow_edges(
+    nodes: &[DataNode],
+    _bindings: &[BindingDef],
+    ctx: &ExtractionCtx<'_>,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    // ── AST‑driven Assign edges ─────────────────────────────────────
+    walk_for_assign_edges(ctx.root, ctx.source, pos_map, nodes, edges);
+
+    // ── FieldLoad edges (function‑scoped, binding‑aware) ───────────
+    // For each Field data node, find the base variable DataNode within
+    // the same function and (when available) with matching binding_id.
+    // Falls back to name-only within the same function when binding_id
+    // is absent (languages without lexical binder).
     let field_nodes: Vec<&DataNode> = nodes
         .iter()
         .filter(|n| n.kind == DataNodeKind::Field)
@@ -288,25 +421,45 @@ fn build_dataflow_edges(
 
     for field_node in &field_nodes {
         if let Some(ref access_path) = field_node.access_path {
-            // If the base name (first part of access_path) matches a known local/parameter,
-            // create a FieldLoad edge from base → field.
             let base_name = access_path.split('.').next().unwrap_or(access_path);
-            if let Some(base_id) = node_by_name
-                .get(&(base_name, DataNodeKind::Local))
-                .or_else(|| node_by_name.get(&(base_name, DataNodeKind::Parameter)))
-            {
+
+            // Find the best-matching base node within the same function.
+            // Prefer binding_id match; fall back to name-only.
+            let base_node = field_node.binding_id.and_then(|bid| {
+                nodes
+                    .iter()
+                    .find(|n| {
+                        n.function_id == field_node.function_id
+                            && n.binding_id == Some(bid)
+                            && n.kind != DataNodeKind::Field
+                            && n.range.start_byte < field_node.range.start_byte
+                    })
+            }).or_else(|| {
+                // Fallback: same function, same name, Local/Parameter before field
+                nodes
+                    .iter()
+                    .find(|n| {
+                        n.function_id == field_node.function_id
+                            && n.name.as_deref() == Some(base_name)
+                            && (n.kind == DataNodeKind::Local
+                                || n.kind == DataNodeKind::Parameter)
+                            && n.range.start_byte < field_node.range.start_byte
+                    })
+            });
+
+            if let Some(base_node) = base_node {
                 let edge_id = DataFlowEdgeId::generate(
-                    base_id,
+                    &base_node.id,
                     &field_node.id,
                     DataFlowKind::FieldLoad.as_str(),
                 );
                 let edge = DataFlowEdge::new(
                     edge_id,
-                    **base_id,
+                    base_node.id,
                     field_node.id,
                     DataFlowKind::FieldLoad,
                     field_node.range,
-                    0.8,
+                    0.80,
                 );
                 edges.push(edge);
             }
@@ -392,6 +545,43 @@ fn build_dataflow_edges(
         }
     }
 
+    // ── Sub-expression containment edges ─────────────────────────────────
+    // For each Expr node (e.g. `p.x * factor`), find contained Field/Literal/
+    // CallTarget nodes and create Read edges from them to the Expr.
+    // This enables backward slicers to trace through sub-expressions:
+    //   scaledX ← Assign ← p.x*factor(Expr) ← Read ← p.x(Field) ← FieldLoad ← p
+    let expr_nodes_for_containment: Vec<&DataNode> = nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Expr || n.kind == DataNodeKind::Return)
+        .collect();
+
+    let contained_kinds = [
+        DataNodeKind::Field,
+        DataNodeKind::Literal,
+        DataNodeKind::CallTarget,
+    ];
+
+    for expr in &expr_nodes_for_containment {
+        for contained in nodes.iter().filter(|n| {
+            n.id != expr.id
+                && n.function_id == expr.function_id
+                && n.range.start_byte >= expr.range.start_byte
+                && n.range.end_byte <= expr.range.end_byte
+                && contained_kinds.contains(&n.kind)
+        }) {
+            let edge_id =
+                DataFlowEdgeId::generate(&contained.id, &expr.id, DataFlowKind::Read.as_str());
+            edges.push(DataFlowEdge::new(
+                edge_id,
+                contained.id,
+                expr.id,
+                DataFlowKind::Read,
+                expr.range,
+                0.75,
+            ));
+        }
+    }
+
     // ── ReturnToCall edges ──────────────────────────────────────────────
     // Link return-value expression nodes to their enclosing Return nodes.
     // When `return compute()` is captured, the CallTarget `compute` is
@@ -445,6 +635,23 @@ fn build_dataflow_edges(
 ///
 /// When `binding_id` is not set, falls back to grouping by
 /// `(function_id, name)` as a conservative heuristic.
+///
+/// Standalone use-def resolution: creates edges from variable definitions
+/// to later uses of the same name within each function scope.
+///
+/// Grouping strategy: when a DataNode has a `binding_id`, it groups by
+/// `(function_id, binding_id)` — different lexical bindings (even with
+/// the same name in nested scopes) produce distinct groups, preventing
+/// false def-use connections across shadow boundaries.
+///
+/// When `binding_id` is not set, falls back to grouping by
+/// `(function_id, name)` as a conservative heuristic.
+///
+/// Edge creation: for backward‑slice provenance tracing, each definition
+/// connects to ALL subsequent uses within its group.  This preserves the
+/// full assignment chain (x = a; x = b; x = c; return x) that a backward
+/// slice must traverse.  The binding_id grouping prevents cross‑scope
+/// false connections for languages with a lexical binder.
 fn resolve_use_def(data_nodes: &[DataNode]) -> Vec<DataFlowEdge> {
     let mut edges = Vec::new();
 
@@ -478,18 +685,23 @@ fn resolve_use_def(data_nodes: &[DataNode]) -> Vec<DataFlowEdge> {
 
         for &def_idx in &def_indices {
             let def_node = group[def_idx];
-            // Create edges from def to all later uses of different kinds
+            // Create edges from def to all later uses within the same group.
+            // For backward‑slice trace this gives the full provenance chain;
+            // binding_id grouping prevents cross‑scope false connections.
             for use_node in group.iter().skip(def_idx + 1) {
                 if use_node.id == def_node.id {
                     continue;
                 }
-                // Only connect to nodes that are Expr, CallArg, Return, or Field uses
+                // Connect to nodes that are Expr, CallArg, Return, Field, or
+                // Local uses (Local for multi-assignment chains like
+                // x = a; x = b; return x).
                 if matches!(
                     use_node.kind,
                     DataNodeKind::Expr
                         | DataNodeKind::CallArg
                         | DataNodeKind::Field
                         | DataNodeKind::Return
+                        | DataNodeKind::Local
                 ) {
                     let edge_id = DataFlowEdgeId::generate(
                         &def_node.id,
@@ -591,6 +803,7 @@ pub(crate) fn resolve_dataflow_function_ids(nodes: &mut [DataNode], symbols: &[S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use atlas_types::ids::FileId;
     use std::path::PathBuf;
 
     #[cfg(feature = "typescript")]

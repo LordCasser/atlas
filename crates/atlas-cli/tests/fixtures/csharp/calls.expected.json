@@ -1,0 +1,93 @@
+{
+  "symbols": [
+    {
+      "name": "Calculator",
+      "kind": "class"
+    },
+    {
+      "name": "Add",
+      "kind": "method"
+    },
+    {
+      "name": "Main",
+      "kind": "method"
+    },
+    {
+      "name": "result",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "Calculator",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Add",
+      "kind": "type_reference"
+    },
+    {
+      "text": "a",
+      "kind": "type_reference"
+    },
+    {
+      "text": "b",
+      "kind": "type_reference"
+    },
+    {
+      "text": "a",
+      "kind": "type_reference"
+    },
+    {
+      "text": "b",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Main",
+      "kind": "type_reference"
+    },
+    {
+      "text": "result",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Add",
+      "kind": "call"
+    },
+    {
+      "text": "Add",
+      "kind": "type_reference"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Class#0",
+      "kind": "class"
+    },
+    {
+      "name": "Method#23",
+      "kind": "method"
+    },
+    {
+      "name": "Block#59",
+      "kind": "block"
+    },
+    {
+      "name": "Method#94",
+      "kind": "method"
+    },
+    {
+      "name": "Block#113",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "Main"
+    }
+  ]
+}

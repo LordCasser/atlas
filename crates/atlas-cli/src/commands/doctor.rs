@@ -47,22 +47,48 @@ pub fn run(project: &str) -> anyhow::Result<()> {
         println!("  [SKIP] SQLite FTS5 support (no database)");
     }
 
-    // 5. Schema version
+    // 5. Schema version (with migration guidance)
     if db_exists {
         match check_schema(&db_path) {
             Ok(Some(ver)) => {
                 let current = atlas_db::CURRENT_SCHEMA_VERSION;
-                check(
-                    &format!("Schema version (expected v{current}, got v{ver})"),
-                    ver == current,
-                    &mut all_ok,
-                );
-                if ver != current {
-                    println!("     Hint: Re-run `atlas init` to create a fresh database.");
+                if ver == current {
+                    check(
+                        &format!("Schema version (v{ver})"),
+                        true,
+                        &mut all_ok,
+                    );
+                } else if ver < current {
+                    // Check if migrations are available
+                    let has_migrations = atlas_db::MIGRATIONS
+                        .iter()
+                        .any(|m| m.from_version >= ver && m.from_version < current);
+                    if has_migrations {
+                        check(
+                            &format!("Schema version (v{ver} → v{current}, auto-migratable)"),
+                            true,
+                            &mut all_ok,
+                        );
+                        println!("     Hint: Run `atlas init` to auto-migrate.");
+                    } else {
+                        check(
+                            &format!("Schema version (v{ver}, needs rebuild → v{current})"),
+                            false,
+                            &mut all_ok,
+                        );
+                        println!("     Hint: No migration path. Run `atlas init` to rebuild.");
+                    }
+                } else {
+                    check(
+                        &format!("Schema version (v{ver} > app v{current}, incompatible)"),
+                        false,
+                        &mut all_ok,
+                    );
+                    println!("     Hint: Database is from a newer Atlas version. Upgrade Atlas or rebuild.");
                 }
             }
             Ok(None) => {
-                check("Schema version", false, &mut all_ok);
+                check("Schema version (no schema_versions table)", false, &mut all_ok);
                 println!("     Hint: Run `atlas init` to initialize the database");
             }
             Err(e) => {
@@ -85,6 +111,15 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     check_lang("C++", cfg!(feature = "cpp"), &mut all_ok);
     check_lang("ArkTS", cfg!(feature = "arkts"), &mut all_ok);
     check_experimental_lang("Cangjie", cfg!(feature = "cangjie"));
+
+    // Post-MVP languages
+    check_lang("Go", cfg!(feature = "go"), &mut all_ok);
+    check_lang("C#", cfg!(feature = "csharp"), &mut all_ok);
+    check_lang("Rust", cfg!(feature = "rust"), &mut all_ok);
+    check_lang("PHP", cfg!(feature = "php"), &mut all_ok);
+    check_lang("Ruby", cfg!(feature = "ruby"), &mut all_ok);
+    check_lang("Kotlin", cfg!(feature = "kotlin"), &mut all_ok);
+    check_experimental_lang("Bash", cfg!(feature = "bash"));
 
     // 7. Per-language capability summary
     print_capabilities();

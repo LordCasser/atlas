@@ -1,0 +1,84 @@
+{
+  "symbols": [
+    {
+      "name": "main",
+      "kind": "function"
+    },
+    {
+      "name": "map",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "HashMap",
+      "kind": "type_reference"
+    },
+    {
+      "text": "String",
+      "kind": "type_reference"
+    },
+    {
+      "text": "new",
+      "kind": "call"
+    },
+    {
+      "text": "insert",
+      "kind": "call"
+    },
+    {
+      "text": "insert",
+      "kind": "field_access"
+    },
+    {
+      "text": "to_string",
+      "kind": "call"
+    },
+    {
+      "text": "to_string",
+      "kind": "field_access"
+    },
+    {
+      "text": "println",
+      "kind": "call"
+    }
+  ],
+  "imports": [
+    {
+      "module": "std::collections::HashMap",
+      "imported_name": "HashMap"
+    },
+    {
+      "module": "std::io",
+      "imported_name": "io"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#45",
+      "kind": "function"
+    },
+    {
+      "name": "Block#55",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "main"
+    },
+    {
+      "caller": "main"
+    },
+    {
+      "caller": "main"
+    },
+    {
+      "caller": "main"
+    }
+  ]
+}

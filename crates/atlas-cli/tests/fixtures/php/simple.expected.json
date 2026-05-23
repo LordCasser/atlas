@@ -1,0 +1,28 @@
+{
+  "symbols": [
+    {
+      "name": "greet",
+      "kind": "function"
+    }
+  ],
+  "references": [
+    {
+      "text": "greet",
+      "kind": "call"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#7",
+      "kind": "function"
+    },
+    {
+      "name": "Block#29",
+      "kind": "block"
+    }
+  ]
+}

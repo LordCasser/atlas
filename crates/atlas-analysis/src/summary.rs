@@ -22,7 +22,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use atlas_db::{DataflowReader, SymbolReader, TraceStore};
+use atlas_db::TraceStore;
 use atlas_types::enums::{DataFlowKind, DataNodeKind};
 use atlas_types::ids::{CallsiteId, DataNodeId, SymbolId};
 use atlas_types::summary::{CallArgFlow, FunctionSummary, ParameterFlow, ReturnFlow};
@@ -31,61 +31,63 @@ use atlas_types::summary::{CallArgFlow, FunctionSummary, ParameterFlow, ReturnFl
 pub struct SummaryBuilder;
 
 impl SummaryBuilder {
-    /// Build a function summary by reading DataNodes from the store and
-    /// filtering by the function symbol's body range (if provided).
+    /// Build a function summary by reading DataNodes from the store.
     ///
     /// When `function_range` is `Some(start_byte, end_byte)`, only DataNodes
-    /// whose range is contained within it are included.  This handles the
-    /// case where the function symbol's own range only covers the name.
+    /// whose range is contained within it are included (used by tests that
+    /// compute the real function body range from tree-sitter).
+    ///
+    /// When `function_range` is `None`, DataNodes are loaded by `function_id`
+    /// via `find_data_nodes_by_function`.  This is the production path: it
+    /// prevents cross-function false connections in multi-function files.
+    /// Falls back to file-level nodes only when function-scoped query returns
+    /// empty (pre-existing data from older index runs where function_id was
+    /// not resolved).
     #[allow(deprecated)]
     pub fn build(
         store: &dyn TraceStore,
         function_id: &SymbolId,
         function_range: Option<(u32, u32)>,
     ) -> anyhow::Result<FunctionSummary> {
-        // Collect all DataNodes for the file and filter by function.
-        // We use file-level lookup because function_id on DataNodes
-        // may not be resolved consistently (pre-existing limitation).
-        let file_id = {
-            let fn_sym = store.find_symbol_by_id(function_id)?;
-            match fn_sym {
-                Some(sym) => sym.file_id,
-                None => {
-                    return Ok(FunctionSummary {
-                        function_id: function_id.clone(),
-                        node_count: 0,
-                        edge_count: 0,
-                        param_flows: vec![],
-                        return_flows: vec![],
-                        call_arg_flows: vec![],
-                        return_sources: vec![],
-                    });
+        let nodes: Vec<_> = if let Some((start, end)) = function_range {
+            // Test path: file-level + byte-range filter (caller provides real
+            // function body range from tree-sitter).
+            let file_id = {
+                let fn_sym = store.find_symbol_by_id(function_id)?;
+                match fn_sym {
+                    Some(sym) => sym.file_id,
+                    None => {
+                        return Ok(empty_summary(function_id));
+                    }
                 }
+            };
+            let all_nodes = store.find_data_nodes_by_file(&file_id)?;
+            all_nodes
+                .into_iter()
+                .filter(|n| n.range.start_byte >= start && n.range.end_byte <= end)
+                .collect()
+        } else {
+            // Production path: function‑scoped query.
+            // Prevents false cross-function bridges in multi-function files.
+            let nodes = store.find_data_nodes_by_function(function_id)?;
+            if nodes.is_empty() {
+                // Fallback: function_id not resolved on any DataNode
+                // (e.g. data from an older index run).  Try file-level.
+                let file_id = {
+                    let fn_sym = store.find_symbol_by_id(function_id)?;
+                    match fn_sym {
+                        Some(sym) => sym.file_id,
+                        None => return Ok(empty_summary(function_id)),
+                    }
+                };
+                store.find_data_nodes_by_file(&file_id)?
+            } else {
+                nodes
             }
         };
 
-        let all_nodes = store.find_data_nodes_by_file(&file_id)?;
-        let nodes: Vec<_> = match function_range {
-            Some((start, end)) => all_nodes
-                .into_iter()
-                .filter(|n| n.range.start_byte >= start && n.range.end_byte <= end)
-                .collect(),
-            None => all_nodes
-                .into_iter()
-                .filter(|n| n.function_id.as_ref() == Some(function_id))
-                .collect(),
-        };
-
         if nodes.is_empty() {
-            return Ok(FunctionSummary {
-                function_id: function_id.clone(),
-                node_count: 0,
-                edge_count: 0,
-                param_flows: vec![],
-                return_flows: vec![],
-                call_arg_flows: vec![],
-                return_sources: vec![],
-            });
+            return Ok(empty_summary(function_id));
         }
 
         // ── 1. Build adjacency map: source → [(target, kind)]
@@ -94,9 +96,7 @@ impl SummaryBuilder {
         let mut adj: HashMap<DataNodeId, Vec<(DataNodeId, DataFlowKind)>> = HashMap::new();
         let mut edge_count = 0usize;
 
-        let all_edges = store
-            .find_dataflow_edges_by_sources(&source_ids)
-            .unwrap_or_default();
+        let all_edges = store.find_dataflow_edges_by_sources(&source_ids)?;
         for edge in &all_edges {
             if node_ids.contains(&edge.target) {
                 adj.entry(edge.source)
@@ -277,11 +277,26 @@ impl SummaryBuilder {
     }
 }
 
+/// Build an empty summary for a function with no DataNodes.
+#[allow(deprecated)]
+fn empty_summary(function_id: &SymbolId) -> FunctionSummary {
+    FunctionSummary {
+        function_id: function_id.clone(),
+        node_count: 0,
+        edge_count: 0,
+        param_flows: vec![],
+        return_flows: vec![],
+        call_arg_flows: vec![],
+        #[allow(deprecated)]
+        return_sources: vec![],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[cfg(feature = "typescript")]
-    use atlas_db::{DataflowReader, Store, SymbolReader};
+    use atlas_db::Store;
     #[cfg(feature = "typescript")]
     use atlas_extraction::create_frontend;
     #[cfg(feature = "typescript")]

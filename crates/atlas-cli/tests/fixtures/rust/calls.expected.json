@@ -1,0 +1,49 @@
+{
+  "symbols": [
+    {
+      "name": "add",
+      "kind": "function"
+    },
+    {
+      "name": "main",
+      "kind": "function"
+    },
+    {
+      "name": "result",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "add",
+      "kind": "call"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#0",
+      "kind": "function"
+    },
+    {
+      "name": "Block#30",
+      "kind": "block"
+    },
+    {
+      "name": "Function#45",
+      "kind": "function"
+    },
+    {
+      "name": "Block#55",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "main"
+    }
+  ]
+}

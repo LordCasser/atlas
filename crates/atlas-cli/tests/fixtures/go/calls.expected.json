@@ -1,0 +1,61 @@
+{
+  "symbols": [
+    {
+      "name": "main",
+      "kind": "package"
+    },
+    {
+      "name": "add",
+      "kind": "function"
+    },
+    {
+      "name": "main",
+      "kind": "function"
+    },
+    {
+      "name": "result",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "int",
+      "kind": "type_reference"
+    },
+    {
+      "text": "int",
+      "kind": "type_reference"
+    },
+    {
+      "text": "add",
+      "kind": "call"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#14",
+      "kind": "function"
+    },
+    {
+      "name": "Block#37",
+      "kind": "block"
+    },
+    {
+      "name": "Function#56",
+      "kind": "function"
+    },
+    {
+      "name": "Block#68",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "main"
+    }
+  ]
+}

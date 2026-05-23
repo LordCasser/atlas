@@ -11,5 +11,5 @@ pub(crate) mod store_rows;
 pub(crate) mod store_writers;
 
 pub use readers::{CallGraphReader, DataflowReader, FileReader, SymbolReader, TraceStore};
-pub use schema::{CURRENT_SCHEMA_VERSION, SCHEMA_DDL};
+pub use schema::{CURRENT_SCHEMA_VERSION, SCHEMA_DDL, SchemaStatus, check_and_migrate, MIGRATIONS};
 pub use store::{Store, StoreStats};

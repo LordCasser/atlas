@@ -1,0 +1,123 @@
+{
+  "symbols": [
+    {
+      "name": "Greeter",
+      "kind": "trait"
+    },
+    {
+      "name": "Person",
+      "kind": "struct"
+    },
+    {
+      "name": "name",
+      "kind": "field"
+    },
+    {
+      "name": "greet",
+      "kind": "method"
+    },
+    {
+      "name": "main",
+      "kind": "function"
+    },
+    {
+      "name": "p",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "Greeter",
+      "kind": "type_reference"
+    },
+    {
+      "text": "String",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Person",
+      "kind": "type_reference"
+    },
+    {
+      "text": "String",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Greeter",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Person",
+      "kind": "type_reference"
+    },
+    {
+      "text": "String",
+      "kind": "type_reference"
+    },
+    {
+      "text": "format",
+      "kind": "call"
+    },
+    {
+      "text": "Person",
+      "kind": "type_reference"
+    },
+    {
+      "text": "to_string",
+      "kind": "call"
+    },
+    {
+      "text": "to_string",
+      "kind": "field_access"
+    },
+    {
+      "text": "greet",
+      "kind": "call"
+    },
+    {
+      "text": "greet",
+      "kind": "field_access"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Trait#0",
+      "kind": "trait"
+    },
+    {
+      "name": "Class#50",
+      "kind": "class"
+    },
+    {
+      "name": "Function#117",
+      "kind": "function"
+    },
+    {
+      "name": "Block#143",
+      "kind": "block"
+    },
+    {
+      "name": "Function#194",
+      "kind": "function"
+    },
+    {
+      "name": "Block#204",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "greet"
+    },
+    {
+      "caller": "main"
+    },
+    {
+      "caller": "main"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "symbols": [
+    {
+      "name": "add",
+      "kind": "method"
+    }
+  ],
+  "references": [
+    {
+      "text": "add",
+      "kind": "call"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Method#0",
+      "kind": "method"
+    }
+  ]
+}

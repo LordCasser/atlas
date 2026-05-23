@@ -44,23 +44,41 @@ mod symbols;
 // StoreReader — read-only query interface
 // ---------------------------------------------------------------------------
 
-/// Read-only query interface backed by a shared SQLite connection.
+/// Read-only query interface backed by a dedicated SQLite read connection.
 ///
-/// All methods take `&self` and perform only SELECT queries.
-/// For mutations, use `Store` which derefs to `StoreReader`.
+/// All methods take `&self` and perform only SELECT queries on a separate
+/// connection opened in `query_only` mode.  This allows concurrent reads
+/// during write transactions (WAL mode), avoiding the single-connection
+/// bottleneck.
+///
+/// For mutations, use `Store` which owns the write connection and derefs
+/// to `StoreReader`.
 pub struct StoreReader {
+    /// Write connection — all INSERT/UPDATE/DELETE/reference resolution.
     pub(crate) conn: Mutex<Connection>,
+    /// Read connection — all SELECT queries.  For file-backed databases
+    /// this is a second `Connection` opened with `PRAGMA query_only = ON`
+    /// so reads never block writes (WAL mode).  For in-memory databases
+    /// this is `None` and reads fall back to the write connection.
+    pub(crate) read_conn: Option<Mutex<Connection>>,
 }
 
 impl StoreReader {
-    /// Lock the underlying SQLite connection for read access.
-    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    /// Lock the read connection for SELECT queries.
+    ///
+    /// For file-backed databases the read connection uses `PRAGMA query_only = ON`
+    /// and runs independently from the write connection.  For in-memory databases
+    /// this falls back to the write connection.
+    fn lock_read(&self) -> std::sync::MutexGuard<'_, Connection> {
+        match &self.read_conn {
+            Some(rc) => rc.lock().unwrap_or_else(|e| e.into_inner()),
+            None => self.conn.lock().unwrap_or_else(|e| e.into_inner()),
+        }
     }
 
     /// Find a symbol by its deterministic SymbolId.
     pub fn find_symbol_by_id(&self, id: &SymbolId) -> anyhow::Result<Option<SymbolDef>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
                     language,
@@ -85,7 +103,7 @@ impl StoreReader {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock_read();
         let placeholders: Vec<String> = (0..ids.len()).map(|i| format!("?{}", i + 1)).collect();
         let sql = format!(
             "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
@@ -138,9 +156,18 @@ impl Store {
     // Internal helpers (accessed by domain submodules via module privacy)
     // -----------------------------------------------------------------------
 
-    /// Lock the underlying SQLite connection for read or write access.
+    /// Lock the write connection for mutations.
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.reader.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Lock the read connection for SELECT queries.
+    ///
+    /// The read connection uses `PRAGMA query_only = ON` and runs
+    /// independently from the write connection.  In WAL mode this
+    /// allows concurrent reads during write transactions.
+    pub(crate) fn lock_read(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.reader.lock_read()
     }
 
     /// Run a closure inside a transaction.

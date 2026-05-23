@@ -1,0 +1,37 @@
+{
+  "symbols": [
+    {
+      "name": "main",
+      "kind": "function"
+    },
+    {
+      "name": "greeting",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "println",
+      "kind": "call"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#0",
+      "kind": "function"
+    },
+    {
+      "name": "Block#10",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "main"
+    }
+  ]
+}

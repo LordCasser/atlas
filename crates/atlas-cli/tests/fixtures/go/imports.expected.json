@@ -1,0 +1,52 @@
+{
+  "symbols": [
+    {
+      "name": "main",
+      "kind": "package"
+    },
+    {
+      "name": "main",
+      "kind": "function"
+    }
+  ],
+  "references": [
+    {
+      "text": "Println",
+      "kind": "call"
+    },
+    {
+      "text": "Println",
+      "kind": "field_access"
+    },
+    {
+      "text": "Exit",
+      "kind": "call"
+    },
+    {
+      "text": "Exit",
+      "kind": "field_access"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#39",
+      "kind": "function"
+    },
+    {
+      "name": "Block#51",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "main"
+    },
+    {
+      "caller": "main"
+    }
+  ]
+}

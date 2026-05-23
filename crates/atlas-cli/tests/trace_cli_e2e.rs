@@ -381,6 +381,54 @@ int main() {
     assert!(resp.result.is_none());
 }
 
+/// Go: trace_variable must return partial (Symbolic level, no dataflow).
+#[cfg(feature = "go")]
+#[test]
+fn p1_capability_go_variable_is_partial() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "main.go",
+        r#"package main
+
+func add(a, b int) int {
+    return a + b
+}
+
+func main() {
+    x := add(1, 2)
+    _ = x
+}
+"#,
+    )];
+    let (tmp, store) = init_and_index(files);
+    let eng = engine(store.clone());
+    let file_id = resolve_file_id(&eng, tmp.path(), "main.go");
+
+    let resp = eng.trace_variable(&file_id, 6, 10, 10);
+
+    assert!(resp.ok, "Go variable trace should not be an error");
+    assert!(resp.partial_result, "Go variable trace should be partial (no dataflow)");
+    assert!(
+        !resp.diagnostics.is_empty(),
+        "should have unsupported_language diagnostic"
+    );
+    assert!(
+        resp.diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("unsupported_language")),
+        "diagnostic code should be 'unsupported_language'"
+    );
+    assert!(resp.result.is_none(), "Go variable trace should have no result");
+    assert!(resp.capability.is_some(), "capability should still be provided");
+
+    let cap = resp.capability.as_ref().unwrap();
+    assert_eq!(cap.language, "go");
+    assert!(
+        cap.supported_features.contains(&"call_graph".to_string()),
+        "Go should support call_graph even if not dataflow"
+    );
+}
+
 /// TS: trace_variable should produce a result (dataflow available).
 #[test]
 fn p1_capability_ts_variable_succeeds() {

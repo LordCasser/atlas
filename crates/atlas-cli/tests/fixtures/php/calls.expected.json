@@ -1,0 +1,28 @@
+{
+  "symbols": [
+    {
+      "name": "add",
+      "kind": "function"
+    }
+  ],
+  "references": [
+    {
+      "text": "add",
+      "kind": "call"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#7",
+      "kind": "function"
+    },
+    {
+      "name": "Block#28",
+      "kind": "block"
+    }
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "symbols": [
+    {
+      "name": "main",
+      "kind": "package"
+    },
+    {
+      "name": "Greeter",
+      "kind": "interface"
+    },
+    {
+      "name": "Person",
+      "kind": "struct"
+    },
+    {
+      "name": "Greet",
+      "kind": "method"
+    },
+    {
+      "name": "main",
+      "kind": "function"
+    },
+    {
+      "name": "g",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "Greeter",
+      "kind": "type_reference"
+    },
+    {
+      "text": "string",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Person",
+      "kind": "type_reference"
+    },
+    {
+      "text": "string",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Person",
+      "kind": "type_reference"
+    },
+    {
+      "text": "string",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Name",
+      "kind": "field_access"
+    },
+    {
+      "text": "Greeter",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Person",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Greet",
+      "kind": "call"
+    },
+    {
+      "text": "Greet",
+      "kind": "field_access"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Method#95",
+      "kind": "method"
+    },
+    {
+      "name": "Block#127",
+      "kind": "block"
+    },
+    {
+      "name": "Function#159",
+      "kind": "function"
+    },
+    {
+      "name": "Block#171",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "main"
+    }
+  ]
+}

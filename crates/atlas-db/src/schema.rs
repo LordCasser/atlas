@@ -1,10 +1,10 @@
-//! Atlas-native SQLite schema DDL — static schema, no migration.
+//! Atlas-native SQLite schema DDL — with migration infrastructure.
 //!
-//! This is a rapid-development codebase with no production deployments.
-//! The schema is treated as **single-version** (V1).  There is no
-//! migration system, no backward-compatibility guarantees, and no
-//! version negotiation between client and database.  If the schema
-//! needs to change, it changes in-place in this file.
+//! The schema is currently at **V1**.  Schema changes during development
+//! are made in-place.  Migration from V1 to future versions is supported
+//! via the ordered [`MIGRATIONS`] chain.  When no migration path exists
+//! (future→past downgrade or very old DB), the user is directed to
+//! `atlas init` for a fresh rebuild.
 //!
 //! Schema version: 1
 //!
@@ -28,7 +28,7 @@
 
 /// Current schema version — always 1 during rapid development.
 /// There is no migration system; schema changes are made in-place.
-pub const CURRENT_SCHEMA_VERSION: i64 = 2;
+pub const CURRENT_SCHEMA_VERSION: i64 = 1;
 /// Complete DDL for a fresh database.
 pub const SCHEMA_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -396,6 +396,163 @@ CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
 END;
 "#;
 
+// ---------------------------------------------------------------------------
+// Migration infrastructure
+// ---------------------------------------------------------------------------
+
+/// A single schema migration step.
+///
+/// Each entry in [`MIGRATIONS`] upgrades the database from `from_version`
+/// to `from_version + 1`.  Migrations are applied in order and must be
+/// idempotent (using `IF NOT EXISTS` / `IF EXISTS` where possible).
+pub struct Migration {
+    /// Source version this migration upgrades FROM.
+    pub from_version: i64,
+    /// SQL DDL to execute in a single transaction.
+    pub sql: &'static str,
+    /// Human-readable description (recorded in `schema_versions`).
+    pub description: &'static str,
+}
+
+/// Ordered migration chain.
+///
+/// When the database is at version N and [`CURRENT_SCHEMA_VERSION`] is M > N,
+/// migrations from index N-1 through M-1 are applied sequentially.  When no
+/// migration covers the gap, the user is directed to `atlas init`.
+///
+/// Add entries here when the schema changes:
+/// ```ignore
+/// pub const MIGRATIONS: &[Migration] = &[
+///     Migration { from_version: 1, sql: "ALTER TABLE ...", description: "v2: ..." },
+///     Migration { from_version: 2, sql: "CREATE INDEX ...", description: "v3: ..." },
+/// ];
+/// ```
+pub const MIGRATIONS: &[Migration] = &[
+    // V1→V2 example (uncomment and fill when needed):
+    // Migration {
+    //     from_version: 1,
+    //     sql: "ALTER TABLE symbols ADD COLUMN new_field TEXT;",
+    //     description: "v2: add new_field to symbols",
+    // },
+];
+
+/// Run pending migrations on a database connection.
+///
+/// Reads the current version from `schema_versions`, applies all migrations
+/// whose `from_version >= current_version` and < [`CURRENT_SCHEMA_VERSION`],
+/// and records each applied migration.
+///
+/// Returns the number of migrations applied.
+pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<usize> {
+    let current = current_schema_version(conn)?;
+    if current >= CURRENT_SCHEMA_VERSION {
+        return Ok(0); // up-to-date or newer (handled by check_schema_compat)
+    }
+
+    let mut applied = 0usize;
+    for mig in MIGRATIONS {
+        if mig.from_version < current {
+            continue; // already applied
+        }
+        if mig.from_version >= CURRENT_SCHEMA_VERSION {
+            break; // past target
+        }
+        // Only apply if this migration bridges from exactly where we are
+        if mig.from_version != current + applied as i64 {
+            anyhow::bail!(
+                "No migration from v{} to v{}; run `atlas init` to rebuild",
+                current + applied as i64,
+                CURRENT_SCHEMA_VERSION,
+            );
+        }
+        conn.execute_batch(mig.sql)?;
+        conn.execute(
+            "INSERT INTO schema_versions (version, description) VALUES (?1, ?2)",
+            rusqlite::params![mig.from_version + 1, mig.description],
+        )?;
+        applied += 1;
+    }
+    Ok(applied)
+}
+
+/// Read the current schema version from the database.
+///
+/// Returns 0 if the `schema_versions` table does not exist or is empty.
+pub fn current_schema_version(conn: &rusqlite::Connection) -> anyhow::Result<i64> {
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_versions'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap_or(false);
+
+    if !table_exists {
+        return Ok(0);
+    }
+
+    let ver: Option<i64> = conn
+        .query_row(
+            "SELECT version FROM schema_versions ORDER BY version DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .ok();
+    Ok(ver.unwrap_or(0))
+}
+
+/// Result of checking schema compatibility on DB open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchemaStatus {
+    /// Schema is current — no action needed.
+    Current,
+    /// Migrations were applied successfully.
+    Migrated { from: i64, to: i64, steps: usize },
+    /// DB is from a newer version — cannot proceed.
+    TooNew { db_version: i64, app_version: i64 },
+    /// DB needs migration but no path exists.
+    NeedsRebuild { db_version: i64, app_version: i64 },
+}
+
+/// Check schema compatibility and run pending migrations if possible.
+///
+/// Called after opening a database.  Returns the current status and any
+/// migration result.
+pub fn check_and_migrate(conn: &rusqlite::Connection) -> anyhow::Result<SchemaStatus> {
+    let db_ver = current_schema_version(conn)?;
+
+    if db_ver == 0 {
+        // Fresh DB or pre-versioning DB — will be initialized by init_schema
+        return Ok(SchemaStatus::Current);
+    }
+
+    if db_ver > CURRENT_SCHEMA_VERSION {
+        return Ok(SchemaStatus::TooNew {
+            db_version: db_ver,
+            app_version: CURRENT_SCHEMA_VERSION,
+        });
+    }
+
+    if db_ver < CURRENT_SCHEMA_VERSION {
+        let steps = run_migrations(conn)?;
+        if steps > 0 {
+            return Ok(SchemaStatus::Migrated {
+                from: db_ver,
+                to: CURRENT_SCHEMA_VERSION,
+                steps,
+            });
+        }
+        // No migration path available
+        return Ok(SchemaStatus::NeedsRebuild {
+            db_version: db_ver,
+            app_version: CURRENT_SCHEMA_VERSION,
+        });
+    }
+
+    Ok(SchemaStatus::Current)
+}
+
 #[cfg(test)]
 mod tests {
     use rusqlite::Connection;
@@ -430,5 +587,46 @@ mod tests {
         assert!(tables.contains(&"symbols_fts".to_string()));
         assert!(tables.contains(&"project_metadata".to_string()));
         assert!(tables.contains(&"schema_versions".to_string()));
+    }
+
+    #[test]
+    fn test_current_schema_version_on_fresh_db_is_zero() {
+        let conn = Connection::open_in_memory().unwrap();
+        // No schema_versions table → version 0
+        let ver = super::current_schema_version(&conn).unwrap();
+        assert_eq!(ver, 0);
+    }
+
+    #[test]
+    fn test_check_and_migrate_current_is_noop() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::SCHEMA_DDL).unwrap();
+        // Record current version (init_schema would do this)
+        conn.execute(
+            "INSERT INTO schema_versions (version, description) VALUES (?1, ?2)",
+            rusqlite::params![super::CURRENT_SCHEMA_VERSION, "v1: test"],
+        ).unwrap();
+
+        let status = super::check_and_migrate(&conn).unwrap();
+        assert_eq!(status, super::SchemaStatus::Current);
+    }
+
+    #[test]
+    fn test_check_and_migrate_too_new_is_detected() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::SCHEMA_DDL).unwrap();
+        conn.execute(
+            "INSERT INTO schema_versions (version, description) VALUES (?1, ?2)",
+            rusqlite::params![999, "future version"],
+        ).unwrap();
+
+        let status = super::check_and_migrate(&conn).unwrap();
+        assert!(matches!(status, super::SchemaStatus::TooNew { .. }));
+    }
+
+    #[test]
+    fn test_migrations_array_is_empty_at_v1() {
+        // V1 is the current version — no migrations needed yet
+        assert!(super::MIGRATIONS.is_empty());
     }
 }

@@ -1,0 +1,98 @@
+{
+  "symbols": [
+    {
+      "name": "main",
+      "kind": "package"
+    },
+    {
+      "name": "Server",
+      "kind": "struct"
+    },
+    {
+      "name": "Start",
+      "kind": "method"
+    },
+    {
+      "name": "main",
+      "kind": "function"
+    },
+    {
+      "name": "srv",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "Server",
+      "kind": "type_reference"
+    },
+    {
+      "text": "int",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Server",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Printf",
+      "kind": "call"
+    },
+    {
+      "text": "Printf",
+      "kind": "field_access"
+    },
+    {
+      "text": "Port",
+      "kind": "field_access"
+    },
+    {
+      "text": "Server",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Start",
+      "kind": "call"
+    },
+    {
+      "text": "Start",
+      "kind": "field_access"
+    }
+  ],
+  "imports": [
+    {
+      "module": "fmt",
+      "imported_name": "fmt"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Method#147",
+      "kind": "method"
+    },
+    {
+      "name": "Block#172",
+      "kind": "block"
+    },
+    {
+      "name": "Function#219",
+      "kind": "function"
+    },
+    {
+      "name": "Block#231",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "Start"
+    },
+    {
+      "caller": "main"
+    }
+  ]
+}

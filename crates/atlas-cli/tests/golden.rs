@@ -255,6 +255,18 @@ fn golden_python_simple() {
     run_golden("python", "simple", "py", Language::Python);
 }
 
+#[cfg(feature = "javascript")]
+#[test]
+fn golden_javascript_simple() {
+    run_golden("javascript", "simple", "js", Language::JavaScript);
+}
+
+#[cfg(feature = "arkts")]
+#[test]
+fn golden_arkts_simple() {
+    run_golden("arkts", "simple", "ets", Language::ArkTS);
+}
+
 // ---------------------------------------------------------------------------
 // P2: Import resolution golden tests
 // ---------------------------------------------------------------------------
@@ -279,4 +291,178 @@ fn golden_c_includes() {
 #[test]
 fn golden_typescript_cfg() {
     run_golden("typescript", "cfg", "ts", Language::TypeScript);
+}
+
+// ---------------------------------------------------------------------------
+// Post-MVP language golden tests (Symbolic level)
+// ---------------------------------------------------------------------------
+
+// -- Go --
+
+#[cfg(feature = "go")]
+#[test]
+fn golden_go_simple() {
+    run_golden("go", "simple", "go", Language::Go);
+}
+
+#[cfg(feature = "go")]
+#[test]
+fn golden_go_imports() {
+    run_golden("go", "imports", "go", Language::Go);
+}
+
+#[cfg(feature = "go")]
+#[test]
+fn golden_go_calls() {
+    run_golden("go", "calls", "go", Language::Go);
+}
+
+#[cfg(feature = "go")]
+#[test]
+fn golden_go_class() {
+    run_golden("go", "class", "go", Language::Go);
+}
+
+// -- C# --
+
+#[cfg(feature = "csharp")]
+#[test]
+fn golden_csharp_simple() {
+    run_golden("csharp", "simple", "cs", Language::CSharp);
+}
+
+#[cfg(feature = "csharp")]
+#[test]
+fn golden_csharp_imports() {
+    run_golden("csharp", "imports", "cs", Language::CSharp);
+}
+
+#[cfg(feature = "csharp")]
+#[test]
+fn golden_csharp_calls() {
+    run_golden("csharp", "calls", "cs", Language::CSharp);
+}
+
+#[cfg(feature = "csharp")]
+#[test]
+fn golden_csharp_class() {
+    run_golden("csharp", "class", "cs", Language::CSharp);
+}
+
+// -- Rust --
+
+#[cfg(feature = "rust")]
+#[test]
+fn golden_rust_simple() {
+    run_golden("rust", "simple", "rs", Language::Rust);
+}
+
+#[cfg(feature = "rust")]
+#[test]
+fn golden_rust_imports() {
+    run_golden("rust", "imports", "rs", Language::Rust);
+}
+
+#[cfg(feature = "rust")]
+#[test]
+fn golden_rust_calls() {
+    run_golden("rust", "calls", "rs", Language::Rust);
+}
+
+#[cfg(feature = "rust")]
+#[test]
+fn golden_rust_class() {
+    run_golden("rust", "class", "rs", Language::Rust);
+}
+
+// -- PHP --
+
+#[cfg(feature = "php")]
+#[test]
+fn golden_php_simple() {
+    run_golden("php", "simple", "php", Language::Php);
+}
+
+#[cfg(feature = "php")]
+#[test]
+fn golden_php_imports() {
+    run_golden("php", "imports", "php", Language::Php);
+}
+
+#[cfg(feature = "php")]
+#[test]
+fn golden_php_calls() {
+    run_golden("php", "calls", "php", Language::Php);
+}
+
+#[cfg(feature = "php")]
+#[test]
+fn golden_php_class() {
+    run_golden("php", "class", "php", Language::Php);
+}
+
+// -- Ruby --
+
+#[cfg(feature = "ruby")]
+#[test]
+fn golden_ruby_simple() {
+    run_golden("ruby", "simple", "rb", Language::Ruby);
+}
+
+#[cfg(feature = "ruby")]
+#[test]
+fn golden_ruby_imports() {
+    run_golden("ruby", "imports", "rb", Language::Ruby);
+}
+
+#[cfg(feature = "ruby")]
+#[test]
+fn golden_ruby_calls() {
+    run_golden("ruby", "calls", "rb", Language::Ruby);
+}
+
+#[cfg(feature = "ruby")]
+#[test]
+fn golden_ruby_class() {
+    run_golden("ruby", "class", "rb", Language::Ruby);
+}
+
+// -- Kotlin --
+
+#[cfg(feature = "kotlin")]
+#[test]
+fn golden_kotlin_simple() {
+    run_golden("kotlin", "simple", "kt", Language::Kotlin);
+}
+
+#[cfg(feature = "kotlin")]
+#[test]
+fn golden_kotlin_imports() {
+    run_golden("kotlin", "imports", "kt", Language::Kotlin);
+}
+
+#[cfg(feature = "kotlin")]
+#[test]
+fn golden_kotlin_calls() {
+    run_golden("kotlin", "calls", "kt", Language::Kotlin);
+}
+
+#[cfg(feature = "kotlin")]
+#[test]
+fn golden_kotlin_class() {
+    run_golden("kotlin", "class", "kt", Language::Kotlin);
+}
+
+// -- Bash (opt-in-only, reduced fixtures) --
+
+#[cfg(feature = "bash")]
+#[test]
+fn golden_bash_simple() {
+    run_golden("bash", "simple", "sh", Language::Bash);
+}
+
+#[cfg(feature = "bash")]
+#[test]
+fn golden_bash_calls() {
+    run_golden("bash", "calls", "sh", Language::Bash);
 }

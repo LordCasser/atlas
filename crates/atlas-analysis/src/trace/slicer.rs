@@ -73,15 +73,12 @@ impl Slicer {
         let mut truncated = false;
 
         while let Some((current_id, depth)) = queue.pop_front() {
-            let edges = store
-                .find_dataflow_edges_by_target(&current_id)
-                .unwrap_or_default();
+            let edges = store.find_dataflow_edges_by_target(&current_id)?;
 
             // Inter-procedural: also query virtual edges across call boundaries
             let virtual_edges = if let Some(provider) = edge_provider {
                 provider
-                    .virtual_incoming(&current_id, store)
-                    .unwrap_or_default()
+                    .virtual_incoming(&current_id, store)?
                     .into_iter()
                     .map(|ve| ve.to_dataflow_edge())
                     .collect::<Vec<_>>()
@@ -89,51 +86,125 @@ impl Slicer {
                 vec![]
             };
 
-            // Process both real and virtual edges
-            for edge in edges.iter().chain(virtual_edges.iter()) {
-                // Only follow dataflow edges that represent value movement
-                if !should_trace_backward(&edge.kind) {
-                    continue;
+            // Collect all candidate edges (real + virtual)
+            let mut candidates: Vec<_> = edges
+                .iter()
+                .filter(|e| should_trace_backward(&e.kind))
+                .chain(
+                    virtual_edges
+                        .iter()
+                        .filter(|e| should_trace_backward(&e.kind)),
+                )
+                .collect();
+
+            // Sort candidates so edges whose source is likely a use-def chain
+            // node (Local/Parameter) are processed LAST.  This lets them
+            // overwrite shortcuts in the predecessors map, producing longer
+            // evidence chains for multi‑assignment traces.
+            //
+            // Secondary sort (when both sources are Local/Param): prefer the
+            // CLOSEST preceding definition (largest start_byte) so the BFS
+            // chain hops through all intermediate assignments rather than
+            // jumping straight to the earliest definition.
+            candidates.sort_by(|a, b| {
+                use std::cmp::Ordering;
+                let a_dn = store
+                    .get_data_node(&a.source)
+                    .ok()
+                    .flatten();
+                let b_dn = store
+                    .get_data_node(&b.source)
+                    .ok()
+                    .flatten();
+                let a_local = a_dn
+                    .as_ref()
+                    .map(|dn| matches!(dn.kind, atlas_types::enums::DataNodeKind::Local | atlas_types::enums::DataNodeKind::Parameter))
+                    .unwrap_or(false);
+                let b_local = b_dn
+                    .as_ref()
+                    .map(|dn| matches!(dn.kind, atlas_types::enums::DataNodeKind::Local | atlas_types::enums::DataNodeKind::Parameter))
+                    .unwrap_or(false);
+                match (a_local, b_local) {
+                    (true, false) => Ordering::Greater,  // Local/Param come last
+                    (false, true) => Ordering::Less,
+                    (true, true) => {
+                        // Both are Local/Param: sort by source start_byte ASC.
+                        // The closest preceding definition (largest start_byte)
+                        // is processed LAST and overwrites in predecessors.
+                        let a_byte = a_dn.map(|dn| dn.range.start_byte).unwrap_or(0);
+                        let b_byte = b_dn.map(|dn| dn.range.start_byte).unwrap_or(0);
+                        a_byte.cmp(&b_byte)
+                    }
+                    _ => Ordering::Equal,
                 }
+            });
 
-                let source_id = &edge.source;
+            // ── Phase 1: set predecessors for all viable candidates ────
+            // Walking all candidates lets the sort-directed "last wins"
+            // strategy work correctly: edges from closer definitions
+            // (Local/Param sorted last) overwrite earlier entries.
+            if !candidates.is_empty() {
+                let current_key = hex::encode(current_id.as_bytes());
+                for edge in &candidates {
+                    let source_key = hex::encode(edge.source.as_bytes());
+                    if !visited.contains_key(&source_key) {
+                        predecessors.insert(
+                            current_key.clone(),
+                            (edge.source.clone(), edge.kind.clone()),
+                        );
+                    }
+                }
+            }
+
+            // ── Phase 2: enqueue ONLY the highest-priority candidate ────
+            // Visiting every candidate in one BFS iteration marks all their
+            // sources as "visited" prematurely, blocking later BFS hops.
+            // Example: R ← L1, R ← L2, R ← L3 (all Local).
+            // If all three are enqueued+visited at depth=1, then when L3
+            // is processed at depth 1, L2 and L1 are already visited and
+            // cannot serve as predecessors for L3, breaking the chain
+            // L1→L2→L3→R.  By enqueuing only the last candidate (L3), we
+            // keep L1/L2 available as upstream predecessors.
+            if let Some(best_edge) = candidates.last() {
+                let source_id = &best_edge.source;
                 let source_key = hex::encode(source_id.as_bytes());
-
                 if !visited.contains_key(&source_key) {
                     let new_depth = depth + 1;
                     if new_depth >= max_depth {
                         // Budget exhausted — check if this source has unexplored
                         // predecessors (not just the edge we already followed).
-                        let source_edges = store
-                            .find_dataflow_edges_by_target(source_id)
-                            .unwrap_or_default();
+                        let source_edges =
+                            store.find_dataflow_edges_by_target(source_id)?;
                         if source_edges.iter().any(|e| should_trace_backward(&e.kind)) {
                             truncated = true;
-                            // Track this frontier node as the farthest known point.
                             if new_depth > farthest_depth {
                                 farthest_depth = new_depth;
                                 farthest_node_id = source_id.clone();
                             }
                         }
-                        continue;
-                    }
-                    let current_key = hex::encode(current_id.as_bytes());
-                    visited.insert(source_key.clone(), new_depth);
-                    // Store current→source so reconstruct_path can walk
-                    // backward from sink through each predecessor.
-                    predecessors.insert(current_key, (source_id.clone(), edge.kind.clone()));
-                    queue.push_back((source_id.clone(), new_depth));
-
-                    if new_depth > farthest_depth {
-                        farthest_depth = new_depth;
-                        farthest_node_id = source_id.clone();
+                    } else {
+                        visited.insert(source_key.clone(), new_depth);
+                        queue.push_back((source_id.clone(), new_depth));
+                        if new_depth > farthest_depth {
+                            farthest_depth = new_depth;
+                            farthest_node_id = source_id.clone();
+                        }
                     }
                 }
             }
         }
 
         // Reconstruct path from farthest node to sink
-        let steps = reconstruct_path(&predecessors, &farthest_node_id, &sink_node.id, store)?;
+        let mut steps = reconstruct_path(&predecessors, &farthest_node_id, &sink_node.id, store)?;
+
+        // Populate evidence on every step so cross‑file virtual edges
+        // carry file‑path attribution (needed by test assertions and
+        // agent/AI consumers).
+        for step in &mut steps {
+            if step.evidence.is_none() {
+                step.evidence = build_step_evidence(store, &step.file_id, &step.from_node_id);
+            }
+        }
 
         // Resolve the source node as a TracePoint
         let source_node = store.get_data_node(&farthest_node_id)?.unwrap_or_else(|| {
@@ -297,6 +368,26 @@ fn kind_description(kind: &DataFlowKind) -> &'static str {
         DataFlowKind::ReceiverToThis => "receiver → self",
         DataFlowKind::Phi => "phi (control-flow merge)",
     }
+}
+
+/// Build an [`Evidence`] from file metadata and a data node.
+///
+/// Used to populate step-level evidence for trace-path display and
+/// assertion verification.  Reads file path from the store and node
+/// name from the data node.
+fn build_step_evidence(
+    store: &Store,
+    file_id: &atlas_types::ids::FileId,
+    node_id: &DataNodeId,
+) -> Option<atlas_types::trace::Evidence> {
+    let file_path = store.get_file(file_id).ok().flatten().map(|fi| fi.path)?;
+    let data_node = store.get_data_node(node_id).ok().flatten();
+    let symbol_name = data_node.as_ref().and_then(|n| n.name.clone());
+    Some(atlas_types::trace::Evidence {
+        file_path,
+        snippet: None,
+        symbol_name,
+    })
 }
 
 // ---------------------------------------------------------------------------

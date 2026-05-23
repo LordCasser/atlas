@@ -1,0 +1,72 @@
+{
+  "symbols": [
+    {
+      "name": "main",
+      "kind": "function"
+    },
+    {
+      "name": "items",
+      "kind": "property"
+    },
+    {
+      "name": "items",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "listOf",
+      "kind": "call"
+    },
+    {
+      "text": "println",
+      "kind": "call"
+    },
+    {
+      "text": "items",
+      "kind": "field_access"
+    },
+    {
+      "text": "println",
+      "kind": "call"
+    },
+    {
+      "text": "Date",
+      "kind": "call"
+    }
+  ],
+  "imports": [
+    {
+      "module": "kotlin.collections.listOf",
+      "imported_name": "listOf"
+    },
+    {
+      "module": "java.util.Date",
+      "imported_name": "Date"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Block#67",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "main"
+    },
+    {
+      "caller": "main"
+    },
+    {
+      "caller": "main"
+    },
+    {
+      "caller": "main"
+    }
+  ]
+}
