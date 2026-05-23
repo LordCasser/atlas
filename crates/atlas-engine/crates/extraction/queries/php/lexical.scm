@@ -1,12 +1,10 @@
-;; PHP lexical binding captures: parameters, locals, foreach vars, catch vars
+;; PHP lexical binding captures: parameters, foreach vars, catch vars, static vars
+;; Note: assignment LHS ($x = ...) is NOT treated as a binding definition —
+;; only explicit declaration points (param, foreach, catch, static) create BindingDefs.
 
 ;; --- Function/method parameters ---
 (parameter
   name: (variable_name) @lexical.parameter)
-
-;; --- Local variable assignments ($x = expr) ---
-(assignment_expression
-  left: (variable_name) @lexical.local)
 
 ;; --- Foreach loop variable (foreach ($a as $v)) ---
 (foreach_statement
