@@ -491,6 +491,25 @@ fn normalize_rust_dataflow_builder(capture_name: &str, node: tree_sitter::Node, 
             let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, if capture_name == "df.literal" { "literal" } else { "receiver" }, Some(&text), None, range.start_byte);
             (Some(DataNode { id: node_id, file_id, function_id: None, kind: if capture_name == "df.literal" { DataNodeKind::Literal } else { DataNodeKind::Receiver }, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range }), None)
         },
+        "df.identifier_use" => {
+            // Skip identifiers that are parameter names or declaration names
+            let text = node_text(node, source).unwrap_or_default();
+            if text.is_empty() {
+                return (None, None);
+            }
+            let node_id = DataNodeId::generate(
+                &file_id, None::<&SymbolId>, "identifier_use",
+                Some(&text), Some(&text), range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id, file_id, function_id: None,
+                kind: DataNodeKind::VariableUse,
+                binding_id: None, callsite_id: None,
+                name: Some(text.clone()), access_path: Some(text),
+                arg_index: None, range,
+            };
+            (Some(dn), None)
+        }
         _ => (None, None),
     }
 }

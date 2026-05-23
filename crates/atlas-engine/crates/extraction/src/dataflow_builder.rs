@@ -314,29 +314,60 @@ fn walk_for_assign_edges(
             node.child_by_field_name("name"),
             node.child_by_field_name("value"),
         ) {
-            let name_key = (
-                name_node.start_byte() as u32,
-                name_node.end_byte() as u32,
-                DataNodeKind::Local,
-            );
-            let value_key = (
-                value_node.start_byte() as u32,
-                value_node.end_byte() as u32,
-                DataNodeKind::Expr,
-            );
-            if let (Some(&target_id), Some(&source_id)) =
-                (pos_map.get(&name_key), pos_map.get(&value_key))
-            {
-                let edge_id =
-                    DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
-                edges.push(DataFlowEdge::new(
-                    edge_id,
-                    source_id,
-                    target_id,
-                    DataFlowKind::Assign,
-                    ts_node_range(&name_node),
-                    0.95,
-                ));
+            let name_kind = name_node.kind();
+            if name_kind == "object_pattern" || name_kind == "array_pattern" {
+                // Destructuring: each binding gets edge from the initializer Expr
+                // Walk the pattern to find all identifier bindings and create
+                // Assign edges: initializer_Expr → each_destructured_Local
+                let value_key = (
+                    value_node.start_byte() as u32,
+                    value_node.end_byte() as u32,
+                    DataNodeKind::Expr,
+                );
+                if let Some(&source_id) = pos_map.get(&value_key) {
+                    let mut bindings: Vec<tree_sitter::Node> = Vec::new();
+                    collect_pattern_bindings(name_node, &mut bindings);
+                    for binding_node in &bindings {
+                        let bind_key = (
+                            binding_node.start_byte() as u32,
+                            binding_node.end_byte() as u32,
+                            DataNodeKind::Local,
+                        );
+                        if let Some(&target_id) = pos_map.get(&bind_key) {
+                            let edge_id = DataFlowEdgeId::generate(
+                                &source_id, &target_id, DataFlowKind::Assign.as_str(),
+                            );
+                            edges.push(DataFlowEdge::new(
+                                edge_id, source_id, target_id,
+                                DataFlowKind::Assign,
+                                ts_node_range(binding_node), 0.85,
+                            ));
+                        }
+                    }
+                }
+            } else {
+                // Simple variable declarator: name (Local) ← value (Expr)
+                let name_key = (
+                    name_node.start_byte() as u32,
+                    name_node.end_byte() as u32,
+                    DataNodeKind::Local,
+                );
+                let value_key = (
+                    value_node.start_byte() as u32,
+                    value_node.end_byte() as u32,
+                    DataNodeKind::Expr,
+                );
+                if let (Some(&target_id), Some(&source_id)) =
+                    (pos_map.get(&name_key), pos_map.get(&value_key))
+                {
+                    let edge_id =
+                        DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+                    edges.push(DataFlowEdge::new(
+                        edge_id, source_id, target_id,
+                        DataFlowKind::Assign,
+                        ts_node_range(&name_node), 0.95,
+                    ));
+                }
             }
         }
     }
@@ -844,6 +875,34 @@ fn base_name_from_access_path(raw: &str) -> &str {
         }
     }
     raw
+}
+
+/// Recursively collect all identifier binding nodes from a destructuring pattern
+/// (object_pattern, array_pattern, pair_pattern, rest_pattern).
+fn collect_pattern_bindings<'a>(pattern_node: tree_sitter::Node<'a>, out: &mut Vec<tree_sitter::Node<'a>>) {
+    match pattern_node.kind() {
+        "identifier" => { out.push(pattern_node); }
+        "shorthand_property_identifier_pattern" => { out.push(pattern_node); }
+        "pair_pattern" => {
+            if let Some(value_node) = pattern_node.child_by_field_name("value") {
+                collect_pattern_bindings(value_node, out);
+            }
+        }
+        "object_pattern" | "array_pattern" | "rest_pattern" => {
+            for i in 0..pattern_node.child_count() {
+                if let Some(child) = pattern_node.child(i) {
+                    collect_pattern_bindings(child, out);
+                }
+            }
+        }
+        _ => {
+            for i in 0..pattern_node.child_count() {
+                if let Some(child) = pattern_node.child(i) {
+                    collect_pattern_bindings(child, out);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

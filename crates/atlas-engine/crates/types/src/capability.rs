@@ -514,7 +514,7 @@ mod profiles {
                 symbols: FeatureSupport::supported_with_confidence(0.50),
                 references: FeatureSupport::supported_with_confidence(0.50),
                 imports: FeatureSupport::supported_with_confidence(0.50),
-                scopes: FeatureSupport::unsupported("scope query not implemented for Python"),
+                scopes: FeatureSupport::supported_with_confidence(0.50),
                 call_graph: FeatureSupport::supported_with_confidence(0.50),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
                     0.45,

@@ -488,6 +488,25 @@ fn normalize_php_dataflow_builder(capture_name: &str, node: tree_sitter::Node, s
                 }
             }).unwrap_or((None, None))
         },
+        "df.identifier_use" => {
+            // Skip identifiers that are parameter names or declaration names
+            let text = node_text(node, source).unwrap_or_default();
+            if text.is_empty() {
+                return (None, None);
+            }
+            let node_id = DataNodeId::generate(
+                &file_id, None::<&SymbolId>, "identifier_use",
+                Some(&text), Some(&text), range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id, file_id, function_id: None,
+                kind: DataNodeKind::VariableUse,
+                binding_id: None, callsite_id: None,
+                name: Some(text.clone()), access_path: Some(text),
+                arg_index: None, range,
+            };
+            (Some(dn), None)
+        }
         _ => (None, None),
     }
 }
