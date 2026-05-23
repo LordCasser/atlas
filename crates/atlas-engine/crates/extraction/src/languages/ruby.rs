@@ -215,13 +215,13 @@ impl ScopeExtractorSpec for RubyAdapter {
 
 impl LexicalBindingSpec for RubyAdapter {
     fn lexical_query(&self) -> &str {
-        ""
+        include_str!("../../queries/ruby/lexical.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::unsupported("Ruby does not support lexical binding extraction")
+        FeatureSupport::supported_with_limitations(0.45, vec!["name-based binding (no proper shadowing)"])
     }
-    fn normalize(&self, _ctx: NormalizeCtx<'_>, _capture: Capture<'_>) -> Option<BindingDef> {
-        None
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
+        normalize_ruby_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
 }
 

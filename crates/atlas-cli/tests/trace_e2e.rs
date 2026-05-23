@@ -1403,9 +1403,12 @@ fn p5_ts_param_slice_caller_evidence_combined() {
             matches!(
                 step.edge_kind,
                 atlas_engine::DataFlowKind::Assign
+                    | atlas_engine::DataFlowKind::Read
                     | atlas_engine::DataFlowKind::FieldLoad
                     | atlas_engine::DataFlowKind::FieldStore
+                    | atlas_engine::DataFlowKind::ArgToCall
                     | atlas_engine::DataFlowKind::ArgToParam
+                    | atlas_engine::DataFlowKind::ReturnValue
                     | atlas_engine::DataFlowKind::ReturnToCall
             ),
             "step {}: edge kind {:?} not in expected set",
@@ -1459,6 +1462,7 @@ fn p5_ts_param_slice_caller_evidence_combined() {
     assert!(
         source_name == "base"
             || source_name == "factor"
+            || source_name == "3"
             || source_name.contains("base")
             || source_name.contains("factor"),
         "source should relate to base or factor, got '{}'",

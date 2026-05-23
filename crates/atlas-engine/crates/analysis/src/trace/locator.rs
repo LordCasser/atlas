@@ -7,7 +7,8 @@
 
 use db::{CallGraphReader, DataflowReader, SymbolReader};
 use types::bindings::{BindingDef, BindingUse};
-use types::enums::ReferenceKind;
+use types::dataflow::DataNode;
+use types::enums::{DataNodeKind, ReferenceKind};
 use types::ids::{DataNodeId, FileId};
 use types::structs::{Callsite, ReferenceUse, TextRange};
 use types::trace::{TraceDataNodeRef, TracePoint};
@@ -57,11 +58,11 @@ impl Locator {
         let scopes = store.find_scopes_by_file(file_id)?;
         let scope = find_innermost_at_position(&scopes, |s| &s.range, line0, col0).cloned();
 
-        // 4. Find the data node at this position (prefer the most specific,
-        //    i.e. the one with the smallest byte range)
+        // 4. Find the data node at this position using semantic priority
+        //    (prefer CallArg over VariableUse, etc.) then smallest byte range.
         let data_nodes = store.find_data_nodes_by_file(file_id)?;
         let data_node =
-            find_innermost_at_position(&data_nodes, |dn| &dn.range, line0, col0).cloned();
+            find_best_data_node_at_position(&data_nodes, line0, col0).cloned();
 
         // 5. Collect incoming and outgoing dataflow edges
         let (incoming, outgoing) = if let Some(ref dn) = data_node {
@@ -123,6 +124,53 @@ where
         if range_contains(range, line, column) {
             let span = range.end_byte.saturating_sub(range.start_byte);
             if span < best_span {
+                best_span = span;
+                best = Some(item);
+            }
+        }
+    }
+    best
+}
+
+/// Semantic priority for data node kinds.
+/// Lower number = higher priority (preferred when multiple nodes match a position).
+fn data_node_priority(kind: DataNodeKind) -> u8 {
+    match kind {
+        DataNodeKind::CallArg => 0,
+        DataNodeKind::Field => 1,
+        DataNodeKind::Local => 2,
+        DataNodeKind::Parameter => 3,
+        DataNodeKind::Return => 4,
+        DataNodeKind::CallTarget => 5,
+        DataNodeKind::VariableUse => 6,
+        DataNodeKind::Expr => 7,
+        DataNodeKind::Literal => 8,
+        DataNodeKind::Receiver => 9,
+        _ => 10,
+    }
+}
+
+/// Find the best DataNode at a position using semantic priority then byte span.
+/// When multiple nodes (e.g., CallArg and VariableUse) share overlapping ranges,
+/// the one with lower priority number wins.
+fn find_best_data_node_at_position<'a>(
+    items: &'a [DataNode],
+    line: u32,
+    column: u32,
+) -> Option<&'a DataNode> {
+    let mut best: Option<&DataNode> = None;
+    let mut best_priority: u8 = u8::MAX;
+    let mut best_span: u32 = u32::MAX;
+
+    for item in items {
+        let range = &item.range;
+        if range_contains(range, line, column) {
+            let priority = data_node_priority(item.kind);
+            let span = range.end_byte.saturating_sub(range.start_byte);
+            if priority < best_priority
+                || (priority == best_priority && span < best_span)
+            {
+                best_priority = priority;
                 best_span = span;
                 best = Some(item);
             }

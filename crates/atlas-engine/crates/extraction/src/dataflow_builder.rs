@@ -341,35 +341,45 @@ fn walk_for_assign_edges(
         }
     }
 
-    // assignment_expression (TS/JS): left (Local) ← right (Expr)
-    // assignment (Python):           left (Local) ← right (Expr)
+    // assignment_expression (TS/JS): left (Local/Field) ← right (Expr)
+    // assignment (Python):           left (Local)  ← right (Expr)
     if kind == "assignment_expression" || kind == "assignment" {
         if let (Some(left_node), Some(right_node)) = (
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
         ) {
-            let left_key = (
-                left_node.start_byte() as u32,
-                left_node.end_byte() as u32,
-                DataNodeKind::Local,
-            );
+            // Try Field target first (obj.field = value), then Local (x = value)
+            let left_start = left_node.start_byte() as u32;
+            let left_end = left_node.end_byte() as u32;
+            let (target_id, edge_kind) = if let Some(&id) = pos_map
+                .get(&(left_start, left_end, DataNodeKind::Field))
+            {
+                (id, DataFlowKind::FieldStore)
+            } else if let Some(&id) = pos_map
+                .get(&(left_start, left_end, DataNodeKind::Local))
+            {
+                (id, DataFlowKind::Assign)
+            } else {
+                // Neither Field nor Local target found in pos_map
+                // Recurse to process children
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        walk_for_assign_edges(child, _source, pos_map, _all_nodes, edges);
+                    }
+                }
+                return;
+            };
             let right_key = (
                 right_node.start_byte() as u32,
                 right_node.end_byte() as u32,
                 DataNodeKind::Expr,
             );
-            if let (Some(&target_id), Some(&source_id)) =
-                (pos_map.get(&left_key), pos_map.get(&right_key))
-            {
+            if let Some(&source_id) = pos_map.get(&right_key) {
                 let edge_id =
-                    DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+                    DataFlowEdgeId::generate(&source_id, &target_id, edge_kind.as_str());
                 edges.push(DataFlowEdge::new(
-                    edge_id,
-                    source_id,
-                    target_id,
-                    DataFlowKind::Assign,
-                    ts_node_range(&left_node),
-                    0.95,
+                    edge_id, source_id, target_id, edge_kind,
+                    ts_node_range(&left_node), 0.90,
                 ));
             }
         }
@@ -426,7 +436,7 @@ fn build_dataflow_edges(
 
     for field_node in &field_nodes {
         if let Some(ref access_path) = field_node.access_path {
-            let base_name = access_path.split('.').next().unwrap_or(access_path);
+            let base_name = base_name_from_access_path(access_path);
 
             // Find the best-matching base node within the same function.
             // Prefer binding_id match; fall back to name-only.
@@ -703,7 +713,8 @@ fn resolve_use_def(data_nodes: &[DataNode]) -> Vec<DataFlowEdge> {
                 // x = a; x = b; return x).
                 if matches!(
                     use_node.kind,
-                    DataNodeKind::Expr
+                    DataNodeKind::VariableUse
+                        | DataNodeKind::Expr
                         | DataNodeKind::CallArg
                         | DataNodeKind::Field
                         | DataNodeKind::Return
@@ -804,6 +815,35 @@ pub(crate) fn resolve_dataflow_function_ids(nodes: &mut [DataNode], symbols: &[S
             node.function_id = Some(id);
         }
     }
+}
+
+/// Extract the base variable name from an access path string.
+///
+/// Handles common field access syntax across languages:
+/// - Dot: `obj.field` → `obj`
+/// - Arrow: `ptr->field` → `ptr`
+/// - Bracket/Index: `arr[i]`, `params[:name]`, `$_GET["name"]` → `arr` / `params` / `$_GET`
+/// - Static: `Class::method` → `Class`
+/// - Optional: `obj?.field` → `obj`
+fn base_name_from_access_path(raw: &str) -> &str {
+    // Find the first separator character
+    for (i, c) in raw.char_indices() {
+        match c {
+            '.' | '-' | '[' | ':' | '?' => {
+                if i > 0 {
+                    return &raw[..i];
+                }
+            }
+            _ => {}
+        }
+        // Handle "->" as two chars
+        if c == '-' && raw.as_bytes().get(i + 1) == Some(&b'>') {
+            if i > 0 {
+                return &raw[..i];
+            }
+        }
+    }
+    raw
 }
 
 #[cfg(test)]

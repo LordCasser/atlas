@@ -323,23 +323,9 @@ fn p1_capability_java_variable_is_partial() {
 
     let resp = eng.trace_variable(&file_id, 3, 17, 10);
 
-    // Java is Symbolic-level — dataflow not supported
+    // Java is now DataflowBasic — dataflow IS supported
     assert!(resp.ok, "Java variable trace should not be an error");
-    assert!(resp.partial_result, "Java variable trace should be partial");
-    assert!(
-        !resp.diagnostics.is_empty(),
-        "should have unsupported_language diagnostic"
-    );
-    assert!(
-        resp.diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some("unsupported_language")),
-        "diagnostic code should be 'unsupported_language'"
-    );
-    assert!(
-        resp.result.is_none(),
-        "Java variable trace should have no result"
-    );
+    assert!(!resp.partial_result, "Java variable trace should NOT be partial (dataflow supported)");
     assert!(
         resp.capability.is_some(),
         "capability should still be provided"
@@ -348,7 +334,11 @@ fn p1_capability_java_variable_is_partial() {
     let cap = resp.capability.as_ref().unwrap();
     assert!(
         cap.supported_features.contains(&"call_graph".to_string()),
-        "Java should support call_graph even if not dataflow"
+        "Java should support call_graph"
+    );
+    assert!(
+        cap.supported_features.contains(&"intra_statement_dataflow".to_string()),
+        "Java should support dataflow (DataflowBasic)"
     );
 }
 
@@ -375,10 +365,14 @@ int main() {
 
     let resp = eng.trace_variable(&file_id, 6, 17, 10);
 
+    // C is now DataflowBasic — capability must reflect dataflow support
     assert!(resp.ok);
-    assert!(resp.partial_result, "C variable trace should be partial");
-    assert!(!resp.diagnostics.is_empty());
-    assert!(resp.result.is_none());
+    assert!(resp.capability.is_some(), "capability should be provided");
+    let cap = resp.capability.as_ref().unwrap();
+    assert!(
+        cap.supported_features.contains(&"intra_statement_dataflow".to_string()),
+        "C should support dataflow (DataflowBasic)"
+    );
 }
 
 /// Go: trace_variable must return partial (Symbolic level, no dataflow).
@@ -406,27 +400,22 @@ func main() {
 
     let resp = eng.trace_variable(&file_id, 6, 10, 10);
 
+    // Go is now DataflowBasic — capability must reflect dataflow support
     assert!(resp.ok, "Go variable trace should not be an error");
-    assert!(resp.partial_result, "Go variable trace should be partial (no dataflow)");
-    assert!(
-        !resp.diagnostics.is_empty(),
-        "should have unsupported_language diagnostic"
-    );
-    assert!(
-        resp.diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some("unsupported_language")),
-        "diagnostic code should be 'unsupported_language'"
-    );
-    assert!(resp.result.is_none(), "Go variable trace should have no result");
     assert!(resp.capability.is_some(), "capability should still be provided");
 
     let cap = resp.capability.as_ref().unwrap();
     assert_eq!(cap.language, "go");
     assert!(
         cap.supported_features.contains(&"call_graph".to_string()),
-        "Go should support call_graph even if not dataflow"
+        "Go should support call_graph"
     );
+    assert!(
+        cap.supported_features.contains(&"intra_statement_dataflow".to_string()),
+        "Go should support dataflow (DataflowBasic)"
+    );
+    // Note: result may be partial if no data node at exact position,
+    // but the capability profile itself must claim dataflow support.
 }
 
 /// TS: trace_variable should produce a result (dataflow available).

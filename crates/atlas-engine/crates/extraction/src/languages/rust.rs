@@ -212,13 +212,13 @@ impl ScopeExtractorSpec for RustAdapter {
 
 impl LexicalBindingSpec for RustAdapter {
     fn lexical_query(&self) -> &str {
-        ""
+        include_str!("../../queries/rust/lexical.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::unsupported("Rust does not support lexical binding extraction")
+        FeatureSupport::supported_with_limitations(0.55, vec!["name-based binding (no proper shadowing)"])
     }
-    fn normalize(&self, _ctx: NormalizeCtx<'_>, _capture: Capture<'_>) -> Option<BindingDef> {
-        None
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
+        normalize_rust_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
 }
 
