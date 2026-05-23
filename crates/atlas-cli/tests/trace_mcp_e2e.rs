@@ -18,11 +18,11 @@
 #![cfg(feature = "mcp")]
 
 use atlas_cli::commands::{index, init};
-use atlas_context::ContextBuilder;
+use atlas_engine::ContextBuilder;
 use atlas_engine::Store;
 use atlas_engine::GraphEngine;
 use atlas_mcp::tools::ToolRouter;
-use atlas_search::SearchEngine;
+use atlas_engine::SearchEngine;
 use atlas_engine::ids::{FileId, SymbolId};
 use serde_json::{Value, json};
 use std::path::Path;

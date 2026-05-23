@@ -9,9 +9,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use atlas_context::ContextBuilder;
+use atlas_engine::ContextBuilder;
 use atlas_engine::Store;
-use atlas_search::SearchEngine;
+use atlas_engine::SearchEngine;
 use atlas_engine::SymbolId;
 use atlas_engine::FileId;
 

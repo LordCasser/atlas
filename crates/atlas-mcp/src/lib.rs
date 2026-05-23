@@ -14,10 +14,10 @@
 
 use std::sync::Arc;
 
-use atlas_context::ContextBuilder;
+use atlas_engine::ContextBuilder;
 use atlas_engine::Store;
 use atlas_engine::GraphEngine;
-use atlas_search::SearchEngine;
+use atlas_engine::SearchEngine;
 use atlas_engine::Workspace;
 
 use self::protocol::{Response, ServerCapabilities, ServerInfo, ToolsCapability};

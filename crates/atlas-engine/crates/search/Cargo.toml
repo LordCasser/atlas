@@ -1,0 +1,19 @@
+[package]
+name = "search"
+version = "0.1.0"
+edition = "2024"
+description = "Atlas fuzzy search engine — query parsing, substring/fuzzy matching, scoring"
+license = "MIT"
+
+[dependencies]
+types = { path = "../types" }
+db = { path = "../db" }
+graph = { path = "../graph" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+cangjie = []  # enables Cangjie-specific keyword search (language-specific)

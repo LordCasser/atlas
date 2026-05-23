@@ -1,0 +1,33 @@
+[package]
+name = "types"
+version = "0.1.0"
+edition = "2024"
+description = "Atlas core type system: IDs, enums, and the Intermediate Representation (IR)"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+blake3 = "1"
+hex = "0.4"
+rusqlite = { version = "0.39", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[features]
+# Language features (boolean flags for capability profiles and enum variants)
+typescript = []
+python = []
+java = []
+c = []
+cpp = []
+arkts = []
+cangjie = []
+go = []
+csharp = []
+rust = []
+php = []
+ruby = []
+bash = []
+kotlin = []

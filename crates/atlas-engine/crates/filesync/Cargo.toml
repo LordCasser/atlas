@@ -1,0 +1,25 @@
+[package]
+name = "filesync"
+version = "0.1.0"
+edition = "2024"
+description = "Atlas file watcher and incremental sync engine"
+license = "MIT"
+
+[dependencies]
+types = { path = "../types" }
+db = { path = "../db" }
+extraction = { path = "../extraction" }
+graph = { path = "../graph" }
+resolution = { path = "../resolution" }
+workspace = { path = "../workspace" }
+anyhow = "1"
+blake3 = "1"
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+notify = { version = "7", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+sync = ["dep:notify"]

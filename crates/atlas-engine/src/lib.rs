@@ -31,29 +31,35 @@ use std::sync::Arc;
 // ─── Re-exports ────────────────────────────────────────────────────────────
 
 /// All core IR types (SymbolDef, ReferenceUse, FileFacts, etc.).
-pub use atlas_types::*;
+pub use types::*;
 /// Database store and schema version.
-pub use atlas_db::{CURRENT_SCHEMA_VERSION, Store, MIGRATIONS};
+pub use db::{CURRENT_SCHEMA_VERSION, Store, MIGRATIONS};
 /// Workspace abstractions.
-pub use atlas_workspace::{ProjectRoot, SourcePath, Workspace};
+pub use workspace::{ProjectRoot, SourcePath, Workspace};
 /// Extraction layer: language frontends, parser pool, grammar registry.
-pub use atlas_extraction::{
+pub use extraction::{
     LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig, create_frontend,
     extract_file,
 };
 /// Resolution layer: reference resolver, path aliases, config hashing.
-pub use atlas_resolution::{
+pub use resolution::{
     PathAliasResolver, ReferenceResolver, ResolutionStats, commit_config_hashes,
     detect_config_change,
 };
 /// Graph layer: graph builder, query engine, snapshots.
-pub use atlas_graph::{
+pub use graph::{
     GraphBuilder, GraphBuilderStats, GraphEngine, GraphSnapshot, NodeIx, TraversalConfig,
     TraversalDirection,
 };
 /// Analysis layer: trace engine and query responses.
-pub use atlas_analysis::trace;
-pub use atlas_analysis::trace::{TraceEngine, TraceQueryResponse};
+pub use analysis::trace;
+pub use analysis::trace::{TraceEngine, TraceQueryResponse};
+/// Search layer: FTS5 + fuzzy search engine.
+pub use search::{SearchEngine, SearchOptions};
+/// Context layer: AI context builder (callers, callees, peers).
+pub use context::ContextBuilder;
+/// Sync layer: incremental sync engine, file lock, file discovery.
+pub use filesync::{SyncEngine, SyncStats, FileLock, discovery};
 
 // ─── Engine ────────────────────────────────────────────────────────────────
 
@@ -71,7 +77,7 @@ pub use atlas_analysis::trace::{TraceEngine, TraceQueryResponse};
 /// ```
 pub struct Engine {
     store: Arc<Store>,
-    trace: atlas_analysis::trace::TraceEngine,
+    trace: analysis::trace::TraceEngine,
 }
 
 impl Engine {
@@ -84,7 +90,7 @@ impl Engine {
     pub fn open(db_path: &Path) -> anyhow::Result<Self> {
         let store = Store::open_db(db_path)?;
         let store = Arc::new(store);
-        let trace = atlas_analysis::trace::TraceEngine::new(store.clone());
+        let trace = analysis::trace::TraceEngine::new(store.clone());
         Ok(Self { store, trace })
     }
 
@@ -95,7 +101,7 @@ impl Engine {
     pub fn open_with_root(db_path: &Path, project_root: &Path) -> anyhow::Result<Self> {
         let store = Store::open_db(db_path)?;
         let store = Arc::new(store);
-        let trace = atlas_analysis::trace::TraceEngine::new_with_root(store.clone(), project_root.to_path_buf());
+        let trace = analysis::trace::TraceEngine::new_with_root(store.clone(), project_root.to_path_buf());
         Ok(Self { store, trace })
     }
 
@@ -104,7 +110,7 @@ impl Engine {
         let store = Store::open_in_memory()?;
         store.init_schema()?;
         let store = Arc::new(store);
-        let trace = atlas_analysis::trace::TraceEngine::new(store.clone());
+        let trace = analysis::trace::TraceEngine::new(store.clone());
         Ok(Self { store, trace })
     }
 
@@ -114,7 +120,7 @@ impl Engine {
     }
 
     /// Access the underlying trace engine.
-    pub fn trace_engine(&self) -> &atlas_analysis::trace::TraceEngine {
+    pub fn trace_engine(&self) -> &analysis::trace::TraceEngine {
         &self.trace
     }
 
@@ -125,11 +131,11 @@ impl Engine {
     /// Returns [`FileFacts`] containing symbols, references, imports, scopes,
     /// and (if supported) dataflow facts.  Does NOT write to the database.
     pub fn extract_file(&self, path: &Path, source: &str, language: Language) -> anyhow::Result<FileFacts> {
-        let frontend = atlas_extraction::create_frontend(language)
+        let frontend = extraction::create_frontend(language)
             .ok_or_else(|| anyhow::anyhow!("Language frontend not available for {:?}", language))?;
         let file_id = FileId::generate(path.to_string_lossy().as_ref());
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
-        let facts = atlas_extraction::extract_file(&frontend, file_id, path, source, &content_hash)?;
+        let facts = extraction::extract_file(&frontend, file_id, path, source, &content_hash)?;
         Ok(facts)
     }
 
@@ -162,7 +168,7 @@ impl Engine {
         file_id: &FileId,
         line: u32,
         column: u32,
-    ) -> atlas_analysis::trace::TraceQueryResponse<TracePoint> {
+    ) -> analysis::trace::TraceQueryResponse<TracePoint> {
         self.trace.trace_point(file_id, line, column)
     }
 
@@ -177,7 +183,7 @@ impl Engine {
         line: u32,
         column: u32,
         max_depth: usize,
-    ) -> atlas_analysis::trace::TraceQueryResponse<TracePath> {
+    ) -> analysis::trace::TraceQueryResponse<TracePath> {
         self.trace.trace_variable(file_id, line, column, max_depth)
     }
 
@@ -189,7 +195,7 @@ impl Engine {
         &self,
         target_id: &SymbolId,
         max_depth: usize,
-    ) -> atlas_analysis::trace::TraceQueryResponse<atlas_types::caller_path::CallerChain> {
+    ) -> analysis::trace::TraceQueryResponse<types::caller_path::CallerChain> {
         self.trace.trace_callers(target_id, max_depth)
     }
 }
@@ -223,7 +229,7 @@ mod tests {
         let cap = Engine::language_capability(Language::TypeScript);
         assert_eq!(cap.language, "typescript");
         assert!(
-            cap.capability_level >= atlas_types::capability::CapabilityLevel::DataflowBasic,
+            cap.capability_level >= types::capability::CapabilityLevel::DataflowBasic,
             "TypeScript should be at least DataflowBasic"
         );
     }
@@ -261,8 +267,8 @@ mod tests {
 
     #[test]
     fn trace_query_response_serializes() {
-        let resp: atlas_analysis::trace::TraceQueryResponse<&str> =
-            atlas_analysis::trace::TraceQueryResponse::err("trace_point", "file not found");
+        let resp: analysis::trace::TraceQueryResponse<&str> =
+            analysis::trace::TraceQueryResponse::err("trace_point", "file not found");
         let json = serde_json::to_string(&resp).expect("should serialize");
         assert!(json.contains(r#""ok""#));
         assert!(json.contains(r#""kind""#));

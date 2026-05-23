@@ -11,9 +11,6 @@ path = "src/main.rs"
 
 [dependencies]
 atlas-engine = { path = "../atlas-engine" }
-atlas-search = { path = "../atlas-search" }
-atlas-context = { path = "../atlas-context" }
-atlas-sync = { path = "../atlas-sync" }
 atlas-mcp = { path = "../atlas-mcp", optional = true }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

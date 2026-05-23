@@ -1,3 +1,8 @@
 [workspace]
-members = ["crates/*"]
+members = [
+    "crates/atlas-engine",
+    "crates/atlas-engine/crates/*",
+    "crates/atlas-cli",
+    "crates/atlas-mcp",
+]
 resolver = "2"

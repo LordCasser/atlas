@@ -2,8 +2,8 @@
 
 use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
-use atlas_search::SearchEngine;
-use atlas_search::SearchOptions;
+use atlas_engine::SearchEngine;
+use atlas_engine::SearchOptions;
 use atlas_engine::{Language, SymbolKind};
 use serde::Serialize;
 use std::sync::Arc;

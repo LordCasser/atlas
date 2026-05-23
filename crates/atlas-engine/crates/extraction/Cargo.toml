@@ -1,0 +1,50 @@
+[package]
+name = "extraction"
+version = "0.1.0"
+edition = "2024"
+description = "Atlas code extraction engine — tree-sitter parsing, symbol extraction, CFG, dataflow"
+license = "MIT"
+
+[dependencies]
+types = { path = "../types" }
+anyhow = "1"
+serde_json = "1"
+streaming-iterator = "0.1.9"
+tracing = "0.1"
+tree-sitter = "0.24"
+
+# Language grammars (optional, feature-gated)
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-python = { version = "0.23", optional = true }
+tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-c = { version = "0.23", optional = true }
+tree-sitter-cpp = { version = "0.23", optional = true }
+tree-sitter-cangjie = { git = "https://gitcode.com/Cangjie-SIG/tree-sitter-cangjie.git", optional = true }
+tree-sitter-go = { version = "0.23", optional = true }
+tree-sitter-c-sharp = { version = "=0.23.0", optional = true }
+tree-sitter-rust = { version = "0.23", optional = true }
+tree-sitter-php = { version = "0.23", optional = true }
+tree-sitter-ruby = { version = "0.23", optional = true }
+tree-sitter-bash = { version = "0.23", optional = true }
+tree-sitter-kotlin = { git = "https://github.com/fwcd/tree-sitter-kotlin", rev = "f66d2908542e93c0204c6c241f794afe4e9cd5d1", optional = true }
+
+[dev-dependencies]
+db = { path = "../db" }
+tempfile = "3"
+
+[features]
+typescript = ["dep:tree-sitter-typescript", "types/typescript"]
+javascript = ["dep:tree-sitter-typescript"]  # JS uses TS grammar
+python = ["dep:tree-sitter-python", "types/python"]
+java = ["dep:tree-sitter-java", "types/java"]
+c = ["dep:tree-sitter-c", "types/c"]
+cpp = ["dep:tree-sitter-cpp", "types/cpp"]
+arkts = ["typescript", "types/arkts"]  # ArkTS uses TS grammar + own capability profile
+cangjie = ["dep:tree-sitter-cangjie", "types/cangjie"]
+go = ["dep:tree-sitter-go", "types/go"]
+csharp = ["dep:tree-sitter-c-sharp", "types/csharp"]
+rust = ["dep:tree-sitter-rust", "types/rust"]
+php = ["dep:tree-sitter-php", "types/php"]
+ruby = ["dep:tree-sitter-ruby", "types/ruby"]
+bash = ["dep:tree-sitter-bash", "types/bash"]
+kotlin = ["dep:tree-sitter-kotlin", "types/kotlin"]

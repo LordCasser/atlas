@@ -1,0 +1,19 @@
+[package]
+name = "graph"
+version = "0.1.0"
+edition = "2024"
+description = "Atlas knowledge graph engine — BFS/DFS traversal, callers/callees, impact analysis"
+license = "MIT"
+
+[dependencies]
+types = { path = "../types" }
+db = { path = "../db" }
+anyhow = "1"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+
+[dev-dependencies]
+extraction = { path = "../extraction" }
+resolution = { path = "../resolution" }
+tempfile = "3"
