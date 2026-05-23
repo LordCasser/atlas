@@ -144,29 +144,25 @@ impl ScopeExtractorSpec for ArkTsAdapter {
 
 impl LexicalBindingSpec for ArkTsAdapter {
     fn lexical_query(&self) -> &str {
-        ""
+        include_str!("../../queries/typescript/lexical.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::unsupported("ArkTS does not support lexical binding extraction")
+        FeatureSupport::supported_with_limitations(0.45, vec!["ArkTS via TS grammar fallback — lexical bindings may miss ArkTS-specific constructs"])
     }
-    fn normalize(&self, _ctx: NormalizeCtx<'_>, _capture: Capture<'_>) -> Option<BindingDef> {
-        None
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
+        crate::languages::typescript::normalize_ts_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
 }
 
 impl DataflowSpec for ArkTsAdapter {
     fn dataflow_builder_query(&self) -> &str {
-        ""
+        include_str!("../../queries/typescript/dataflow_builder.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::unsupported("ArkTS does not support dataflow extraction")
+        FeatureSupport::supported_with_limitations(0.45, vec!["ArkTS via TS grammar fallback — dataflow may miss ArkTS-specific constructs"])
     }
-    fn normalize(
-        &self,
-        _ctx: NormalizeCtx<'_>,
-        _capture: Capture<'_>,
-    ) -> (Option<DataNode>, Option<DataFlowEdge>) {
-        (None, None)
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> (Option<DataNode>, Option<DataFlowEdge>) {
+        crate::languages::typescript::normalize_ts_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
 }
 

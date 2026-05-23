@@ -592,106 +592,113 @@ mod profiles {
         }
     }
 
-    // ---- C ----------------------------------------------------------------
+    // ---- C (DataflowBasic) -------------------------------------------------
 
     fn c_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "c".into(),
-            capability_level: CapabilityLevel::Symbolic,
+            capability_level: CapabilityLevel::DataflowBasic,
             supported_features: vec![
                 "symbol_extraction".into(),
                 "reference_extraction".into(),
                 "include_resolution".into(),
                 "call_graph".into(),
+                "lexical_bindings".into(),
+                "intra_statement_dataflow".into(),
+                "use_def_heuristic".into(),
+                "access_path".into(),
+                "call_arguments".into(),
+                "return_flow".into(),
             ],
             unsupported_features: vec![
-                "lexical_bindings".into(),
-                "dataflow".into(),
                 "cfg".into(),
-                "backward_trace".into(),
+                "scope_aware_binding".into(),
+                "interprocedural_dataflow".into(),
             ],
             limitations: vec![
-                "no DataFlowBuilder (dataflow queries not implemented)".into(),
-                "no LexicalBinder (lexical queries not implemented)".into(),
+                "name-based binding (no proper shadowing)".into(),
+                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
+                "macro expansion and #include resolution may produce incomplete facts".into(),
             ],
-            confidence_floor: 0.70,
+            confidence_floor: 0.65,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.70),
-                references: FeatureSupport::supported_with_confidence(0.70),
-                imports: FeatureSupport::supported_with_confidence(0.70),
-                scopes: FeatureSupport::unsupported("scope query not implemented for C"),
-                call_graph: FeatureSupport::supported_with_confidence(0.70),
-                lexical_bindings: FeatureSupport::unsupported(
-                    "LexicalBinder not implemented for C",
+                symbols: FeatureSupport::supported_with_confidence(0.65),
+                references: FeatureSupport::supported_with_confidence(0.65),
+                imports: FeatureSupport::supported_with_confidence(0.65),
+                scopes: FeatureSupport::supported_with_confidence(0.65),
+                call_graph: FeatureSupport::supported_with_confidence(0.65),
+                lexical_bindings: FeatureSupport::supported_with_limitations(
+                    0.65,
+                    vec!["name-based binding (no proper shadowing)"],
                 ),
-                local_dataflow: FeatureSupport::unsupported(
-                    "DataFlowBuilder not implemented for C",
+                local_dataflow: FeatureSupport::supported_with_limitations(
+                    0.65,
+                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
                 ),
-                use_def: FeatureSupport::unsupported(
-                    "requires lexical bindings and dataflow (both not implemented for C)",
+                use_def: FeatureSupport::supported_with_limitations(
+                    0.65,
+                    vec!["name-based binding (no proper shadowing)"],
                 ),
-                field_access: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for C)",
-                ),
-                call_arguments: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for C)",
-                ),
-                returns_flow: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for C)",
-                ),
+                field_access: FeatureSupport::supported_with_confidence(0.65),
+                call_arguments: FeatureSupport::supported_with_confidence(0.65),
+                returns_flow: FeatureSupport::supported_with_confidence(0.65),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for C"),
                 interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
             }),
         }
     }
 
-    // ---- C++ --------------------------------------------------------------
+    // ---- C++ (DataflowBasic) -----------------------------------------------
 
     fn cpp_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "cpp".into(),
-            capability_level: CapabilityLevel::Symbolic,
+            capability_level: CapabilityLevel::DataflowBasic,
             supported_features: vec![
                 "symbol_extraction".into(),
                 "reference_extraction".into(),
                 "include_resolution".into(),
                 "call_graph".into(),
+                "lexical_bindings".into(),
+                "intra_statement_dataflow".into(),
+                "use_def_heuristic".into(),
+                "access_path".into(),
+                "call_arguments".into(),
+                "return_flow".into(),
             ],
             unsupported_features: vec![
-                "lexical_bindings".into(),
-                "dataflow".into(),
                 "cfg".into(),
-                "backward_trace".into(),
+                "scope_aware_binding".into(),
+                "interprocedural_dataflow".into(),
             ],
             limitations: vec![
-                "no DataFlowBuilder (dataflow queries not implemented)".into(),
-                "no LexicalBinder (lexical queries not implemented)".into(),
+                "name-based binding (no proper shadowing)".into(),
+                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
+                "template instantiation not followed".into(),
+                "ADL and overload resolution not modeled".into(),
             ],
-            confidence_floor: 0.70,
+            confidence_floor: 0.60,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.70),
-                references: FeatureSupport::supported_with_confidence(0.70),
-                imports: FeatureSupport::supported_with_confidence(0.70),
-                scopes: FeatureSupport::unsupported("scope query not implemented for C++"),
-                call_graph: FeatureSupport::supported_with_confidence(0.70),
-                lexical_bindings: FeatureSupport::unsupported(
-                    "LexicalBinder not implemented for C++",
+                symbols: FeatureSupport::supported_with_confidence(0.60),
+                references: FeatureSupport::supported_with_confidence(0.60),
+                imports: FeatureSupport::supported_with_confidence(0.60),
+                scopes: FeatureSupport::supported_with_confidence(0.60),
+                call_graph: FeatureSupport::supported_with_confidence(0.60),
+                lexical_bindings: FeatureSupport::supported_with_limitations(
+                    0.60,
+                    vec!["name-based binding (no proper shadowing)"],
                 ),
-                local_dataflow: FeatureSupport::unsupported(
-                    "DataFlowBuilder not implemented for C++",
+                local_dataflow: FeatureSupport::supported_with_limitations(
+                    0.60,
+                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
                 ),
-                use_def: FeatureSupport::unsupported(
-                    "requires lexical bindings and dataflow (both not implemented for C++)",
+                use_def: FeatureSupport::supported_with_limitations(
+                    0.60,
+                    vec!["name-based binding (no proper shadowing)"],
                 ),
-                field_access: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for C++)",
-                ),
-                call_arguments: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for C++)",
-                ),
-                returns_flow: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for C++)",
-                ),
+                field_access: FeatureSupport::supported_with_confidence(0.60),
+                call_arguments: FeatureSupport::supported_with_confidence(0.60),
+                returns_flow: FeatureSupport::supported_with_confidence(0.60),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for C++"),
                 interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
             }),
@@ -701,53 +708,55 @@ mod profiles {
     // ---- ArkTS ------------------------------------------------------------
 
     fn arkts_profile() -> LanguageCapabilityProfile {
-        // ArkTS delegates to the TypeScript frontend for structural extraction.
-        // Lexical bindings and dataflow are NOT supported by the delegate.
+        // ArkTS delegates to the TypeScript frontend for extraction + dataflow.
+        // Lower confidence due to TS grammar fallback limitations.
         LanguageCapabilityProfile {
             language: "arkts".into(),
-            capability_level: CapabilityLevel::Symbolic,
+            capability_level: CapabilityLevel::DataflowBasic,
             supported_features: vec![
                 "symbol_extraction".into(),
                 "reference_extraction".into(),
                 "import_resolution".into(),
                 "call_graph".into(),
-            ],
-            unsupported_features: vec![
-                "scope_aware_binding".into(),
-                "interprocedural_dataflow".into(),
                 "lexical_bindings".into(),
                 "intra_statement_dataflow".into(),
                 "use_def_heuristic".into(),
                 "access_path".into(),
+                "call_arguments".into(),
+                "return_flow".into(),
+            ],
+            unsupported_features: vec![
                 "cfg".into(),
+                "scope_aware_binding".into(),
+                "interprocedural_dataflow".into(),
             ],
             limitations: vec![
                 "delegates to TypeScript frontend (ArkTS-specific constructs may be missed)".into(),
+                "name-based binding (no proper shadowing)".into(),
             ],
-            confidence_floor: 0.50,
+            confidence_floor: 0.45,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.50),
-                references: FeatureSupport::supported_with_confidence(0.50),
-                imports: FeatureSupport::supported_with_confidence(0.50),
-                scopes: FeatureSupport::supported_with_confidence(0.50),
-                call_graph: FeatureSupport::supported_with_confidence(0.50),
-                lexical_bindings: FeatureSupport::unsupported(
-                    "ArkTS does not support lexical binding extraction",
+                symbols: FeatureSupport::supported_with_confidence(0.45),
+                references: FeatureSupport::supported_with_confidence(0.45),
+                imports: FeatureSupport::supported_with_confidence(0.45),
+                scopes: FeatureSupport::supported_with_confidence(0.45),
+                call_graph: FeatureSupport::supported_with_confidence(0.45),
+                lexical_bindings: FeatureSupport::supported_with_limitations(
+                    0.45,
+                    vec!["delegates to TypeScript frontend (ArkTS-specific constructs may be missed)"],
                 ),
-                local_dataflow: FeatureSupport::unsupported(
-                    "ArkTS does not support dataflow extraction",
+                local_dataflow: FeatureSupport::supported_with_limitations(
+                    0.45,
+                    vec!["delegates to TypeScript frontend (ArkTS-specific constructs may be missed)"],
                 ),
-                use_def: FeatureSupport::unsupported("ArkTS does not support dataflow extraction"),
-                field_access: FeatureSupport::unsupported(
-                    "ArkTS does not support dataflow extraction",
+                use_def: FeatureSupport::supported_with_limitations(
+                    0.45,
+                    vec!["name-based binding (no proper shadowing)"],
                 ),
-                call_arguments: FeatureSupport::unsupported(
-                    "ArkTS does not support dataflow extraction",
-                ),
-                returns_flow: FeatureSupport::unsupported(
-                    "ArkTS does not support dataflow extraction",
-                ),
-                cfg: FeatureSupport::unsupported("ArkTS does not support dataflow extraction"),
+                field_access: FeatureSupport::supported_with_confidence(0.45),
+                call_arguments: FeatureSupport::supported_with_confidence(0.45),
+                returns_flow: FeatureSupport::supported_with_confidence(0.45),
+                cfg: FeatureSupport::unsupported("CFG builder not implemented for ArkTS"),
                 interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
             }),
         }
@@ -920,142 +929,91 @@ mod profiles {
         }
     }
 
-    // ---- Rust --------------------------------------------------------------
+    // ---- Rust (DataflowBasic) ----------------------------------------------
 
     fn rust_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "rust".into(),
-            capability_level: CapabilityLevel::Symbolic,
+            capability_level: CapabilityLevel::DataflowBasic,
             supported_features: vec![
                 "symbol_extraction".into(),
                 "reference_extraction".into(),
                 "import_resolution".into(),
                 "call_graph".into(),
+                "lexical_bindings".into(),
+                "intra_statement_dataflow".into(),
+                "use_def_heuristic".into(),
+                "access_path".into(),
+                "call_arguments".into(),
+                "return_flow".into(),
             ],
             unsupported_features: vec![
-                "lexical_bindings".into(),
-                "dataflow".into(),
                 "cfg".into(),
-                "backward_trace".into(),
+                "scope_aware_binding".into(),
+                "interprocedural_dataflow".into(),
             ],
             limitations: vec![
-                "no DataFlowBuilder (dataflow queries not implemented)".into(),
-                "no LexicalBinder (lexical queries not implemented)".into(),
-                "lifetime parameters and where clauses not captured".into(),
+                "name-based binding (no proper shadowing)".into(),
+                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
                 "macro_rules! body patterns not analyzed".into(),
-                "impl trait / dyn trait treated as simple type reference".into(),
+                "borrow checker semantics not modeled".into(),
             ],
-            confidence_floor: 0.70,
+            confidence_floor: 0.60,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.70),
-                references: FeatureSupport::supported_with_confidence(0.70),
-                imports: FeatureSupport::supported_with_confidence(0.70),
-                scopes: FeatureSupport::supported_with_confidence(0.70),
-                call_graph: FeatureSupport::supported_with_confidence(0.70),
-                lexical_bindings: FeatureSupport::unsupported(
-                    "LexicalBinder not implemented for Rust",
+                symbols: FeatureSupport::supported_with_confidence(0.60),
+                references: FeatureSupport::supported_with_confidence(0.60),
+                imports: FeatureSupport::supported_with_confidence(0.60),
+                scopes: FeatureSupport::supported_with_confidence(0.60),
+                call_graph: FeatureSupport::supported_with_confidence(0.60),
+                lexical_bindings: FeatureSupport::supported_with_limitations(
+                    0.60,
+                    vec!["name-based binding (no proper shadowing)"],
                 ),
-                local_dataflow: FeatureSupport::unsupported(
-                    "DataFlowBuilder not implemented for Rust",
+                local_dataflow: FeatureSupport::supported_with_limitations(
+                    0.60,
+                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
                 ),
-                use_def: FeatureSupport::unsupported(
-                    "requires lexical bindings and dataflow (both not implemented for Rust)",
+                use_def: FeatureSupport::supported_with_limitations(
+                    0.60,
+                    vec!["name-based binding (no proper shadowing)"],
                 ),
-                field_access: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for Rust)",
-                ),
-                call_arguments: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for Rust)",
-                ),
-                returns_flow: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for Rust)",
-                ),
+                field_access: FeatureSupport::supported_with_confidence(0.60),
+                call_arguments: FeatureSupport::supported_with_confidence(0.60),
+                returns_flow: FeatureSupport::supported_with_confidence(0.60),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for Rust"),
                 interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
             }),
         }
     }
 
-    // ---- PHP ---------------------------------------------------------------
+    // ---- PHP (DataflowBasic) ------------------------------------------------
 
     fn php_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "php".into(),
-            capability_level: CapabilityLevel::Symbolic,
+            capability_level: CapabilityLevel::DataflowBasic,
             supported_features: vec![
                 "symbol_extraction".into(),
                 "reference_extraction".into(),
                 "import_resolution".into(),
                 "call_graph".into(),
+                "lexical_bindings".into(),
+                "intra_statement_dataflow".into(),
+                "use_def_heuristic".into(),
+                "access_path".into(),
+                "call_arguments".into(),
+                "return_flow".into(),
             ],
             unsupported_features: vec![
-                "lexical_bindings".into(),
-                "dataflow".into(),
                 "cfg".into(),
-                "backward_trace".into(),
+                "scope_aware_binding".into(),
+                "interprocedural_dataflow".into(),
             ],
             limitations: vec![
-                "no DataFlowBuilder (dataflow queries not implemented)".into(),
-                "no LexicalBinder (lexical queries not implemented)".into(),
-                "anonymous functions / closures named `<closure>`".into(),
+                "name-based binding (no proper shadowing)".into(),
+                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
                 "dynamic method calls via variable not resolved".into(),
                 "namespace aliases resolved at reference resolution layer".into(),
-            ],
-            confidence_floor: 0.65,
-            features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.65),
-                references: FeatureSupport::supported_with_confidence(0.65),
-                imports: FeatureSupport::supported_with_confidence(0.65),
-                scopes: FeatureSupport::supported_with_confidence(0.65),
-                call_graph: FeatureSupport::supported_with_confidence(0.65),
-                lexical_bindings: FeatureSupport::unsupported(
-                    "LexicalBinder not implemented for PHP",
-                ),
-                local_dataflow: FeatureSupport::unsupported(
-                    "DataFlowBuilder not implemented for PHP",
-                ),
-                use_def: FeatureSupport::unsupported(
-                    "requires lexical bindings and dataflow (both not implemented for PHP)",
-                ),
-                field_access: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for PHP)",
-                ),
-                call_arguments: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for PHP)",
-                ),
-                returns_flow: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for PHP)",
-                ),
-                cfg: FeatureSupport::unsupported("CFG builder not implemented for PHP"),
-                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
-            }),
-        }
-    }
-
-    // ---- Ruby --------------------------------------------------------------
-
-    fn ruby_profile() -> LanguageCapabilityProfile {
-        LanguageCapabilityProfile {
-            language: "ruby".into(),
-            capability_level: CapabilityLevel::Symbolic,
-            supported_features: vec![
-                "symbol_extraction".into(),
-                "reference_extraction".into(),
-                "import_resolution".into(),
-                "call_graph".into(),
-            ],
-            unsupported_features: vec![
-                "lexical_bindings".into(),
-                "dataflow".into(),
-                "cfg".into(),
-                "backward_trace".into(),
-            ],
-            limitations: vec![
-                "no DataFlowBuilder (dataflow queries not implemented)".into(),
-                "no LexicalBinder (lexical queries not implemented)".into(),
-                "method_missing / define_method dynamic methods not captured".into(),
-                "include/extend/prepend mixin methods not expanded".into(),
-                "block/yield implicit calls not tracked".into(),
             ],
             confidence_floor: 0.55,
             features: Some(FeatureMatrix {
@@ -1064,24 +1022,78 @@ mod profiles {
                 imports: FeatureSupport::supported_with_confidence(0.55),
                 scopes: FeatureSupport::supported_with_confidence(0.55),
                 call_graph: FeatureSupport::supported_with_confidence(0.55),
-                lexical_bindings: FeatureSupport::unsupported(
-                    "LexicalBinder not implemented for Ruby",
+                lexical_bindings: FeatureSupport::supported_with_limitations(
+                    0.55,
+                    vec!["name-based binding (no proper shadowing)"],
                 ),
-                local_dataflow: FeatureSupport::unsupported(
-                    "DataFlowBuilder not implemented for Ruby",
+                local_dataflow: FeatureSupport::supported_with_limitations(
+                    0.55,
+                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
                 ),
-                use_def: FeatureSupport::unsupported(
-                    "requires lexical bindings and dataflow (both not implemented for Ruby)",
+                use_def: FeatureSupport::supported_with_limitations(
+                    0.55,
+                    vec!["name-based binding (no proper shadowing)"],
                 ),
-                field_access: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for Ruby)",
+                field_access: FeatureSupport::supported_with_confidence(0.55),
+                call_arguments: FeatureSupport::supported_with_confidence(0.55),
+                returns_flow: FeatureSupport::supported_with_confidence(0.55),
+                cfg: FeatureSupport::unsupported("CFG builder not implemented for PHP"),
+                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+            }),
+        }
+    }
+
+    // ---- Ruby (DataflowBasic) -----------------------------------------------
+
+    fn ruby_profile() -> LanguageCapabilityProfile {
+        LanguageCapabilityProfile {
+            language: "ruby".into(),
+            capability_level: CapabilityLevel::DataflowBasic,
+            supported_features: vec![
+                "symbol_extraction".into(),
+                "reference_extraction".into(),
+                "import_resolution".into(),
+                "call_graph".into(),
+                "lexical_bindings".into(),
+                "intra_statement_dataflow".into(),
+                "use_def_heuristic".into(),
+                "access_path".into(),
+                "call_arguments".into(),
+                "return_flow".into(),
+            ],
+            unsupported_features: vec![
+                "cfg".into(),
+                "scope_aware_binding".into(),
+                "interprocedural_dataflow".into(),
+            ],
+            limitations: vec![
+                "name-based binding (no proper shadowing)".into(),
+                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
+                "method_missing / define_method dynamic methods not captured".into(),
+                "block/yield implicit calls not tracked".into(),
+            ],
+            confidence_floor: 0.50,
+            features: Some(FeatureMatrix {
+                symbols: FeatureSupport::supported_with_confidence(0.50),
+                references: FeatureSupport::supported_with_confidence(0.50),
+                imports: FeatureSupport::supported_with_confidence(0.50),
+                scopes: FeatureSupport::supported_with_confidence(0.50),
+                call_graph: FeatureSupport::supported_with_confidence(0.50),
+                lexical_bindings: FeatureSupport::supported_with_limitations(
+                    0.50,
+                    vec!["name-based binding (no proper shadowing)"],
                 ),
-                call_arguments: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for Ruby)",
+                local_dataflow: FeatureSupport::supported_with_limitations(
+                    0.50,
+                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
                 ),
-                returns_flow: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for Ruby)",
+                use_def: FeatureSupport::supported_with_limitations(
+                    0.50,
+                    vec!["name-based binding (no proper shadowing)"],
                 ),
+                field_access: FeatureSupport::supported_with_confidence(0.50),
+                call_arguments: FeatureSupport::supported_with_confidence(0.50),
+                returns_flow: FeatureSupport::supported_with_confidence(0.50),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for Ruby"),
                 interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
             }),
