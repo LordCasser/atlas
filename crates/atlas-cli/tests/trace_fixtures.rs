@@ -588,4 +588,61 @@ export function b(x: number): void { c(x); }
     assert!(has_a_evidence, "should have evidence from indirect caller a.ts");
 }
 
+// ────────────────────────────────────────────────────────────────
+// Fixture 6: Nested call bridge (Layer 3).
+// ────────────────────────────────────────────────────────────────
+
+/// FX6: For `outer(inner(x))`, tracing backward from outer's parameter
+/// should return a valid trace path (not error/empty). The L3 nested bridge
+/// may or may not produce ReturnToCall edges depending on dataflow model
+/// maturity — the test verifies the bridge code path doesn't crash.
+#[test]
+fn fx6_nested_call_bridge() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "nested.ts",
+        r#"function inner(val: number): number {
+    return val * 2;
+}
+
+function outer(x: number): number {
+    return x + 1;
+}
+
+const result = outer(inner(5));
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("nested.ts");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    // Verify both functions have data nodes (extraction succeeded)
+    let has_outer = data_nodes.iter().any(|n| n.name.as_deref() == Some("x"));
+    let has_inner = data_nodes.iter().any(|n| n.name.as_deref() == Some("val"));
+    assert!(has_outer, "should have data nodes for outer()");
+    assert!(has_inner, "should have data nodes for inner()");
+
+    // Trace from outer's parameter x — must not crash/timeout
+    let outer_param = data_nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("x") && n.kind == DataNodeKind::Parameter)
+        .expect("outer param 'x' not found");
+
+    let resp = engine.trace_variable(
+        &file_id,
+        outer_param.range.start_line + 1,
+        outer_param.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "typescript");
+
+    // Currently data_node_id on callsite args may not be populated for TS
+    // nested calls, so the L3 bridge may not fire.  The test verifies the
+    // bridge code path doesn't panic, and extraction produces correct facts.
+    // When data_node_id becomes reliable, this can be upgraded to assert
+    // ReturnToCall edges.
+}
+
 

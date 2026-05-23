@@ -137,6 +137,58 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                     }
                 }
 
+                // Layer 3: nested call bridge.
+                // For each direct caller arg at this parameter position,
+                // if the arg is a call result (CallReturn/Expr with callsite_id),
+                // bridge from the inner callee's return sources to this param.
+                for cs in &direct_callers {
+                    if let Some(param_idx) = param_index {
+                        for (arg_idx, arg) in cs.args.iter().enumerate() {
+                            if arg_idx != param_idx {
+                                continue;
+                            }
+                            let arg_dn_id = match &arg.data_node_id {
+                                Some(dn_id) => dn_id,
+                                None => continue,
+                            };
+                            // Check if this argument is a call result
+                            if let Ok(Some(arg_dn)) = store.get_data_node(arg_dn_id) {
+                                if arg_dn.kind == DataNodeKind::CallReturn
+                                    || arg_dn.kind == DataNodeKind::Expr
+                                {
+                                    if let Some(inner_csid) = arg_dn.callsite_id {
+                                        if let Ok(inner_cs) = store.find_callsites_by_id(&inner_csid) {
+                                            if let Some(inner_callee) = inner_cs.first()
+                                                .and_then(|cs| cs.callee.as_ref())
+                                            {
+                                                if let Ok(inner_summary) = crate::summary::SummaryBuilder::build(
+                                                    store, inner_callee, None,
+                                                ) {
+                                                    for rf in &inner_summary.return_flows {
+                                                        for src_id in &rf.sources {
+                                                            edges.push(TraceEdge {
+                                                                source_id: src_id.clone(),
+                                                                target_id: target_id.clone(),
+                                                                kind: DataFlowKind::ReturnToCall,
+                                                                confidence: 0.55,
+                                                                provenance: format!(
+                                                                    "nested call return {} → outer param (via callsite {})",
+                                                                    hex::encode(rf.return_id.as_bytes()),
+                                                                    hex::encode(inner_csid.as_bytes()),
+                                                                ),
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Layer 2: indirect callers (recursive, up to depth 3)
                 const MAX_INDIRECT_DEPTH: usize = 3;
                 let indirect = find_indirect_callers(
