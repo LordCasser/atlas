@@ -63,3 +63,27 @@
 ;; --- Identifier uses (variable references) ---
 ;; Captured broadly; normalize filters out declarations/properties/types/callee-targets.
 (identifier) @df.identifier_use
+
+;; --- Destructuring binding ---
+(object_pattern
+  (shorthand_property_identifier_pattern) @df.assign_target)
+(pair_pattern
+  key: (_)
+  value: (identifier) @df.assign_target)
+(array_pattern
+  (identifier) @df.assign_target)
+
+;; --- Property assignment (obj.field = value) ---
+(assignment_expression
+  left: (member_expression) @df.assign_field_target
+  right: (_) @df.assign_value)
+
+;; --- Subscript assignment (arr[i] = value) ---
+(assignment_expression
+  left: (subscript_expression) @df.assign_field_target
+  right: (_) @df.assign_value)
+
+;; --- new expression ---
+(new_expression
+  constructor: (_) @df.call_target
+  arguments: (arguments (_) @df.call_arg))

@@ -492,20 +492,22 @@ mod profiles {
                 "reference_extraction".into(),
                 "import_resolution".into(),
                 "call_graph".into(),
+                "lexical_bindings".into(),
                 "intra_statement_dataflow".into(),
                 "use_def_heuristic".into(),
                 "access_path".into(),
+                "call_arguments".into(),
+                "return_flow".into(),
             ],
             unsupported_features: vec![
-                "lexical_bindings".into(),
                 "scope_aware_binding".into(),
                 "interprocedural_dataflow".into(),
                 "cfg".into(),
             ],
             limitations: vec![
-                "no lexical binding extraction (LexicalBinder not implemented for Python)".into(),
-                "name-based use-def resolution (may conflate same-named variables)".into(),
+                "name-based binding (no proper shadowing)".into(),
                 "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
+                "assignment LHS treated as binding definition".into(),
             ],
             confidence_floor: 0.50,
             features: Some(FeatureMatrix {
@@ -514,8 +516,9 @@ mod profiles {
                 imports: FeatureSupport::supported_with_confidence(0.50),
                 scopes: FeatureSupport::unsupported("scope query not implemented for Python"),
                 call_graph: FeatureSupport::supported_with_confidence(0.50),
-                lexical_bindings: FeatureSupport::unsupported(
-                    "LexicalBinder not implemented for Python",
+                lexical_bindings: FeatureSupport::supported_with_limitations(
+                    0.45,
+                    vec!["assignment LHS treated as binding definition"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
                     0.50,
@@ -523,10 +526,7 @@ mod profiles {
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
                     0.50,
-                    vec![
-                        "name-based use-def (may conflate same-named variables)",
-                        "no lexical binding extraction",
-                    ],
+                    vec!["name-based use-def (may conflate same-named variables)"],
                 ),
                 field_access: FeatureSupport::supported_with_confidence(0.50),
                 call_arguments: FeatureSupport::supported_with_confidence(0.50),

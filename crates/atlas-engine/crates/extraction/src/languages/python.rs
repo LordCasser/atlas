@@ -171,6 +171,18 @@ fn is_py_identifier_declaration(node: tree_sitter::Node) -> bool {
     }
 }
 
+/// Find the enclosing `call` node in Python AST.
+fn find_call_expression_python(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        if parent.kind() == "call" {
+            return Some(parent);
+        }
+        current = parent;
+    }
+    None
+}
+
 fn normalize_py_dataflow_builder(
     capture_name: &str,
     node: tree_sitter::Node,
@@ -248,6 +260,9 @@ fn normalize_py_dataflow_builder(
         }
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
+            let callsite_id = find_call_expression_python(node).map(|ce| {
+                types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+            });
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&types::ids::SymbolId>,
@@ -256,19 +271,20 @@ fn normalize_py_dataflow_builder(
                 None,
                 range.start_byte,
             );
-            let dn = DataNode::call_arg(node_id, file_id, None, None, Some(&text), range);
+            let dn = DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range);
             (Some(dn), None)
         }
         "df.call_target" => {
             node_text(node, source)
                 .map(|name| {
-                    // Build full access_path from parent attribute node
-                    // e.g. for "os.system" → access_path = "os.system"
                     let access_path = node
                         .parent()
                         .filter(|p| p.kind() == "attribute")
                         .and_then(|p| node_text(p, source))
                         .unwrap_or_else(|| name.clone());
+                    let callsite_id = find_call_expression_python(node).map(|ce| {
+                        types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+                    });
                     let node_id = DataNodeId::generate(
                         &file_id,
                         None::<&types::ids::SymbolId>,
@@ -281,7 +297,7 @@ fn normalize_py_dataflow_builder(
                         node_id,
                         file_id,
                         None,
-                        None,
+                        callsite_id,
                         &name,
                         &access_path,
                         range,
@@ -435,13 +451,16 @@ impl ScopeExtractorSpec for PythonAdapter {
 
 impl LexicalBindingSpec for PythonAdapter {
     fn lexical_query(&self) -> &str {
-        ""
+        include_str!("../../queries/python/lexical.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::unsupported("Python does not support lexical binding extraction")
+        FeatureSupport::supported_with_limitations(
+            0.45,
+            vec!["name-based binding (no proper shadowing)", "assignment LHS treated as definition"],
+        )
     }
-    fn normalize(&self, _ctx: NormalizeCtx<'_>, _capture: Capture<'_>) -> Option<BindingDef> {
-        None
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
+        normalize_py_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
 }
 
@@ -680,6 +699,32 @@ fn extract_module_from_import_ancestor(node: tree_sitter::Node, source: &str) ->
         current = parent;
     }
     String::new()
+}
+
+// ── Lexical binding normalize ──────────────────────────────────────────
+
+fn py_binding_kind(capture_name: &str) -> Option<BindingKind> {
+    match capture_name {
+        "lexical.parameter" => Some(BindingKind::Parameter),
+        "lexical.local" => Some(BindingKind::Local),
+        "lexical.catch_variable" => Some(BindingKind::CatchVariable),
+        "lexical.import_alias" => Some(BindingKind::ImportAlias),
+        _ => None,
+    }
+}
+
+fn normalize_py_lexical(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> Option<BindingDef> {
+    let kind = py_binding_kind(capture_name)?;
+    let name = node_text(node, source)?;
+    let range = node_range(node);
+    let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
+    let id = BindingId::generate(&file_id, &scope_id, kind.as_str(), &name, range.start_byte);
+    Some(BindingDef { id, file_id, function_id: None, scope_id, kind, name, symbol_id: None, range })
 }
 
 #[cfg(test)]
