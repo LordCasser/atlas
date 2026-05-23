@@ -1,122 +1,163 @@
 # Atlas
 
-**Local-first semantic knowledge graph builder for codebases.**
+<p align="center">
+  <strong>Local-first 语义知识图谱引擎 — 为 LLM Agent 而生。</strong>
+</p>
 
-Atlas parses your source code with tree-sitter, extracts symbols, scopes, references, calls, callsites, bindings, and dataflow facts, stores them in SQLite, resolves cross-file links, and exposes graph plus trace queries via CLI and MCP (Model Context Protocol) for LLM agents.
+<p align="center">
+  <img src="https://img.shields.io/badge/language-Rust-orange" alt="Language: Rust">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
+  <img src="https://img.shields.io/badge/edition-2024-purple" alt="Rust Edition: 2024">
+</p>
 
-```
-Source Code                 Atlas Engine                  LLM Agent
-  │                             │                             │
-  ├─ *.ts, *.py, *.java  ──→  tree-sitter extract  ──→  SQLite DB
-  ├─ *.c, *.cpp, *.ets         resolve references           │
-  └─ ...                       build graph               MCP Server
-                                                        (JSON-RPC)
-```
-
----
-
-## Features
-
-- **7 MVP languages**: TypeScript, JavaScript, Python, Java, C, C++, ArkTS
-- **Deterministic**: tree-sitter AST/query extraction, no AI guessing
-- **Local-first**: all data in `.atlas/` per project, no remote services
-- **Incremental**: content-hash change detection re-indexes only modified files
-- **Rich graph**: symbols, scopes, references, calls, dataflow, imports, container edges
-- **Trace mainline**: user-specified variable provenance and caller-path queries for AI analysis
-- **MCP native**: graph, search, context, and trace tools for LLM agents
-- **CLI**: `init`, `index`, `sync`, `search`, `status`, `doctor`, `trace`
+<p align="center">
+  <a href="#什么是-atlas">概述</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#cli-命令">CLI</a> ·
+  <a href="#mcp-服务">MCP</a> ·
+  <a href="#支持的语言">语言</a> ·
+  <a href="#架构设计">架构</a> ·
+  <a href="#追踪与分析">追踪</a> ·
+  <a href="#开发">开发</a>
+</p>
 
 ---
 
-## Quick Start
+## 什么是 Atlas？
 
-### Prerequisites
+Atlas 用 **tree-sitter** 解析你的源代码，提取**符号、作用域、引用、调用关系、
+数据流和控制流**等事实，存入本地 **SQLite** 数据库，并通过 **CLI** 和 **MCP 服务**
+两种方式向 LLM Agent 暴露丰富的查询能力（Claude、Cursor、Continue 等均已支持）。
 
-- **Rust** 1.85+ (edition 2024)
-- **Git** (for `git ls-files` file discovery; graceful fallback to filesystem walk)
+它确定性强、完全本地运行，专为 **Agent 驱动的代码理解** 设计：
+LLM Agent 可以查询 Atlas 来寻找调用者、追踪变量来源、分析影响面、构建上下文窗口
+—— 一切基于真实的 AST 事实，而非 AI 猜测。
 
-### Install
+```
+源代码       ──▶    Atlas 引擎   ──▶  LLM Agent（MCP 工具调用）
+┌──────────┐  ┌──────────────────┐  ┌──────────────┐
+│ Source   │  │ Atlas Engine     │  │ LLM Agent    │
+│          │  │                  │  │              │
+│ .ts .py  │  │ parse -> store   │  │ search       │
+│ .java .c │  │ Resolve -> Graph │  │ callgraph    │
+│ .cpp ... │  │ Trace -> Analyze │  │ trace/impact │
+└──────────┘  └──────────────────┘  └──────────────┘
+```
+
+### 核心特性
+
+| 特性 | 说明 |
+|------|------|
+| **确定性** | tree-sitter AST 提取，零 AI 幻觉 |
+| **本地优先** | 所有数据保存在项目的 `.atlas/atlas.db` 中，不依赖任何云服务 |
+| **增量索引** | 基于内容哈希的变更检测，仅重建修改过的文件 |
+| **MCP 原生** | 通过 stdio 的 JSON-RPC 暴露 16 个工具，直接为 AI Agent 服务 |
+| **丰富图谱** | 符号、作用域、引用、调用、导入、数据流、控制流边 |
+| **变量追踪** | 变量来源追踪和调用路径查询，附带完整证据 |
+
+---
+
+## 快速开始
+
+### 环境要求
+
+- **Rust** 1.85+（edition 2024）
+- **Git**（用于 `git ls-files` 文件发现；可自动回退到文件系统遍历）
+
+### 安装
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/<your-org>/atlas.git
 cd atlas
-cargo build --release --features all-languages,cli
+cargo build --release --features all-languages
 ```
 
-The binary is at `./target/release/atlas`.
+编译产物位于 `./target/release/atlas`。
 
-### First Project
+### 索引你的第一个项目
 
 ```bash
-# Initialize Atlas in your project
+# 初始化（创建 .atlas/ 目录）
 atlas init --project /path/to/your/project
 
-# Index the codebase
+# 全量索引（解析所有源代码文件）
 atlas index --project /path/to/your/project
 
-# Check status
+# 查看索引状态
 atlas status --project /path/to/your/project
 
-# Search for a symbol
+# 搜索符号
 atlas search "UserService" --project /path/to/your/project
 ```
 
+> **提示：** 如果你已经在项目目录中，可以省略 `--project`，默认使用当前目录 `.`。
+
 ---
 
-## CLI Commands
+## CLI 命令
 
-| Command | Description |
-|---------|-------------|
-| `atlas init` | Create `.atlas/` directory with SQLite database |
-| `atlas index` | Discover and index all source files in a project |
-| `atlas sync` | Incremental sync (re-indexes only changed files) |
-| `atlas search <query>` | Search symbols by name (FTS5 + LIKE + fuzzy cascade) |
-| `atlas status` | Show file/symbol/edge counts and DB stats |
-| `atlas doctor` | Check environment: SQLite FTS5, grammar support, schema |
+| 命令 | 说明 |
+|------|------|
+| `atlas init` | 初始化 `.atlas/` 目录，创建空 SQLite 数据库 |
+| `atlas index` | 发现并解析项目中所有源文件 |
+| `atlas sync` | 增量同步——仅重建发生变更的文件及相关关系 |
+| `atlas search <关键词>` | 按名称搜索符号（FTS5 + LIKE + 模糊匹配级联） |
+| `atlas status` | 显示文件数、符号数、边数等数据库统计信息 |
+| `atlas files` | 列出所有已索引文件及其语言和状态 |
+| `atlas context <符号>` | 构建 AI 上下文：调用者 + 被调用者 + 同侪，以 Markdown 输出 |
+| `atlas trace point <文件> <行> <列>` | 解析指定代码位置的所有事实 |
+| `atlas trace variable <文件> <行> <列>` | 追踪指定位置的变量来源 |
+| `atlas trace caller-path <符号ID>` | 追踪某个函数的最远调用链 |
+| `atlas doctor` | 诊断环境：SQLite、语法支持、Schema 健康状态 |
+| `atlas mcp --project <路径>` | 启动 MCP 服务（JSON-RPC over stdio） |
 
-All commands accept `-p / --project <PATH>` to specify the project root (defaults to `.`).
+所有命令均支持 `-p / --project <PATH>` 指定项目根目录（默认为 `.`）。
 
-### Search Examples
+### 搜索语法
 
 ```bash
-# Basic search
-atlas search "calculate" --project .
+# 基础搜索
+atlas search "calculate"
 
-# Limit results
+# 带过滤条件
 atlas search "User" --limit 20
-
-# Search does substring matching (LIKE fallback) + camelCase normalization
-# "getUser" matches "get_user" and vice versa
+atlas search "kind:function lang:typescript handle*"
 ```
+
+搜索采用三级联查策略：**FTS5 前缀匹配** → **LIKE 子串匹配** → **模糊前缀匹配**，
+同时自动进行 camelCase/snake_case 归一化。
 
 ---
 
-## MCP Server
+## MCP 服务
 
-Atlas provides a built-in MCP JSON-RPC 2.0 server over stdio, exposing bounded tools for LLM agents:
+Atlas 内置 MCP 服务，通过 **JSON-RPC 2.0 over stdio** 为 AI Agent 暴露一组有界的、
+文档完备的工具。
 
-| Tool | Description |
-|------|-------------|
-| `atlas_status` | Project overview: file/symbol/edge counts |
-| `atlas_files` | List all indexed files with language and status |
-| `atlas_search` | Search symbols by name (FTS5 + fuzzy, kind filter) |
-| `atlas_symbol` | Get detailed info for a specific symbol |
-| `atlas_neighbors` | Get incoming/outgoing edges for a symbol |
-| `atlas_callers` | List functions that call a given function |
-| `atlas_callees` | List functions called by a given function |
-| `atlas_callgraph` | BFS call graph from a symbol, configurable depth |
-| `atlas_path` | Shortest path between two symbols in the graph |
-| `atlas_explore` | Symbol details + all neighbor edges with kinds |
-| `atlas_impact` | Impact analysis: what depends on this symbol? |
-| `atlas_context` | AI context: callers + callees + peers as markdown |
-| `atlas_trace_point` | Resolve facts at a code position |
-| `atlas_trace_variable` | Trace where a value at a code position comes from |
-| `atlas_trace_caller_path` | Trace the farthest caller chain for a target function |
-| `atlas_language_capabilities` | Report per-language trace/search/graph capability metadata |
+### MCP 工具列表
 
-### Configuring MCP (Claude Desktop / Cursor)
+| 工具 | 说明 |
+|------|------|
+| `atlas_status` | 项目概览：文件/符号/边数量统计 |
+| `atlas_files` | 列出所有已索引文件及其语言 |
+| `atlas_search` | 按名称搜索符号（FTS5 + 模糊，支持 kind/lang/path 过滤） |
+| `atlas_symbol` | 获取指定符号的详细信息 |
+| `atlas_neighbors` | 获取某符号的入边/出边 |
+| `atlas_callers` | 列出调用了某函数的所有函数 |
+| `atlas_callees` | 列出某函数调用的所有函数 |
+| `atlas_callgraph` | 从某符号出发的 BFS 调用图（可配置深度） |
+| `atlas_path` | 两个符号在图中的最短路径 |
+| `atlas_explore` | 符号详情 + 所有邻居边（含边类型） |
+| `atlas_impact` | 影响面分析：哪些符号依赖了此符号？ |
+| `atlas_context` | AI 上下文窗口：调用者 + 被调用者 + 同侪 |
+| `atlas_trace_point` | 解析指定代码位置的所有事实 |
+| `atlas_trace_variable` | 从指定代码位置追踪变量来源 |
+| `atlas_trace_caller_path` | 追踪指定函数的最远调用链 |
+| `atlas_language_capabilities` | 返回各语言的追踪/搜索/图谱能力元数据 |
 
-Add to your MCP client configuration (`mcp.json` or `claude_desktop_config.json`):
+### 客户端配置
+
+**Claude Desktop**（`claude_desktop_config.json`）：
 
 ```json
 {
@@ -129,166 +170,361 @@ Add to your MCP client configuration (`mcp.json` or `claude_desktop_config.json`
 }
 ```
 
-The `mcp` subcommand starts a persistent MCP server process that the LLM agent queries on demand. You must run `atlas index` before starting the MCP server.
+**Cursor**（`.cursor/mcp.json`）：
+
+```json
+{
+  "mcpServers": {
+    "atlas": {
+      "command": "/path/to/target/release/atlas",
+      "args": ["mcp", "--project", "."]
+    }
+  }
+}
+```
+
+**Continue / VS Code**（`mcp.json` 或 `~/.continue/config.json`）：
+
+```json
+{
+  "mcpServers": {
+    "atlas": {
+      "command": "/path/to/target/release/atlas",
+      "args": ["mcp", "--project", "${workspaceFolder}"]
+    }
+  }
+}
+```
+
+> **重要：** 启动 MCP 服务之前，必须先对项目执行一次 `atlas index`。MCP 服务从已有的
+> `.atlas/atlas.db` 读取数据——它自身不会触发索引。
+
+### MCP 请求示例
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "atlas_trace_variable",
+    "arguments": { "file": "src/app.ts", "line": 4, "column": 18, "max_depth": 20 }
+  }
+}
+```
+
+所有追踪工具返回统一的 `TraceQueryResponse<T>` 信封，包含 `ok`、`kind`、
+`capability`、`partial_result`、`diagnostics` 和 `result` 字段。详细规范见
+[Trace Contract](docs/trace-contract.md)。
 
 ---
 
-## Supported Languages
+## 支持的语言
 
-| Language | Extensions | Feature Flag | Grammar |
-|----------|-----------|-------------|---------|
-| TypeScript | `.ts`, `.tsx` | `typescript` | tree-sitter-typescript |
-| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` | `javascript` | tree-sitter-typescript (shared) |
-| Python | `.py`, `.pyi`, `.pyx` | `python` | tree-sitter-python |
-| Java | `.java` | `java` | tree-sitter-java |
-| C | `.c`, `.h` | `c` | tree-sitter-c |
-| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` | `cpp` | tree-sitter-cpp |
-| ArkTS | `.ets` | `arkts` | tree-sitter-typescript (delegated) |
-| Cangjie ⚠️ | `.cj`, `.cangjie` | `cangjie` | Experimental opt-in, not included in `all-languages` |
+### MVP 语言（完整提取 + 追踪支持）
 
-Default features: `typescript`, `javascript`, `python`, `cli`. Enable additional languages with `--features`:
+| 语言 | 扩展名 | 能力等级 |
+|------|--------|:---:|
+| TypeScript | `.ts`, `.tsx` | DataflowBasic |
+| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` | DataflowBasic |
+| Python | `.py`, `.pyi`, `.pyx` | DataflowBasic |
+| Java | `.java` | Symbolic |
+| C | `.c`, `.h` | Symbolic |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | Symbolic |
+| ArkTS | `.ets`, `.sts` | Symbolic |
+
+### Post-MVP 语言（仅符号提取，暂无追踪）
+
+| 语言 | 扩展名 | 是否包含在 `all-languages`？ |
+|------|--------|:---:|
+| Go | `.go` | 是 |
+| C# | `.cs` | 是 |
+| Rust | `.rs` | 是 |
+| PHP | `.php` | 是 |
+| Ruby | `.rb` | 是 |
+| Kotlin | `.kt`, `.kts` | 是 |
+
+### 实验性语言（需显式启用）
+
+| 语言 | 扩展名 | Feature 标志 |
+|------|--------|-------------|
+| Bash | `.sh`, `.bash` | `bash` |
+| 仓颉 | `.cj`, `.cangjie` | `cangjie` |
+
+### 构建变体
 
 ```bash
-cargo build --release --features "all-languages,cli"
+# 默认：TypeScript、JavaScript、Python
+cargo build --release
+
+# 全部 MVP + post-MVP 语言
+cargo build --release --features all-languages
+
+# 开启实验性语言
+cargo build --release --features "all-languages,bash,cangjie"
 ```
 
 ---
 
-## How It Works
+## 架构设计
 
-### 1. Extraction
-Each source file is parsed with tree-sitter. Per-language `.scm` queries capture:
-- **Definitions**: functions, classes, methods, variables, enums, macros
-- **References**: calls, type references, field accesses, instantiations
-- **Imports**: import/include/using statements with module resolution
-- **Scopes**: lexical scopes (file, class, function, block, namespace)
-- **Dataflow**: parameters, returns, assignments, field reads/writes
+### 处理管线
 
-### 2. Post-Extraction
-- **Scope Tree**: stack-based nesting assigns `parent_id` to scopes and `scope_id` to symbols
-- **Container Assignment**: class-like scopes are assigned as container for member symbols
-- **Callsite Derivation**: `Call` references with source symbols generate callsites
+处理管线（6 个阶段：提取 → 后处理 → 解析 → 图谱 → 查询 → 接口）
+```
+┌────────────────────────────────────┐
+│ 1. Extraction (tree-sitter + .scm) │
+│ Per-file: symbols, scopes, refs,   │
+│ imports, callsites, dataflow, CFG  │
+└──────────────────┬─────────────────┘
+                  ▼
+┌────────────────────────────────────┐
+│ 2. Post-Processing                 │
+│ Scope tree, container assignment,  │
+│ lexical + semantic binding         │
+└──────────────────┬─────────────────┘
+                  ▼
+┌────────────────────────────────────┐
+│ 3. Resolution                      │
+│ Best-effort: builtin filter ->     │
+│ scope-local -> container -> import │
+│ -> project search fallback         │
+└──────────────────┬─────────────────┘
+                  ▼
+┌────────────────────────────────────┐
+│ 4. Graph Build                     │
+│ Resolved refs + callsites ->       │
+│ symbol_edges (Calls, Refs, ...)    │
+└──────────────────┬─────────────────┘
+                  ▼
+┌────────────────────────────────────┐
+│ 5. Query Layer                     │
+│ GraphEngine (BFS/DFS) + Search +   │
+│ Context Builder + Analysis + Trace │
+└──────────────────┬─────────────────┘
+                  ▼
+┌────────────────────────────────────┐
+│ 6. Interface                       │
+│ CLI (12 cmds) + MCP (16 tools)     │
+└────────────────────────────────────┘
+```
 
-### 3. Resolution
-The current resolver uses a bounded best-effort cascade:
-1. **Builtin Filter**: excludes known stdlib names (100+ per language)
-2. **Scope-local**: walks lexical scope chain for exact name match
-3. **Container-local**: searches enclosing class scope for method references
-4. **Same-file**: exact name match within the file
-5. **Import/include**: resolves imported symbols and C/C++ local includes where facts exist
-6. **Project search fallback**: exact/proximity/fuzzy matching through indexed symbols
+### Crate 地图
 
-Path alias and re-export/barrel resolver components exist, but they are not yet exposed as fully stable project-config-driven resolution in the main path.
-
-### 4. Graph
-Resolved references create structural edges (`Calls`, `Instantiates`, `Implements`, `References`, `Contains`). The full graph is loaded in-memory for querying (`callers`, `callees`, `callgraph`, `shortest_path`, `impact`).
-
-### 5. Search
-A 3-stage cascade:
-1. **FTS5 prefix**: primary match, fastest
-2. **LIKE fallback**: substring match on name/qualified_name
-3. **Fuzzy prefix**: 3-char FTS5 prefix + post-filter
-
-Name matching uses 6-tier similarity: exact → case-insensitive → camelCase/snake_case normalized → word overlap → Levenshtein.
-
----
-
-## Project Structure
+项目以 Rust workspace 方式组织，共 **12 个 crate**，严格遵循自底向上的依赖顺序：
 
 ```
-.atlas/                          # Per-project Atlas state
-├── atlas.db                     # SQLite database (schema v1 during rapid development)
-
 crates/
-├── atlas-types/                 # Core type system (7 ID types, 11 enums, IR structs)
-├── atlas-db/                    # SQLite persistence (schema + store + readers)
-├── atlas-workspace/             # ProjectRoot, WorkspacePaths, SourcePath
-├── atlas-extraction/            # Tree-sitter parsing + language frontends/adapters
-│   ├── queries/                 # Per-language .scm query files
-│   └── languages/               # LanguageAdapter implementations
-├── atlas-resolution/            # Reference resolution + include/path/export helper components
-├── atlas-graph/                 # In-memory GraphSnapshot + GraphEngine (BFS/DFS)
-├── atlas-analysis/              # Variable provenance and caller-path analysis layer
-├── atlas-search/                # FTS5 + LIKE + fuzzy + camelCase normalization
-├── atlas-context/               # AI context builder (callers/callees/peers)
-├── atlas-sync/                  # Incremental sync (git-aware discovery + hash detection)
-├── atlas-mcp/                   # MCP JSON-RPC 2.0 server
-└── atlas-cli/                   # CLI binary + commands + all tests
+├── atlas-types           核心类型系统：7 种 ID 类型、11 种枚举、IR 结构体
+├── atlas-workspace       项目根目录、工作区路径、源文件路径抽象
+├── atlas-db              SQLite Schema + Store 读写 + Reader + 迁移
+├── atlas-extraction      tree-sitter 解析、.scm 查询、LanguageAdapter
+│   ├── queries/          各语言的 tree-sitter 查询文件
+│   └── languages/        LanguageAdapter 实现
+├── atlas-resolution      符号解析：引用消解 + include 图 + 路径别名
+├── atlas-graph           GraphBuilder、GraphSnapshot、GraphEngine（BFS/DFS）
+├── atlas-analysis        变量来源追踪 + 调用路径查询分析引擎
+├── atlas-search          FTS5 + LIKE + 模糊搜索 + camelCase 归一化
+├── atlas-context         AI 上下文构建器（调用者/被调用者/同侪）
+├── atlas-sync            增量同步：Git 感知文件发现 + 哈希变更检测
+├── atlas-mcp             MCP JSON-RPC 2.0 服务（16 个工具）
+└── atlas-cli             CLI 二进制（12 个命令）+ 所有集成测试
 ```
 
+### 依赖方向（严格无环）
+
+```
+ atlas-cli ──▶ atlas-mcp, atlas-sync, atlas-search, atlas-context,
+               atlas-analysis, atlas-graph, atlas-resolution,
+               atlas-extraction, atlas-db, atlas-types, atlas-workspace
+
+ atlas-mcp ──▶ atlas-context, atlas-search, atlas-graph,
+               atlas-analysis, atlas-db, atlas-types, atlas-workspace
+
+ atlas-sync ──▶ atlas-graph, atlas-resolution, atlas-extraction,
+                atlas-db, atlas-types, atlas-workspace
+
+ atlas-search / atlas-context ──▶ atlas-graph, atlas-db, atlas-types
+
+ atlas-analysis ──▶ atlas-db, atlas-types, atlas-workspace
+
+ atlas-graph ──▶ atlas-db, atlas-types
+
+ atlas-resolution ──▶ atlas-db, atlas-types, atlas-workspace
+
+ atlas-extraction ──▶ atlas-types
+
+ atlas-db ──▶ atlas-types
+
+ atlas-workspace ──▶ (标准库)
+
+ atlas-types ──▶ (blake3, serde, rusqlite)
+```
+
+### 核心设计决策
+
+| 决策 | 理由 |
+|------|------|
+| **确定性 ID**（blake3 哈希） | 幂等索引；不使用 UUID 或自增主键 |
+| **SQLite + 内存图谱** | SQLite 作为持久化的 source of truth；内存图作为只读查询加速层 |
+| **最佳努力解析** | 解析失败以警告形式呈现并携带置信度；不阻断索引流程 |
+| **Feature 门控语言** | 每种语言是独立的 Cargo feature；不实现中心化大抽取器 |
+| **MCP 一等入口** | MCP 服务是一等接口，不是 CLI 的附属功能 |
+| **单一 Mutex\<Connection\>** | 简单并发模型，满足单机 Agent 使用场景 |
+
+### 数据库 Schema
+
+数据存储在 `.atlas/atlas.db`（Schema 版本 1）。主要表：
+
+```
+files          symbols        scopes         references
+imports        symbol_edges   callsites      bindings
+binding_uses   data_nodes     dataflow_edges cfg_nodes
+cfg_edges      project_metadata               schema_versions
+symbols_fts    （FTS5 全文索引）
+```
+
+当前项目处于快速开发阶段——Schema 变更需要 `atlas init` 重建数据库。
+
 ---
 
-## Architecture Principles
+## 追踪与分析
 
-- **Separation of Concerns**: Each module has a single, well-defined responsibility
-- **Deterministic IDs**: All IDs are blake3 hashes, enabling idempotent indexing
-- **Deref Coercion**: `Store` derefs to `StoreReader` for clean read/write separation
-- **Feature Gating**: Language adapters, MCP server, CLI optional via Cargo features
-- **Best-Effort Resolution**: Resolution errors surface as warnings, don't block the pipeline
+Atlas 提供**变量来源追踪**和**调用路径查询**能力——它不是完整的污点分析或漏洞扫描器。
+你提供一个可疑的代码位置，Atlas 返回结构化的程序证据。
+
+### 追踪管线
+
+用户指定代码位置，Atlas 返回结构化证据——三种入口统一输出 `TraceQueryResponse<T>` 信封。
+```
+  User Query: "Where does this value come from?"
+       │
+       ▼
+  TraceEngine
+       │
+       ├─ trace_point(file, line, col)
+       │    Resolve facts: reference, symbol,
+       │    data_node, binding, callsite, scope
+       │
+       ├─ trace_variable(file, line, col)
+       │    Backward slice via dataflow edges
+       │    from query point -> farthest origin
+       │
+       └─ trace_caller_path(symbol_id)
+            BFS from target -> farthest caller
+       │
+       ▼
+  TraceQueryResponse<T>
+     { ok, kind, capability, partial_result, diagnostics, result }
+```
+
+### 能力门控
+
+每种语言通过能力画像（capability profile）明确规定可用的追踪功能：
+
+| 功能 | TS/JS | Python | Java | C/C++ | ArkTS | Post-MVP |
+|------|:-----:|:------:|:----:|:-----:|:-----:|:--------:|
+| 符号与引用 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 调用图 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 局部数据流 | ✓ | ✓† | ✗ | ✗ | ✗ | ✗ |
+| Use-Def 链 | ✓ | ✓†† | ✗ | ✗ | ✗ | ✗ |
+| 控制流图 (CFG) | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ |
+
+> ✓† = 启发式命名匹配 · ✓†† = 仅名称匹配精度 · Post-MVP = Go/C#/Rust/PHP/Ruby/Kotlin
+
+当追踪查询超出当前语言的能力边界时，Atlas 返回 `partial_result: true` 并附带详细
+诊断信息——绝不会静默地返回空结果。
+
+详见 [Trace Contract](docs/trace-contract.md)，包含完整的 JSON 契约和使用示例。
 
 ---
 
-## Testing
+## 开发
+
+### 构建与测试
 
 ```bash
-# Default test suite (TS/JS/Python languages + CLI)
+# 默认测试套件（TypeScript、JavaScript、Python）
 cargo test
 
-# Full test suite (all languages + MCP + sync)
+# 完整测试套件（全部语言 + MCP + 增量同步）
 cargo test --features "all-languages,mcp,sync"
 
-# Integration tests only
+# 仅集成测试
 cargo test --test integration
 
-# Run with release build
+# 构建 release 二进制
 cargo build --release -p atlas-cli --features all-languages
-./target/release/atlas index --project /tmp/test-project
 ```
 
-The full verification target is `cargo test --features "all-languages,mcp,sync"`.
+### 项目结构
+
+```
+atlas/
+├── crates/                # 12 个 workspace crate（详见上方 crate 地图）
+├── docs/                  # 架构文档、需求规格、追踪合约
+│   ├── 01-requirements.md
+│   ├── 02-architecture-constraints.md
+│   ├── 03-current-architecture.md
+│   ├── 04-changes.md
+│   ├── 05-roadmap.md
+│   └── trace-contract.md
+├── examples/              # 各语言的测试项目
+├── Cargo.toml             # Workspace 根配置
+└── README.md
+```
+
+### 架构原则
+
+- **职责分离**：每个 crate 有单一、明确的职责
+- **确定性 ID**：所有 ID 均为 blake3 哈希——保证索引幂等
+- **最佳努力语义**：解析错误以警告形式呈现，不阻断管线
+- **Feature 门控**：语言、MCP、增量同步、CLI 均为可选 Cargo feature
+- **Deref 强制转换**：`Store` 自动解引用为 `StoreReader`，清晰分离读写
+- **输出预算**：所有响应受尺寸限制，不存在无界输出
 
 ---
 
-## Known Limitations
+## 已知限制
 
-- **Trace capability is language-specific**: CLI and MCP responses include capability metadata; unsupported trace features return partial results with diagnostics.
-- **Call arguments**: `callsites.args_json` + call-arg `DataNode` is the single source of truth; the deprecated `callsite_args` table has been removed.
-- **Path aliases**: tsconfig path aliases are wired into the resolver; barrel/re-export chains remain name-based (no AST-level re-export graph).
-- **ArkTS**: delegates to TypeScript grammar; some ArkTS-specific syntax may not parse
-- **Cangjie ⚠️**: experimental opt-in support. It is not part of MVP, default features, or `all-languages`; enable explicitly with `--features cangjie`. Known issues:
-  1. tree-sitter-cangjie grammar ABI 15 pre-dates Atlas tree-sitter 0.24.7 (max ABI 14)
-  2. grammar.js has been rewritten (using modern node types like `functionDefinition`, `classDefinition`, `postfixExpression`) but parser.c was stale — regeneration with tree-sitter CLI 0.24.7 resolved ABI + naming but revealed:
-  3. Atlas `.scm` queries reference node types (e.g. `typeAnnotation`) that don't exist in the current grammar, requiring query-level fixes
-  - **Status**: removed from `all-languages` feature (opt-in only via `--features cangjie`). Full fix requires `.scm` query updates to match grammar node types.
-- **C/C++**: no preprocessor expansion; only `#include` directives are parsed for imports
-- **Java**: no classpath/Maven/Gradle resolution; cross-file resolution is name-based
-- **Python**: no dynamic type inference; runtime-constructed symbols are not captured
-- **Performance**: full in-memory graph for 100k+ symbol projects (~50MB memory budget)
-- **Concurrency**: Store uses single `Mutex<Connection>`; MCP server is single-threaded
+| 领域 | 限制说明 |
+|------|---------|
+| **追踪** | 数据流/追踪仅支持 TS/JS/Python；其他语言仅符号级 |
+| **C/C++** | 不做预处理展开；仅解析 `#include` 指令 |
+| **Java** | 不做 classpath/Maven/Gradle 解析；跨文件解析基于名称匹配 |
+| **Python** | 不做动态类型推断；运行时构造的符号无法捕获 |
+| **ArkTS** | 委托给 TypeScript 语法解析；部分 ArkTS 特有语法可能无法解析 |
+| **Post-MVP 语言** | Go/C#/Rust/PHP/Ruby/Kotlin：仅符号、引用、调用——无数据流或追踪 |
+| **Barrel 重导出** | TypeScript 重导出链通过名称兜底解析，而非 AST 导出图 |
+| **性能** | 10 万+ 符号项目需全量内存图（约 50MB 内存） |
+| **并发** | 单一 `Mutex<Connection>`；MCP 服务为单线程 |
+| **Schema** | 快速开发期无迁移系统；Schema 变更需 `atlas init` 重建 |
 
 ---
 
-## Roadmap
+## 路线图
 
-The active roadmap is in [`docs/05-roadmap.md`](docs/05-roadmap.md). Current priority is:
+当前优先事项（详见 [`docs/05-roadmap.md`](docs/05-roadmap.md)）：
 
-- Stabilize facts needed for variable provenance and caller-path queries.
-- Complete TypeScript/JavaScript/Python Level 3 trace fixtures.
-- Keep Java/C/C++/ArkTS capability boundaries explicit in CLI and MCP output; keep Cangjie marked experimental when explicitly enabled.
-- Add lightweight function summaries for bounded cross-function provenance.
-- Defer crate/workspace splitting until trace E2E behavior is stable.
-
----
-
-## License
-
-MIT
+1. **稳定追踪事实**，确保变量来源追踪和调用路径查询可靠
+2. **加固 TS/JS/Python 追踪 fixtures**，增强路径步骤的语义断言
+3. **保持能力边界的显式化**，在 CLI 和 MCP 输出中清晰呈现
+4. **轻量级函数摘要** 和有界的跨函数变量来源追踪
+5. **推迟 `atlas-engine` crate 拆分**，直至追踪精度达到生产可用水平
 
 ---
 
-## Contributing
+## 参与贡献
 
-1. Run `cargo test` and `cargo test --features all-languages,mcp,sync` before submitting
-2. All new extraction logic should have a corresponding integration test
-3. During rapid development, schema changes update the v1 schema and tests; deployment migrations are not a current requirement
-4. Language adapters follow the query/normalization `LanguageAdapter` trait in `src/extraction/languages/mod.rs`
+1. 提交前请运行完整测试套件：
+   ```bash
+   cargo test --features "all-languages,mcp,sync"
+   ```
+2. 新的提取逻辑必须包含集成测试
+3. 语言适配器遵循 `crates/atlas-extraction/src/languages/` 中的 `LanguageAdapter` trait
+4. Schema 变更需同步更新版本追踪和测试（当前阶段无需部署迁移）
+5. 修改追踪合约时，需要同步更新 `docs/trace-contract.md` 和对应测试
+
+---
+
+## 许可证
+
+[MIT](LICENSE)
