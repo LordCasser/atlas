@@ -45,6 +45,8 @@ pub struct ToolRouter {
     /// Project root directory for snippet extraction.
     pub(crate) project_root: std::path::PathBuf,
     tools: Vec<Tool>,
+    /// File count at last graph build (used to detect external index/sync).
+    last_graph_file_count: usize,
 }
 
 impl ToolRouter {
@@ -54,6 +56,7 @@ impl ToolRouter {
         context: ContextBuilder,
         project_root: std::path::PathBuf,
     ) -> Self {
+        let file_count = store.count_files().unwrap_or(0);
         let tools = make_all_tools();
         Self {
             store,
@@ -61,7 +64,28 @@ impl ToolRouter {
             context,
             project_root,
             tools,
+            last_graph_file_count: file_count,
         }
+    }
+
+    /// Refresh the graph snapshot if an external index/sync has added/removed
+    /// files since the last build.
+    pub(crate) fn maybe_refresh_graph(&mut self) -> anyhow::Result<()> {
+        let current_count = self.store.count_files().unwrap_or(self.last_graph_file_count);
+        if current_count != self.last_graph_file_count {
+            tracing::info!(
+                "File count changed ({} -> {}), refreshing graph snapshot",
+                self.last_graph_file_count,
+                current_count,
+            );
+            let new_graph = Arc::new(
+                atlas_graph::GraphEngine::from_store(&self.store, 0.3)?,
+            );
+            self.search.refresh_graph(Arc::clone(&new_graph));
+            self.context.refresh_graph(new_graph);
+            self.last_graph_file_count = current_count;
+        }
+        Ok(())
     }
 
     /// Access the underlying store (for testing).

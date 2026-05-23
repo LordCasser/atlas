@@ -62,18 +62,25 @@ impl GraphBuilder {
         let edge_count = edges.len();
         let mut warnings: Vec<String> = warnings.into_inner().unwrap_or_default();
 
-        // Write edges to store
-        if !edges.is_empty() {
-            if let Err(e) = self.store.batch_insert_edges(&edges) {
-                warnings.push(format!(
-                    "batch edge insert failed ({} edges): {}",
-                    edge_count, e
-                ));
+        // Write edges to store, tracking actual success
+        let edges_written = if !edges.is_empty() {
+            match self.store.batch_insert_edges(&edges) {
+                Ok(()) => edge_count,
+                Err(e) => {
+                    warnings.push(format!(
+                        "batch edge insert failed ({} edges): {}",
+                        edge_count, e
+                    ));
+                    0 // actual written is 0 on failure
+                }
             }
-        }
+        } else {
+            0
+        };
 
         GraphBuilderStats {
             edges_built: edge_count,
+            edges_written,
             warnings,
         }
     }
@@ -196,9 +203,10 @@ impl GraphBuilder {
 /// Statistics from a GraphBuilder run.
 #[derive(Debug, Clone, Default)]
 pub struct GraphBuilderStats {
-    /// Number of edges built (before write to store; may differ from
-    /// actual stored count if the batch insert fails).
+    /// Number of edges built (before write to store).
     pub edges_built: usize,
+    /// Number of edges actually written (0 on batch insert failure).
+    pub edges_written: usize,
     pub warnings: Vec<String>,
 }
 

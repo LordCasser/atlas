@@ -103,24 +103,24 @@ impl Store {
 
     // ── Exclusive lock (cross-process, via project_metadata table) ─────────
 
-    /// Try to acquire an exclusive write lock.
+    /// Try to acquire an exclusive write lock (atomic via SQLite transaction).
     ///
-    /// Records the current PID and timestamp in `project_metadata`.
-    /// Fails if another process already holds the lock and is still alive.
-    /// Stale locks (process died) are automatically stolen.
+    /// Uses BEGIN IMMEDIATE to atomically check for existing lock and record
+    /// the current PID.  Fails immediately if another process holds the lock
+    /// and is still alive.  Stale locks (process died) are stolen.
     pub fn acquire_exclusive_lock(&self) -> anyhow::Result<()> {
         let conn = self.lock();
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch("BEGIN IMMEDIATE")?;
         let pid = std::process::id();
         let now = chrono_now_ms();
 
-        // Check for existing lock
-        let existing: Option<(i64, i64)> = conn
+        let existing: Option<(i64, i64)> = tx
             .query_row(
                 "SELECT value FROM project_metadata WHERE key = 'exclusive_lock_pid'",
                 [],
                 |row| {
                     let v: String = row.get(0)?;
-                    // Format: "pid:timestamp_ms"
                     let parts: Vec<&str> = v.splitn(2, ':').collect();
                     if parts.len() == 2 {
                         Ok(Some((
@@ -142,15 +142,19 @@ impl Store {
                     existing_pid
                 );
             }
-            // Stale lock — steal it
+            // Stale lock — steal it: replace old entry
+            tx.execute(
+                "DELETE FROM project_metadata WHERE key = 'exclusive_lock_pid'",
+                [],
+            )?;
         }
 
-        // Write our lock
         let lock_value = format!("{}:{}", pid, now);
-        conn.execute(
-            "INSERT OR REPLACE INTO project_metadata (key, value) VALUES ('exclusive_lock_pid', ?1)",
+        tx.execute(
+            "INSERT INTO project_metadata (key, value) VALUES ('exclusive_lock_pid', ?1)",
             params![lock_value],
         )?;
+        tx.commit()?;
         Ok(())
     }
 

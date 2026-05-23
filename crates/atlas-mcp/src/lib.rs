@@ -61,8 +61,10 @@ impl McpServer {
         let mut reader = BufReader::new(stdin);
         let mut stdout = tokio::io::stdout();
 
-        // Build the tool router with fresh graph engine per request.
-        // This ensures that after sync/index operations, MCP tools see the latest data.
+        // Build the tool router with initial graph engine.
+        // Graph snapshot is loaded once at startup and remains stable
+        // for the server lifetime. Use `atlas_status` or server restart
+        // to refresh the graph after sync/index operations.
         let store = self.store;
         let search = SearchEngine::new(
             Arc::clone(&store),
@@ -72,17 +74,10 @@ impl McpServer {
             Arc::clone(&store),
             Arc::new(GraphEngine::from_store(&store, 0.3)?),
         );
-        // graph_fn rebuilds from store on every call to avoid staleness
-        let store_for_graph = Arc::clone(&store);
-        let graph_fn = move || {
-            GraphEngine::from_store(&store_for_graph, 0.3)
-                .map_err(|e| format!("Failed to reload graph snapshot from store: {}", e))
-        };
         let router = ToolRouter::new(
             Arc::clone(&store),
             search,
             context,
-            graph_fn,
             self.workspace.root().to_path_buf(),
         );
 
@@ -91,6 +86,11 @@ impl McpServer {
                 Some(req) => req,
                 None => break, // EOF
             };
+
+            // Check if DB has been updated since last graph build.
+            // If so, refresh graph/snapshot to keep trace and graph tools
+            // consistent within the same MCP session.
+            router.maybe_refresh_graph()?;
 
             let response = {
                 let start = std::time::Instant::now();

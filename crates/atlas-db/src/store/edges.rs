@@ -121,6 +121,30 @@ impl Store {
         Ok(count)
     }
 
+    /// Clear resolved targets on OTHER files' references that point to
+    /// symbols in this file.  Called before deleting a file's symbols so that
+    /// cross-file references become unresolved instead of dangling.
+    pub fn invalidate_references_to_symbols_in_file(
+        &self,
+        file_id: &FileId,
+    ) -> anyhow::Result<usize> {
+        let conn = self.lock();
+        // Find all symbol IDs belonging to this file, then clear any
+        // reference in ANY file whose resolved_symbol_id matches.
+        let count = conn.execute(
+            r#"UPDATE "references" SET
+                resolved_symbol_id = NULL,
+                resolved_confidence = NULL,
+                resolved_strategy = NULL,
+                resolved_provenance = NULL
+               WHERE resolved_symbol_id IN (
+                   SELECT symbol_id FROM symbols WHERE file_id = ?1
+               )"#,
+            params![file_id],
+        )?;
+        Ok(count)
+    }
+
     /// Delete all edges that were created from references belonging to a file.
     ///
     /// When a file is modified, the edges derived from its references become

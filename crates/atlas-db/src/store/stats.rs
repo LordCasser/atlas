@@ -28,7 +28,7 @@ impl Store {
 
     /// Get a project metadata value by key.
     pub fn get_metadata(&self, key: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare("SELECT value FROM project_metadata WHERE key = ?1")?;
         let mut rows = stmt.query(params![key])?;
         match rows.next()? {
@@ -39,7 +39,7 @@ impl Store {
 
     /// Get the schema version from the database.
     pub fn schema_version(&self) -> anyhow::Result<i64> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare("SELECT MAX(version) FROM schema_versions")?;
         let version: Option<i64> = stmt.query_row([], |row| row.get(0))?;
         Ok(version.unwrap_or(0))
@@ -49,7 +49,15 @@ impl Store {
 
     /// Collection metrics about the indexed codebase.
     pub fn get_stats(&self) -> anyhow::Result<StoreStats> {
-        let conn = self.lock();
+    /// Returns the total number of indexed files (fast COUNT query).
+    pub fn count_files(&self) -> anyhow::Result<usize> {
+        let conn = self.lock_read();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
+        Ok(count as usize)
+    }
+
+    pub fn get_stats(&self) -> anyhow::Result<StoreStats> {
+        let conn = self.lock_read();
         let total_files: i64 = conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
         let total_symbols: i64 =
             conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))?;
@@ -101,7 +109,7 @@ impl Store {
     /// `path LIKE '%/' || ?`. Falls back to Rust path normalization for the
     /// suffix case. This replaces the old `list_files()` → linear scan pattern.
     pub fn resolve_file_id(&self, root: &Path, rel_path: &str) -> anyhow::Result<Option<FileId>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
 
         // 1. Exact path match.
         let mut stmt = conn.prepare("SELECT file_id FROM files WHERE path = ?1")?;
@@ -112,7 +120,7 @@ impl Store {
         // 2. Suffix match (e.g. "helper.ts" matches "src/lib/helper.ts").
         let pattern = format!("%/{}", rel_path);
         let mut stmt =
-            conn.prepare("SELECT file_id, path FROM files WHERE path LIKE ?1 LIMIT 5")?;
+            conn.prepare("SELECT file_id, path FROM files WHERE path LIKE ?1 ORDER BY path ASC LIMIT 5")?;
         let rows: Vec<_> = stmt
             .query_map(params![&pattern], |row| {
                 Ok((row.get::<_, FileId>(0)?, row.get::<_, String>(1)?))

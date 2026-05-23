@@ -21,6 +21,7 @@ use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
 use atlas_extraction::frontend::LanguageFrontend;
 use atlas_extraction::{self, LanguageRegistry, ParseWorkerPool, WorkerConfig};
+use atlas_sync::FileLock;
 use atlas_sync::discovery::{DiscoveryConfig, discover_files};
 use atlas_types::ExtractionError;
 use atlas_types::FailureCategory;
@@ -56,6 +57,9 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     // ── Phase: Open store ──────────────────────────────────────────────────
     let _store_timer = PhaseTimer::start("Open store");
     let ctx = CommandContext::open(project, DbMode::CreateOrOpenReadWrite)?;
+    let _lock = FileLock::acquire(&ctx.store)
+        .context("Another atlas process is indexing this project. "
+                 "Wait for it to finish, or stop the other process first.")?;
     let root = ctx.root.as_path();
     let pipeline_start = Instant::now();
     let mut phase_timings = PhaseTimings::new();
@@ -107,6 +111,10 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
             let sp = SourcePath::try_from_relative(&rel_path.to_string_lossy())
                 .with_context(|| format!("invalid deleted path: {}", rel_path.display()))?;
             let file_id = atlas_types::FileId::generate(sp.as_str());
+            // Invalidate cross-file references BEFORE deleting symbols
+            ctx.store
+                .invalidate_references_to_symbols_in_file(&file_id)
+                .with_context(|| format!("Failed to invalidate cross-refs for: {}", sp))?;
             ctx.store
                 .delete_edges_for_file_references(&file_id)
                 .with_context(|| format!("Failed to delete edges for stale file: {}", sp))?;
@@ -132,8 +140,27 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
 
     // ── Phase: Language init ───────────────────────────────────────────────
     let lang_timer = PhaseTimer::start("Language init");
-    let _registry =
-        LanguageRegistry::new(&languages).context("Failed to load language grammars")?;
+    let _registry = match LanguageRegistry::new(&languages) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(
+                "Some language grammars are not compiled in: {:#}",
+                e
+            );
+            tracing::warn!("Files in those languages will be skipped.");
+            let available: Vec<Language> = languages
+                .iter()
+                .filter(|l| LanguageRegistry::new(&[*l]).is_ok())
+                .copied()
+                .collect();
+            if available.is_empty() {
+                anyhow::bail!(
+                    "No language grammars available. Rebuild with --features to add language support."
+                );
+            }
+            LanguageRegistry::new(&available)?
+        }
+    };
     // P2: Build frontend cache — one LanguageFrontend per language, reused across all files.
     let frontend_cache: HashMap<Language, LanguageFrontend> = languages
         .iter()
@@ -261,6 +288,11 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     {
         let clean_timer = PhaseTimer::start("Clean stale");
         let file_ids: Vec<_> = extracted.iter().map(|ef| ef.facts.file.file_id).collect();
+        // Invalidate cross-file references pointing into these files
+        // before deleting symbols (prevents dangling resolved targets).
+        for fid in &file_ids {
+            let _ = ctx.store.invalidate_references_to_symbols_in_file(fid);
+        }
         if let Err(e) = ctx.store.delete_files_batch(&file_ids) {
             return Err(anyhow::anyhow!(
                 "Failed to clean stale facts before indexing: {:#}",
