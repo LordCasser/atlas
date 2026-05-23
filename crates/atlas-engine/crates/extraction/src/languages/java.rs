@@ -212,29 +212,35 @@ impl ScopeExtractorSpec for JavaAdapter {
 
 impl LexicalBindingSpec for JavaAdapter {
     fn lexical_query(&self) -> &str {
-        ""
+        include_str!("../../queries/java/lexical.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::unsupported("Java does not support lexical binding extraction")
+        FeatureSupport::supported_with_limitations(
+            0.65,
+            vec!["name-based binding (no proper shadowing)"],
+        )
     }
-    fn normalize(&self, _ctx: NormalizeCtx<'_>, _capture: Capture<'_>) -> Option<BindingDef> {
-        None
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
+        normalize_java_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
 }
 
 impl DataflowSpec for JavaAdapter {
     fn dataflow_builder_query(&self) -> &str {
-        ""
+        include_str!("../../queries/java/dataflow_builder.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::unsupported("Java does not support dataflow extraction")
+        FeatureSupport::supported_with_limitations(
+            0.65,
+            vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
+        )
     }
     fn normalize(
         &self,
-        _ctx: NormalizeCtx<'_>,
-        _capture: Capture<'_>,
+        ctx: NormalizeCtx<'_>,
+        capture: Capture<'_>,
     ) -> (Option<DataNode>, Option<DataFlowEdge>) {
-        (None, None)
+        normalize_java_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
 }
 
@@ -364,6 +370,241 @@ fn java_extract_signature(
     }
 }
 
+// ── Lexical binding normalize ──────────────────────────────────────────
+
+/// Map capture name to BindingKind.
+fn java_binding_kind(capture_name: &str) -> Option<BindingKind> {
+    match capture_name {
+        "lexical.parameter" => Some(BindingKind::Parameter),
+        "lexical.local" => Some(BindingKind::Local),
+        "lexical.catch_variable" => Some(BindingKind::CatchVariable),
+        _ => None,
+    }
+}
+
+/// Normalize a lexical capture into a BindingDef.
+fn normalize_java_lexical(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> Option<BindingDef> {
+    let kind = java_binding_kind(capture_name)?;
+    let name = node_text(node, source)?;
+    let range = node_range(node);
+    let scope_id = ScopeId::generate(
+        &file_id,
+        None::<&ScopeId>,
+        kind.as_str(),
+        range.start_byte,
+    );
+    let id = BindingId::generate(
+        &file_id,
+        &scope_id,
+        kind.as_str(),
+        &name,
+        range.start_byte,
+    );
+    Some(BindingDef {
+        id,
+        file_id,
+        function_id: None,
+        scope_id,
+        kind,
+        name,
+        symbol_id: None,
+        range,
+    })
+}
+
+// ── Dataflow normalize ─────────────────────────────────────────────────
+
+/// Find a call expression ancestor for a dataflow node.
+fn find_call_expression_java(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        if parent.kind() == "method_invocation" {
+            return Some(parent);
+        }
+        current = parent;
+    }
+    None
+}
+
+/// Normalize a dataflow capture into (DataNode, DataFlowEdge).
+fn normalize_java_dataflow_builder(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> (Option<DataNode>, Option<DataFlowEdge>) {
+    use types::ids::DataNodeId;
+
+    let range = node_range(node);
+
+    match capture_name {
+        "df.parameter" => node_text(node, source)
+            .map(|name| {
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "parameter",
+                    Some(&name),
+                    Some(&name),
+                    range.start_byte,
+                );
+                let dn = DataNode::parameter(node_id, file_id, None, None, &name, range);
+                (Some(dn), None)
+            })
+            .unwrap_or((None, None)),
+        "df.assign_target" => node_text(node, source)
+            .map(|name| {
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "local",
+                    Some(&name),
+                    Some(&name),
+                    range.start_byte,
+                );
+                let dn = DataNode::local(node_id, file_id, None, None, &name, range);
+                (Some(dn), None)
+            })
+            .unwrap_or((None, None)),
+        "df.assign_value" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let callsite_id = find_call_expression_java(node).map(|ce| {
+                types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+            });
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "expr",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: DataNodeKind::Expr,
+                binding_id: None,
+                callsite_id,
+                name: Some(text),
+                access_path: None,
+                arg_index: None,
+                range,
+            };
+            (Some(dn), None)
+        }
+        "df.return_value" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "return",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: DataNodeKind::Return,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text),
+                access_path: None,
+                arg_index: None,
+                range,
+            };
+            (Some(dn), None)
+        }
+        "df.call_target" => node_text(node, source)
+            .map(|name| {
+                let access_path = name.clone();
+                let callsite_id = find_call_expression_java(node).map(|ce| {
+                    types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+                });
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "call_target",
+                    Some(&name),
+                    Some(&access_path),
+                    range.start_byte,
+                );
+                let dn = DataNode::call_target(
+                    node_id, file_id, None, callsite_id, &name, &access_path, range,
+                );
+                (Some(dn), None)
+            })
+            .unwrap_or((None, None)),
+        "df.call_arg" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let callsite_id = find_call_expression_java(node).map(|ce| {
+                types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+            });
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "call_arg",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range);
+            (Some(dn), None)
+        }
+        "df.field_name" => node_text(node, source)
+            .map(|name| {
+                let access_path = node
+                    .parent()
+                    .filter(|p| p.kind() == "field_access")
+                    .and_then(|p| node_text(p, source))
+                    .unwrap_or_else(|| name.clone());
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "field",
+                    Some(&name),
+                    Some(&access_path),
+                    range.start_byte,
+                );
+                let dn = DataNode::field(node_id, file_id, None, &name, &access_path, range);
+                (Some(dn), None)
+            })
+            .unwrap_or((None, None)),
+        "df.receiver" | "df.literal" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                if capture_name == "df.literal" { "literal" } else { "receiver" },
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: if capture_name == "df.literal" { DataNodeKind::Literal } else { DataNodeKind::Receiver },
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text),
+                access_path: None,
+                arg_index: None,
+                range,
+            };
+            (Some(dn), None)
+        }
+        _ => (None, None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,5 +660,139 @@ mod tests {
         let lang = spec.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, spec.scope_query());
         assert!(query.is_ok(), "scope query must compile: {:?}", query.err());
+    }
+
+    #[test]
+    fn test_lexical_query_parses() {
+        let spec = JavaAdapter;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.lexical_query());
+        assert!(
+            query.is_ok(),
+            "lexical query must compile: {:?}",
+            query.err()
+        );
+    }
+
+    #[test]
+    fn test_dataflow_builder_query_parses() {
+        let spec = JavaAdapter;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.dataflow_builder_query());
+        assert!(
+            query.is_ok(),
+            "dataflow_builder query must compile: {:?}",
+            query.err()
+        );
+    }
+
+    #[test]
+    fn test_lexical_normalize_parameter() {
+        let frontend = java_frontend();
+        let ts_lang = frontend.parser.tree_sitter_language();
+        let source = "class Foo { void bar(int x) {} }";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let query = tree_sitter::Query::new(&ts_lang, frontend.lexical.lexical_query()).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let file_id = FileId::generate("Test.java");
+        let ctx = NormalizeCtx {
+            language: Language::Java,
+            file_id,
+            file_path: std::path::Path::new("Test.java"),
+            source,
+        };
+
+        let mut hits = 0;
+        let mut captures = cursor.captures(&query, root, source.as_bytes());
+        use streaming_iterator::StreamingIterator;
+        while let Some((m, idx)) = captures.next() {
+            let cap = m.captures[*idx];
+            let name = query.capture_names()[cap.index as usize].to_string();
+            if frontend.lexical.normalize(ctx, Capture { name, node: cap.node }).is_some() {
+                hits += 1;
+            }
+        }
+        assert!(hits > 0, "lexical query should produce at least one BindingDef for int x parameter");
+    }
+
+    #[test]
+    fn test_dataflow_normalize_assignment() {
+        let frontend = java_frontend();
+        let ts_lang = frontend.parser.tree_sitter_language();
+        let source = "class Foo { int bar() { int x = 1; x = 2; return x; } }";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let query = tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let file_id = FileId::generate("Test.java");
+        let ctx = NormalizeCtx {
+            language: Language::Java,
+            file_id,
+            file_path: std::path::Path::new("Test.java"),
+            source,
+        };
+
+        let mut node_hits = 0;
+        let mut captures = cursor.captures(&query, root, source.as_bytes());
+        use streaming_iterator::StreamingIterator;
+        while let Some((m, idx)) = captures.next() {
+            let cap = m.captures[*idx];
+            let name = query.capture_names()[cap.index as usize].to_string();
+            let (dn, _de) = frontend.dataflow.normalize(ctx, Capture { name, node: cap.node });
+            if dn.is_some() {
+                node_hits += 1;
+            }
+        }
+        assert!(
+            node_hits > 0,
+            "dataflow query should produce at least one DataNode for assignment + return"
+        );
+    }
+
+    #[test]
+    fn test_dataflow_call_arg_normalize() {
+        let frontend = java_frontend();
+        let ts_lang = frontend.parser.tree_sitter_language();
+        let source = "class Foo { void bar() { helper(x, 42); } }";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let query = tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let file_id = FileId::generate("Test.java");
+        let ctx = NormalizeCtx {
+            language: Language::Java,
+            file_id,
+            file_path: std::path::Path::new("Test.java"),
+            source,
+        };
+
+        let mut has_call_arg = false;
+        let mut has_call_target = false;
+        let mut captures = cursor.captures(&query, root, source.as_bytes());
+        use streaming_iterator::StreamingIterator;
+        while let Some((m, idx)) = captures.next() {
+            let cap = m.captures[*idx];
+            let name = query.capture_names()[cap.index as usize].to_string();
+            let (dn, _de) = frontend.dataflow.normalize(ctx, Capture { name, node: cap.node });
+            if let Some(dn) = dn {
+                match dn.kind {
+                    DataNodeKind::CallArg => has_call_arg = true,
+                    DataNodeKind::CallTarget => has_call_target = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(has_call_target, "should have a call target (helper)");
+        assert!(has_call_arg, "should have call arguments (x, 42)");
     }
 }

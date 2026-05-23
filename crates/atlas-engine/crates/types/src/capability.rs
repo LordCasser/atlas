@@ -537,53 +537,55 @@ mod profiles {
         }
     }
 
-    // ---- Java -------------------------------------------------------------
+    // ---- Java (DataflowBasic) -----------------------------------------------
 
     fn java_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "java".into(),
-            capability_level: CapabilityLevel::Symbolic,
+            capability_level: CapabilityLevel::DataflowBasic,
             supported_features: vec![
                 "symbol_extraction".into(),
                 "reference_extraction".into(),
                 "import_resolution".into(),
                 "call_graph".into(),
+                "lexical_bindings".into(),
+                "intra_statement_dataflow".into(),
+                "use_def_heuristic".into(),
+                "access_path".into(),
+                "call_arguments".into(),
+                "return_flow".into(),
             ],
             unsupported_features: vec![
-                "lexical_bindings".into(),
-                "dataflow".into(),
                 "cfg".into(),
-                "backward_trace".into(),
+                "scope_aware_binding".into(),
+                "interprocedural_dataflow".into(),
             ],
             limitations: vec![
-                "no DataFlowBuilder (dataflow queries not implemented)".into(),
-                "no LexicalBinder (lexical queries not implemented)".into(),
+                "name-based binding (no proper shadowing)".into(),
+                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
             ],
-            confidence_floor: 0.70,
+            confidence_floor: 0.65,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.70),
-                references: FeatureSupport::supported_with_confidence(0.70),
-                imports: FeatureSupport::supported_with_confidence(0.70),
-                scopes: FeatureSupport::unsupported("scope query not implemented for Java"),
-                call_graph: FeatureSupport::supported_with_confidence(0.70),
-                lexical_bindings: FeatureSupport::unsupported(
-                    "LexicalBinder not implemented for Java",
+                symbols: FeatureSupport::supported_with_confidence(0.65),
+                references: FeatureSupport::supported_with_confidence(0.65),
+                imports: FeatureSupport::supported_with_confidence(0.65),
+                scopes: FeatureSupport::supported_with_confidence(0.65),
+                call_graph: FeatureSupport::supported_with_confidence(0.65),
+                lexical_bindings: FeatureSupport::supported_with_limitations(
+                    0.65,
+                    vec!["name-based binding (no proper shadowing)"],
                 ),
-                local_dataflow: FeatureSupport::unsupported(
-                    "DataFlowBuilder not implemented for Java",
+                local_dataflow: FeatureSupport::supported_with_limitations(
+                    0.65,
+                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
                 ),
-                use_def: FeatureSupport::unsupported(
-                    "requires lexical bindings and dataflow (both not implemented for Java)",
+                use_def: FeatureSupport::supported_with_limitations(
+                    0.65,
+                    vec!["name-based binding (no proper shadowing)"],
                 ),
-                field_access: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for Java)",
-                ),
-                call_arguments: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for Java)",
-                ),
-                returns_flow: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for Java)",
-                ),
+                field_access: FeatureSupport::supported_with_confidence(0.65),
+                call_arguments: FeatureSupport::supported_with_confidence(0.65),
+                returns_flow: FeatureSupport::supported_with_confidence(0.65),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for Java"),
                 interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
             }),
