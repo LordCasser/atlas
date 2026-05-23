@@ -353,19 +353,16 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     // ── Phase 3: Resolve all references ───────────────────────────────────
     println!("\nResolving references...");
     let res_timer = PhaseTimer::start("Resolution");
-    // P2: Load tsconfig.json path aliases if present
+    // P2: Load tsconfig.json or jsconfig.json path aliases if present
     let path_alias =
         atlas_resolution::PathAliasResolver::from_tsconfig(&root.join("tsconfig.json"))
+            .or_else(|| {
+                atlas_resolution::PathAliasResolver::from_jsconfig(&root.join("jsconfig.json"))
+            })
             .unwrap_or_else(atlas_resolution::PathAliasResolver::empty);
 
-    // P2: Detect tsconfig.json change and invalidate all import resolutions
-    // if the path alias config differs from the previous run.
-    //
-    // jsconfig.json is NOT checked for invalidation because the resolver only
-    // loads tsconfig.json for path alias resolution.  JS projects requiring
-    // path aliases should use tsconfig.json (supported by tsc/TypeScript parser).
     let tsconfig_changed =
-        atlas_resolution::detect_config_change(&ctx.store, &root, &["tsconfig.json"])?;
+        atlas_resolution::detect_config_change(&ctx.store, &root, &["tsconfig.json", "jsconfig.json"])?;
     if tsconfig_changed {
         let inv_refs = ctx
             .store

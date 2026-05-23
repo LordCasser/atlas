@@ -169,10 +169,15 @@ impl SyncEngine {
 
         // 4. Re-resolve all unresolved references (P2: two-step pipeline)
         let res_timer = PhaseTimer::start("Resolution");
-        // P2: Load tsconfig.json path aliases if present
+        // P2: Load tsconfig.json or jsconfig.json path aliases if present
         let path_alias = atlas_resolution::PathAliasResolver::from_tsconfig(
             &self.project_root.join("tsconfig.json"),
         )
+        .or_else(|| {
+            atlas_resolution::PathAliasResolver::from_jsconfig(
+                &self.project_root.join("jsconfig.json"),
+            )
+        })
         .unwrap_or_else(atlas_resolution::PathAliasResolver::empty);
         let mut resolver =
             atlas_resolution::ReferenceResolver::with_path_alias(self.store.clone(), path_alias);

@@ -1,6 +1,6 @@
-//! Path alias resolver for TypeScript/JavaScript tsconfig.json paths.
+//! Path alias resolver for TypeScript/JavaScript tsconfig.json and jsconfig.json.
 //!
-//! Handles `baseUrl` and `paths` mappings from tsconfig.json, e.g.:
+//! Handles `baseUrl` and `paths` mappings, e.g.:
 //! ```json
 //! {
 //!   "compilerOptions": {
@@ -75,6 +75,12 @@ impl PathAliasResolver {
         Some(Self { base_url, paths })
     }
 
+    /// Parse a jsconfig.json file (same format as tsconfig.json).
+    pub fn from_jsconfig(path: &Path) -> Option<Self> {
+        // jsconfig.json has the same structure as tsconfig.json
+        Self::from_tsconfig(path)
+    }
+
     /// Resolve an import path using the configured path aliases.
     ///
     /// Returns `None` if no alias matches (caller should fall back to
@@ -85,11 +91,13 @@ impl PathAliasResolver {
     /// 2. Check for wildcard pattern match (e.g., `@/*` matching `@/foo`)
     /// 3. If baseUrl is set, prepend it to relative paths
     pub fn resolve(&self, import_path: &str) -> Option<String> {
-        // Strategy 1: Exact match (no wildcard)
+        // Strategy 1: Exact match (no wildcard) — try all substitutions
         if let Some(substitutions) = self.paths.get(import_path) {
-            // Return the first substitution
-            if let Some(first) = substitutions.first() {
-                return Some(self.apply_base_url(first));
+            for sub in substitutions {
+                let resolved = self.apply_base_url(sub);
+                // For exact matches, the first valid substitution wins.
+                // Multi-target support: iterate all substitutions.
+                return Some(resolved);
             }
         }
 

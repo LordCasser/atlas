@@ -4,16 +4,13 @@
 //! to keep the main store module focused on the public API.
 
 /// Strip FTS5 special characters to prevent syntax errors.
+/// Returns empty string when input contains no valid query characters.
 pub(crate) fn sanitize_fts5_query(raw: &str) -> String {
     let sanitized: String = raw
         .chars()
-        .filter(|c| c.is_alphanumeric() || c.is_whitespace() || *c == '_' || *c == '.' || *c == '-')
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace() || *c == '_')
         .collect();
-    if sanitized.is_empty() {
-        "*".to_string()
-    } else {
-        sanitized
-    }
+    sanitized.trim().to_string()
 }
 
 /// Current time in milliseconds since Unix epoch.

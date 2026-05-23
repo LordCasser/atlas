@@ -174,14 +174,19 @@ pub(crate) fn row_to_edge(row: &Row) -> rusqlite::Result<RawEdge> {
     let ref_id: Option<ReferenceId> = row.get(6)?;
     let location: Option<TextRange> = {
         let sb: Option<u32> = row.get(7)?;
-        sb.map(|start_byte| TextRange {
-            start_byte,
-            end_byte: row.get::<_, u32>(8).unwrap_or(0),
-            start_line: row.get::<_, u32>(9).unwrap_or(0),
-            start_column: row.get::<_, u32>(10).unwrap_or(0),
-            end_line: row.get::<_, u32>(11).unwrap_or(0),
-            end_column: row.get::<_, u32>(12).unwrap_or(0),
+        sb.map(|start_byte| {
+            // If start_byte is present, all range fields must be valid.
+            // Propagate errors instead of silently defaulting to 0.
+            Ok(TextRange {
+                start_byte,
+                end_byte: row.get::<_, u32>(8)?,
+                start_line: row.get::<_, u32>(9)?,
+                start_column: row.get::<_, u32>(10)?,
+                end_line: row.get::<_, u32>(11)?,
+                end_column: row.get::<_, u32>(12)?,
+            })
         })
+        .transpose()?
     };
     let metadata: Option<String> = row.get(13)?;
     let resolved_by_str: Option<String> = row.get(14)?;
@@ -281,12 +286,12 @@ pub(crate) fn row_to_data_node(row: &Row) -> rusqlite::Result<DataNode> {
 
 pub(crate) fn row_to_dataflow_edge(row: &Row) -> rusqlite::Result<DataFlowEdge> {
     let location = TextRange {
-        start_byte: row.get::<_, u32>(4).unwrap_or(0),
-        end_byte: row.get::<_, u32>(5).unwrap_or(0),
-        start_line: row.get::<_, u32>(6).unwrap_or(0),
-        start_column: row.get::<_, u32>(7).unwrap_or(0),
-        end_line: row.get::<_, u32>(8).unwrap_or(0),
-        end_column: row.get::<_, u32>(9).unwrap_or(0),
+        start_byte: row.get::<_, u32>(4)?,
+        end_byte: row.get::<_, u32>(5)?,
+        start_line: row.get::<_, u32>(6)?,
+        start_column: row.get::<_, u32>(7)?,
+        end_line: row.get::<_, u32>(8)?,
+        end_column: row.get::<_, u32>(9)?,
     };
     let conf: Option<f64> = row.get(10)?;
     let kind_str: String = row.get(3)?;
