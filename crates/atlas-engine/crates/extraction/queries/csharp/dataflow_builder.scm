@@ -47,3 +47,6 @@
 (boolean_literal) @df.literal
 (null_literal) @df.literal
 (character_literal) @df.literal
+
+;; --- Identifier uses (variable references) ---
+(identifier) @df.identifier_use

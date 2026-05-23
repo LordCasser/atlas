@@ -42,3 +42,6 @@
 (false) @df.literal
 (nil) @df.literal
 (symbol) @df.literal
+
+;; --- Identifier uses (variable references) ---
+(identifier) @df.identifier_use

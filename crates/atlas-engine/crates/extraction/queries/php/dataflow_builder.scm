@@ -38,3 +38,6 @@
 (float) @df.literal
 (boolean) @df.literal
 (null) @df.literal
+
+;; --- Identifier uses (variable references) ---
+(identifier) @df.identifier_use
