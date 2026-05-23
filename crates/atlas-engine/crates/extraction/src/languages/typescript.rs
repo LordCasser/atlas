@@ -498,7 +498,7 @@ pub(crate) fn normalize_ts_dataflow_builder(
             };
             (Some(dn), None)
         }
-        "df.literal" | "df.await_value" => {
+        "df.literal" => {
             let text = node_text(node, source).unwrap_or_default();
             let node_id = DataNodeId::generate(
                 &file_id,
@@ -520,6 +520,47 @@ pub(crate) fn normalize_ts_dataflow_builder(
                 arg_index: None,
                 range,
             };
+            (Some(dn), None)
+        }
+        "df.await_value" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let callsite_id = find_call_expression(node).map(|ce| {
+                types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+            });
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&types::ids::SymbolId>,
+                "expr",
+                Some("await expr"),
+                Some(&text),
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: types::enums::DataNodeKind::Expr,
+                binding_id: None,
+                callsite_id,
+                name: Some("await expr".to_string()),
+                access_path: Some(text),
+                arg_index: None,
+                range,
+            };
+            (Some(dn), None)
+        }
+        "df.assign_field_target" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let name = text.clone();
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&types::ids::SymbolId>,
+                "field",
+                Some(&name),
+                Some(&text),
+                range.start_byte,
+            );
+            let dn = DataNode::field(node_id, file_id, None, &name, &text, range);
             (Some(dn), None)
         }
         "df.identifier_use" => {
@@ -826,5 +867,70 @@ mod tests {
             Some(ReferenceKind::FieldAccess)
         );
         assert_eq!(ts_reference_kind("unknown.capture"), None);
+    }
+
+    #[test]
+    fn test_dataflow_builder_query_parses() {
+        let spec = TypeScriptFrontendSpec;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.dataflow_builder_query());
+        assert!(
+            query.is_ok(),
+            "dataflow_builder query must compile: {:?}",
+            query.err()
+        );
+    }
+
+    #[test]
+    fn test_dataflow_normalize_destructuring() {
+        let frontend = typescript_frontend();
+        let ts_lang = frontend.parser.tree_sitter_language();
+        let source = "function f() { const { name, value: val } = obj; }";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let query =
+            tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let file_id = FileId::generate("test.ts");
+        let ctx = NormalizeCtx {
+            language: Language::TypeScript,
+            file_id,
+            file_path: std::path::Path::new("test.ts"),
+            source,
+        };
+
+        let mut has_name_target = false;
+        let mut has_val_target = false;
+        let mut captures = cursor.captures(&query, root, source.as_bytes());
+        use streaming_iterator::StreamingIterator;
+        while let Some((m, idx)) = captures.next() {
+            let cap = m.captures[*idx];
+            let capture_name = query.capture_names()[cap.index as usize].to_string();
+            let (dn, _de) = frontend.dataflow.normalize(
+                ctx,
+                Capture {
+                    name: capture_name,
+                    node: cap.node,
+                },
+            );
+            if let Some(dn) = dn {
+                match dn.name.as_deref() {
+                    Some("name") if dn.kind == DataNodeKind::Local => has_name_target = true,
+                    Some("val") if dn.kind == DataNodeKind::Local => has_val_target = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(
+            has_name_target,
+            "should create Local DataNode for shorthand destructured 'name'"
+        );
+        assert!(
+            has_val_target,
+            "should create Local DataNode for pair-pattern destructured 'val'"
+        );
     }
 }

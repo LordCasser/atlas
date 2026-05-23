@@ -410,10 +410,15 @@ fn normalize_c_dataflow_builder(capture_name: &str, node: tree_sitter::Node, sou
             (Some(DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range)), None)
         },
         "df.field_name" => node_text(node, source).map(|name| {
-            let access_path = node.parent().filter(|p| p.kind() == "member_expression").and_then(|p| node_text(p, source)).unwrap_or_else(|| name.clone());
+            let access_path = node.parent().filter(|p| p.kind() == "field_expression").and_then(|p| node_text(p, source)).unwrap_or_else(|| name.clone());
             let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "field", Some(&name), Some(&access_path), range.start_byte);
             (Some(DataNode::field(node_id, file_id, None, &name, &access_path, range)), None)
         }).unwrap_or((None, None)),
+        "df.index" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "expr", Some(&text), None, range.start_byte);
+            (Some(DataNode { id: node_id, file_id, function_id: None, kind: DataNodeKind::Expr, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range }), None)
+        },
         "df.receiver" | "df.literal" => {
             let text = node_text(node, source).unwrap_or_default();
             let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, if capture_name == "df.literal" { "literal" } else { "receiver" }, Some(&text), None, range.start_byte);
@@ -478,5 +483,62 @@ mod tests {
         let lang = spec.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, spec.scope_query());
         assert!(query.is_ok(), "scope query must compile: {:?}", query.err());
+    }
+
+    #[test]
+    fn test_dataflow_builder_query_parses() {
+        let spec = CAdapter;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.dataflow_builder_query());
+        assert!(query.is_ok(), "dataflow builder query must compile: {:?}", query.err());
+    }
+
+    #[test]
+    fn test_dataflow_pointer_and_field_access() {
+        let frontend = super::c_frontend();
+        let ts_lang = frontend.parser.tree_sitter_language();
+        let source = "int f(int *p) { int x = *p; int y = p->field; return y; }";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let query = tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let file_id = FileId::generate("Test.c");
+        let ctx = NormalizeCtx {
+            language: Language::C,
+            file_id,
+            file_path: std::path::Path::new("Test.c"),
+            source,
+        };
+
+        let mut node_hits = 0;
+        let mut has_parameter = false;
+        let mut has_receiver = false;
+        let mut has_field = false;
+        let mut has_return = false;
+        let mut captures = cursor.captures(&query, root, source.as_bytes());
+        use streaming_iterator::StreamingIterator;
+        while let Some((m, idx)) = captures.next() {
+            let cap = m.captures[*idx];
+            let name = query.capture_names()[cap.index as usize].to_string();
+            let (dn, _de) = frontend.dataflow.normalize(ctx, Capture { name, node: cap.node });
+            if let Some(dn) = dn {
+                node_hits += 1;
+                match dn.kind {
+                    DataNodeKind::Parameter => has_parameter = true,
+                    DataNodeKind::Receiver => has_receiver = true,
+                    DataNodeKind::Field => has_field = true,
+                    DataNodeKind::Return => has_return = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(node_hits > 0, "dataflow query should produce DataNodes for pointer/func C code");
+        assert!(has_parameter, "should have a parameter DataNode (p)");
+        assert!(has_receiver, "should have a receiver DataNode from *p");
+        assert!(has_field, "should have a field DataNode from p->field");
+        assert!(has_return, "should have a return DataNode");
     }
 }

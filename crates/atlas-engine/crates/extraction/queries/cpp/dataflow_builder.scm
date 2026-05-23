@@ -43,7 +43,16 @@
 (char_literal) @df.literal
 (true) @df.literal
 (false) @df.literal
-(nullptr) @df.literal
+(null) @df.literal
+
+;; --- Reference declarator ---
+(reference_declarator (identifier) @df.assign_target)
+
+;; --- new expression ---
+(new_expression type: (_) @df.call_target)
+
+;; --- Constructor call arguments ---
+(new_expression arguments: (argument_list (_) @df.call_arg))
 
 ;; --- Identifier uses (variable references) ---
 (identifier) @df.identifier_use

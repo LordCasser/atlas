@@ -232,17 +232,23 @@ impl LexicalBindingSpec for PhpAdapter {
 
 impl DataflowSpec for PhpAdapter {
     fn dataflow_builder_query(&self) -> &str {
-        ""
+        include_str!("../../queries/php/dataflow_builder.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::unsupported("PHP does not support dataflow extraction")
+        FeatureSupport::supported_with_limitations(
+            0.6,
+            vec![
+                "capture-order assignment pairing (Nth target ≈ Nth expr)",
+                "dynamic calls / variable-variables not resolved",
+            ],
+        )
     }
     fn normalize(
         &self,
-        _ctx: NormalizeCtx<'_>,
-        _capture: Capture<'_>,
+        ctx: NormalizeCtx<'_>,
+        capture: Capture<'_>,
     ) -> (Option<DataNode>, Option<DataFlowEdge>) {
-        (None, None)
+        normalize_php_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
 }
 
@@ -458,6 +464,30 @@ fn normalize_php_dataflow_builder(capture_name: &str, node: tree_sitter::Node, s
             let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, if capture_name == "df.literal" { "literal" } else { "receiver" }, Some(&text), None, range.start_byte);
             (Some(DataNode { id: node_id, file_id, function_id: None, kind: if capture_name == "df.literal" { DataNodeKind::Literal } else { DataNodeKind::Receiver }, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range }), None)
         },
+        // ── PHP dataflow additions (§2.11) ────────────────────────
+        "df.index" => {
+            // Index expression in $arr[$key] → Expr DataNode
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "expr", Some(&text), None, range.start_byte);
+            (Some(DataNode { id: node_id, file_id, function_id: None, kind: DataNodeKind::Expr, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range }), None)
+        },
+        "df.assign_field_target" => {
+            // Array assignment LHS: $arr[$key] = value → Field DataNode
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "field", Some(&text), Some(&text), range.start_byte);
+            (Some(DataNode::field(node_id, file_id, None, &text, &text, range)), None)
+        },
+        "df.superglobal" => {
+            // $_GET, $_POST, etc. → Global DataNode
+            node_text(node, source).map(|name| {
+                if name.starts_with("$_") {
+                    let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "global", Some(&name), Some(&name), range.start_byte);
+                    (Some(DataNode { id: node_id, file_id, function_id: None, kind: DataNodeKind::Global, binding_id: None, callsite_id: None, name: Some(name), access_path: None, arg_index: None, range }), None)
+                } else {
+                    (None, None)
+                }
+            }).unwrap_or((None, None))
+        },
         _ => (None, None),
     }
 }
@@ -516,5 +546,78 @@ mod tests {
         let lang = spec.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, spec.scope_query());
         assert!(query.is_ok(), "scope query must compile: {:?}", query.err());
+    }
+
+    #[test]
+    fn test_dataflow_builder_query_parses() {
+        let spec = PhpAdapter;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.dataflow_builder_query());
+        assert!(
+            query.is_ok(),
+            "dataflow_builder query must compile: {:?}",
+            query.err()
+        );
+    }
+
+    #[test]
+    fn test_dataflow_normalize_php() {
+        let frontend = php_frontend();
+        let ts_lang = frontend.parser.tree_sitter_language();
+        let source = r#"<?php
+function f($req) {
+    $name = $_GET["name"];
+    $clean = sanitize($name);
+    return $clean;
+}
+"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let query = tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let file_id = FileId::generate("test.php");
+        let ctx = NormalizeCtx {
+            language: Language::Php,
+            file_id,
+            file_path: std::path::Path::new("test.php"),
+            source,
+        };
+
+        let mut has_global = false;
+        let mut has_receiver = false;
+        let mut has_expr = false;
+        let mut has_parameter = false;
+        let mut has_return = false;
+        let mut has_local = false;
+        let mut has_call_target = false;
+        let mut captures = cursor.captures(&query, root, source.as_bytes());
+        use streaming_iterator::StreamingIterator;
+        while let Some((m, idx)) = captures.next() {
+            let cap = m.captures[*idx];
+            let name = query.capture_names()[cap.index as usize].to_string();
+            let (dn, _de) = frontend.dataflow.normalize(ctx, Capture { name, node: cap.node });
+            if let Some(dn) = dn {
+                match dn.kind {
+                    DataNodeKind::Global => has_global = true,
+                    DataNodeKind::Receiver => has_receiver = true,
+                    DataNodeKind::Expr => has_expr = true,
+                    DataNodeKind::Parameter => has_parameter = true,
+                    DataNodeKind::Return => has_return = true,
+                    DataNodeKind::Local => has_local = true,
+                    DataNodeKind::CallTarget => has_call_target = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(has_global, "should have Global DataNode for $_GET");
+        assert!(has_receiver, "should have Receiver DataNode for $_GET in $_GET['name']");
+        assert!(has_expr, "should have Expr DataNode for array index");
+        assert!(has_parameter, "should have Parameter DataNode for $req");
+        assert!(has_return, "should have Return DataNode");
+        assert!(has_local, "should have Local DataNode for $name/$clean");
+        assert!(has_call_target, "should have CallTarget DataNode for sanitize");
     }
 }

@@ -5,10 +5,6 @@
 
 (function_definition) @scope.function
 
-;; Method declarations (inside class bodies)
-(field_declaration
-  (function_definition) @scope.method)
-
 (class_specifier (field_declaration_list) @scope.class)
 
 (namespace_definition) @scope.namespace

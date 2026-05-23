@@ -446,6 +446,19 @@ fn normalize_csharp_dataflow_builder(capture_name: &str, node: tree_sitter::Node
             let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "field", Some(&name), Some(&access_path), range.start_byte);
             (Some(DataNode::field(node_id, file_id, None, &name, &access_path, range)), None)
         }).unwrap_or((None, None)),
+        "df.assign_field_target" => {
+            // Node is a member_access_expression (e.g. "obj.Prop" or
+            // "this.Field"). Create a Field DataNode with the full text
+            // as name and access_path.
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "field", Some(&text), Some(&text), range.start_byte);
+            (Some(DataNode::field(node_id, file_id, None, &text, &text, range)), None)
+        }
+        "df.await_value" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "expr", Some(&text), None, range.start_byte);
+            (Some(DataNode { id: node_id, file_id, function_id: None, kind: DataNodeKind::Expr, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range }), None)
+        }
         "df.receiver" | "df.literal" => {
             let text = node_text(node, source).unwrap_or_default();
             let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, if capture_name == "df.literal" { "literal" } else { "receiver" }, Some(&text), None, range.start_byte);
@@ -509,5 +522,57 @@ mod tests {
         let lang = spec.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, spec.scope_query());
         assert!(query.is_ok(), "scope query must compile: {:?}", query.err());
+    }
+
+    #[test]
+    fn test_dataflow_builder_query_parses() {
+        let spec = CSharpAdapter;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.dataflow_builder_query());
+        assert!(
+            query.is_ok(),
+            "dataflow_builder query must compile: {:?}",
+            query.err()
+        );
+    }
+
+    #[test]
+    fn test_dataflow_field_assign_and_await() {
+        let frontend = csharp_frontend();
+        let ts_lang = frontend.parser.tree_sitter_language();
+        let source = "class Foo { void Bar() { obj.Prop = 42; var x = await DoAsync(); } }";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let query = tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let file_id = FileId::generate("Test.cs");
+        let ctx = NormalizeCtx {
+            language: Language::CSharp,
+            file_id,
+            file_path: std::path::Path::new("Test.cs"),
+            source,
+        };
+
+        let mut has_field = false;
+        let mut has_expr = false; // await_value produces Expr nodes
+        let mut captures = cursor.captures(&query, root, source.as_bytes());
+        use streaming_iterator::StreamingIterator;
+        while let Some((m, idx)) = captures.next() {
+            let cap = m.captures[*idx];
+            let name = query.capture_names()[cap.index as usize].to_string();
+            let (dn, _de) = frontend.dataflow.normalize(ctx, Capture { name, node: cap.node });
+            if let Some(dn) = dn {
+                match dn.kind {
+                    DataNodeKind::Field => has_field = true,
+                    DataNodeKind::Expr => has_expr = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(has_field, "should have a Field DataNode from obj.Prop assignment");
+        assert!(has_expr, "should have an Expr DataNode from await DoAsync()");
     }
 }

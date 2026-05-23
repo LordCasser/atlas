@@ -5,6 +5,9 @@
 (parameter_declaration
   declarator: (identifier) @df.parameter)
 
+(parameter_declaration
+  declarator: (pointer_declarator (identifier) @df.parameter))
+
 ;; --- Assignments: target = value ---
 (assignment_expression
   left: (identifier) @df.assign_target
@@ -27,16 +30,10 @@
 (argument_list
   (_) @df.call_arg)
 
-;; --- Field access: obj.field (member_expression) ---
-(member_expression
-  object: (_) @df.receiver
-  property: (identifier) @df.field_name)
-
-;; --- Field access via pointer: ptr->field ---
-(pointer_expression
+;; --- Field access: obj.field / ptr->field ---
+(field_expression
   argument: (_) @df.receiver
-  operator: "->"
-  (field_identifier) @df.field_name)
+  field: (field_identifier) @df.field_name)
 
 ;; --- Literals ---
 (string_literal) @df.literal
@@ -44,7 +41,14 @@
 (char_literal) @df.literal
 (true) @df.literal
 (false) @df.literal
-(nullptr) @df.literal
+(null) @df.literal
+
+;; --- Pointer deref (*p) and address-of (&x) ---
+(pointer_expression operator: "*" argument: (_) @df.receiver)
+(pointer_expression operator: "&" argument: (_) @df.assign_value)
+
+;; --- Array subscript ---
+(subscript_expression argument: (_) @df.receiver index: (_) @df.index)
 
 ;; --- Identifier uses (variable references) ---
 (identifier) @df.identifier_use

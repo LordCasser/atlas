@@ -10,13 +10,17 @@
   left: (identifier) @df.assign_target
   right: (_) @df.assign_value)
 
+;; --- Field/property assignment: obj.Member = value ---
+(assignment_expression
+  left: (member_access_expression) @df.assign_field_target
+  right: (_) @df.assign_value)
+
 ;; --- Local variable declarations with initializer ---
 (local_declaration_statement
   (variable_declaration
     (variable_declarator
       name: (identifier) @df.assign_target
-      equals_value_clause: (equals_value_clause
-        (_) @df.assign_value))))
+      (_) @df.assign_value)))
 
 ;; --- Return statements ---
 (return_statement
@@ -30,6 +34,11 @@
 (invocation_expression
   function: (member_access_expression
     name: (identifier) @df.call_target))
+
+;; --- Object creation: new Foo(args) ---
+(object_creation_expression
+  type: (_) @df.call_target
+  arguments: (argument_list (_) @df.call_arg))
 
 ;; --- Call arguments ---
 (argument_list
@@ -47,6 +56,15 @@
 (boolean_literal) @df.literal
 (null_literal) @df.literal
 (character_literal) @df.literal
+
+;; --- Foreach: foreach (Type name in expr) ---
+(foreach_statement
+  type: (_)
+  left: (identifier) @df.assign_target)
+
+;; --- Await: await expr ---
+(await_expression
+  (_) @df.await_value)
 
 ;; --- Identifier uses (variable references) ---
 (identifier) @df.identifier_use

@@ -212,17 +212,13 @@ impl LexicalBindingSpec for CppAdapter {
 
 impl DataflowSpec for CppAdapter {
     fn dataflow_builder_query(&self) -> &str {
-        ""
+        include_str!("../../queries/cpp/dataflow_builder.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::unsupported("C++ does not support dataflow extraction")
+        FeatureSupport::supported_with_limitations(0.65, vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"])
     }
-    fn normalize(
-        &self,
-        _ctx: NormalizeCtx<'_>,
-        _capture: Capture<'_>,
-    ) -> (Option<DataNode>, Option<DataFlowEdge>) {
-        (None, None)
+    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> (Option<DataNode>, Option<DataFlowEdge>) {
+        normalize_cpp_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
 }
 
@@ -493,5 +489,68 @@ mod tests {
         let lang = spec.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, spec.scope_query());
         assert!(query.is_ok(), "scope query must compile: {:?}", query.err());
+    }
+
+    #[test]
+    fn test_dataflow_builder_query_parses() {
+        let spec = CppAdapter;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.dataflow_builder_query());
+        assert!(query.is_ok(), "dataflow builder query must compile: {:?}", query.err());
+    }
+
+    #[test]
+    fn test_dataflow_reference_and_new_expression() {
+        let frontend = super::cpp_frontend();
+        let ts_lang = frontend.parser.tree_sitter_language();
+        let source = "void f() { int x = 0; int& ref = x; auto p = new Foo(1, 2); }";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let query = tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let file_id = FileId::generate("Test.cpp");
+        let ctx = NormalizeCtx {
+            language: Language::Cpp,
+            file_id,
+            file_path: std::path::Path::new("Test.cpp"),
+            source,
+        };
+
+        let mut node_hits = 0;
+        let mut has_local = false;
+        let mut has_call_target = false;
+        let mut has_call_arg = false;
+        let mut captures = cursor.captures(&query, root, source.as_bytes());
+        use streaming_iterator::StreamingIterator;
+        while let Some((m, idx)) = captures.next() {
+            let cap = m.captures[*idx];
+            let name = query.capture_names()[cap.index as usize].to_string();
+            let (dn, _de) = frontend.dataflow.normalize(ctx, Capture { name, node: cap.node });
+            if let Some(dn) = dn {
+                node_hits += 1;
+                match dn.kind {
+                    DataNodeKind::Local => {
+                        // Check for the reference binding "ref"
+                        if dn.name.as_deref() == Some("ref") {
+                            has_local = true;
+                        }
+                    }
+                    DataNodeKind::CallTarget => {
+                        if dn.name.as_deref() == Some("Foo") {
+                            has_call_target = true;
+                        }
+                    }
+                    DataNodeKind::CallArg => has_call_arg = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(node_hits > 0, "dataflow query should produce DataNodes for ref binding + new expression");
+        assert!(has_local, "should have a local DataNode from int& ref = x");
+        assert!(has_call_target, "should have a CallTarget DataNode from new Foo(1, 2)");
+        assert!(has_call_arg, "should have CallArg DataNodes from new Foo(1, 2)");
     }
 }

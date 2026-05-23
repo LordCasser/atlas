@@ -1,8 +1,8 @@
 ;; PHP dataflow builder captures: parameters, assignments, returns,
-;; call targets, call args, field access
+;; call targets, call args, field access, array access, superglobals
 
 ;; --- Function/method parameters ---
-(parameter
+(simple_parameter
   name: (variable_name) @df.parameter)
 
 ;; --- Assignments: $x = expr ---
@@ -39,5 +39,19 @@
 (boolean) @df.literal
 (null) @df.literal
 
-;; --- Identifier uses (variable references) ---
-(identifier) @df.identifier_use
+;; --- Array access: $arr[$key] ---
+;; subscript_expression has no named fields; use positional anchors
+(subscript_expression
+  .
+  (variable_name) @df.receiver
+  .
+  (_) @df.index)
+
+;; --- Array assignment: $arr[$key] = value ---
+(assignment_expression
+  left: (subscript_expression) @df.assign_field_target
+  right: (_) @df.assign_value)
+
+;; --- Superglobal access ($_GET, $_POST, etc.) ---
+(variable_name) @df.superglobal
+(#match? @df.superglobal "^\\$_")

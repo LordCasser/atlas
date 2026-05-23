@@ -577,6 +577,47 @@ fn normalize_java_dataflow_builder(
                 (Some(dn), None)
             })
             .unwrap_or((None, None)),
+        "df.assign_field_target" => {
+            // Node is a field_access (e.g. "obj.field" or "this.field").
+            // Create a Field DataNode with the full text as name and access_path.
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "field",
+                Some(&text),
+                Some(&text),
+                range.start_byte,
+            );
+            let dn = DataNode::field(node_id, file_id, None, &text, &text, range);
+            (Some(dn), None)
+        }
+        "df.index" => {
+            // Node is the index expression of an array access (e.g. arr[i]),
+            // could be an identifier, literal, or complex expression.
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "expr",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: DataNodeKind::Expr,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text),
+                access_path: None,
+                arg_index: None,
+                range,
+            };
+            (Some(dn), None)
+        }
         "df.receiver" | "df.literal" => {
             let text = node_text(node, source).unwrap_or_default();
             let node_id = DataNodeId::generate(
@@ -794,5 +835,58 @@ mod tests {
         }
         assert!(has_call_target, "should have a call target (helper)");
         assert!(has_call_arg, "should have call arguments (x, 42)");
+    }
+
+    #[test]
+    fn test_dataflow_field_assignment_and_object_creation() {
+        let frontend = java_frontend();
+        let ts_lang = frontend.parser.tree_sitter_language();
+        let source = "class Foo { void bar() { obj.field = 42; Foo f = new Foo(x, y); } }";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let query = tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let file_id = FileId::generate("Test.java");
+        let ctx = NormalizeCtx {
+            language: Language::Java,
+            file_id,
+            file_path: std::path::Path::new("Test.java"),
+            source,
+        };
+
+        let mut field_nodes: Vec<DataNode> = Vec::new();
+        let mut call_target_nodes: Vec<DataNode> = Vec::new();
+        let mut captures = cursor.captures(&query, root, source.as_bytes());
+        use streaming_iterator::StreamingIterator;
+        while let Some((m, idx)) = captures.next() {
+            let cap = m.captures[*idx];
+            let name = query.capture_names()[cap.index as usize].to_string();
+            let (dn, _de) = frontend.dataflow.normalize(ctx, Capture { name, node: cap.node });
+            if let Some(dn) = dn {
+                match dn.kind {
+                    DataNodeKind::Field => field_nodes.push(dn),
+                    DataNodeKind::CallTarget => call_target_nodes.push(dn),
+                    _ => {}
+                }
+            }
+        }
+
+        // Should have at least one Field node from "obj.field" assignment
+        assert!(!field_nodes.is_empty(), "should have at least one Field DataNode from obj.field assignment");
+        let field_texts: Vec<&str> = field_nodes.iter().filter_map(|n| n.name.as_deref()).collect();
+        assert!(
+            field_texts.iter().any(|t| t.contains("field")),
+            "should capture field assignment, got: {:?}", field_texts
+        );
+
+        // Should have a CallTarget DataNode from "new Foo()"
+        let call_names: Vec<&str> = call_target_nodes.iter().filter_map(|n| n.name.as_deref()).collect();
+        assert!(
+            call_names.iter().any(|t| t.contains("Foo")),
+            "should capture new Foo(x, y) call target, got: {:?}", call_names
+        );
     }
 }
