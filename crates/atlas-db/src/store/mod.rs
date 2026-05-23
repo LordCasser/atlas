@@ -253,7 +253,10 @@ impl Store {
                 let valid_callsites: Vec<_> = facts
                     .callsites
                     .iter()
-                    .filter(|callsite| valid_sources.contains(&callsite.caller))
+                    .filter(|callsite| {
+                        valid_sources.contains(&callsite.caller)
+                            && callsite.callee.map_or(true, |callee| valid_sources.contains(&callee))
+                    })
                     .cloned()
                     .collect();
                 if !valid_callsites.is_empty() {
@@ -261,24 +264,104 @@ impl Store {
                 }
             }
 
-            // Binding + Dataflow data
-            if !facts.bindings.is_empty() {
-                write_bindings(&tx, &facts.bindings)?;
+            // Binding data — FK guarded (scope_id, function_id for bindings;
+            // binding_id, scope_id for uses)
+            let valid_bindings: Vec<_> = facts
+                .bindings
+                .iter()
+                .filter(|b| {
+                    b.function_id.map_or(true, |fid| valid_sources.contains(&fid))
+                        && facts.scopes.iter().any(|s| s.id == b.scope_id)
+                })
+                .cloned()
+                .collect();
+            if !valid_bindings.is_empty() {
+                write_bindings(&tx, &valid_bindings)?;
             }
             if !facts.binding_uses.is_empty() {
-                write_binding_uses(&tx, &facts.binding_uses)?;
+                let valid_binding_ids: HashSet<_> = valid_bindings
+                    .iter()
+                    .map(|b| b.id)
+                    .collect();
+                let valid_uses: Vec<_> = facts
+                    .binding_uses
+                    .iter()
+                    .filter(|bu| {
+                        valid_binding_ids.contains(&bu.binding_id)
+                            && facts.scopes.iter().any(|s| s.id == bu.scope_id)
+                    })
+                    .cloned()
+                    .collect();
+                if !valid_uses.is_empty() {
+                    write_binding_uses(&tx, &valid_uses)?;
+                }
             }
+
+            // Dataflow + CFG data — FK guarded like edges/callsites above
             if !facts.data_nodes.is_empty() {
-                write_data_nodes(&tx, &facts.data_nodes)?;
+                // Filter out data_nodes whose function_id references a symbol
+                // not in this batch (cross-file reference).  These will be
+                // resolved on a subsequent pass once the target symbol exists.
+                let safe_nodes: Vec<_> = facts
+                    .data_nodes
+                    .iter()
+                    .filter(|dn| {
+                        dn.function_id.map_or(true, |fid| valid_sources.contains(&fid))
+                    })
+                    .cloned()
+                    .collect();
+                if !safe_nodes.is_empty() {
+                    write_data_nodes(&tx, &safe_nodes)?;
+                }
             }
             if !facts.dataflow_edges.is_empty() {
-                write_dataflow_edges(&tx, &facts.dataflow_edges)?;
+                // Guard: only write edges whose source and target exist among
+                // the data_nodes we just committed (or will commit).
+                let valid_node_ids: HashSet<_> = facts
+                    .data_nodes
+                    .iter()
+                    .filter(|dn| {
+                        dn.function_id.map_or(true, |fid| valid_sources.contains(&fid))
+                    })
+                    .map(|dn| dn.id)
+                    .collect();
+                let safe_edges: Vec<_> = facts
+                    .dataflow_edges
+                    .iter()
+                    .filter(|e| valid_node_ids.contains(&e.source) && valid_node_ids.contains(&e.target))
+                    .cloned()
+                    .collect();
+                if !safe_edges.is_empty() {
+                    write_dataflow_edges(&tx, &safe_edges)?;
+                }
             }
             if !facts.cfg_nodes.is_empty() {
-                write_cfg_nodes(&tx, &facts.cfg_nodes)?;
+                let safe_cfg: Vec<_> = facts
+                    .cfg_nodes
+                    .iter()
+                    .filter(|cn| valid_sources.contains(&cn.function_id))
+                    .cloned()
+                    .collect();
+                if !safe_cfg.is_empty() {
+                    write_cfg_nodes(&tx, &safe_cfg)?;
+                }
             }
             if !facts.cfg_edges.is_empty() {
-                write_cfg_edges(&tx, &facts.cfg_edges)?;
+                let valid_cfg_ids: HashSet<_> = facts
+                    .cfg_nodes
+                    .iter()
+                    .filter(|cn| valid_sources.contains(&cn.function_id))
+                    .map(|cn| cn.id)
+                    .collect();
+                let safe_cfg_edges: Vec<_> = facts
+                    .cfg_edges
+                    .iter()
+                    .filter(|e| valid_cfg_ids.contains(&e.source) && valid_cfg_ids.contains(&e.target))
+                    .cloned()
+                    .collect();
+                if !safe_cfg_edges.is_empty() {
+                    write_cfg_edges(&tx, &safe_cfg_edges)?;
+                }
             }
         }
 

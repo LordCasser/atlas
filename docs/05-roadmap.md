@@ -4,11 +4,11 @@
 
 ## 1. 近期优先级
 
-1. 基于当前架构稳定变量来源追踪和调用路径查询所需 facts：bindings、binding uses、callsites、inline call arguments、data nodes、dataflow edges、call graph；`callsite_args` 表已移除，调用实参统一使用 `callsites.args_json` + call-arg DataNode；FunctionSummary 已实现 query-time 基础版。
-2. 优先补齐 TypeScript/JavaScript/Python 的 backward slice 能力，再为 Java/C/C++/ArkTS 标注能力等级；Cangjie 只在显式启用时展示 experimental capability。
-3. 建立“指定位置 -> 变量来源 -> caller path -> Agent evidence”的端到端 fixture。
-4. 将 trace CLI/MCP 输出打磨为 Agent 可消费格式。
-5. 在变量来源追踪和调用路径查询端到端测试完成前，不做 crate/workspace 拆分，不开启 Corpus 分支。
+1. 在当前 12-crate workspace 内继续稳定变量来源追踪和调用路径查询所需 facts：bindings、binding uses、callsites、inline call arguments、data nodes、dataflow edges、call graph；`callsite_args` 表已移除，调用实参统一使用 `callsites.args_json` + call-arg DataNode；FunctionSummary 已实现 query-time 基础版。
+2. TypeScript/JavaScript/Python 已有 backward slice 端到端测试，下一步重点是把启发式 dataflow 转成更受 AST 结构约束的事实，并收紧断言。
+3. Java/C/C++/ArkTS 以及 Go/Rust/C#/PHP/Ruby/Kotlin 当前以 Symbolic best-effort 和 explicit unsupported diagnostics 为边界；不得把未覆盖的 Level 3 来源追踪描述为已完成能力。Bash/Cangjie 只在显式启用时展示 experimental capability。
+4. 继续打磨 trace CLI/MCP 输出，使 capability、partial result、diagnostics、confidence/provenance 对 Agent 足够明确。
+5. 不再做 workspace 大拆分；后续只在 trace 精度和 public API 稳定后，考虑抽出可复用 `atlas-engine` crate。Corpus 仍不启动。
 
 ## 2. P5：变量来源追踪与调用路径查询 MVP
 
@@ -90,13 +90,14 @@ FunctionSummary
 - dataflow/CFG 提供专门 reader 和 bounded traversal API。
 - context/trace/path 工具按需加载局部 facts。
 
-## 5. Engine / CLI / MCP 拆分
+## 5. Engine / CLI / MCP 边界演进
 
 拆分时机：
 
 ```text
-当前架构完成 MVP 语言 variable provenance / caller path E2E
-  -> 拆分 engine / CLI / MCP
+当前 12-crate workspace 已完成
+  -> 稳定 variable provenance / caller path 语义精度和 public API
+  -> 抽出可复用 atlas-engine crate
   -> 后续再分叉 Atlas 与 Corpus
 ```
 
@@ -132,7 +133,7 @@ crates/
 - 不规划污点分析产品线；变量来源追踪和调用路径查询是分析主线。
 - 项目级持久化和索引策略可以先保留在 Atlas 应用层，后续为 Atlas/Corpus 分支分别适配。
 
-不要过早拆分；当前门槛是 MVP 语言变量来源追踪和调用路径查询端到端测试完成。
+不要过早抽出 `atlas-engine`；当前门槛不是“能跑通 E2E”，而是 trace 语义、capability 边界和测试断言已经足够稳定。
 
 ## 6. 后续分叉方向
 
@@ -172,15 +173,12 @@ Corpus 详细需求曾在旧文档中展开；当前 docs 清理后，如需恢�
 
 ## 7. 语言支持演进
 
-MVP 之后可以引入：
+当前代码已经接入两类非 MVP 语言：
 
-- Go
-- Rust
-- C#
-- PHP
-- Ruby
-- Swift
-- Kotlin
+- `all-languages` 包含的 post-MVP Symbolic frontends：Go、Rust、C#、PHP、Ruby、Kotlin。
+- 显式 opt-in experimental frontends：Bash、Cangjie。
+
+这些语言已经不是“未来可以引入”的空白项，但也还没有生产化到变量来源追踪层。Swift 目前没有代码实现、feature flag 或 grammar 依赖。
 
 当前 MVP 语言按能力等级推进：
 
@@ -197,13 +195,20 @@ Level 5: lightweight interprocedural summaries
 
 | 语言 | 当前边界 | 下一步重点 | 用户交互约束 |
 |---|---|---|---|
-| TypeScript | Level 3 主目标，Level 5 未完成 | 真实源码 fixture、函数摘要、caller arg -> callee param bridge | 展示 `capability_level=3`；跨函数结果标注 summary/best-effort |
-| JavaScript | Level 3 主目标，沿 TS JS grammar | 与 TS 共用 dataflow/query 但保持 language 独立 | 展示 `language=javascript`，不要混用 TS 名称 |
-| Python | Level 3 主目标，动态语义低置信度 | import alias、attribute access、keyword args、returns fixture | 动态属性、反射调用、monkey patch 输出 limitation |
+| TypeScript | `DataflowBasic` / Level 3 主目标，Level 5 未完成 | 真实源码 fixture、函数摘要、caller arg -> callee param bridge | 展示 `capability_level=dataflow_basic`；跨函数结果标注 summary/best-effort |
+| JavaScript | `DataflowBasic` / Level 3 主目标，沿 TS JS grammar | 与 TS 共用 dataflow/query 但保持 language 独立 | 展示 `language=javascript`，不要混用 TS 名称 |
+| Python | `DataflowBasic` / Level 3 主目标，动态语义低置信度 | import alias、attribute access、keyword args、returns fixture | 动态属性、反射调用、monkey patch 输出 limitation |
 | Java | Level 1 当前保底，Level 2/3 待 fixture 约束 | method invocation、argument、return、package/import resolution | caller/callee 可用；变量来源不可用时明确 unsupported |
 | C | include-aware Level 1/2 best-effort | callsite args、局部 assignment、return、include provenance | 宏、函数指针、复杂指针别名标 low confidence/unsupported |
 | C++ | include-aware Level 1/2 best-effort | method call、namespace、simple assignment、return | 模板、重载、ADL 不得宣称精确 |
 | ArkTS | TypeScript grammar fallback 的 Level 1/2 best-effort | ArkTS fixture、语言标识、TS fallback provenance | 输出必须说明 ArkTS via TS grammar fallback |
+| Go | Post-MVP Symbolic，已在 `all-languages` | symbols/references/imports/calls golden fixture、package/import resolution | 变量来源、CFG、use-def 返回 unsupported diagnostics |
+| Rust | Post-MVP Symbolic，已在 `all-languages` | macro/trait/impl 边界 fixture、call graph 置信度 | macro、lifetime、trait dispatch 不得宣称精确 |
+| C# | Post-MVP Symbolic，已在 `all-languages` | namespace/partial class/delegate/event fixture | partial class 合并、delegate/event 语义保持 limitation |
+| PHP | Post-MVP Symbolic，已在 `all-languages` | namespace/use alias、method call、closure fixture | 动态 method call、runtime include 标 unsupported/low confidence |
+| Ruby | Post-MVP Symbolic，已在 `all-languages` | class/module/method/mixin fixture | method_missing、define_method、mixin 展开不宣称精确 |
+| Kotlin | Post-MVP Symbolic，已在 `all-languages` | package/import、class/object、extension function fixture | companion/object/extension 函数 limitation 显式展示 |
+| Bash | Experimental opt-in Symbolic | command/function/source fixture、低置信度 diagnostics | 默认/all-languages binary 不发现 `.sh/.bash`；命令调用标 low confidence |
 | Cangjie | 不属于 MVP；experimental opt-in | grammar spike、minimal adapter、definitions/calls fixture | 默认/all-languages binary 不发现 `.cj/.cangjie`；启用后 trace 默认 unsupported，不返回静默空结果 |
 
 交互层演进：
@@ -219,6 +224,7 @@ Level 5: lightweight interprocedural summaries
 - fixtures 覆盖 definitions/imports/calls。
 - 不修改中心 mega-extractor。
 - resolution 规则可插拔。
+- capability profile、CLI/MCP unsupported diagnostics 和测试规范同步更新。
 
 ## 8. Search 与 Context 演进
 
@@ -248,12 +254,23 @@ Level 5: lightweight interprocedural summaries
 - explicit confidence/provenance
 - structured JSON plus Markdown context where useful
 
-## 10. 不建议近期投入
+## 10. Schema 迁移（已完成）
+
+schema 迁移基础设施已于 2026-05 落地：
+
+- [x] `CURRENT_SCHEMA_VERSION` 与应用版本绑定。
+- [x] 打开数据库时执行版本检查：若 DB 版本低于当前版本，运行有序迁移链（ALTER TABLE / CREATE INDEX 等）自动升级；若高于当前版本，拒绝打开并报告不兼容。
+- [x] `atlas doctor` 区分"可自动迁移"（迁移链覆盖）与"需手动重建"（无迁移路径或 DB 来自更新版本）两种情况，并给出明确指引。
+- [x] 迁移通过 `schema_versions` 表记录，支持幂等重放。
+
+当前 `MIGRATIONS` 数组为空（V1），未来 schema 变更时在此添加迁移条目即可。
+
+## 11. 不建议近期投入
 
 - 完整编译器级 C/C++ 语义。
 - 完整 Java classpath/build system 解析。
 - Python 动态类型精确推断。
 - 全语言 framework resolver 生态。
 - 提前构建大型 graph database。
-- 在 MVP 语言变量来源追踪和调用路径查询端到端测试完成前做 workspace 大拆分。
+- 在 trace 语义精度和 public API 稳定前抽出 `atlas-engine`。
 - 在 engine/CLI/MCP 边界拆清前开启 Corpus 分支。

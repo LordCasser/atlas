@@ -4,63 +4,110 @@
 //! These are low-level INSERT/REPLACE functions called from `Store::insert_*`
 //! methods (one transaction per call) and `Store::write_facts` (all writes
 //! inside one batch transaction).
+//!
+//! Symbols and references use batched multi-row INSERT for reduced round-trips;
+//! JSON serialization for empty arrays (the common case) is cached to avoid
+//! per-row `serde_json::to_string()` overhead.
 
 use atlas_types::*;
 use rusqlite::{Connection, params};
 
+/// Cached empty JSON array string — `Vec::new()` → `"[]"` is constant.
+const EMPTY_JSON_ARRAY: &str = "[]";
+
+/// Max rows per multi-row INSERT (limited by SQLite variable binding limit).
+const BATCH_CHUNK_SIZE: usize = 50;
+
 pub(crate) fn write_symbols(conn: &Connection, symbols: &[SymbolDef]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO symbols
-           (symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
-            language,
-            range_start_byte, range_end_byte, range_start_line, range_start_column,
-            range_end_line, range_end_column,
-            name_start_byte, name_end_byte, name_start_line, name_start_column,
-            name_end_line, name_end_column,
-            signature, visibility, exported, static_, async_,
-            container_id, scope_id, package_name, namespace_path_json)
-        VALUES (
-            ?1,?2,?3,?4,?5,?6,?7,
-            ?8,?9,?10,?11,?12,?13,
-            ?14,?15,?16,?17,?18,?19,
-            ?20,?21,?22,?23,?24,
-            ?25,?26,?27,?28
-        )"#,
-    )?;
-    for s in symbols {
-        let path_json = serde_json::to_string(&s.symbol_path)?;
-        let ns_json = serde_json::to_string(&s.namespace_path)?;
-        stmt.execute(params![
-            s.id,
-            s.file_id,
-            s.kind.as_str(),
-            s.name,
-            s.qualified_name,
-            path_json,
-            s.language.as_str(),
-            s.range.start_byte,
-            s.range.end_byte,
-            s.range.start_line,
-            s.range.start_column,
-            s.range.end_line,
-            s.range.end_column,
-            s.name_range.start_byte,
-            s.name_range.end_byte,
-            s.name_range.start_line,
-            s.name_range.start_column,
-            s.name_range.end_line,
-            s.name_range.end_column,
-            s.signature,
-            s.visibility.map(|v| v.as_str()),
-            s.exported as i32,
-            s.static_ as i32,
-            s.async_ as i32,
-            s.container,
-            s.scope_id,
-            s.package_name,
-            ns_json,
-        ])?;
+    if symbols.is_empty() {
+        return Ok(());
     }
+
+    let base_sql = r#"INSERT OR REPLACE INTO symbols
+        (symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
+         language,
+         range_start_byte, range_end_byte, range_start_line, range_start_column,
+         range_end_line, range_end_column,
+         name_start_byte, name_end_byte, name_start_line, name_start_column,
+         name_end_line, name_end_column,
+         signature, visibility, exported, static_, async_,
+         container_id, scope_id, package_name, namespace_path_json)
+     VALUES "#;
+
+    for chunk in symbols.chunks(BATCH_CHUNK_SIZE) {
+        let placeholders: Vec<String> = (0..chunk.len())
+            .map(|i| {
+                let o = i * 28;
+                format!(
+                    "(?{o1},?{o2},?{o3},?{o4},?{o5},?{o6},?{o7},\
+                      ?{o8},?{o9},?{o10},?{o11},?{o12},?{o13},\
+                      ?{o14},?{o15},?{o16},?{o17},?{o18},?{o19},\
+                      ?{o20},?{o21},?{o22},?{o23},?{o24},\
+                      ?{o25},?{o26},?{o27},?{o28})",
+                    o1 = o + 1, o2 = o + 2, o3 = o + 3, o4 = o + 4,
+                    o5 = o + 5, o6 = o + 6, o7 = o + 7, o8 = o + 8,
+                    o9 = o + 9, o10 = o + 10, o11 = o + 11, o12 = o + 12,
+                    o13 = o + 13, o14 = o + 14, o15 = o + 15, o16 = o + 16,
+                    o17 = o + 17, o18 = o + 18, o19 = o + 19, o20 = o + 20,
+                    o21 = o + 21, o22 = o + 22, o23 = o + 23, o24 = o + 24,
+                    o25 = o + 25, o26 = o + 26, o27 = o + 27, o28 = o + 28,
+                )
+            })
+            .collect();
+        let sql = format!("{}{}", base_sql, placeholders.join(","));
+
+        // Collect all params for this chunk
+        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(chunk.len() * 28);
+        for s in chunk {
+            let path_json = if s.symbol_path.is_empty() {
+                EMPTY_JSON_ARRAY
+            } else {
+                // We need to own the string for serde_json output
+                &*Box::leak(serde_json::to_string(&s.symbol_path)?.into_boxed_str())
+            };
+            let ns_json = if s.namespace_path.is_empty() {
+                EMPTY_JSON_ARRAY
+            } else {
+                &*Box::leak(serde_json::to_string(&s.namespace_path)?.into_boxed_str())
+            };
+            let visibility = s.visibility.map(|v| v.as_str().to_string());
+            let exported = s.exported as i32;
+            let static_ = s.static_ as i32;
+            let async_ = s.async_ as i32;
+
+            all_params.push(Box::new(s.id));
+            all_params.push(Box::new(s.file_id));
+            all_params.push(Box::new(s.kind.as_str().to_string()));
+            all_params.push(Box::new(s.name.clone()));
+            all_params.push(Box::new(s.qualified_name.clone()));
+            all_params.push(Box::new(path_json.to_string()));
+            all_params.push(Box::new(s.language.as_str().to_string()));
+            all_params.push(Box::new(s.range.start_byte));
+            all_params.push(Box::new(s.range.end_byte));
+            all_params.push(Box::new(s.range.start_line));
+            all_params.push(Box::new(s.range.start_column));
+            all_params.push(Box::new(s.range.end_line));
+            all_params.push(Box::new(s.range.end_column));
+            all_params.push(Box::new(s.name_range.start_byte));
+            all_params.push(Box::new(s.name_range.end_byte));
+            all_params.push(Box::new(s.name_range.start_line));
+            all_params.push(Box::new(s.name_range.start_column));
+            all_params.push(Box::new(s.name_range.end_line));
+            all_params.push(Box::new(s.name_range.end_column));
+            all_params.push(Box::new(s.signature.clone()));
+            all_params.push(Box::new(visibility));
+            all_params.push(Box::new(exported));
+            all_params.push(Box::new(static_));
+            all_params.push(Box::new(async_));
+            all_params.push(Box::new(s.container));
+            all_params.push(Box::new(s.scope_id));
+            all_params.push(Box::new(s.package_name.clone()));
+            all_params.push(Box::new(ns_json.to_string()));
+        }
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
+        conn.execute(&sql, param_refs.as_slice())?;
+    }
+
     Ok(())
 }
 
@@ -92,40 +139,66 @@ pub(crate) fn write_scopes(conn: &Connection, scopes: &[ScopeDef]) -> anyhow::Re
 }
 
 pub(crate) fn write_references(conn: &Connection, refs: &[ReferenceUse]) -> anyhow::Result<()> {
-    let mut stmt = conn.prepare(
-        r#"INSERT OR REPLACE INTO "references"
-            (reference_id, file_id, source_symbol, scope_id, kind, text, name,
-            receiver, arity,
-            range_start_byte, range_end_byte, range_start_line, range_start_column,
-            range_end_line, range_end_column,
-            resolved_symbol_id, resolved_confidence, resolved_strategy, resolved_provenance,
-            binding_id)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)"#,
-    )?;
-    for r in refs {
-        stmt.execute(params![
-            r.id,
-            r.file_id,
-            r.source_symbol,
-            r.scope_id,
-            r.kind.as_str(),
-            r.text,
-            r.name,
-            r.receiver,
-            r.arity,
-            r.range.start_byte,
-            r.range.end_byte,
-            r.range.start_line,
-            r.range.start_column,
-            r.range.end_line,
-            r.range.end_column,
-            r.resolved.as_ref().map(|rt| &rt.symbol_id),
-            r.resolved.as_ref().map(|rt| rt.confidence.as_f32()),
-            r.resolved.as_ref().map(|rt| rt.strategy.as_str()),
-            r.resolved.as_ref().map(|rt| rt.provenance.as_str()),
-            r.binding_id,
-        ])?;
+    if refs.is_empty() {
+        return Ok(());
     }
+
+    const REF_PARAMS: usize = 20;
+    let base_sql = r#"INSERT OR REPLACE INTO "references"
+        (reference_id, file_id, source_symbol, scope_id, kind, text, name,
+        receiver, arity,
+        range_start_byte, range_end_byte, range_start_line, range_start_column,
+        range_end_line, range_end_column,
+        resolved_symbol_id, resolved_confidence, resolved_strategy, resolved_provenance,
+        binding_id)
+     VALUES "#;
+
+    for chunk in refs.chunks(BATCH_CHUNK_SIZE) {
+        let placeholders: Vec<String> = (0..chunk.len())
+            .map(|i| {
+                let o = i * REF_PARAMS;
+                format!(
+                    "(?{o1},?{o2},?{o3},?{o4},?{o5},?{o6},?{o7},?{o8},?{o9},\
+                      ?{o10},?{o11},?{o12},?{o13},?{o14},?{o15},?{o16},?{o17},?{o18},?{o19},?{o20})",
+                    o1 = o + 1, o2 = o + 2, o3 = o + 3, o4 = o + 4,
+                    o5 = o + 5, o6 = o + 6, o7 = o + 7, o8 = o + 8,
+                    o9 = o + 9, o10 = o + 10, o11 = o + 11, o12 = o + 12,
+                    o13 = o + 13, o14 = o + 14, o15 = o + 15, o16 = o + 16,
+                    o17 = o + 17, o18 = o + 18, o19 = o + 19, o20 = o + 20,
+                )
+            })
+            .collect();
+        let sql = format!("{}{}", base_sql, placeholders.join(","));
+
+        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(chunk.len() * REF_PARAMS);
+        for r in chunk {
+            let strategy = r.resolved.as_ref().map(|rt| rt.strategy.as_str().to_string());
+            let provenance = r.resolved.as_ref().map(|rt| rt.provenance.as_str().to_string());
+            all_params.push(Box::new(r.id));
+            all_params.push(Box::new(r.file_id));
+            all_params.push(Box::new(r.source_symbol));
+            all_params.push(Box::new(r.scope_id));
+            all_params.push(Box::new(r.kind.as_str().to_string()));
+            all_params.push(Box::new(r.text.clone()));
+            all_params.push(Box::new(r.name.clone()));
+            all_params.push(Box::new(r.receiver.clone()));
+            all_params.push(Box::new(r.arity));
+            all_params.push(Box::new(r.range.start_byte));
+            all_params.push(Box::new(r.range.end_byte));
+            all_params.push(Box::new(r.range.start_line));
+            all_params.push(Box::new(r.range.start_column));
+            all_params.push(Box::new(r.range.end_line));
+            all_params.push(Box::new(r.range.end_column));
+            all_params.push(Box::new(r.resolved.as_ref().map(|rt| rt.symbol_id)));
+            all_params.push(Box::new(r.resolved.as_ref().map(|rt| rt.confidence.as_f32())));
+            all_params.push(Box::new(strategy));
+            all_params.push(Box::new(provenance));
+            all_params.push(Box::new(r.binding_id));
+        }
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
+        conn.execute(&sql, param_refs.as_slice())?;
+    }
+
     Ok(())
 }
 
