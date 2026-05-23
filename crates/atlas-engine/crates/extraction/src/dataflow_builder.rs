@@ -136,6 +136,9 @@ impl DataFlowBuilder {
         &mut edges,
     );
 
+    // Language-specific edge building (e.g., destructuring, tuple unpacking)
+    dataflow_spec.build_language_edges(&nodes, bindings, scopes, &mut edges)?;
+
         Ok(DataFlowResult { nodes, edges })
     }
 

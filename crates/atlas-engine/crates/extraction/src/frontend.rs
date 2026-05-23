@@ -138,6 +138,26 @@ pub trait DataflowSpec: Send + Sync {
         ctx: NormalizeCtx<'_>,
         capture: Capture<'_>,
     ) -> (Option<DataNode>, Option<DataFlowEdge>);
+
+    /// Build language-specific dataflow edges after normalization.
+    ///
+    /// Called by [`DataFlowBuilder`] after all captures are normalized and
+    /// the default edges are built.  Each language adapter can override this
+    /// to add edges for language-specific AST patterns (e.g., destructuring,
+    /// tuple unpacking, Go short-var, Rust match bindings, etc.).
+    ///
+    /// The default implementation is a no-op — all edge building for standard
+    /// patterns (assignment, field access, containment, return) is handled by
+    /// the shared builder.
+    fn build_language_edges(
+        &self,
+        _nodes: &[DataNode],
+        _bindings: &[BindingDef],
+        _scopes: &[ScopeDef],
+        _edges: &mut Vec<DataFlowEdge>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
