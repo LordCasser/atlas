@@ -220,6 +220,7 @@ impl DataflowSpec for CAdapter {
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> (Option<DataNode>, Option<DataFlowEdge>) {
         normalize_c_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
+}
 
 // ---------------------------------------------------------------------------
 // Factory — direct slot construction, no adapter wrapper needed.

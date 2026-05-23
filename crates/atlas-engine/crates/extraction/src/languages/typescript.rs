@@ -445,7 +445,31 @@ pub(crate) fn normalize_ts_dataflow_builder(
                 (Some(dn), None)
             })
             .unwrap_or((None, None)),
-        "df.literal" | "df.await_value" | "df.receiver" => {
+        "df.receiver" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&types::ids::SymbolId>,
+                "receiver",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: types::enums::DataNodeKind::Receiver,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text),
+                access_path: None,
+                arg_index: None,
+                range,
+            };
+            (Some(dn), None)
+        }
+        "df.literal" | "df.await_value" => {
             let text = node_text(node, source).unwrap_or_default();
             let node_id = DataNodeId::generate(
                 &file_id,

@@ -3,7 +3,11 @@
 
 (translation_unit) @scope.file
 
-(function_definition (compound_statement) @scope.function)
+(function_definition) @scope.function
+
+;; Method declarations (inside class bodies)
+(field_declaration
+  (function_definition) @scope.method)
 
 (class_specifier (field_declaration_list) @scope.class)
 

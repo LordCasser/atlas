@@ -8,6 +8,8 @@
 
 (object_declaration) @scope.class
 
+(function_declaration) @scope.function
+
 (function_body) @scope.block
 
 (if_expression) @scope.conditional

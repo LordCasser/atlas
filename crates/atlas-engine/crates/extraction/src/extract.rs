@@ -710,6 +710,7 @@ mod tests {
             }
         }
     }
+#[cfg(feature = "typescript")]
 
     #[test]
     fn test_extract_and_insert_ts_arrow_function_registry_guard() {
@@ -810,6 +811,7 @@ void C::m() {
         let result = store.insert_file_facts(&facts);
         assert!(result.is_ok(), "Insert failed: {:?}", result.err());
     }
+#[cfg(feature = "typescript")]
 
     #[test]
     fn test_extract_ts_simple() {
@@ -828,6 +830,7 @@ void C::m() {
         );
         assert!(!facts.references.is_empty(), "Should have references");
     }
+#[cfg(feature = "python")]
 
     #[test]
     fn test_extract_python_simple() {
@@ -840,6 +843,7 @@ void C::m() {
         assert_eq!(facts.file.language, Language::Python);
         assert!(!facts.symbols.is_empty(), "Should have symbols");
     }
+#[cfg(feature = "typescript")]
 
     #[test]
     fn test_extract_ts_dataflow() {
@@ -857,6 +861,7 @@ void C::m() {
             "Should have dataflow edges"
         );
     }
+#[cfg(feature = "python")]
 
     #[test]
     fn test_extract_python_dataflow() {
@@ -872,6 +877,7 @@ void C::m() {
         assert!(!facts.symbols.is_empty(), "Should have symbols");
         assert!(facts.raw_edges.is_empty(), "Old dataflow path removed");
     }
+#[cfg(feature = "typescript")]
 
     #[test]
     fn test_extract_and_insert_ts() {
@@ -911,6 +917,7 @@ void C::m() {
         let result = store.insert_file_facts(&facts);
         assert!(result.is_ok(), "Insert failed: {:?}", result.err());
     }
+#[cfg(feature = "typescript")]
 
     #[test]
     fn test_extract_and_insert_ts_class() {

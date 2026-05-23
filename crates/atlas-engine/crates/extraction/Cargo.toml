@@ -34,7 +34,7 @@ tempfile = "3"
 
 [features]
 typescript = ["dep:tree-sitter-typescript", "types/typescript"]
-javascript = ["dep:tree-sitter-typescript"]  # JS uses TS grammar
+javascript = ["typescript", "dep:tree-sitter-typescript"]  # JS uses TS grammar + adapter
 python = ["dep:tree-sitter-python", "types/python"]
 java = ["dep:tree-sitter-java", "types/java"]
 c = ["dep:tree-sitter-c", "types/c"]
