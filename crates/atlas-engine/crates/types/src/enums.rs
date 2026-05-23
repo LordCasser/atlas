@@ -883,8 +883,12 @@ pub enum DataFlowKind {
     FieldLoad,
     /// Field / member store: `a.b = v`  →  node(v) → node(a.b)
     FieldStore,
+    /// Call argument flows to call target (intra-procedural).
+    ArgToCall,
     /// Actual argument flows to formal parameter (inter-procedural).
     ArgToParam,
+    /// Return expression flows to return node (intra-procedural).
+    ReturnValue,
     /// Return value flows to call-site result (inter-procedural).
     ReturnToCall,
     /// Receiver flows to `this` / `self` inside callee.
@@ -901,7 +905,9 @@ impl DataFlowKind {
             Self::Write => "write",
             Self::FieldLoad => "field_load",
             Self::FieldStore => "field_store",
+            Self::ArgToCall => "arg_to_call",
             Self::ArgToParam => "arg_to_param",
+            Self::ReturnValue => "return_value",
             Self::ReturnToCall => "return_to_call",
             Self::ReceiverToThis => "receiver_to_this",
             Self::Phi => "phi",
@@ -915,7 +921,9 @@ impl DataFlowKind {
             "write" => Some(Self::Write),
             "field_load" => Some(Self::FieldLoad),
             "field_store" => Some(Self::FieldStore),
+            "arg_to_call" => Some(Self::ArgToCall),
             "arg_to_param" => Some(Self::ArgToParam),
+            "return_value" => Some(Self::ReturnValue),
             "return_to_call" => Some(Self::ReturnToCall),
             "receiver_to_this" => Some(Self::ReceiverToThis),
             "phi" => Some(Self::Phi),

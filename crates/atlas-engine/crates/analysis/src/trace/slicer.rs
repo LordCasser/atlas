@@ -278,7 +278,9 @@ fn should_trace_backward(kind: &DataFlowKind) -> bool {
             | DataFlowKind::Write
             | DataFlowKind::FieldLoad
             | DataFlowKind::FieldStore
+            | DataFlowKind::ArgToCall
             | DataFlowKind::ArgToParam
+            | DataFlowKind::ReturnValue
             | DataFlowKind::ReturnToCall
             | DataFlowKind::ReceiverToThis
     )
@@ -363,8 +365,10 @@ fn kind_description(kind: &DataFlowKind) -> &'static str {
         DataFlowKind::Write => "write",
         DataFlowKind::FieldLoad => "field access",
         DataFlowKind::FieldStore => "field store",
-        DataFlowKind::ArgToParam => "argument → parameter",
-        DataFlowKind::ReturnToCall => "return → callsite",
+        DataFlowKind::ArgToCall => "call argument → call target",
+        DataFlowKind::ArgToParam => "argument → parameter (cross-function)",
+        DataFlowKind::ReturnValue => "expression → return",
+        DataFlowKind::ReturnToCall => "return → callsite (cross-function)",
         DataFlowKind::ReceiverToThis => "receiver → self",
         DataFlowKind::Phi => "phi (control-flow merge)",
     }
@@ -418,7 +422,9 @@ mod tests {
             DataFlowKind::Assign,
             DataFlowKind::Read,
             DataFlowKind::FieldLoad,
+            DataFlowKind::ArgToCall,
             DataFlowKind::ArgToParam,
+            DataFlowKind::ReturnValue,
             DataFlowKind::Phi,
         ] {
             assert!(!kind_description(kind).is_empty());

@@ -10,7 +10,7 @@
 //! 2. Creates [`DataNode`]s for each capture (Parameter, Local, Field, Return,
 //!    CallArg, Literal, Expr).
 //! 3. Creates [`DataFlowEdge`]s connecting related nodes (Assign, Read, Write,
-//!    FieldLoad, FieldStore, ArgToParam, ReturnToCall).
+//!    FieldLoad, FieldStore, ArgToCall, ReturnValue).
 //!
 //! # Edge-building rules
 //!
@@ -18,13 +18,15 @@
 //!   Local/Parameter targets).
 //! - **FieldLoad**: name-based base → field (looks up the base of an access path
 //!   among known locals/params).
-//! - **ArgToParam**: callsite-grouped call_arg → call_target.  CallArg and
-//!   CallTarget nodes from the same `call_expression` share a `callsite_id`
-//!   (set during extraction by walking the AST).  Falls back to "most recent
-//!   preceding target" heuristic when `callsite_id` is not set.
-//! - **ReturnToCall**: contained-node → Return.  Nodes whose range falls fully
-//!   inside a Return node's range (e.g. `CallTarget` in `return foo()`) are
-//!   linked to the Return.
+//! - **ArgToCall**: callsite-grouped call_arg → call_target (intra-procedural).
+//!   CallArg and CallTarget nodes from the same `call_expression` share a
+//!   `callsite_id` (set during extraction by walking the AST).  Falls back to
+//!   "most recent preceding target" heuristic when `callsite_id` is not set.
+//!   (Note: `ArgToParam` is reserved for inter-procedural caller→callee edges.)
+//! - **ReturnValue**: contained-node → Return (intra-procedural).  Nodes whose
+//!   range falls fully inside a Return node's range (e.g. `CallTarget` in
+//!   `return foo()`) are linked to the Return.
+//!   (Note: `ReturnToCall` is reserved for inter-procedural callee→caller edges.)
 //!
 //! # Invariants
 //!
@@ -399,7 +401,7 @@ fn ts_node_range(ts_node: &tree_sitter::Node) -> TextRange {
 /// assignment_expression (left/right) provide explicit parent‑child structure.
 /// This replaces the former position‑based heuristic (Nth≈Nth target grouping).
 ///
-/// Other edge types (FieldLoad, ArgToParam, containment, ReturnToCall) are
+/// Other edge types (FieldLoad, ArgToCall, containment, ReturnValue) are
 /// constrained by function scope and (where available) binding_id to avoid
 /// false connections across same-named variables in different scopes.
 fn build_dataflow_edges(
@@ -469,7 +471,7 @@ fn build_dataflow_edges(
         }
     }
 
-    // ── ArgToParam edges ────────────────────────────────────────────────
+    // ── ArgToCall edges ──────────────────────────────────────────────────
     // Group CallArgs and CallTargets by their `callsite_id` (set during
     // extraction by walking up to the enclosing `call_expression`).
     // This correctly handles nested calls like `foo(bar(a), b)` where
@@ -506,13 +508,13 @@ fn build_dataflow_edges(
                             let edge_id = DataFlowEdgeId::generate(
                                 &arg.id,
                                 &target.id,
-                                DataFlowKind::ArgToParam.as_str(),
+                                DataFlowKind::ArgToCall.as_str(),
                             );
                             edges.push(DataFlowEdge::new(
                                 edge_id,
                                 arg.id,
                                 target.id,
-                                DataFlowKind::ArgToParam,
+                                DataFlowKind::ArgToCall,
                                 arg.range,
                                 0.75,
                             ));
@@ -534,13 +536,13 @@ fn build_dataflow_edges(
                 let edge_id = DataFlowEdgeId::generate(
                     &arg.id,
                     &target.id,
-                    DataFlowKind::ArgToParam.as_str(),
+                    DataFlowKind::ArgToCall.as_str(),
                 );
                 edges.push(DataFlowEdge::new(
                     edge_id,
                     arg.id,
                     target.id,
-                    DataFlowKind::ArgToParam,
+                    DataFlowKind::ArgToCall,
                     arg.range,
                     0.75,
                 ));
@@ -586,7 +588,7 @@ fn build_dataflow_edges(
         }
     }
 
-    // ── ReturnToCall edges ──────────────────────────────────────────────
+    // ── ReturnValue edges ────────────────────────────────────────────────
     // Link return-value expression nodes to their enclosing Return nodes.
     // When `return compute()` is captured, the CallTarget `compute` is
     // inside the Return node's range.  Create a dataflow edge so that
@@ -616,12 +618,12 @@ fn build_dataflow_edges(
                 )
         }) {
             let edge_id =
-                DataFlowEdgeId::generate(&source.id, &ret.id, DataFlowKind::ReturnToCall.as_str());
+                DataFlowEdgeId::generate(&source.id, &ret.id, DataFlowKind::ReturnValue.as_str());
             edges.push(DataFlowEdge::new(
                 edge_id,
                 source.id,
                 ret.id,
-                DataFlowKind::ReturnToCall,
+                DataFlowKind::ReturnValue,
                 ret.range,
                 0.85,
             ));
