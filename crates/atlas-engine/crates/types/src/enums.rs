@@ -810,6 +810,8 @@ pub enum DataNodeKind {
     Literal,
     /// Generic expression node (when kind is not more specific).
     Expr,
+    /// Identifier use (variable reference, not a declaration).
+    VariableUse,
     /// Argument passed at a call-site.
     CallArg,
     /// Function/method being called (callee identifier).
@@ -833,6 +835,7 @@ impl DataNodeKind {
             Self::Return => "return",
             Self::Literal => "literal",
             Self::Expr => "expr",
+            Self::VariableUse => "variable_use",
             Self::CallArg => "call_arg",
             Self::CallTarget => "call_target",
             Self::CallReturn => "call_return",
@@ -850,6 +853,7 @@ impl DataNodeKind {
             "return" => Some(Self::Return),
             "literal" => Some(Self::Literal),
             "expr" => Some(Self::Expr),
+            "variable_use" => Some(Self::VariableUse),
             "call_arg" => Some(Self::CallArg),
             "call_target" => Some(Self::CallTarget),
             "call_return" => Some(Self::CallReturn),

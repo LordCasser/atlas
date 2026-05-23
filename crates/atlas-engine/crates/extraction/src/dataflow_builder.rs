@@ -559,6 +559,7 @@ fn build_dataflow_edges(
         DataNodeKind::Field,
         DataNodeKind::Literal,
         DataNodeKind::CallTarget,
+        DataNodeKind::VariableUse,
     ];
 
     for expr in &expr_nodes_for_containment {

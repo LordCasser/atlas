@@ -55,3 +55,6 @@
 (true) @df.literal
 (false) @df.literal
 (none) @df.literal
+
+;; --- Identifier uses (variable references) ---
+(identifier) @df.identifier_use

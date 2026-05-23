@@ -59,3 +59,7 @@
 
 ;; --- Await expressions (async dataflow) ---
 (await_expression (_) @df.await_value)
+
+;; --- Identifier uses (variable references) ---
+;; Captured broadly; normalize filters out declarations/properties/types/callee-targets.
+(identifier) @df.identifier_use

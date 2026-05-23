@@ -148,6 +148,29 @@ fn normalize_py_scope(
     })
 }
 
+/// Check if an identifier is a declaration name or property name in Python AST.
+fn is_py_identifier_declaration(node: tree_sitter::Node) -> bool {
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+    match parent.kind() {
+        "function_definition" | "class_definition" | "parameters"
+        | "aliased_import" | "import_statement" | "except_clause"
+        | "with_item" | "for_statement" => {
+            // Check if this node is the "name" field of the parent
+            parent.child_by_field_name("name")
+                .map_or(false, |n| n.id() == node.id())
+        }
+        // Attribute access: obj.attr — don't capture property name as use
+        "attribute" => {
+            parent.child_by_field_name("attribute")
+                .map_or(false, |n| n.id() == node.id())
+        }
+        _ => false,
+    }
+}
+
 fn normalize_py_dataflow_builder(
     capture_name: &str,
     node: tree_sitter::Node,
@@ -309,6 +332,34 @@ fn normalize_py_dataflow_builder(
                 callsite_id: None,
                 name: Some(text),
                 access_path: None,
+                arg_index: None,
+                range,
+            };
+            (Some(dn), None)
+        }
+        "df.identifier_use" => {
+            // Skip identifiers that are declaration names or property names
+            if is_py_identifier_declaration(node) {
+                return (None, None);
+            }
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "identifier_use",
+                Some(&text),
+                Some(&text),
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: DataNodeKind::VariableUse,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text.clone()),
+                access_path: Some(text),
                 arg_index: None,
                 range,
             };

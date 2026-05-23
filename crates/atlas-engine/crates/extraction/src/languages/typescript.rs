@@ -290,6 +290,35 @@ pub(crate) fn normalize_ts_lexical(
     })
 }
 
+/// Check if a tree-sitter identifier node is a declaration name, property name,
+/// or type name — i.e., it should NOT be treated as an identifier use.
+fn is_ts_identifier_declaration_or_property(node: tree_sitter::Node) -> bool {
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+    match parent.kind() {
+        // Declaration names
+        "variable_declarator" | "function_declaration" | "class_declaration"
+        | "method_definition" | "interface_declaration" | "enum_declaration"
+        | "type_alias_declaration" | "module" | "import_specifier"
+        | "import_clause" | "namespace_import" | "catch_clause"
+        | "public_field_definition" | "required_parameter" | "optional_parameter" => {
+            // Check if this node is the "name" field of the parent
+            parent.child_by_field_name("name")
+                .map_or(false, |n| n.id() == node.id())
+        }
+        // Property names in member expressions (obj.property)
+        "member_expression" => {
+            parent.child_by_field_name("property")
+                .map_or(false, |n| n.id() == node.id())
+        }
+        // Type references (like `string`, `number` in type annotations)
+        "type_annotation" | "type_arguments" | "type_parameters" => true,
+        _ => false,
+    }
+}
+
 pub(crate) fn normalize_ts_dataflow_builder(
     capture_name: &str,
     node: tree_sitter::Node,
@@ -488,6 +517,35 @@ pub(crate) fn normalize_ts_dataflow_builder(
                 callsite_id: None,
                 name: Some(text),
                 access_path: None,
+                arg_index: None,
+                range,
+            };
+            (Some(dn), None)
+        }
+        "df.identifier_use" => {
+            // Filter out identifiers that are declaration names, property names,
+            // type names, or callee targets (already captured by other patterns).
+            if is_ts_identifier_declaration_or_property(node) {
+                return (None, None);
+            }
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&types::ids::SymbolId>,
+                "identifier_use",
+                Some(&text),
+                Some(&text),
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: types::enums::DataNodeKind::VariableUse,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text.clone()),
+                access_path: Some(text),
                 arg_index: None,
                 range,
             };
