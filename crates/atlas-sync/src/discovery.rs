@@ -140,13 +140,32 @@ fn walk_dir(dir: &Path, root: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        // Use symlink_metadata to avoid following symlinks into loops
+        // or escaping the project root.
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.is_dir() {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if name.starts_with('.') || ALWAYS_EXCLUDE_DIRS.contains(&name) {
                 continue;
             }
+            // Canonicalize to detect symlink escapes
+            let canonical = match path.canonicalize() {
+                Ok(c) => c,
+                Err(_) => continue, // broken symlink — skip
+            };
+            let root_canonical = match root.canonicalize() {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            if !canonical.starts_with(&root_canonical) {
+                // Symlink points outside project root — skip
+                continue;
+            }
             walk_dir(&path, root, files)?;
-        } else {
+        } else if meta.is_file() {
             if let Ok(rel) = path.strip_prefix(root) {
                 files.push(rel.to_path_buf());
             }

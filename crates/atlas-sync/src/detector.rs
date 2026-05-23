@@ -76,6 +76,11 @@ pub fn detect_git_changes(root: &Path) -> Option<ChangedFiles> {
             PorcelainStatus::Added => changes.added.push(full_path),
             PorcelainStatus::Modified => changes.modified.push(full_path),
             PorcelainStatus::Deleted => changes.deleted.push(full_path),
+            PorcelainStatus::Renamed(new_path) => {
+                // Old file data must be cleaned, new file must be indexed
+                changes.deleted.push(full_path);
+                changes.added.push(root.join(new_path));
+            }
         }
     }
 
@@ -91,6 +96,7 @@ enum PorcelainStatus {
     Added,
     Modified,
     Deleted,
+    Renamed(String), // new path after rename
 }
 
 /// Parse a single git status --porcelain line (e.g. " M src/main.rs" or "?? newfile").
@@ -104,12 +110,12 @@ fn parse_porcelain_line(line: &str) -> (PorcelainStatus, &str) {
         " M" | "M " | "MM" | "CM" => (PorcelainStatus::Modified, path),
         "D " | " D" | "DM" | "RD" => (PorcelainStatus::Deleted, path),
         "R " => {
-            // Renamed: "R  old -> new" — take the new name
-            if let Some((_old, new_path)) = path.split_once(" -> ") {
-                (PorcelainStatus::Added, new_path)
+            if let Some((old_path, new_path)) = path.split_once(" -> ") {
+                (PorcelainStatus::Renamed(new_path.trim().to_string()), old_path.trim())
             } else {
                 (PorcelainStatus::Modified, path)
             }
+        }
         }
         _ => (PorcelainStatus::Modified, path),
     }

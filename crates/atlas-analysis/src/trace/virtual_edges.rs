@@ -177,12 +177,11 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                                                                     hex::encode(inner_csid.as_bytes()),
                                                                 ),
                                                             });
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
+                            }
+                        }
+                    }
+                }
+            }
                                 }
                             }
                         }
@@ -194,23 +193,16 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                 let indirect = find_indirect_callers(
                     store, &function_id, MAX_INDIRECT_DEPTH,
                 );
-                for (depth, caller_sym_id, cs) in &indirect {
-                    // Load this indirect caller's parameters
-                    let caller_params = store
-                        .find_data_nodes_by_function(caller_sym_id)
-                        .unwrap_or_default();
-                    let caller_param_idx = caller_params
-                        .iter()
-                        .filter(|dn| dn.kind == DataNodeKind::Parameter)
-                        .position(|dn| &dn.id == target_id);
-
-                    for (arg_idx, arg) in cs.args.iter().enumerate() {
-                        let arg_dn_id = match &arg.data_node_id {
-                            Some(dn_id) => dn_id,
-                            None => continue,
-                        };
-                        if let Some(cp_idx) = caller_param_idx {
-                            if arg_idx == cp_idx {
+                for (depth, _caller_sym_id, cs) in &indirect {
+                    // Match args by position using the ORIGINAL callee's
+                    // parameter index, not the indirect caller's param set.
+                    if let Some(p_idx) = param_index {
+                        for (arg_idx, arg) in cs.args.iter().enumerate() {
+                            let arg_dn_id = match &arg.data_node_id {
+                                Some(dn_id) => dn_id,
+                                None => continue,
+                            };
+                            if arg_idx == p_idx {
                                 let depth_penalty = 0.85_f64.powi(*depth as i32);
                                 edges.push(TraceEdge {
                                     source_id: arg_dn_id.clone(),
@@ -221,7 +213,7 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                                         "indirect(depth={depth}) caller arg[{}] at callsite {} → param[{}]",
                                         arg_idx,
                                         hex::encode(cs.id.as_bytes()),
-                                        cp_idx,
+                                        p_idx,
                                     ),
                                 });
                             }

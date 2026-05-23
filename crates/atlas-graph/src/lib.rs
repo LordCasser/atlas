@@ -83,18 +83,42 @@ impl GraphEngine {
     // ── neighbors ────────────────────────────────────────────────────────
 
     /// Direct neighbors of a symbol, optionally filtered by edge kinds.
+    /// Supports multi-hop traversal via config.max_depth.
     pub fn neighbors(&self, id: &SymbolId, config: TraversalConfig) -> Subgraph {
-        let Some(&node_ix) = self.snapshot.id_to_idx.get(id) else {
+        let Some(&start_ix) = self.snapshot.id_to_idx.get(id) else {
             return Subgraph::default();
         };
-        let pairs = self.snapshot.neighbors(
-            node_ix,
-            config.direction,
-            config.edge_kind_filter.as_deref(),
-        );
+
+        let max_depth = config.max_depth.max(1).min(5);
+        let mut visited_nodes = std::collections::HashSet::new();
+        let mut visited_edges = std::collections::HashSet::new();
+        let mut frontier = vec![start_ix];
+        visited_nodes.insert(start_ix);
+
+        for _depth in 0..max_depth {
+            let mut next_frontier = Vec::new();
+            for &node_ix in &frontier {
+                let pairs = self.snapshot.neighbors(
+                    node_ix,
+                    config.direction,
+                    config.edge_kind_filter.as_deref(),
+                );
+                for (nix, eix) in pairs {
+                    if visited_nodes.insert(nix) {
+                        next_frontier.push(nix);
+                    }
+                    visited_edges.insert(eix);
+                }
+            }
+            frontier = next_frontier;
+            if frontier.is_empty() {
+                break;
+            }
+        }
+
         let mut sub = Subgraph::default();
-        sub.node_indices = pairs.iter().map(|(nix, _)| *nix).collect();
-        sub.edge_indices = pairs.iter().map(|(_, eix)| *eix).collect();
+        sub.node_indices = visited_nodes.into_iter().collect();
+        sub.edge_indices = visited_edges.into_iter().collect();
         sub
     }
 

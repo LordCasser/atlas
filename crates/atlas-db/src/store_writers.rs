@@ -60,15 +60,14 @@ pub(crate) fn write_symbols(conn: &Connection, symbols: &[SymbolDef]) -> anyhow:
         let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(chunk.len() * 28);
         for s in chunk {
             let path_json = if s.symbol_path.is_empty() {
-                EMPTY_JSON_ARRAY
+                EMPTY_JSON_ARRAY.to_string()
             } else {
-                // We need to own the string for serde_json output
-                &*Box::leak(serde_json::to_string(&s.symbol_path)?.into_boxed_str())
+                serde_json::to_string(&s.symbol_path)?
             };
             let ns_json = if s.namespace_path.is_empty() {
-                EMPTY_JSON_ARRAY
+                EMPTY_JSON_ARRAY.to_string()
             } else {
-                &*Box::leak(serde_json::to_string(&s.namespace_path)?.into_boxed_str())
+                serde_json::to_string(&s.namespace_path)?
             };
             let visibility = s.visibility.map(|v| v.as_str().to_string());
             let exported = s.exported as i32;
@@ -80,7 +79,7 @@ pub(crate) fn write_symbols(conn: &Connection, symbols: &[SymbolDef]) -> anyhow:
             all_params.push(Box::new(s.kind.as_str().to_string()));
             all_params.push(Box::new(s.name.clone()));
             all_params.push(Box::new(s.qualified_name.clone()));
-            all_params.push(Box::new(path_json.to_string()));
+            all_params.push(Box::new(path_json));
             all_params.push(Box::new(s.language.as_str().to_string()));
             all_params.push(Box::new(s.range.start_byte));
             all_params.push(Box::new(s.range.end_byte));
@@ -102,7 +101,7 @@ pub(crate) fn write_symbols(conn: &Connection, symbols: &[SymbolDef]) -> anyhow:
             all_params.push(Box::new(s.container));
             all_params.push(Box::new(s.scope_id));
             all_params.push(Box::new(s.package_name.clone()));
-            all_params.push(Box::new(ns_json.to_string()));
+            all_params.push(Box::new(ns_json));
         }
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
         conn.execute(&sql, param_refs.as_slice())?;

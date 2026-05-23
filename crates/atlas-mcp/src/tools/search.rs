@@ -9,7 +9,7 @@ use serde_json::json;
 impl ToolRouter {
     pub(crate) fn handle_search(&self, args: &serde_json::Value) -> (String, bool) {
         let query = get_str(args, "query");
-        let limit = get_u64(args, "limit").unwrap_or(20) as usize;
+        let limit = (get_u64(args, "limit").unwrap_or(20) as usize).min(200);
         let kind = get_str_opt(args, "kind");
 
         let results = if let Some(k_str) = kind {
@@ -53,10 +53,7 @@ impl ToolRouter {
             None => return (format!("Symbol not found: {}", qname), true),
         };
 
-        let graph = match self.get_graph() {
-            Ok(g) => g,
-            Err(e) => return Self::graph_error_result(&e),
-        };
+        let graph = self.search.graph_snapshot();
         let callers_count = graph.callers(&sym.id).callers.len();
         let callees_count = graph.callees(&sym.id).callees.len();
 
