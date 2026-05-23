@@ -33,7 +33,7 @@ impl Store {
         &self,
         function_id: &SymbolId,
     ) -> anyhow::Result<Vec<CfgNode>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT cfg_node_id, function_id, kind,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
@@ -46,7 +46,7 @@ impl Store {
 
     /// Find CFG edges originating from a CFG node.
     pub fn find_cfg_edges_by_source(&self, source: &CfgNodeId) -> anyhow::Result<Vec<CfgEdge>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT cfg_edge_id, source_node, target_node, kind FROM cfg_edges WHERE source_node = ?1",
         )?;

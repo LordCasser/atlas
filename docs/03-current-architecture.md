@@ -60,7 +60,7 @@ Source files
 
 ## 3. Schema 状态
 
-当前 `CURRENT_SCHEMA_VERSION` 为 `1`。项目仍处于快速开发阶段，当前不维护部署迁移或旧库兼容承诺。
+当前 `CURRENT_SCHEMA_VERSION` 为 `1`。项目仍处于快速开发阶段，**schema 变更不提供自动迁移或不一致检测——此能力明确推迟到正式发布前（见 `05-roadmap.md` §10）**。开发期间 schema 变更后的预期流程是 `atlas init` 重建新库。
 
 主要表：
 
@@ -120,7 +120,7 @@ schema_versions
 已知限制：
 
 - per-file timeout 尚未完全强制，受 adapter/threading 约束。
-- 非 TS 语言的 lexical/dataflow 支持仍需要逐步补齐。
+- 非 TS/JS/Python 语言的 lexical/dataflow 支持仍需要逐步补齐；Go/Rust/C#/PHP/Ruby/Kotlin 当前是 post-MVP Symbolic frontends。
 - CFG 不覆盖 try/catch/finally、switch/case、async/await、labeled break/continue。
 
 ## 5. Resolution 与 Graph
@@ -192,7 +192,7 @@ Atlas 不包含污点分析（taint analysis）。当前产品主线为变量来
 - analysis/types 层提供 capability profile / feature matrix，描述每种语言当前支持的 trace level、supported features、unsupported features、known limitations 和 confidence floor。
 - CLI/MCP/context 不能自行推断语言能力，只能展示 analysis/engine 返回的 capability。
 - trace 查询即使返回 partial result，也必须同时返回 capability 和 diagnostics，说明哪些路径是完整证据、哪些只是 best-effort、哪些请求超出当前语言能力。
-- 当前默认边界：TypeScript/JavaScript/Python 作为 Level 3 主目标推进；Java/C/C++/ArkTS 以 Level 1/2 best-effort 输出；Cangjie 不属于默认或 `all-languages` 编译，仅在显式启用 `cangjie` feature 时作为 experimental minimal support。
+- 当前 capability 边界：TypeScript/JavaScript/Python 为 `DataflowBasic` 主线；Java/C/C++/ArkTS/Go/C#/Rust/PHP/Ruby/Kotlin 为 `Symbolic`；Bash/Cangjie 是显式 opt-in experimental。`all-languages` 包含 MVP 7 语言和 Go/C#/Rust/PHP/Ruby/Kotlin，不包含 Bash/Cangjie。
 
 ## 8. Cargo Features
 
@@ -202,7 +202,6 @@ Atlas 不包含污点分析（taint analysis）。当前产品主线为变量来
 typescript
 javascript
 python
-cli
 ```
 
 MVP 语言 features：
@@ -217,13 +216,25 @@ cpp
 arkts
 ```
 
-不完善/实验语言 features 目前是 opt-in，不计入 MVP 验收：
+Post-MVP Symbolic features 已接入 `all-languages`，不计入 MVP trace 验收：
+
+```text
+go
+csharp
+rust
+php
+ruby
+kotlin
+```
+
+不完善/实验语言 features 目前是 opt-in，不计入 MVP 验收，也不在 `all-languages`：
 
 ```text
 cangjie
+bash
 ```
 
-未来语言 features 目前也是 opt-in，不计入 MVP 验收。
+未来新增语言仍按独立 adapter/query/fixture/capability profile 接入，不得修改中心 mega-extractor。
 
 ## 9. 当前演进决策
 
@@ -244,7 +255,7 @@ cangjie
 当前主线目标：
 
 1. 在现有 `types/db/extraction/resolution/graph/analysis/cli/mcp` 架构内完成变量来源追踪与调用路径查询。
-2. 为 MVP 语言按能力等级补齐 trace 所需 facts 和端到端测试。
+2. 为 MVP 语言按能力等级补齐 trace 所需 facts 和端到端测试；post-MVP Symbolic 语言先锁定 capability 和 golden fixtures，不进入变量来源追踪验收。
 3. 稳定 CLI/MCP 的 trace 查询输出。
 
 完成 Item 10 拆分后，crate 边界已建立：

@@ -15,8 +15,8 @@ use atlas_types::Language;
 use atlas_types::bindings::{BindingDef, BindingUse};
 use atlas_types::ids::{BindingUseId, CallsiteId, FileId, ScopeId};
 use atlas_types::{
-    ArgumentFact, Callsite, DataNode, DataNodeKind, DiagnosticLevel, ExtractDiagnostic, FileFacts,
-    FileInfo, ParseStatus, ReferenceKind, ScopeDef, ScopeKind, SymbolKind, TextRange,
+    ArgumentFact, Callsite, DataNodeKind, DiagnosticLevel, ExtractDiagnostic, FileFacts, FileInfo,
+    ParseStatus, ReferenceKind, ScopeDef, ScopeKind, SymbolKind, TextRange,
 };
 
 use super::callsite_spec::CallsiteParts;
@@ -753,12 +753,32 @@ function g() {
         let file_path = PathBuf::from("arrow.js");
 
         let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        assert_eq!(facts.file.language, Language::JavaScript);
         assert_sources_are_known(&facts);
 
         let store = Store::open_in_memory().unwrap();
         store.init_schema().unwrap();
         let result = store.insert_file_facts(&facts);
         assert!(result.is_ok(), "Insert failed: {:?}", result.err());
+    }
+
+    #[cfg(feature = "arkts")]
+    #[test]
+    fn test_extract_arkts_smoke() {
+        let source = "function sayHello(name: string): void {\n  console.log(`Hello, ${name}`);\n}\nconst greeting: string = \"World\";\nsayHello(greeting);\n";
+        let file_id = FileId::generate("test.ets");
+        let frontend = create_frontend(Language::ArkTS).unwrap();
+        let file_path = PathBuf::from("test.ets");
+
+        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        assert_eq!(facts.file.language, Language::ArkTS);
+        assert_sources_are_known(&facts);
+        assert!(
+            !facts.symbols.is_empty(),
+            "Should have symbols: {:?}",
+            facts.symbols
+        );
+        assert!(!facts.references.is_empty(), "Should have references");
     }
 
     #[cfg(feature = "cpp")]

@@ -30,7 +30,17 @@ impl ContextBuilder {
 
     /// Replace the internal graph snapshot with a fresh one.
     pub fn refresh_graph(&self, graph: Arc<GraphEngine>) {
-        *self.graph.write().unwrap() = graph;
+        *self.graph.write().unwrap_or_else(|e| e.into_inner()) = graph;
+    }
+
+    /// Acquire a read-lock on the graph, recovering from poison.
+    fn graph(&self) -> std::sync::RwLockReadGuard<'_, Arc<GraphEngine>> {
+        self.graph.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Return a clone of the current graph snapshot.
+    pub fn graph_snapshot(&self) -> Arc<GraphEngine> {
+        Arc::clone(&*self.graph())
     }
 
     // ------------------------------------------------------------------
@@ -39,41 +49,38 @@ impl ContextBuilder {
 
     /// Build a context view around a specific symbol: its callers, callees,
     /// containing scope, and adjacent symbols.
+    ///
+    /// The graph snapshot is locked once and held for the entire operation,
+    /// guaranteeing consistent results even if `refresh_graph()` is called
+    /// concurrently from another request.
     pub fn build_context_for_symbol(&self, symbol_id: &SymbolId) -> anyhow::Result<ContextView> {
         let sym = self.store.find_symbol_by_id(symbol_id)?;
         let Some(ref sym) = sym else {
             anyhow::bail!("symbol not found: {}", symbol_id);
         };
 
-        let caller_view = self.graph.read().unwrap().callers(symbol_id);
-        let callee_view = self.graph.read().unwrap().callees(symbol_id);
+        // Single graph lock for consistent snapshot across all queries
+        let g = self.graph();
+        let caller_view = g.callers(symbol_id);
+        let callee_view = g.callees(symbol_id);
         let file_id = sym.file_id;
 
         // Peers: symbols in the same file
         let file_symbols = self.store.find_symbols_by_file(&file_id)?;
 
         // Importers are symbols; dependencies are files
-        let importer_symbols = self.graph.read().unwrap().importers(&file_id);
-        let dep_files = self.graph.read().unwrap().dependencies(&file_id);
+        let importer_symbols = g.importers(&file_id);
+        let dep_files = g.dependencies(&file_id);
+
+        // Resolve node indices to SymbolIds while still holding the lock
+        let resolved_callers = g.resolve_node_ids(&caller_view.callers);
+        let resolved_callees = g.resolve_node_ids(&callee_view.callees);
+        drop(g); // release graph lock before store queries
 
         let view = ContextView {
             subject: sym.clone(),
-            callers: resolve_symbols(
-                &self.store,
-                &self
-                    .graph
-                    .read()
-                    .unwrap()
-                    .resolve_node_ids(&caller_view.callers),
-            )?,
-            callees: resolve_symbols(
-                &self.store,
-                &self
-                    .graph
-                    .read()
-                    .unwrap()
-                    .resolve_node_ids(&callee_view.callees),
-            )?,
+            callers: resolve_symbols(&self.store, &resolved_callers)?,
+            callees: resolve_symbols(&self.store, &resolved_callees)?,
             file_peers: file_symbols,
             importers: resolve_symbols_to_paths(&self.store, &importer_symbols)?,
             dependencies: resolve_files(&self.store, &dep_files)?,
@@ -89,27 +96,18 @@ impl ContextBuilder {
             anyhow::bail!("symbol not found: {}", symbol_id);
         };
 
-        let caller_view = self.graph.read().unwrap().callers(symbol_id);
-        let callee_view = self.graph.read().unwrap().callees(symbol_id);
+        // Single graph lock for consistent snapshot
+        let g = self.graph();
+        let caller_view = g.callers(symbol_id);
+        let callee_view = g.callees(symbol_id);
+        let resolved_callers = g.resolve_node_ids(&caller_view.callers);
+        let resolved_callees = g.resolve_node_ids(&callee_view.callees);
+        drop(g); // release graph lock before store queries
 
         let slice = ContextSlice {
             subject: sym,
-            callers: resolve_symbols(
-                &self.store,
-                &self
-                    .graph
-                    .read()
-                    .unwrap()
-                    .resolve_node_ids(&caller_view.callers),
-            )?,
-            callees: resolve_symbols(
-                &self.store,
-                &self
-                    .graph
-                    .read()
-                    .unwrap()
-                    .resolve_node_ids(&callee_view.callees),
-            )?,
+            callers: resolve_symbols(&self.store, &resolved_callers)?,
+            callees: resolve_symbols(&self.store, &resolved_callees)?,
         };
 
         Ok(slice)

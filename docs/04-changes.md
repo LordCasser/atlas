@@ -15,7 +15,7 @@
 
 - Atlas 是 CodeGraph-inspired 的 Rust-native 本地代码知识图谱引擎。
 - CodeGraph 只作为产品形态和经验参考。
-- MVP 聚焦 7 种语言；Cangjie 暂时降级为显式 opt-in 的不完善支持语言。
+- MVP 聚焦 7 种语言；Go/Rust/C#/PHP/Ruby/Kotlin 已作为 post-MVP Symbolic frontends 接入 `all-languages`，不计入 MVP trace 验收；Bash/Cangjie 保持显式 opt-in experimental。
 - schema 为 Atlas 自有模型，保留 scopes、references、callsites、dataflow、CFG 和 trace 基础事实。
 - extraction 使用 tree-sitter queries + LanguageAdapter。
 - SQLite 是 source of truth，GraphSnapshot 是查询加速层。
@@ -43,8 +43,8 @@
 - ✅ Item 10 已完成：项目已从单 crate 拆分为 12 个 Cargo workspace crate。
 - 不立即开启 Corpus 分支（crate 边界已建立，后续演进可在此边界上分叉）。
 - ✅ 已基于当前架构完成变量来源追踪与调用路径查询端到端测试。
-- ✅ trace 能力稳定后，完成 engine/CLI/MCP crate 边界拆分。
-- 后续演进：Atlas 单仓库单版本索引 和 Corpus 多版本源码索引 可在现有 crate 边界上并行推进。
+- 当前还没有单独的 `atlas-engine` crate；trace 精度和 public API 稳定后，再抽出可复用 engine。
+- 后续演进：Atlas 单仓库单版本索引继续在当前 workspace 内推进；Corpus 多版本源码索引必须等 engine/API 边界稳定后再启动。
 
 ## 3. 从 symbol-only graph 演进到 facts-first graph
 

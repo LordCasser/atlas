@@ -1,0 +1,121 @@
+{
+  "symbols": [
+    {
+      "name": "Server",
+      "kind": "class"
+    },
+    {
+      "name": "Server",
+      "kind": "class"
+    },
+    {
+      "name": "constructor",
+      "kind": "method"
+    },
+    {
+      "name": "start",
+      "kind": "method"
+    },
+    {
+      "name": "router",
+      "kind": "variable"
+    },
+    {
+      "name": "createServer",
+      "kind": "function"
+    }
+  ],
+  "references": [
+    {
+      "text": "Server",
+      "kind": "type_reference"
+    },
+    {
+      "text": "port",
+      "kind": "field_access"
+    },
+    {
+      "text": "Router",
+      "kind": "instantiation"
+    },
+    {
+      "text": "listen",
+      "kind": "call"
+    },
+    {
+      "text": "listen",
+      "kind": "field_access"
+    },
+    {
+      "text": "port",
+      "kind": "field_access"
+    },
+    {
+      "text": "log",
+      "kind": "call"
+    },
+    {
+      "text": "log",
+      "kind": "field_access"
+    },
+    {
+      "text": "Server",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Server",
+      "kind": "instantiation"
+    }
+  ],
+  "imports": [
+    {
+      "module": "@ohos/express",
+      "imported_name": "Router"
+    },
+    {
+      "module": "@ohos/express"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Class#253",
+      "kind": "class"
+    },
+    {
+      "name": "Method#287",
+      "kind": "method"
+    },
+    {
+      "name": "Block#313",
+      "kind": "block"
+    },
+    {
+      "name": "Method#344",
+      "kind": "method"
+    },
+    {
+      "name": "Block#358",
+      "kind": "block"
+    },
+    {
+      "name": "Function#458",
+      "kind": "function"
+    },
+    {
+      "name": "Block#502",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "start"
+    },
+    {
+      "caller": "start"
+    }
+  ]
+}

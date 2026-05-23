@@ -447,7 +447,13 @@ impl TraceEngine {
     fn extract_snippet(&self, file_path: &str, line_0based: u32) -> Option<String> {
         let root = self.project_root.as_ref()?;
         let full_path = root.join(file_path);
-        let content = std::fs::read_to_string(&full_path).ok()?;
+        let canonical = full_path.canonicalize().ok()?;
+        // Canonicalize root too — macOS symlinks /var→/private/var
+        let canonical_root = root.canonicalize().ok()?;
+        if !canonical.starts_with(&canonical_root) {
+            return None;
+        }
+        let content = std::fs::read_to_string(&canonical).ok()?;
         let line_idx = line_0based as usize;
         content.lines().nth(line_idx).map(|l| l.trim().to_string())
     }

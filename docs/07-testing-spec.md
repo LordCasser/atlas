@@ -182,14 +182,14 @@
 - fixture 必须经过 extraction -> store -> resolution -> GraphBuilder -> dataflow/call graph -> trace query。
 - CLI、MCP 或等价 public API 必须能查询 trace path，并返回 bounded、结构化输出。
 - 测试必须断言每个 path step 的 kind、file、range、confidence/provenance 和截断行为。
-- Java/C/C++/ArkTS 如果只能支持 Level 0/1/2，测试必须断言 capability profile、unsupported diagnostics 或 lower-confidence best-effort 输出；Cangjie 只在显式启用 `cangjie` feature 的实验测试中覆盖。
+- Java/C/C++/ArkTS 如果只能支持 Level 0/1/2，测试必须断言 capability profile、unsupported diagnostics 或 lower-confidence best-effort 输出；Go/Rust/C#/PHP/Ruby/Kotlin 作为 post-MVP Symbolic frontends，必须至少覆盖 feature 编译、capability profile 和 symbols/references/imports/calls golden fixture；Bash/Cangjie 只在显式启用对应 feature 的实验测试中覆盖。
 - 每种 MVP 语言至少有一个 capability profile 快照测试；能力等级升级时必须同步更新 fixture 和用户可见输出断言。
 
-### Engine / CLI / MCP 拆分阶段
+### `atlas-engine` 抽出阶段
 
 最低要求：
 
-- 拆分前后的 public API 行为保持一致。
+- 从当前 12-crate workspace 抽出 `atlas-engine` 前后的 public API 行为保持一致。
 - `atlas-engine` 不依赖 CLI 参数解析、MCP transport 或交互输出格式。
 - CLI/MCP 只调用 engine/API，不复制 resolver、graph、analysis 算法。
 
@@ -198,7 +198,7 @@
 - engine crate 有独立单元和集成测试。
 - CLI crate 有命令级 smoke/E2E 测试。
 - MCP crate 有 tool schema、routing、bounded output 测试。
-- 原有 all-languages、mcp、sync 组合测试继续通过。
+- 原有 all-languages、mcp、sync 组合测试继续通过；`all-languages` 当前包含 Go/Rust/C#/PHP/Ruby/Kotlin，但不包含 Bash/Cangjie。
 
 ### Corpus 分支启动后
 
@@ -233,7 +233,7 @@ cargo test --features "all-languages,mcp,sync"
 3. 禁止 MCP/CLI 工具只注册不测试实际调用。
 4. 禁止新增 schema 表但不测试 insert/query/delete/cascade。
 5. 禁止修改 golden expected 而不说明语义原因。
-6. 禁止在拆分 crate 前跳过当前阶段端到端门禁。
+6. 禁止在抽出 `atlas-engine` 前跳过当前阶段端到端和语义精度门禁。
 
 ## 6. 当前项目的测试缺口
 
@@ -242,5 +242,7 @@ cargo test --features "all-languages,mcp,sync"
 1. 调用实参事实源已统一为 `callsites.args_json` + call-arg `DataNode`；`callsite_args` 表已移除。需要补 DataNode/callsite arg 的 insert/query/delete/cascade 测试。
 2. `dataflow_edges` 的 `TextRange` 持久化已补全（6 字段完整 byte/line/column），需补 trace evidence 完整往返的 golden 测试。
 3. 变量来源追踪与调用路径查询仍需要更多真实源码端到端 fixture，尤其是跨文件调用、参数位置和 unsupported/partial 结果。
-4. path alias 已通过 `resolve_by_module_path()` 接入主解析路径并可接 E2E 测试；barrel re-export 仍需要结构化实现（ExportResolver 已移除）。
-5. 旧 `RawEdge` dataflow 路径已移除，不再需要双轨隔离。
+4. Go/Rust/C#/PHP/Ruby/Kotlin 已加入 `all-languages`，需要补齐每种语言的 capability snapshot、golden fixtures 和 unsupported trace CLI/MCP 断言。
+5. Bash/Cangjie 需要 opt-in feature 的最小编译/doctor/capability 测试，避免被误认为默认支持语言。
+6. path alias 已通过 `resolve_by_module_path()` 接入主解析路径并可接 E2E 测试；barrel re-export 仍需要结构化实现（ExportResolver 已移除）。
+7. 旧 `RawEdge` dataflow 路径已移除，不再需要双轨隔离。

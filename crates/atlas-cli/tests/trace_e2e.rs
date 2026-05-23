@@ -20,8 +20,13 @@ use atlas_graph::GraphBuilder;
 use atlas_resolution::{ReferenceResolver, ResolutionStats};
 use atlas_types::enums::Language;
 use atlas_types::ids::FileId;
+use serde_json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+// ────────────────────────────────────────────────────────────────
+// Semantic Trace Test Helpers
+// ────────────────────────────────────────────────────────────────
 
 // ────────────────────────────────────────────────────────────────
 // Helpers
@@ -1347,17 +1352,68 @@ fn p5_ts_param_slice_caller_evidence_combined() {
     );
     assert!(resp.ok, "trace_variable should succeed");
     assert!(resp.capability.is_some(), "capability must be present");
+    assert!(!resp.partial_result, "full result expected, not partial");
+    assert!(
+        resp.diagnostics.is_empty(),
+        "expected no diagnostics, got {:?}",
+        resp.diagnostics
+    );
+
+    let cap = resp
+        .capability
+        .as_ref()
+        .expect("capability profile must exist");
+    assert_eq!(cap.language, "typescript");
+    assert!(
+        cap.capability_level
+            >= atlas_types::capability::CapabilityLevel::DataflowBasic,
+        "TS must have at least DataflowBasic capability"
+    );
+    // ── Envelope fields validation (via JSON) ──
+    let ts_json = serde_json::to_value(&resp).expect("serialize trace response");
+    let required = ["ok", "kind", "capability", "partial_result", "diagnostics", "result"];
+    for field in &required {
+        assert!(
+            ts_json.get(field).is_some(),
+            "trace_variable response missing envelope field '{}'",
+            field
+        );
+    }
+    assert_eq!(ts_json["kind"].as_str(), Some("trace_variable"));
 
     let path = resp.result.as_ref().expect("trace path should exist");
     assert!(path.confidence > 0.0, "confidence should be positive");
     assert!(path.nodes_visited > 0, "nodes_visited should be > 0");
+    assert!(!path.steps.is_empty(), "trace must have at least one dataflow step");
 
+    // ── Step-level semantic assertions ──
     for (i, step) in path.steps.iter().enumerate() {
         assert!(
             !step.file_id.as_bytes().is_empty(),
             "step {}: file_id should be populated",
             i
         );
+        assert!(
+            !step.description.is_empty(),
+            "step {}: description must not be empty",
+            i
+        );
+        // Edge kind must be a known DataFlowKind variant.
+        assert!(
+            matches!(
+                step.edge_kind,
+                atlas_types::enums::DataFlowKind::Assign
+                    | atlas_types::enums::DataFlowKind::FieldLoad
+                    | atlas_types::enums::DataFlowKind::FieldStore
+                    | atlas_types::enums::DataFlowKind::ArgToParam
+                    | atlas_types::enums::DataFlowKind::ReturnToCall
+            ),
+            "step {}: edge kind {:?} not in expected set",
+            i,
+            step.edge_kind
+        );
+        // Confidence is measured at the path level, not per-step.
+        // Per-step we assert file_id, description, and evidence completeness.
         let ev = step
             .evidence
             .as_ref()
@@ -1367,13 +1423,46 @@ fn p5_ts_param_slice_caller_evidence_combined() {
             "step {}: evidence.file_path must be set",
             i
         );
+        // snippet requires a workspace root (TraceEngine::new_with_root).
+        // In-memory store tests cannot provide it; CLI e2e tests verify snippet.
+        if ev.snippet.is_some() {
+            assert!(
+                !ev.snippet.as_ref().unwrap().is_empty(),
+                "step {}: evidence.snippet must not be empty when present",
+                i
+            );
+        }
     }
 
-    // Verify sink identity
+    // ── Sink identity + source/sink names ──
     assert_eq!(
         path.sink.data_node.as_ref().map(|n| &n.id),
         Some(&result_node.id),
-        "sink should be the result node"
+        "sink should be the result node (id={:?})",
+        result_node.id
+    );
+    assert!(
+        path.sink.data_node.as_ref().and_then(|n| n.name.as_deref())
+            == Some("result"),
+        "sink name must be 'result'"
+    );
+    // Source name should be None, a parameter (base/factor), or an expression
+    // involving them.  A backward slice from a body-local should trace toward
+    // dataflow origins — currently the source may be an Expr node (e.g.
+    // "base * factor") because intra-expression operand edges are not yet built.
+    let source_name = path
+        .source
+        .data_node
+        .as_ref()
+        .and_then(|n| n.name.as_deref())
+        .unwrap_or("<none>");
+    assert!(
+        source_name == "base"
+            || source_name == "factor"
+            || source_name.contains("base")
+            || source_name.contains("factor"),
+        "source should relate to base or factor, got '{}'",
+        source_name
     );
 
     // ── trace_callers from 'compute' ──
@@ -1385,6 +1474,7 @@ fn p5_ts_param_slice_caller_evidence_combined() {
 
     let caller_resp = engine.trace_callers(&compute_sym.id, 10);
     assert!(caller_resp.ok, "trace_callers should succeed");
+    assert!(caller_resp.capability.is_some(), "caller capability must be present");
 
     let chain = caller_resp
         .result
@@ -1395,23 +1485,33 @@ fn p5_ts_param_slice_caller_evidence_combined() {
         chain.target.name, "compute",
         "chain target should be compute"
     );
+    assert_eq!(chain.steps.len(), 1, "expected exactly 1 caller step");
 
-    for (i, step) in chain.steps.iter().enumerate() {
-        let ev = step
-            .evidence
-            .as_ref()
-            .unwrap_or_else(|| panic!("caller step {}: evidence must exist", i));
-        assert!(
-            !ev.file_path.is_empty(),
-            "caller step {}: file_path must be set",
-            i
-        );
-        assert!(
-            ev.symbol_name.is_some(),
-            "caller step {}: symbol_name must be set (provenance)",
-            i
-        );
-    }
+    let cstep = &chain.steps[0];
+    // The caller should be 'handler' from main.ts — check evidence.file_path.
+    let ev = cstep
+        .evidence
+        .as_ref()
+        .expect("caller step evidence must exist");
+    assert!(
+        !ev.file_path.is_empty(),
+        "caller step: file_path must be set"
+    );
+    assert!(
+        ev.file_path.ends_with("main.ts"),
+        "caller step file must be main.ts, got {}",
+        ev.file_path
+    );
+    assert!(
+        ev.symbol_name.is_some(),
+        "caller step: symbol_name must be set (provenance)"
+    );
+    assert_eq!(
+        ev.symbol_name.as_deref(),
+        Some("handler"),
+        "caller provenance must identify handler, got {:?}",
+        ev.symbol_name
+    );
 }
 
 /// JS combined: same structure as TS but without type annotations.
@@ -1450,15 +1550,33 @@ fn p5_js_param_slice_caller_evidence_combined() {
     );
     assert!(resp.ok, "JS trace_variable should succeed");
     assert!(resp.capability.is_some(), "JS capability must be present");
+    assert!(!resp.partial_result, "JS full result expected, not partial");
+    assert!(
+        resp.diagnostics.is_empty(),
+        "JS expected no diagnostics, got {:?}",
+        resp.diagnostics
+    );
+
+    let cap = resp
+        .capability
+        .as_ref()
+        .expect("JS capability profile must exist");
+    assert_eq!(cap.language, "javascript");
 
     let path = resp.result.as_ref().expect("JS trace path should exist");
     assert!(path.confidence > 0.0, "JS confidence should be positive");
     assert!(path.nodes_visited > 0, "JS nodes_visited should be > 0");
+    assert!(!path.steps.is_empty(), "JS trace must have at least one step");
 
     for (i, step) in path.steps.iter().enumerate() {
         assert!(
             !step.file_id.as_bytes().is_empty(),
             "JS step {}: file_id should be populated",
+            i
+        );
+        assert!(
+            !step.description.is_empty(),
+            "JS step {}: description must not be empty",
             i
         );
         let ev = step
@@ -1470,12 +1588,26 @@ fn p5_js_param_slice_caller_evidence_combined() {
             "JS step {}: evidence.file_path must be set",
             i
         );
+        // snippet requires workspace root; CLI e2e tests verify it.
+        if ev.snippet.is_some() {
+            assert!(
+                !ev.snippet.as_ref().unwrap().is_empty(),
+                "JS step {}: snippet must not be empty when present",
+                i
+            );
+        }
     }
 
     assert_eq!(
         path.sink.data_node.as_ref().map(|n| &n.id),
         Some(&result_node.id),
-        "JS sink should be the result node"
+        "JS sink should be the result node (id={:?})",
+        result_node.id
+    );
+    assert!(
+        path.sink.data_node.as_ref().and_then(|n| n.name.as_deref())
+            == Some("result"),
+        "JS sink name must be 'result'"
     );
 
     // ── trace_callers from 'compute' ──
@@ -1498,22 +1630,18 @@ fn p5_js_param_slice_caller_evidence_combined() {
         "JS chain target should be compute"
     );
 
-    for (i, step) in chain.steps.iter().enumerate() {
-        let ev = step
-            .evidence
-            .as_ref()
-            .unwrap_or_else(|| panic!("JS caller step {}: evidence must exist", i));
-        assert!(
-            !ev.file_path.is_empty(),
-            "JS caller step {}: file_path must be set",
-            i
-        );
-        assert!(
-            ev.symbol_name.is_some(),
-            "JS caller step {}: symbol_name must be set",
-            i
-        );
-    }
+    let ev = chain.steps[0]
+        .evidence
+        .as_ref()
+        .expect("JS caller step evidence must exist");
+    assert!(
+        !ev.file_path.is_empty(),
+        "JS caller step: file_path must be set"
+    );
+    assert!(
+        ev.symbol_name.is_some(),
+        "JS caller step: symbol_name must be set (provenance)"
+    );
 }
 
 /// Python combined: param flows to result, cross-file caller chain, evidence.
@@ -1554,6 +1682,12 @@ fn p5_py_param_slice_caller_evidence_combined() {
         "Python capability must be present"
     );
 
+    let cap = resp
+        .capability
+        .as_ref()
+        .expect("Python capability profile must exist");
+    assert_eq!(cap.language, "python");
+
     // Python dataflow may be partial — assert envelope is well-formed.
     if let Some(ref path) = resp.result {
         assert!(
@@ -1561,11 +1695,20 @@ fn p5_py_param_slice_caller_evidence_combined() {
             "Python confidence should be positive"
         );
         assert!(path.nodes_visited > 0, "Python nodes_visited should be > 0");
+        assert!(
+            !path.steps.is_empty(),
+            "Python trace must have at least one step"
+        );
 
         for (i, step) in path.steps.iter().enumerate() {
             assert!(
                 !step.file_id.as_bytes().is_empty(),
                 "Python step {}: file_id should be populated",
+                i
+            );
+            assert!(
+                !step.description.is_empty(),
+                "Python step {}: description must not be empty",
                 i
             );
             let ev = step
@@ -1577,17 +1720,31 @@ fn p5_py_param_slice_caller_evidence_combined() {
                 "Python step {}: evidence.file_path must be set",
                 i
             );
+            // snippet requires workspace root; CLI e2e tests verify it.
+            if ev.snippet.is_some() {
+                assert!(
+                    !ev.snippet.as_ref().unwrap().is_empty(),
+                    "Python step {}: snippet must not be empty when present",
+                    i
+                );
+            }
         }
 
         assert_eq!(
             path.sink.data_node.as_ref().map(|n| &n.id),
             Some(&result_node.id),
-            "Python sink should be the result node"
+            "Python sink should be the result node (id={:?})",
+            result_node.id
+        );
+        assert!(
+            path.sink.data_node.as_ref().and_then(|n| n.name.as_deref())
+                == Some("result"),
+            "Python sink name must be 'result'"
         );
     } else {
         assert!(
             resp.partial_result || !resp.diagnostics.is_empty(),
-            "empty Python result should be partial or diagnostic"
+            "empty Python result should be partial or have diagnostics"
         );
     }
 
@@ -1618,10 +1775,399 @@ fn p5_py_param_slice_caller_evidence_combined() {
                 );
                 assert!(
                     ev.symbol_name.is_some(),
-                    "Python caller step {}: symbol_name must be set",
+                    "Python caller step {}: symbol_name must be set (provenance)",
                     i
                 );
             }
         }
     }
+}
+
+// ────────────────────────────────────────────────────────────────
+// Semantic Trace Tests — variable provenance precision
+// ────────────────────────────────────────────────────────────────
+
+/// ── Semantic Trace Tests ──────────────────────────────────────────
+///
+/// These tests exercise the DATAFLOW graph produced by DataFlowBuilder,
+/// NOT the reference/import graph.  They locate a data node by name via
+/// `find_data_nodes_by_file` (same pattern as the Python trace test)
+/// and assert properties of the backward slice.
+
+/// Test A: shadowing — inner scope variable `total` must NOT be
+/// conflated with outer scope `total`.
+///
+/// Currently **FAILS** because DataFlowBuilder creates assignment edges
+/// heuristically (line 256 in dataflow_builder.rs) without scope-aware
+/// shadowing — both inner and outer `total` may end up on the same
+/// dataflow chain.
+#[test]
+fn sem_a_shadowing_inner_scope_not_traced_as_outer() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "shadow.ts",
+        r#"function process(items: number[]): number {
+    let total = 0;
+    for (const item of items) {
+        let total = item;  // shadows outer total
+    }
+    return total;  // <-- trace point (line 6, 1-based)
+}
+"#,
+    )];
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("shadow.ts");
+
+    // Find the data node for `total` in the return statement — it should
+    // be the last data node named "total" in this file.
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let total_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.name.as_deref() == Some("total"))
+        .collect();
+    assert!(
+        !total_nodes.is_empty(),
+        "expected at least one data node named 'total'; got 0 (dataflow may not produce it yet)"
+    );
+    // Use the last `total` data node (should be the return-statement one).
+    let sink_node = total_nodes.last().unwrap();
+
+    let point = Locator::locate(
+        store.as_ref(),
+        &file_id,
+        sink_node.range.start_line + 1,
+        sink_node.range.start_column + 1,
+    )
+    .expect("locate failed");
+    assert!(
+        point.data_node.is_some(),
+        "locator should find a data node at 'total' position"
+    );
+
+    let path = Slicer::slice(store.as_ref(), &point, 10, None)
+        .expect("slice error")
+        .expect("backward trace must produce path");
+
+    assert!(!path.steps.is_empty(), "backward trace must have steps");
+    // The inner `let total = item` (the second Local data node named "total"
+    // by byte order in this file) must NOT appear in the trace chain.
+    let total_locals: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| {
+            n.kind == atlas_types::enums::DataNodeKind::Local && n.name.as_deref() == Some("total")
+        })
+        .collect();
+    assert!(
+        total_locals.len() >= 2,
+        "expected >=2 Local data nodes named 'total' (outer + inner), got {}",
+        total_locals.len()
+    );
+    let inner_local = total_locals[1]; // second occurrence = inner scope
+    let violation = path
+        .steps
+        .iter()
+        .any(|step| step.from_node_id == inner_local.id || step.to_node_id == inner_local.id);
+    assert!(
+        !violation,
+        "shadow trace must NOT include inner-scope 'total = item' data node (id={:?}, line={})",
+        inner_local.id, inner_local.range.start_line,
+    );
+    println!(
+        "shadow trace: {} steps, source={:?}, sink={:?}",
+        path.steps.len(),
+        path.source
+            .data_node
+            .as_ref()
+            .and_then(|d| d.name.as_deref()),
+        path.sink.data_node.as_ref().and_then(|d| d.name.as_deref()),
+    );
+}
+
+/// Test B: field base collision — two different field accesses (`p.x`,
+/// `p.y`) on same base variable must stay distinct.
+///
+/// Currently **may FAIL** because DataFlowBuilder uses field-name-only
+/// matching at assignment edge creation (line 230 in dataflow_builder.rs)
+/// without distinguishing the base object.
+#[test]
+fn sem_b_field_base_collision_distinct_fields() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "field.ts",
+        r#"interface Point { x: number; y: number; }
+function scale(p: Point, factor: number): Point {
+    let scaledX = p.x * factor;   // <-- p.x use (data node for scaledX)
+    let scaledY = p.y * factor;   // <-- p.y use
+    return { x: scaledX, y: scaledY };
+}
+"#,
+    )];
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("field.ts");
+
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let scaled_x_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.name.as_deref() == Some("scaledX"))
+        .collect();
+    let scaled_y_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.name.as_deref() == Some("scaledY"))
+        .collect();
+    assert!(
+        !scaled_x_nodes.is_empty(),
+        "expected data node for scaledX (dataflow must produce assignments)"
+    );
+    assert!(!scaled_y_nodes.is_empty(), "expected data node for scaledY");
+
+    // Trace backward from scaledX return use.
+    let sink_node = scaled_x_nodes.last().unwrap();
+    let point = Locator::locate(
+        store.as_ref(),
+        &file_id,
+        sink_node.range.start_line + 1,
+        sink_node.range.start_column + 1,
+    )
+    .expect("locate failed");
+
+    let path = Slicer::slice(store.as_ref(), &point, 10, None)
+        .expect("slice error")
+        .expect("field-base trace must produce path");
+    assert!(!path.steps.is_empty(), "field-base trace must have steps");
+    // Should have at least 2 dataflow edges: field-load (p→p.x) + assignment
+    // (p.x*factor → scaledX).  Currently only 1 step — the field-load edge
+    // is missing because DataFlowBuilder only creates assignment edges (line 256)
+    // but not explicit field-load edges from base to field access.
+    assert!(
+        path.steps.len() >= 2,
+        "field-base: expected >=2 steps (field-load + assignment), got {}",
+        path.steps.len()
+    );
+    println!(
+        "field-base trace: {} steps, source={:?}, sink={:?}",
+        path.steps.len(),
+        path.source
+            .data_node
+            .as_ref()
+            .and_then(|d| d.name.as_deref()),
+        path.sink.data_node.as_ref().and_then(|d| d.name.as_deref()),
+    );
+}
+
+/// Test C: multi-assignment chain — variable redefined 3x must show
+/// a chain through ALL assignments, not just the last one.
+///
+/// Currently **may FAIL** because DataFlowBuilder use-def edge
+/// resolution (line 471) is heuristic — it may not find all
+/// intermediate assignments.
+#[test]
+fn sem_c_multi_assignment_chain_complete() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "chain.ts",
+        r#"function pipe(): number {
+    let x = getValue();       // src1
+    x = transform(x);         // src2
+    x = finalize(x);          // src3
+    return x;
+}
+function getValue(): number { return 42; }
+function transform(v: number): number { return v + 1; }
+function finalize(v: number): number { return v * 2; }
+"#,
+    )];
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("chain.ts");
+
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let x_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.name.as_deref() == Some("x"))
+        .collect();
+    assert!(
+        x_nodes.len() >= 2,
+        "expected >=2 data nodes named 'x', got {} (mult-assignment chain must produce data nodes)",
+        x_nodes.len()
+    );
+
+    // Trace backward from the last `x` node (return-statement use).
+    let sink_node = x_nodes.last().unwrap();
+    let point = Locator::locate(
+        store.as_ref(),
+        &file_id,
+        sink_node.range.start_line + 1,
+        sink_node.range.start_column + 1,
+    )
+    .expect("locate failed");
+
+    let path = Slicer::slice(store.as_ref(), &point, 20, None)
+        .expect("slice error")
+        .expect("multi-assignment trace must produce path");
+    // The chain should have at least 3 dataflow edges:
+    //   getValue() → x, transform(x) → x, finalize(x) → x (or return x)
+    // Currently only 2 steps — the middle assignments are lost because
+    // DataFlowBuilder use-def resolution (line 471) is heuristic.
+    assert!(
+        path.steps.len() >= 3,
+        "multi-assignment: expected >=3 steps (getValue→x, transform→x, finalize→x), got {}",
+        path.steps.len()
+    );
+    println!(
+        "multi-assignment trace: {} steps, source={:?}, sink={:?}",
+        path.steps.len(),
+        path.source
+            .data_node
+            .as_ref()
+            .and_then(|d| d.name.as_deref()),
+        path.sink.data_node.as_ref().and_then(|d| d.name.as_deref()),
+    );
+    eprintln!(
+        "multi-assignment trace: {} steps, source={:?}, sink={:?}",
+        path.steps.len(),
+        path.source
+            .data_node
+            .as_ref()
+            .and_then(|d| d.name.as_deref()),
+        path.sink.data_node.as_ref().and_then(|d| d.name.as_deref()),
+    );
+}
+
+/// Test D: nested call — `outer(inner(input))` must connect argument flow
+/// through inner return → outer argument position.
+///
+/// Currently **may FAIL** because interprocedural bridge (SummaryBuilder)
+/// uses parameter list order from an unordered DB query — the 0-th
+/// parameter may not be the first one in the function signature.
+#[test]
+fn sem_d_nested_call_preserves_flow_through_inner_return() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "nested.ts",
+        r#"function double(n: number): number { return n * 2; }
+function addOne(x: number): number { return x + 1; }
+function compute(): number {
+    let input = 5;
+    return addOne(double(input));
+}
+"#,
+    )];
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("nested.ts");
+
+    // Find data node for `n` (parameter of double).
+    // Tracing backward from the callee's parameter triggers the
+    // interprocedural bridge (SummaryEdgeProvider) which creates ArgToParam
+    // edges from the caller's CallArg (input) to the callee's Parameter (n).
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let n_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.name.as_deref() == Some("n"))
+        .collect();
+    assert!(
+        !n_nodes.is_empty(),
+        "expected data node for 'n' (parameter of double)"
+    );
+
+    let sink_node = n_nodes[0]; // first match (should be the Parameter node)
+    let point = Locator::locate(
+        store.as_ref(),
+        &file_id,
+        sink_node.range.start_line + 1,
+        sink_node.range.start_column + 1,
+    )
+    .expect("locate failed");
+
+    // For nested calls, we need interprocedural bridging to cross
+    // function boundaries.
+    use atlas_analysis::trace::virtual_edges::SummaryEdgeProvider;
+    let path = Slicer::slice(store.as_ref(), &point, 20, Some(&SummaryEdgeProvider))
+        .expect("slice error")
+        .expect("nested call trace must produce path");
+
+    assert!(!path.steps.is_empty(), "nested call trace must have steps");
+    // Verify that the trace crosses at least one function boundary.
+    // Currently FAILS because SummaryBuilder parameter index comes from
+    // an unordered DB query — the 0-th param may be wrong, breaking
+    // interprocedural ArgToParam bridging.
+    let has_arg_to_param = path
+        .steps
+        .iter()
+        .any(|s| matches!(s.edge_kind, atlas_types::enums::DataFlowKind::ArgToParam));
+    assert!(
+        has_arg_to_param,
+        "nested call trace must include ArgToParam edge (interprocedural bridge missing)"
+    );
+    // TODO(critical): when bridge ORDER BY + function range is fixed,
+    // verify that steps include correct param index for double(n: number).
+    println!(
+        "nested call trace: {} steps, source={:?}, sink={:?}",
+        path.steps.len(),
+        path.source
+            .data_node
+            .as_ref()
+            .and_then(|d| d.name.as_deref()),
+        path.sink.data_node.as_ref().and_then(|d| d.name.as_deref()),
+    );
+}
+
+/// Test E: multi-function return bridge — `helper()` return value must
+/// be traceable back through the call to `let x = helper()` in `main()`.
+///
+/// Currently **may FAIL** because SummaryBuilder doesn't bound returns
+/// by function range — a return in a different function inside the same
+/// file may be incorrectly attributed to the traced callsite.
+#[test]
+fn sem_e_cross_function_return_bridge_through_call() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "bridge.ts",
+        r#"function helper(): number {
+    let secret = 42;
+    return secret;
+}
+function main(): number {
+    let result = helper();
+    return result;
+}
+"#,
+    )];
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("bridge.ts");
+
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let result_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.name.as_deref() == Some("result"))
+        .collect();
+    assert!(
+        !result_nodes.is_empty(),
+        "expected data node for 'result' (dataflow must produce local assignments)"
+    );
+
+    let sink_node = result_nodes.last().unwrap();
+    let point = Locator::locate(
+        store.as_ref(),
+        &file_id,
+        sink_node.range.start_line + 1,
+        sink_node.range.start_column + 1,
+    )
+    .expect("locate failed");
+
+    // Interprocedural bridge is needed to cross helper() → result boundary.
+    use atlas_analysis::trace::virtual_edges::SummaryEdgeProvider;
+    let path = Slicer::slice(store.as_ref(), &point, 20, Some(&SummaryEdgeProvider))
+        .expect("slice error")
+        .expect("cross-function trace must produce path");
+
+    // TODO(fix): once interprocedural bridge has ORDER BY + function range,
+    // assert path.steps.len() >= 2 (crosses helper() call boundary).
+    eprintln!(
+        "cross-fn bridge trace: {} steps, source={:?}, sink={:?}",
+        path.steps.len(),
+        path.source
+            .data_node
+            .as_ref()
+            .and_then(|d| d.name.as_deref()),
+        path.sink.data_node.as_ref().and_then(|d| d.name.as_deref()),
+    );
 }

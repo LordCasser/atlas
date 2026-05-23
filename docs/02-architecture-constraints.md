@@ -82,6 +82,8 @@ tree-sitter parser
 - 单文件失败必须结构化记录，不中断项目索引。
 - ArkTS MVP 复用 TypeScript grammar，但 language 必须是 `arkts`。
 - C/C++ 是 best-effort，不承诺完整 preprocessing、模板、重载。
+- Go/Rust/C#/PHP/Ruby/Kotlin 已作为 post-MVP Symbolic frontends 接入 `all-languages`，不得宣称 lexical/dataflow/CFG/trace 变量来源能力。
+- Bash 是显式 opt-in experimental frontend，不参与默认或 `all-languages` 验收。
 - Cangjie 不属于 MVP，必须显式启用 `cangjie` feature；启用前不参与默认发现、默认编译或 `all-languages` 验收。
 
 ## 5. Fact 模型约束
@@ -190,7 +192,7 @@ LanguageCapabilityProfile
 
 ## 9. 引擎拆分边界
 
-完成 MVP 语言变量来源追踪与调用路径查询端到端测试后，再拆分可复用引擎 crate。
+当前 workspace 已完成 12-crate 拆分；这里的“引擎拆分”专指后续抽出可复用 `atlas-engine` crate。只有在 MVP 语言变量来源追踪与调用路径查询不仅能跑通端到端测试，而且语义精度、capability 边界和 public API 都稳定后，才进行该拆分。
 
 拆分目标：
 

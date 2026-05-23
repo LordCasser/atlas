@@ -2,20 +2,21 @@
 //! ScopeKind, Visibility, ResolutionStrategy, Provenance, ResolutionStatus, ParseStatus.
 //!
 //! Severely trimmed from 22+ languages / 12 edge kinds to the MVP language set
-//! plus explicitly opt-in experimental languages.
+//! plus feature-gated post-MVP and experimental languages.
 
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
-// Language — MVP languages plus opt-in experimental languages
+// Language — MVP languages plus feature-gated post-MVP/experimental languages
 // ---------------------------------------------------------------------------
 
 /// Languages known to Atlas.
 ///
-/// Cangjie is intentionally retained as an opt-in experimental language. It is
-/// not part of the MVP/default/all-languages compile set.
+/// Cangjie and Bash are intentionally retained as opt-in experimental
+/// languages and are not part of the MVP/default/all-languages compile set.
 ///
-/// Go and C# are post-MVP opt-in languages at Symbolic capability level.
+/// Go, C#, Rust, PHP, Ruby, and Kotlin are post-MVP languages at Symbolic
+/// capability level and are included by the `all-languages` feature.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
 )]

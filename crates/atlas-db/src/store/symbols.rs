@@ -19,7 +19,7 @@ impl Store {
 
     /// Find all symbols in a file.
     pub fn find_symbols_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<SymbolDef>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
                     language,
@@ -52,7 +52,7 @@ impl Store {
         limit: usize,
         kind_filter: Option<&SymbolKind>,
     ) -> anyhow::Result<Vec<SymbolDef>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let safe_query = sanitize_fts5_query(query);
         if safe_query.is_empty() {
             return Ok(Vec::new());
@@ -115,7 +115,7 @@ impl Store {
         limit: usize,
         kind_filter: Option<&SymbolKind>,
     ) -> anyhow::Result<Vec<SymbolDef>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let like_pattern = format!("%{}%", pattern.replace('%', "").replace('_', ""));
         if like_pattern.len() <= 2 {
             // Just "%%"
@@ -179,7 +179,7 @@ impl Store {
 
     /// Total number of symbols in the database.
     pub fn count_symbols(&self) -> anyhow::Result<usize> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))?;
         Ok(n as usize)
     }
@@ -188,7 +188,7 @@ impl Store {
 
     /// Find symbols by qualified name (exact match, index lookup).
     pub fn find_symbols_by_qname(&self, qname: &str) -> anyhow::Result<Vec<SymbolDef>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
                     language,
@@ -207,7 +207,7 @@ impl Store {
     /// Load ALL symbols (for GraphSnapshot construction).
     /// Uses a separate read connection to avoid blocking writes via the mutex.
     pub fn get_all_symbols(&self) -> anyhow::Result<Vec<SymbolDef>> {
-        let guard = self.lock();
+        let guard = self.lock_read();
         let conn: &rusqlite::Connection = &guard;
         let mut stmt = conn.prepare(
             "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
@@ -234,7 +234,7 @@ impl Store {
     /// Faster than `search_symbols_by_name_like` for exact-match lookups,
     /// avoiding FTS5 overhead and LIKE scans.
     pub fn find_symbols_by_name(&self, name: &str) -> anyhow::Result<Vec<SymbolDef>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
                     language,

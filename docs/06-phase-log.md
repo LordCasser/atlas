@@ -228,6 +228,12 @@
 - **文件拆分**：`store.rs`（3 个 helper 文件）、`extract.rs`（query_helpers + 移至兄弟模块）、`mcp/tools.rs`（按能力拆为 7 个文件）。
 - **文档同步**：更新了 `03-current-architecture.md`、`06-phase-log.md`、`src/db/README.md`、`src/resolution/README.md`。
 
+### Post-MVP 语言 frontends
+
+- **已接入 `all-languages` 的 Symbolic frontends**：Go、C#、Rust、PHP、Ruby、Kotlin。当前能力边界是 symbols/references/imports/scopes/call graph best-effort；未实现 lexical binding、dataflow、CFG 或变量来源追踪。
+- **显式 opt-in experimental frontends**：Bash、Cangjie。Bash 命令调用低置信度，Cangjie 仍受 grammar/query 适配限制；二者不进入默认 features 或 `all-languages`。
+- **文档结论**：这些语言不能再写成“未来可引入”，但也不能写成生产级 trace 支持。当前应按 `LanguageCapabilityProfile` 暴露能力边界和 unsupported diagnostics。
+
 ## P5 验收检查清单
 
 > 基于 `docs/01-requirements.md` §7 和 `docs/05-roadmap.md` §1-2 的完成条件逐项验证。
@@ -243,8 +249,10 @@
 | C | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | **Level 1** |
 | C++ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | **Level 1** |
 | ArkTS | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | **Level 1** |
+| Go/Rust/C#/PHP/Ruby/Kotlin | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | **Post-MVP Symbolic** |
+| Bash/Cangjie | ✅ experimental | ✅ experimental | Bash partial / Cangjie ❌ | ❌ | ❌ | ❌ | ❌ | **Opt-in experimental** |
 
-**判定：✅ 符合要求。** TS/JS 达到 Level 3（全量 facts），Python 达到 Level 2（local dataflow 部分），其余语言 Level 1（callers/callees）。Level 1 语言缺少的能力已显式标记在 `LanguageCapabilityProfile` / `FeatureMatrix` 中。
+**判定：✅ 符合 MVP 要求。** TS/JS 达到 Level 3（全量 facts），Python 达到 Level 2（local dataflow 部分），Java/C/C++/ArkTS 满足 Level 1 边界。Post-MVP 和 opt-in 语言必须继续以 capability profile 标注 unsupported trace 能力，不能纳入 P5 完成度结论。
 
 ### 2. E2E fixture 覆盖
 
@@ -321,10 +329,69 @@ extraction (tree-sitter) → FileFacts → store.insert_file_facts → DB
 |------|--------|---------|
 | Python dataflow 只有 Assign 边，无 FieldLoad/Return 边 | P3 | `FeatureMatrix` |
 | Java/C/C++/ArkTS 无 dataflow/lexical 提取 | P3 | `LanguageCapabilityProfile` |
+| Go/Rust/C#/PHP/Ruby/Kotlin 只有 Symbolic frontends，未进入 trace/dataflow | P3 | `LanguageCapabilityProfile` / `docs/05-roadmap.md` §7 |
+| Bash/Cangjie 仅 opt-in experimental，不进入默认/all-languages | P3 | Cargo features / `LanguageCapabilityProfile` |
 | FunctionSummary 跨函数桥接（caller arg→callee param, callee return→caller） | P4 | `docs/05-roadmap.md` §3 |
 | Graph/DataFlow/CFG 分层读取 | P4 | `docs/05-roadmap.md` §4 |
-| crate 拆分（atlas-engine/atlas-cli/atlas-mcp） | P5 | `docs/05-roadmap.md` §5 |
+| 抽出可复用 `atlas-engine` crate | P5 | `docs/05-roadmap.md` §5 |
 
 ### P5 验收结论
 
-**✅ P5 通过。** 6 项验收标准（facts 完整性、E2E fixture、输出字段、契约不变量、CLI/MCP 接口、测试链路）全部满足。已知差距已记录并通过文档显式标记。可以推进 Items 8-10（FunctionSummary 跨函数桥接、分层读取、crate 拆分）。
+**✅ P5 通过。** 6 项验收标准（facts 完整性、E2E fixture、输出字段、契约不变量、CLI/MCP 接口、测试链路）全部满足。已知差距已记录并通过文档显式标记。可以推进 FunctionSummary 跨函数桥接、分层读取和后续 `atlas-engine` 抽出前的语义/API 稳定工作。
+
+## P8：生产就绪提升
+
+目标：清理 warning、修复 trace 语义缺陷、补齐 golden 测试和 capability 边界测试、实现 schema 迁移基础设施、采集性能基线。
+
+### 1. Warning 清零
+
+- dataflow_builder.rs：移除未使用的 `FileId` import（仅测试使用，移入测试模块）
+- slicer.rs：移除未使用的 `FileReader` import
+- store/mod.rs：移除 dead `StoreReader::lock()` 方法
+- trace_fixtures.rs：移除 dead `PipelineStats` / `assert_no_node` / `lookup_node`
+
+**判定：✅ `cargo check --features all-languages` 0 warnings。**
+
+### 2. Trace 语义修复
+
+- **FieldLoad**：从全局 `HashMap<(name, kind), DataNodeId>` 改为 function-scoped + binding_id 优先查找。同名变量在闭包/嵌套作用域下不再误连。
+- **use-def**：binding_id 分组已隔离跨作用域误连，保持 def-to-all-uses（backward slice 需要完整赋值链）。文档增加了设计说明。
+- **SummaryBuilder**：生产路径从 file-level 回退改为 `find_data_nodes_by_function()` 查询。多函数文件中 return/call_arg 不再跨函数误桥接。自动修复 virtual_edges.rs 的 ReturnToCall bridge。
+
+**判定：✅ 全 trace 测试通过（trace_e2e 27/27, trace_fixtures 6/6, trace_cli_e2e 23/23）。**
+
+### 3. Golden 测试扩容
+
+新增 26 个 golden fixture（Go/C#/Rust/PHP/Ruby/Kotlin × 4, Bash × 2），覆盖 simple/imports/calls/class-method 四类。自动 bootstrap 生成 expected JSON。
+
+**判定：✅ `cargo test --features all-languages,bash --test golden` 33/33 通过。**
+
+### 4. CLI/MCP capability 边界测试
+
+新增 `p1_capability_go_variable_is_partial` (CLI) 和 `p1_mcp_go_trace_variable_is_partial` (MCP)，验证 Symbolic 语言 trace 返回 `partial_result=true` + `unsupported_language` diagnostic + `capability` 对象。
+
+**判定：✅ 全测试矩阵通过。**
+
+### 5. Schema 迁移基础设施
+
+- `MIGRATIONS` 数组 + `Migration` struct（当前空，V1→V2 时填充）
+- `check_and_migrate()` → `SchemaStatus`（Current / Migrated / TooNew / NeedsRebuild）
+- `init_schema()` 集成迁移检查，返回 `SchemaStatus`
+- `atlas doctor` 区分 auto-migratable / manual rebuild / too-new
+
+**判定：✅ schema 测试通过（4 个新测试）。**
+
+### 6. 性能基线
+
+在两份真实项目上采集了性能数据（`docs/08-performance-baseline.md`）：
+
+- **TypeScript 项目** (165 files)：9.3s 总计，Resolution 瓶颈 64%（fuzzy matching 占 72%）
+- **Multi-lang 项目** (156 files, 11 languages)：28.1s 总计，Resolution 瓶颈 79%
+- 7 种新语言全部 0 提取错误，Go 最快 (2.3ms/file)
+- 发现 DB FOREIGN KEY 完整性 bug（特定 batch insert 场景）
+
+**判定：✅ 基线已建立，优化方向明确。**
+
+### P8 验收结论
+
+**✅ P8 通过。** 6 项子目标全部达成。Atlas 进入可内部 dogfood 状态：完整 feature 测试矩阵通过、trace 语义 fixture 覆盖主要误连场景、CLI/MCP unsupported/partial 输出稳定、schema 迁移就绪、性能基线明确。

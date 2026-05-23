@@ -117,7 +117,13 @@ fn read_source_snippet(
 ) -> Option<String> {
     let path_str = file_path.as_ref()?;
     let full_path = project_root.join(path_str);
-    let content = std::fs::read_to_string(&full_path).ok()?;
+    let canonical = full_path.canonicalize().ok()?;
+    // Canonicalize root too — macOS /var→/private/var symlink
+    let canonical_root = project_root.canonicalize().ok()?;
+    if !canonical.starts_with(&canonical_root) {
+        return None;
+    }
+    let content = std::fs::read_to_string(&canonical).ok()?;
     let lines: Vec<&str> = content.lines().collect();
     let idx = (line_num as usize).saturating_sub(1);
     if idx >= lines.len() {

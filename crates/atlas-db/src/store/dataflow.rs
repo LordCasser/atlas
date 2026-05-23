@@ -39,7 +39,7 @@ impl Store {
         &self,
         function_id: &SymbolId,
     ) -> anyhow::Result<Vec<BindingDef>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT binding_id, file_id, function_id, scope_id, kind, name, symbol_id,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
@@ -52,7 +52,7 @@ impl Store {
 
     /// Find all bindings in a file.
     pub fn find_bindings_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<BindingDef>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT binding_id, file_id, function_id, scope_id, kind, name, symbol_id,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
@@ -68,7 +68,7 @@ impl Store {
         &self,
         binding_id: &BindingId,
     ) -> anyhow::Result<Vec<BindingUse>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT binding_use_id, file_id, scope_id, binding_id, reference_id, name,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
@@ -81,7 +81,7 @@ impl Store {
 
     /// Find all binding uses in a file.
     pub fn find_binding_uses_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<BindingUse>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT binding_use_id, file_id, scope_id, binding_id, reference_id, name,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
@@ -109,13 +109,14 @@ impl Store {
         &self,
         function_id: &SymbolId,
     ) -> anyhow::Result<Vec<DataNode>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id,
                     name, access_path, arg_index,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
                     range_end_line, range_end_column
-             FROM data_nodes WHERE function_id = ?1",
+             FROM data_nodes WHERE function_id = ?1
+             ORDER BY range_start_byte ASC",
         )?;
         let rows = stmt.query_map(params![function_id], row_to_data_node)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -123,7 +124,7 @@ impl Store {
 
     /// Get a single data node by ID.
     pub fn get_data_node(&self, node_id: &DataNodeId) -> anyhow::Result<Option<DataNode>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id,
                     name, access_path, arg_index,
@@ -147,7 +148,7 @@ impl Store {
         if ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let conn = self.lock();
+        let conn = self.lock_read();
         let placeholders: Vec<String> = (0..ids.len()).map(|i| format!("?{}", i + 1)).collect();
         let sql = format!(
             "SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id,
@@ -176,7 +177,7 @@ impl Store {
 
     /// Find all data nodes in a file.
     pub fn find_data_nodes_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<DataNode>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id,
                     name, access_path, arg_index,
@@ -195,7 +196,7 @@ impl Store {
         &self,
         callsite_id: &CallsiteId,
     ) -> anyhow::Result<Vec<DataNode>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id,
                     name, access_path, arg_index,
@@ -224,7 +225,7 @@ impl Store {
         &self,
         source: &DataNodeId,
     ) -> anyhow::Result<Vec<DataFlowEdge>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT dataflow_edge_id, source, target, kind,
                     location_0, location_1, location_2,
@@ -240,7 +241,7 @@ impl Store {
         &self,
         target: &DataNodeId,
     ) -> anyhow::Result<Vec<DataFlowEdge>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT dataflow_edge_id, source, target, kind,
                     location_0, location_1, location_2,
@@ -259,7 +260,7 @@ impl Store {
         if sources.is_empty() {
             return Ok(Vec::new());
         }
-        let conn = self.lock();
+        let conn = self.lock_read();
         let placeholders: Vec<String> = (0..sources.len()).map(|i| format!("?{}", i + 1)).collect();
         let sql = format!(
             "SELECT dataflow_edge_id, source, target, kind,

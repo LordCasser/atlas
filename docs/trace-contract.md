@@ -243,20 +243,21 @@ Each language has a `LanguageCapabilityProfile` that includes:
 
 ### Per-language FeatureMatrix (key features)
 
-| Feature | TS/JS | Python | Java | C/C++ | Cangjie opt-in |
-|---------|:-----:|:------:|:----:|:-----:|:-------:|
-| symbols | ✓ | ✓ | ✓ | ✓ | ✓ |
-| references | ✓ | ✓ | ✓ | ✓ | ✓ |
-| call_graph | ✓ | ✓ | ✓ | ✓ | ✗ |
-| lexical_bindings | ✓† | ✗ | ✗ | ✗ | ✗ |
-| local_dataflow | ✓ | ✓† | ✗ | ✗ | ✗ |
-| use_def | ✓ | ✓†† | ✗ | ✗ | ✗ |
-| cfg | ✓ | ✗ | ✗ | ✗ | ✗ |
-| interprocedural | ✗ | ✗ | ✗ | ✗ | ✗ |
+| Feature | TS/JS | Python | Java | C/C++ | ArkTS | Go/Rust/C#/PHP/Ruby/Kotlin | Bash opt-in | Cangjie opt-in |
+|---------|:-----:|:------:|:----:|:-----:|:-----:|:-------------------------:|:-----------:|:-------:|
+| symbols | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓††† | ✓ |
+| references | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓††† | ✓ |
+| call_graph | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓††† | ✗ |
+| lexical_bindings | ✓† | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| local_dataflow | ✓ | ✓† | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| use_def | ✓ | ✓†† | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| cfg | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| interprocedural | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 
-- ✓ = `Supported { confidence_floor: ~0.8+ }`
+- ✓ = `Supported { confidence_floor: profile-specific }`
 - ✓† = Supported with limitations (e.g., Python dataflow: heuristic naming only)
 - ✓†† = Supported with reduced precision (e.g., Python use-def: name-only heuristic)
+- ✓††† = Symbolic/low-confidence extraction only; trace variable provenance remains unsupported
 - ✗ = `Unsupported { reason: "..." }` with structured diagnostic
 
 ### Capability gating

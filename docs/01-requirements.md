@@ -35,7 +35,7 @@ MVP 固定支持：
 
 Cangjie 暂时作为不完善支持语言保留，必须显式启用 `cangjie` feature，不进入默认 features、`all-languages` 或 MVP 验收。
 
-非 MVP 语言可以作为 opt-in/future/experimental features，但不纳入当前验收。
+当前代码已经接入 Go、Rust、C#、PHP、Ruby、Kotlin 的 post-MVP Symbolic frontends，并纳入 `all-languages` 编译集合；Bash 是显式 opt-in experimental frontend，不在 `all-languages`。这些语言不纳入 MVP 验收，当前只按 capability profile 暴露 symbols/references/imports/call graph 等 Symbolic 能力，不宣称变量来源追踪、dataflow 或 CFG 可用。
 
 ## 3. 非目标
 
@@ -59,6 +59,8 @@ MVP 可以 best-effort：
 - C/C++ include-aware direct call graph。
 - ArkTS via TypeScript grammar。
 - Cangjie grammar-based minimal extraction（仅显式启用 `cangjie` feature 时）。
+- Go/Rust/C#/PHP/Ruby/Kotlin 的 Symbolic 级抽取和调用图（启用 `all-languages` 时）。
+- Bash 的低置信度命令调用抽取（仅显式启用 `bash` feature 时）。
 - 低置信度 name-based resolution。
 
 ## 4. 功能需求
@@ -200,6 +202,8 @@ Level 5: lightweight interprocedural summaries
 | C | 当前 include-aware Level 1/2 best-effort；宏、preprocessing、函数指针不保证 | 调用路径可低置信度展示；宏展开、函数指针、复杂指针别名必须显示 limitation |
 | C++ | 当前 include-aware Level 1/2 best-effort；模板、重载、ADL、复杂类型不保证 | 调用路径和局部来源必须标注 best-effort；不能把重载解析结果伪装成精确 |
 | ArkTS | 复用 TypeScript grammar 的 Level 1/2 best-effort；ArkTS 特有语义不保证 | 必须显示 `arkts via TypeScript grammar` 或等价 provenance |
+| Go/Rust/C#/PHP/Ruby/Kotlin | Post-MVP Symbolic；无 lexical binding、dataflow、CFG 或变量来源追踪 | `all-languages` binary 可以发现并索引；trace 变量来源必须返回 unsupported diagnostics |
+| Bash | Experimental opt-in Symbolic；命令调用低置信度，source/import 映射不可靠 | 默认/all-languages binary 不发现 `.sh/.bash`；启用后必须标注 low confidence |
 | Cangjie | 不属于 MVP；仅显式启用 `cangjie` feature 时提供 experimental minimal facts | 默认/all-languages binary 不发现 `.cj/.cangjie`；启用后 trace 默认不宣称可用 |
 
 CLI、MCP 和 context 输出都必须包含语言能力信息。最小字段：
@@ -264,7 +268,7 @@ MCP 使用 JSON-RPC over stdio。核心工具：
 
 MVP 完成标准：
 
-1. 7 种 MVP 语言能进入解析路径；Cangjie 不进入 MVP 验收，仅作为显式 opt-in experimental 语言。
+1. 7 种 MVP 语言能进入解析路径；Go/Rust/C#/PHP/Ruby/Kotlin 只作为 post-MVP Symbolic frontends 随 `all-languages` 编译；Bash/Cangjie 不进入 MVP 验收，仅作为显式 opt-in experimental 语言。
 2. `atlas index` 能生成 `.atlas/atlas.db`。
 3. `atlas search` 能检索符号。
 4. CLI 或 MCP 能查询基本 callers/callees。
@@ -277,15 +281,15 @@ MVP 完成标准：
 
 ## 7. 当前阶段验收焦点
 
-当前阶段不先做 crate 拆分，也不先开启 Corpus 分支。当前阶段必须基于现有架构，把变量来源追踪和调用路径查询做到端到端可验证。
+当前 workspace crate 拆分已经完成，代码位于 12 个 Cargo crates 中。当前阶段不再做新的大拆分，也不先开启 Corpus 分支；重点是在现有 crate 边界内把变量来源追踪和调用路径查询从“端到端可跑”推进到“语义结果可被测试约束”。
 
 阶段完成条件：
 
 1. MVP 语言按能力等级补齐 trace 所需 facts：symbols、references、callsites、bindings、data_nodes、dataflow_edges，CFG where applicable。
 2. TypeScript/JavaScript/Python 至少有真实源码 fixture 覆盖“指定位置 -> 变量来源 -> caller path”。
-3. Java/C/C++/ArkTS 至少能提供 Level 1 调用图和 Level 2/3 的 best-effort 局部来源追踪，不能支持的能力必须显式标记；Cangjie 启用时只要求明确 experimental capability 和 unsupported diagnostics。
-4. CLI、MCP 或等价 public API 能按 file/line、function+variable、callsite+argument 查询 backward trace。
-5. 输出包含 path steps、源码 range、相关代码片段、confidence/provenance、截断说明。
-6. 测试覆盖真实 extraction -> store -> resolution -> dataflow/call graph -> trace 查询链路，而不只覆盖类型和单个 builder。
+3. Java/C/C++/ArkTS 至少能提供 Level 1 调用图；Go/Rust/C#/PHP/Ruby/Kotlin 维持 post-MVP Symbolic 边界；Level 2/3 局部来源追踪只有在对应 facts 和 fixture 存在时才能宣称。不能支持的能力必须显式标记；Bash/Cangjie 启用时只要求明确 experimental capability 和 unsupported diagnostics。
+4. CLI、MCP 或等价 public API 当前能按 file/line/column 查询 trace point / backward trace，并能按 symbol id/name 查询 caller path；function+variable 和 callsite+argument 级入口属于后续交互增强。
+5. 输出包含 path steps、源码 range、相关代码片段或 evidence、confidence/provenance、截断说明。
+6. 测试覆盖真实 extraction -> store -> resolution -> dataflow/call graph -> trace 查询链路，而不只覆盖类型和单个 builder；后续重点是把断言从“有结果”升级为具体 path step 语义。
 
-只有完成上述变量来源追踪和调用路径查询端到端能力后，才进入 crate 拆分阶段。
+只有当前 trace 精度、capability 边界和测试断言稳定后，才考虑抽出可复用 `atlas-engine` crate。Corpus 分支仍必须等 engine/API 边界稳定后再启动。

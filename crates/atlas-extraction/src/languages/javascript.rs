@@ -26,7 +26,13 @@ fn normalize_js_definition(
     file_id: FileId,
     _file_path: &Path,
 ) -> Option<SymbolDef> {
-    super::typescript::normalize_ts_definition(capture_name, node, source, file_id)
+    super::typescript::normalize_ts_definition(
+        capture_name,
+        node,
+        source,
+        file_id,
+        Language::JavaScript,
+    )
 }
 
 fn normalize_js_reference(

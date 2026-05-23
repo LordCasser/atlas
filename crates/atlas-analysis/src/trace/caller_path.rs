@@ -198,10 +198,31 @@ fn reconstruct_call_path(
     // Reverse to get root→target order
     raw_steps.reverse();
 
+    // Prefetch all unique caller/callee symbols once to avoid N+1 queries.
+    let mut symbol_cache: std::collections::HashMap<
+        atlas_types::ids::SymbolId,
+        atlas_types::SymbolDef,
+    > = std::collections::HashMap::new();
+    {
+        let mut unique_ids: std::collections::HashSet<atlas_types::ids::SymbolId> =
+            std::collections::HashSet::new();
+        for (caller, callee, _, _, _) in &raw_steps {
+            unique_ids.insert(caller.clone());
+            unique_ids.insert(callee.clone());
+        }
+        for id in &unique_ids {
+            if let Ok(Some(sym)) = store.find_symbol_by_id(id) {
+                symbol_cache.insert(id.clone(), sym);
+            }
+        }
+    }
+
     let mut steps = Vec::new();
     for (idx, (caller, callee, kind, ref_id, edge_location)) in raw_steps.into_iter().enumerate() {
-        let file_id = store
-            .find_symbol_by_id(&caller)?
+        let caller_sym = symbol_cache.get(&caller);
+        let callee_sym = symbol_cache.get(&callee);
+
+        let file_id = caller_sym
             .map(|s| s.file_id)
             .unwrap_or_else(|| atlas_types::ids::FileId::generate("unknown"));
 
@@ -218,23 +239,13 @@ fn reconstruct_call_path(
         let range = if let Some(ref cs) = callsite {
             Some(cs.range)
         } else {
-            edge_location.clone().or_else(|| {
-                store
-                    .find_symbol_by_id(&caller)
-                    .ok()
-                    .flatten()
-                    .map(|s| s.range)
-            })
+            edge_location
+                .clone()
+                .or_else(|| caller_sym.map(|s| s.range))
         };
 
-        let caller_name = store
-            .find_symbol_by_id(&caller)?
-            .map(|s| s.name)
-            .unwrap_or_default();
-        let callee_name = store
-            .find_symbol_by_id(&callee)?
-            .map(|s| s.name)
-            .unwrap_or_default();
+        let caller_name = caller_sym.map(|s| s.name.clone()).unwrap_or_default();
+        let callee_name = callee_sym.map(|s| s.name.clone()).unwrap_or_default();
 
         let mut step = CallerChainStep::new(
             idx as u32,

@@ -50,7 +50,7 @@ impl Store {
 
     /// Get file info by ID.
     pub fn get_file(&self, file_id: &FileId) -> anyhow::Result<Option<FileInfo>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT file_id, path, language, content_hash, status
              FROM files WHERE file_id = ?1",
@@ -65,7 +65,7 @@ impl Store {
 
     /// List all indexed files.
     pub fn list_files(&self) -> anyhow::Result<Vec<FileInfo>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT file_id, path, language, content_hash, status FROM files ORDER BY path",
         )?;

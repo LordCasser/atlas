@@ -44,7 +44,13 @@ impl SymbolExtractorSpec for TypeScriptFrontendSpec {
         FeatureSupport::supported()
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<SymbolDef> {
-        normalize_ts_definition(&capture.name, capture.node, ctx.source, ctx.file_id)
+        normalize_ts_definition(
+            &capture.name,
+            capture.node,
+            ctx.source,
+            ctx.file_id,
+            ctx.language,
+        )
     }
 }
 
@@ -127,6 +133,7 @@ pub(crate) fn normalize_ts_definition(
     node: tree_sitter::Node,
     source: &str,
     file_id: FileId,
+    language: Language,
 ) -> Option<SymbolDef> {
     use super::shared::SymbolDefBuilder;
 
@@ -138,16 +145,9 @@ pub(crate) fn normalize_ts_definition(
     let exported = is_exported_in_tree(node);
 
     Some(
-        SymbolDefBuilder::new(
-            file_id,
-            Language::TypeScript,
-            kind,
-            name,
-            qualified_name,
-            range,
-        )
-        .exported(exported)
-        .build(),
+        SymbolDefBuilder::new(file_id, language, kind, name, qualified_name, range)
+            .exported(exported)
+            .build(),
     )
 }
 
