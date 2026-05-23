@@ -296,7 +296,116 @@ pub fn java_callsite_extractor() -> GenericCallsiteExtractor {
     )
 }
 
-/// Cangjie callsite extractor.
+/// Go callsite extractor.
+pub fn go_callsite_extractor() -> GenericCallsiteExtractor {
+    GenericCallsiteExtractor::new(
+        &["call_expression"],
+        &[], // Go uses `make`/`new` builtins, not grammar-level constructors
+        &[], // method calls use selector_expression inside call_expression
+        &[
+            "block",
+            "function_declaration",
+            "method_declaration",
+            "source_file",
+        ],
+    )
+}
+
+/// C# callsite extractor.
+pub fn csharp_callsite_extractor() -> GenericCallsiteExtractor {
+    GenericCallsiteExtractor::new(
+        &["invocation_expression"],
+        &["object_creation_expression"],
+        &[],
+        &[
+            "block",
+            "method_declaration",
+            "constructor_declaration",
+            "class_declaration",
+            "compilation_unit",
+        ],
+    )
+}
+
+/// PHP callsite extractor.
+pub fn php_callsite_extractor() -> GenericCallsiteExtractor {
+    GenericCallsiteExtractor::new(
+        &["function_call_expression", "member_call_expression", "scoped_call_expression"],
+        &["object_creation_expression"],
+        &[],
+        &[
+            "compound_statement",
+            "function_definition",
+            "method_declaration",
+            "class_declaration",
+            "program",
+        ],
+    )
+}
+
+/// Kotlin callsite extractor.
+pub fn kotlin_callsite_extractor() -> GenericCallsiteExtractor {
+    GenericCallsiteExtractor::new(
+        &["call_expression"],
+        &[], // Kotlin uses regular function calls for object construction
+        &[], // method calls use navigation_expression inside call_expression
+        &[
+            "block",
+            "function_declaration",
+            "class_declaration",
+            "source_file",
+        ],
+    )
+}
+
+/// Bash callsite extractor.
+pub fn bash_callsite_extractor() -> GenericCallsiteExtractor {
+    GenericCallsiteExtractor::new(
+        &["command"],
+        &[],
+        &[],
+        &[
+            "function_definition",
+            "if_statement",
+            "while_statement",
+            "for_statement",
+            "case_statement",
+            "program",
+        ],
+    )
+}
+
+/// Ruby callsite extractor.
+pub fn ruby_callsite_extractor() -> GenericCallsiteExtractor {
+    GenericCallsiteExtractor::new(
+        &["call"],
+        &[], // Ruby has no grammar-level constructor
+        &[], // all calls use the `call` node
+        &[
+            "block",
+            "do_block",
+            "method",
+            "singleton_method",
+            "class",
+            "module",
+            "program",
+        ],
+    )
+}
+
+/// Rust callsite extractor.
+pub fn rust_callsite_extractor() -> GenericCallsiteExtractor {
+    GenericCallsiteExtractor::new(
+        &["call_expression", "macro_invocation"],
+        &[], // Rust has no grammar-level constructor
+        &[],
+        &[
+            "block",
+            "function_item",
+            "source_file",
+        ],
+    )
+}
 pub fn cangjie_callsite_extractor() -> GenericCallsiteExtractor {
     GenericCallsiteExtractor::new(
         &["invocation_expression"],
@@ -339,6 +448,20 @@ pub fn create_extractor(lang: atlas_types::enums::Language) -> Box<dyn CallsiteE
         atlas_types::enums::Language::Cpp => Box::new(c_callsite_extractor()),
         #[cfg(feature = "cangjie")]
         atlas_types::enums::Language::Cangjie => Box::new(cangjie_callsite_extractor()),
+        #[cfg(feature = "go")]
+        atlas_types::enums::Language::Go => Box::new(go_callsite_extractor()),
+        #[cfg(feature = "csharp")]
+        atlas_types::enums::Language::CSharp => Box::new(csharp_callsite_extractor()),
+        #[cfg(feature = "rust")]
+        atlas_types::enums::Language::Rust => Box::new(rust_callsite_extractor()),
+        #[cfg(feature = "php")]
+        atlas_types::enums::Language::Php => Box::new(php_callsite_extractor()),
+        #[cfg(feature = "ruby")]
+        atlas_types::enums::Language::Ruby => Box::new(ruby_callsite_extractor()),
+        #[cfg(feature = "bash")]
+        atlas_types::enums::Language::Bash => Box::new(bash_callsite_extractor()),
+        #[cfg(feature = "kotlin")]
+        atlas_types::enums::Language::Kotlin => Box::new(kotlin_callsite_extractor()),
         #[allow(unreachable_patterns)]
         _ => Box::new(GenericCallsiteExtractor::new(
             &["call_expression"],

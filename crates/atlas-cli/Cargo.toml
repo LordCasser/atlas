@@ -49,7 +49,15 @@ c = ["atlas-types/c", "atlas-extraction/c"]
 cpp = ["atlas-types/cpp", "atlas-extraction/cpp"]
 arkts = ["typescript", "atlas-types/arkts", "atlas-extraction/arkts"]
 cangjie = ["atlas-types/cangjie", "atlas-extraction/cangjie"]
+go = ["atlas-types/go", "atlas-extraction/go"]
+csharp = ["atlas-types/csharp", "atlas-extraction/csharp"]
+rust = ["atlas-types/rust", "atlas-extraction/rust"]
+php = ["atlas-types/php", "atlas-extraction/php"]
+ruby = ["atlas-types/ruby", "atlas-extraction/ruby"]
+bash = ["atlas-types/bash", "atlas-extraction/bash"]
+kotlin = ["atlas-types/kotlin", "atlas-extraction/kotlin"]
+# bash is opt-in-only (scripting language, like cangjie) — NOT in all-languages
 all-languages = [
     "typescript", "javascript", "python", "java",
-    "c", "cpp", "arkts",
+    "c", "cpp", "arkts", "go", "csharp", "rust", "php", "ruby", "kotlin",
 ]

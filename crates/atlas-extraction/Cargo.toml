@@ -20,6 +20,13 @@ tree-sitter-java = { version = "0.23", optional = true }
 tree-sitter-c = { version = "0.23", optional = true }
 tree-sitter-cpp = { version = "0.23", optional = true }
 tree-sitter-cangjie = { git = "https://gitcode.com/Cangjie-SIG/tree-sitter-cangjie.git", optional = true }
+tree-sitter-go = { version = "0.23", optional = true }
+tree-sitter-c-sharp = { version = "=0.23.0", optional = true }
+tree-sitter-rust = { version = "0.23", optional = true }
+tree-sitter-php = { version = "0.23", optional = true }
+tree-sitter-ruby = { version = "0.23", optional = true }
+tree-sitter-bash = { version = "0.23", optional = true }
+tree-sitter-kotlin = { git = "https://github.com/fwcd/tree-sitter-kotlin", rev = "f66d2908542e93c0204c6c241f794afe4e9cd5d1", optional = true }
 
 [dev-dependencies]
 atlas-db = { path = "../atlas-db" }
@@ -34,3 +41,10 @@ c = ["dep:tree-sitter-c", "atlas-types/c"]
 cpp = ["dep:tree-sitter-cpp", "atlas-types/cpp"]
 arkts = ["typescript", "atlas-types/arkts"]  # ArkTS uses TS grammar + own capability profile
 cangjie = ["dep:tree-sitter-cangjie", "atlas-types/cangjie"]
+go = ["dep:tree-sitter-go", "atlas-types/go"]
+csharp = ["dep:tree-sitter-c-sharp", "atlas-types/csharp"]
+rust = ["dep:tree-sitter-rust", "atlas-types/rust"]
+php = ["dep:tree-sitter-php", "atlas-types/php"]
+ruby = ["dep:tree-sitter-ruby", "atlas-types/ruby"]
+bash = ["dep:tree-sitter-bash", "atlas-types/bash"]
+kotlin = ["dep:tree-sitter-kotlin", "atlas-types/kotlin"]

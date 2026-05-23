@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// Cangjie is intentionally retained as an opt-in experimental language. It is
 /// not part of the MVP/default/all-languages compile set.
+///
+/// Go and C# are post-MVP opt-in languages at Symbolic capability level.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
 )]
@@ -28,6 +30,13 @@ pub enum Language {
     Cpp,
     ArkTS,
     Cangjie,
+    Go,
+    CSharp,
+    Rust,
+    Php,
+    Ruby,
+    Bash,
+    Kotlin,
 }
 
 impl Language {
@@ -42,6 +51,13 @@ impl Language {
             Self::Cpp => "cpp",
             Self::ArkTS => "arkts",
             Self::Cangjie => "cangjie",
+            Self::Go => "go",
+            Self::CSharp => "csharp",
+            Self::Rust => "rust",
+            Self::Php => "php",
+            Self::Ruby => "ruby",
+            Self::Bash => "bash",
+            Self::Kotlin => "kotlin",
         }
     }
 
@@ -56,6 +72,13 @@ impl Language {
             "cpp" => Some(Self::Cpp),
             "arkts" => Some(Self::ArkTS),
             "cangjie" => Some(Self::Cangjie),
+            "go" => Some(Self::Go),
+            "csharp" => Some(Self::CSharp),
+            "rust" => Some(Self::Rust),
+            "php" => Some(Self::Php),
+            "ruby" => Some(Self::Ruby),
+            "bash" => Some(Self::Bash),
+            "kotlin" => Some(Self::Kotlin),
             _ => None,
         }
     }
@@ -72,6 +95,20 @@ impl Language {
             "ets" | "sts" => Some(Self::ArkTS),
             #[cfg(feature = "cangjie")]
             "cj" | "cangjie" => Some(Self::Cangjie),
+            #[cfg(feature = "go")]
+            "go" => Some(Self::Go),
+            #[cfg(feature = "csharp")]
+            "cs" => Some(Self::CSharp),
+            #[cfg(feature = "rust")]
+            "rs" => Some(Self::Rust),
+            #[cfg(feature = "php")]
+            "php" => Some(Self::Php),
+            #[cfg(feature = "ruby")]
+            "rb" => Some(Self::Ruby),
+            #[cfg(feature = "bash")]
+            "sh" | "bash" => Some(Self::Bash),
+            #[cfg(feature = "kotlin")]
+            "kt" | "kts" => Some(Self::Kotlin),
             _ => None,
         }
     }
@@ -85,17 +122,26 @@ impl Language {
 
     /// All file extensions (without dot) for enabled discovery languages.
     pub fn all_extensions() -> Vec<&'static str> {
-        let extensions = vec![
+        let mut extensions = vec![
             "ts", "mts", "cts", "tsx", "js", "mjs", "cjs", "jsx", "py", "pyi", "pyx", "java", "c",
             "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "ets", "sts",
         ];
         #[cfg(feature = "cangjie")]
-        {
-            let mut ext = extensions;
-            ext.extend(["cj", "cangjie"]);
-            return ext;
-        }
-        #[cfg(not(feature = "cangjie"))]
+        extensions.extend(["cj", "cangjie"]);
+        #[cfg(feature = "go")]
+        extensions.extend(["go"]);
+        #[cfg(feature = "csharp")]
+        extensions.extend(["cs"]);
+        #[cfg(feature = "rust")]
+        extensions.extend(["rs"]);
+        #[cfg(feature = "php")]
+        extensions.extend(["php"]);
+        #[cfg(feature = "ruby")]
+        extensions.extend(["rb"]);
+        #[cfg(feature = "bash")]
+        extensions.extend(["sh", "bash"]);
+        #[cfg(feature = "kotlin")]
+        extensions.extend(["kt", "kts"]);
         extensions
     }
 
@@ -112,6 +158,13 @@ impl Language {
             ],
             Self::ArkTS => &["**/*.ets", "**/*.sts"],
             Self::Cangjie => &["**/*.cj", "**/*.cangjie"],
+            Self::Go => &["**/*.go"],
+            Self::CSharp => &["**/*.cs"],
+            Self::Rust => &["**/*.rs"],
+            Self::Php => &["**/*.php"],
+            Self::Ruby => &["**/*.rb"],
+            Self::Bash => &["**/*.sh", "**/*.bash"],
+            Self::Kotlin => &["**/*.kt", "**/*.kts"],
         }
     }
 }
@@ -983,6 +1036,13 @@ mod tests {
             Language::Cpp,
             Language::ArkTS,
             Language::Cangjie,
+            Language::Go,
+            Language::CSharp,
+            Language::Rust,
+            Language::Php,
+            Language::Ruby,
+            Language::Bash,
+            Language::Kotlin,
         ] {
             assert_eq!(Language::from_str(lang.as_str()), Some(lang));
         }
@@ -996,18 +1056,55 @@ mod tests {
         assert_eq!(Language::from_extension("cj"), Some(Language::Cangjie));
         #[cfg(not(feature = "cangjie"))]
         assert_eq!(Language::from_extension("cj"), None);
+        #[cfg(feature = "go")]
+        assert_eq!(Language::from_extension("go"), Some(Language::Go));
+        #[cfg(not(feature = "go"))]
+        assert_eq!(Language::from_extension("go"), None);
+        #[cfg(feature = "csharp")]
+        assert_eq!(Language::from_extension("cs"), Some(Language::CSharp));
+        #[cfg(not(feature = "csharp"))]
+        assert_eq!(Language::from_extension("cs"), None);
+        #[cfg(feature = "rust")]
+        assert_eq!(Language::from_extension("rs"), Some(Language::Rust));
+        #[cfg(not(feature = "rust"))]
+        assert_eq!(Language::from_extension("rs"), None);
+        #[cfg(feature = "php")]
+        assert_eq!(Language::from_extension("php"), Some(Language::Php));
+        #[cfg(not(feature = "php"))]
+        assert_eq!(Language::from_extension("php"), None);
+        #[cfg(feature = "ruby")]
+        assert_eq!(Language::from_extension("rb"), Some(Language::Ruby));
+        #[cfg(not(feature = "ruby"))]
+        assert_eq!(Language::from_extension("rb"), None);
+        #[cfg(feature = "bash")]
+        assert_eq!(Language::from_extension("sh"), Some(Language::Bash));
+        #[cfg(not(feature = "bash"))]
+        assert_eq!(Language::from_extension("sh"), None);
+        #[cfg(feature = "kotlin")]
+        assert_eq!(Language::from_extension("kt"), Some(Language::Kotlin));
+        #[cfg(not(feature = "kotlin"))]
+        assert_eq!(Language::from_extension("kt"), None);
         assert_eq!(Language::from_extension("java"), Some(Language::Java));
         assert_eq!(Language::from_extension("unknown"), None);
     }
 
     #[test]
     fn test_language_mvp_only() {
-        // Non-MVP languages MUST NOT be recognized
+        // Non-MVP languages MUST NOT be recognized when feature is off
+        #[cfg(not(feature = "go"))]
         assert_eq!(Language::from_extension("go"), None);
-        assert_eq!(Language::from_extension("rs"), None);
+        #[cfg(not(feature = "csharp"))]
         assert_eq!(Language::from_extension("cs"), None);
+        #[cfg(not(feature = "rust"))]
+        assert_eq!(Language::from_extension("rs"), None);
+        #[cfg(not(feature = "php"))]
         assert_eq!(Language::from_extension("php"), None);
+        #[cfg(not(feature = "ruby"))]
         assert_eq!(Language::from_extension("rb"), None);
+        #[cfg(not(feature = "bash"))]
+        assert_eq!(Language::from_extension("sh"), None);
+        #[cfg(not(feature = "kotlin"))]
+        assert_eq!(Language::from_extension("kt"), None);
     }
 
     #[test]

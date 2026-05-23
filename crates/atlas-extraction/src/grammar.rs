@@ -92,6 +92,41 @@ impl LanguageRegistry {
                 let lang: tree_sitter::Language = tree_sitter_cangjie::LANGUAGE.into();
                 self.register(lang, Language::Cangjie);
             }
+            #[cfg(feature = "go")]
+            Language::Go => {
+                let lang: tree_sitter::Language = tree_sitter_go::LANGUAGE.into();
+                self.register(lang, Language::Go);
+            }
+            #[cfg(feature = "csharp")]
+            Language::CSharp => {
+                let lang: tree_sitter::Language = tree_sitter_c_sharp::LANGUAGE.into();
+                self.register(lang, Language::CSharp);
+            }
+            #[cfg(feature = "rust")]
+            Language::Rust => {
+                let lang: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+                self.register(lang, Language::Rust);
+            }
+            #[cfg(feature = "php")]
+            Language::Php => {
+                let lang: tree_sitter::Language = tree_sitter_php::LANGUAGE_PHP.into();
+                self.register(lang, Language::Php);
+            }
+            #[cfg(feature = "ruby")]
+            Language::Ruby => {
+                let lang: tree_sitter::Language = tree_sitter_ruby::LANGUAGE.into();
+                self.register(lang, Language::Ruby);
+            }
+            #[cfg(feature = "bash")]
+            Language::Bash => {
+                let lang: tree_sitter::Language = tree_sitter_bash::LANGUAGE.into();
+                self.register(lang, Language::Bash);
+            }
+            #[cfg(feature = "kotlin")]
+            Language::Kotlin => {
+                let lang: tree_sitter::Language = tree_sitter_kotlin::LANGUAGE.into();
+                self.register(lang, Language::Kotlin);
+            }
             #[allow(unreachable_patterns)]
             _ => {
                 bail!("Language {lang:?} not enabled (missing feature flag or not yet implemented)",)
@@ -133,6 +168,16 @@ mod tests {
             LanguageRegistry::detect_language(Path::new("hello.cj")),
             None
         );
+        #[cfg(feature = "go")]
+        assert_eq!(
+            LanguageRegistry::detect_language(Path::new("main.go")),
+            Some(Language::Go)
+        );
+        #[cfg(not(feature = "go"))]
+        assert_eq!(
+            LanguageRegistry::detect_language(Path::new("main.go")),
+            None
+        );
         assert_eq!(
             LanguageRegistry::detect_language(Path::new("Main.java")),
             Some(Language::Java)
@@ -152,10 +197,31 @@ mod tests {
         // Non-MVP languages
         assert_eq!(
             LanguageRegistry::detect_language(Path::new("main.go")),
-            None
+            Language::from_extension("go")
         );
+        #[cfg(not(feature = "rust"))]
         assert_eq!(
             LanguageRegistry::detect_language(Path::new("main.rs")),
+            None
+        );
+        #[cfg(not(feature = "php"))]
+        assert_eq!(
+            LanguageRegistry::detect_language(Path::new("main.php")),
+            None
+        );
+        #[cfg(not(feature = "ruby"))]
+        assert_eq!(
+            LanguageRegistry::detect_language(Path::new("main.rb")),
+            None
+        );
+        #[cfg(not(feature = "bash"))]
+        assert_eq!(
+            LanguageRegistry::detect_language(Path::new("script.sh")),
+            None
+        );
+        #[cfg(not(feature = "kotlin"))]
+        assert_eq!(
+            LanguageRegistry::detect_language(Path::new("Main.kt")),
             None
         );
     }
@@ -197,5 +263,54 @@ mod tests {
     fn test_load_arkts() {
         let registry = LanguageRegistry::new(&[Language::ArkTS]).unwrap();
         assert!(registry.has(Language::ArkTS));
+    }
+
+    #[cfg(feature = "go")]
+    #[test]
+    fn test_load_go() {
+        let registry = LanguageRegistry::new(&[Language::Go]).unwrap();
+        assert!(registry.has(Language::Go));
+    }
+
+    #[cfg(feature = "csharp")]
+    #[test]
+    fn test_load_csharp() {
+        let registry = LanguageRegistry::new(&[Language::CSharp]).unwrap();
+        assert!(registry.has(Language::CSharp));
+    }
+
+    #[cfg(feature = "rust")]
+    #[test]
+    fn test_load_rust() {
+        let registry = LanguageRegistry::new(&[Language::Rust]).unwrap();
+        assert!(registry.has(Language::Rust));
+    }
+
+    #[cfg(feature = "php")]
+    #[test]
+    fn test_load_php() {
+        let registry = LanguageRegistry::new(&[Language::Php]).unwrap();
+        assert!(registry.has(Language::Php));
+    }
+
+    #[cfg(feature = "ruby")]
+    #[test]
+    fn test_load_ruby() {
+        let registry = LanguageRegistry::new(&[Language::Ruby]).unwrap();
+        assert!(registry.has(Language::Ruby));
+    }
+
+    #[cfg(feature = "bash")]
+    #[test]
+    fn test_load_bash() {
+        let registry = LanguageRegistry::new(&[Language::Bash]).unwrap();
+        assert!(registry.has(Language::Bash));
+    }
+
+    #[cfg(feature = "kotlin")]
+    #[test]
+    fn test_load_kotlin() {
+        let registry = LanguageRegistry::new(&[Language::Kotlin]).unwrap();
+        assert!(registry.has(Language::Kotlin));
     }
 }

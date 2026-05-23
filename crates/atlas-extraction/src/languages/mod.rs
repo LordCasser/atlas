@@ -68,6 +68,27 @@ pub mod cpp;
 #[cfg(feature = "cangjie")]
 pub mod cangjie;
 
+#[cfg(feature = "go")]
+pub mod go;
+
+#[cfg(feature = "csharp")]
+pub mod csharp;
+
+#[cfg(feature = "rust")]
+pub mod rust;
+
+#[cfg(feature = "php")]
+pub mod php;
+
+#[cfg(feature = "ruby")]
+pub mod ruby;
+
+#[cfg(feature = "bash")]
+pub mod bash;
+
+#[cfg(feature = "kotlin")]
+pub mod kotlin;
+
 /// Create a `LanguageFrontend` for the given language.
 /// Returns `None` if the language's frontend is not compiled in (feature-gated).
 ///
@@ -91,6 +112,20 @@ pub fn create_frontend(lang: Language) -> Option<crate::frontend::LanguageFronte
         Language::Cpp => Some(cpp::cpp_frontend()),
         #[cfg(feature = "cangjie")]
         Language::Cangjie => Some(cangjie::cangjie_frontend()),
+        #[cfg(feature = "go")]
+        Language::Go => Some(go::go_frontend()),
+        #[cfg(feature = "csharp")]
+        Language::CSharp => Some(csharp::csharp_frontend()),
+        #[cfg(feature = "rust")]
+        Language::Rust => Some(rust::rust_frontend()),
+        #[cfg(feature = "php")]
+        Language::Php => Some(php::php_frontend()),
+        #[cfg(feature = "ruby")]
+        Language::Ruby => Some(ruby::ruby_frontend()),
+        #[cfg(feature = "bash")]
+        Language::Bash => Some(bash::bash_frontend()),
+        #[cfg(feature = "kotlin")]
+        Language::Kotlin => Some(kotlin::kotlin_frontend()),
         #[allow(unreachable_patterns)]
         _ => None,
     }

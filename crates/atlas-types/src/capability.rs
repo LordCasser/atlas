@@ -286,6 +286,20 @@ impl LanguageCapabilityProfile {
         profiles.push(Self::for_language(ArkTS));
         #[cfg(feature = "cangjie")]
         profiles.push(Self::for_language(Cangjie));
+        #[cfg(feature = "go")]
+        profiles.push(Self::for_language(Go));
+        #[cfg(feature = "csharp")]
+        profiles.push(Self::for_language(CSharp));
+        #[cfg(feature = "rust")]
+        profiles.push(Self::for_language(Rust));
+        #[cfg(feature = "php")]
+        profiles.push(Self::for_language(Php));
+        #[cfg(feature = "ruby")]
+        profiles.push(Self::for_language(Ruby));
+        #[cfg(feature = "bash")]
+        profiles.push(Self::for_language(Bash));
+        #[cfg(feature = "kotlin")]
+        profiles.push(Self::for_language(Kotlin));
 
         profiles
     }
@@ -308,6 +322,13 @@ mod profiles {
             Language::Cpp => cpp_profile(),
             Language::ArkTS => arkts_profile(),
             Language::Cangjie => cangjie_profile(),
+            Language::Go => go_profile(),
+            Language::CSharp => csharp_profile(),
+            Language::Rust => rust_profile(),
+            Language::Php => php_profile(),
+            Language::Ruby => ruby_profile(),
+            Language::Bash => bash_profile(),
+            Language::Kotlin => kotlin_profile(),
         }
     }
 
@@ -742,6 +763,404 @@ mod profiles {
                     "requires dataflow (not implemented for Cangjie)",
                 ),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for Cangjie"),
+                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+            }),
+        }
+    }
+
+    // ---- Go ----------------------------------------------------------------
+
+    fn go_profile() -> LanguageCapabilityProfile {
+        LanguageCapabilityProfile {
+            language: "go".into(),
+            capability_level: CapabilityLevel::Symbolic,
+            supported_features: vec![
+                "symbol_extraction".into(),
+                "reference_extraction".into(),
+                "import_resolution".into(),
+                "call_graph".into(),
+            ],
+            unsupported_features: vec![
+                "lexical_bindings".into(),
+                "dataflow".into(),
+                "cfg".into(),
+                "backward_trace".into(),
+            ],
+            limitations: vec![
+                "no DataFlowBuilder (dataflow queries not implemented)".into(),
+                "no LexicalBinder (lexical queries not implemented)".into(),
+                "generic type parameters not captured in Symbolic level".into(),
+                "interface embedding treated as type reference".into(),
+            ],
+            confidence_floor: 0.75,
+            features: Some(FeatureMatrix {
+                symbols: FeatureSupport::supported_with_confidence(0.75),
+                references: FeatureSupport::supported_with_confidence(0.75),
+                imports: FeatureSupport::supported_with_confidence(0.75),
+                scopes: FeatureSupport::supported_with_confidence(0.75),
+                call_graph: FeatureSupport::supported_with_confidence(0.75),
+                lexical_bindings: FeatureSupport::unsupported(
+                    "LexicalBinder not implemented for Go",
+                ),
+                local_dataflow: FeatureSupport::unsupported(
+                    "DataFlowBuilder not implemented for Go",
+                ),
+                use_def: FeatureSupport::unsupported(
+                    "requires lexical bindings and dataflow (both not implemented for Go)",
+                ),
+                field_access: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for Go)",
+                ),
+                call_arguments: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for Go)",
+                ),
+                returns_flow: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for Go)",
+                ),
+                cfg: FeatureSupport::unsupported("CFG builder not implemented for Go"),
+                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+            }),
+        }
+    }
+
+    // ---- C# ----------------------------------------------------------------
+
+    fn csharp_profile() -> LanguageCapabilityProfile {
+        LanguageCapabilityProfile {
+            language: "csharp".into(),
+            capability_level: CapabilityLevel::Symbolic,
+            supported_features: vec![
+                "symbol_extraction".into(),
+                "reference_extraction".into(),
+                "import_resolution".into(),
+                "call_graph".into(),
+            ],
+            unsupported_features: vec![
+                "lexical_bindings".into(),
+                "dataflow".into(),
+                "cfg".into(),
+                "backward_trace".into(),
+            ],
+            limitations: vec![
+                "no DataFlowBuilder (dataflow queries not implemented)".into(),
+                "no LexicalBinder (lexical queries not implemented)".into(),
+                "delegate/event declarations simplified (delegate→Function, event skipped)".into(),
+                "partial classes across files not merged".into(),
+                "record/record struct treated as class/struct".into(),
+            ],
+            confidence_floor: 0.75,
+            features: Some(FeatureMatrix {
+                symbols: FeatureSupport::supported_with_confidence(0.75),
+                references: FeatureSupport::supported_with_confidence(0.75),
+                imports: FeatureSupport::supported_with_confidence(0.75),
+                scopes: FeatureSupport::supported_with_confidence(0.75),
+                call_graph: FeatureSupport::supported_with_confidence(0.75),
+                lexical_bindings: FeatureSupport::unsupported(
+                    "LexicalBinder not implemented for C#",
+                ),
+                local_dataflow: FeatureSupport::unsupported(
+                    "DataFlowBuilder not implemented for C#",
+                ),
+                use_def: FeatureSupport::unsupported(
+                    "requires lexical bindings and dataflow (both not implemented for C#)",
+                ),
+                field_access: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for C#)",
+                ),
+                call_arguments: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for C#)",
+                ),
+                returns_flow: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for C#)",
+                ),
+                cfg: FeatureSupport::unsupported("CFG builder not implemented for C#"),
+                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+            }),
+        }
+    }
+
+    // ---- Rust --------------------------------------------------------------
+
+    fn rust_profile() -> LanguageCapabilityProfile {
+        LanguageCapabilityProfile {
+            language: "rust".into(),
+            capability_level: CapabilityLevel::Symbolic,
+            supported_features: vec![
+                "symbol_extraction".into(),
+                "reference_extraction".into(),
+                "import_resolution".into(),
+                "call_graph".into(),
+            ],
+            unsupported_features: vec![
+                "lexical_bindings".into(),
+                "dataflow".into(),
+                "cfg".into(),
+                "backward_trace".into(),
+            ],
+            limitations: vec![
+                "no DataFlowBuilder (dataflow queries not implemented)".into(),
+                "no LexicalBinder (lexical queries not implemented)".into(),
+                "lifetime parameters and where clauses not captured".into(),
+                "macro_rules! body patterns not analyzed".into(),
+                "impl trait / dyn trait treated as simple type reference".into(),
+            ],
+            confidence_floor: 0.70,
+            features: Some(FeatureMatrix {
+                symbols: FeatureSupport::supported_with_confidence(0.70),
+                references: FeatureSupport::supported_with_confidence(0.70),
+                imports: FeatureSupport::supported_with_confidence(0.70),
+                scopes: FeatureSupport::supported_with_confidence(0.70),
+                call_graph: FeatureSupport::supported_with_confidence(0.70),
+                lexical_bindings: FeatureSupport::unsupported(
+                    "LexicalBinder not implemented for Rust",
+                ),
+                local_dataflow: FeatureSupport::unsupported(
+                    "DataFlowBuilder not implemented for Rust",
+                ),
+                use_def: FeatureSupport::unsupported(
+                    "requires lexical bindings and dataflow (both not implemented for Rust)",
+                ),
+                field_access: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for Rust)",
+                ),
+                call_arguments: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for Rust)",
+                ),
+                returns_flow: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for Rust)",
+                ),
+                cfg: FeatureSupport::unsupported("CFG builder not implemented for Rust"),
+                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+            }),
+        }
+    }
+
+    // ---- PHP ---------------------------------------------------------------
+
+    fn php_profile() -> LanguageCapabilityProfile {
+        LanguageCapabilityProfile {
+            language: "php".into(),
+            capability_level: CapabilityLevel::Symbolic,
+            supported_features: vec![
+                "symbol_extraction".into(),
+                "reference_extraction".into(),
+                "import_resolution".into(),
+                "call_graph".into(),
+            ],
+            unsupported_features: vec![
+                "lexical_bindings".into(),
+                "dataflow".into(),
+                "cfg".into(),
+                "backward_trace".into(),
+            ],
+            limitations: vec![
+                "no DataFlowBuilder (dataflow queries not implemented)".into(),
+                "no LexicalBinder (lexical queries not implemented)".into(),
+                "anonymous functions / closures named `<closure>`".into(),
+                "dynamic method calls via variable not resolved".into(),
+                "namespace aliases resolved at reference resolution layer".into(),
+            ],
+            confidence_floor: 0.65,
+            features: Some(FeatureMatrix {
+                symbols: FeatureSupport::supported_with_confidence(0.65),
+                references: FeatureSupport::supported_with_confidence(0.65),
+                imports: FeatureSupport::supported_with_confidence(0.65),
+                scopes: FeatureSupport::supported_with_confidence(0.65),
+                call_graph: FeatureSupport::supported_with_confidence(0.65),
+                lexical_bindings: FeatureSupport::unsupported(
+                    "LexicalBinder not implemented for PHP",
+                ),
+                local_dataflow: FeatureSupport::unsupported(
+                    "DataFlowBuilder not implemented for PHP",
+                ),
+                use_def: FeatureSupport::unsupported(
+                    "requires lexical bindings and dataflow (both not implemented for PHP)",
+                ),
+                field_access: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for PHP)",
+                ),
+                call_arguments: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for PHP)",
+                ),
+                returns_flow: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for PHP)",
+                ),
+                cfg: FeatureSupport::unsupported("CFG builder not implemented for PHP"),
+                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+            }),
+        }
+    }
+
+    // ---- Ruby --------------------------------------------------------------
+
+    fn ruby_profile() -> LanguageCapabilityProfile {
+        LanguageCapabilityProfile {
+            language: "ruby".into(),
+            capability_level: CapabilityLevel::Symbolic,
+            supported_features: vec![
+                "symbol_extraction".into(),
+                "reference_extraction".into(),
+                "import_resolution".into(),
+                "call_graph".into(),
+            ],
+            unsupported_features: vec![
+                "lexical_bindings".into(),
+                "dataflow".into(),
+                "cfg".into(),
+                "backward_trace".into(),
+            ],
+            limitations: vec![
+                "no DataFlowBuilder (dataflow queries not implemented)".into(),
+                "no LexicalBinder (lexical queries not implemented)".into(),
+                "method_missing / define_method dynamic methods not captured".into(),
+                "include/extend/prepend mixin methods not expanded".into(),
+                "block/yield implicit calls not tracked".into(),
+            ],
+            confidence_floor: 0.55,
+            features: Some(FeatureMatrix {
+                symbols: FeatureSupport::supported_with_confidence(0.55),
+                references: FeatureSupport::supported_with_confidence(0.55),
+                imports: FeatureSupport::supported_with_confidence(0.55),
+                scopes: FeatureSupport::supported_with_confidence(0.55),
+                call_graph: FeatureSupport::supported_with_confidence(0.55),
+                lexical_bindings: FeatureSupport::unsupported(
+                    "LexicalBinder not implemented for Ruby",
+                ),
+                local_dataflow: FeatureSupport::unsupported(
+                    "DataFlowBuilder not implemented for Ruby",
+                ),
+                use_def: FeatureSupport::unsupported(
+                    "requires lexical bindings and dataflow (both not implemented for Ruby)",
+                ),
+                field_access: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for Ruby)",
+                ),
+                call_arguments: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for Ruby)",
+                ),
+                returns_flow: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for Ruby)",
+                ),
+                cfg: FeatureSupport::unsupported("CFG builder not implemented for Ruby"),
+                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+            }),
+        }
+    }
+
+    // ---- Bash (opt-in-only, scripting language) ----------------------------
+
+    fn bash_profile() -> LanguageCapabilityProfile {
+        LanguageCapabilityProfile {
+            language: "bash".into(),
+            capability_level: CapabilityLevel::Symbolic,
+            supported_features: vec![
+                "symbol_extraction".into(),
+                "reference_extraction".into(),
+                "call_graph".into(),
+            ],
+            unsupported_features: vec![
+                "import_resolution".into(),
+                "scope_extraction".into(),
+                "lexical_bindings".into(),
+                "dataflow".into(),
+                "cfg".into(),
+                "backward_trace".into(),
+            ],
+            limitations: vec![
+                "no DataFlowBuilder (dataflow queries not implemented)".into(),
+                "no LexicalBinder (lexical queries not implemented)".into(),
+                "scopes limited to file and function (no block scoping)".into(),
+                "command call targets may be variables/string-interpolated — unresolvable statically".into(),
+                "source / . builtins produce best-effort import facts".into(),
+                "alias and positional parameters ($1, $@) not captured".into(),
+            ],
+            confidence_floor: 0.40,
+            features: Some(FeatureMatrix {
+                symbols: FeatureSupport::supported_with_confidence(0.50),
+                references: FeatureSupport::supported_with_confidence(0.50),
+                imports: FeatureSupport::unsupported(
+                    "import/include mapping unreliable for Bash source builtins",
+                ),
+                scopes: FeatureSupport::unsupported("scope query not implemented for Bash"),
+                call_graph: FeatureSupport::supported_with_limitations(
+                    0.40,
+                    vec!["command calls may be dynamically resolved — low confidence"],
+                ),
+                lexical_bindings: FeatureSupport::unsupported(
+                    "LexicalBinder not implemented for Bash",
+                ),
+                local_dataflow: FeatureSupport::unsupported(
+                    "DataFlowBuilder not implemented for Bash",
+                ),
+                use_def: FeatureSupport::unsupported(
+                    "requires lexical bindings and dataflow (both not implemented for Bash)",
+                ),
+                field_access: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for Bash)",
+                ),
+                call_arguments: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for Bash)",
+                ),
+                returns_flow: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for Bash)",
+                ),
+                cfg: FeatureSupport::unsupported("CFG builder not implemented for Bash"),
+                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+            }),
+        }
+    }
+
+    // ---- Kotlin ------------------------------------------------------------
+
+    fn kotlin_profile() -> LanguageCapabilityProfile {
+        LanguageCapabilityProfile {
+            language: "kotlin".into(),
+            capability_level: CapabilityLevel::Symbolic,
+            supported_features: vec![
+                "symbol_extraction".into(),
+                "reference_extraction".into(),
+                "import_resolution".into(),
+                "call_graph".into(),
+            ],
+            unsupported_features: vec![
+                "lexical_bindings".into(),
+                "dataflow".into(),
+                "cfg".into(),
+                "backward_trace".into(),
+            ],
+            limitations: vec![
+                "no DataFlowBuilder (dataflow queries not implemented)".into(),
+                "no LexicalBinder (lexical queries not implemented)".into(),
+                "extension functions not differentiated from regular functions".into(),
+                "object declarations treated as classes".into(),
+                "companion objects not separately modeled".into(),
+            ],
+            confidence_floor: 0.70,
+            features: Some(FeatureMatrix {
+                symbols: FeatureSupport::supported_with_confidence(0.70),
+                references: FeatureSupport::supported_with_confidence(0.70),
+                imports: FeatureSupport::supported_with_confidence(0.70),
+                scopes: FeatureSupport::supported_with_confidence(0.70),
+                call_graph: FeatureSupport::supported_with_confidence(0.70),
+                lexical_bindings: FeatureSupport::unsupported(
+                    "LexicalBinder not implemented for Kotlin",
+                ),
+                local_dataflow: FeatureSupport::unsupported(
+                    "DataFlowBuilder not implemented for Kotlin",
+                ),
+                use_def: FeatureSupport::unsupported(
+                    "requires lexical bindings and dataflow (both not implemented for Kotlin)",
+                ),
+                field_access: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for Kotlin)",
+                ),
+                call_arguments: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for Kotlin)",
+                ),
+                returns_flow: FeatureSupport::unsupported(
+                    "requires dataflow (not implemented for Kotlin)",
+                ),
+                cfg: FeatureSupport::unsupported("CFG builder not implemented for Kotlin"),
                 interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
             }),
         }
