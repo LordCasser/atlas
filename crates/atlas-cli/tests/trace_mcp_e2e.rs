@@ -19,11 +19,11 @@
 
 use atlas_cli::commands::{index, init};
 use atlas_context::ContextBuilder;
-use atlas_db::Store;
-use atlas_graph::GraphEngine;
+use atlas_engine::Store;
+use atlas_engine::GraphEngine;
 use atlas_mcp::tools::ToolRouter;
 use atlas_search::SearchEngine;
-use atlas_types::ids::{FileId, SymbolId};
+use atlas_engine::ids::{FileId, SymbolId};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;

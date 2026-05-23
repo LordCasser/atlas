@@ -12,14 +12,14 @@
 //! Run with default features:  `cargo test --test trace_e2e`
 //! Run with all languages:    `cargo test --test trace_e2e --features all-languages`
 
-use atlas_analysis::trace::virtual_edges::TraceEdgeProvider;
-use atlas_analysis::trace::{CallerPathExplorer, Locator, Slicer, TraceEngine};
-use atlas_db::Store;
-use atlas_extraction::extract_file;
-use atlas_graph::GraphBuilder;
-use atlas_resolution::{ReferenceResolver, ResolutionStats};
-use atlas_types::enums::Language;
-use atlas_types::ids::FileId;
+use atlas_engine::trace::virtual_edges::TraceEdgeProvider;
+use atlas_engine::trace::{CallerPathExplorer, Locator, Slicer, TraceEngine};
+use atlas_engine::Store;
+use atlas_engine::extract_file;
+use atlas_engine::GraphBuilder;
+use atlas_engine::{ReferenceResolver, ResolutionStats};
+use atlas_engine::enums::Language;
+use atlas_engine::ids::FileId;
 use serde_json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -47,7 +47,7 @@ fn index_files(files: &[(&str, &str)]) -> (Arc<Store>, PipelineStats) {
         let path = Path::new(rel_path);
         let lang = Language::from_path(path)
             .unwrap_or_else(|| panic!("no language detected for {}", rel_path));
-        let frontend = atlas_extraction::create_frontend(lang)
+        let frontend = atlas_engine::create_frontend(lang)
             .unwrap_or_else(|| panic!("no frontend for {} (lang={:?})", rel_path, lang));
         let file_id = FileId::generate(rel_path);
         let facts = extract_file(&frontend, file_id, &PathBuf::from(rel_path), content, "abc")
@@ -450,7 +450,7 @@ function run(): void {
     let data_nodes = store.find_data_nodes_by_file(&file_id).unwrap();
     let params: Vec<_> = data_nodes
         .iter()
-        .filter(|dn| dn.kind == atlas_types::enums::DataNodeKind::Parameter)
+        .filter(|dn| dn.kind == atlas_engine::enums::DataNodeKind::Parameter)
         .collect();
     assert!(
         params.len() >= 2,
@@ -469,7 +469,7 @@ function run(): void {
         .iter()
         .find(|dn| dn.name.as_deref() == Some("input"))
         .expect("should find input parameter");
-    let provider = atlas_analysis::trace::virtual_edges::SummaryEdgeProvider;
+    let provider = atlas_engine::trace::virtual_edges::SummaryEdgeProvider;
     let edges = provider
         .virtual_incoming(&input_param.id, store.as_ref())
         .expect("virtual_incoming should succeed");
@@ -477,7 +477,7 @@ function run(): void {
     // Check that at least one edge bridges from caller arg to callee param
     let arg_edges: Vec<_> = edges
         .iter()
-        .filter(|e| e.kind == atlas_types::enums::DataFlowKind::ArgToParam)
+        .filter(|e| e.kind == atlas_engine::DataFlowKind::ArgToParam)
         .collect();
     assert!(
         !arg_edges.is_empty(),
@@ -541,7 +541,7 @@ function run(): void {
     let data_nodes = store.find_data_nodes_by_file(&caller_file_id).unwrap();
     let call_exprs: Vec<_> = data_nodes
         .iter()
-        .filter(|dn| dn.kind == atlas_types::enums::DataNodeKind::Expr && dn.callsite_id.is_some())
+        .filter(|dn| dn.kind == atlas_engine::enums::DataNodeKind::Expr && dn.callsite_id.is_some())
         .collect();
     assert!(
         !call_exprs.is_empty(),
@@ -557,14 +557,14 @@ function run(): void {
     );
 
     // ── Verify SummaryEdgeProvider produces ReturnToCall edges ──
-    let provider = atlas_analysis::trace::virtual_edges::SummaryEdgeProvider;
+    let provider = atlas_engine::trace::virtual_edges::SummaryEdgeProvider;
     let edges = provider
         .virtual_incoming(&call_result_expr.id, store.as_ref())
         .expect("virtual_incoming should succeed");
 
     let return_edges: Vec<_> = edges
         .iter()
-        .filter(|e| e.kind == atlas_types::enums::DataFlowKind::ReturnToCall)
+        .filter(|e| e.kind == atlas_engine::DataFlowKind::ReturnToCall)
         .collect();
     assert!(
         !return_edges.is_empty(),
@@ -824,7 +824,7 @@ function outer(val: number): void {
     let nodes = store.find_data_nodes_by_file(&file_id).unwrap();
     let call_arg_nodes: Vec<_> = nodes
         .iter()
-        .filter(|n| n.kind == atlas_types::enums::DataNodeKind::CallArg)
+        .filter(|n| n.kind == atlas_engine::enums::DataNodeKind::CallArg)
         .collect();
     assert!(
         !call_arg_nodes.is_empty(),
@@ -851,7 +851,7 @@ function outer(val: number): void {
     let dn = point.data_node.as_ref().unwrap();
     assert_eq!(
         dn.kind,
-        atlas_types::enums::DataNodeKind::CallArg,
+        atlas_engine::enums::DataNodeKind::CallArg,
         "data node at call arg position should have kind CallArg, got {:?}",
         dn.kind
     );
@@ -1366,7 +1366,7 @@ fn p5_ts_param_slice_caller_evidence_combined() {
     assert_eq!(cap.language, "typescript");
     assert!(
         cap.capability_level
-            >= atlas_types::capability::CapabilityLevel::DataflowBasic,
+            >= atlas_engine::capability::CapabilityLevel::DataflowBasic,
         "TS must have at least DataflowBasic capability"
     );
     // ── Envelope fields validation (via JSON) ──
@@ -1402,11 +1402,11 @@ fn p5_ts_param_slice_caller_evidence_combined() {
         assert!(
             matches!(
                 step.edge_kind,
-                atlas_types::enums::DataFlowKind::Assign
-                    | atlas_types::enums::DataFlowKind::FieldLoad
-                    | atlas_types::enums::DataFlowKind::FieldStore
-                    | atlas_types::enums::DataFlowKind::ArgToParam
-                    | atlas_types::enums::DataFlowKind::ReturnToCall
+                atlas_engine::DataFlowKind::Assign
+                    | atlas_engine::DataFlowKind::FieldLoad
+                    | atlas_engine::DataFlowKind::FieldStore
+                    | atlas_engine::DataFlowKind::ArgToParam
+                    | atlas_engine::DataFlowKind::ReturnToCall
             ),
             "step {}: edge kind {:?} not in expected set",
             i,
@@ -1854,7 +1854,7 @@ fn sem_a_shadowing_inner_scope_not_traced_as_outer() {
     let total_locals: Vec<_> = data_nodes
         .iter()
         .filter(|n| {
-            n.kind == atlas_types::enums::DataNodeKind::Local && n.name.as_deref() == Some("total")
+            n.kind == atlas_engine::enums::DataNodeKind::Local && n.name.as_deref() == Some("total")
         })
         .collect();
     assert!(
@@ -2079,7 +2079,7 @@ function compute(): number {
 
     // For nested calls, we need interprocedural bridging to cross
     // function boundaries.
-    use atlas_analysis::trace::virtual_edges::SummaryEdgeProvider;
+    use atlas_engine::trace::virtual_edges::SummaryEdgeProvider;
     let path = Slicer::slice(store.as_ref(), &point, 20, Some(&SummaryEdgeProvider))
         .expect("slice error")
         .expect("nested call trace must produce path");
@@ -2092,7 +2092,7 @@ function compute(): number {
     let has_arg_to_param = path
         .steps
         .iter()
-        .any(|s| matches!(s.edge_kind, atlas_types::enums::DataFlowKind::ArgToParam));
+        .any(|s| matches!(s.edge_kind, atlas_engine::DataFlowKind::ArgToParam));
     assert!(
         has_arg_to_param,
         "nested call trace must include ArgToParam edge (interprocedural bridge missing)"
@@ -2154,7 +2154,7 @@ function main(): number {
     .expect("locate failed");
 
     // Interprocedural bridge is needed to cross helper() → result boundary.
-    use atlas_analysis::trace::virtual_edges::SummaryEdgeProvider;
+    use atlas_engine::trace::virtual_edges::SummaryEdgeProvider;
     let path = Slicer::slice(store.as_ref(), &point, 20, Some(&SummaryEdgeProvider))
         .expect("slice error")
         .expect("cross-function trace must produce path");

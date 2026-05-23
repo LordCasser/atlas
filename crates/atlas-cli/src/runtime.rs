@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
-use atlas_db::Store;
-use atlas_workspace::Workspace;
+use atlas_engine::Store;
+use atlas_engine::Workspace;
 
 /// Controls DB creation and schema-initialisation behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

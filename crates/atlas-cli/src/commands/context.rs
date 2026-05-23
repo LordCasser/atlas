@@ -3,9 +3,9 @@
 use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
 use atlas_context::ContextBuilder;
-use atlas_db::Store;
-use atlas_graph::GraphEngine;
-use atlas_types::SymbolDef;
+use atlas_engine::Store;
+use atlas_engine::GraphEngine;
+use atlas_engine::SymbolDef;
 use std::sync::Arc;
 
 pub fn run(query: &str, project: &str) -> anyhow::Result<()> {

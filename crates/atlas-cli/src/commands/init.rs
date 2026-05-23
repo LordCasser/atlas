@@ -2,7 +2,7 @@
 
 use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
-use atlas_types::Language;
+use atlas_engine::Language;
 
 pub fn run(project: &str) -> anyhow::Result<()> {
     let ctx = CommandContext::open(project, DbMode::InitOrCreate)?;
@@ -27,7 +27,7 @@ pub fn run(project: &str) -> anyhow::Result<()> {
         .get_stats()
         .context("Failed to read database stats")?;
     println!("  SQLite:   {}", store_stats.sqlite_version);
-    println!("  Schema:   v{}", atlas_db::CURRENT_SCHEMA_VERSION);
+    println!("  Schema:   v{}", atlas_engine::CURRENT_SCHEMA_VERSION);
 
     Ok(())
 }

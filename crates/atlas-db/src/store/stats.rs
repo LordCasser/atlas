@@ -47,8 +47,6 @@ impl Store {
 
     // ── Stats ───────────────────────────────────────────────────────────────
 
-    /// Collection metrics about the indexed codebase.
-    pub fn get_stats(&self) -> anyhow::Result<StoreStats> {
     /// Returns the total number of indexed files (fast COUNT query).
     pub fn count_files(&self) -> anyhow::Result<usize> {
         let conn = self.lock_read();
@@ -56,6 +54,7 @@ impl Store {
         Ok(count as usize)
     }
 
+    /// Collection metrics about the indexed codebase.
     pub fn get_stats(&self) -> anyhow::Result<StoreStats> {
         let conn = self.lock_read();
         let total_files: i64 = conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;

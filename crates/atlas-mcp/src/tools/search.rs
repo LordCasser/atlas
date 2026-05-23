@@ -1,6 +1,6 @@
 //! Search tools: full-text symbol search and single-symbol lookup.
 
-use atlas_types::SymbolKind;
+use atlas_engine::SymbolKind;
 
 use super::{ToolRouter, get_str, get_str_opt, get_u64};
 

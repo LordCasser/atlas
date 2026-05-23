@@ -1,6 +1,6 @@
 //! Status tools: project overview and file listing.
 
-use atlas_types::{Language, LanguageCapabilityProfile};
+use atlas_engine::{Language, LanguageCapabilityProfile};
 
 use super::ToolRouter;
 

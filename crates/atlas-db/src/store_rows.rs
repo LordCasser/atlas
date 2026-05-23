@@ -174,19 +174,17 @@ pub(crate) fn row_to_edge(row: &Row) -> rusqlite::Result<RawEdge> {
     let ref_id: Option<ReferenceId> = row.get(6)?;
     let location: Option<TextRange> = {
         let sb: Option<u32> = row.get(7)?;
-        sb.map(|start_byte| {
-            // If start_byte is present, all range fields must be valid.
-            // Propagate errors instead of silently defaulting to 0.
-            Ok(TextRange {
+        match sb {
+            Some(start_byte) => Some(TextRange {
                 start_byte,
                 end_byte: row.get::<_, u32>(8)?,
                 start_line: row.get::<_, u32>(9)?,
                 start_column: row.get::<_, u32>(10)?,
                 end_line: row.get::<_, u32>(11)?,
                 end_column: row.get::<_, u32>(12)?,
-            })
-        })
-        .transpose()?
+            }),
+            None => None,
+        }
     };
     let metadata: Option<String> = row.get(13)?;
     let resolved_by_str: Option<String> = row.get(14)?;

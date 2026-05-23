@@ -2,7 +2,7 @@
 
 use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
-use atlas_types::{FeatureSupport, Language, LanguageCapabilityProfile};
+use atlas_engine::{FeatureSupport, Language, LanguageCapabilityProfile};
 
 pub fn run(project: &str) -> anyhow::Result<()> {
     let ctx = CommandContext::open(project, DbMode::ExistingReadOnly)?;
@@ -17,7 +17,7 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     println!("  Project root:    {}", ws.root().display());
     println!("  Database:        {}/atlas.db", ws.atlas_dir().display());
     println!("  SQLite version:  {}", stats.sqlite_version);
-    println!("  Schema version:  v{}", atlas_db::CURRENT_SCHEMA_VERSION);
+    println!("  Schema version:  v{}", atlas_engine::CURRENT_SCHEMA_VERSION);
     println!();
     println!("  Files indexed:   {}", stats.total_files);
     println!("  Symbols:         {}", stats.total_symbols);

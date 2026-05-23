@@ -109,9 +109,8 @@ impl Store {
     /// the current PID.  Fails immediately if another process holds the lock
     /// and is still alive.  Stale locks (process died) are stolen.
     pub fn acquire_exclusive_lock(&self) -> anyhow::Result<()> {
-        let conn = self.lock();
-        let tx = conn.unchecked_transaction()?;
-        tx.execute_batch("BEGIN IMMEDIATE")?;
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let pid = std::process::id();
         let now = chrono_now_ms();
 

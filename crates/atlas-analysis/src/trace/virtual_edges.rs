@@ -177,11 +177,12 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                                                                     hex::encode(inner_csid.as_bytes()),
                                                                 ),
                                                             });
-                            }
-                        }
-                    }
-                }
-            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

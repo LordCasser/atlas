@@ -4,7 +4,7 @@ use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
 use atlas_search::SearchEngine;
 use atlas_search::SearchOptions;
-use atlas_types::{Language, SymbolKind};
+use atlas_engine::{Language, SymbolKind};
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -21,7 +21,7 @@ pub fn run(
     let root = &ctx.root;
 
     // Build graph and search engine
-    let graph = atlas_graph::GraphEngine::from_store(&store_arc, 0.3)
+    let graph = atlas_engine::GraphEngine::from_store(&store_arc, 0.3)
         .context("Failed to load graph snapshot")?;
     let graph = Arc::new(graph);
     let search = SearchEngine::new(Arc::clone(&store_arc), Arc::clone(&graph));

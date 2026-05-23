@@ -15,10 +15,10 @@
 use std::sync::Arc;
 
 use atlas_context::ContextBuilder;
-use atlas_db::Store;
-use atlas_graph::GraphEngine;
+use atlas_engine::Store;
+use atlas_engine::GraphEngine;
 use atlas_search::SearchEngine;
-use atlas_workspace::Workspace;
+use atlas_engine::Workspace;
 
 use self::protocol::{Response, ServerCapabilities, ServerInfo, ToolsCapability};
 use self::tools::ToolRouter;
@@ -74,7 +74,7 @@ impl McpServer {
             Arc::clone(&store),
             Arc::new(GraphEngine::from_store(&store, 0.3)?),
         );
-        let router = ToolRouter::new(
+        let mut router = ToolRouter::new(
             Arc::clone(&store),
             search,
             context,

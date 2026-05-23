@@ -1,8 +1,8 @@
 //! Trace tools: symbol and variable trace queries with dataflow/caller-path
 //! traversal.
 
-use atlas_analysis::trace::{TraceEngine, TraceQueryResponse};
-use atlas_types::SymbolId;
+use atlas_engine::{TraceEngine, TraceQueryResponse};
+use atlas_engine::SymbolId;
 
 use super::{ToolRouter, get_str_opt, get_u64, resolve_file_id};
 

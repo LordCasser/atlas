@@ -10,10 +10,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use atlas_context::ContextBuilder;
-use atlas_db::Store;
+use atlas_engine::Store;
 use atlas_search::SearchEngine;
-use atlas_types::SymbolId;
-use atlas_types::ids::FileId;
+use atlas_engine::SymbolId;
+use atlas_engine::FileId;
 
 use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolInputSchema};
 
@@ -79,7 +79,7 @@ impl ToolRouter {
                 current_count,
             );
             let new_graph = Arc::new(
-                atlas_graph::GraphEngine::from_store(&self.store, 0.3)?,
+                atlas_engine::GraphEngine::from_store(&self.store, 0.3)?,
             );
             self.search.refresh_graph(Arc::clone(&new_graph));
             self.context.refresh_graph(new_graph);
@@ -165,7 +165,7 @@ impl ToolRouter {
     }
 
     /// Render a node from the graph snapshot to JSON.
-    pub(crate) fn node_json(snap: &atlas_graph::GraphSnapshot, ix: atlas_graph::NodeIx) -> Value {
+    pub(crate) fn node_json(snap: &atlas_engine::GraphSnapshot, ix: atlas_engine::NodeIx) -> Value {
         let n = snap.node(ix);
         json!({
             "name": n.name,

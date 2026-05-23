@@ -9,10 +9,10 @@
 //! Run with default features:  `cargo test --test trace_cli_e2e`
 //! Run with all languages:    `cargo test --test trace_cli_e2e --features all-languages`
 
-use atlas_analysis::trace::TraceEngine;
+use atlas_engine::trace::TraceEngine;
 use atlas_cli::commands::{index, init};
-use atlas_db::Store;
-use atlas_types::ids::{FileId, SymbolId};
+use atlas_engine::Store;
+use atlas_engine::ids::{FileId, SymbolId};
 use serde_json::Value;
 use std::path::Path;
 use std::sync::Arc;
@@ -1026,8 +1026,8 @@ fn p12_trace_variable_file_not_found() {
 /// so project-level tsconfig path mappings were ignored during import resolution.
 #[test]
 fn p13_tsconfig_path_alias_resolves_imports() {
-    use atlas_db::Store;
-    use atlas_types::enums::EdgeKind;
+    use atlas_engine::Store;
+    use atlas_engine::enums::EdgeKind;
 
     let _ = tracing_subscriber::fmt::try_init();
     let tmp = TempDir::new().expect("create temp dir");

@@ -1,0 +1,47 @@
+[package]
+name = "atlas-engine"
+version = "0.1.0"
+edition = "2024"
+description = "Atlas Engine — unified facade crate: extraction, resolution, graph, trace"
+license = "MIT"
+
+[dependencies]
+atlas-types = { path = "../atlas-types" }
+atlas-workspace = { path = "../atlas-workspace" }
+atlas-db = { path = "../atlas-db" }
+atlas-extraction = { path = "../atlas-extraction" }
+atlas-resolution = { path = "../atlas-resolution" }
+atlas-graph = { path = "../atlas-graph" }
+atlas-analysis = { path = "../atlas-analysis" }
+anyhow = "1"
+blake3 = "1"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[features]
+default = ["typescript", "javascript", "python"]
+
+# ── Language features (aggregated from upstream crates) ──
+typescript = ["atlas-types/typescript", "atlas-extraction/typescript", "atlas-analysis/typescript"]
+javascript = ["atlas-extraction/javascript"]
+python = ["atlas-types/python", "atlas-extraction/python"]
+java = ["atlas-types/java", "atlas-extraction/java"]
+c = ["atlas-types/c", "atlas-extraction/c"]
+cpp = ["atlas-types/cpp", "atlas-extraction/cpp"]
+arkts = ["typescript", "atlas-types/arkts", "atlas-extraction/arkts"]
+cangjie = ["atlas-types/cangjie", "atlas-extraction/cangjie"]
+go = ["atlas-types/go", "atlas-extraction/go"]
+csharp = ["atlas-types/csharp", "atlas-extraction/csharp"]
+rust = ["atlas-types/rust", "atlas-extraction/rust"]
+php = ["atlas-types/php", "atlas-extraction/php"]
+ruby = ["atlas-types/ruby", "atlas-extraction/ruby"]
+bash = ["atlas-types/bash", "atlas-extraction/bash"]
+kotlin = ["atlas-types/kotlin", "atlas-extraction/kotlin"]
+
+all-languages = [
+    "typescript", "javascript", "python", "java",
+    "c", "cpp", "arkts", "go", "csharp", "rust", "php", "ruby", "kotlin",
+]

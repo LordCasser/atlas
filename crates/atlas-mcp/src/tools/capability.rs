@@ -1,7 +1,7 @@
 //! Capability tool: lists per-language analysis profiles with supported
 //! features, limitations, and confidence floors.
 
-use atlas_types::LanguageCapabilityProfile;
+use atlas_engine::LanguageCapabilityProfile;
 
 use super::ToolRouter;
 

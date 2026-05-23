@@ -101,17 +101,11 @@ name = "atlas-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "atlas-analysis",
  "atlas-context",
- "atlas-db",
- "atlas-extraction",
- "atlas-graph",
+ "atlas-engine",
  "atlas-mcp",
- "atlas-resolution",
  "atlas-search",
  "atlas-sync",
- "atlas-types",
- "atlas-workspace",
  "blake3",
  "clap",
  "hex",
@@ -145,6 +139,24 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "atlas-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atlas-analysis",
+ "atlas-db",
+ "atlas-extraction",
+ "atlas-graph",
+ "atlas-resolution",
+ "atlas-types",
+ "atlas-workspace",
+ "blake3",
+ "hex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -194,13 +206,9 @@ name = "atlas-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "atlas-analysis",
  "atlas-context",
- "atlas-db",
- "atlas-graph",
+ "atlas-engine",
  "atlas-search",
- "atlas-types",
- "atlas-workspace",
  "serde",
  "serde_json",
  "tokio",

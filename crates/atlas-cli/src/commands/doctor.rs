@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use atlas_types::LanguageCapabilityProfile;
+use atlas_engine::LanguageCapabilityProfile;
 
 pub fn run(project: &str) -> anyhow::Result<()> {
     let root = Path::new(project);
@@ -51,7 +51,7 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     if db_exists {
         match check_schema(&db_path) {
             Ok(Some(ver)) => {
-                let current = atlas_db::CURRENT_SCHEMA_VERSION;
+                let current = atlas_engine::CURRENT_SCHEMA_VERSION;
                 if ver == current {
                     check(
                         &format!("Schema version (v{ver})"),
@@ -60,7 +60,7 @@ pub fn run(project: &str) -> anyhow::Result<()> {
                     );
                 } else if ver < current {
                     // Check if migrations are available
-                    let has_migrations = atlas_db::MIGRATIONS
+                    let has_migrations = atlas_engine::MIGRATIONS
                         .iter()
                         .any(|m| m.from_version >= ver && m.from_version < current);
                     if has_migrations {

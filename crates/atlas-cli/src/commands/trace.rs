@@ -9,8 +9,8 @@
 //!   function to its farthest caller.
 
 use crate::runtime::{CommandContext, DbMode};
-use atlas_analysis::trace::{TraceEngine, TraceQueryResponse};
-use atlas_types::ids::SymbolId;
+use atlas_engine::{TraceEngine, TraceQueryResponse};
+use atlas_engine::SymbolId;
 
 /// Helper: in JSON mode, always output a TraceQueryResponse envelope, even for
 /// pre-engine errors like missing file or invalid symbol.  In human-readable
@@ -43,7 +43,7 @@ pub fn run_point(
     let file_id = match engine.resolve_file_id_with_root(ctx.workspace.root(), file_path)? {
         Some(fid) => fid,
         None => {
-            let resp: TraceQueryResponse<atlas_types::trace::TracePoint> = TraceQueryResponse::err(
+            let resp: TraceQueryResponse<atlas_engine::TracePoint> = TraceQueryResponse::err(
                 "trace_point",
                 &format!("File not found in index: '{}'", file_path),
             );
@@ -150,7 +150,7 @@ pub fn run_variable(
     let file_id = match engine.resolve_file_id_with_root(ctx.workspace.root(), file_path)? {
         Some(fid) => fid,
         None => {
-            let resp: TraceQueryResponse<atlas_types::trace::TracePath> = TraceQueryResponse::err(
+            let resp: TraceQueryResponse<atlas_engine::TracePath> = TraceQueryResponse::err(
                 "trace_variable",
                 &format!("File not found in index: '{}'", file_path),
             );
@@ -232,7 +232,7 @@ pub fn run_caller_path(
         let target_id: SymbolId = match hex.parse() {
             Ok(id) => id,
             Err(_) => {
-                let resp: TraceQueryResponse<atlas_types::caller_path::CallerChain> =
+                let resp: TraceQueryResponse<atlas_engine::CallerChain> =
                     TraceQueryResponse::err(
                         "trace_callers",
                         &format!("Invalid symbol hex ID: {}", hex),
@@ -244,7 +244,7 @@ pub fn run_caller_path(
     } else if let Some(name) = symbol_name {
         engine.trace_callers_by_name(name, max_depth)
     } else {
-        let resp: TraceQueryResponse<atlas_types::caller_path::CallerChain> =
+        let resp: TraceQueryResponse<atlas_engine::CallerChain> =
             TraceQueryResponse::err(
                 "trace_callers",
                 "Must provide either --symbol <hex> or --name <symbol-name>",

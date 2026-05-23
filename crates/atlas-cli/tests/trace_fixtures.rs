@@ -11,13 +11,13 @@
 //!
 //! Run: `cargo test --test trace_fixtures`
 
-use atlas_analysis::trace::{Locator, Slicer, TraceEngine};
-use atlas_db::Store;
-use atlas_extraction::extract_file;
-use atlas_graph::GraphBuilder;
-use atlas_resolution::ReferenceResolver;
-use atlas_types::enums::{DataFlowKind, DataNodeKind, Language};
-use atlas_types::ids::FileId;
+use atlas_engine::trace::{Locator, Slicer, TraceEngine};
+use atlas_engine::Store;
+use atlas_engine::extract_file;
+use atlas_engine::GraphBuilder;
+use atlas_engine::ReferenceResolver;
+use atlas_engine::enums::{DataFlowKind, DataNodeKind, Language};
+use atlas_engine::ids::FileId;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -34,7 +34,7 @@ fn index_files(files: &[(&str, &str)]) -> Arc<Store> {
         let path = Path::new(rel_path);
         let lang = Language::from_path(path)
             .unwrap_or_else(|| panic!("no language detected for {}", rel_path));
-        let frontend = atlas_extraction::create_frontend(lang)
+        let frontend = atlas_engine::create_frontend(lang)
             .unwrap_or_else(|| panic!("no frontend for {} (lang={:?})", rel_path, lang));
         let file_id = FileId::generate(rel_path);
         let facts = extract_file(&frontend, file_id, &PathBuf::from(rel_path), content, "abc")
@@ -55,7 +55,7 @@ fn index_files(files: &[(&str, &str)]) -> Arc<Store> {
 
 /// Locate a data node by name in a file.  Uses **last** occurrence in byte order
 /// (post‑body uses in a function usually sort after body‑local definitions).
-fn find_node<'a>(nodes: &'a [atlas_types::dataflow::DataNode], name: &str) -> &'a atlas_types::dataflow::DataNode {
+fn find_node<'a>(nodes: &'a [atlas_engine::dataflow::DataNode], name: &str) -> &'a atlas_engine::dataflow::DataNode {
     nodes
         .iter()
         .filter(|n| n.name.as_deref() == Some(name))
@@ -64,7 +64,7 @@ fn find_node<'a>(nodes: &'a [atlas_types::dataflow::DataNode], name: &str) -> &'
 }
 
 /// Assert that a trace path contains at least one step of the given edge kind.
-fn assert_has_edge_kind(path: &atlas_types::trace::TracePath, kind: DataFlowKind) {
+fn assert_has_edge_kind(path: &atlas_engine::TracePath, kind: DataFlowKind) {
     let found = path.steps.iter().any(|s| s.edge_kind == kind);
     assert!(
         found,
@@ -77,7 +77,7 @@ fn assert_has_edge_kind(path: &atlas_types::trace::TracePath, kind: DataFlowKind
 /// Assert the envelope is well‑formed: ok=true, partial_result=false,
 /// diagnostics empty, capability present with given language.
 fn assert_envelope_ok(
-    resp: &atlas_analysis::trace::TraceQueryResponse<atlas_types::trace::TracePath>,
+    resp: &atlas_engine::trace::TraceQueryResponse<atlas_engine::TracePath>,
     lang: &str,
 ) {
     assert!(resp.ok, "expected ok=true");
@@ -264,7 +264,7 @@ fn fx3_cross_file_arg_to_param_bridge() {
     let base_node = base_nodes[0];
 
     // Use interprocedural bridging via SummaryEdgeProvider.
-    use atlas_analysis::trace::virtual_edges::SummaryEdgeProvider;
+    use atlas_engine::trace::virtual_edges::SummaryEdgeProvider;
     let point = Locator::locate(
         store.as_ref(),
         &helper_id,
@@ -331,7 +331,7 @@ fn fx4_cross_file_return_to_call_bridge() {
     )
     .expect("locate failed");
 
-    use atlas_analysis::trace::virtual_edges::SummaryEdgeProvider;
+    use atlas_engine::trace::virtual_edges::SummaryEdgeProvider;
     let path = Slicer::slice(store.as_ref(), &point, 20, Some(&SummaryEdgeProvider))
         .expect("slice error")
         .expect("cross-file return trace must produce path");
@@ -392,7 +392,7 @@ fn fx5_java_capability_declares_dataflow_unsupported() {
     let cap = resp.capability.as_ref().expect("Java capability must be present");
     assert_eq!(cap.language, "java");
     assert!(
-        cap.capability_level == atlas_types::capability::CapabilityLevel::Symbolic,
+        cap.capability_level == atlas_engine::capability::CapabilityLevel::Symbolic,
         "Java must be Symbolic level, got {:?}",
         cap.capability_level
     );
@@ -402,14 +402,14 @@ fn fx5_java_capability_declares_dataflow_unsupported() {
         assert!(
             matches!(
                 features.local_dataflow,
-                atlas_types::capability::FeatureSupport::Unsupported { .. }
+                atlas_engine::capability::FeatureSupport::Unsupported { .. }
             ),
             "Java local_dataflow must be Unsupported"
         );
         assert!(
             matches!(
                 features.use_def,
-                atlas_types::capability::FeatureSupport::Unsupported { .. }
+                atlas_engine::capability::FeatureSupport::Unsupported { .. }
             ),
             "Java use_def must be Unsupported"
         );
@@ -461,7 +461,7 @@ fn fx6_python_cfg_unsupported_in_capability() {
         assert!(
             matches!(
                 features.cfg,
-                atlas_types::capability::FeatureSupport::Unsupported { .. }
+                atlas_engine::capability::FeatureSupport::Unsupported { .. }
             ),
             "Python CFG must be declared Unsupported in FeatureMatrix, got {:?}",
             features.cfg

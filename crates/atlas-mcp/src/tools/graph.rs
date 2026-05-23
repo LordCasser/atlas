@@ -1,7 +1,7 @@
 //! Graph traversal tools: neighbors, callers, callees, callgraph, path,
 //! explore, and impact analysis.
 
-use atlas_graph::{TraversalConfig, TraversalDirection};
+use atlas_engine::{TraversalConfig, TraversalDirection};
 
 use super::{ToolRouter, get_str, get_str_opt, get_u64};
 

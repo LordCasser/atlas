@@ -6,12 +6,12 @@
 //! Run with default features:  `cargo test --test integration`
 //! Run with all languages:    `cargo test --test integration --features all-languages,mcp,sync`
 
-use atlas_db::Store;
-use atlas_extraction::extract_file;
-use atlas_graph::GraphBuilder;
-use atlas_resolution::{ReferenceResolver, ResolutionStats};
-use atlas_types::enums::{EdgeKind, Language};
-use atlas_types::ids::FileId;
+use atlas_engine::Store;
+use atlas_engine::extract_file;
+use atlas_engine::GraphBuilder;
+use atlas_engine::{ReferenceResolver, ResolutionStats};
+use atlas_engine::enums::{EdgeKind, Language};
+use atlas_engine::ids::FileId;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -34,7 +34,7 @@ fn index_files(files: &[(&str, &str)]) -> (Arc<Store>, PipelineStats) {
         let path = Path::new(rel_path);
         let lang = Language::from_path(path)
             .unwrap_or_else(|| panic!("no language detected for {}", rel_path));
-        let frontend = atlas_extraction::create_frontend(lang)
+        let frontend = atlas_engine::create_frontend(lang)
             .unwrap_or_else(|| panic!("no frontend for {} (lang={:?})", rel_path, lang));
         let file_id = FileId::generate(rel_path);
         let facts = extract_file(&frontend, file_id, &PathBuf::from(rel_path), content, "abc")
@@ -136,7 +136,7 @@ main();
 
 #[test]
 fn ts_cross_file_graph_callers_callees() {
-    use atlas_graph::GraphEngine;
+    use atlas_engine::GraphEngine;
 
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[
@@ -823,7 +823,7 @@ function main() {
             let dn = dn.unwrap();
             assert_eq!(
                 dn.kind,
-                atlas_types::enums::DataNodeKind::CallArg,
+                atlas_engine::enums::DataNodeKind::CallArg,
                 "arg[{}] links to kind={:?}, expected CallArg",
                 i,
                 dn.kind
@@ -877,7 +877,7 @@ function main(): number {
     let nodes = store.find_data_nodes_by_file(&file_id).unwrap();
     let call_targets: Vec<_> = nodes
         .iter()
-        .filter(|n| n.kind == atlas_types::enums::DataNodeKind::CallTarget)
+        .filter(|n| n.kind == atlas_engine::enums::DataNodeKind::CallTarget)
         .collect();
     assert!(
         call_targets.len() >= 2,
@@ -899,7 +899,7 @@ function main(): number {
     // ── Find CallArg nodes ──
     let call_args: Vec<_> = nodes
         .iter()
-        .filter(|n| n.kind == atlas_types::enums::DataNodeKind::CallArg)
+        .filter(|n| n.kind == atlas_engine::enums::DataNodeKind::CallArg)
         .collect();
     // Should have 3 args: 10 (→bar), result_of_bar_expression (→foo), 20 (→foo)
     // But tree-sitter may capture the full bar(10) expression as a single CallArg for foo
@@ -916,7 +916,7 @@ function main(): number {
     for ca in &call_args {
         if let Ok(edges) = store.find_dataflow_edges_by_source(&ca.id) {
             for e in &edges {
-                if e.kind == atlas_types::enums::DataFlowKind::ArgToParam {
+                if e.kind == atlas_engine::DataFlowKind::ArgToParam {
                     arg_to_param_edges.push((ca.id, e.clone()));
                 }
             }
@@ -1041,7 +1041,7 @@ function main(): number {
 
                 assert_eq!(
                     dn.kind,
-                    atlas_types::enums::DataNodeKind::CallArg,
+                    atlas_engine::enums::DataNodeKind::CallArg,
                     "arg[{}] links to kind={:?}, expected CallArg",
                     i,
                     dn.kind
@@ -1073,7 +1073,7 @@ function main(): number {
     let nodes = store.find_data_nodes_by_file(&file_id).unwrap();
     let call_arg_nodes: Vec<_> = nodes
         .iter()
-        .filter(|n| n.kind == atlas_types::enums::DataNodeKind::CallArg)
+        .filter(|n| n.kind == atlas_engine::enums::DataNodeKind::CallArg)
         .collect();
     assert!(
         !call_arg_nodes.is_empty(),
@@ -1140,7 +1140,7 @@ function bar() {
         nodes.iter().map(|n| (n.id, n.function_id)).collect();
 
     // Collect all dataflow edges
-    let mut cross_fn_edges: Vec<(atlas_types::ids::DataNodeId, atlas_types::ids::DataNodeId)> =
+    let mut cross_fn_edges: Vec<(atlas_engine::ids::DataNodeId, atlas_engine::ids::DataNodeId)> =
         vec![];
     for node in &nodes {
         if let Ok(edges) = store.find_dataflow_edges_by_source(&node.id) {

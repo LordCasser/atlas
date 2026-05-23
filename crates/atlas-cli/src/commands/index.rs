@@ -19,15 +19,15 @@
 
 use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
-use atlas_extraction::frontend::LanguageFrontend;
-use atlas_extraction::{self, LanguageRegistry, ParseWorkerPool, WorkerConfig};
+use atlas_engine::LanguageFrontend;
+use atlas_engine::{self, LanguageRegistry, ParseWorkerPool, WorkerConfig};
 use atlas_sync::FileLock;
 use atlas_sync::discovery::{DiscoveryConfig, discover_files};
-use atlas_types::ExtractionError;
-use atlas_types::FailureCategory;
-use atlas_types::Language;
-use atlas_types::{PerLanguageStats, PhaseTimer, PhaseTiming, PhaseTimings};
-use atlas_workspace::SourcePath;
+use atlas_engine::ExtractionError;
+use atlas_engine::FailureCategory;
+use atlas_engine::Language;
+use atlas_engine::{PerLanguageStats, PhaseTimer, PhaseTiming, PhaseTimings};
+use atlas_engine::SourcePath;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -40,7 +40,7 @@ use std::time::Instant;
 struct ExtractedFile {
     rel_path: PathBuf,
     lang: Language,
-    facts: atlas_types::FileFacts,
+    facts: atlas_engine::FileFacts,
 }
 
 /// Result of the hash-check phase: dirty set + deletion set.
@@ -58,8 +58,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     let _store_timer = PhaseTimer::start("Open store");
     let ctx = CommandContext::open(project, DbMode::CreateOrOpenReadWrite)?;
     let _lock = FileLock::acquire(&ctx.store)
-        .context("Another atlas process is indexing this project. "
-                 "Wait for it to finish, or stop the other process first.")?;
+        .context("Another atlas process is indexing this project. Wait for it to finish, or stop the other process first.")?;
     let root = ctx.root.as_path();
     let pipeline_start = Instant::now();
     let mut phase_timings = PhaseTimings::new();
@@ -110,7 +109,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
         for rel_path in &hash_result.deleted {
             let sp = SourcePath::try_from_relative(&rel_path.to_string_lossy())
                 .with_context(|| format!("invalid deleted path: {}", rel_path.display()))?;
-            let file_id = atlas_types::FileId::generate(sp.as_str());
+            let file_id = atlas_engine::FileId::generate(sp.as_str());
             // Invalidate cross-file references BEFORE deleting symbols
             ctx.store
                 .invalidate_references_to_symbols_in_file(&file_id)
@@ -150,7 +149,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
             tracing::warn!("Files in those languages will be skipped.");
             let available: Vec<Language> = languages
                 .iter()
-                .filter(|l| LanguageRegistry::new(&[*l]).is_ok())
+                .filter(|l| LanguageRegistry::new(&[**l]).is_ok())
                 .copied()
                 .collect();
             if available.is_empty() {
@@ -164,7 +163,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     // P2: Build frontend cache — one LanguageFrontend per language, reused across all files.
     let frontend_cache: HashMap<Language, LanguageFrontend> = languages
         .iter()
-        .filter_map(|&lang| atlas_extraction::create_frontend(lang).map(|fe| (lang, fe)))
+        .filter_map(|&lang| atlas_engine::create_frontend(lang).map(|fe| (lang, fe)))
         .collect();
     let lang_timing = lang_timer.items(languages.len() as u64).finish();
     phase_timings.push(lang_timing);
@@ -355,14 +354,14 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     let res_timer = PhaseTimer::start("Resolution");
     // P2: Load tsconfig.json or jsconfig.json path aliases if present
     let path_alias =
-        atlas_resolution::PathAliasResolver::from_tsconfig(&root.join("tsconfig.json"))
+        atlas_engine::PathAliasResolver::from_tsconfig(&root.join("tsconfig.json"))
             .or_else(|| {
-                atlas_resolution::PathAliasResolver::from_jsconfig(&root.join("jsconfig.json"))
+                atlas_engine::PathAliasResolver::from_jsconfig(&root.join("jsconfig.json"))
             })
-            .unwrap_or_else(atlas_resolution::PathAliasResolver::empty);
+            .unwrap_or_else(atlas_engine::PathAliasResolver::empty);
 
     let tsconfig_changed =
-        atlas_resolution::detect_config_change(&ctx.store, &root, &["tsconfig.json", "jsconfig.json"])?;
+        atlas_engine::detect_config_change(&ctx.store, &root, &["tsconfig.json", "jsconfig.json"])?;
     if tsconfig_changed {
         let inv_refs = ctx
             .store
@@ -380,7 +379,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     }
 
     let mut resolver =
-        atlas_resolution::ReferenceResolver::with_path_alias(Arc::clone(&ctx.store), path_alias);
+        atlas_engine::ReferenceResolver::with_path_alias(Arc::clone(&ctx.store), path_alias);
     let (resolved, stats) = resolver.resolve_all()?;
     let res_elapsed = res_timer
         .items(stats.total_refs as u64)
@@ -433,7 +432,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     // ── Phase 3b: Build edges ────────────────────────────────────────────
     println!("\nBuilding edges...");
     let edge_timer = PhaseTimer::start("Graph build");
-    let builder = atlas_graph::GraphBuilder::new(Arc::clone(&ctx.store));
+    let builder = atlas_engine::GraphBuilder::new(Arc::clone(&ctx.store));
     let build_stats = builder.build_all(&resolved);
     let edge_elapsed = edge_timer
         .items(build_stats.edges_built as u64)
@@ -463,7 +462,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
     // (extraction + resolution + graph build).  Committing earlier would
     // leave the hash updated on partial failure, preventing retry.
     if tsconfig_changed {
-        atlas_resolution::commit_config_hashes(&ctx.store, &root, &["tsconfig.json"])?;
+        atlas_engine::commit_config_hashes(&ctx.store, &root, &["tsconfig.json"])?;
     }
 
     // Show final stats
@@ -509,7 +508,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
 /// 3. Classify each file: New, Dirty, or Clean.
 /// 4. Detect deleted files (in DB but not on disk).
 fn build_dirty_set(
-    store: &atlas_db::Store,
+    store: &atlas_engine::Store,
     discovered: &[PathBuf],
     root: &Path,
 ) -> anyhow::Result<HashCheckResult> {
@@ -588,7 +587,7 @@ fn extract_one_with_frontend(
     root: &Path,
     _lang: Language,
     frontend: &LanguageFrontend,
-) -> Result<atlas_types::FileFacts, ExtractionError> {
+) -> Result<atlas_engine::FileFacts, ExtractionError> {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -615,7 +614,7 @@ fn extract_one_with_frontend(
         category: FailureCategory::IoError,
         message: format!("invalid source path: {}", relative.display()),
     })?;
-    let file_id = atlas_types::FileId::generate(sp.as_str());
+    let file_id = atlas_engine::FileId::generate(sp.as_str());
 
     pool.extract_one(frontend, file_id, relative, &source, &content_hash)
 }
@@ -649,7 +648,7 @@ fn format_duration(ms: u64) -> String {
     }
 }
 
-fn format_phase_details(t: &atlas_types::PhaseTiming) -> String {
+fn format_phase_details(t: &atlas_engine::PhaseTiming) -> String {
     let mut parts = Vec::new();
     if let Some(items) = t.items {
         parts.push(format!("{} items", items));

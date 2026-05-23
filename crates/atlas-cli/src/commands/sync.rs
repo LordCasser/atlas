@@ -7,8 +7,7 @@ use atlas_sync::FileLock;
 pub fn run(project: &str) -> Result<()> {
     let ctx = CommandContext::open(project, DbMode::ExistingReadWrite)?;
     let _lock = FileLock::acquire(&ctx.store)
-        .context("Another atlas process is modifying this project. "
-                 "Wait for it to finish, or stop the other process first.")?;
+        .context("Another atlas process is modifying this project. Wait for it to finish, or stop the other process first.")?;
 
     let engine = atlas_sync::SyncEngine::new(ctx.store.clone(), ctx.root);
 
@@ -46,7 +45,7 @@ pub fn run(project: &str) -> Result<()> {
 }
 
 /// Print phase timing breakdown in aligned columns.
-fn print_phase_timings(timings: &atlas_types::PhaseTimings) {
+fn print_phase_timings(timings: &atlas_engine::PhaseTimings) {
     if timings.is_empty() {
         return;
     }

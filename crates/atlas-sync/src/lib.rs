@@ -8,6 +8,8 @@ pub mod detector;
 pub mod discovery;
 pub mod file_lock;
 
+pub use file_lock::FileLock;
+
 #[cfg(feature = "sync")]
 pub mod watcher;
 

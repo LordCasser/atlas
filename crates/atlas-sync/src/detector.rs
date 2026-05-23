@@ -6,6 +6,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::discovery::DiscoveryConfig;
+
+/// Compute the BLAKE3 hex hash of a file's contents.
+fn compute_blake3_hex(path: &Path) -> anyhow::Result<String> {
+    let content = std::fs::read(path)?;
+    Ok(blake3::hash(&content).to_hex().to_string())
+}
+
 /// What happened to a file between the last index and now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChangeKind {
@@ -115,7 +123,6 @@ fn parse_porcelain_line(line: &str) -> (PorcelainStatus, &str) {
             } else {
                 (PorcelainStatus::Modified, path)
             }
-        }
         }
         _ => (PorcelainStatus::Modified, path),
     }
