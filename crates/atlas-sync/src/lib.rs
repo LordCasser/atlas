@@ -80,7 +80,10 @@ impl SyncEngine {
             let sp = SourcePath::try_from_relative(&relative.to_string_lossy())
                 .with_context(|| format!("invalid deleted path: {}", relative.display()))?;
             let file_id = atlas_types::ids::FileId::generate(sp.as_str());
-            // P2: Invalidate edges derived from this file's references before
+            // P2: Invalidate OTHER files' references pointing to this file's
+            // symbols before deleting (prevents dangling resolved targets).
+            let _ = self.store.invalidate_references_to_symbols_in_file(&file_id);
+            // Invalidate edges derived from this file's references before
             // deleting the file (CASCADE handles the rest).
             self.store
                 .delete_edges_for_file_references(&file_id)
@@ -94,7 +97,9 @@ impl SyncEngine {
             let sp = SourcePath::try_from_relative(&relative.to_string_lossy())
                 .with_context(|| format!("invalid modified path: {}", relative.display()))?;
             let file_id = atlas_types::ids::FileId::generate(sp.as_str());
-            // P2: Invalidate resolved facts and derived edges for modified files.
+            // Invalidate cross-file references before clearing own data
+            let _ = self.store.invalidate_references_to_symbols_in_file(&file_id);
+            // Invalidate resolved facts and derived edges for modified files.
             // This ensures stale resolution targets don't persist after re-extraction.
             self.store
                 .invalidate_references_for_file(&file_id)

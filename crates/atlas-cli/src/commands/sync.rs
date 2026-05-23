@@ -1,10 +1,14 @@
 //! `atlas sync` — incremental sync for changed files.
 
 use crate::runtime::{CommandContext, DbMode};
-use anyhow::Result;
+use anyhow::{Context, Result};
+use atlas_sync::FileLock;
 
 pub fn run(project: &str) -> Result<()> {
     let ctx = CommandContext::open(project, DbMode::ExistingReadWrite)?;
+    let _lock = FileLock::acquire(&ctx.store)
+        .context("Another atlas process is modifying this project. "
+                 "Wait for it to finish, or stop the other process first.")?;
 
     let engine = atlas_sync::SyncEngine::new(ctx.store.clone(), ctx.root);
 

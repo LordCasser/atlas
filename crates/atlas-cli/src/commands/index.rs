@@ -453,7 +453,14 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
         edges_built = build_stats.edges_built,
         duration_ms = edge_elapsed,
     );
-    println!("  Edges built:         {}", build_stats.edges_built);
+    if build_stats.edges_built != build_stats.edges_written {
+        println!("  Edges built:         {} ({} written)", build_stats.edges_built, build_stats.edges_written);
+        if !build_stats.warnings.is_empty() {
+            println!("  Edge warnings:       {}", build_stats.warnings.first().unwrap_or(&String::new()));
+        }
+    } else {
+        println!("  Edges built:         {}", build_stats.edges_built);
+    }
 
     // Commit tsconfig hash baseline AFTER the full pipeline succeeded
     // (extraction + resolution + graph build).  Committing earlier would
