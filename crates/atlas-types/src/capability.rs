@@ -175,6 +175,44 @@ impl FeatureMatrix {
 
         floors.into_iter().fold(1.0, f64::min)
     }
+
+    /// Human-readable feature names that are currently supported.
+    pub fn supported_feature_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        if self.symbols.is_supported() { names.push("symbol_extraction".into()); }
+        if self.references.is_supported() { names.push("reference_extraction".into()); }
+        if self.imports.is_supported() { names.push("import_resolution".into()); }
+        if self.scopes.is_supported() { names.push("scope_extraction".into()); }
+        if self.call_graph.is_supported() { names.push("call_graph".into()); }
+        if self.lexical_bindings.is_supported() { names.push("lexical_bindings".into()); }
+        if self.local_dataflow.is_supported() { names.push("intra_statement_dataflow".into()); }
+        if self.use_def.is_supported() { names.push("use_def_heuristic".into()); }
+        if self.field_access.is_supported() { names.push("access_path".into()); }
+        if self.call_arguments.is_supported() { names.push("call_arguments".into()); }
+        if self.returns_flow.is_supported() { names.push("return_flow".into()); }
+        if self.cfg.is_supported() { names.push("cfg".into()); }
+        if self.interprocedural_summaries.is_supported() { names.push("interprocedural_dataflow".into()); }
+        names
+    }
+
+    /// Human-readable feature names that are NOT currently supported.
+    pub fn unsupported_feature_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        if !self.symbols.is_supported() { names.push("symbol_extraction".into()); }
+        if !self.references.is_supported() { names.push("reference_extraction".into()); }
+        if !self.imports.is_supported() { names.push("import_resolution".into()); }
+        if !self.scopes.is_supported() { names.push("scope_extraction".into()); }
+        if !self.call_graph.is_supported() { names.push("call_graph".into()); }
+        if !self.lexical_bindings.is_supported() { names.push("lexical_bindings".into()); }
+        if !self.local_dataflow.is_supported() { names.push("intra_statement_dataflow".into()); }
+        if !self.use_def.is_supported() { names.push("use_def_heuristic".into()); }
+        if !self.field_access.is_supported() { names.push("access_path".into()); }
+        if !self.call_arguments.is_supported() { names.push("call_arguments".into()); }
+        if !self.returns_flow.is_supported() { names.push("return_flow".into()); }
+        if !self.cfg.is_supported() { names.push("cfg".into()); }
+        if !self.interprocedural_summaries.is_supported() { names.push("interprocedural_dataflow".into()); }
+        names
+    }
 }
 
 // ---------------------------------------------------------------------------

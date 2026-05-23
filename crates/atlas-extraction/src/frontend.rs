@@ -339,6 +339,24 @@ impl LanguageFrontend {
             interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
         }
     }
+
+    /// Derive a complete [`LanguageCapabilityProfile`] from the slot implementations.
+    ///
+    /// Unlike the hand-written profiles in `atlas_types::capability::profiles`,
+    /// this method computes the profile directly from slot trait capabilities,
+    /// guaranteeing that the profile always matches the actual implementation.
+    pub fn derive_capability_profile(&self) -> LanguageCapabilityProfile {
+        let fm = self.feature_matrix();
+        LanguageCapabilityProfile {
+            language: self.language().as_str().into(),
+            capability_level: fm.derive_capability_level(),
+            supported_features: fm.supported_feature_names(),
+            unsupported_features: fm.unsupported_feature_names(),
+            limitations: self.capability.limitations.clone(),
+            confidence_floor: fm.min_confidence_floor(),
+            features: Some(fm),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -645,6 +663,79 @@ mod tests {
                     lang
                 );
             }
+        }
+    }
+
+    /// B5: auto-derived capability profile must be consistent with static profile.
+    ///
+    /// For each language, the profile derived from slot capabilities must:
+    /// - Have the same capability_level as the static profile
+    /// - Have a FeatureMatrix where the supported/unsupported states match
+    #[test]
+    fn test_auto_derived_profile_matches_static() {
+        let mut languages: Vec<Language> = Vec::new();
+        #[cfg(feature = "typescript")]
+        languages.push(Language::TypeScript);
+        #[cfg(feature = "javascript")]
+        languages.push(Language::JavaScript);
+        #[cfg(feature = "python")]
+        languages.push(Language::Python);
+        #[cfg(feature = "java")]
+        languages.push(Language::Java);
+        #[cfg(feature = "c")]
+        languages.push(Language::C);
+        #[cfg(feature = "cpp")]
+        languages.push(Language::Cpp);
+        #[cfg(feature = "arkts")]
+        languages.push(Language::ArkTS);
+        #[cfg(feature = "go")]
+        languages.push(Language::Go);
+        #[cfg(feature = "csharp")]
+        languages.push(Language::CSharp);
+        #[cfg(feature = "rust")]
+        languages.push(Language::Rust);
+
+        assert!(!languages.is_empty(), "expected at least one language enabled");
+
+        for lang in languages {
+            let frontend = crate::languages::create_frontend(lang)
+                .unwrap_or_else(|| panic!("create_frontend failed for {:?}", lang));
+
+            let derived = frontend.derive_capability_profile();
+            let static_profile = frontend.capability.clone();
+
+            // Capability level must match
+            assert_eq!(
+                derived.capability_level, static_profile.capability_level,
+                "{:?}: derived level {:?} != static level {:?}",
+                lang, derived.capability_level, static_profile.capability_level
+            );
+
+            // Both must have FeatureMatrix
+            let df = derived.features.as_ref().expect("derived must have FeatureMatrix");
+            let sf = static_profile.features.as_ref().expect("static must have FeatureMatrix");
+
+            // Per-feature supported/unsupported must match
+            assert_eq!(
+                df.symbols.is_supported(), sf.symbols.is_supported(),
+                "{:?}: symbols mismatch", lang
+            );
+            assert_eq!(
+                df.local_dataflow.is_supported(), sf.local_dataflow.is_supported(),
+                "{:?}: dataflow mismatch", lang
+            );
+            assert_eq!(
+                df.lexical_bindings.is_supported(), sf.lexical_bindings.is_supported(),
+                "{:?}: lexical mismatch", lang
+            );
+            assert_eq!(
+                df.scopes.is_supported(), sf.scopes.is_supported(),
+                "{:?}: scopes mismatch", lang
+            );
+
+            // Derived profile must produce valid string lists
+            assert!(!derived.supported_features.is_empty(), "{:?}: no supported features", lang);
+            assert!(!derived.unsupported_features.is_empty(), "{:?}: no unsupported features", lang);
         }
     }
 }
