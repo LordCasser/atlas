@@ -23,7 +23,7 @@ impl Store {
 
     /// Find all references belonging to a file.
     pub fn find_references_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<ReferenceUse>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(REFERENCE_SELECT_WHERE)?;
         let rows = stmt.query_map(params![file_id], row_to_reference)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -31,7 +31,7 @@ impl Store {
 
     /// Find unresolved references (no resolved target).
     pub fn find_unresolved_references(&self) -> anyhow::Result<Vec<ReferenceUse>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(&format!(
             "{} WHERE resolved_symbol_id IS NULL",
             REFERENCE_SELECT_NO_WHERE
@@ -193,7 +193,7 @@ impl Store {
 
     /// Find edges originating from a symbol.
     pub fn find_edges_by_source(&self, source: &SymbolId) -> anyhow::Result<Vec<RawEdge>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT edge_id, source, target, kind, confidence, provenance,
                     ref_id, location_0, location_1, location_2, location_3, location_4, location_5,
@@ -206,7 +206,7 @@ impl Store {
 
     /// Find edges targeting a symbol.
     pub fn find_edges_by_target(&self, target: &SymbolId) -> anyhow::Result<Vec<RawEdge>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT edge_id, source, target, kind, confidence, provenance,
                     ref_id, location_0, location_1, location_2, location_3, location_4, location_5,
@@ -221,7 +221,7 @@ impl Store {
     /// Uses the shared connection via the mutex; long-running reads may
     //  block writes.  In the future this should use a separate read connection.
     pub fn get_all_edges(&self) -> anyhow::Result<Vec<RawEdge>> {
-        let guard = self.lock();
+        let guard = self.lock_read();
         let conn: &rusqlite::Connection = &guard;
         let mut stmt = conn.prepare(
             "SELECT edge_id, source, target, kind, confidence, provenance,
@@ -244,7 +244,7 @@ impl Store {
 
     /// Find all callsites in a file.
     pub fn find_callsites_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<Callsite>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT callsite_id, reference_id, caller, callee, receiver, args_json,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
@@ -263,7 +263,7 @@ impl Store {
     ///
     /// Used by summary-bridge trace to find callers of a function.
     pub fn find_callsites_by_callee(&self, callee: &SymbolId) -> anyhow::Result<Vec<Callsite>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT callsite_id, reference_id, caller, callee, receiver, args_json,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
@@ -278,7 +278,7 @@ impl Store {
 
     /// Find a single callsite by its ID.
     pub fn find_callsites_by_id(&self, callsite_id: &CallsiteId) -> anyhow::Result<Vec<Callsite>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT callsite_id, reference_id, caller, callee, receiver, args_json,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
@@ -296,7 +296,7 @@ impl Store {
         &self,
         ref_id: &ReferenceId,
     ) -> anyhow::Result<Option<Callsite>> {
-        let conn = self.lock();
+        let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT callsite_id, reference_id, caller, callee, receiver, args_json,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
@@ -328,5 +328,19 @@ impl Store {
             params![callee, ref_id],
         )?;
         Ok(())
+    }
+
+    /// Find all references that resolve to a given symbol (usages).
+    pub fn find_references_by_symbol(
+        &self,
+        symbol_id: &SymbolId,
+    ) -> anyhow::Result<Vec<ReferenceUse>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(&format!(
+            "{} WHERE resolved_symbol_id = ?1",
+            REFERENCE_SELECT_NO_WHERE
+        ))?;
+        let rows = stmt.query_map(params![symbol_id], row_to_reference)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 }

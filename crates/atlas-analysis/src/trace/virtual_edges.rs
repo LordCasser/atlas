@@ -17,11 +17,11 @@
 //! direct-join heuristics (match callsite callee symbol → callee params;
 //! match call-arg DataNode → callee param by index).
 
-use atlas_db::Store;
 use atlas_db::TraceStore;
 use atlas_types::dataflow::DataFlowEdge;
 use atlas_types::enums::{DataFlowKind, DataNodeKind};
-use atlas_types::ids::DataNodeId;
+use atlas_types::ids::{DataNodeId, SymbolId};
+use atlas_types::structs::Callsite;
 
 // ---------------------------------------------------------------------------
 // TraceEdge — a cross-boundary dataflow connection
@@ -97,31 +97,27 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
         let mut edges: Vec<TraceEdge> = Vec::new();
 
         match target_node.kind {
-            // ── Parameter: find callers that pass arguments ──
+            // ── Parameter: find direct + indirect callers ──
             DataNodeKind::Parameter => {
-                // Find the function symbol this parameter belongs to
                 let function_id = match &target_node.function_id {
                     Some(fid) => fid.clone(),
                     None => return Ok(vec![]),
                 };
 
-                // Find all callsites targeting this function
-                let callers = store.find_callsites_by_callee(&function_id)?;
-
-                // Hoisted: load callee parameters once (not per callsite/arg).
+                // Layer 1: direct callers
+                let direct_callers = store.find_callsites_by_callee(&function_id)?;
                 let callee_params = store.find_data_nodes_by_function(&function_id)?;
                 let param_index = callee_params
                     .iter()
                     .filter(|dn| dn.kind == DataNodeKind::Parameter)
                     .position(|dn| &dn.id == target_id);
 
-                for cs in &callers {
+                for cs in &direct_callers {
                     for (arg_idx, arg) in cs.args.iter().enumerate() {
                         let arg_dn_id = match &arg.data_node_id {
                             Some(dn_id) => dn_id,
                             None => continue,
                         };
-
                         if let Some(param_idx) = param_index {
                             if arg_idx == param_idx {
                                 edges.push(TraceEdge {
@@ -130,10 +126,50 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                                     kind: DataFlowKind::ArgToParam,
                                     confidence: 0.67,
                                     provenance: format!(
-                                        "caller arg[{}] at callsite {} → callee param[{}]",
+                                        "direct caller arg[{}] at callsite {} → callee param[{}]",
                                         arg_idx,
                                         hex::encode(cs.id.as_bytes()),
                                         param_idx,
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // Layer 2: indirect callers (recursive, up to depth 3)
+                const MAX_INDIRECT_DEPTH: usize = 3;
+                let indirect = find_indirect_callers(
+                    store, &function_id, MAX_INDIRECT_DEPTH,
+                );
+                for (depth, caller_sym_id, cs) in &indirect {
+                    // Load this indirect caller's parameters
+                    let caller_params = store
+                        .find_data_nodes_by_function(caller_sym_id)
+                        .unwrap_or_default();
+                    let caller_param_idx = caller_params
+                        .iter()
+                        .filter(|dn| dn.kind == DataNodeKind::Parameter)
+                        .position(|dn| &dn.id == target_id);
+
+                    for (arg_idx, arg) in cs.args.iter().enumerate() {
+                        let arg_dn_id = match &arg.data_node_id {
+                            Some(dn_id) => dn_id,
+                            None => continue,
+                        };
+                        if let Some(cp_idx) = caller_param_idx {
+                            if arg_idx == cp_idx {
+                                let depth_penalty = 0.85_f64.powi(*depth as i32);
+                                edges.push(TraceEdge {
+                                    source_id: arg_dn_id.clone(),
+                                    target_id: target_id.clone(),
+                                    kind: DataFlowKind::ArgToParam,
+                                    confidence: 0.67 * depth_penalty,
+                                    provenance: format!(
+                                        "indirect(depth={depth}) caller arg[{}] at callsite {} → param[{}]",
+                                        arg_idx,
+                                        hex::encode(cs.id.as_bytes()),
+                                        cp_idx,
                                     ),
                                 });
                             }
@@ -156,18 +192,14 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                     None => return Ok(vec![]),
                 };
 
-                // Get the callee symbol to obtain file_id for summary
-                let callee_sym = match store.find_symbol_by_id(&callee_sym_id)? {
-                    Some(s) => s,
-                    None => return Ok(vec![]),
-                };
-
-                // Try summary-based bridge first
-                if let Ok(summary) = crate::summary::SummaryBuilder::build(
-                    store,
-                    &callee_sym_id,
-                    Some((callee_sym.range.start_byte, callee_sym.range.end_byte)),
-                ) {
+                // Try summary-based bridge first.
+                // Pass None for function_range: SummaryBuilder uses all DataNodes
+                // in the file and relies on graph connectivity for scoping.
+                // (function_id is not reliably set on DataNodes, and callers
+                // here don't have source-level function body ranges.)
+                if let Ok(summary) =
+                    crate::summary::SummaryBuilder::build(store, &callee_sym_id, None)
+                {
                     for rf in &summary.return_flows {
                         for src_id in &rf.sources {
                             edges.push(TraceEdge {
@@ -252,6 +284,45 @@ impl TraceEdge {
             confidence: self.confidence,
         }
     }
+}
+
+/// Recursively find indirect callers of a function through the call graph.
+///
+/// BFS from the given function through all callers.  Returns tuples of
+/// (depth, caller_symbol_id, callsite).  Depth 1 = direct caller, 2 = caller
+/// of caller, etc.  Bounded by `max_depth`.
+fn find_indirect_callers(
+    store: &dyn TraceStore,
+    function_id: &SymbolId,
+    max_depth: usize,
+) -> Vec<(usize, SymbolId, Callsite)> {
+    let mut results = Vec::new();
+    let mut visited: std::collections::HashSet<SymbolId> = std::collections::HashSet::new();
+    visited.insert(function_id.clone());
+
+    // BFS queue: (depth, function_id)
+    let mut queue: std::collections::VecDeque<(usize, SymbolId)> = std::collections::VecDeque::new();
+    queue.push_back((0, function_id.clone()));
+
+    while let Some((depth, current_fid)) = queue.pop_front() {
+        if depth >= max_depth {
+            continue;
+        }
+        let callers = match store.find_callsites_by_callee(&current_fid) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for cs in callers {
+            let caller_sym = cs.caller;
+            if visited.contains(&caller_sym) {
+                continue;
+            }
+            visited.insert(caller_sym);
+            results.push((depth + 1, caller_sym, cs.clone()));
+            queue.push_back((depth + 1, caller_sym));
+        }
+    }
+    results
 }
 
 #[cfg(test)]

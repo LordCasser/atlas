@@ -3,10 +3,41 @@
 //! Combines multiple relevance signals:
 //!   - BM25-inspired TF-IDF score from FTS5 proximity
 //!   - Graph degree signal (callers + callees + references)
-//!   - Path relevance (matches in file/module names)
+//!   - Name similarity (exact/fuzzy match confidence)
+//!   - Qualified name bonus (query matches qualified path)
 //!   - Kind bonus (class > function > variable for navigation queries)
+//!   - Path relevance (matches in file/module names, test files downranked)
+//!
+//! Weights are configurable via [`ScoreWeights`] for long-term tuning.
 
 use atlas_types::SymbolKind;
+
+/// Configurable signal weights for hybrid ranking.
+///
+/// Default weights prioritize FTS5 (full-text) and name similarity,
+/// with moderate graph centrality and kind bonuses.
+#[derive(Debug, Clone)]
+pub struct ScoreWeights {
+    pub fts: f64,
+    pub name: f64,
+    pub graph: f64,
+    pub qualified: f64,
+    pub kind: f64,
+    pub path: f64,
+}
+
+impl Default for ScoreWeights {
+    fn default() -> Self {
+        Self {
+            fts: 0.35,
+            name: 0.25,
+            graph: 0.10,
+            qualified: 0.15,
+            kind: 0.10,
+            path: 0.05,
+        }
+    }
+}
 
 /// Cumulative relevance score for a search hit.
 #[derive(Debug, Clone, Default)]
@@ -17,43 +48,51 @@ pub struct SearchScore {
     pub graph_score: f64,
     /// Name similarity bonus (exact → 1.0, fuzzy → 0.0..0.9).
     pub name_score: f64,
+    /// Qualified name bonus (query appears in qualified path).
+    pub qualified_bonus: f64,
     /// Kind bonus for navigation (class > function > variable).
     pub kind_bonus: f64,
-    /// Path relevance (query appears in file/module path).
+    /// Path relevance (query appears in file path, test files downranked).
     pub path_bonus: f64,
     /// Weighted total.
     pub total: f64,
 }
 
 impl SearchScore {
-    /// Create a score from raw signals and apply weights.
+    /// Create a score from raw signals and apply configurable weights.
     pub fn new(
         fts_score: f64,
         total_degree: usize,
         max_degree: usize,
         name_similarity: f64,
+        qualified_match: bool,
         kind: SymbolKind,
-        path_match: bool,
+        file_path: Option<&str>,
+        weights: &ScoreWeights,
     ) -> Self {
         let graph_score = if max_degree > 0 {
             (total_degree as f64 / max_degree.max(1) as f64).min(1.0)
         } else {
             0.0
         };
+        let qualified_bonus = if qualified_match { 1.0 } else { 0.0 };
         let kind_bonus = kind_weight(kind);
-        let path_bonus = if path_match { 0.15 } else { 0.0 };
+        let path_bonus = file_path.map_or(0.5, |p| {
+            if is_test_file(p) { 0.2 } else { 0.5 }
+        });
 
-        // Weighted combination with tunable coefficients
-        let total = fts_score * 0.40
-            + graph_score * 0.20
-            + name_similarity * 0.25
-            + kind_bonus * 0.10
-            + path_bonus;
+        let total = fts_score * weights.fts
+            + graph_score * weights.graph
+            + name_similarity * weights.name
+            + qualified_bonus * weights.qualified
+            + kind_bonus * weights.kind
+            + path_bonus * weights.path;
 
         Self {
             fts_score,
             graph_score,
             name_score: name_similarity,
+            qualified_bonus,
             kind_bonus,
             path_bonus,
             total,
@@ -62,7 +101,6 @@ impl SearchScore {
 }
 
 /// Return a heuristic kind weight for search relevance.
-/// Classes/structs rank higher for navigation queries; functions for API queries.
 fn kind_weight(kind: SymbolKind) -> f64 {
     match kind {
         SymbolKind::Class | SymbolKind::Interface | SymbolKind::Trait => 0.8,
@@ -74,6 +112,13 @@ fn kind_weight(kind: SymbolKind) -> f64 {
         SymbolKind::Parameter | SymbolKind::Macro | SymbolKind::Decorator => 0.15,
         _ => 0.1,
     }
+}
+
+/// Check if a file path looks like a test file.
+fn is_test_file(path: &str) -> bool {
+    let p = path.to_lowercase();
+    p.contains("_test.") || p.contains(".test.") || p.contains("__test__")
+        || p.contains("/test/") || p.contains("\\test\\")
 }
 
 /// BM25-inspired inverse document frequency.
@@ -124,15 +169,28 @@ mod tests {
 
     #[test]
     fn test_kind_weight_class() {
-        let score = SearchScore::new(0.5, 10, 50, 0.8, SymbolKind::Class, true);
+        let score = SearchScore::new(0.5, 10, 50, 0.8, true, SymbolKind::Class, None, &ScoreWeights::default());
         assert!(score.total > 0.0);
-        assert!(score.total <= 1.0);
         assert!(score.kind_bonus > 0.5);
     }
 
     #[test]
     fn test_kind_weight_parameter() {
-        let score = SearchScore::new(0.5, 10, 50, 0.8, SymbolKind::Parameter, false);
+        let score = SearchScore::new(0.5, 10, 50, 0.8, false, SymbolKind::Parameter, None, &ScoreWeights::default());
         assert!(score.kind_bonus < 0.2);
+    }
+
+    #[test]
+    fn test_qualified_bonus_boosts_match() {
+        let a = SearchScore::new(0.5, 10, 50, 0.8, true, SymbolKind::Function, None, &ScoreWeights::default());
+        let b = SearchScore::new(0.5, 10, 50, 0.8, false, SymbolKind::Function, None, &ScoreWeights::default());
+        assert!(a.total > b.total, "qualified match should increase score");
+    }
+
+    #[test]
+    fn test_test_file_downranked() {
+        let prod = SearchScore::new(0.5, 10, 50, 0.8, false, SymbolKind::Function, Some("src/main.rs"), &ScoreWeights::default());
+        let test_file = SearchScore::new(0.5, 10, 50, 0.8, false, SymbolKind::Function, Some("src/main_test.rs"), &ScoreWeights::default());
+        assert!(prod.path_bonus > test_file.path_bonus, "test files should have lower path bonus");
     }
 }

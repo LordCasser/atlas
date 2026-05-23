@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use atlas_context::ContextBuilder;
 use atlas_db::Store;
-use atlas_graph::GraphEngine;
 use atlas_search::SearchEngine;
 use atlas_types::SymbolId;
 use atlas_types::ids::FileId;
@@ -26,10 +25,13 @@ use serde_json::{Value, json};
 
 pub(crate) mod capability;
 pub(crate) mod context;
+pub(crate) mod dependencies;
+pub(crate) mod dependents;
 pub(crate) mod graph;
 pub(crate) mod search;
 pub(crate) mod status;
 pub(crate) mod trace;
+pub(crate) mod usages;
 
 // -------------------------------------------------------------------
 // ToolRouter
@@ -40,9 +42,6 @@ pub struct ToolRouter {
     pub(crate) store: Arc<Store>,
     pub(crate) search: SearchEngine,
     pub(crate) context: ContextBuilder,
-    /// Lazily-rebuilt GraphEngine per request (from fresh snapshot).
-    /// Returns an error string on failure so the MCP server doesn't panic.
-    pub(crate) graph_fn: Box<dyn Fn() -> Result<GraphEngine, String> + Send + Sync>,
     /// Project root directory for snippet extraction.
     pub(crate) project_root: std::path::PathBuf,
     tools: Vec<Tool>,
@@ -53,7 +52,6 @@ impl ToolRouter {
         store: Arc<Store>,
         search: SearchEngine,
         context: ContextBuilder,
-        graph_fn: impl Fn() -> Result<GraphEngine, String> + Send + Sync + 'static,
         project_root: std::path::PathBuf,
     ) -> Self {
         let tools = make_all_tools();
@@ -61,7 +59,6 @@ impl ToolRouter {
             store,
             search,
             context,
-            graph_fn: Box::new(graph_fn),
             project_root,
             tools,
         }
@@ -81,16 +78,11 @@ impl ToolRouter {
 
     /// Handle tools/call — dispatch by tool name.
     ///
-    /// Refreshes the graph snapshot before execution so that search/context
-    /// tools see the latest indexed state without server restart.
+    /// Graph-backed engines are NOT refreshed here — use the `atlas_status`
+    /// or an explicit server restart for snapshot updates. The graph is built
+    /// once at server startup.
     pub fn call_tool(&self, name: &str, arguments: &Value) -> CallToolResult {
-        // Refresh graph-backed engines so they see fresh data
-        if let Ok(graph) = self.get_graph() {
-            let graph = Arc::new(graph);
-            self.search.refresh_graph(graph.clone());
-            self.context.refresh_graph(graph);
-        }
-        // NOTE: if get_graph fails, engines keep their last-good graph
+        // No per-request graph rebuild — engines were initialized at startup.
         // Each handler returns (result_text, is_error).
         // is_error=true only for genuine failures (lookup errors, I/O errors, unknown tool).
         let (result, is_error) = match name {
@@ -110,6 +102,9 @@ impl ToolRouter {
             "atlas_trace_variable" => self.handle_trace_variable(arguments),
             "atlas_trace_caller_path" => self.handle_trace_caller_path(arguments),
             "atlas_language_capabilities" => self.handle_language_capabilities(),
+            "usages" => self.handle_usages(arguments),
+            "dependencies" => self.handle_dependencies(arguments),
+            "dependents" => self.handle_dependents(arguments),
             _ => (format!("Unknown tool: {}", name), true),
         };
 
@@ -132,20 +127,6 @@ impl ToolRouter {
     // -------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------
-
-    /// Rebuild the graph snapshot, returning an error message on failure.
-    /// This avoids panicking when the graph snapshot can't be reloaded.
-    pub(crate) fn get_graph(&self) -> Result<GraphEngine, String> {
-        (self.graph_fn)()
-    }
-
-    /// Generate a structured JSON error for graph rebuild failures.
-    pub(crate) fn graph_error_result(err: &str) -> (String, bool) {
-        (
-            json!({ "ok": false, "error": "graph_reload_failed", "message": err }).to_string(),
-            true,
-        )
-    }
 
     /// Resolve a qualified name to a SymbolId, returning error string on failure.
     pub(crate) fn resolve_qname(&self, qname: &str) -> Result<SymbolId, String> {
@@ -365,6 +346,42 @@ pub fn make_all_tools() -> Vec<Tool> {
                 schema_type: "object".into(),
                 properties: Some(json!({})),
                 required: None,
+            },
+        },
+        Tool {
+            name: "usages".into(),
+            description: "Find all reference usages of a symbol (where it's called, referenced, or instantiated).".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "symbol": { "type": "string", "description": "Qualified symbol name" },
+                    "limit": { "type": "integer", "description": "Max results (default 50)" },
+                })),
+                required: Some(vec!["symbol".into()]),
+            },
+        },
+        Tool {
+            name: "dependencies".into(),
+            description: "Find files that a given file imports or includes (outgoing dependencies).".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "file_id": { "type": "string", "description": "File ID in hex format" },
+                    "limit": { "type": "integer", "description": "Max results (default 50)" },
+                })),
+                required: Some(vec!["file_id".into()]),
+            },
+        },
+        Tool {
+            name: "dependents".into(),
+            description: "Find files that import or include a given file (incoming dependents / reverse dependencies).".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "file_id": { "type": "string", "description": "File ID in hex format" },
+                    "limit": { "type": "integer", "description": "Max results (default 50)" },
+                })),
+                required: Some(vec!["file_id".into()]),
             },
         },
     ]

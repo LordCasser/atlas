@@ -520,7 +520,72 @@ function scale(p: Point, factor: number): Point {
     );
 
     // The path should include a FieldLoad edge.
-    assert_has_edge_kind(&path, DataFlowKind::FieldLoad);
+    let has_field_load = path
+        .steps
+        .iter()
+        .any(|s| s.edge_kind == DataFlowKind::FieldLoad);
+    assert!(has_field_load, "should have at least one FieldLoad edge");
+}
+
+// ────────────────────────────────────────────────────────────────
+// Fixture 5: Indirect caller → parameter bridging (Layer 2).
+// ────────────────────────────────────────────────────────────────
+
+/// FX5: When function C is called by B, and B is called by A,
+/// tracing a parameter of C backward should find A's argument
+/// through the indirect call chain A → B → C.
+#[test]
+fn fx5_indirect_caller_bridge() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[
+        ("a.ts", r#"import { b } from './b';
+export function a(): void { b(42); }
+"#),
+        ("b.ts", r#"import { c } from './c';
+export function b(x: number): void { c(x); }
+"#),
+        ("c.ts", r#"export function c(val: number): void {
+    console.log(val);
+}
+"#),
+    ];
+    let store = index_files(files);
+    let file_id = FileId::generate("c.ts");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    // Find the parameter DataNode for 'val' in function c
+    let val_param = data_nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("val") && n.kind == DataNodeKind::Parameter)
+        .expect("parameter 'val' not found");
+
+    let resp = engine.trace_variable(
+        &file_id,
+        val_param.range.start_line + 1,
+        val_param.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "typescript");
+
+    let path = resp.result.expect("trace path must exist");
+
+    // Should have at least one indirect ArgToParam edge
+    let arg_to_param_count = path.steps.iter()
+        .filter(|s| s.edge_kind == DataFlowKind::ArgToParam)
+        .count();
+    assert!(
+        arg_to_param_count >= 1,
+        "expected >= 1 ArgToParam edge in indirect chain, got {}",
+        arg_to_param_count
+    );
+
+    // Should have evidence from file a.ts (the indirect caller)
+    let has_a_evidence = path.steps.iter().any(|s| {
+        s.evidence.as_ref().map_or(false, |e| e.file_path.contains("a.ts"))
+    });
+    assert!(has_a_evidence, "should have evidence from indirect caller a.ts");
 }
 
 

@@ -89,7 +89,17 @@ impl SearchEngine {
 
     /// Replace the internal graph snapshot with a fresh one.
     pub fn refresh_graph(&self, graph: Arc<GraphEngine>) {
-        *self.graph.write().unwrap() = graph;
+        *self.graph.write().unwrap_or_else(|e| e.into_inner()) = graph;
+    }
+
+    /// Acquire a read-lock on the graph, recovering from poison.
+    fn graph(&self) -> std::sync::RwLockReadGuard<'_, Arc<GraphEngine>> {
+        self.graph.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Return a clone of the current graph snapshot.
+    pub fn graph_snapshot(&self) -> Arc<GraphEngine> {
+        Arc::clone(&*self.graph())
     }
 
     // ------------------------------------------------------------------
@@ -179,27 +189,38 @@ impl SearchEngine {
         let matching_symbols = raw_results.len();
         let max_degree = raw_results
             .iter()
-            .map(|s| self.graph.read().unwrap().degree(&s.id))
+            .map(|s| self.graph().degree(&s.id))
             .max()
             .unwrap_or(1);
 
         let mut results: Vec<SearchResult> = Vec::with_capacity(raw_results.len());
+        let weights = scoring::ScoreWeights::default();
         for sym in raw_results {
             let name_sim = compute_name_similarity(query, &sym.name, &query_norm);
-            let path_match = sym
+            let qualified_match = sym
                 .qualified_name
                 .to_lowercase()
                 .contains(&query.to_lowercase());
-            let degree = self.graph.read().unwrap().degree(&sym.id);
+            let degree = self.graph().degree(&sym.id);
             let idf = scoring::idf_weight(total_symbols, matching_symbols);
+
+            // Resolve FileId → human-readable path
+            let file_path = self
+                .store
+                .get_file(&sym.file_id)
+                .ok()
+                .flatten()
+                .map(|info| info.path);
 
             let score = SearchScore::new(
                 idf.clamp(0.0, 1.0),
                 degree,
                 max_degree,
                 name_sim,
+                qualified_match,
                 sym.kind,
-                path_match,
+                file_path.as_deref(),
+                &weights,
             );
 
             // Determine matched field for display
@@ -211,20 +232,12 @@ impl SearchEngine {
                 String::new()
             };
 
-            // Resolve FileId → human-readable path
-            let file_path = self
-                .store
-                .get_file(&sym.file_id)
-                .ok()
-                .flatten()
-                .map(|info| info.path);
-
             results.push(SearchResult {
                 symbol: sym,
                 score,
                 matched_field,
                 snippet: None,
-                file_path,
+                file_path: file_path.clone(),
             });
         }
 
@@ -426,7 +439,7 @@ mod tests {
     use atlas_db::Store;
     use atlas_graph::GraphEngine;
     use atlas_types::{FileInfo, Language, ParseStatus, SymbolDef};
-    use std::sync::{Arc, RwLock};
+    use std::sync::Arc;
 
     fn test_store() -> Arc<Store> {
         let store = Store::open_in_memory().unwrap();

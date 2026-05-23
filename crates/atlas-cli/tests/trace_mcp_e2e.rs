@@ -1132,3 +1132,74 @@ function d(): number { return 42; }
         diags
     );
 }
+
+// ────────────────────────────────────────────────────────────────
+// MCP tool coverage: usages, dependencies, dependents
+// ────────────────────────────────────────────────────────────────
+
+#[test]
+fn mcp_usages_returns_references() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "app.ts",
+        r#"function greet(name: string): string { return "Hello, " + name; }
+greet("World");
+"#,
+    )];
+    let (_tmp, router) = build_router(files);
+    let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
+    let file_id = find_file_id(&store, _tmp.path(), "app.ts");
+    let greet_id = find_symbol(&store, &file_id, "greet");
+
+    let (json, is_error) = call_tool(
+        &router,
+        "usages",
+        json!({ "symbol": greet_id.to_hex() }),
+    );
+    assert!(!is_error, "atlas_usages should succeed");
+    assert!(json.get("usages").is_some(), "should have usages array");
+}
+
+#[test]
+fn mcp_dependencies_returns_imports() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[
+        ("lib.ts", "export const VERSION = '1.0';"),
+        ("app.ts", "import { VERSION } from './lib';\nconsole.log(VERSION);"),
+    ];
+    let (_tmp, router) = build_router(files);
+    let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
+    let file_id = find_file_id(&store, _tmp.path(), "app.ts");
+
+    let (json, is_error) = call_tool(
+        &router,
+        "dependencies",
+        json!({ "file_id": file_id.to_hex() }),
+    );
+    assert!(!is_error, "atlas_dependencies should succeed");
+    let deps = json.get("dependencies").and_then(|d| d.as_array());
+    assert!(deps.is_some(), "should have dependencies array");
+    assert!(deps.unwrap().len() > 0, "should have at least one dependency");
+}
+
+#[test]
+fn mcp_usages_empty_for_unreferenced() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "app.ts",
+        "function unused(): void {}\n// never called\n",
+    )];
+    let (_tmp, router) = build_router(files);
+    let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
+    let file_id = find_file_id(&store, _tmp.path(), "app.ts");
+    let sym_id = find_symbol(&store, &file_id, "unused");
+
+    let (json, is_error) = call_tool(
+        &router,
+        "usages",
+        json!({ "symbol": sym_id.to_hex() }),
+    );
+    assert!(!is_error, "atlas_usages should succeed even for unused symbols");
+    let total = json.get("total_usages").and_then(|v| v.as_u64()).unwrap_or(999);
+    assert_eq!(total, 0, "unused function should have 0 usages");
+}
