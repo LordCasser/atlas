@@ -84,14 +84,23 @@ impl ImportResolver {
         }
 
         if results.is_empty() {
-            // Fallback: search by local name or imported name
             let fallback_name = import.local_name.clone().or_else(|| {
                 let n = import.imported_name.clone();
                 if n.is_empty() { None } else { Some(n) }
             });
 
-            if let Some(name) = fallback_name {
-                results.extend(self.store.search_symbols(&name)?);
+            if let Some(ref name) = fallback_name {
+                // Strategy A: module-path-aware lookup (constrains to import target)
+                if !import.module.is_empty() {
+                    let by_module = self.resolve_by_module_path(&import.module, name);
+                    if !by_module.is_empty() {
+                        results.extend(by_module);
+                    }
+                }
+                // Strategy B: global fallback as last resort
+                if results.is_empty() {
+                    results.extend(self.store.search_symbols(name)?);
+                }
             }
         }
 

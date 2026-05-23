@@ -130,14 +130,17 @@ fn parse_porcelain_line(line: &str) -> (PorcelainStatus, &str) {
 pub fn detect_db_hash_changes(root: &Path, store: &atlas_db::Store) -> Result<ChangedFiles> {
     let mut changes = ChangedFiles::default();
 
-    let known_extensions: HashSet<&str> = atlas_types::Language::all_extensions()
-        .iter()
-        .map(|s| s.trim_start_matches('.'))
-        .collect();
+    // 1. Use the same discovery logic as normal index (atlasignore, gitignore,
+    //    exclude dirs) to get the canonical file list.
+    let config = DiscoveryConfig::default();
+    let discovered = crate::discovery::discover_files(root, &config)?;
 
-    // 1. Walk the project, compute current BLAKE3 hashes for all source files
     let mut current_hashes: HashMap<String, String> = HashMap::new();
-    collect_and_hash_files(root, root, &known_extensions, &mut current_hashes)?;
+    for rel_path in &discovered {
+        let full = root.join(rel_path);
+        let hash = compute_blake3_hex(&full)?;
+        current_hashes.insert(rel_path.to_string_lossy().to_string(), hash);
+    }
 
     // 2. Get previously indexed file hashes from the DB
     let db_files = store.list_files().unwrap_or_default();

@@ -39,14 +39,29 @@ impl IncludeGraph {
     /// For `#include <path.h>` (system include), we return `None`
     /// (system headers are handled by BuiltinFilter).
     pub fn resolve_include(&self, import: &ImportDef) -> Option<FileId> {
-        // Only handle local includes (#include "...")
         if import.kind != ImportKind::Include || !import.is_relative {
             return None;
         }
-
         let module_path = &import.module;
         if module_path.is_empty() {
             return None;
+        }
+
+        // Strategy 0: relative to the including file's directory
+        if let Ok(Some(file_info)) = self.store.get_file(&import.file_id) {
+            let file_dir = Path::new(&file_info.path)
+                .parent()
+                .unwrap_or(Path::new(""));
+            let candidate = self.project_root.join(file_dir).join(module_path);
+            let relative = candidate
+                .strip_prefix(&self.project_root)
+                .unwrap_or(&candidate);
+            if let Ok(sp) = SourcePath::try_from_relative(&relative.to_string_lossy()) {
+                let file_id = FileId::generate(sp.as_str());
+                if self.store.get_file(&file_id).ok().flatten().is_some() {
+                    return Some(file_id);
+                }
+            }
         }
 
         // Strategy 1: Try as project-relative path
