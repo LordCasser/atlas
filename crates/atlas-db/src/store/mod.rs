@@ -287,7 +287,7 @@ impl Store {
                     .binding_uses
                     .iter()
                     .filter(|bu| {
-                        valid_binding_ids.contains(&bu.binding_id)
+                        bu.binding_id.map_or(false, |bid| valid_binding_ids.contains(&bid))
                             && facts.scopes.iter().any(|s| s.id == bu.scope_id)
                     })
                     .cloned()
