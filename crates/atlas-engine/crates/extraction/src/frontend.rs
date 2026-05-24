@@ -856,3 +856,46 @@ mod tests {
             );
         }
     }
+
+    /// Verify that each dataflow language produces at least some DataNodes and edges.
+    #[test]
+    fn test_all_dataflow_languages_produce_facts() {
+        use crate::languages::create_frontend;
+        use crate::extract::extract_file;
+        use types::enums::Language;
+        use types::ids::FileId;
+
+        let fixtures: &[(&str, Language, &str)] = &[
+            #[cfg(feature = "typescript")] ("const x = 1;\nfunction f(a: number) { return a + x; }\n", Language::TypeScript, "ts"),
+            #[cfg(feature = "javascript")] ("const x = 1;\nfunction f(a) { return a + x; }\n", Language::JavaScript, "js"),
+            #[cfg(feature = "python")] ("def f(a):\n    x = 1\n    return a + x\n", Language::Python, "py"),
+            #[cfg(feature = "java")] ("class C { int f(int a) { int x = 1; return a + x; } }\n", Language::Java, "java"),
+            #[cfg(feature = "c")] ("int f(int a) { int x = 1; return a + x; }\n", Language::C, "c"),
+            #[cfg(feature = "cpp")] ("int f(int a) { int x = 1; return a + x; }\n", Language::Cpp, "cpp"),
+            #[cfg(feature = "go")] ("package p\nfunc f(a int) int { x := 1; return a + x }\n", Language::Go, "go"),
+            #[cfg(feature = "csharp")] ("class C { int F(int a) { int x = 1; return a + x; } }\n", Language::CSharp, "cs"),
+            #[cfg(feature = "rust")] ("fn f(a: i32) -> i32 { let x = 1; a + x }\n", Language::Rust, "rs"),
+            #[cfg(feature = "php")] ("<?php\nfunction f($a) { $x = 1; return $a + $x; }\n", Language::Php, "php"),
+            #[cfg(feature = "ruby")] ("def f(a)\n  x = 1\n  a + x\nend\n", Language::Ruby, "rb"),
+            #[cfg(feature = "kotlin")] ("fun f(a: Int): Int { val x = 1; return a + x }\n", Language::Kotlin, "kt"),
+        ];
+
+        for &(source, lang, ext) in fixtures {
+            let Some(frontend) = create_frontend(lang) else { continue };
+            if !frontend.dataflow.capability().is_supported() { continue; }
+            let file_id = FileId::generate(&format!("smoke.{}", ext));
+            let facts = extract_file(&frontend, file_id, std::path::Path::new(&format!("smoke.{}", ext)), source, "t")
+                .unwrap_or_else(|e| panic!("{:?} extraction failed: {}", lang, e));
+
+            let node_count = facts.data_nodes.len();
+            let edge_count = facts.dataflow_edges.len();
+            assert!(node_count > 0, "{:?} must produce at least 1 DataNode, got 0", lang);
+            assert!(edge_count > 0, "{:?} must produce at least 1 DataFlowEdge, got 0 (nodes={})", lang, node_count);
+
+            // If lexical is supported, must produce at least some bindings
+            if frontend.lexical.capability().is_supported() {
+                let binding_count = facts.bindings.len();
+                assert!(binding_count > 0, "{:?} lexical must produce at least 1 BindingDef, got 0", lang);
+            }
+        }
+    }
