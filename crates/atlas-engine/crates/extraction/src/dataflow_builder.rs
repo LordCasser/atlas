@@ -806,6 +806,7 @@ fn build_dataflow_edges(
                         | DataNodeKind::Literal
                         | DataNodeKind::CallArg
                         | DataNodeKind::Field
+                        | DataNodeKind::VariableUse
                 )
         }) {
             let edge_id =
