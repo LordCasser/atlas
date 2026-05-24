@@ -81,12 +81,24 @@
       "kind": "class"
     },
     {
+      "name": "Function#24",
+      "kind": "function"
+    },
+    {
       "name": "Class#47",
       "kind": "class"
     },
     {
+      "name": "Function#94",
+      "kind": "function"
+    },
+    {
       "name": "Block#123",
       "kind": "block"
+    },
+    {
+      "name": "Function#143",
+      "kind": "function"
     },
     {
       "name": "Block#154",

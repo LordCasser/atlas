@@ -29,7 +29,7 @@
       "kind": "file"
     },
     {
-      "name": "{\n    int result = helper(42);\n    printf(\"Result: %d\\n\", result);\n    return 0;\n}",
+      "name": "int main() {\n    int result = helper(42);\n    printf(\"Result: %d\\n\", result);\n    return 0;\n}",
       "kind": "function"
     },
     {

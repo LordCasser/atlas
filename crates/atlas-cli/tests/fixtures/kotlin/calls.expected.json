@@ -45,8 +45,16 @@
       "kind": "file"
     },
     {
+      "name": "Function#0",
+      "kind": "function"
+    },
+    {
       "name": "Block#29",
       "kind": "block"
+    },
+    {
+      "name": "Function#51",
+      "kind": "function"
     },
     {
       "name": "Block#62",
@@ -55,10 +63,10 @@
   ],
   "callsites": [
     {
-      "caller": "add"
+      "caller": "main"
     },
     {
-      "caller": "add"
+      "caller": "main"
     }
   ]
 }

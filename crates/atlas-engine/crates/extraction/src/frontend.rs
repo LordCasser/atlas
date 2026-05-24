@@ -129,7 +129,7 @@ pub trait LexicalBindingSpec: Send + Sync {
 }
 
 /// Dataflow extraction spec.
-pub trait DataflowSpec: Send + Sync {
+pub(crate) trait DataflowSpec: Send + Sync {
     /// S-expression query for dataflow builder.
     fn dataflow_builder_query(&self) -> &str;
     /// Feature support for dataflow extraction.
@@ -240,7 +240,7 @@ pub struct FrontendParts {
     pub scopes: Box<dyn ScopeExtractorSpec>,
     pub callsites: Box<dyn CallsiteExtractorSpec>,
     pub lexical: Box<dyn LexicalBindingSpec>,
-    pub dataflow: Box<dyn DataflowSpec>,
+    pub(crate) dataflow: Box<dyn DataflowSpec>,
     pub capability: LanguageCapabilityProfile,
 }
 
@@ -272,7 +272,7 @@ pub struct LanguageFrontend {
     /// Lexical binding extraction.
     pub lexical: Box<dyn LexicalBindingSpec>,
     /// Dataflow extraction.
-    pub dataflow: Box<dyn DataflowSpec>,
+    pub(crate) dataflow: Box<dyn DataflowSpec>,
     /// Language capability profile (used by TraceEngine for gating).
     pub capability: LanguageCapabilityProfile,
 }

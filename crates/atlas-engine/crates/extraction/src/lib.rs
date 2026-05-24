@@ -38,7 +38,7 @@ pub use dataflow_builder::{DataFlowBuilder, DataFlowResult};
 pub use error::{ExtractionFailure, ExtractionFailureKind};
 pub use extract::extract_file;
 pub use frontend::{
-    DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec,
+    FrontendParts, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec,
     ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec, SymbolExtractorSpec, UnsupportedSpec,
 };
 pub use grammar::LanguageRegistry;

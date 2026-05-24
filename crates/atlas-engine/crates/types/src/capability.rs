@@ -393,8 +393,7 @@ mod profiles {
             ],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
-                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
-                "ArgToParam edges are call_arg→call_target, not caller-arg→callee-param".into(),
+                "AST-driven local dataflow with language-specific gaps".into(),
             ],
             confidence_floor: 0.55,
             features: Some(FeatureMatrix {
@@ -409,7 +408,7 @@ mod profiles {
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
                     0.55,
-                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
+                    vec!["AST-driven local dataflow; destructuring and async not yet path-verified"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
                     0.55,
@@ -420,7 +419,7 @@ mod profiles {
                 returns_flow: FeatureSupport::supported_with_confidence(0.55),
                 cfg: FeatureSupport::supported_with_confidence(0.55),
                 interprocedural_summaries: FeatureSupport::unsupported(
-                    "not implemented; ArgToParam edges are call_arg→call_target, not caller-arg→callee-param",
+                    "not implemented",
                 ),
             }),
         }
