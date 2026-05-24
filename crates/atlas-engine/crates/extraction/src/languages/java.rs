@@ -644,7 +644,9 @@ fn normalize_java_dataflow_builder(
             (Some(dn), None)
         }
         "df.identifier_use" => {
-            // Skip identifiers that are parameter names or declaration names
+            if crate::languages::shared::is_identifier_decl_or_property(node, &["object_creation_expression", "type_identifier"]) {
+                return (None, None);
+            }
             let text = node_text(node, source).unwrap_or_default();
             if text.is_empty() {
                 return (None, None);

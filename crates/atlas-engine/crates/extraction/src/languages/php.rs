@@ -490,7 +490,9 @@ fn normalize_php_dataflow_builder(capture_name: &str, node: tree_sitter::Node, s
             }).unwrap_or((None, None))
         },
         "df.identifier_use" => {
-            // Skip identifiers that are parameter names or declaration names
+            if crate::languages::shared::is_identifier_decl_or_property(node, &["namespace_use_clause", "use_declaration"]) {
+                return (None, None);
+            }
             let text = node_text(node, source).unwrap_or_default();
             if text.is_empty() {
                 return (None, None);

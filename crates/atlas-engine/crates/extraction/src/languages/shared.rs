@@ -142,8 +142,73 @@ pub fn node_name_range(node: tree_sitter::Node, name: &str, source: &str) -> Opt
     None
 }
 
+// ── Shared identifier-use filter ────────────────────────────────────────
+
+/// Check if an identifier node is a declaration name or property name
+/// (should be excluded from VariableUse generation).
+///
+/// `extra_decl_kinds`: language-specific declaration node kinds to also check.
+/// Common kinds (variable_declarator, function_declaration, class_declaration,
+/// parameter, catch_clause) are always checked.
+pub(crate) fn is_identifier_decl_or_property(
+    node: tree_sitter::Node,
+    extra_decl_kinds: &[&str],
+) -> bool {
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+    let parent_kind = parent.kind();
+
+    // Common declaration kinds across all languages
+    let is_common_decl = matches!(
+        parent_kind,
+        "variable_declarator" | "function_declaration" | "class_declaration"
+        | "method_declaration" | "method_definition" | "constructor_declaration"
+        | "interface_declaration" | "enum_declaration" | "struct_specifier"
+        | "function_definition" | "function_item" | "property_declaration"
+        | "required_parameter" | "optional_parameter" | "formal_parameter"
+        | "parameter" | "simple_parameter" | "parameter_declaration"
+        | "catch_clause" | "catch_declaration" | "catch_formal_parameter"
+        | "import_specifier" | "import_clause" | "namespace_import"
+        | "aliased_import" | "import_statement" | "for_statement"
+        | "foreach_statement" | "enhanced_for_statement" | "with_item"
+        | "except_clause" | "static_variable_declaration"
+        | "field_declaration" | "public_field_definition"
+    ) || extra_decl_kinds.contains(&parent_kind);
+
+    if is_common_decl {
+        // Check if this node is the "name" field of its parent
+        if parent.child_by_field_name("name").map_or(false, |n| n.id() == node.id()) {
+            return true;
+        }
+    }
+
+    // Property names in member/field access expressions
+    let is_property = matches!(
+        parent_kind,
+        "member_expression" | "field_expression" | "field_access"
+        | "selector_expression" | "navigation_expression"
+        | "member_access_expression" | "attribute"
+    );
+    if is_property {
+        for field in &["property", "field", "attribute"] {
+            if parent.child_by_field_name(field).map_or(false, |n| n.id() == node.id()) {
+                return true;
+            }
+        }
+    }
+
+    // Type annotations / type arguments
+    if matches!(parent_kind, "type_annotation" | "type_arguments" | "type_parameters" | "generic_type") {
+        return true;
+    }
+
+    false
+}
+
 // ── Shared dataflow normalize ───────────────────────────────────────────
-// Eliminates ~100 lines of duplicate code per language.
+// ... existing shared functions follow ...
 
 use types::*;
 

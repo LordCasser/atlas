@@ -432,7 +432,9 @@ fn normalize_cpp_dataflow_builder(capture_name: &str, node: tree_sitter::Node, s
             (Some(DataNode { id: node_id, file_id, function_id: None, kind: if capture_name == "df.literal" { DataNodeKind::Literal } else { DataNodeKind::Receiver }, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range }), None)
         },
         "df.identifier_use" => {
-            // Skip identifiers that are parameter names or declaration names
+            if crate::languages::shared::is_identifier_decl_or_property(node, &["template_declaration", "type_definition"]) {
+                return (None, None);
+            }
             let text = node_text(node, source).unwrap_or_default();
             if text.is_empty() {
                 return (None, None);
