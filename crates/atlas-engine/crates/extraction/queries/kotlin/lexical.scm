@@ -23,6 +23,4 @@
 
 ;; --- Catch variable (catch (e: Exception)) ---
 (catch_block
-  (catch_header
-    (variable_declaration
-      (simple_identifier) @lexical.catch_variable)))
+  (simple_identifier) @lexical.catch_variable)

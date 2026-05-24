@@ -23,7 +23,7 @@
 
 ;; --- Catch variable (catch (exception& e)) ---
 (catch_clause
-  parameter: (parameter_declaration
+  (parameter_declaration
     declarator: (identifier) @lexical.catch_variable))
 
 ;; --- Lambda parameter ---

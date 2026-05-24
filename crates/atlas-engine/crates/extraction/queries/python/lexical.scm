@@ -25,11 +25,11 @@
 
 ;; --- With statement alias (with open(f) as x) ---
 (with_item
-  alias: (identifier) @lexical.local)
+  (identifier) @lexical.local)
 
 ;; --- Except alias (except Exception as e) ---
 (except_clause
-  alias: (identifier) @lexical.catch_variable)
+  (identifier) @lexical.catch_variable)
 
 ;; --- Import alias (import foo as bar) ---
 (aliased_import

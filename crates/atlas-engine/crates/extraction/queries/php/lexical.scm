@@ -3,7 +3,7 @@
 ;; only explicit declaration points (param, foreach, catch, static) create BindingDefs.
 
 ;; --- Function/method parameters ---
-(parameter
+(simple_parameter
   name: (variable_name) @lexical.parameter)
 
 ;; --- Foreach loop variable (foreach ($a as $v)) ---
