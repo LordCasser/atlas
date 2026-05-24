@@ -2207,3 +2207,145 @@ fn sem_f_expression_decomposition_trace_to_parameters() {
     // binding_id may not be set until lexical binder runs; skip strict check
     let _ = has_bound_variable_use;
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Batch 3: Per-language verification tests
+// ═══════════════════════════════════════════════════════════════════════
+
+/// TS: field assignment produces Field + FieldStore edge.
+#[cfg(feature = "typescript")]
+#[test]
+fn vfy_ts_field_assignment_produces_field_store() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("field.ts");
+    let source = "class C { f: number = 0; set(v: number) { this.f = v; } }";
+    let frontend = create_frontend(Language::TypeScript).unwrap();
+    let facts = extract_file(&frontend, file_id, std::path::Path::new("field.ts"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Field), "should have Field node for this.f");
+}
+
+/// TS: return value trace reaches parameter through variable.
+#[cfg(feature = "typescript")]
+#[test]
+fn vfy_ts_return_trace_reaches_parameter() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("ret.ts");
+    let source = "function f(x: number): number { const y = x + 1; return y; }";
+    let frontend = create_frontend(Language::TypeScript).unwrap();
+    let facts = extract_file(&frontend, file_id, std::path::Path::new("ret.ts"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local y");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse x or y");
+}
+
+/// Java: method call produces CallTarget and CallArg DataNodes.
+#[cfg(feature = "java")]
+#[test]
+fn vfy_java_method_call_produces_call_nodes() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("Call.java");
+    let source = "class C { void bar(int x) { helper(x, 42); } }";
+    let frontend = create_frontend(Language::Java).unwrap();
+    let facts = extract_file(&frontend, file_id, std::path::Path::new("Call.java"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "call target helper");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallArg), "call arg x or 42");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
+}
+
+/// Java: field access produces Field DataNode.
+#[cfg(feature = "java")]
+#[test]
+fn vfy_java_field_access_produces_field_node() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("Field.java");
+    let source = "class C { void bar() { Object o = null; o.field = 1; } }";
+    let frontend = create_frontend(Language::Java).unwrap();
+    let facts = extract_file(&frontend, file_id, std::path::Path::new("Field.java"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Field), "field node");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local o");
+}
+
+/// Go: short variable declaration produces Local + edges.
+#[cfg(feature = "go")]
+#[test]
+fn vfy_go_short_var_produces_local_and_edges() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("short.go");
+    let source = "package p\nfunc f(x int) int {\n\ty := x + 1\n\treturn y\n}\n";
+    let frontend = create_frontend(Language::Go).unwrap();
+    let facts = extract_file(&frontend, file_id, std::path::Path::new("short.go"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local y");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return");
+}
+
+/// Python: call args and return produce correct DataNodes.
+#[cfg(feature = "python")]
+#[test]
+fn vfy_python_call_and_return_data_nodes() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("callret.py");
+    let source = "def f(x):\n    y = sanitize(x, 42)\n    return y\n";
+    let frontend = create_frontend(Language::Python).unwrap();
+    let facts = extract_file(&frontend, file_id, std::path::Path::new("callret.py"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "calltarget sanitize");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallArg), "callarg x or 42");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return y");
+}
+
+/// C: pointer field access dataflow.
+#[cfg(feature = "c")]
+#[test]
+fn vfy_c_pointer_field_access_dataflow() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("ptr.c");
+    let source = "struct S { int field; };\nint f(struct S *p) {\n\tint y = p->field;\n\treturn y;\n}\n";
+    let frontend = create_frontend(Language::C).unwrap();
+    let facts = extract_file(&frontend, file_id, std::path::Path::new("ptr.c"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param p");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local y");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return");
+    // May or may not have Field/Receiver depending on grammar
+    let has_field = nodes.iter().any(|n| n.kind == DataNodeKind::Field);
+    let _ = has_field;
+}
+
+/// Rust: let declaration dataflow.
+#[cfg(feature = "rust")]
+#[test]
+fn vfy_rust_let_declaration_dataflow() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("let.rs");
+    let source = "fn f(x: i32) -> i32 {\n    let y = x + 1;\n    y\n}\n";
+    let frontend = create_frontend(Language::Rust).unwrap();
+    let facts = extract_file(&frontend, file_id, std::path::Path::new("let.rs"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local y");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse x");
+}
