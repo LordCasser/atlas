@@ -48,6 +48,9 @@ ruby = ["atlas-engine/ruby"]
 bash = ["atlas-engine/bash"]
 kotlin = ["atlas-engine/kotlin"]
 all-languages = [
+    # All DataflowBasic + Symbolic languages with verified lexical/dataflow compilation.
+    # Cangjie and Bash are excluded: Cangjie has a tree-sitter ABI version mismatch,
+    # Bash is explicitly Symbolic-only with no dataflow support.
     "typescript", "javascript", "python", "java",
     "c", "cpp", "arkts", "go", "csharp", "rust", "php", "ruby", "kotlin",
 ]
