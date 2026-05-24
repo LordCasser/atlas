@@ -909,28 +909,28 @@ function main(): number {
         call_args.len()
     );
 
-    // ── Verify ArgToParam edges go to correct target ──
+    // ── Verify ArgToCall edges go to correct target ──
     // Dataflow edges are per-DataNode (not symbol-level graph edges).
     // Query edges from each CallArg DataNode.
-    let mut arg_to_param_edges = Vec::new();
+    let mut arg_to_call_edges = Vec::new();
     for ca in &call_args {
         if let Ok(edges) = store.find_dataflow_edges_by_source(&ca.id) {
             for e in &edges {
-                if e.kind == atlas_engine::DataFlowKind::ArgToParam {
-                    arg_to_param_edges.push((ca.id, e.clone()));
+                if e.kind == atlas_engine::DataFlowKind::ArgToCall {
+                    arg_to_call_edges.push((ca.id, e.clone()));
                 }
             }
         }
     }
     assert!(
-        !arg_to_param_edges.is_empty(),
-        "expected ArgToParam dataflow edges for nested calls"
+        !arg_to_call_edges.is_empty(),
+        "expected ArgToCall dataflow edges for nested calls"
     );
 
-    // For each ArgToParam edge, the source (CallArg) and target should
+    // For each ArgToCall edge, the source (CallArg) and target should
     // share the same callsite_id group.
     let mut mismatches = 0usize;
-    for (src_id, edge) in &arg_to_param_edges {
+    for (src_id, edge) in &arg_to_call_edges {
         let src_node = nodes.iter().find(|n| n.id == *src_id);
         let tgt_node = nodes.iter().find(|n| n.id == edge.target);
         if let (Some(src), Some(tgt)) = (src_node, tgt_node) {
@@ -946,10 +946,10 @@ function main(): number {
     assert_eq!(
         mismatches,
         0,
-        "ArgToParam edges should have matching callsite_id between source and target. \
+        "ArgToCall edges should have matching callsite_id between source and target. \
          Found {} mismatches out of {} edges.",
         mismatches,
-        arg_to_param_edges.len()
+        arg_to_call_edges.len()
     );
 
     // Contract: the CallArg "20" (literal at line 8) should be linked
