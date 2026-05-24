@@ -1,8 +1,8 @@
 //! Stats, metadata, schema version, and path resolution.
 
-use types::*;
 use rusqlite::params;
 use std::path::Path;
+use types::*;
 
 use super::{Store, StoreStats};
 
@@ -43,6 +43,44 @@ impl Store {
         let mut stmt = conn.prepare("SELECT MAX(version) FROM schema_versions")?;
         let version: Option<i64> = stmt.query_row([], |row| row.get(0))?;
         Ok(version.unwrap_or(0))
+    }
+
+    /// Return a compact signature for detecting whether indexed graph inputs changed.
+    ///
+    /// This is intentionally cheap and read-only. It combines core fact counts,
+    /// the latest file `index_time`, and index/sync metadata when present.
+    pub fn index_signature(&self) -> anyhow::Result<String> {
+        let conn = self.lock_read();
+        let total_files: i64 = conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
+        let total_symbols: i64 =
+            conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))?;
+        let total_edges: i64 =
+            conn.query_row("SELECT COUNT(*) FROM symbol_edges", [], |r| r.get(0))?;
+        let total_references: i64 =
+            conn.query_row("SELECT COUNT(*) FROM \"references\"", [], |r| r.get(0))?;
+        let max_index_time: Option<String> =
+            conn.query_row("SELECT MAX(index_time) FROM files", [], |r| r.get(0))?;
+        let last_index_time: Option<String> = conn
+            .query_row(
+                "SELECT value FROM project_metadata WHERE key = 'last_index_time'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        let last_sync_time: Option<String> = conn
+            .query_row(
+                "SELECT value FROM project_metadata WHERE key = 'last_sync_time'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+
+        Ok(format!(
+            "files={total_files};symbols={total_symbols};refs={total_references};edges={total_edges};max_index_time={};last_index_time={};last_sync_time={}",
+            max_index_time.unwrap_or_default(),
+            last_index_time.unwrap_or_default(),
+            last_sync_time.unwrap_or_default(),
+        ))
     }
 
     // ── Stats ───────────────────────────────────────────────────────────────
@@ -118,8 +156,9 @@ impl Store {
 
         // 2. Suffix match (e.g. "helper.ts" matches "src/lib/helper.ts").
         let pattern = format!("%/{}", rel_path);
-        let mut stmt =
-            conn.prepare("SELECT file_id, path FROM files WHERE path LIKE ?1 ORDER BY path ASC LIMIT 5")?;
+        let mut stmt = conn.prepare(
+            "SELECT file_id, path FROM files WHERE path LIKE ?1 ORDER BY path ASC LIMIT 5",
+        )?;
         let rows: Vec<_> = stmt
             .query_map(params![&pattern], |row| {
                 Ok((row.get::<_, FileId>(0)?, row.get::<_, String>(1)?))

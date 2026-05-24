@@ -11,7 +11,9 @@
 5. [未来架构演进](./05-roadmap.md)
 6. [阶段日志](./06-phase-log.md)
 7. [测试规范](./07-testing-spec.md)
-8. [Trace Contract](./trace-contract.md)
+8. [性能基线](./08-performance-baseline.md)
+9. [跨过程数据流设计](./09-interprocedural-dataflow-design.md)
+10. [Trace Contract](./trace-contract.md)
 
 ## 维护规则
 
@@ -22,6 +24,8 @@
 5. 未落地计划只写入 `05-roadmap.md`，不要混入当前实现。
 6. 阶段性实施摘要写入 `06-phase-log.md`，不要塞回变更说明。
 7. 改阶段验收、测试深度、feature 验证矩阵，更新 `07-testing-spec.md`。
-8. 改 CLI/MCP trace JSON 字段、diagnostic code 或 capability 输出，更新 `trace-contract.md`。
+8. 改性能测量方法或发布基线，更新 `08-performance-baseline.md`。
+9. 改跨过程数据流和 summary 设计，更新 `09-interprocedural-dataflow-design.md`。
+10. 改 CLI/MCP trace JSON 字段、diagnostic code 或 capability 输出，更新 `trace-contract.md`。
 
 根目录只保留 `README.md`。架构、需求、路线图和测试规范统一维护在 `docs/` 下。

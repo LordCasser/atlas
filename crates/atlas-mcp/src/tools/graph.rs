@@ -19,7 +19,7 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        let graph = self.context.graph_snapshot();
+        let graph = self.context_builder().graph_snapshot();
         let dir = match direction {
             "outgoing" => TraversalDirection::Outgoing,
             "incoming" => TraversalDirection::Incoming,
@@ -66,7 +66,7 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        let graph = self.context.graph_snapshot();
+        let graph = self.context_builder().graph_snapshot();
         let cg = graph.callers(&sid);
         let snap = graph.snapshot();
         let shown = cg.callers.iter().take(limit);
@@ -93,7 +93,7 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        let graph = self.context.graph_snapshot();
+        let graph = self.context_builder().graph_snapshot();
         let cg = graph.callees(&sid);
         let snap = graph.snapshot();
         let shown = cg.callees.iter().take(limit);
@@ -121,7 +121,7 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        let graph = self.context.graph_snapshot();
+        let graph = self.context_builder().graph_snapshot();
         let sub = graph.callgraph(&sid, depth.min(5));
         let snap = graph.snapshot();
 
@@ -158,7 +158,7 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        let graph = self.context.graph_snapshot();
+        let graph = self.context_builder().graph_snapshot();
         match graph.shortest_path(&from_id, &to_id, max_depth.min(10)) {
             Some(path) => {
                 let snap = graph.snapshot();
@@ -204,7 +204,7 @@ impl ToolRouter {
             None => return (format!("Symbol not found: {}", qname), true),
         };
 
-        let graph = self.context.graph_snapshot();
+        let graph = self.context_builder().graph_snapshot();
         let snap = graph.snapshot();
 
         // Immediate neighbors with edge kind info
@@ -269,7 +269,7 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        let graph = self.context.graph_snapshot();
+        let graph = self.context_builder().graph_snapshot();
         let sub = graph.impact(&sid, depth.min(5));
         let snap = graph.snapshot();
 

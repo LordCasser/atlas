@@ -18,6 +18,7 @@ serde_json = "1"
 [features]
 # Language features (boolean flags for capability profiles and enum variants)
 typescript = []
+javascript = []
 python = []
 java = []
 c = []

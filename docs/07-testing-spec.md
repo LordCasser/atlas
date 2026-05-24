@@ -6,7 +6,7 @@
 
 1. 测试必须对应阶段目标。早期可以验证模型和算法雏形；进入能力验收时，必须验证真实入口和真实数据链路。
 2. 单元测试可以使用手写 facts、mock data 和小型内存图；端到端测试不得用手写 facts 替代 extraction、storage、resolution、graph 或 analysis 主链路。
-3. 默认 feature 和关键 feature 组合都必须可编译。`mcp`、`sync`、`all-languages` 不是文档能力，而是验收矩阵的一部分。
+3. 默认 feature 和关键 feature 组合都必须可编译。`mcp`、`all-languages` 不是文档能力，而是验收矩阵的一部分；sync/filesync 当前是 engine 默认依赖，不是独立 Cargo feature。
 4. Golden fixture 用于锁定抽取输出，不用于证明产品能力已经端到端可用。
 5. 新增语言、新增 schema、新增 CLI/MCP 工具、新增 analysis 能力，都必须同时补测试和文档里的阶段状态。
 6. 低置信度、启发式、fallback 行为必须在测试里显式断言 confidence、strategy 或 diagnostics，不能只断言“有结果”。
@@ -77,7 +77,7 @@
 
 要求：
 
-- `cargo test --features "mcp"` 必须通过。
+- `cargo test -p atlas-cli --features "mcp"` 必须通过。
 - 新增 MCP 工具必须测试注册名、required schema、正常调用和错误调用。
 - 涉及项目文件或源码片段的工具必须测试 project path 限制。
 - 输出必须断言 bounded 行为、confidence/provenance 暴露和结构化 JSON。
@@ -185,11 +185,11 @@
 - Java/C/C++/ArkTS 如果只能支持 Level 0/1/2，测试必须断言 capability profile、unsupported diagnostics 或 lower-confidence best-effort 输出；Go/Rust/C#/PHP/Ruby/Kotlin 已升级为 experimental DataflowBasic frontends，必须至少覆盖 symbols/references/imports/calls golden fixture 和 dataflow edge/path smoke 测试；Bash/Cangjie 只在显式启用对应 feature 的实验测试中覆盖。
 - 每种 MVP 语言至少有一个 capability profile 快照测试；能力等级升级时必须同步更新 fixture 和用户可见输出断言。
 
-### `atlas-engine` 抽出阶段
+### `atlas-engine` facade 稳定阶段
 
 最低要求：
 
-- 从当前 12-crate workspace 抽出 `atlas-engine` 前后的 public API 行为保持一致。
+- `atlas-engine` facade public API 的行为保持一致，不能把 CLI 参数、MCP transport 或交互格式泄漏进 engine。
 - `atlas-engine` 不依赖 CLI 参数解析、MCP transport 或交互输出格式。
 - CLI/MCP 只调用 engine/API，不复制 resolver、graph、analysis 算法。
 
@@ -198,7 +198,7 @@
 - engine crate 有独立单元和集成测试。
 - CLI crate 有命令级 smoke/E2E 测试。
 - MCP crate 有 tool schema、routing、bounded output 测试。
-- 原有 all-languages、mcp、sync 组合测试继续通过；`all-languages` 当前包含 Go/Rust/C#/PHP/Ruby/Kotlin，但不包含 Bash/Cangjie。
+- 原有 default、all-languages、mcp 组合测试继续通过；`all-languages` 当前包含 Go/Rust/C#/PHP/Ruby/Kotlin，但不包含 Bash/Cangjie。
 
 ### Corpus 分支启动后
 
@@ -218,10 +218,9 @@
 
 ```bash
 cargo test
-cargo test --features "all-languages"
-cargo test --features "mcp"
-cargo test --features "sync"
-cargo test --features "all-languages,mcp,sync"
+cargo test -p atlas-cli --features "all-languages"
+cargo test -p atlas-cli --features "mcp"
+cargo test -p atlas-cli --features "all-languages,mcp"
 ```
 
 如果某个 feature 因外部依赖不可用而不能运行，必须在变更说明或 PR 中写清楚原因、影响范围和补偿验证。不能把 feature 编译失败视为“非默认路径所以可忽略”。
@@ -233,7 +232,7 @@ cargo test --features "all-languages,mcp,sync"
 3. 禁止 MCP/CLI 工具只注册不测试实际调用。
 4. 禁止新增 schema 表但不测试 insert/query/delete/cascade。
 5. 禁止修改 golden expected 而不说明语义原因。
-6. 禁止在抽出 `atlas-engine` 前跳过当前阶段端到端和语义精度门禁。
+6. 禁止在稳定或扩张 `atlas-engine` public API 前跳过当前阶段端到端和语义精度门禁。
 
 ## 6. 当前项目的测试缺口
 
@@ -242,7 +241,7 @@ cargo test --features "all-languages,mcp,sync"
 1. 调用实参事实源已统一为 `callsites.args_json` + call-arg `DataNode`；`callsite_args` 表已移除。需要补 DataNode/callsite arg 的 insert/query/delete/cascade 测试。
 2. `dataflow_edges` 的 `TextRange` 持久化已补全（6 字段完整 byte/line/column），需补 trace evidence 完整往返的 golden 测试。
 3. 变量来源追踪与调用路径查询仍需要更多真实源码端到端 fixture，尤其是跨文件调用、参数位置和 unsupported/partial 结果。
-4. Go/Rust/C#/PHP/Ruby/Kotlin 已加入 `all-languages`，需要补齐每种语言的 capability snapshot、golden fixtures 和 unsupported trace CLI/MCP 断言。
+4. Go/Rust/C#/PHP/Ruby/Kotlin 已加入 `all-languages` 并声明 DataflowBasic，需要补齐每种语言的 capability snapshot、golden fixtures、dataflow smoke，以及 CFG/跨函数等 unsupported 或 partial trace CLI/MCP 断言。
 5. Bash/Cangjie 需要 opt-in feature 的最小编译/doctor/capability 测试，避免被误认为默认支持语言。
 6. path alias 已通过 `resolve_by_module_path()` 接入主解析路径并可接 E2E 测试；barrel re-export 仍需要结构化实现（ExportResolver 已移除）。
 7. 旧 `RawEdge` dataflow 路径已移除，不再需要双轨隔离。

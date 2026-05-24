@@ -97,6 +97,7 @@ pub struct ServerCapabilities {
 
 #[derive(Debug, Serialize, Default)]
 pub struct ToolsCapability {
+    #[serde(rename = "listChanged")]
     pub list_changed: bool,
 }
 
@@ -119,6 +120,7 @@ pub struct ServerInfo {
 pub struct Tool {
     pub name: String,
     pub description: String,
+    #[serde(rename = "inputSchema")]
     pub input_schema: ToolInputSchema,
 }
 
@@ -178,3 +180,26 @@ pub const INVALID_REQUEST: i32 = -32600;
 pub const METHOD_NOT_FOUND: i32 = -32601;
 pub const INVALID_PARAMS: i32 = -32602;
 pub const INTERNAL_ERROR: i32 = -32603;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_serializes_mcp_input_schema_name() {
+        let tool = Tool {
+            name: "example".into(),
+            description: "example tool".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({})),
+                required: None,
+            },
+        };
+
+        let value = serde_json::to_value(tool).unwrap();
+        assert!(value.get("inputSchema").is_some());
+        assert!(value.get("input_schema").is_none());
+    }
+}

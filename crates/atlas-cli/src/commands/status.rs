@@ -17,7 +17,13 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     println!("  Project root:    {}", ws.root().display());
     println!("  Database:        {}/atlas.db", ws.atlas_dir().display());
     println!("  SQLite version:  {}", stats.sqlite_version);
-    println!("  Schema version:  v{}", atlas_engine::CURRENT_SCHEMA_VERSION);
+    let db_schema_version = ctx.store.schema_version().unwrap_or(0);
+    println!(
+        "  Schema version:  db v{} / app v{}",
+        db_schema_version,
+        atlas_engine::CURRENT_SCHEMA_VERSION
+    );
+    println!("  Atlas version:   {}", env!("CARGO_PKG_VERSION"));
     println!();
     println!("  Files indexed:   {}", stats.total_files);
     println!("  Symbols:         {}", stats.total_symbols);

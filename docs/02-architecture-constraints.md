@@ -166,7 +166,7 @@ LanguageCapabilityProfile
 - SQLite 使用 WAL。
 - 写路径走事务和 batch write。
 - 读路径可以短连接或 read API。
-- 快速开发阶段 `CURRENT_SCHEMA_VERSION` 保持为当前 schema 代号；schema 变化必须同步更新当前架构文档和测试。部署迁移和旧库兼容不作为当前约束。
+- `CURRENT_SCHEMA_VERSION` 必须与 schema 代号同步；schema 变化必须同步更新当前架构文档、迁移链和测试。当前 V1 的 `MIGRATIONS` 为空，发布前必须明确旧库兼容策略。
 - symbol graph 与 dataflow graph 必须分表。
 
 ## 8. Resolution 与 Graph 约束
@@ -192,12 +192,13 @@ LanguageCapabilityProfile
 
 ## 9. 引擎拆分边界
 
-当前 workspace 已完成 12-crate 拆分；这里的“引擎拆分”专指后续抽出可复用 `atlas-engine` crate。只有在 MVP 语言变量来源追踪与调用路径查询不仅能跑通端到端测试，而且语义精度、capability 边界和 public API 都稳定后，才进行该拆分。
+当前 workspace 已完成 `atlas-engine` facade + engine 内部 crates + CLI/MCP 的拆分；这里的“引擎拆分”约束现在专指后续稳定和冻结可复用 `atlas-engine` public API。只有在 MVP 语言变量来源追踪与调用路径查询不仅能跑通端到端测试，而且语义精度、capability 边界和 public API 都稳定后，才扩张或冻结该 API。
 
 拆分目标：
 
 ```text
 atlas-engine
+  facade public API and re-exports
   core types and facts
   tree-sitter parser/query extraction
   language adapters

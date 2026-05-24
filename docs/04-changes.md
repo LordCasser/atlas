@@ -40,10 +40,10 @@
 
 当前补充决策（已更新—Item 10 完成）：
 
-- ✅ Item 10 已完成：项目已从单 crate 拆分为 12 个 Cargo workspace crate。
+- ✅ Item 10 已完成：项目已从单 crate 拆分为 `atlas-engine` facade、engine 内部 crates、`atlas-mcp` 和 `atlas-cli`。
 - 不立即开启 Corpus 分支（crate 边界已建立，后续演进可在此边界上分叉）。
 - ✅ 已基于当前架构完成变量来源追踪与调用路径查询端到端测试。
-- 当前还没有单独的 `atlas-engine` crate；trace 精度和 public API 稳定后，再抽出可复用 engine。
+- 当前已有单独的 `atlas-engine` facade crate；trace 精度和 public API 稳定后，再冻结/扩张可复用 engine API。
 - 后续演进：Atlas 单仓库单版本索引继续在当前 workspace 内推进；Corpus 多版本源码索引必须等 engine/API 边界稳定后再启动。
 
 ## 3. 从 symbol-only graph 演进到 facts-first graph

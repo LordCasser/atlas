@@ -53,11 +53,7 @@ pub fn run(project: &str) -> anyhow::Result<()> {
             Ok(Some(ver)) => {
                 let current = atlas_engine::CURRENT_SCHEMA_VERSION;
                 if ver == current {
-                    check(
-                        &format!("Schema version (v{ver})"),
-                        true,
-                        &mut all_ok,
-                    );
+                    check(&format!("Schema version (v{ver})"), true, &mut all_ok);
                 } else if ver < current {
                     // Check if migrations are available
                     let has_migrations = atlas_engine::MIGRATIONS
@@ -84,11 +80,17 @@ pub fn run(project: &str) -> anyhow::Result<()> {
                         false,
                         &mut all_ok,
                     );
-                    println!("     Hint: Database is from a newer Atlas version. Upgrade Atlas or rebuild.");
+                    println!(
+                        "     Hint: Database is from a newer Atlas version. Upgrade Atlas or rebuild."
+                    );
                 }
             }
             Ok(None) => {
-                check("Schema version (no schema_versions table)", false, &mut all_ok);
+                check(
+                    "Schema version (no schema_versions table)",
+                    false,
+                    &mut all_ok,
+                );
                 println!("     Hint: Run `atlas init` to initialize the database");
             }
             Err(e) => {
@@ -100,26 +102,26 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     // 6. Language grammar availability (compile-time feature check)
     println!();
     println!("  Language grammar support:");
-    check_lang(
-        "TypeScript/JavaScript",
-        cfg!(feature = "typescript"),
-        &mut all_ok,
-    );
-    check_lang("Python", cfg!(feature = "python"), &mut all_ok);
-    check_lang("Java", cfg!(feature = "java"), &mut all_ok);
-    check_lang("C", cfg!(feature = "c"), &mut all_ok);
-    check_lang("C++", cfg!(feature = "cpp"), &mut all_ok);
-    check_lang("ArkTS", cfg!(feature = "arkts"), &mut all_ok);
+    check_lang("TypeScript", cfg!(feature = "typescript"));
+    check_lang("JavaScript", cfg!(feature = "javascript"));
+    check_lang("Python", cfg!(feature = "python"));
+    check_lang("Java", cfg!(feature = "java"));
+    check_lang("C", cfg!(feature = "c"));
+    check_lang("C++", cfg!(feature = "cpp"));
+    check_lang("ArkTS", cfg!(feature = "arkts"));
     check_experimental_lang("Cangjie", cfg!(feature = "cangjie"));
 
     // Post-MVP languages
-    check_lang("Go", cfg!(feature = "go"), &mut all_ok);
-    check_lang("C#", cfg!(feature = "csharp"), &mut all_ok);
-    check_lang("Rust", cfg!(feature = "rust"), &mut all_ok);
-    check_lang("PHP", cfg!(feature = "php"), &mut all_ok);
-    check_lang("Ruby", cfg!(feature = "ruby"), &mut all_ok);
-    check_lang("Kotlin", cfg!(feature = "kotlin"), &mut all_ok);
+    check_lang("Go", cfg!(feature = "go"));
+    check_lang("C#", cfg!(feature = "csharp"));
+    check_lang("Rust", cfg!(feature = "rust"));
+    check_lang("PHP", cfg!(feature = "php"));
+    check_lang("Ruby", cfg!(feature = "ruby"));
+    check_lang("Kotlin", cfg!(feature = "kotlin"));
     check_experimental_lang("Bash", cfg!(feature = "bash"));
+
+    println!();
+    println!("  Compiled features: {}", compiled_features().join(", "));
 
     // 7. Per-language capability summary
     print_capabilities();
@@ -146,12 +148,11 @@ fn check(name: &str, ok: bool, all_ok: &mut bool) {
     }
 }
 
-fn check_lang(name: &str, enabled: bool, all_ok: &mut bool) {
+fn check_lang(name: &str, enabled: bool) {
     if enabled {
         println!("    [OK]    {name}");
     } else {
         println!("    [WARN]  {name} (not compiled in)");
-        *all_ok = false;
     }
 }
 
@@ -267,6 +268,63 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {
-        format!("{}…", &s[..max_len - 1])
+        let mut end = 0;
+        for (idx, _) in s.char_indices() {
+            if idx >= max_len {
+                break;
+            }
+            end = idx;
+        }
+        format!("{}…", &s[..end])
     }
+}
+
+fn compiled_features() -> Vec<&'static str> {
+    let mut features = Vec::new();
+    if cfg!(feature = "typescript") {
+        features.push("typescript");
+    }
+    if cfg!(feature = "javascript") {
+        features.push("javascript");
+    }
+    if cfg!(feature = "python") {
+        features.push("python");
+    }
+    if cfg!(feature = "java") {
+        features.push("java");
+    }
+    if cfg!(feature = "c") {
+        features.push("c");
+    }
+    if cfg!(feature = "cpp") {
+        features.push("cpp");
+    }
+    if cfg!(feature = "arkts") {
+        features.push("arkts");
+    }
+    if cfg!(feature = "go") {
+        features.push("go");
+    }
+    if cfg!(feature = "csharp") {
+        features.push("csharp");
+    }
+    if cfg!(feature = "rust") {
+        features.push("rust");
+    }
+    if cfg!(feature = "php") {
+        features.push("php");
+    }
+    if cfg!(feature = "ruby") {
+        features.push("ruby");
+    }
+    if cfg!(feature = "kotlin") {
+        features.push("kotlin");
+    }
+    if cfg!(feature = "bash") {
+        features.push("bash");
+    }
+    if cfg!(feature = "cangjie") {
+        features.push("cangjie");
+    }
+    features
 }

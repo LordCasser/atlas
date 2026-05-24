@@ -51,7 +51,7 @@ LLM Agent 可以查询 Atlas 来寻找调用者、追踪变量来源、分析影
 | **确定性** | tree-sitter AST 提取，零 AI 幻觉 |
 | **本地优先** | 所有数据保存在项目的 `.atlas/atlas.db` 中，不依赖任何云服务 |
 | **增量索引** | 基于内容哈希的变更检测，仅重建修改过的文件 |
-| **MCP 原生** | 通过 stdio 的 JSON-RPC 暴露 16 个工具，直接为 AI Agent 服务 |
+| **MCP 原生** | 通过 stdio 的 JSON-RPC 暴露 19 个工具，直接为 AI Agent 服务 |
 | **丰富图谱** | 符号、作用域、引用、调用、导入、数据流、控制流边 |
 | **变量追踪** | 变量来源追踪和调用路径查询，附带完整证据 |
 
@@ -69,7 +69,7 @@ LLM Agent 可以查询 Atlas 来寻找调用者、追踪变量来源、分析影
 ```bash
 git clone https://github.com/<your-org>/atlas.git
 cd atlas
-cargo build --release --features all-languages
+cargo build --release -p atlas-cli --features "all-languages,mcp"
 ```
 
 编译产物位于 `./target/release/atlas`。
@@ -105,11 +105,11 @@ atlas search "UserService" --project /path/to/your/project
 | `atlas status` | 显示文件数、符号数、边数等数据库统计信息 |
 | `atlas files` | 列出所有已索引文件及其语言和状态 |
 | `atlas context <符号>` | 构建 AI 上下文：调用者 + 被调用者 + 同侪，以 Markdown 输出 |
-| `atlas trace point <文件> <行> <列>` | 解析指定代码位置的所有事实 |
-| `atlas trace variable <文件> <行> <列>` | 追踪指定位置的变量来源 |
-| `atlas trace caller-path <符号ID>` | 追踪某个函数的最远调用链 |
+| `atlas trace point --file <文件> --line <行> --column <列>` | 解析指定代码位置的所有事实 |
+| `atlas trace variable --file <文件> --line <行> --column <列>` | 追踪指定位置的变量来源 |
+| `atlas trace caller-path --symbol <符号ID>` | 追踪某个函数的最远调用链 |
 | `atlas doctor` | 诊断环境：SQLite、语法支持、Schema 健康状态 |
-| `atlas mcp --project <路径>` | 启动 MCP 服务（JSON-RPC over stdio） |
+| `atlas mcp --project <路径>` | 启动 MCP 服务（JSON-RPC over stdio，需用 `mcp` feature 构建） |
 
 所有命令均支持 `-p / --project <PATH>` 指定项目根目录（默认为 `.`）。
 
@@ -154,6 +154,9 @@ Atlas 内置 MCP 服务，通过 **JSON-RPC 2.0 over stdio** 为 AI Agent 暴露
 | `atlas_trace_variable` | 从指定代码位置追踪变量来源 |
 | `atlas_trace_caller_path` | 追踪指定函数的最远调用链 |
 | `atlas_language_capabilities` | 返回各语言的追踪/搜索/图谱能力元数据 |
+| `usages` | 查找某符号的引用使用点 |
+| `dependencies` | 查询某文件导入或 include 的文件 |
+| `dependents` | 查询导入或 include 某文件的反向依赖 |
 
 ### 客户端配置
 
@@ -196,6 +199,30 @@ Atlas 内置 MCP 服务，通过 **JSON-RPC 2.0 over stdio** 为 AI Agent 暴露
 }
 ```
 
+**opencode**（`opencode.json`）：
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "atlas": {
+      "type": "local",
+      "command": ["/path/to/target/release/atlas", "mcp", "--project", "/path/to/your/project"],
+      "enabled": true
+    }
+  }
+}
+```
+
+**Codex CLI**（`~/.codex/config.toml`）：
+
+```toml
+[mcp_servers.atlas]
+command = "/path/to/target/release/atlas"
+args = ["mcp", "--project", "/path/to/your/project"]
+enabled = true
+```
+
 > **重要：** 启动 MCP 服务之前，必须先对项目执行一次 `atlas index`。MCP 服务从已有的
 > `.atlas/atlas.db` 读取数据——它自身不会触发索引。
 
@@ -206,7 +233,7 @@ Atlas 内置 MCP 服务，通过 **JSON-RPC 2.0 over stdio** 为 AI Agent 暴露
   "method": "tools/call",
   "params": {
     "name": "atlas_trace_variable",
-    "arguments": { "file": "src/app.ts", "line": 4, "column": 18, "max_depth": 20 }
+    "arguments": { "file_path": "src/app.ts", "line": 4, "column": 18, "max_depth": 20 }
   }
 }
 ```
@@ -219,28 +246,30 @@ Atlas 内置 MCP 服务，通过 **JSON-RPC 2.0 over stdio** 为 AI Agent 暴露
 
 ## 支持的语言
 
-### MVP 语言（完整提取 + 追踪支持）
+### MVP 语言
 
 | 语言 | 扩展名 | 能力等级 |
 |------|--------|:---:|
 | TypeScript | `.ts`, `.tsx` | DataflowBasic |
 | JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` | DataflowBasic |
 | Python | `.py`, `.pyi`, `.pyx` | DataflowBasic |
-| Java | `.java` | Symbolic |
-| C | `.c`, `.h` | Symbolic |
-| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | Symbolic |
-| ArkTS | `.ets`, `.sts` | Symbolic |
+| Java | `.java` | DataflowBasic best-effort |
+| C | `.c`, `.h` | DataflowBasic best-effort |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | DataflowBasic best-effort |
+| ArkTS | `.ets`, `.sts` | DataflowBasic best-effort via TypeScript grammar |
 
-### Post-MVP 语言（仅符号提取，暂无追踪）
+### Post-MVP 语言（包含在 `all-languages`）
 
-| 语言 | 扩展名 | 是否包含在 `all-languages`？ |
+| 语言 | 扩展名 | 能力等级 |
 |------|--------|:---:|
-| Go | `.go` | 是 |
-| C# | `.cs` | 是 |
-| Rust | `.rs` | 是 |
-| PHP | `.php` | 是 |
-| Ruby | `.rb` | 是 |
-| Kotlin | `.kt`, `.kts` | 是 |
+| Go | `.go` | DataflowBasic best-effort |
+| C# | `.cs` | DataflowBasic best-effort |
+| Rust | `.rs` | DataflowBasic best-effort |
+| PHP | `.php` | DataflowBasic best-effort |
+| Ruby | `.rb` | DataflowBasic best-effort |
+| Kotlin | `.kt`, `.kts` | DataflowBasic best-effort |
+
+`DataflowBasic` 表示具备基础局部 bindings/dataflow/call argument/return facts；不表示完整跨函数变量来源追踪、CFG 或编译器级语义。具体支持功能、限制和 confidence_floor 以 `atlas doctor` / MCP `atlas_language_capabilities` 输出为准。
 
 ### 实验性语言（需显式启用）
 
@@ -252,14 +281,17 @@ Atlas 内置 MCP 服务，通过 **JSON-RPC 2.0 over stdio** 为 AI Agent 暴露
 ### 构建变体
 
 ```bash
-# 默认：TypeScript、JavaScript、Python
-cargo build --release
+# 默认：TypeScript、JavaScript、Python，不包含 MCP 命令
+cargo build --release -p atlas-cli
 
 # 全部 MVP + post-MVP 语言
-cargo build --release --features all-languages
+cargo build --release -p atlas-cli --features all-languages
+
+# 全部语言 + MCP 服务
+cargo build --release -p atlas-cli --features "all-languages,mcp"
 
 # 开启实验性语言
-cargo build --release --features "all-languages,bash,cangjie"
+cargo build --release -p atlas-cli --features "all-languages,mcp,bash,cangjie"
 ```
 
 ---
@@ -303,60 +335,43 @@ cargo build --release --features "all-languages,bash,cangjie"
                   ▼
 ┌────────────────────────────────────┐
 │ 6. Interface                       │
-│ CLI (12 cmds) + MCP (16 tools)     │
+│ CLI (10 cmds) + MCP (19 tools)     │
 └────────────────────────────────────┘
 ```
 
 ### Crate 地图
 
-项目以 Rust workspace 方式组织，共 **12 个 crate**，严格遵循自底向上的依赖顺序：
+项目以 Rust workspace 方式组织，共 **13 个 Cargo package**：`atlas-engine` facade、engine 内部 10 个 crate、`atlas-mcp` 和 `atlas-cli`。
 
 ```
 crates/
-├── atlas-types           核心类型系统：7 种 ID 类型、11 种枚举、IR 结构体
-├── atlas-workspace       项目根目录、工作区路径、源文件路径抽象
-├── atlas-db              SQLite Schema + Store 读写 + Reader + 迁移
-├── atlas-extraction      tree-sitter 解析、.scm 查询、LanguageAdapter
-│   ├── queries/          各语言的 tree-sitter 查询文件
-│   └── languages/        LanguageAdapter 实现
-├── atlas-resolution      符号解析：引用消解 + include 图 + 路径别名
-├── atlas-graph           GraphBuilder、GraphSnapshot、GraphEngine（BFS/DFS）
-├── atlas-analysis        变量来源追踪 + 调用路径查询分析引擎
-├── atlas-search          FTS5 + LIKE + 模糊搜索 + camelCase 归一化
-├── atlas-context         AI 上下文构建器（调用者/被调用者/同侪）
-├── atlas-sync            增量同步：Git 感知文件发现 + 哈希变更检测
-├── atlas-mcp             MCP JSON-RPC 2.0 服务（16 个工具）
-└── atlas-cli             CLI 二进制（12 个命令）+ 所有集成测试
+├── atlas-engine          facade crate：re-export core APIs
+│   └── crates/
+│       ├── types         核心类型系统、ID、capability profile
+│       ├── workspace     项目根目录、工作区路径、源文件路径抽象
+│       ├── db            SQLite Schema + Store 读写 + Reader + 迁移
+│       ├── extraction    tree-sitter 解析、.scm 查询、LanguageAdapter
+│       ├── resolution    符号解析：引用消解 + include 图 + 路径别名
+│       ├── graph         GraphBuilder、GraphSnapshot、GraphEngine（BFS/DFS）
+│       ├── analysis      变量来源追踪 + 调用路径查询分析引擎
+│       ├── search        FTS5 + LIKE + 模糊搜索 + camelCase 归一化
+│       ├── context       AI 上下文构建器（调用者/被调用者/同侪）
+│       └── filesync      增量同步：Git 感知文件发现 + 哈希变更检测
+├── atlas-mcp             MCP JSON-RPC 2.0 服务（19 个工具）
+└── atlas-cli             CLI 二进制（10 个命令）+ 集成测试
 ```
 
 ### 依赖方向（严格无环）
 
 ```
- atlas-cli ──▶ atlas-mcp, atlas-sync, atlas-search, atlas-context,
-               atlas-analysis, atlas-graph, atlas-resolution,
-               atlas-extraction, atlas-db, atlas-types, atlas-workspace
+ atlas-cli ──▶ atlas-engine, atlas-mcp
 
- atlas-mcp ──▶ atlas-context, atlas-search, atlas-graph,
-               atlas-analysis, atlas-db, atlas-types, atlas-workspace
+ atlas-mcp ──▶ atlas-engine
 
- atlas-sync ──▶ atlas-graph, atlas-resolution, atlas-extraction,
-                atlas-db, atlas-types, atlas-workspace
+ atlas-engine ──▶ types, workspace, db, extraction, resolution,
+                  graph, analysis, search, context, filesync
 
- atlas-search / atlas-context ──▶ atlas-graph, atlas-db, atlas-types
-
- atlas-analysis ──▶ atlas-db, atlas-types, atlas-workspace
-
- atlas-graph ──▶ atlas-db, atlas-types
-
- atlas-resolution ──▶ atlas-db, atlas-types, atlas-workspace
-
- atlas-extraction ──▶ atlas-types
-
- atlas-db ──▶ atlas-types
-
- atlas-workspace ──▶ (标准库)
-
- atlas-types ──▶ (blake3, serde, rusqlite)
+ engine 内部 crate 保持自底向上的无环依赖：types/workspace/db → extraction/resolution/graph/analysis/search/context/filesync。
 ```
 
 ### 核心设计决策
@@ -382,7 +397,7 @@ cfg_edges      project_metadata               schema_versions
 symbols_fts    （FTS5 全文索引）
 ```
 
-当前项目处于快速开发阶段——Schema 变更需要 `atlas init` 重建数据库。
+Schema 迁移基础设施已存在，当前版本为 V1，`MIGRATIONS` 为空。V1 发布前会明确后续兼容策略；遇到无迁移路径的旧库时，按 `atlas doctor` 指引重建 `.atlas/atlas.db`。
 
 ---
 
@@ -424,11 +439,11 @@ Atlas 提供**变量来源追踪**和**调用路径查询**能力——它不是
 |------|:-----:|:------:|:----:|:-----:|:-----:|:--------:|
 | 符号与引用 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | 调用图 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| 局部数据流 | ✓ | ✓† | ✗ | ✗ | ✗ | ✗ |
-| Use-Def 链 | ✓ | ✓†† | ✗ | ✗ | ✗ | ✗ |
+| 局部数据流 | ✓ | ✓† | ✓† | ✓† | ✓† | ✓† |
+| Use-Def 链 | ✓†† | ✓†† | ✓†† | ✓†† | ✓†† | ✓†† |
 | 控制流图 (CFG) | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ |
 
-> ✓† = 启发式命名匹配 · ✓†† = 仅名称匹配精度 · Post-MVP = Go/C#/Rust/PHP/Ruby/Kotlin
+> ✓† = AST-driven local dataflow，仍有语言特定缺口 · ✓†† = 名称/作用域启发式精度 · Post-MVP = Go/C#/Rust/PHP/Ruby/Kotlin
 
 当追踪查询超出当前语言的能力边界时，Atlas 返回 `partial_result: true` 并附带详细
 诊断信息——绝不会静默地返回空结果。
@@ -445,8 +460,8 @@ Atlas 提供**变量来源追踪**和**调用路径查询**能力——它不是
 # 默认测试套件（TypeScript、JavaScript、Python）
 cargo test
 
-# 完整测试套件（全部语言 + MCP + 增量同步）
-cargo test --features "all-languages,mcp,sync"
+# 完整测试套件（全部语言 + MCP）
+cargo test -p atlas-cli --features "all-languages,mcp"
 
 # 仅集成测试
 cargo test --test integration
@@ -459,7 +474,7 @@ cargo build --release -p atlas-cli --features all-languages
 
 ```
 atlas/
-├── crates/                # 12 个 workspace crate（详见上方 crate 地图）
+├── crates/                # atlas-engine facade、engine 内部 crates、CLI、MCP
 ├── docs/                  # 架构文档、需求规格、追踪合约
 │   ├── 01-requirements.md
 │   ├── 02-architecture-constraints.md
@@ -477,7 +492,7 @@ atlas/
 - **职责分离**：每个 crate 有单一、明确的职责
 - **确定性 ID**：所有 ID 均为 blake3 哈希——保证索引幂等
 - **最佳努力语义**：解析错误以警告形式呈现，不阻断管线
-- **Feature 门控**：语言、MCP、增量同步、CLI 均为可选 Cargo feature
+- **Feature 门控**：语言和 MCP 通过 Cargo features 控制；sync/filesync 作为 engine 默认能力提供
 - **Deref 强制转换**：`Store` 自动解引用为 `StoreReader`，清晰分离读写
 - **输出预算**：所有响应受尺寸限制，不存在无界输出
 
@@ -492,11 +507,11 @@ atlas/
 | **Java** | 不做 classpath/Maven/Gradle 解析；跨文件解析基于名称匹配 |
 | **Python** | 不做动态类型推断；运行时构造的符号无法捕获 |
 | **ArkTS** | 委托给 TypeScript 语法解析；部分 ArkTS 特有语法可能无法解析 |
-| **Post-MVP 语言** | Go/C#/Rust/PHP/Ruby/Kotlin：仅符号、引用、调用——无数据流或追踪 |
+| **Post-MVP 语言** | Go/C#/Rust/PHP/Ruby/Kotlin：基础 DataflowBasic best-effort；完整 path-level 追踪仍需按语言验证 |
 | **Barrel 重导出** | TypeScript 重导出链通过名称兜底解析，而非 AST 导出图 |
 | **性能** | 10 万+ 符号项目需全量内存图（约 50MB 内存） |
 | **并发** | 单一 `Mutex<Connection>`；MCP 服务为单线程 |
-| **Schema** | 快速开发期无迁移系统；Schema 变更需 `atlas init` 重建 |
+| **Schema** | 已有 V1 迁移基础设施；当前 `MIGRATIONS` 为空，无迁移路径时需按 `atlas doctor` 指引重建 |
 
 ---
 
@@ -508,7 +523,7 @@ atlas/
 2. **加固 TS/JS/Python 追踪 fixtures**，增强路径步骤的语义断言
 3. **保持能力边界的显式化**，在 CLI 和 MCP 输出中清晰呈现
 4. **轻量级函数摘要** 和有界的跨函数变量来源追踪
-5. **推迟 `atlas-engine` crate 拆分**，直至追踪精度达到生产可用水平
+5. **稳定 `atlas-engine` facade API**，直至追踪精度达到生产可用水平
 
 ---
 
@@ -516,7 +531,7 @@ atlas/
 
 1. 提交前请运行完整测试套件：
    ```bash
-   cargo test --features "all-languages,mcp,sync"
+   cargo test -p atlas-cli --features "all-languages,mcp"
    ```
 2. 新的提取逻辑必须包含集成测试
 3. 语言适配器遵循 `crates/atlas-extraction/src/languages/` 中的 `LanguageAdapter` trait

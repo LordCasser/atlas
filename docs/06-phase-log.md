@@ -204,9 +204,9 @@
 
 所有 feature 组合通过：
 - `cargo test` — 310 passed
-- `cargo test --features "all-languages"` — 341 passed
-- `cargo test --features "mcp"` — 334 passed
-- `cargo test --features "all-languages,mcp"` — 366 passed
+- `cargo test -p atlas-cli --features "all-languages"` — 341 passed
+- `cargo test -p atlas-cli --features "mcp"` — 334 passed
+- `cargo test -p atlas-cli --features "all-languages,mcp"` — 366 passed
 
 ## Post-P5：工程质量与 P1 修复
 
@@ -230,13 +230,13 @@
 
 ### Post-MVP 语言 frontends
 
-- **已接入 `all-languages` 的 Symbolic frontends**：Go、C#、Rust、PHP、Ruby、Kotlin。当前能力边界是 symbols/references/imports/scopes/call graph best-effort；未实现 lexical binding、dataflow、CFG 或变量来源追踪。
+- **已接入 `all-languages` 的 DataflowBasic frontends**：Go、C#、Rust、PHP、Ruby、Kotlin。当前能力边界是基础局部 dataflow best-effort；CFG、跨函数传播和完整 path-level 变量来源追踪仍未生产化。
 - **显式 opt-in experimental frontends**：Bash、Cangjie。Bash 命令调用低置信度，Cangjie 仍受 grammar/query 适配限制；二者不进入默认 features 或 `all-languages`。
 - **文档结论**：这些语言不能再写成“未来可引入”，但也不能写成生产级 trace 支持。当前应按 `LanguageCapabilityProfile` 暴露能力边界和 unsupported diagnostics。
 
 ## P5 验收检查清单
 
-> 基于 `docs/01-requirements.md` §7 和 `docs/05-roadmap.md` §1-2 的完成条件逐项验证。
+> 基于 `docs/01-requirements.md` §7 和 `docs/05-roadmap.md` §3 的完成条件逐项验证。
 
 ### 1. MVP 语言 facts 完整性
 
@@ -245,14 +245,14 @@
 | TypeScript | ✅ | ✅ | ✅ | ✅ lexical + identifier-use | ✅ | ✅ Assign/FieldLoad/CallArg/Return/ArgToParam | ✅ branches | **Level 3** |
 | JavaScript | ✅ | ✅ | ✅ | ✅ (委托 TS adapter) | ✅ | ✅ (同 TS) | ✅ | **Level 3** |
 | Python | ✅ | ✅ | ✅ | ✅ | ✅ partial | ✅ partial (Assign only) | ❌ | **Level 2** |
-| Java | ✅ | ✅ | ✅ | ❌ (未实现 lexical) | ❌ | ❌ | ❌ | **Level 1** |
-| C | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | **Level 1** |
-| C++ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | **Level 1** |
-| ArkTS | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | **Level 1** |
-| Go/Rust/C#/PHP/Ruby/Kotlin | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | **Post-MVP Symbolic** |
+| Java | ✅ | ✅ | ✅ | ✅ best-effort | ✅ | ✅ | ❌ | **DataflowBasic best-effort** |
+| C | ✅ | ✅ | ✅ | ✅ best-effort | ✅ | ✅ | ❌ | **DataflowBasic best-effort** |
+| C++ | ✅ | ✅ | ✅ | ✅ best-effort | ✅ | ✅ | ❌ | **DataflowBasic best-effort** |
+| ArkTS | ✅ | ✅ | ✅ | ✅ best-effort | ✅ | ✅ | ❌ | **DataflowBasic best-effort** |
+| Go/Rust/C#/PHP/Ruby/Kotlin | ✅ | ✅ | ✅ | ✅ best-effort | ✅ | ✅ | ❌ | **Post-MVP DataflowBasic** |
 | Bash/Cangjie | ✅ experimental | ✅ experimental | Bash partial / Cangjie ❌ | ❌ | ❌ | ❌ | ❌ | **Opt-in experimental** |
 
-**判定：✅ 符合 MVP 要求。** TS/JS 达到 Level 3（全量 facts），Python 达到 Level 2（local dataflow 部分），Java/C/C++/ArkTS 满足 Level 1 边界。Post-MVP 和 opt-in 语言必须继续以 capability profile 标注 unsupported trace 能力，不能纳入 P5 完成度结论。
+**判定：✅ 符合 MVP 要求。** TS/JS/Python 和其他 DataflowBasic 语言均需继续用 capability profile 标注 limitation/confidence；基础 local dataflow 不等同于完整跨函数 trace 生产能力。Opt-in 语言必须继续标注 experimental/unsupported。
 
 ### 2. E2E fixture 覆盖
 
@@ -300,8 +300,8 @@
 
 | 接口 | 能力 | 验证 |
 |------|------|------|
-| CLI `atlas trace --variable` | backward slice | `trace_e2e.rs` + `trace_cli_e2e.rs` |
-| CLI `atlas trace --callers` | caller path with depth/limit | `trace_cli_e2e.rs` |
+| CLI `atlas trace variable` | backward slice | `trace_e2e.rs` + `trace_cli_e2e.rs` |
+| CLI `atlas trace caller-path` | caller path with depth/limit | `trace_cli_e2e.rs` |
 | MCP `atlas_trace_point` | 指定 file/line 查询 | `trace_mcp_e2e.rs` |
 | MCP `atlas_trace_variable` | 变量来源追踪 | `trace_mcp_e2e.rs` |
 | MCP `atlas_trace_caller_path` | 调用路径 | `trace_mcp_e2e.rs` |
@@ -328,12 +328,12 @@ extraction (tree-sitter) → FileFacts → store.insert_file_facts → DB
 | 差距 | 严重程度 | 标记位置 |
 |------|--------|---------|
 | Python dataflow 只有 Assign 边，无 FieldLoad/Return 边 | P3 | `FeatureMatrix` |
-| Java/C/C++/ArkTS 无 dataflow/lexical 提取 | P3 | `LanguageCapabilityProfile` |
-| Go/Rust/C#/PHP/Ruby/Kotlin 只有 Symbolic frontends，未进入 trace/dataflow | P3 | `LanguageCapabilityProfile` / `docs/05-roadmap.md` §7 |
+| Java/C/C++/ArkTS dataflow 仍是 best-effort，CFG/跨函数未完成 | P3 | `LanguageCapabilityProfile` |
+| Go/Rust/C#/PHP/Ruby/Kotlin 已是 DataflowBasic best-effort，但完整 path-level trace 仍需逐语言补齐 | P3 | `LanguageCapabilityProfile` / `docs/05-roadmap.md` §8 |
 | Bash/Cangjie 仅 opt-in experimental，不进入默认/all-languages | P3 | Cargo features / `LanguageCapabilityProfile` |
-| FunctionSummary 跨函数桥接（caller arg→callee param, callee return→caller） | P4 | `docs/05-roadmap.md` §3 |
-| Graph/DataFlow/CFG 分层读取 | P4 | `docs/05-roadmap.md` §4 |
-| 抽出可复用 `atlas-engine` crate | P5 | `docs/05-roadmap.md` §5 |
+| FunctionSummary 跨函数桥接（caller arg→callee param, callee return→caller） | P4 | `docs/05-roadmap.md` §4 |
+| Graph/DataFlow/CFG 分层读取 | P4 | `docs/05-roadmap.md` §5 |
+| 稳定可复用 `atlas-engine` facade API | P5 | `docs/05-roadmap.md` §6 |
 
 ### P5 验收结论
 
@@ -368,7 +368,7 @@ extraction (tree-sitter) → FileFacts → store.insert_file_facts → DB
 
 ### 4. CLI/MCP capability 边界测试
 
-新增 `p1_capability_go_variable_is_partial` (CLI) 和 `p1_mcp_go_trace_variable_is_partial` (MCP)，验证 Symbolic 语言 trace 返回 `partial_result=true` + `unsupported_language` diagnostic + `capability` 对象。
+新增 `p1_capability_go_variable_is_partial` (CLI) 和 `p1_mcp_go_trace_variable_is_partial` (MCP) 时，验证过 Symbolic 边界的 partial 输出；当前 Go 已升级为 DataflowBasic best-effort，这类测试需要改为覆盖 CFG/跨函数等仍 unsupported 的能力边界。
 
 **判定：✅ 全测试矩阵通过。**
 

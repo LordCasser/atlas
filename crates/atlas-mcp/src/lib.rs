@@ -15,9 +15,9 @@
 use std::sync::Arc;
 
 use atlas_engine::ContextBuilder;
-use atlas_engine::Store;
 use atlas_engine::GraphEngine;
 use atlas_engine::SearchEngine;
+use atlas_engine::Store;
 use atlas_engine::Workspace;
 
 use self::protocol::{Response, ServerCapabilities, ServerInfo, ToolsCapability};
@@ -61,25 +61,14 @@ impl McpServer {
         let mut reader = BufReader::new(stdin);
         let mut stdout = tokio::io::stdout();
 
-        // Build the tool router with initial graph engine.
-        // Graph snapshot is loaded once at startup and remains stable
-        // for the server lifetime. Use `atlas_status` or server restart
-        // to refresh the graph after sync/index operations.
         let store = self.store;
-        let search = SearchEngine::new(
-            Arc::clone(&store),
-            Arc::new(GraphEngine::from_store(&store, 0.3)?),
-        );
-        let context = ContextBuilder::new(
-            Arc::clone(&store),
-            Arc::new(GraphEngine::from_store(&store, 0.3)?),
-        );
-        let mut router = ToolRouter::new(
-            Arc::clone(&store),
-            search,
-            context,
-            self.workspace.root().to_path_buf(),
-        );
+        let project_root = self.workspace.root().to_path_buf();
+
+        // ── Phase 1: Initialize router with no graph (fast startup) ────
+        // Graph build is deferred to the first request that needs it.
+        // This ensures the MCP handshake (initialize request/response)
+        // completes within client timeout, even for large codebases.
+        let mut router = ToolRouter::new_empty(Arc::clone(&store), project_root);
 
         loop {
             let request = match transport::read_request(&mut reader).await? {
@@ -87,16 +76,24 @@ impl McpServer {
                 None => break, // EOF
             };
 
+            // ── Phase 2: Lazy graph build on first request ──────────────
+            // Build the graph on first use (after initialize handshake is
+            // done).  This avoids blocking the MCP handshake for large DBs.
+            router.ensure_graph_initialized()?;
+
             // Check if DB has been updated since last graph build.
-            // If so, refresh graph/snapshot to keep trace and graph tools
-            // consistent within the same MCP session.
             router.maybe_refresh_graph()?;
 
             let response = {
                 let start = std::time::Instant::now();
                 let outcome = Self::dispatch(&request, &router);
                 let duration_ms = start.elapsed().as_millis() as u64;
-                let ok = outcome.response.error.is_none() && !outcome.tool_error;
+                let ok = outcome
+                    .response
+                    .as_ref()
+                    .map(|response| response.error.is_none())
+                    .unwrap_or(true)
+                    && !outcome.tool_error;
                 let _span = tracing::info_span!(
                     "mcp_request",
                     method = %request.method,
@@ -109,7 +106,9 @@ impl McpServer {
                 tracing::info!(parent: &_span, "request handled");
                 outcome.response
             };
-            transport::write_response(&mut stdout, &response).await?;
+            if let Some(response) = response {
+                transport::write_response(&mut stdout, &response).await?;
+            }
         }
 
         Ok(())
@@ -121,7 +120,7 @@ impl McpServer {
 /// can correctly report `ok = false` for MCP tool errors (which live in
 /// `CallToolResult.is_error`, not `Response.error`).
 struct DispatchOutcome {
-    response: Response,
+    response: Option<Response>,
     tool_name: Option<String>,
     tool_error: bool,
 }
@@ -129,10 +128,24 @@ struct DispatchOutcome {
 impl McpServer {
     /// Dispatch a single JSON-RPC request.
     fn dispatch(request: &protocol::Request, router: &ToolRouter) -> DispatchOutcome {
+        if request.id.is_none() {
+            return DispatchOutcome {
+                response: None,
+                tool_name: None,
+                tool_error: false,
+            };
+        }
+
         match request.method.as_str() {
             "initialize" => {
+                let protocol_version = request
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.get("protocolVersion"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("2024-11-05");
                 let result = serde_json::to_value(serde_json::json!({
-                    "protocolVersion": "0.1.0",
+                    "protocolVersion": protocol_version,
                     "capabilities": ServerCapabilities {
                         tools: Some(ToolsCapability { list_changed: false }),
                     },
@@ -144,12 +157,12 @@ impl McpServer {
                 .ok();
 
                 DispatchOutcome {
-                    response: Response {
+                    response: Some(Response {
                         jsonrpc: protocol::JSONRPC_VERSION,
                         id: request.id.clone(),
                         result,
                         error: None,
-                    },
+                    }),
                     tool_name: None,
                     tool_error: false,
                 }
@@ -159,12 +172,12 @@ impl McpServer {
                 let list_result = router.list_tools();
                 let result = serde_json::to_value(list_result).ok();
                 DispatchOutcome {
-                    response: Response {
+                    response: Some(Response {
                         jsonrpc: protocol::JSONRPC_VERSION,
                         id: request.id.clone(),
                         result,
                         error: None,
-                    },
+                    }),
                     tool_name: None,
                     tool_error: false,
                 }
@@ -175,11 +188,11 @@ impl McpServer {
                     Some(p) => p,
                     None => {
                         return DispatchOutcome {
-                            response: Response::error(
+                            response: Some(Response::error(
                                 request.id.clone(),
                                 protocol::INVALID_PARAMS,
                                 "Missing params".into(),
-                            ),
+                            )),
                             tool_name: None,
                             tool_error: true,
                         };
@@ -190,11 +203,11 @@ impl McpServer {
                     Some(n) => n,
                     None => {
                         return DispatchOutcome {
-                            response: Response::error(
+                            response: Some(Response::error(
                                 request.id.clone(),
                                 protocol::INVALID_PARAMS,
                                 "Missing tool name".into(),
-                            ),
+                            )),
                             tool_name: None,
                             tool_error: true,
                         };
@@ -210,23 +223,23 @@ impl McpServer {
                 let result = serde_json::to_value(tool_result).ok();
 
                 DispatchOutcome {
-                    response: Response {
+                    response: Some(Response {
                         jsonrpc: protocol::JSONRPC_VERSION,
                         id: request.id.clone(),
                         result,
                         error: None,
-                    },
+                    }),
                     tool_name: Some(name.to_string()),
                     tool_error,
                 }
             }
 
             _ => DispatchOutcome {
-                response: Response::error(
+                response: Some(Response::error(
                     request.id.clone(),
                     protocol::METHOD_NOT_FOUND,
                     format!("Method not found: {}", request.method),
-                ),
+                )),
                 tool_name: None,
                 tool_error: true,
             },

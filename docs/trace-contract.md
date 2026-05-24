@@ -248,15 +248,15 @@ Each language has a `LanguageCapabilityProfile` that includes:
 | symbols | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓††† | ✓ |
 | references | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓††† | ✓ |
 | call_graph | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓††† | ✗ |
-| lexical_bindings | ✓† | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
-| local_dataflow | ✓ | ✓† | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
-| use_def | ✓ | ✓†† | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| lexical_bindings | ✓† | ✓†† | ✓†† | ✓†† | ✓†† | ✓†† | ✗ | ✗ |
+| local_dataflow | ✓† | ✓† | ✓† | ✓† | ✓† | ✓† | ✗ | ✗ |
+| use_def | ✓†† | ✓†† | ✓†† | ✓†† | ✓†† | ✓†† | ✗ | ✗ |
 | cfg | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | interprocedural | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 
 - ✓ = `Supported { confidence_floor: profile-specific }`
-- ✓† = Supported with limitations (e.g., Python dataflow: heuristic naming only)
-- ✓†† = Supported with reduced precision (e.g., Python use-def: name-only heuristic)
+- ✓† = Supported with limitations; local dataflow is AST-driven but still has language-specific gaps
+- ✓†† = Supported with reduced precision, primarily name/scope heuristic binding
 - ✓††† = Symbolic/low-confidence extraction only; trace variable provenance remains unsupported
 - ✗ = `Unsupported { reason: "..." }` with structured diagnostic
 
@@ -289,17 +289,18 @@ Gating uses the **FeatureMatrix** (not the coarse `CapabilityLevel`):
   "inputSchema": {
     "type": "object",
     "properties": {
-      "file": { "type": "string", "description": "Relative file path" },
+      "file_id": { "type": "string", "description": "File ID hex from atlas_files" },
+      "file_path": { "type": "string", "description": "Relative file path" },
       "line": { "type": "integer", "minimum": 1 },
       "column": { "type": "integer", "minimum": 1 }
     },
-    "required": ["file", "line", "column"]
+    "required": []
   }
 }
 ```
 
 Same pattern for `atlas_trace_variable` (+ `max_depth`) and
-`atlas_trace_caller_path` (takes `symbol` hex ID instead of `file`/`line`/`column`).
+`atlas_trace_caller_path` (takes `symbol` hex ID or `symbol_name` instead of `file_id`/`file_path`/`line`/`column`). The current MCP schema permits either file identity form and validates missing arguments inside the handler so errors can use the same `TraceQueryResponse` envelope.
 
 ### All three return `CallToolResult`:
 
@@ -339,12 +340,12 @@ These are explicitly excluded from the current frozen trace contract:
 
 ```bash
 # Get full trace response as JSON
-atlas trace point src/app.ts 10 15 --json
-atlas trace variable src/app.ts 10 15 --json
-atlas trace caller-path <symbol-hex> --json
+atlas trace point --file src/app.ts --line 10 --column 15 --json
+atlas trace variable --file src/app.ts --line 10 --column 15 --json
+atlas trace caller-path --symbol <symbol-hex> --json
 
 # Human-readable
-atlas trace point src/app.ts 10 15
+atlas trace point --file src/app.ts --line 10 --column 15
 ```
 
 ### MCP (from AI agent)
@@ -353,7 +354,7 @@ atlas trace point src/app.ts 10 15
 // Request
 { "method": "tools/call", "params": {
     "name": "atlas_trace_variable",
-    "arguments": { "file": "src/app.ts", "line": 4, "column": 18, "max_depth": 20 }
+    "arguments": { "file_path": "src/app.ts", "line": 4, "column": 18, "max_depth": 20 }
 }}
 
 // Response — always parse the envelope first, then check result

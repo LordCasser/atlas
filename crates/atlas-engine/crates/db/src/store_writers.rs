@@ -9,8 +9,9 @@
 //! JSON serialization for empty arrays (the common case) is cached to avoid
 //! per-row `serde_json::to_string()` overhead.
 
-use types::*;
 use rusqlite::{Connection, params};
+use std::collections::HashSet;
+use types::*;
 
 /// Cached empty JSON array string — `Vec::new()` → `"[]"` is constant.
 const EMPTY_JSON_ARRAY: &str = "[]";
@@ -22,6 +23,7 @@ pub(crate) fn write_symbols(conn: &Connection, symbols: &[SymbolDef]) -> anyhow:
     if symbols.is_empty() {
         return Ok(());
     }
+    let valid_symbol_ids: HashSet<_> = symbols.iter().map(|s| s.id).collect();
 
     let base_sql = r#"INSERT OR REPLACE INTO symbols
         (symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
@@ -44,20 +46,42 @@ pub(crate) fn write_symbols(conn: &Connection, symbols: &[SymbolDef]) -> anyhow:
                       ?{o14},?{o15},?{o16},?{o17},?{o18},?{o19},\
                       ?{o20},?{o21},?{o22},?{o23},?{o24},\
                       ?{o25},?{o26},?{o27},?{o28})",
-                    o1 = o + 1, o2 = o + 2, o3 = o + 3, o4 = o + 4,
-                    o5 = o + 5, o6 = o + 6, o7 = o + 7, o8 = o + 8,
-                    o9 = o + 9, o10 = o + 10, o11 = o + 11, o12 = o + 12,
-                    o13 = o + 13, o14 = o + 14, o15 = o + 15, o16 = o + 16,
-                    o17 = o + 17, o18 = o + 18, o19 = o + 19, o20 = o + 20,
-                    o21 = o + 21, o22 = o + 22, o23 = o + 23, o24 = o + 24,
-                    o25 = o + 25, o26 = o + 26, o27 = o + 27, o28 = o + 28,
+                    o1 = o + 1,
+                    o2 = o + 2,
+                    o3 = o + 3,
+                    o4 = o + 4,
+                    o5 = o + 5,
+                    o6 = o + 6,
+                    o7 = o + 7,
+                    o8 = o + 8,
+                    o9 = o + 9,
+                    o10 = o + 10,
+                    o11 = o + 11,
+                    o12 = o + 12,
+                    o13 = o + 13,
+                    o14 = o + 14,
+                    o15 = o + 15,
+                    o16 = o + 16,
+                    o17 = o + 17,
+                    o18 = o + 18,
+                    o19 = o + 19,
+                    o20 = o + 20,
+                    o21 = o + 21,
+                    o22 = o + 22,
+                    o23 = o + 23,
+                    o24 = o + 24,
+                    o25 = o + 25,
+                    o26 = o + 26,
+                    o27 = o + 27,
+                    o28 = o + 28,
                 )
             })
             .collect();
         let sql = format!("{}{}", base_sql, placeholders.join(","));
 
         // Collect all params for this chunk
-        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(chunk.len() * 28);
+        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            Vec::with_capacity(chunk.len() * 28);
         for s in chunk {
             let path_json = if s.symbol_path.is_empty() {
                 EMPTY_JSON_ARRAY.to_string()
@@ -98,19 +122,32 @@ pub(crate) fn write_symbols(conn: &Connection, symbols: &[SymbolDef]) -> anyhow:
             all_params.push(Box::new(exported));
             all_params.push(Box::new(static_));
             all_params.push(Box::new(async_));
-            all_params.push(Box::new(s.container));
+            all_params.push(Box::new(None::<SymbolId>));
             all_params.push(Box::new(s.scope_id));
             all_params.push(Box::new(s.package_name.clone()));
             all_params.push(Box::new(ns_json));
         }
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            all_params.iter().map(|p| p.as_ref()).collect();
         conn.execute(&sql, param_refs.as_slice())?;
+    }
+
+    let mut update_container = conn.prepare(
+        r#"UPDATE symbols
+           SET container_id = ?2
+           WHERE symbol_id = ?1"#,
+    )?;
+    for s in symbols {
+        if let Some(container_id) = s.container.filter(|id| valid_symbol_ids.contains(id)) {
+            update_container.execute(params![s.id, container_id])?;
+        }
     }
 
     Ok(())
 }
 
 pub(crate) fn write_scopes(conn: &Connection, scopes: &[ScopeDef]) -> anyhow::Result<()> {
+    let valid_scope_ids: HashSet<_> = scopes.iter().map(|s| s.id).collect();
     let mut stmt = conn.prepare(
         r#"INSERT OR REPLACE INTO scopes
             (scope_id, file_id, kind, name, scope_path, parent_id,
@@ -125,7 +162,7 @@ pub(crate) fn write_scopes(conn: &Connection, scopes: &[ScopeDef]) -> anyhow::Re
             sc.kind.as_str(),
             sc.name,
             sc.scope_path,
-            sc.parent_id,
+            None::<ScopeId>,
             sc.range.start_byte,
             sc.range.end_byte,
             sc.range.start_line,
@@ -133,6 +170,16 @@ pub(crate) fn write_scopes(conn: &Connection, scopes: &[ScopeDef]) -> anyhow::Re
             sc.range.end_line,
             sc.range.end_column,
         ])?;
+    }
+    let mut update_parent = conn.prepare(
+        r#"UPDATE scopes
+           SET parent_id = ?2
+           WHERE scope_id = ?1"#,
+    )?;
+    for sc in scopes {
+        if let Some(parent_id) = sc.parent_id.filter(|id| valid_scope_ids.contains(id)) {
+            update_parent.execute(params![sc.id, parent_id])?;
+        }
     }
     Ok(())
 }
@@ -169,10 +216,17 @@ pub(crate) fn write_references(conn: &Connection, refs: &[ReferenceUse]) -> anyh
             .collect();
         let sql = format!("{}{}", base_sql, placeholders.join(","));
 
-        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(chunk.len() * REF_PARAMS);
+        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            Vec::with_capacity(chunk.len() * REF_PARAMS);
         for r in chunk {
-            let strategy = r.resolved.as_ref().map(|rt| rt.strategy.as_str().to_string());
-            let provenance = r.resolved.as_ref().map(|rt| rt.provenance.as_str().to_string());
+            let strategy = r
+                .resolved
+                .as_ref()
+                .map(|rt| rt.strategy.as_str().to_string());
+            let provenance = r
+                .resolved
+                .as_ref()
+                .map(|rt| rt.provenance.as_str().to_string());
             all_params.push(Box::new(r.id));
             all_params.push(Box::new(r.file_id));
             all_params.push(Box::new(r.source_symbol));
@@ -189,12 +243,15 @@ pub(crate) fn write_references(conn: &Connection, refs: &[ReferenceUse]) -> anyh
             all_params.push(Box::new(r.range.end_line));
             all_params.push(Box::new(r.range.end_column));
             all_params.push(Box::new(r.resolved.as_ref().map(|rt| rt.symbol_id)));
-            all_params.push(Box::new(r.resolved.as_ref().map(|rt| rt.confidence.as_f32())));
+            all_params.push(Box::new(
+                r.resolved.as_ref().map(|rt| rt.confidence.as_f32()),
+            ));
             all_params.push(Box::new(strategy));
             all_params.push(Box::new(provenance));
             all_params.push(Box::new(r.binding_id));
         }
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            all_params.iter().map(|p| p.as_ref()).collect();
         conn.execute(&sql, param_refs.as_slice())?;
     }
 

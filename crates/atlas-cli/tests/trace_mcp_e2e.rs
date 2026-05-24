@@ -18,13 +18,13 @@
 #![cfg(feature = "mcp")]
 
 use atlas_cli::commands::{index, init};
-use atlas_engine::ContextBuilder;
-use atlas_engine::Store;
-use atlas_engine::GraphEngine;
-use atlas_mcp::tools::ToolRouter;
-use atlas_engine::SearchEngine;
 use atlas_engine::ids::{FileId, SymbolId};
-use serde_json::{Value, json};
+use atlas_engine::ContextBuilder;
+use atlas_engine::GraphEngine;
+use atlas_engine::SearchEngine;
+use atlas_engine::Store;
+use atlas_mcp::tools::ToolRouter;
+use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -276,12 +276,10 @@ fn p0_mcp_trace_point_with_file_path_resolves() {
 
     assert!(!is_error, "file_path-based trace_point must succeed");
     assert_envelope_fields(&content_json);
-    assert!(
-        content_json
-            .get("ok")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    );
+    assert!(content_json
+        .get("ok")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -596,7 +594,7 @@ fn p2_mcp_output_truncation_safety() {
 }
 
 // ────────────────────────────────────────────────────────────────
-// P1: Capability boundary — Java trace_variable is partial
+// P1: Capability boundary — Java trace_variable is DataflowBasic
 // ────────────────────────────────────────────────────────────────
 
 #[cfg(feature = "java")]
@@ -621,32 +619,38 @@ fn p1_mcp_java_trace_variable_is_partial() {
     let (content_json, is_error) = call_tool(&router, "atlas_trace_variable", args);
 
     assert!(!is_error, "Java variable trace must not be an error");
-    assert!(
-        content_json
-            .get("partial_result")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        "Java variable trace must be partial (no dataflow)"
-    );
-    let diags = content_json.get("diagnostics").and_then(|d| d.as_array());
-    assert!(diags.is_some(), "must have diagnostics array");
-    let diags = diags.unwrap();
-    assert!(!diags.is_empty(), "must have at least one diagnostic");
+    let diags = content_json
+        .get("diagnostics")
+        .and_then(|d| d.as_array())
+        .expect("must have diagnostics array");
     let has_unsupported = diags
         .iter()
         .any(|d| d.get("code").and_then(|c| c.as_str()) == Some("unsupported_language"));
     assert!(
-        has_unsupported,
-        "must contain unsupported_language diagnostic"
+        !has_unsupported,
+        "Java DataflowBasic trace must not be gated as unsupported_language"
     );
     assert!(
         content_json.get("capability").is_some(),
         "Java capability must be present"
     );
+    let cap = content_json.get("capability").unwrap();
+    assert_eq!(
+        cap.get("language").and_then(|v| v.as_str()).unwrap_or(""),
+        "java",
+        "capability language must be 'java'"
+    );
+    assert_eq!(
+        cap.get("capability_level")
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
+        "dataflow_basic",
+        "Java should advertise DataflowBasic"
+    );
 }
 
 // ────────────────────────────────────────────────────────────────
-// P1: Capability boundary — Go trace_variable is partial
+// P1: Capability boundary — Go trace_variable is DataflowBasic
 // ────────────────────────────────────────────────────────────────
 
 #[cfg(feature = "go")]
@@ -675,23 +679,16 @@ func main() {
     let (content_json, is_error) = call_tool(&router, "atlas_trace_variable", args);
 
     assert!(!is_error, "Go variable trace must not be an error");
-    assert!(
-        content_json
-            .get("partial_result")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        "Go variable trace must be partial (no dataflow)"
-    );
-    let diags = content_json.get("diagnostics").and_then(|d| d.as_array());
-    assert!(diags.is_some(), "must have diagnostics array");
-    let diags = diags.unwrap();
-    assert!(!diags.is_empty(), "must have at least one diagnostic");
+    let diags = content_json
+        .get("diagnostics")
+        .and_then(|d| d.as_array())
+        .expect("must have diagnostics array");
     let has_unsupported = diags
         .iter()
         .any(|d| d.get("code").and_then(|c| c.as_str()) == Some("unsupported_language"));
     assert!(
-        has_unsupported,
-        "must contain unsupported_language diagnostic"
+        !has_unsupported,
+        "Go DataflowBasic trace must not be gated as unsupported_language"
     );
     assert!(
         content_json.get("capability").is_some(),
@@ -702,6 +699,13 @@ func main() {
         cap.get("language").and_then(|v| v.as_str()).unwrap_or(""),
         "go",
         "capability language must be 'go'"
+    );
+    assert_eq!(
+        cap.get("capability_level")
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
+        "dataflow_basic",
+        "Go should advertise DataflowBasic"
     );
 }
 
@@ -1151,11 +1155,7 @@ greet("World");
     let file_id = find_file_id(&store, _tmp.path(), "app.ts");
     let greet_id = find_symbol(&store, &file_id, "greet");
 
-    let (json, is_error) = call_tool(
-        &router,
-        "usages",
-        json!({ "symbol": greet_id.to_hex() }),
-    );
+    let (json, is_error) = call_tool(&router, "usages", json!({ "symbol": greet_id.to_hex() }));
     assert!(!is_error, "atlas_usages should succeed");
     assert!(json.get("usages").is_some(), "should have usages array");
 }
@@ -1165,7 +1165,10 @@ fn mcp_dependencies_returns_imports() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[
         ("lib.ts", "export const VERSION = '1.0';"),
-        ("app.ts", "import { VERSION } from './lib';\nconsole.log(VERSION);"),
+        (
+            "app.ts",
+            "import { VERSION } from './lib';\nconsole.log(VERSION);",
+        ),
     ];
     let (_tmp, router) = build_router(files);
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
@@ -1179,27 +1182,29 @@ fn mcp_dependencies_returns_imports() {
     assert!(!is_error, "atlas_dependencies should succeed");
     let deps = json.get("dependencies").and_then(|d| d.as_array());
     assert!(deps.is_some(), "should have dependencies array");
-    assert!(deps.unwrap().len() > 0, "should have at least one dependency");
+    assert!(
+        deps.unwrap().len() > 0,
+        "should have at least one dependency"
+    );
 }
 
 #[test]
 fn mcp_usages_empty_for_unreferenced() {
     let _ = tracing_subscriber::fmt::try_init();
-    let files = &[(
-        "app.ts",
-        "function unused(): void {}\n// never called\n",
-    )];
+    let files = &[("app.ts", "function unused(): void {}\n// never called\n")];
     let (_tmp, router) = build_router(files);
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "app.ts");
     let sym_id = find_symbol(&store, &file_id, "unused");
 
-    let (json, is_error) = call_tool(
-        &router,
-        "usages",
-        json!({ "symbol": sym_id.to_hex() }),
+    let (json, is_error) = call_tool(&router, "usages", json!({ "symbol": sym_id.to_hex() }));
+    assert!(
+        !is_error,
+        "atlas_usages should succeed even for unused symbols"
     );
-    assert!(!is_error, "atlas_usages should succeed even for unused symbols");
-    let total = json.get("total_usages").and_then(|v| v.as_u64()).unwrap_or(999);
+    let total = json
+        .get("total_usages")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(999);
     assert_eq!(total, 0, "unused function should have 0 usages");
 }

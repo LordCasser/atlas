@@ -1,8 +1,7 @@
 //! File change detection using git status (primary) or DB content-hash fallback.
 
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -119,7 +118,10 @@ fn parse_porcelain_line(line: &str) -> (PorcelainStatus, &str) {
         "D " | " D" | "DM" | "RD" => (PorcelainStatus::Deleted, path),
         "R " => {
             if let Some((old_path, new_path)) = path.split_once(" -> ") {
-                (PorcelainStatus::Renamed(new_path.trim().to_string()), old_path.trim())
+                (
+                    PorcelainStatus::Renamed(new_path.trim().to_string()),
+                    old_path.trim(),
+                )
             } else {
                 (PorcelainStatus::Modified, path)
             }
@@ -179,66 +181,10 @@ pub fn detect_db_hash_changes(root: &Path, store: &db::Store) -> Result<ChangedF
     Ok(changes)
 }
 
-/// Walk the project tree, collecting relative paths and their blake3 content hashes.
-fn collect_and_hash_files(
-    project_root: &Path,
-    dir: &Path,
-    extensions: &HashSet<&str>,
-    output: &mut HashMap<String, String>,
-) -> Result<()> {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return Ok(()),
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = path.file_name().unwrap_or_default();
-
-        // Skip hidden dirs
-        if name.to_str().map_or(true, |n| n.starts_with('.')) {
-            continue;
-        }
-
-        if path.is_dir() {
-            let dir_name = name.to_str().unwrap_or_default();
-            if matches!(
-                dir_name,
-                "node_modules"
-                    | "target"
-                    | "dist"
-                    | "build"
-                    | "__pycache__"
-                    | ".git"
-                    | ".atlas"
-                    | "venv"
-                    | ".venv"
-            ) {
-                continue;
-            }
-            collect_and_hash_files(project_root, &path, extensions, output)?;
-        } else if path.is_file() {
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                if extensions.contains(ext) {
-                    let rel = path
-                        .strip_prefix(project_root)
-                        .unwrap_or(&path)
-                        .to_string_lossy()
-                        .to_string();
-                    let content = fs::read(&path)?;
-                    let hash = blake3::hash(&content).to_hex().to_string();
-                    output.insert(rel, hash);
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn test_parse_porcelain_added() {
@@ -285,8 +231,8 @@ mod tests {
         use db::Store;
         use extraction::create_frontend;
         use extraction::extract_file;
-        use types::Language;
         use types::ids::FileId;
+        use types::Language;
 
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open_in_memory().unwrap();

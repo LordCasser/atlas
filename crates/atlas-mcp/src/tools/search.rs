@@ -14,11 +14,11 @@ impl ToolRouter {
 
         let results = if let Some(k_str) = kind {
             match SymbolKind::from_str(k_str) {
-                Some(k) => self.search.search_by_kind(query, k, limit),
+                Some(k) => self.search_engine().search_by_kind(query, k, limit),
                 None => return (format!("Unknown symbol kind: {}", k_str), true),
             }
         } else {
-            self.search.search_simple(query, limit)
+            self.search_engine().search_simple(query, limit)
         };
 
         match results {
@@ -53,7 +53,7 @@ impl ToolRouter {
             None => return (format!("Symbol not found: {}", qname), true),
         };
 
-        let graph = self.search.graph_snapshot();
+        let graph = self.search_engine().graph_snapshot();
         let callers_count = graph.callers(&sym.id).callers.len();
         let callees_count = graph.callees(&sym.id).callees.len();
 

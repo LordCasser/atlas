@@ -10,10 +10,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use atlas_engine::ContextBuilder;
-use atlas_engine::Store;
-use atlas_engine::SearchEngine;
-use atlas_engine::SymbolId;
 use atlas_engine::FileId;
+use atlas_engine::SearchEngine;
+use atlas_engine::Store;
+use atlas_engine::SymbolId;
 
 use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolInputSchema};
 
@@ -40,57 +40,88 @@ pub(crate) mod usages;
 /// Dispatches tools/list and tools/call.
 pub struct ToolRouter {
     pub(crate) store: Arc<Store>,
-    pub(crate) search: SearchEngine,
-    pub(crate) context: ContextBuilder,
+    /// Graph engines built lazily on first request (after MCP handshake).
+    pub(crate) search: Option<SearchEngine>,
+    pub(crate) context: Option<ContextBuilder>,
     /// Project root directory for snippet extraction.
     pub(crate) project_root: std::path::PathBuf,
     tools: Vec<Tool>,
-    /// File count at last graph build (used to detect external index/sync).
-    last_graph_file_count: usize,
+    /// Database/index signature at last graph build (used to detect external index/sync).
+    last_graph_signature: String,
+    /// True once the graph has been built at least once.
+    graph_initialized: bool,
+    /// Cached signature to avoid per-request COUNT queries.
+    cached_signature: String,
+    /// When the cached signature was last checked (avoids re-query within cooldown).
+    last_signature_check: std::time::Instant,
 }
 
 impl ToolRouter {
-    pub fn new(
-        store: Arc<Store>,
-        search: SearchEngine,
-        context: ContextBuilder,
-        project_root: std::path::PathBuf,
-    ) -> Self {
-        let file_count = store.count_files().unwrap_or(0);
+    /// Create a router without building the graph (fast startup).
+    /// Graph is built lazily on the first request via `ensure_graph_initialized`.
+    pub fn new_empty(store: Arc<Store>, project_root: std::path::PathBuf) -> Self {
         let tools = make_all_tools();
         Self {
             store,
-            search,
-            context,
+            search: None,
+            context: None,
             project_root,
             tools,
-            last_graph_file_count: file_count,
+            last_graph_signature: String::new(),
+            graph_initialized: false,
+            cached_signature: String::new(),
+            last_signature_check: std::time::Instant::now(),
         }
     }
 
-    /// Refresh the graph snapshot if an external index/sync has added/removed
-    /// files since the last build.
-    pub(crate) fn maybe_refresh_graph(&mut self) -> anyhow::Result<()> {
-        let current_count = self.store.count_files().unwrap_or(self.last_graph_file_count);
-        if current_count != self.last_graph_file_count {
-            tracing::info!(
-                "File count changed ({} -> {}), refreshing graph snapshot",
-                self.last_graph_file_count,
-                current_count,
-            );
-            let new_graph = Arc::new(
-                atlas_engine::GraphEngine::from_store(&self.store, 0.3)?,
-            );
-            self.search.refresh_graph(Arc::clone(&new_graph));
-            self.context.refresh_graph(new_graph);
-            self.last_graph_file_count = current_count;
+    /// Build the graph engine on first use.
+    /// This is called before the first request after the MCP handshake completes,
+    /// so the client doesn't timeout waiting for a response during startup.
+    pub(crate) fn ensure_graph_initialized(&mut self) -> anyhow::Result<()> {
+        if self.graph_initialized {
+            return Ok(());
         }
+        tracing::info!("Building graph snapshot (first request)...");
+        let graph = Arc::new(atlas_engine::GraphEngine::from_store(&self.store, 0.3)?);
+        self.search = Some(SearchEngine::new(Arc::clone(&self.store), Arc::clone(&graph)));
+        self.context = Some(ContextBuilder::new(Arc::clone(&self.store), graph));
+        self.last_graph_signature = self.store.index_signature().unwrap_or_default();
+        self.graph_initialized = true;
+        tracing::info!("Graph snapshot ready.");
         Ok(())
     }
 
-    /// Access the underlying store (for testing).
-    pub fn store(&self) -> Arc<Store> {
-        self.store.clone()
+    /// Access the search engine (panics if graph not initialized).
+    pub(crate) fn search_engine(&self) -> &SearchEngine {
+        self.search.as_ref().expect("graph not initialized")
+    }
+
+    /// Access the context builder (panics if graph not initialized).
+    pub(crate) fn context_builder(&self) -> &ContextBuilder {
+        self.context.as_ref().expect("graph not initialized")
+    }
+
+    /// Refresh the graph snapshot if an external index/sync has changed the DB.
+    /// Signature is cached for 5 seconds to avoid per-request COUNT queries.
+    pub(crate) fn maybe_refresh_graph(&mut self) -> anyhow::Result<()> {
+        if !self.graph_initialized {
+            return Ok(());
+        }
+        // Cache signature for 5 seconds
+        if self.last_signature_check.elapsed().as_secs() < 5 {
+            return Ok(());
+        }
+        self.last_signature_check = std::time::Instant::now();
+        let current = self.store.index_signature().unwrap_or_else(|_| self.cached_signature.clone());
+        if current != self.last_graph_signature {
+            tracing::info!("Index signature changed, refreshing graph");
+            let graph = Arc::new(atlas_engine::GraphEngine::from_store(&self.store, 0.3)?);
+            if let Some(ref mut s) = self.search { s.refresh_graph(Arc::clone(&graph)); }
+            if let Some(ref mut c) = self.context { c.refresh_graph(graph); }
+            self.last_graph_signature = current.clone();
+        }
+        self.cached_signature = current;
+        Ok(())
     }
 
     /// Handle tools/list — return all registered tool definitions.
@@ -332,7 +363,7 @@ pub fn make_all_tools() -> Vec<Tool> {
                     "line": { "type": "integer", "description": "1-based line number" },
                     "column": { "type": "integer", "description": "1-based column number" },
                 })),
-                required: None,
+                required: Some(vec!["line".into(), "column".into()]),
             },
         },
         Tool {
@@ -347,7 +378,7 @@ pub fn make_all_tools() -> Vec<Tool> {
                     "column": { "type": "integer", "description": "1-based column number" },
                     "max_depth": { "type": "integer", "description": "Maximum backward traversal depth (default 30)" },
                 })),
-                required: None,
+                required: Some(vec!["line".into(), "column".into()]),
             },
         },
         Tool {
@@ -455,5 +486,15 @@ pub(crate) fn get_u64(args: &Value, key: &str) -> Option<u64> {
 }
 
 fn truncate(s: &str, max_len: usize) -> &str {
-    if s.len() <= max_len { s } else { &s[..max_len] }
+    if s.len() <= max_len {
+        return s;
+    }
+    let mut end = 0;
+    for (idx, _) in s.char_indices() {
+        if idx > max_len {
+            break;
+        }
+        end = idx;
+    }
+    &s[..end]
 }

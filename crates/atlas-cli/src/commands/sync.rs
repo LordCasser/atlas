@@ -3,6 +3,7 @@
 use crate::runtime::{CommandContext, DbMode};
 use anyhow::{Context, Result};
 use atlas_engine::FileLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn run(project: &str) -> Result<()> {
     let ctx = CommandContext::open(project, DbMode::ExistingReadWrite)?;
@@ -31,6 +32,12 @@ pub fn run(project: &str) -> Result<()> {
 
     // Run sync
     let stats = engine.sync()?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string();
+    ctx.store.set_metadata("last_sync_time", &now)?;
 
     println!("\nSync complete:");
     println!("  Files reindexed: {}", stats.files_reindexed);

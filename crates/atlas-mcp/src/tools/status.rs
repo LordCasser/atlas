@@ -37,6 +37,13 @@ impl ToolRouter {
                 },
                 "database": {
                     "sqlite_version": stats.sqlite_version,
+                    "schema_version": self.store.schema_version().unwrap_or(0),
+                    "app_schema_version": atlas_engine::CURRENT_SCHEMA_VERSION,
+                },
+                "server": {
+                    "atlas_version": env!("CARGO_PKG_VERSION"),
+                    "tool_contract_version": 1,
+                    "compiled_features": compiled_features(),
                 },
                 "language_capabilities": lang_caps,
             }))
@@ -62,4 +69,28 @@ impl ToolRouter {
             Err(e) => (format!("Error listing files: {}", e), true),
         }
     }
+}
+
+fn compiled_features() -> Vec<&'static str> {
+    LanguageCapabilityProfile::all_compiled()
+        .into_iter()
+        .map(|p| match p.language.as_str() {
+            "typescript" => "typescript",
+            "javascript" => "javascript",
+            "python" => "python",
+            "java" => "java",
+            "c" => "c",
+            "cpp" => "cpp",
+            "arkts" => "arkts",
+            "go" => "go",
+            "csharp" => "csharp",
+            "rust" => "rust",
+            "php" => "php",
+            "ruby" => "ruby",
+            "kotlin" => "kotlin",
+            "bash" => "bash",
+            "cangjie" => "cangjie",
+            _ => "unknown",
+        })
+        .collect()
 }

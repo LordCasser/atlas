@@ -15,7 +15,7 @@ impl ToolRouter {
             Some(id) => id,
             None => return (format!("Symbol not found: {}", qname), true),
         };
-        match self.context.build_context_for_symbol(&sid) {
+        match self.context_builder().build_context_for_symbol(&sid) {
             Ok(view) => {
                 // Wrap markdown in JSON so it's not misdetected as error
                 let md = view.to_markdown();

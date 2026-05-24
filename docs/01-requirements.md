@@ -59,7 +59,7 @@ MVP 可以 best-effort：
 - C/C++ include-aware direct call graph。
 - ArkTS via TypeScript grammar。
 - Cangjie grammar-based minimal extraction（仅显式启用 `cangjie` feature 时）。
-- Go/Rust/C#/PHP/Ruby/Kotlin 的 Symbolic 级抽取和调用图（启用 `all-languages` 时）。
+- Go/Rust/C#/PHP/Ruby/Kotlin 的基础 DataflowBasic 抽取和调用图（启用 `all-languages` 时）；完整 path-level 变量来源追踪、CFG 和跨函数 summary 仍以 capability limitations 和测试覆盖为准。
 - Bash 的低置信度命令调用抽取（仅显式启用 `bash` feature 时）。
 - 低置信度 name-based resolution。
 
@@ -198,11 +198,11 @@ Level 5: lightweight interprocedural summaries
 | TypeScript | Level 3 为当前主目标；Level 4/5 只能在对应 facts 和测试存在时启用 | 可展示变量来源、call args、field access、return；跨函数结果必须标注 depth、summary/heuristic 和 confidence |
 | JavaScript | 与 TypeScript 共用 JS grammar 路径，按 Level 3 主目标推进 | 展示同 TypeScript，但必须标注 `javascript`，不能混写成 `typescript` |
 | Python | Level 3 为当前主目标；动态属性、monkey patch、反射调用不保证精确 | 对动态调用、属性链、import alias fallback 输出 lower confidence 或 unsupported diagnostics |
-| Java | 当前至少 Level 1；Level 2/3 只有 fixture 覆盖后才可宣称 | 默认展示 callers/callees；参数、返回值、字段来源若不可用必须显示 unsupported |
-| C | 当前 include-aware Level 1/2 best-effort；宏、preprocessing、函数指针不保证 | 调用路径可低置信度展示；宏展开、函数指针、复杂指针别名必须显示 limitation |
-| C++ | 当前 include-aware Level 1/2 best-effort；模板、重载、ADL、复杂类型不保证 | 调用路径和局部来源必须标注 best-effort；不能把重载解析结果伪装成精确 |
-| ArkTS | 复用 TypeScript grammar 的 Level 1/2 best-effort；ArkTS 特有语义不保证 | 必须显示 `arkts via TypeScript grammar` 或等价 provenance |
-| Go/Rust/C#/PHP/Ruby/Kotlin | Post-MVP Symbolic；无 lexical binding、dataflow、CFG 或变量来源追踪 | `all-languages` binary 可以发现并索引；trace 变量来源必须返回 unsupported diagnostics |
+| Java | DataflowBasic best-effort；CFG/跨函数传播未完成 | 默认展示 callers/callees；参数、返回值、字段来源必须带 limitation/confidence，超出能力时显示 partial diagnostics |
+| C | include-aware DataflowBasic best-effort；宏、preprocessing、函数指针不保证 | 调用路径可低置信度展示；宏展开、函数指针、复杂指针别名必须显示 limitation |
+| C++ | include-aware DataflowBasic best-effort；模板、重载、ADL、复杂类型不保证 | 调用路径和局部来源必须标注 best-effort；不能把重载解析结果伪装成精确 |
+| ArkTS | 复用 TypeScript grammar 的 DataflowBasic best-effort；ArkTS 特有语义不保证 | 必须显示 `arkts via TypeScript grammar` 或等价 provenance |
+| Go/Rust/C#/PHP/Ruby/Kotlin | Post-MVP DataflowBasic best-effort；CFG 和跨函数变量来源追踪未完成 | `all-languages` binary 可以发现并索引；trace 结果必须携带 limitation/confidence，超出能力时返回 partial diagnostics |
 | Bash | Experimental opt-in Symbolic；命令调用低置信度，source/import 映射不可靠 | 默认/all-languages binary 不发现 `.sh/.bash`；启用后必须标注 low confidence |
 | Cangjie | 不属于 MVP；仅显式启用 `cangjie` feature 时提供 experimental minimal facts | 默认/all-languages binary 不发现 `.cj/.cangjie`；启用后 trace 默认不宣称可用 |
 
@@ -238,6 +238,7 @@ MCP 使用 JSON-RPC over stdio。核心工具：
 - `atlas_explore`
 - trace tools: `atlas_trace_point`, `atlas_trace_variable`, `atlas_trace_caller_path` where implemented
 - `atlas_language_capabilities`
+- `usages`、`dependencies`、`dependents` 工具当前已实现，并作为通用语义工具保持无 `atlas_` 前缀；V1 前需要在 MCP 工具契约中明确命名策略。
 
 工具输出必须 bounded、结构化，并在涉及启发式关系时暴露 confidence/provenance。
 
@@ -281,15 +282,15 @@ MVP 完成标准：
 
 ## 7. 当前阶段验收焦点
 
-当前 workspace crate 拆分已经完成，代码位于 12 个 Cargo crates 中。当前阶段不再做新的大拆分，也不先开启 Corpus 分支；重点是在现有 crate 边界内把变量来源追踪和调用路径查询从“端到端可跑”推进到“语义结果可被测试约束”。
+当前 workspace crate 拆分已经完成，代码位于 `atlas-engine` facade、engine 内部 crates、`atlas-cli` 和 `atlas-mcp` 中。当前阶段不再做新的大拆分，也不先开启 Corpus 分支；重点是在现有 crate 边界内把变量来源追踪和调用路径查询从“端到端可跑”推进到“语义结果可被测试约束”。
 
 阶段完成条件：
 
 1. MVP 语言按能力等级补齐 trace 所需 facts：symbols、references、callsites、bindings、data_nodes、dataflow_edges，CFG where applicable。
 2. TypeScript/JavaScript/Python 至少有真实源码 fixture 覆盖“指定位置 -> 变量来源 -> caller path”。
-3. Java/C/C++/ArkTS 至少能提供 Level 1 调用图；Go/Rust/C#/PHP/Ruby/Kotlin 维持 post-MVP Symbolic 边界；Level 2/3 局部来源追踪只有在对应 facts 和 fixture 存在时才能宣称。不能支持的能力必须显式标记；Bash/Cangjie 启用时只要求明确 experimental capability 和 unsupported diagnostics。
+3. Java/C/C++/ArkTS/Go/Rust/C#/PHP/Ruby/Kotlin 维持 DataflowBasic best-effort 边界；Level 2/3 局部来源追踪只有在对应 facts 和 fixture 存在时才能宣称为稳定。不能支持的能力必须显式标记；Bash/Cangjie 启用时只要求明确 experimental capability 和 unsupported diagnostics。
 4. CLI、MCP 或等价 public API 当前能按 file/line/column 查询 trace point / backward trace，并能按 symbol id/name 查询 caller path；function+variable 和 callsite+argument 级入口属于后续交互增强。
 5. 输出包含 path steps、源码 range、相关代码片段或 evidence、confidence/provenance、截断说明。
 6. 测试覆盖真实 extraction -> store -> resolution -> dataflow/call graph -> trace 查询链路，而不只覆盖类型和单个 builder；后续重点是把断言从“有结果”升级为具体 path step 语义。
 
-只有当前 trace 精度、capability 边界和测试断言稳定后，才考虑抽出可复用 `atlas-engine` crate。Corpus 分支仍必须等 engine/API 边界稳定后再启动。
+只有当前 trace 精度、capability 边界和测试断言稳定后，才冻结/扩张可复用 `atlas-engine` facade API。Corpus 分支仍必须等 engine/API 边界稳定后再启动。

@@ -9,7 +9,7 @@
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
 use super::protocol::{Request, Response};
 
@@ -17,19 +17,14 @@ use super::protocol::{Request, Response};
 ///
 /// Parses Content-Length header then reads exactly that many bytes
 /// as the JSON body.
-pub async fn read_request(reader: &mut BufReader<tokio::io::Stdin>) -> Result<Option<Request>> {
-    let mut header_line = String::new();
-    let n = reader.read_line(&mut header_line).await?;
-    if n == 0 {
-        return Ok(None); // EOF
-    }
-
-    let content_len =
-        parse_content_length(&header_line).context("Invalid Content-Length header")?;
-
-    // Read empty separator line (\r\n or \n)
-    let mut blank = String::new();
-    reader.read_line(&mut blank).await?;
+pub async fn read_request<R>(reader: &mut R) -> Result<Option<Request>>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let content_len = match read_content_length(reader).await? {
+        Some(len) => len,
+        None => return Ok(None),
+    };
 
     // Read exactly content_len bytes
     let mut body = vec![0u8; content_len];
@@ -43,6 +38,40 @@ pub async fn read_request(reader: &mut BufReader<tokio::io::Stdin>) -> Result<Op
     })?;
 
     Ok(Some(req))
+}
+
+async fn read_content_length<R>(reader: &mut R) -> Result<Option<usize>>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut content_len = None;
+    let mut saw_header = false;
+
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).await?;
+        if n == 0 {
+            if saw_header {
+                bail!("Unexpected EOF while reading MCP headers");
+            }
+            return Ok(None);
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            break;
+        }
+
+        saw_header = true;
+        if is_content_length_header(trimmed) {
+            content_len =
+                Some(parse_content_length(trimmed).context("Invalid Content-Length header")?);
+        }
+    }
+
+    content_len
+        .context("Missing Content-Length header")
+        .map(Some)
 }
 
 /// Writes a JSON-RPC response to stdout with Content-Length framing.
@@ -68,7 +97,7 @@ pub async fn write_json(writer: &mut tokio::io::Stdout, value: &Value) -> Result
 fn parse_content_length(line: &str) -> Result<usize> {
     let trimmed = line.trim();
     let prefix = "Content-Length:";
-    if !trimmed.to_lowercase().starts_with(&prefix.to_lowercase()) {
+    if !is_content_length_header(trimmed) {
         bail!("Missing Content-Length header, got: {}", trimmed);
     }
     let value = trimmed[prefix.len()..].trim();
@@ -77,9 +106,15 @@ fn parse_content_length(line: &str) -> Result<usize> {
         .with_context(|| format!("Invalid Content-Length value: {}", value))
 }
 
+fn is_content_length_header(line: &str) -> bool {
+    let prefix = "Content-Length:";
+    line.len() >= prefix.len() && line[..prefix.len()].eq_ignore_ascii_case(prefix)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::BufReader;
 
     #[test]
     fn test_parse_content_length() {
@@ -93,5 +128,35 @@ mod tests {
             456
         );
         assert!(parse_content_length("Bad: 100").is_err());
+    }
+
+    #[tokio::test]
+    async fn read_request_accepts_extra_headers() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+        let frame = format!(
+            "Content-Length: {}\r\nContent-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let mut reader = BufReader::new(frame.as_bytes());
+
+        let request = read_request(&mut reader).await.unwrap().unwrap();
+
+        assert_eq!(request.method, "initialize");
+    }
+
+    #[tokio::test]
+    async fn read_request_ignores_header_order() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let frame = format!(
+            "Content-Type: application/vscode-jsonrpc; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let mut reader = BufReader::new(frame.as_bytes());
+
+        let request = read_request(&mut reader).await.unwrap().unwrap();
+
+        assert_eq!(request.method, "tools/list");
     }
 }

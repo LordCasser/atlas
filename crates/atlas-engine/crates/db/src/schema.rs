@@ -26,8 +26,11 @@
 //! - `symbols_fts`    — FTS5 index on symbol names
 //! - `schema_versions` — migration tracking
 
-/// Current schema version — always 1 during rapid development.
-/// There is no migration system; schema changes are made in-place.
+/// Current schema version.
+///
+/// When this value is raised, add matching entries to [`MIGRATIONS`] so
+/// existing databases can be upgraded or explicitly reported as needing a
+/// rebuild.
 pub const CURRENT_SCHEMA_VERSION: i64 = 1;
 /// Complete DDL for a fresh database.
 pub const SCHEMA_DDL: &str = r#"
@@ -605,7 +608,8 @@ mod tests {
         conn.execute(
             "INSERT INTO schema_versions (version, description) VALUES (?1, ?2)",
             rusqlite::params![super::CURRENT_SCHEMA_VERSION, "v1: test"],
-        ).unwrap();
+        )
+        .unwrap();
 
         let status = super::check_and_migrate(&conn).unwrap();
         assert_eq!(status, super::SchemaStatus::Current);
@@ -618,7 +622,8 @@ mod tests {
         conn.execute(
             "INSERT INTO schema_versions (version, description) VALUES (?1, ?2)",
             rusqlite::params![999, "future version"],
-        ).unwrap();
+        )
+        .unwrap();
 
         let status = super::check_and_migrate(&conn).unwrap();
         assert!(matches!(status, super::SchemaStatus::TooNew { .. }));

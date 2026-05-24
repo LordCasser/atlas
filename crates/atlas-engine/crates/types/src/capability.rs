@@ -179,38 +179,90 @@ impl FeatureMatrix {
     /// Human-readable feature names that are currently supported.
     pub fn supported_feature_names(&self) -> Vec<String> {
         let mut names = Vec::new();
-        if self.symbols.is_supported() { names.push("symbol_extraction".into()); }
-        if self.references.is_supported() { names.push("reference_extraction".into()); }
-        if self.imports.is_supported() { names.push("import_resolution".into()); }
-        if self.scopes.is_supported() { names.push("scope_extraction".into()); }
-        if self.call_graph.is_supported() { names.push("call_graph".into()); }
-        if self.lexical_bindings.is_supported() { names.push("lexical_bindings".into()); }
-        if self.local_dataflow.is_supported() { names.push("intra_statement_dataflow".into()); }
-        if self.use_def.is_supported() { names.push("use_def_heuristic".into()); }
-        if self.field_access.is_supported() { names.push("access_path".into()); }
-        if self.call_arguments.is_supported() { names.push("call_arguments".into()); }
-        if self.returns_flow.is_supported() { names.push("return_flow".into()); }
-        if self.cfg.is_supported() { names.push("cfg".into()); }
-        if self.interprocedural_summaries.is_supported() { names.push("interprocedural_dataflow".into()); }
+        if self.symbols.is_supported() {
+            names.push("symbol_extraction".into());
+        }
+        if self.references.is_supported() {
+            names.push("reference_extraction".into());
+        }
+        if self.imports.is_supported() {
+            names.push("import_resolution".into());
+        }
+        if self.scopes.is_supported() {
+            names.push("scope_extraction".into());
+        }
+        if self.call_graph.is_supported() {
+            names.push("call_graph".into());
+        }
+        if self.lexical_bindings.is_supported() {
+            names.push("lexical_bindings".into());
+        }
+        if self.local_dataflow.is_supported() {
+            names.push("intra_statement_dataflow".into());
+        }
+        if self.use_def.is_supported() {
+            names.push("use_def_heuristic".into());
+        }
+        if self.field_access.is_supported() {
+            names.push("access_path".into());
+        }
+        if self.call_arguments.is_supported() {
+            names.push("call_arguments".into());
+        }
+        if self.returns_flow.is_supported() {
+            names.push("return_flow".into());
+        }
+        if self.cfg.is_supported() {
+            names.push("cfg".into());
+        }
+        if self.interprocedural_summaries.is_supported() {
+            names.push("interprocedural_dataflow".into());
+        }
         names
     }
 
     /// Human-readable feature names that are NOT currently supported.
     pub fn unsupported_feature_names(&self) -> Vec<String> {
         let mut names = Vec::new();
-        if !self.symbols.is_supported() { names.push("symbol_extraction".into()); }
-        if !self.references.is_supported() { names.push("reference_extraction".into()); }
-        if !self.imports.is_supported() { names.push("import_resolution".into()); }
-        if !self.scopes.is_supported() { names.push("scope_extraction".into()); }
-        if !self.call_graph.is_supported() { names.push("call_graph".into()); }
-        if !self.lexical_bindings.is_supported() { names.push("lexical_bindings".into()); }
-        if !self.local_dataflow.is_supported() { names.push("intra_statement_dataflow".into()); }
-        if !self.use_def.is_supported() { names.push("use_def_heuristic".into()); }
-        if !self.field_access.is_supported() { names.push("access_path".into()); }
-        if !self.call_arguments.is_supported() { names.push("call_arguments".into()); }
-        if !self.returns_flow.is_supported() { names.push("return_flow".into()); }
-        if !self.cfg.is_supported() { names.push("cfg".into()); }
-        if !self.interprocedural_summaries.is_supported() { names.push("interprocedural_dataflow".into()); }
+        if !self.symbols.is_supported() {
+            names.push("symbol_extraction".into());
+        }
+        if !self.references.is_supported() {
+            names.push("reference_extraction".into());
+        }
+        if !self.imports.is_supported() {
+            names.push("import_resolution".into());
+        }
+        if !self.scopes.is_supported() {
+            names.push("scope_extraction".into());
+        }
+        if !self.call_graph.is_supported() {
+            names.push("call_graph".into());
+        }
+        if !self.lexical_bindings.is_supported() {
+            names.push("lexical_bindings".into());
+        }
+        if !self.local_dataflow.is_supported() {
+            names.push("intra_statement_dataflow".into());
+        }
+        if !self.use_def.is_supported() {
+            names.push("use_def_heuristic".into());
+        }
+        if !self.field_access.is_supported() {
+            names.push("access_path".into());
+        }
+        if !self.call_arguments.is_supported() {
+            names.push("call_arguments".into());
+        }
+        if !self.returns_flow.is_supported() {
+            names.push("return_flow".into());
+        }
+        if !self.cfg.is_supported() {
+            names.push("cfg".into());
+        }
+        if !self.interprocedural_summaries.is_supported() {
+            names.push("interprocedural_dataflow".into());
+        }
         names
     }
 }
@@ -308,10 +360,9 @@ impl LanguageCapabilityProfile {
         let mut profiles = Vec::with_capacity(8);
 
         #[cfg(feature = "typescript")]
-        {
-            profiles.push(Self::for_language(TypeScript));
-            profiles.push(Self::for_language(JavaScript));
-        }
+        profiles.push(Self::for_language(TypeScript));
+        #[cfg(feature = "javascript")]
+        profiles.push(Self::for_language(JavaScript));
         #[cfg(feature = "python")]
         profiles.push(Self::for_language(Python));
         #[cfg(feature = "java")]
@@ -408,7 +459,9 @@ mod profiles {
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
                     0.55,
-                    vec!["AST-driven local dataflow; destructuring and async not yet path-verified"],
+                    vec![
+                        "AST-driven local dataflow; destructuring and async not yet path-verified",
+                    ],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
                     0.55,
@@ -418,9 +471,7 @@ mod profiles {
                 call_arguments: FeatureSupport::supported_with_confidence(0.55),
                 returns_flow: FeatureSupport::supported_with_confidence(0.55),
                 cfg: FeatureSupport::supported_with_confidence(0.55),
-                interprocedural_summaries: FeatureSupport::unsupported(
-                    "not implemented",
-                ),
+                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
             }),
         }
     }
@@ -742,11 +793,15 @@ mod profiles {
                 call_graph: FeatureSupport::supported_with_confidence(0.45),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
                     0.45,
-                    vec!["delegates to TypeScript frontend (ArkTS-specific constructs may be missed)"],
+                    vec![
+                        "delegates to TypeScript frontend (ArkTS-specific constructs may be missed)",
+                    ],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
                     0.45,
-                    vec!["delegates to TypeScript frontend (ArkTS-specific constructs may be missed)"],
+                    vec![
+                        "delegates to TypeScript frontend (ArkTS-specific constructs may be missed)",
+                    ],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
                     0.45,

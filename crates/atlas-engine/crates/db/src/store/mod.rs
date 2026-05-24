@@ -21,12 +21,12 @@
 //! accept `impl SymbolReader + ...` instead of `&Store` to reduce coupling.
 //! Writer traits are deferred to a future cleanup pass (Item 10).
 
-use types::*;
 use rusqlite::{Connection, Transaction, params};
 use std::collections::HashSet;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use types::*;
 
 use crate::store_rows::*;
 use crate::store_writers::*;
@@ -255,7 +255,9 @@ impl Store {
                     .iter()
                     .filter(|callsite| {
                         valid_sources.contains(&callsite.caller)
-                            && callsite.callee.map_or(true, |callee| valid_sources.contains(&callee))
+                            && callsite
+                                .callee
+                                .map_or(true, |callee| valid_sources.contains(&callee))
                     })
                     .cloned()
                     .collect();
@@ -270,24 +272,24 @@ impl Store {
                 .bindings
                 .iter()
                 .filter(|b| {
-                    b.function_id.map_or(true, |fid| valid_sources.contains(&fid))
+                    b.function_id
+                        .map_or(true, |fid| valid_sources.contains(&fid))
                         && facts.scopes.iter().any(|s| s.id == b.scope_id)
+                        && b.symbol_id.map_or(true, |sid| valid_sources.contains(&sid))
                 })
                 .cloned()
                 .collect();
             if !valid_bindings.is_empty() {
                 write_bindings(&tx, &valid_bindings)?;
             }
+            let valid_binding_ids: HashSet<_> = valid_bindings.iter().map(|b| b.id).collect();
             if !facts.binding_uses.is_empty() {
-                let valid_binding_ids: HashSet<_> = valid_bindings
-                    .iter()
-                    .map(|b| b.id)
-                    .collect();
                 let valid_uses: Vec<_> = facts
                     .binding_uses
                     .iter()
                     .filter(|bu| {
-                        bu.binding_id.map_or(false, |bid| valid_binding_ids.contains(&bid))
+                        bu.binding_id
+                            .map_or(false, |bid| valid_binding_ids.contains(&bid))
                             && facts.scopes.iter().any(|s| s.id == bu.scope_id)
                     })
                     .cloned()
@@ -306,7 +308,11 @@ impl Store {
                     .data_nodes
                     .iter()
                     .filter(|dn| {
-                        dn.function_id.map_or(true, |fid| valid_sources.contains(&fid))
+                        dn.function_id
+                            .map_or(true, |fid| valid_sources.contains(&fid))
+                            && dn
+                                .binding_id
+                                .map_or(true, |bid| valid_binding_ids.contains(&bid))
                     })
                     .cloned()
                     .collect();
@@ -321,14 +327,20 @@ impl Store {
                     .data_nodes
                     .iter()
                     .filter(|dn| {
-                        dn.function_id.map_or(true, |fid| valid_sources.contains(&fid))
+                        dn.function_id
+                            .map_or(true, |fid| valid_sources.contains(&fid))
+                            && dn
+                                .binding_id
+                                .map_or(true, |bid| valid_binding_ids.contains(&bid))
                     })
                     .map(|dn| dn.id)
                     .collect();
                 let safe_edges: Vec<_> = facts
                     .dataflow_edges
                     .iter()
-                    .filter(|e| valid_node_ids.contains(&e.source) && valid_node_ids.contains(&e.target))
+                    .filter(|e| {
+                        valid_node_ids.contains(&e.source) && valid_node_ids.contains(&e.target)
+                    })
                     .cloned()
                     .collect();
                 if !safe_edges.is_empty() {
@@ -356,7 +368,9 @@ impl Store {
                 let safe_cfg_edges: Vec<_> = facts
                     .cfg_edges
                     .iter()
-                    .filter(|e| valid_cfg_ids.contains(&e.source) && valid_cfg_ids.contains(&e.target))
+                    .filter(|e| {
+                        valid_cfg_ids.contains(&e.source) && valid_cfg_ids.contains(&e.target)
+                    })
                     .cloned()
                     .collect();
                 if !safe_cfg_edges.is_empty() {
@@ -766,6 +780,71 @@ mod tests {
         let stats = store.get_stats().unwrap();
         assert_eq!(stats.total_files, 1);
         assert_eq!(stats.total_symbols, 1);
+    }
+
+    #[test]
+    fn insert_file_facts_handles_child_before_parent_order() {
+        let store = test_store();
+        let file_id = FileId::generate("src/nested.c");
+        let range = TextRange {
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 11,
+        };
+
+        let parent_scope_id = ScopeId::generate(&file_id, None, ScopeKind::Function.as_str(), 0);
+        let child_scope_id = ScopeId::generate(
+            &file_id,
+            Some(&parent_scope_id),
+            ScopeKind::Block.as_str(),
+            5,
+        );
+        let child_scope = ScopeDef {
+            id: child_scope_id,
+            file_id,
+            kind: ScopeKind::Block,
+            name: "block".into(),
+            scope_path: "parent:block".into(),
+            range,
+            parent_id: Some(parent_scope_id),
+        };
+        let parent_scope = ScopeDef {
+            id: parent_scope_id,
+            file_id,
+            kind: ScopeKind::Function,
+            name: "parent".into(),
+            scope_path: "parent".into(),
+            range,
+            parent_id: None,
+        };
+
+        let parent = test_symbol(file_id, "parent", SymbolKind::Function);
+        let mut child = test_symbol(file_id, "child", SymbolKind::Function);
+        child.container = Some(parent.id);
+
+        let facts = FileFacts {
+            file: FileInfo {
+                file_id,
+                path: "src/nested.c".into(),
+                language: Language::C,
+                content_hash: "hash".into(),
+                status: ParseStatus::Success,
+            },
+            symbols: vec![child.clone(), parent.clone()],
+            scopes: vec![child_scope, parent_scope],
+            ..Default::default()
+        };
+
+        store.insert_file_facts(&facts).unwrap();
+
+        let found_child = store.find_symbol_by_id(&child.id).unwrap().unwrap();
+        assert_eq!(found_child.container, Some(parent.id));
+        let scopes = store.find_scopes_by_file(&file_id).unwrap();
+        let found_child_scope = scopes.iter().find(|s| s.id == child_scope_id).unwrap();
+        assert_eq!(found_child_scope.parent_id, Some(parent_scope_id));
     }
 
     #[test]
