@@ -400,7 +400,8 @@ fn normalize_csharp_lexical(capture_name: &str, node: tree_sitter::Node, source:
 fn find_call_expression_csharp(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
     let mut current = node;
     while let Some(parent) = current.parent() {
-        if parent.kind() == "invocation_expression" { return Some(parent); }
+        let kinds: &[&str] = &["invocation_expression", "object_creation_expression"];
+        if kinds.contains(&parent.kind()) { return Some(parent); }
         current = parent;
     }
     None

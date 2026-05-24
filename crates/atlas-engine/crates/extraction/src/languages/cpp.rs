@@ -379,7 +379,8 @@ fn normalize_cpp_lexical(capture_name: &str, node: tree_sitter::Node, source: &s
 fn find_call_expression_cpp(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
     let mut current = node;
     while let Some(parent) = current.parent() {
-        if parent.kind() == "call_expression" { return Some(parent); }
+        let kinds: &[&str] = &["call_expression", "new_expression"];
+        if kinds.contains(&parent.kind()) { return Some(parent); }
         current = parent;
     }
     None

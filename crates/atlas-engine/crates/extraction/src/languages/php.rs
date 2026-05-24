@@ -413,7 +413,8 @@ fn normalize_php_lexical(capture_name: &str, node: tree_sitter::Node, source: &s
 fn find_call_expression_php(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
     let mut current = node;
     while let Some(parent) = current.parent() {
-        if parent.kind() == "function_call_expression" { return Some(parent); }
+        let kinds: &[&str] = &["function_call_expression", "member_call_expression", "object_creation_expression"];
+        if kinds.contains(&parent.kind()) { return Some(parent); }
         current = parent;
     }
     None
