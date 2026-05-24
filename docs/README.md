@@ -1,31 +1,34 @@
-# Atlas 文档
+# Atlas documentation
 
-本文档集只保留当前需要维护的少量文档。调研长文和重复设计草案已合并进下面文档，阶段日志单独保留。
+This directory keeps the release-facing and contributor-facing documentation that should remain current for V1 users. Completed milestones, superseded plans, and phase logs are archived under [`archive/`](archive/). Active planning remains in `05-roadmap.md`.
 
-## 阅读顺序
+## Recommended reading order
 
-1. [需求规格](./01-requirements.md)
-2. [架构约束](./02-architecture-constraints.md)
-3. [当前架构实现](./03-current-architecture.md)
-4. [架构与需求变更记录](./04-changes.md)
-5. [未来架构演进](./05-roadmap.md)
-6. [阶段日志](./06-phase-log.md)
-7. [测试规范](./07-testing-spec.md)
-8. [性能基线](./08-performance-baseline.md)
-9. [跨过程数据流设计](./09-interprocedural-dataflow-design.md)
-10. [Trace Contract](./trace-contract.md)
+1. [Requirements](./01-requirements.md)
+2. [Architecture constraints](./02-architecture-constraints.md)
+3. [Current architecture](./03-current-architecture.md)
+4. [Roadmap](./05-roadmap.md)
+5. [Testing spec](./07-testing-spec.md)
+6. [Performance baseline](./08-performance-baseline.md)
+7. [Trace contract](./trace-contract.md)
 
-## 维护规则
+## Archived development notes
 
-1. 改需求边界，更新 `01-requirements.md`。
-2. 改模块边界、ID、持久化、解析/resolution/graph 规则，更新 `02-architecture-constraints.md`。
-3. 改已经落地的代码结构、schema、CLI/MCP/analysis 能力，更新 `03-current-architecture.md`。
-4. 改变方向或替代旧结论，更新 `04-changes.md`。
-5. 未落地计划只写入 `05-roadmap.md`，不要混入当前实现。
-6. 阶段性实施摘要写入 `06-phase-log.md`，不要塞回变更说明。
-7. 改阶段验收、测试深度、feature 验证矩阵，更新 `07-testing-spec.md`。
-8. 改性能测量方法或发布基线，更新 `08-performance-baseline.md`。
-9. 改跨过程数据流和 summary 设计，更新 `09-interprocedural-dataflow-design.md`。
-10. 改 CLI/MCP trace JSON 字段、diagnostic code 或 capability 输出，更新 `trace-contract.md`。
+The following files are retained for project history, but they are not part of the current user-facing documentation set:
 
-根目录只保留 `README.md`。架构、需求、路线图和测试规范统一维护在 `docs/` 下。
+- [Architecture and requirements change log](./archive/04-changes.md)
+- [Historical roadmap](./archive/05-roadmap.md)
+- [Phase log](./archive/06-phase-log.md)
+- [Inter-procedural dataflow design notes](./archive/09-interprocedural-dataflow-design.md)
+- [Multi-language dataflow implementation plan](./archive/dataflow-implementation-plan.md)
+
+## Maintenance rules
+
+1. Update `01-requirements.md` when product scope or acceptance criteria change.
+2. Update `02-architecture-constraints.md` when module boundaries, persistence rules, ID rules, or graph/resolution constraints change.
+3. Update `03-current-architecture.md` when implemented code structure, schema, CLI/MCP behavior, or analysis capability changes.
+4. Update `05-roadmap.md` for current and future work only; move completed or superseded roadmap sections to `archive/`.
+5. Update `07-testing-spec.md` when release checks, fixture expectations, or feature validation requirements change.
+6. Update `08-performance-baseline.md` only when performance methodology or measured release baselines change.
+7. Update `trace-contract.md` when CLI/MCP trace JSON fields, diagnostics, or capability output change.
+8. Move obsolete planning notes to `archive/` instead of linking them from the README as active guidance.

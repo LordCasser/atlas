@@ -1,0 +1,4 @@
+interface:
+  display_name: "Atlas"
+  short_description: "Use Atlas code graph CLI and MCP tools"
+  default_prompt: "Use Atlas to index a repository, query symbols, inspect call graphs, trace variables, and gather code context through the CLI or MCP tools."

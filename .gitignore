@@ -6,5 +6,4 @@
 *.db-wal
 *.db-shm
 .gitmodules
-codegraph/
 examples/

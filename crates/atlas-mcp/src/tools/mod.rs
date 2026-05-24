@@ -57,6 +57,31 @@ pub struct ToolRouter {
 }
 
 impl ToolRouter {
+    /// Create a router with pre-built graph-backed engines.
+    ///
+    /// Integration tests use this constructor to exercise tool routing against a
+    /// known graph snapshot. The stdio MCP server uses [`ToolRouter::new_empty`]
+    /// so startup and `initialize` do not block on graph construction.
+    pub fn new(
+        store: Arc<Store>,
+        search: SearchEngine,
+        context: ContextBuilder,
+        project_root: std::path::PathBuf,
+    ) -> Self {
+        let last_graph_signature = store.index_signature().unwrap_or_default();
+        Self {
+            store,
+            search: Some(search),
+            context: Some(context),
+            project_root,
+            tools: make_all_tools(),
+            last_graph_signature: last_graph_signature.clone(),
+            graph_initialized: true,
+            cached_signature: last_graph_signature,
+            last_signature_check: std::time::Instant::now(),
+        }
+    }
+
     /// Create a router without building the graph (fast startup).
     /// Graph is built lazily on the first request via `ensure_graph_initialized`.
     pub fn new_empty(store: Arc<Store>, project_root: std::path::PathBuf) -> Self {
@@ -74,16 +99,45 @@ impl ToolRouter {
         }
     }
 
+    /// Return the backing store.
+    pub fn store(&self) -> Arc<Store> {
+        Arc::clone(&self.store)
+    }
+
+    /// Return whether a tool needs the in-memory graph/search/context snapshot.
+    ///
+    /// Store-backed tools intentionally do not force graph construction. This
+    /// keeps MCP `initialize`, `tools/list`, status, files, trace, usages,
+    /// dependencies, dependents and capabilities responsive on large projects.
+    pub(crate) fn tool_requires_graph(name: &str) -> bool {
+        matches!(
+            name,
+            "atlas_search"
+                | "atlas_symbol"
+                | "atlas_neighbors"
+                | "atlas_callers"
+                | "atlas_callees"
+                | "atlas_callgraph"
+                | "atlas_path"
+                | "atlas_explore"
+                | "atlas_impact"
+                | "atlas_context"
+        )
+    }
+
     /// Build the graph engine on first use.
-    /// This is called before the first request after the MCP handshake completes,
-    /// so the client doesn't timeout waiting for a response during startup.
+    /// This is called only for graph-backed tool calls after the MCP handshake
+    /// completes, so the client doesn't timeout waiting for a startup response.
     pub(crate) fn ensure_graph_initialized(&mut self) -> anyhow::Result<()> {
         if self.graph_initialized {
             return Ok(());
         }
         tracing::info!("Building graph snapshot (first request)...");
         let graph = Arc::new(atlas_engine::GraphEngine::from_store(&self.store, 0.3)?);
-        self.search = Some(SearchEngine::new(Arc::clone(&self.store), Arc::clone(&graph)));
+        self.search = Some(SearchEngine::new(
+            Arc::clone(&self.store),
+            Arc::clone(&graph),
+        ));
         self.context = Some(ContextBuilder::new(Arc::clone(&self.store), graph));
         self.last_graph_signature = self.store.index_signature().unwrap_or_default();
         self.graph_initialized = true;
@@ -112,12 +166,19 @@ impl ToolRouter {
             return Ok(());
         }
         self.last_signature_check = std::time::Instant::now();
-        let current = self.store.index_signature().unwrap_or_else(|_| self.cached_signature.clone());
+        let current = self
+            .store
+            .index_signature()
+            .unwrap_or_else(|_| self.cached_signature.clone());
         if current != self.last_graph_signature {
             tracing::info!("Index signature changed, refreshing graph");
             let graph = Arc::new(atlas_engine::GraphEngine::from_store(&self.store, 0.3)?);
-            if let Some(ref mut s) = self.search { s.refresh_graph(Arc::clone(&graph)); }
-            if let Some(ref mut c) = self.context { c.refresh_graph(graph); }
+            if let Some(ref mut s) = self.search {
+                s.refresh_graph(Arc::clone(&graph));
+            }
+            if let Some(ref mut c) = self.context {
+                c.refresh_graph(graph);
+            }
             self.last_graph_signature = current.clone();
         }
         self.cached_signature = current;

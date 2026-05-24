@@ -1,6 +1,6 @@
 # Atlas 当前架构实现
 
-本文描述当前代码已经落地的实现状态。未落地设计写在 [未来架构演进](./05-roadmap.md)。
+本文描述当前代码已经落地的实现状态。当前和未来工作见 [Roadmap](./05-roadmap.md)；已完成或被替代的历史设计归档在 [`docs/archive/`](./archive/)。
 
 ## 1. 代码结构
 
@@ -19,7 +19,7 @@ crates/
     crates/search/     FTS、LIKE/fuzzy、query parser、scoring
     crates/context/    Agent context builder
     crates/filesync/   file discovery、change detection、file lock、watcher
-  atlas-mcp/           MCP protocol、transport、tools
+  atlas-mcp/           MCP server adapter、protocol、tools
   atlas-cli/           CLI binary + commands + integration tests
 ```
 
@@ -61,7 +61,7 @@ Source files
 
 ## 3. Schema 状态
 
-当前 `CURRENT_SCHEMA_VERSION` 为 `1`。schema 迁移基础设施已经落地：打开现有数据库时会检查 `schema_versions`，低版本可通过 `MIGRATIONS` 链升级，高版本会被拒绝。当前 `MIGRATIONS` 为空（V1），因此 V1 内 schema 变更仍应谨慎处理；发布前需要在 roadmap 的 V1 清单中明确兼容策略。
+当前 `CURRENT_SCHEMA_VERSION` 为 `1`。schema 迁移基础设施已经落地：打开现有数据库时会检查 `schema_versions`，低版本可通过 `MIGRATIONS` 链升级，高版本会被拒绝。当前 `MIGRATIONS` 为空（V1），因此 V1 内 schema 变更仍应谨慎处理；发布前需要在 README 和 release notes 中明确兼容策略。
 
 主要表：
 
@@ -158,7 +158,7 @@ Context：
 
 MCP：
 
-- JSON-RPC stdio。
+- 基于官方 Rust SDK `rmcp` 的 stdio transport。
 - 工具按能力分类组织在 `crates/atlas-mcp/src/tools/` 目录。
 - 当前 MCP 注册 19 个 Agent-facing 工具：`atlas_status`、`atlas_files`、`atlas_search`、`atlas_symbol`、`atlas_neighbors`、`atlas_callers`、`atlas_callees`、`atlas_callgraph`、`atlas_path`、`atlas_explore`、`atlas_impact`、`atlas_context`、`atlas_trace_point`、`atlas_trace_variable`、`atlas_trace_caller_path`、`atlas_language_capabilities`、`usages`、`dependencies`、`dependents`。命名策略是 Atlas 专属工具使用 `atlas_` 前缀，通用语义工具保持短名。
 
