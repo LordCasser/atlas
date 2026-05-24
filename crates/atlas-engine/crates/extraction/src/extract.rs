@@ -215,6 +215,7 @@ pub fn extract_file(
             &ectx,
             &bindings,
             &scopes,
+            &symbols,
         )
         .unwrap_or_else(|e| {
             diagnostics.push(ExtractDiagnostic {
@@ -227,11 +228,8 @@ pub fn extract_file(
         let mut nodes = dataflow_result.nodes;
         let edges = dataflow_result.edges;
 
-        // 7d. Resolve DataNode function_ids BEFORE use-def so
-        //     UseDefKey(function_id, binding_id?, name) groups correctly.
-        super::dataflow_builder::resolve_dataflow_function_ids(&mut nodes, &symbols);
-
         // 7c. Build use-def edges (only if dataflow succeeded)
+        // function_ids already resolved inside DataFlowBuilder::extract
         let use_def_edges = DataFlowBuilder::resolve_use_def(&nodes);
         let mut all_edges = edges;
         all_edges.extend(use_def_edges);

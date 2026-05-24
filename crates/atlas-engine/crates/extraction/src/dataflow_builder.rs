@@ -80,6 +80,7 @@ impl DataFlowBuilder {
         ctx: &ExtractionCtx<'_>,
         bindings: &[BindingDef],
         scopes: &[ScopeDef],
+        symbols: &[SymbolDef],
     ) -> anyhow::Result<DataFlowResult> {
         let query_src = dataflow_spec.dataflow_builder_query();
         if query_src.trim().is_empty() {
@@ -128,6 +129,11 @@ impl DataFlowBuilder {
 
     // Post-process: resolve bindings to nodes
     resolve_bindings_to_nodes(&mut nodes, bindings, scopes);
+
+    // Resolve function_ids BEFORE building edges so that
+    // FieldLoad, Assign, and containment edges have correct function_id
+    // for scope-aware matching.
+    resolve_dataflow_function_ids(&mut nodes, symbols);
 
     // Post-process: create dataflow edges from AST structure
     build_dataflow_edges(
