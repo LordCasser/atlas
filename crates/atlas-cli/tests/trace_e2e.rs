@@ -2632,9 +2632,8 @@ fn vfy_kotlin_var_decl_and_function_call() {
     assert!(!edges.is_empty(), "Kotlin should produce dataflow edges (Assign from val y = bar(...) and ArgToCall from bar(x, 42))");
     let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
     let has_argtocall = edges.iter().any(|e| e.kind == DataFlowKind::ArgToCall);
-    assert!(has_assign || has_argtocall,
-        "Kotlin should produce Assign or ArgToCall edges, got: {:?}",
-        edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(has_assign, "Kotlin should produce Assign edges (val y = bar(...)), got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(has_argtocall, "Kotlin should produce ArgToCall edges (bar(x, 42)), got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
     for e in &edges {
         assert!(e.confidence > 0.0f64, "edge confidence should be positive");
         assert!(!e.id.as_bytes().is_empty(), "edge id should be non-empty");
@@ -2667,9 +2666,8 @@ fn vfy_php_superglobal_and_function_call() {
     assert!(has_fieldload, "PHP should produce FieldLoad edge (Global → Field), got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
     let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
     let has_argtocall = edges.iter().any(|e| e.kind == DataFlowKind::ArgToCall);
-    assert!(has_assign || has_argtocall,
-        "PHP should produce Assign or ArgToCall edges, got: {:?}",
-        edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(has_assign, "PHP should produce Assign edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(has_argtocall, "PHP should produce ArgToCall edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
 }
 
 /// Ruby: hash access + implicit return dataflow.
@@ -3112,4 +3110,57 @@ fn process(name: &str) -> String {
         assert!(step.evidence.is_some(), "step {:?} should have evidence", step.edge_kind);
     }
     assert!(path.confidence > 0.0);
+}
+
+/// Rust: match-arm binding creates Local DataNode for bound variable.
+#[cfg(feature = "rust")]
+#[test]
+fn vfy_rust_match_arm_binding_creates_local_data_node() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("match.rs");
+    let source = r#"fn f(x: i32) -> i32 {
+    match x {
+        v => v,
+        _ => 0,
+    }
+}
+"#;
+    let frontend = create_frontend(Language::Rust).unwrap();
+    let facts = extract_file(&frontend, file_id, Path::new("match.rs"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
+    assert!(nodes.iter().any(|n| n.name.as_deref() == Some("v") && n.kind == DataNodeKind::Local),
+        "Rust match-arm should create Local DataNode for bound variable v");
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    assert!(!edges.is_empty(), "Rust match should produce dataflow edges");
+}
+
+/// Python: destructuring assignment produces Assign to each local.
+#[cfg(feature = "python")]
+#[test]
+fn vfy_python_destructuring_produces_assign_to_locals() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("destruct.py");
+    let source = r#"def f():
+    a, b = get_values()
+    return a + b
+"#;
+    let frontend = create_frontend(Language::Python).unwrap();
+    let facts = extract_file(&frontend, file_id, Path::new("destruct.py"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.name.as_deref() == Some("a") && n.kind == DataNodeKind::Local),
+        "Python destructuring should create Local DataNode for a");
+    assert!(nodes.iter().any(|n| n.name.as_deref() == Some("b") && n.kind == DataNodeKind::Local),
+        "Python destructuring should create Local DataNode for b");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "should have CallTarget");
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let kinds: Vec<_> = edges.iter().map(|e| e.kind).collect();
+    assert!(kinds.iter().any(|k| *k == DataFlowKind::Assign),
+        "Python destructuring should produce Assign edges, got: {:?}", kinds);
 }
