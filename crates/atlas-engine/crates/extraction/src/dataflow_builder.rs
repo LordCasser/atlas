@@ -459,38 +459,6 @@ fn walk_for_assign_edges(
                     }
                 }
             }
-            // ── Kotlin assignment fallback ────────────────────────────
-            // tree-sitter-kotlin's `assignment` node has children.multiple
-            // (no named fields).  When no left/right branch matches, fall
-            // back to child ordering: first named = target, unnamed `=` =
-            // separator, next named = value.
-            else if kind == "assignment" {
-                let mut target: Option<tree_sitter::Node> = None;
-                let mut value: Option<tree_sitter::Node> = None;
-                let mut found_eq = false;
-                for i in 0..node.child_count() {
-                    let Some(child) = node.child(i) else { continue };
-                    if child.is_named() {
-                        if target.is_none() {
-                            target = Some(child);
-                        } else if found_eq && value.is_none() {
-                            value = Some(child);
-                        }
-                    } else if !found_eq {
-                        if let Ok(t) = child.utf8_text(source.as_bytes()) {
-                            if t == "=" { found_eq = true; }
-                        }
-                    }
-                }
-                if let (Some(t), Some(v)) = (target, value) {
-                    let t_key = NodePosKey { start_byte: t.start_byte() as u32, end_byte: t.end_byte() as u32, kind: DataNodeKind::Local };
-                    let v_key = NodePosKey { start_byte: v.start_byte() as u32, end_byte: v.end_byte() as u32, kind: DataNodeKind::Expr };
-                    if let (Some(&tid), Some(&sid)) = (pos_map.get(&t_key), pos_map.get(&v_key)) {
-                        let eid = DataFlowEdgeId::generate(&sid, &tid, DataFlowKind::Assign.as_str());
-                        edges.push(DataFlowEdge::new(eid, sid, tid, DataFlowKind::Assign, ts_node_range(&t), 0.85));
-                    }
-                }
-            }
         }
     }
 
@@ -548,32 +516,6 @@ fn walk_for_assign_edges(
                         }
                     }
                 }
-            }
-        }
-    }
-
-    // ── Kotlin: variable_declaration (val x = expr) ────────────────────
-    if kind == "variable_declaration" {
-        // In tree-sitter-kotlin, variable_declaration contains simple_identifier + optional expression
-        let mut name_node: Option<tree_sitter::Node> = None;
-        let mut value_node: Option<tree_sitter::Node> = None;
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.is_named() {
-                    if child.kind() == "simple_identifier" && name_node.is_none() {
-                        name_node = Some(child);
-                    } else if value_node.is_none() {
-                        value_node = Some(child);
-                    }
-                }
-            }
-        }
-        if let (Some(name), Some(value)) = (name_node, value_node) {
-            let name_key = NodePosKey { start_byte: name.start_byte() as u32, end_byte: name.end_byte() as u32, kind: DataNodeKind::Local };
-            let value_key = NodePosKey { start_byte: value.start_byte() as u32, end_byte: value.end_byte() as u32, kind: DataNodeKind::Expr };
-            if let (Some(&target_id), Some(&source_id)) = (pos_map.get(&name_key), pos_map.get(&value_key)) {
-                let edge_id = DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
-                edges.push(DataFlowEdge::new(edge_id, source_id, target_id, DataFlowKind::Assign, ts_node_range(&name), 0.85));
             }
         }
     }

@@ -9,11 +9,19 @@
 
 use crate::languages::{node_range, node_text};
 
+use crate::dataflow_builder::NodePosKey;
+use crate::extraction_ctx::ExtractionCtx;
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
     LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
     SymbolExtractorSpec,
 };
+use std::collections::HashMap;
+use types::bindings::BindingDef;
+use types::dataflow::{DataFlowEdge, DataNode};
+use types::enums::{DataFlowKind, DataNodeKind};
+use types::ids::{DataFlowEdgeId, DataNodeId};
+use types::structs::{ScopeDef, TextRange};
 use crate::languages::shared::SymbolDefBuilder;
 use types::capability::FeatureSupport;
 use types::*;
@@ -241,6 +249,101 @@ impl DataflowSpec for KotlinAdapter {
         capture: Capture<'_>,
     ) -> (Option<DataNode>, Option<DataFlowEdge>) {
         normalize_kotlin_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+
+    fn build_language_edges(
+        &self,
+        ctx: &ExtractionCtx<'_>,
+        pos_map: &HashMap<NodePosKey, DataNodeId>,
+        _nodes: &[DataNode],
+        _bindings: &[BindingDef],
+        _scopes: &[ScopeDef],
+        edges: &mut Vec<DataFlowEdge>,
+    ) -> anyhow::Result<()> {
+        walk_kotlin_assign_edges(ctx.root, ctx.source, pos_map, edges);
+        Ok(())
+    }
+}
+
+/// Walk the AST for Kotlin-specific assignment patterns.
+fn walk_kotlin_assign_edges(
+    node: tree_sitter::Node,
+    source: &str,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    let kind = node.kind();
+
+    // variable_declaration: val x = expr
+    if kind == "variable_declaration" {
+        let mut name_node: Option<tree_sitter::Node> = None;
+        let mut value_node: Option<tree_sitter::Node> = None;
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.is_named() {
+                    if child.kind() == "simple_identifier" && name_node.is_none() {
+                        name_node = Some(child);
+                    } else if value_node.is_none() {
+                        value_node = Some(child);
+                    }
+                }
+            }
+        }
+        if let (Some(name), Some(value)) = (name_node, value_node) {
+            let name_key = NodePosKey { start_byte: name.start_byte() as u32, end_byte: name.end_byte() as u32, kind: DataNodeKind::Local };
+            let value_key = NodePosKey { start_byte: value.start_byte() as u32, end_byte: value.end_byte() as u32, kind: DataNodeKind::Expr };
+            if let (Some(&tid), Some(&sid)) = (pos_map.get(&name_key), pos_map.get(&value_key)) {
+                let eid = DataFlowEdgeId::generate(&sid, &tid, DataFlowKind::Assign.as_str());
+                edges.push(DataFlowEdge::new(eid, sid, tid, DataFlowKind::Assign, kotlin_range(&name), 0.85));
+            }
+        }
+    }
+
+    // assignment: x = expr (children.multiple, no named fields)
+    if kind == "assignment" {
+        let mut target: Option<tree_sitter::Node> = None;
+        let mut value: Option<tree_sitter::Node> = None;
+        let mut found_eq = false;
+        for i in 0..node.child_count() {
+            let Some(child) = node.child(i) else { continue };
+            if child.is_named() {
+                if target.is_none() {
+                    target = Some(child);
+                } else if found_eq && value.is_none() {
+                    value = Some(child);
+                }
+            } else if !found_eq {
+                if let Ok(t) = child.utf8_text(source.as_bytes()) {
+                    if t == "=" { found_eq = true; }
+                }
+            }
+        }
+        if let (Some(t), Some(v)) = (target, value) {
+            let t_key = NodePosKey { start_byte: t.start_byte() as u32, end_byte: t.end_byte() as u32, kind: DataNodeKind::Local };
+            let v_key = NodePosKey { start_byte: v.start_byte() as u32, end_byte: v.end_byte() as u32, kind: DataNodeKind::Expr };
+            if let (Some(&tid), Some(&sid)) = (pos_map.get(&t_key), pos_map.get(&v_key)) {
+                let eid = DataFlowEdgeId::generate(&sid, &tid, DataFlowKind::Assign.as_str());
+                edges.push(DataFlowEdge::new(eid, sid, tid, DataFlowKind::Assign, kotlin_range(&t), 0.85));
+            }
+        }
+    }
+
+    // Recurse
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            walk_kotlin_assign_edges(child, source, pos_map, edges);
+        }
+    }
+}
+
+fn kotlin_range(ts_node: &tree_sitter::Node) -> TextRange {
+    TextRange {
+        start_byte: ts_node.start_byte() as u32,
+        end_byte: ts_node.end_byte() as u32,
+        start_line: ts_node.start_position().row as u32,
+        start_column: ts_node.start_position().column as u32,
+        end_line: ts_node.end_position().row as u32,
+        end_column: ts_node.end_position().column as u32,
     }
 }
 
