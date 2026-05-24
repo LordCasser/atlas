@@ -381,6 +381,15 @@ fn normalize_py_dataflow_builder(
             };
             (Some(dn), None)
         }
+        "df.assign_field_target" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(
+                &file_id, None::<&SymbolId>, "field",
+                Some(&text), Some(&text), range.start_byte,
+            );
+            let dn = DataNode::field(node_id, file_id, None, &text, &text, range);
+            (Some(dn), None)
+        }
         _ => (None, None),
     }
 }
@@ -802,5 +811,55 @@ mod tests {
 
         // Unknown → None
         assert_eq!(py_definition_kind("unknown", func_node), None);
+    }
+
+    #[test]
+    fn test_dataflow_builder_query_parses() {
+        let spec = super::python_frontend();
+        let lang = spec.parser.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.dataflow.dataflow_builder_query());
+        assert!(query.is_ok(), "dataflow query must compile: {:?}", query.err());
+    }
+
+    #[test]
+    fn test_dataflow_normalize_smoke() {
+        let frontend = python_frontend();
+        let ts_lang = frontend.parser.tree_sitter_language();
+        let source = r#"def foo(x):
+    y = x.field
+    result = bar(y, 42)
+    return result
+"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let query = tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let file_id = FileId::generate("test.ext");
+        let ctx = NormalizeCtx {
+            language: frontend.parser.language(),
+            file_id,
+            file_path: std::path::Path::new("test.ext"),
+            source,
+        };
+
+        let mut nodes: Vec<DataNode> = Vec::new();
+        let mut captures = cursor.captures(&query, root, source.as_bytes());
+        use streaming_iterator::StreamingIterator;
+        while let Some((m, idx)) = captures.next() {
+            let cap = m.captures[*idx];
+            let name = query.capture_names()[cap.index as usize].to_string();
+            let (dn, _de) = frontend.dataflow.normalize(ctx, Capture { name, node: cap.node });
+            if let Some(dn) = dn {
+                nodes.push(dn);
+            }
+        }
+
+        assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param");
+        assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "calltarget");
+        assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallArg), "callarg");
+        assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse");
     }
 }

@@ -63,3 +63,8 @@
 
 ;; --- Identifier uses (variable references) ---
 (identifier) @df.identifier_use
+
+;; --- Field assignment (obj.field = val) ---
+(assignment_statement
+  right: (expression_list (_) @df.assign_value))
+

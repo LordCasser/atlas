@@ -58,3 +58,8 @@
 
 ;; --- Identifier uses (variable references) ---
 (identifier) @df.identifier_use
+
+;; --- Field/property assignment (obj.attr = value) ---
+(assignment
+  left: (attribute) @df.assign_field_target
+  right: (_) @df.assign_value)

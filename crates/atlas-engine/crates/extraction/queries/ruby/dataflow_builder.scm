@@ -69,3 +69,8 @@
   object: (_) @df.receiver
   .
   (_) @df.field_name)
+
+;; --- Field assignment via setter (obj.field = val) ---
+(assignment
+  left: (call) @df.assign_field_target
+  right: (_) @df.assign_value)

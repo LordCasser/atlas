@@ -459,6 +459,15 @@ fn normalize_kotlin_dataflow_builder(capture_name: &str, node: tree_sitter::Node
             };
             (Some(dn), None)
         }
+        "df.assign_field_target" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(
+                &file_id, None::<&SymbolId>, "field",
+                Some(&text), Some(&text), range.start_byte,
+            );
+            let dn = DataNode::field(node_id, file_id, None, &text, &text, range);
+            (Some(dn), None)
+        }
         _ => (None, None),
     }
 }
@@ -518,4 +527,47 @@ mod tests {
         let query = tree_sitter::Query::new(&lang, spec.scope_query());
         assert!(query.is_ok(), "scope query must compile: {:?}", query.err());
     }
+
+    #[test]
+    fn test_dataflow_normalize_smoke() {
+        let frontend = kotlin_frontend();
+        let ts_lang = frontend.parser.tree_sitter_language();
+        let source = r#"fun foo(x: Int): Int {
+    val y = x.field
+    val result = bar(y, 42)
+    return result
+}
+"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let query = tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let file_id = FileId::generate("test.ext");
+        let ctx = NormalizeCtx {
+            language: frontend.parser.language(),
+            file_id,
+            file_path: std::path::Path::new("test.ext"),
+            source,
+        };
+
+        let mut nodes: Vec<DataNode> = Vec::new();
+        let mut captures = cursor.captures(&query, root, source.as_bytes());
+        use streaming_iterator::StreamingIterator;
+        while let Some((m, idx)) = captures.next() {
+            let cap = m.captures[*idx];
+            let name = query.capture_names()[cap.index as usize].to_string();
+            let (dn, _de) = frontend.dataflow.normalize(ctx, Capture { name, node: cap.node });
+            if let Some(dn) = dn {
+                nodes.push(dn);
+            }
+        }
+
+        assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param");
+        assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local");
+        assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse");
+    }
+
 }

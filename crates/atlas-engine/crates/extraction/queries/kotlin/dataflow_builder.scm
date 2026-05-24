@@ -37,7 +37,6 @@
 
 ;; --- Method calls: obj.method(args) ---
 (call_expression
-  (navigation_expression
     name: (simple_identifier) @df.call_target))
 
 ;; --- Call arguments ---
@@ -47,7 +46,6 @@
       (_) @df.call_arg)))
 
 ;; --- Field access: obj.field ---
-(navigation_expression
   expression: (_) @df.receiver
   name: (simple_identifier) @df.field_name)
 
@@ -62,3 +60,8 @@
 
 ;; --- Identifier uses (variable references) ---
 (identifier) @df.identifier_use
+
+;; --- Field assignment (obj.field = val) ---
+(assignment
+  right: (_) @df.assign_value)
+

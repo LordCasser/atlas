@@ -449,6 +449,15 @@ fn normalize_cpp_dataflow_builder(capture_name: &str, node: tree_sitter::Node, s
             };
             (Some(dn), None)
         }
+        "df.assign_field_target" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(
+                &file_id, None::<&SymbolId>, "field",
+                Some(&text), Some(&text), range.start_byte,
+            );
+            let dn = DataNode::field(node_id, file_id, None, &text, &text, range);
+            (Some(dn), None)
+        }
         _ => (None, None),
     }
 }

@@ -52,3 +52,8 @@
 
 ;; --- Identifier uses (variable references) ---
 (identifier) @df.identifier_use
+
+;; --- Field assignment via dot or arrow (obj.field = val, ptr->field = val) ---
+(assignment_expression
+  left: (field_expression) @df.assign_field_target
+  right: (_) @df.assign_value)
