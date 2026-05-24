@@ -35,7 +35,7 @@ MVP 固定支持：
 
 Cangjie 暂时作为不完善支持语言保留，必须显式启用 `cangjie` feature，不进入默认 features、`all-languages` 或 MVP 验收。
 
-当前代码已经接入 Go、Rust、C#、PHP、Ruby、Kotlin 的 post-MVP Symbolic frontends，并纳入 `all-languages` 编译集合；Bash 是显式 opt-in experimental frontend，不在 `all-languages`。这些语言不纳入 MVP 验收，当前只按 capability profile 暴露 symbols/references/imports/call graph 等 Symbolic 能力，不宣称变量来源追踪、dataflow 或 CFG 可用。
+当前代码已经接入 Go、Rust、C#、PHP、Ruby、Kotlin 的 experimental DataflowBasic frontends，并纳入 `all-languages` 编译集合；Bash 是显式 opt-in experimental frontend，不在 `all-languages`。这些语言已具备基础 dataflow 抽取能力（参数、赋值、调用、字段访问、返回）和 e2e smoke 测试，但完整 path‑level 验收、CFG 和跨函数 summary 仍待补齐，详见各语言的 capability profile limitations。
 
 ## 3. 非目标
 
@@ -268,7 +268,7 @@ MCP 使用 JSON-RPC over stdio。核心工具：
 
 MVP 完成标准：
 
-1. 7 种 MVP 语言能进入解析路径；Go/Rust/C#/PHP/Ruby/Kotlin 只作为 post-MVP Symbolic frontends 随 `all-languages` 编译；Bash/Cangjie 不进入 MVP 验收，仅作为显式 opt-in experimental 语言。
+1. 7 种 MVP 语言能进入解析路径；Go/Rust/C#/PHP/Ruby/Kotlin 作为 experimental DataflowBasic frontends 随 `all-languages` 编译，具备基础 dataflow smoke 测试；Bash/Cangjie 不进入 MVP 验收，仅作为显式 opt-in experimental 语言。
 2. `atlas index` 能生成 `.atlas/atlas.db`。
 3. `atlas search` 能检索符号。
 4. CLI 或 MCP 能查询基本 callers/callees。

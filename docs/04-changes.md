@@ -15,7 +15,7 @@
 
 - Atlas 是 CodeGraph-inspired 的 Rust-native 本地代码知识图谱引擎。
 - CodeGraph 只作为产品形态和经验参考。
-- MVP 聚焦 7 种语言；Go/Rust/C#/PHP/Ruby/Kotlin 已作为 post-MVP Symbolic frontends 接入 `all-languages`，不计入 MVP trace 验收；Bash/Cangjie 保持显式 opt-in experimental。
+- MVP 聚焦 7 种语言；Go/Rust/C#/PHP/Ruby/Kotlin 已作为 experimental DataflowBasic frontends 接入 `all-languages`，具备基础 dataflow 抽取和 e2e smoke 测试，但完整 path‑level 验收待补齐；Bash/Cangjie 保持显式 opt-in experimental。
 - schema 为 Atlas 自有模型，保留 scopes、references、callsites、dataflow、CFG 和 trace 基础事实。
 - extraction 使用 tree-sitter queries + LanguageAdapter。
 - SQLite 是 source of truth，GraphSnapshot 是查询加速层。

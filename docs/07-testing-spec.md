@@ -182,7 +182,7 @@
 - fixture 必须经过 extraction -> store -> resolution -> GraphBuilder -> dataflow/call graph -> trace query。
 - CLI、MCP 或等价 public API 必须能查询 trace path，并返回 bounded、结构化输出。
 - 测试必须断言每个 path step 的 kind、file、range、confidence/provenance 和截断行为。
-- Java/C/C++/ArkTS 如果只能支持 Level 0/1/2，测试必须断言 capability profile、unsupported diagnostics 或 lower-confidence best-effort 输出；Go/Rust/C#/PHP/Ruby/Kotlin 作为 post-MVP Symbolic frontends，必须至少覆盖 feature 编译、capability profile 和 symbols/references/imports/calls golden fixture；Bash/Cangjie 只在显式启用对应 feature 的实验测试中覆盖。
+- Java/C/C++/ArkTS 如果只能支持 Level 0/1/2，测试必须断言 capability profile、unsupported diagnostics 或 lower-confidence best-effort 输出；Go/Rust/C#/PHP/Ruby/Kotlin 已升级为 experimental DataflowBasic frontends，必须至少覆盖 symbols/references/imports/calls golden fixture 和 dataflow edge/path smoke 测试；Bash/Cangjie 只在显式启用对应 feature 的实验测试中覆盖。
 - 每种 MVP 语言至少有一个 capability profile 快照测试；能力等级升级时必须同步更新 fixture 和用户可见输出断言。
 
 ### `atlas-engine` 抽出阶段
