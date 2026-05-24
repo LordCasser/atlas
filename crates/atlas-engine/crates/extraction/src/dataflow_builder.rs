@@ -494,63 +494,6 @@ fn walk_for_assign_edges(
         }
     }
 
-    // ── Go: short_var_declaration (x := expr) ──────────────────────────
-    // left/right are expression_list containers; look inside for actual nodes
-    if kind == "short_var_declaration" {
-        if let (Some(left_list), Some(right_list)) = (
-            node.child_by_field_name("left"),
-            node.child_by_field_name("right"),
-        ) {
-            create_assign_edges_from_expression_lists(left_list, right_list, pos_map, edges);
-        }
-    }
-
-    // ── Go: assignment_statement (x = expr) ────────────────────────────
-    if kind == "assignment_statement" {
-        if let (Some(left_list), Some(right_list)) = (
-            node.child_by_field_name("left"),
-            node.child_by_field_name("right"),
-        ) {
-            create_assign_edges_from_expression_lists(left_list, right_list, pos_map, edges);
-        }
-    }
-
-    // ── Go: var_spec (var x = expr) ────────────────────────────────────
-    if kind == "var_spec" {
-        if let Some(name_node) = node.child_by_field_name("name") {
-            let name_key = NodePosKey {
-                start_byte: name_node.start_byte() as u32,
-                end_byte: name_node.end_byte() as u32,
-                kind: DataNodeKind::Local,
-            };
-            // Value is inside expression_list
-            if let Some(val_list) = node.child_by_field_name("value") {
-                for i in 0..val_list.child_count() {
-                    if let Some(val_node) = val_list.child(i) {
-                        if val_node.is_named() {
-                            let value_key = NodePosKey {
-                                start_byte: val_node.start_byte() as u32,
-                                end_byte: val_node.end_byte() as u32,
-                                kind: DataNodeKind::Expr,
-                            };
-                            if let (Some(&target_id), Some(&source_id)) =
-                                (pos_map.get(&name_key), pos_map.get(&value_key))
-                            {
-                                let edge_id = DataFlowEdgeId::generate(
-                                    &source_id, &target_id, DataFlowKind::Assign.as_str(),
-                                );
-                                edges.push(DataFlowEdge::new(
-                                    edge_id, source_id, target_id, DataFlowKind::Assign,
-                                    ts_node_range(&name_node), 0.90,
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     // ── C/C++: init_declarator (int x = expr) ──────────────────────────
     if kind == "init_declarator" {
         if let (Some(name_node), Some(value_node)) = (
@@ -644,7 +587,7 @@ fn walk_for_assign_edges(
 }
 
 /// Create Assign edges from Go expression_list pairs.
-fn create_assign_edges_from_expression_lists(
+pub(crate) fn create_assign_edges_from_expression_lists(
     left_list: tree_sitter::Node,
     right_list: tree_sitter::Node,
     pos_map: &HashMap<NodePosKey, DataNodeId>,

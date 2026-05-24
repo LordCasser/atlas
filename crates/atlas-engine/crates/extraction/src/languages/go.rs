@@ -7,12 +7,20 @@
 
 use crate::languages::{node_range, node_text};
 
+use crate::dataflow_builder::{NodePosKey, create_assign_edges_from_expression_lists};
+use crate::extraction_ctx::ExtractionCtx;
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
     LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
     SymbolExtractorSpec,
 };
 use crate::languages::shared::SymbolDefBuilder;
+use std::collections::HashMap;
+use types::bindings::BindingDef;
+use types::dataflow::{DataFlowEdge, DataNode};
+use types::enums::{DataFlowKind, DataNodeKind};
+use types::ids::{DataFlowEdgeId, DataNodeId};
+use types::structs::ScopeDef;
 use types::capability::FeatureSupport;
 use types::*;
 
@@ -240,6 +248,102 @@ impl DataflowSpec for GoAdapter {
         capture: Capture<'_>,
     ) -> (Option<DataNode>, Option<DataFlowEdge>) {
         normalize_go_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+
+    fn build_language_edges(
+        &self,
+        ctx: &ExtractionCtx<'_>,
+        pos_map: &HashMap<NodePosKey, DataNodeId>,
+        _nodes: &[DataNode],
+        _bindings: &[BindingDef],
+        _scopes: &[ScopeDef],
+        edges: &mut Vec<DataFlowEdge>,
+    ) -> anyhow::Result<()> {
+        walk_go_assign_edges(ctx.root, pos_map, edges);
+        Ok(())
+    }
+}
+
+/// Walk the AST for Go-specific assignment patterns.
+fn walk_go_assign_edges(
+    node: tree_sitter::Node,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    let kind = node.kind();
+
+    // short_var_declaration: x := expr
+    if kind == "short_var_declaration" {
+        if let (Some(left_list), Some(right_list)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) {
+            create_assign_edges_from_expression_lists(left_list, right_list, pos_map, edges);
+        }
+    }
+
+    // assignment_statement: x = expr
+    if kind == "assignment_statement" {
+        if let (Some(left_list), Some(right_list)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) {
+            create_assign_edges_from_expression_lists(left_list, right_list, pos_map, edges);
+        }
+    }
+
+    // var_spec: var x = expr
+    if kind == "var_spec" {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            let name_key = NodePosKey {
+                start_byte: name_node.start_byte() as u32,
+                end_byte: name_node.end_byte() as u32,
+                kind: DataNodeKind::Local,
+            };
+            if let Some(val_list) = node.child_by_field_name("value") {
+                for i in 0..val_list.child_count() {
+                    if let Some(val_node) = val_list.child(i) {
+                        if val_node.is_named() {
+                            let value_key = NodePosKey {
+                                start_byte: val_node.start_byte() as u32,
+                                end_byte: val_node.end_byte() as u32,
+                                kind: DataNodeKind::Expr,
+                            };
+                            if let (Some(&target_id), Some(&source_id)) =
+                                (pos_map.get(&name_key), pos_map.get(&value_key))
+                            {
+                                let edge_id = DataFlowEdgeId::generate(
+                                    &source_id, &target_id, DataFlowKind::Assign.as_str(),
+                                );
+                                edges.push(DataFlowEdge::new(
+                                    edge_id, source_id, target_id,
+                                    DataFlowKind::Assign,
+                                    node_range_go(&name_node), 0.90,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Recurse
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            walk_go_assign_edges(child, pos_map, edges);
+        }
+    }
+}
+
+fn node_range_go(ts_node: &tree_sitter::Node) -> types::structs::TextRange {
+    types::structs::TextRange {
+        start_byte: ts_node.start_byte() as u32,
+        end_byte: ts_node.end_byte() as u32,
+        start_line: ts_node.start_position().row as u32,
+        start_column: ts_node.start_position().column as u32,
+        end_line: ts_node.end_position().row as u32,
+        end_column: ts_node.end_position().column as u32,
     }
 }
 
