@@ -315,7 +315,9 @@ fn walk_for_assign_edges(
             node.child_by_field_name("value"),
         ) {
             let name_kind = name_node.kind();
-            if name_kind == "object_pattern" || name_kind == "array_pattern" {
+            if name_kind == "object_pattern" || name_kind == "array_pattern"
+                || name_kind == "pattern_list" || name_kind == "tuple_pattern"
+                || name_kind == "list_pattern" {
                 // Destructuring: each binding gets edge from the initializer Expr
                 // Walk the pattern to find all identifier bindings and create
                 // Assign edges: initializer_Expr → each_destructured_Local
@@ -878,14 +880,26 @@ fn base_name_from_access_path(raw: &str) -> &str {
 }
 
 /// Recursively collect all identifier binding nodes from a destructuring pattern
-/// (object_pattern, array_pattern, pair_pattern, rest_pattern).
-fn collect_pattern_bindings<'a>(pattern_node: tree_sitter::Node<'a>, out: &mut Vec<tree_sitter::Node<'a>>) {
+/// (object_pattern, array_pattern, tuple_pattern, list_pattern, pair_pattern, rest_pattern).
+pub(crate) fn collect_pattern_bindings<'a>(pattern_node: tree_sitter::Node<'a>, out: &mut Vec<tree_sitter::Node<'a>>) {
     match pattern_node.kind() {
         "identifier" => { out.push(pattern_node); }
         "shorthand_property_identifier_pattern" => { out.push(pattern_node); }
         "pair_pattern" => {
             if let Some(value_node) = pattern_node.child_by_field_name("value") {
                 collect_pattern_bindings(value_node, out);
+            }
+        }
+        // Python destructuring: a, b = pair  /  (a, b) = pair
+        "pattern_list" | "tuple_pattern" | "list_pattern" => {
+            for i in 0..pattern_node.child_count() {
+                if let Some(child) = pattern_node.child(i) {
+                    if child.kind() == "identifier" {
+                        out.push(child);
+                    } else {
+                        collect_pattern_bindings(child, out);
+                    }
+                }
             }
         }
         "object_pattern" | "array_pattern" | "rest_pattern" => {
