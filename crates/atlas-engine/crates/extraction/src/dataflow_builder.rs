@@ -486,40 +486,6 @@ fn walk_for_assign_edges(
         }
     }
 
-    // ── Rust: let_declaration (let x = expr) ───────────────────────────
-    if kind == "let_declaration" {
-        if let (Some(pattern_node), Some(value_node)) = (
-            node.child_by_field_name("pattern"),
-            node.child_by_field_name("value"),
-        ) {
-            let value_key = NodePosKey { start_byte: value_node.start_byte() as u32, end_byte: value_node.end_byte() as u32, kind: DataNodeKind::Expr };
-            if let Some(&source_id) = pos_map.get(&value_key) {
-                // Simple identifier pattern: let x = expr
-                if pattern_node.kind() == "identifier" {
-                    let name_key = NodePosKey { start_byte: pattern_node.start_byte() as u32, end_byte: pattern_node.end_byte() as u32, kind: DataNodeKind::Local };
-                    if let Some(&target_id) = pos_map.get(&name_key) {
-                        let edge_id = DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
-                        edges.push(DataFlowEdge::new(edge_id, source_id, target_id, DataFlowKind::Assign, ts_node_range(&pattern_node), 0.90));
-                    }
-                }
-                // Destructuring pattern: let (a, b) = expr
-                else if matches!(pattern_node.kind(), "tuple_pattern" | "tuple_struct_pattern") {
-                    for i in 0..pattern_node.child_count() {
-                        if let Some(child) = pattern_node.child(i) {
-                            if child.is_named() && child.kind() == "identifier" {
-                                let child_key = NodePosKey { start_byte: child.start_byte() as u32, end_byte: child.end_byte() as u32, kind: DataNodeKind::Local };
-                                if let Some(&target_id) = pos_map.get(&child_key) {
-                                    let edge_id = DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
-                                    edges.push(DataFlowEdge::new(edge_id, source_id, target_id, DataFlowKind::Assign, ts_node_range(&child), 0.90));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     // Recurse into children
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {

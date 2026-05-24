@@ -7,12 +7,20 @@
 
 use crate::languages::{node_range, node_text};
 
+use crate::dataflow_builder::NodePosKey;
+use crate::extraction_ctx::ExtractionCtx;
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
     LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
     SymbolExtractorSpec,
 };
 use crate::languages::shared::SymbolDefBuilder;
+use std::collections::HashMap;
+use types::bindings::BindingDef;
+use types::dataflow::{DataFlowEdge, DataNode};
+use types::enums::{DataFlowKind, DataNodeKind};
+use types::ids::{DataFlowEdgeId, DataNodeId};
+use types::structs::{ScopeDef, TextRange};
 use types::capability::FeatureSupport;
 use types::*;
 
@@ -238,6 +246,72 @@ impl DataflowSpec for RustAdapter {
         capture: Capture<'_>,
     ) -> (Option<DataNode>, Option<DataFlowEdge>) {
         normalize_rust_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+
+    fn build_language_edges(
+        &self,
+        ctx: &ExtractionCtx<'_>,
+        pos_map: &HashMap<NodePosKey, DataNodeId>,
+        _nodes: &[DataNode],
+        _bindings: &[BindingDef],
+        _scopes: &[ScopeDef],
+        edges: &mut Vec<DataFlowEdge>,
+    ) -> anyhow::Result<()> {
+        walk_rust_assign_edges(ctx.root, pos_map, edges);
+        Ok(())
+    }
+}
+
+/// Walk the AST for Rust-specific let_declaration patterns.
+fn walk_rust_assign_edges(
+    node: tree_sitter::Node,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    if node.kind() == "let_declaration" {
+        if let (Some(pattern_node), Some(value_node)) = (
+            node.child_by_field_name("pattern"),
+            node.child_by_field_name("value"),
+        ) {
+            let value_key = NodePosKey { start_byte: value_node.start_byte() as u32, end_byte: value_node.end_byte() as u32, kind: DataNodeKind::Expr };
+            if let Some(&source_id) = pos_map.get(&value_key) {
+                if pattern_node.kind() == "identifier" {
+                    let name_key = NodePosKey { start_byte: pattern_node.start_byte() as u32, end_byte: pattern_node.end_byte() as u32, kind: DataNodeKind::Local };
+                    if let Some(&target_id) = pos_map.get(&name_key) {
+                        let eid = DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+                        edges.push(DataFlowEdge::new(eid, source_id, target_id, DataFlowKind::Assign, rust_range(&pattern_node), 0.90));
+                    }
+                } else if matches!(pattern_node.kind(), "tuple_pattern" | "tuple_struct_pattern") {
+                    for i in 0..pattern_node.child_count() {
+                        if let Some(child) = pattern_node.child(i) {
+                            if child.is_named() && child.kind() == "identifier" {
+                                let child_key = NodePosKey { start_byte: child.start_byte() as u32, end_byte: child.end_byte() as u32, kind: DataNodeKind::Local };
+                                if let Some(&target_id) = pos_map.get(&child_key) {
+                                    let eid = DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+                                    edges.push(DataFlowEdge::new(eid, source_id, target_id, DataFlowKind::Assign, rust_range(&child), 0.90));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            walk_rust_assign_edges(child, pos_map, edges);
+        }
+    }
+}
+
+fn rust_range(ts_node: &tree_sitter::Node) -> TextRange {
+    TextRange {
+        start_byte: ts_node.start_byte() as u32,
+        end_byte: ts_node.end_byte() as u32,
+        start_line: ts_node.start_position().row as u32,
+        start_column: ts_node.start_position().column as u32,
+        end_line: ts_node.end_position().row as u32,
+        end_column: ts_node.end_position().column as u32,
     }
 }
 
