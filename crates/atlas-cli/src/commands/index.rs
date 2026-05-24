@@ -329,13 +329,17 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
                     per_lang.record_file(ef.lang, 0, true, Some("db_insert_error"));
                 }
             }
-            // Log the batch error with file context for debugging
+            // Log the batch error with file context for debugging.
+            // FK constraint failures typically come from dataflow_edges
+            // referencing data_nodes not in the batch, or symbol_edges
+            // referencing unresolved symbols.
             let failed_paths: Vec<_> = chunk.iter()
                 .map(|ef| ef.rel_path.to_string_lossy().to_string())
                 .collect();
+            let is_fk = format!("{:#}", e).contains("FOREIGN KEY");
             tracing::warn!(
-                "Batch insert failed ({} files): {:#}. Failed paths: {:?}",
-                chunk.len(), e, failed_paths
+                "Batch insert failed ({} files, FK={}): {:#}. Failed paths: {:?}",
+                chunk.len(), is_fk, e, failed_paths
             );
         }
     }
@@ -599,15 +603,17 @@ fn extract_one_with_frontend(
         Err(e) => {
             let relative = path.strip_prefix(root).unwrap_or(path);
             let rel_str = relative.to_string_lossy().to_string();
-            pool.push_failure(
-                &rel_str,
-                FailureCategory::IoError,
-                format!("Failed to read {}: {}", path.display(), e),
-            );
+            let is_utf8_err = e.to_string().contains("UTF-8") || e.to_string().contains("utf8");
+            let msg = if is_utf8_err {
+                format!("Non-UTF-8 file skipped: {}", path.display())
+            } else {
+                format!("Failed to read {}: {}", path.display(), e)
+            };
+            pool.push_failure(&rel_str, FailureCategory::IoError, msg.clone());
             return Err(ExtractionError {
                 file_path: rel_str,
                 category: FailureCategory::IoError,
-                message: format!("Failed to read {}: {}", path.display(), e),
+                message: msg,
             });
         }
     };
