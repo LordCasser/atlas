@@ -224,17 +224,20 @@ impl LexicalBindingSpec for RustAdapter {
 
 impl DataflowSpec for RustAdapter {
     fn dataflow_builder_query(&self) -> &str {
-        ""
+        include_str!("../../queries/rust/dataflow_builder.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::unsupported("Rust does not support dataflow extraction")
+        FeatureSupport::supported_with_limitations(
+            0.55,
+            vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
+        )
     }
     fn normalize(
         &self,
-        _ctx: NormalizeCtx<'_>,
-        _capture: Capture<'_>,
+        ctx: NormalizeCtx<'_>,
+        capture: Capture<'_>,
     ) -> (Option<DataNode>, Option<DataFlowEdge>) {
-        (None, None)
+        normalize_rust_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
 }
 
