@@ -472,6 +472,40 @@ fn normalize_rust_dataflow_builder(capture_name: &str, node: tree_sitter::Node, 
             let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "return", Some(&text), None, range.start_byte);
             (Some(DataNode { id: node_id, file_id, function_id: None, kind: DataNodeKind::Return, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range }), None)
         },
+        "df.tail_return" => {
+            // Block tail expression (implicit return). Filter out non-expression
+            // nodes like let_declaration that may also match as the last child.
+            let kind = node.kind();
+            if matches!(kind, "let_declaration" | "expression_statement") {
+                return (None, None);
+            }
+            // Only create Return nodes for direct function/closure body tails.
+            // Inner block tails (if/match arm, block expression like
+            // `let y = { x }`) are expression values, not function returns.
+            let is_fn_tail = node
+                .parent()
+                .filter(|p| p.kind() == "block")
+                .and_then(|b| b.parent())
+                .map_or(false, |p| {
+                    matches!(p.kind(), "function_item" | "closure_expression")
+                });
+            let text = node_text(node, source).unwrap_or_default();
+            let data_kind = if is_fn_tail {
+                DataNodeKind::Return
+            } else {
+                DataNodeKind::Expr
+            };
+            let kind_tag = if is_fn_tail { "return" } else { "expr" };
+            let node_id = DataNodeId::generate(
+                &file_id, None::<&SymbolId>, kind_tag,
+                Some(&text), None, range.start_byte,
+            );
+            (Some(DataNode {
+                id: node_id, file_id, function_id: None,
+                kind: data_kind, binding_id: None, callsite_id: None,
+                name: Some(text), access_path: None, arg_index: None, range,
+            }), None)
+        },
         "df.call_target" => node_text(node, source).map(|name| {
             let access_path = name.clone();
             let callsite_id = find_call_expression_rust(node).map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));

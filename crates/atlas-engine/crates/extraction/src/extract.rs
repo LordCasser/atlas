@@ -225,7 +225,7 @@ pub fn extract_file(
             });
             DataFlowResult::default()
         });
-        let mut nodes = dataflow_result.nodes;
+        let nodes = dataflow_result.nodes;
         let edges = dataflow_result.edges;
 
         // 7c. Build use-def edges (only if dataflow succeeded)

@@ -14,9 +14,23 @@
       (simple_identifier) @df.parameter)))
 
 ;; --- Variable declarations: val x = expr ---
+;; The value expression is captured here so the AST-driven assign edge
+;; walker can create Assign edges (Expr → Local) for initializers.
 (variable_declaration
   (simple_identifier) @df.assign_target
   (_) @df.assign_value)
+
+(property_declaration
+  (variable_declaration
+    (simple_identifier) @df.assign_target))
+
+;; --- Assignment: x = expr ---
+;; tree-sitter-kotlin `assignment` has children.multiple (no named fields),
+;; so `(_) @df.assign_value` does not compile inside this node.
+;; The target is captured here; the value expression is found by the
+;; AST walker fallback in `walk_for_assign_edges`.
+(assignment
+  (simple_identifier) @df.assign_target)
 
 ;; --- Return value ---
 (jump_expression
@@ -32,15 +46,24 @@
     (_) @df.call_arg))
 
 ;; --- Field access: obj.field ---
+;; The first named child is the receiver (may be simple_identifier or another
+;; navigation_expression).  The trailing `.` anchor captures only the LAST
+;; simple_identifier (the actual field name), avoiding dual captures where
+;; both `obj` and `field` would be created as Field nodes.
 (navigation_expression
-  (simple_identifier) @df.field_name)
+  .
+  (_) @df.receiver)
+
+(navigation_expression
+  (simple_identifier) @df.field_name
+  .)
 
 ;; --- Literals ---
-(line_string_literal) @df.literal
 (integer_literal) @df.literal
 (real_literal) @df.literal
 (boolean_literal) @df.literal
 (null_literal) @df.literal
+(string_literal) @df.literal
 
 ;; --- Identifier uses ---
 (simple_identifier) @df.identifier_use

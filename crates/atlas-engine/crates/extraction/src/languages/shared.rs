@@ -144,6 +144,35 @@ pub fn node_name_range(node: tree_sitter::Node, name: &str, source: &str) -> Opt
 
 // ── Shared identifier-use filter ────────────────────────────────────────
 
+/// Check if an identifier node sits inside an assignment left-hand side.
+///
+/// Walks up from `node` to find an enclosing assignment-like parent
+/// and checks whether the node is contained within the `left` field.
+/// This prevents `x` in `x = y` from being captured as a VariableUse
+/// (it is already captured separately as `df.assign_target`).
+///
+/// Uses byte-range containment rather than strict field equality because
+/// the left-hand side may be a compound expression (e.g. `obj.field`).
+fn is_inside_assignment_left(node: tree_sitter::Node) -> bool {
+    let mut cur = node;
+    while let Some(parent) = cur.parent() {
+        let pk = parent.kind();
+        let is_assignment_like = pk.contains("assignment")
+            || pk == "assignment_expression"
+            || pk == "assignment_statement"
+            || pk == "assignment";
+        if is_assignment_like {
+            if let Some(left) = parent.child_by_field_name("left") {
+                return left.start_byte() <= node.start_byte()
+                    && left.end_byte() >= node.end_byte();
+            }
+            return false;
+        }
+        cur = parent;
+    }
+    false
+}
+
 /// Check if an identifier node is a declaration name or property name
 /// (should be excluded from VariableUse generation).
 ///
@@ -160,6 +189,13 @@ pub(crate) fn is_identifier_decl_or_property(
     };
     let parent_kind = parent.kind();
 
+    // Exclude identifiers that are assignment left-hand side targets
+    // (already captured as df.assign_target / assign_field_target).
+    // Handles compound LHS like `obj.field` via byte-range containment.
+    if is_inside_assignment_left(node) {
+        return true;
+    }
+
     // Common declaration kinds across all languages
     let is_common_decl = matches!(
         parent_kind,
@@ -175,11 +211,17 @@ pub(crate) fn is_identifier_decl_or_property(
         | "foreach_statement" | "enhanced_for_statement" | "with_item"
         | "except_clause" | "static_variable_declaration"
         | "field_declaration" | "public_field_definition"
+        // C/C++ specific: init_declarator wraps the declarator (identifier)
+        // in declarations like `int x = 1;`
+        | "init_declarator"
     ) || extra_decl_kinds.contains(&parent_kind);
 
     if is_common_decl {
-        // Check if this node is the "name" field of its parent
-        if parent.child_by_field_name("name").map_or(false, |n| n.id() == node.id()) {
+        // Check if this node is the "name" or "declarator" field of its parent.
+        // C/C++ uses "declarator" for identifiers in init_declarator nodes.
+        if parent.child_by_field_name("name").map_or(false, |n| n.id() == node.id())
+            || parent.child_by_field_name("declarator").map_or(false, |n| n.id() == node.id())
+        {
             return true;
         }
     }
@@ -207,86 +249,3 @@ pub(crate) fn is_identifier_decl_or_property(
     false
 }
 
-// ── Shared dataflow normalize ───────────────────────────────────────────
-// ... existing shared functions follow ...
-
-use types::*;
-
-/// Walk up the AST to find the enclosing call expression.
-pub(crate) fn find_call_expr<'a>(call_kind: &str, node: tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
-    let mut current = node;
-    while let Some(parent) = current.parent() {
-        if parent.kind() == call_kind { return Some(parent); }
-        current = parent;
-    }
-    None
-}
-
-/// Shared dataflow normalize for all common capture types.
-pub(crate) fn normalize_dataflow(
-    call_kind: &str,
-    field_kind: &str,
-    capture_name: &str,
-    node: tree_sitter::Node,
-    source: &str,
-    file_id: FileId,
-) -> (Option<DataNode>, Option<DataFlowEdge>) {
-    use types::ids::DataNodeId;
-    let range = super::node_range(node);
-    match capture_name {
-        "df.parameter" => super::node_text(node, source).map(|name| {
-            let nid = DataNodeId::generate(&file_id, None::<&SymbolId>, "parameter", Some(&name), Some(&name), range.start_byte);
-            (Some(DataNode::parameter(nid, file_id, None, None, &name, range)), None)
-        }).unwrap_or((None, None)),
-        "df.assign_target" => super::node_text(node, source).map(|name| {
-            let nid = DataNodeId::generate(&file_id, None::<&SymbolId>, "local", Some(&name), Some(&name), range.start_byte);
-            (Some(DataNode::local(nid, file_id, None, None, &name, range)), None)
-        }).unwrap_or((None, None)),
-        "df.assign_value" => {
-            let text = super::node_text(node, source).unwrap_or_default();
-            let csid = find_call_expr(call_kind, node).map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let nid = DataNodeId::generate(&file_id, None::<&SymbolId>, "expr", Some(&text), None, range.start_byte);
-            (Some(DataNode { id: nid, file_id, function_id: None, kind: DataNodeKind::Expr, binding_id: None, callsite_id: csid, name: Some(text), access_path: None, arg_index: None, range }), None)
-        }
-        "df.return_value" => {
-            let text = super::node_text(node, source).unwrap_or_default();
-            let nid = DataNodeId::generate(&file_id, None::<&SymbolId>, "return", Some(&text), None, range.start_byte);
-            (Some(DataNode { id: nid, file_id, function_id: None, kind: DataNodeKind::Return, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range }), None)
-        }
-        "df.call_target" => super::node_text(node, source).map(|name| {
-            let access_path = name.clone();
-            let csid = find_call_expr(call_kind, node).map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let nid = DataNodeId::generate(&file_id, None::<&SymbolId>, "call_target", Some(&name), Some(&access_path), range.start_byte);
-            (Some(DataNode::call_target(nid, file_id, None, csid, &name, &access_path, range)), None)
-        }).unwrap_or((None, None)),
-        "df.call_arg" => {
-            let text = super::node_text(node, source).unwrap_or_default();
-            let csid = find_call_expr(call_kind, node).map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let nid = DataNodeId::generate(&file_id, None::<&SymbolId>, "call_arg", Some(&text), None, range.start_byte);
-            (Some(DataNode::call_arg(nid, file_id, None, csid, Some(&text), range)), None)
-        }
-        "df.field_name" => super::node_text(node, source).map(|name| {
-            let access_path = node.parent().filter(|p| p.kind() == field_kind).and_then(|p| super::node_text(p, source)).unwrap_or_else(|| name.clone());
-            let nid = DataNodeId::generate(&file_id, None::<&SymbolId>, "field", Some(&name), Some(&access_path), range.start_byte);
-            (Some(DataNode::field(nid, file_id, None, &name, &access_path, range)), None)
-        }).unwrap_or((None, None)),
-        "df.assign_field_target" => {
-            let text = super::node_text(node, source).unwrap_or_default();
-            let nid = DataNodeId::generate(&file_id, None::<&SymbolId>, "field", Some(&text), Some(&text), range.start_byte);
-            (Some(DataNode::field(nid, file_id, None, &text, &text, range)), None)
-        }
-        "df.receiver" | "df.literal" => {
-            let text = super::node_text(node, source).unwrap_or_default();
-            let is_lit = capture_name == "df.literal";
-            let nid = DataNodeId::generate(&file_id, None::<&SymbolId>, if is_lit { "literal" } else { "receiver" }, Some(&text), None, range.start_byte);
-            (Some(DataNode { id: nid, file_id, function_id: None, kind: if is_lit { DataNodeKind::Literal } else { DataNodeKind::Receiver }, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range }), None)
-        }
-        "df.identifier_use" => {
-            let text = super::node_text(node, source).unwrap_or_default();
-            if text.is_empty() { return (None, None); }
-            let nid = DataNodeId::generate(&file_id, None::<&SymbolId>, "identifier_use", Some(&text), Some(&text), range.start_byte);
-            (Some(DataNode { id: nid, file_id, function_id: None, kind: DataNodeKind::VariableUse, binding_id: None, callsite_id: None, name: Some(text.clone()), access_path: Some(text), arg_index: None, range }), None)
-        }
-        _ => (None, None),
-    }
-}

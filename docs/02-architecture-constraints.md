@@ -82,7 +82,7 @@ tree-sitter parser
 - 单文件失败必须结构化记录，不中断项目索引。
 - ArkTS MVP 复用 TypeScript grammar，但 language 必须是 `arkts`。
 - C/C++ 是 best-effort，不承诺完整 preprocessing、模板、重载。
-- Go/Rust/C#/PHP/Ruby/Kotlin 已作为 post-MVP Symbolic frontends 接入 `all-languages`，不得宣称 lexical/dataflow/CFG/trace 变量来源能力。
+- Go/Rust/C#/PHP/Ruby/Kotlin 已从 post-MVP Symbolic frontends 升级为 experimental DataflowBasic frontends，接入 `all-languages`。各语言均具备基础 dataflow 抽取（参数、赋值、调用、字段访问、返回），并有对应的 e2e smoke 测试。完整 path‑level 验收、CFG 和 trace 变量来源能力仍待按语言逐一补齐，详见各语言的 capability profile `limitations`。宣称能力时必须附带实际 confidence_floor 和已知限制列表。
 - Bash 是显式 opt-in experimental frontend，不参与默认或 `all-languages` 验收。
 - Cangjie 不属于 MVP，必须显式启用 `cangjie` feature；启用前不参与默认发现、默认编译或 `all-languages` 验收。
 

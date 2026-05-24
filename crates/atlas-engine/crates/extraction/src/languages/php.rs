@@ -456,7 +456,10 @@ fn normalize_php_dataflow_builder(capture_name: &str, node: tree_sitter::Node, s
             (Some(DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range)), None)
         },
         "df.field_name" => node_text(node, source).map(|name| {
-            let access_path = node.parent().filter(|p| p.kind() == "member_access_expression").and_then(|p| node_text(p, source)).unwrap_or_else(|| name.clone());
+            let access_path = node.parent()
+                .filter(|p| p.kind() == "member_access_expression" || p.kind() == "subscript_expression")
+                .and_then(|p| node_text(p, source))
+                .unwrap_or_else(|| name.clone());
             let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "field", Some(&name), Some(&access_path), range.start_byte);
             (Some(DataNode::field(node_id, file_id, None, &name, &access_path, range)), None)
         }).unwrap_or((None, None)),
@@ -490,11 +493,24 @@ fn normalize_php_dataflow_builder(capture_name: &str, node: tree_sitter::Node, s
             }).unwrap_or((None, None))
         },
         "df.identifier_use" => {
-            if crate::languages::shared::is_identifier_decl_or_property(node, &["namespace_use_clause", "use_declaration"]) {
+            // Filter out declaration contexts and superglobals
+            if crate::languages::shared::is_identifier_decl_or_property(
+                node,
+                &["namespace_use_clause", "use_declaration"],
+            ) {
                 return (None, None);
             }
+            // Skip left-hand side of assignment (already captured as df.assign_target)
+            if let Some(parent) = node.parent() {
+                if parent.kind() == "assignment_expression" {
+                    if parent.child_by_field_name("left").map_or(false, |n| n.id() == node.id()) {
+                        return (None, None);
+                    }
+                }
+            }
+            // Skip superglobals (already captured as df.superglobal)
             let text = node_text(node, source).unwrap_or_default();
-            if text.is_empty() {
+            if text.is_empty() || text.starts_with("$_") {
                 return (None, None);
             }
             let node_id = DataNodeId::generate(

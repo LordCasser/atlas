@@ -644,7 +644,10 @@ fn normalize_java_dataflow_builder(
             (Some(dn), None)
         }
         "df.identifier_use" => {
-            if crate::languages::shared::is_identifier_decl_or_property(node, &["object_creation_expression", "type_identifier"]) {
+            if crate::languages::shared::is_identifier_decl_or_property(
+                node,
+                &["object_creation_expression", "type_identifier", "method_invocation"],
+            ) {
                 return (None, None);
             }
             let text = node_text(node, source).unwrap_or_default();

@@ -621,7 +621,7 @@ pub fn typescript_frontend() -> LanguageFrontend {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Walk up the AST to find the enclosing `call_expression`, if any.
+/// Walk up the AST to find the enclosing `call_expression` or `new_expression`, if any.
 ///
 /// Used to group `CallArg` and `CallTarget` nodes that belong to the same
 /// call site — this enables correct ArgToParam edge creation even in the
@@ -630,11 +630,11 @@ fn find_call_expression(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
     // A call expression can be captured directly (e.g., @df.assign_value
     // on a call_expression) or as a child (e.g., @df.call_arg).
     let mut current = node;
-    if current.kind() == "call_expression" {
+    if current.kind() == "call_expression" || current.kind() == "new_expression" {
         return Some(current);
     }
     while let Some(parent) = current.parent() {
-        if parent.kind() == "call_expression" {
+        if parent.kind() == "call_expression" || parent.kind() == "new_expression" {
             return Some(parent);
         }
         current = parent;

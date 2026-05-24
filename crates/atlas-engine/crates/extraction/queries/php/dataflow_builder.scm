@@ -45,7 +45,7 @@
   .
   (variable_name) @df.receiver
   .
-  (_) @df.index)
+  (_) @df.field_name)
 
 ;; --- Array assignment: $arr[$key] = value ---
 (assignment_expression
@@ -55,3 +55,9 @@
 ;; --- Superglobal access ($_GET, $_POST, etc.) ---
 (variable_name) @df.superglobal
 (#match? @df.superglobal "^\\$_")
+
+;; --- Variable uses (reading a variable value) ---
+;; Captures all variable_name nodes not already handled by specific patterns
+;; above (parameter, assign_target, superglobal). The normalize function filters
+;; out declaration contexts (left side of =, parameter declarations, etc.).
+(variable_name) @df.identifier_use

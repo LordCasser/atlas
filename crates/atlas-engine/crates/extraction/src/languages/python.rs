@@ -329,7 +329,7 @@ fn normalize_py_dataflow_builder(
                 })
                 .unwrap_or((None, None))
         }
-        "df.literal" | "df.receiver" => {
+        "df.literal" => {
             let text = node_text(node, source).unwrap_or_default();
             let node_id = DataNodeId::generate(
                 &file_id,
@@ -344,6 +344,30 @@ fn normalize_py_dataflow_builder(
                 file_id,
                 function_id: None,
                 kind: types::enums::DataNodeKind::Literal,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text),
+                access_path: None,
+                arg_index: None,
+                range,
+            };
+            (Some(dn), None)
+        }
+        "df.receiver" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&types::ids::SymbolId>,
+                "receiver",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: types::enums::DataNodeKind::Receiver,
                 binding_id: None,
                 callsite_id: None,
                 name: Some(text),
@@ -501,7 +525,7 @@ impl DataflowSpec for PythonAdapter {
 /// This is the canonical Python frontend factory.
 pub(crate) fn python_frontend() -> LanguageFrontend {
     use crate::callsite_spec::create_extractor;
-    use crate::frontend::{FrontendParts, UnsupportedSpec};
+    use crate::frontend::FrontendParts;
     use types::capability::LanguageCapabilityProfile;
 
     LanguageFrontend::from_parts(FrontendParts {
@@ -511,9 +535,7 @@ pub(crate) fn python_frontend() -> LanguageFrontend {
         imports: Box::new(PythonAdapter),
         scopes: Box::new(PythonAdapter),
         callsites: create_extractor(Language::Python),
-        lexical: Box::new(UnsupportedSpec::new(
-            "Python does not support lexical binding extraction",
-        )),
+        lexical: Box::new(PythonAdapter),
         dataflow: Box::new(PythonAdapter),
         capability: LanguageCapabilityProfile::for_language(Language::Python),
     })
@@ -722,6 +744,15 @@ fn py_binding_kind(capture_name: &str) -> Option<BindingKind> {
     }
 }
 
+/// Normalize a Python lexical capture into a [`BindingDef`].
+///
+/// **Known limitation**: every assignment LHS is treated as a new binding
+/// definition.  For repeated assignments to the same name in one scope
+/// (`x = a; x = b`), the second assignment creates a separate BindingDef
+/// rather than being recognised as a rebind of the existing variable.  This
+/// means scope-aware use-def may over‑approximate for dynamically‑typed
+/// reassignment chains.  Fixing this requires per‑name deduplication in the
+/// lexical binder.
 fn normalize_py_lexical(
     capture_name: &str,
     node: tree_sitter::Node,

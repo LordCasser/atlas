@@ -2225,6 +2225,11 @@ fn vfy_ts_field_assignment_produces_field_store() {
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Field), "should have Field node for this.f");
+    // Verify FieldStore edge: field assignment should produce FieldStore, not just Assign
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let has_fieldstore = edges.iter().any(|e| e.kind == DataFlowKind::FieldStore);
+    assert!(has_fieldstore, "TS field assignment should produce FieldStore, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
 }
 
 /// TS: return value trace reaches parameter through variable.
@@ -2260,6 +2265,12 @@ fn vfy_java_method_call_produces_call_nodes() {
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "call target helper");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallArg), "call arg x or 42");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
+    // Verify dataflow edges
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    assert!(!edges.is_empty(), "Java method call should produce dataflow edges");
+    let has_argtocall = edges.iter().any(|e| e.kind == DataFlowKind::ArgToCall);
+    assert!(has_argtocall, "Java should produce ArgToCall edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
 }
 
 /// Java: field access produces Field DataNode.
@@ -2276,6 +2287,11 @@ fn vfy_java_field_access_produces_field_node() {
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Field), "field node");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local o");
+    // Verify dataflow edges (FieldStore expected for o.field = 1)
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let has_fieldstore = edges.iter().any(|e| e.kind == DataFlowKind::FieldStore);
+    assert!(has_fieldstore, "Java field assign should produce FieldStore edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
 }
 
 /// Go: short variable declaration produces Local + edges.
@@ -2293,6 +2309,43 @@ fn vfy_go_short_var_produces_local_and_edges() {
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local y");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return");
+    // Verify dataflow edges (not just DataNodes)
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    assert!(!edges.is_empty(), "Go should produce dataflow edges");
+    let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
+    let has_return = edges.iter().any(|e| e.kind == DataFlowKind::ReturnValue);
+    assert!(has_assign, "Go short var decl should produce Assign edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(has_return, "Go return should produce ReturnValue edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+}
+
+/// Go: field access produces Field data node with FieldLoad/FieldStore edges.
+///
+/// NOTE: currently verifies FieldLoad (not FieldStore) because the query
+/// captures the `expression_list` container rather than individual value
+/// expressions, creating a range mismatch with the AST‑driven FieldStore
+/// walker.  FieldLoad at minimum proves field‑access wiring.
+#[cfg(feature = "go")]
+#[test]
+fn vfy_go_field_access_produces_field_edges() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("field.go");
+    let source = "package p\ntype S struct { F int }\nfunc f(s *S, x int) {\n\ts.F = x\n}\n";
+    let frontend = create_frontend(Language::Go).unwrap();
+    let facts = extract_file(&frontend, file_id, std::path::Path::new("field.go"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param s or x");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Field), "field node for s.F");
+    // Verify FieldStore edge — the query fix now captures selector_expression
+    // at the correct range for AST-driven FieldStore edge creation.
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let has_fieldstore = edges.iter().any(|e| e.kind == DataFlowKind::FieldStore);
+    assert!(has_fieldstore,
+        "Go field assignment should produce FieldStore, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>());
 }
 
 /// Python: call args and return produce correct DataNodes.
@@ -2311,6 +2364,13 @@ fn vfy_python_call_and_return_data_nodes() {
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "calltarget sanitize");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallArg), "callarg x or 42");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return y");
+    // Verify dataflow edges
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let has_argtocall = edges.iter().any(|e| e.kind == DataFlowKind::ArgToCall);
+    let has_return = edges.iter().any(|e| e.kind == DataFlowKind::ReturnValue);
+    assert!(has_argtocall, "Python should produce ArgToCall edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(has_return, "Python should produce ReturnValue edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
 }
 
 /// C: pointer field access dataflow.
@@ -2328,9 +2388,17 @@ fn vfy_c_pointer_field_access_dataflow() {
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param p");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local y");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return");
-    // May or may not have Field/Receiver depending on grammar
-    let has_field = nodes.iter().any(|n| n.kind == DataNodeKind::Field);
-    let _ = has_field;
+    // Verify dataflow edges: C pointer access should produce at least Assign edges.
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    assert!(!edges.is_empty(), "C pointer access should produce dataflow edges");
+    let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
+    assert!(has_assign, "C should produce Assign edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    // When Field nodes exist, also assert FieldLoad
+    if nodes.iter().any(|n| n.kind == DataNodeKind::Field) {
+        let has_fieldload = edges.iter().any(|e| e.kind == DataFlowKind::FieldLoad);
+        assert!(has_fieldload, "C with Field node should produce FieldLoad edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    }
 }
 
 /// Rust: let declaration dataflow.
@@ -2348,6 +2416,11 @@ fn vfy_rust_let_declaration_dataflow() {
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local y");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse x");
+    // Verify dataflow edges (Assign from x+1 to y)
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
+    assert!(has_assign, "Rust let declaration should produce Assign edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
 }
 
 /// C++: reference binding + constructor call dataflow.
@@ -2364,6 +2437,12 @@ fn vfy_cpp_reference_and_constructor_dataflow() {
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local x or ref or p");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse");
+    // Verify dataflow edges (Assign from 1 to x etc.)
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    assert!(!edges.is_empty(), "C++ should produce dataflow edges");
+    let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
+    assert!(has_assign, "C++ should produce Assign edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
 }
 
 /// C#: local declaration + method invocation dataflow.
@@ -2381,17 +2460,62 @@ fn vfy_csharp_local_decl_and_method_invocation() {
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local x");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "calltarget Helper");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse");
+    // Verify dataflow edges
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    assert!(!edges.is_empty(), "C# should produce dataflow edges");
+    let has_argtocall = edges.iter().any(|e| e.kind == DataFlowKind::ArgToCall);
+    assert!(has_argtocall, "C# should produce ArgToCall edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
 }
 
-/// Kotlin: dataflow extraction (known limitation: query grammar compatibility).
-/// Note: Kotlin dataflow query has tree-sitter-kotlin grammar compatibility issues;
-/// this test validates that the frontend can be created and the query is non-empty.
+/// C#: field assignment produces FieldStore.
+#[cfg(feature = "csharp")]
+#[test]
+fn vfy_csharp_field_assignment_produces_field_store() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("field.cs");
+    let source = "class C {\n    int F;\n    void M() {\n        int x = 1;\n        this.F = x;\n        Helper(x, 42);\n    }\n}";
+    let frontend = create_frontend(Language::CSharp).unwrap();
+    let facts = extract_file(&frontend, file_id, std::path::Path::new("field.cs"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Field), "field node for this.F");
+    // Verify FieldStore edge: this.F = x should produce FieldStore
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let has_fieldstore = edges.iter().any(|e| e.kind == DataFlowKind::FieldStore);
+    assert!(has_fieldstore, "C# field assign should produce FieldStore, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+}
+
+/// Kotlin: dataflow extraction with real source.
 #[cfg(feature = "kotlin")]
 #[test]
 fn vfy_kotlin_var_decl_and_function_call() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("Data.kt");
+    let source = "fun foo(x: Int): Int {\n    val y = bar(x, 42)\n    return y\n}\n";
     let frontend = create_frontend(Language::Kotlin).unwrap();
-    let query_src = frontend.dataflow.dataflow_builder_query();
-    assert!(!query_src.is_empty(), "Kotlin dataflow query should not be empty");
+    let facts = extract_file(&frontend, file_id, std::path::Path::new("Data.kt"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "calltarget bar");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallArg), "callarg x or 42");
+    // Verify dataflow edges
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    assert!(!edges.is_empty(), "Kotlin should produce dataflow edges (Assign from val y = bar(...) and ArgToCall from bar(x, 42))");
+    let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
+    let has_argtocall = edges.iter().any(|e| e.kind == DataFlowKind::ArgToCall);
+    assert!(has_assign || has_argtocall,
+        "Kotlin should produce Assign or ArgToCall edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    for e in &edges {
+        assert!(e.confidence > 0.0f64, "edge confidence should be positive");
+        assert!(!e.id.as_bytes().is_empty(), "edge id should be non-empty");
+    }
 }
 
 /// PHP: superglobal + function call dataflow.
@@ -2407,11 +2531,22 @@ fn vfy_php_superglobal_and_function_call() {
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param req");
-    // May or may not have CallTarget/Receiver/VariableUse depending on grammar
-    let has_call_target = nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget);
-    let has_receiver = nodes.iter().any(|n| n.kind == DataNodeKind::Receiver);
-    let has_varuse = nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse);
-    let _ = (has_call_target, has_receiver, has_varuse);
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "calltarget sanitize");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Global), "global _GET");
+    // Superglobal array access should produce Field node for $_GET['name']
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Field), "field node for $_GET['name']");
+    // Verify dataflow edges
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    assert!(!edges.is_empty(), "PHP should produce dataflow edges");
+    let has_fieldload = edges.iter().any(|e| e.kind == DataFlowKind::FieldLoad);
+    assert!(has_fieldload, "PHP should produce FieldLoad edge (Global → Field), got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
+    let has_argtocall = edges.iter().any(|e| e.kind == DataFlowKind::ArgToCall);
+    assert!(has_assign || has_argtocall,
+        "PHP should produce Assign or ArgToCall edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>());
 }
 
 /// Ruby: hash access + implicit return dataflow.
@@ -2429,6 +2564,15 @@ fn vfy_ruby_hash_access_and_return() {
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param params");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local name or clean");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "implicit return clean");
+    // Verify dataflow edges
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
+    let has_argtocall = edges.iter().any(|e| e.kind == DataFlowKind::ArgToCall);
+    let has_return = edges.iter().any(|e| e.kind == DataFlowKind::ReturnValue);
+    assert!(has_assign, "Ruby should produce Assign edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(has_return || has_argtocall, "Ruby should produce ReturnValue or ArgToCall edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
 }
 
 /// ArkTS: basic TS delegate extraction.
@@ -2446,4 +2590,403 @@ fn vfy_arkts_basic_extraction() {
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param name");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return");
     assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse name");
+    // Verify dataflow edges
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    assert!(!edges.is_empty(), "ArkTS should produce dataflow edges");
+    let has_return = edges.iter().any(|e| e.kind == DataFlowKind::ReturnValue);
+    assert!(has_return, "ArkTS return should produce ReturnValue edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+}
+
+// ────────────────────────────────────────────────────────────────
+// Canonical path-level trace verification (cross-language baseline)
+// ────────────────────────────────────────────────────────────────
+
+/// TypeScript: canonical provenance path — param → field → local → call arg → call target → return.
+///
+/// Uses `TraceEngine::trace_variable` to verify that a complete dataflow
+/// chain is recoverable, not just individual edge presence.
+#[cfg(feature = "typescript")]
+#[test]
+fn vfy_ts_canonical_provenance_path_field_to_return() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "provenance.ts",
+        r#"function helper(input: string): string {
+    return input.trim();
+}
+function process(req: { body: { name: string } }): string {
+    const name = req.body.name;
+    const clean = helper(name);
+    return clean;
+}
+"#,
+    )];
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("provenance.ts");
+
+    // Find the `clean` data node (the final local before return)
+    let nodes = store.find_data_nodes_by_file(&file_id).unwrap();
+    let clean_node = nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("clean") && n.kind == DataNodeKind::Local)
+        .expect("data node 'clean' not found");
+
+    let (line, col) = mid_point(
+        clean_node.range.start_line,
+        clean_node.range.start_column,
+        clean_node.range.end_line,
+        clean_node.range.end_column,
+    );
+
+    let engine = TraceEngine::new(store);
+    let resp = engine.trace_variable(&file_id, line, col, 20);
+
+    assert!(resp.ok, "trace_variable should succeed");
+    let path = resp
+        .result
+        .as_ref()
+        .expect("trace_variable should produce a result for TS");
+
+    // The path should have meaningful steps covering the full provenance chain:
+    //   req.body.name (Field) --FieldLoad--> ???
+    //   --> name (Local/Assign)
+    //   --> helper (CallTarget)
+    //   --> clean (Local) --> Return
+    assert!(
+        path.steps.len() >= 3,
+        "canonical path should have at least 3 steps, got {}: {:?}",
+        path.steps.len(),
+        path.steps.iter().map(|s| s.edge_kind).collect::<Vec<_>>()
+    );
+
+    let kinds: Vec<DataFlowKind> = path.steps.iter().map(|s| s.edge_kind).collect();
+
+    // Must have FieldLoad for req.body.name access
+    assert!(
+        kinds.contains(&DataFlowKind::FieldLoad),
+        "canonical path should contain FieldLoad for field access, got: {:?}", kinds
+    );
+
+    // Must have call edge (ArgToCall intra-proc or ArgToParam inter-proc)
+    // for helper(name) call bridging
+    assert!(
+        kinds.contains(&DataFlowKind::ArgToCall) || kinds.contains(&DataFlowKind::ArgToParam),
+        "canonical path should contain ArgToCall or ArgToParam for function call, got: {:?}", kinds
+    );
+
+    // Must have Assign for local variable assignments
+    assert!(
+        kinds.contains(&DataFlowKind::Assign),
+        "canonical path should contain Assign for local assignments, got: {:?}", kinds
+    );
+
+    // Every step should have evidence
+    for step in &path.steps {
+        assert!(
+            step.evidence.is_some(),
+            "step {:?} should have evidence", step.edge_kind
+        );
+    }
+
+    assert!(path.confidence > 0.0, "path should have positive confidence");
+}
+
+/// Python: canonical provenance path — param → field → local → call → return.
+///
+/// Verifies that the full dataflow chain is recoverable through TraceEngine.
+/// The trace from the final `clean` local back through the call and field access
+/// exercises the complete infrastructure.
+#[cfg(feature = "python")]
+#[test]
+fn vfy_python_canonical_provenance_path_field_to_return() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "provenance.py",
+        r#"def helper(input):
+    return input.strip()
+
+def process(req):
+    name = req.body.name
+    clean = helper(name)
+    return clean
+"#,
+    )];
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("provenance.py");
+
+    // Verify that Field data nodes exist (field access infrastructure is wired)
+    let nodes = store.find_data_nodes_by_file(&file_id).unwrap();
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Field),
+        "Python should produce Field data nodes for req.body.name"
+    );
+
+    // Find the `clean` data node (final local before return)
+    let clean_node = nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("clean") && n.kind == DataNodeKind::Local)
+        .expect("data node 'clean' not found");
+
+    let (line, col) = mid_point(
+        clean_node.range.start_line,
+        clean_node.range.start_column,
+        clean_node.range.end_line,
+        clean_node.range.end_column,
+    );
+
+    let engine = TraceEngine::new(store);
+    let resp = engine.trace_variable(&file_id, line, col, 20);
+
+    assert!(resp.ok, "trace_variable should succeed");
+    let path = resp
+        .result
+        .as_ref()
+        .expect("trace_variable should produce a result for Python");
+
+    let kinds: Vec<DataFlowKind> = path.steps.iter().map(|s| s.edge_kind).collect();
+
+    assert!(
+        path.steps.len() >= 2,
+        "Python canonical path should have at least 2 steps, got {}: {:?}",
+        path.steps.len(), kinds
+    );
+
+    // Must have Assign for local variable assignments
+    assert!(
+        kinds.contains(&DataFlowKind::Assign),
+        "Python canonical path should contain Assign, got: {:?}", kinds
+    );
+
+    // FieldLoad may not appear in the backward trace if the trace traverses
+    // through use-def edges instead.  Field node presence (checked above) is
+    // the primary verification that field-access extraction works.
+    let has_fieldload = kinds.contains(&DataFlowKind::FieldLoad);
+    let has_read = kinds.contains(&DataFlowKind::Read);
+    assert!(
+        has_fieldload || has_read,
+        "Python canonical path should contain FieldLoad or Read, got: {:?}", kinds
+    );
+
+    for step in &path.steps {
+        assert!(step.evidence.is_some(), "step {:?} should have evidence", step.edge_kind);
+    }
+
+    assert!(path.confidence > 0.0, "path should have positive confidence");
+}
+
+/// Java: canonical provenance path — param → field → local → call → return.
+///
+/// Verifies chained field access (`req.body.name`) and inter-procedural
+/// call bridging (`helper(name)`) on a Java fixture with callee in the same file.
+#[cfg(feature = "java")]
+#[test]
+fn vfy_java_canonical_provenance_path_field_to_return() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "Provenance.java",
+        r#"class Provenance {
+    static String helper(String input) {
+        return input.trim();
+    }
+    String process(Request req) {
+        String name = req.body.name;
+        String clean = helper(name);
+        return clean;
+    }
+}
+class Request {
+    Body body;
+}
+class Body {
+    String name;
+}
+"#,
+    )];
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("Provenance.java");
+
+    // Find the `clean` data node (final local before return)
+    let nodes = store.find_data_nodes_by_file(&file_id).unwrap();
+    let clean_node = nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("clean") && n.kind == DataNodeKind::Local)
+        .expect("data node 'clean' not found");
+
+    let (line, col) = mid_point(
+        clean_node.range.start_line,
+        clean_node.range.start_column,
+        clean_node.range.end_line,
+        clean_node.range.end_column,
+    );
+
+    let engine = TraceEngine::new(store);
+    let resp = engine.trace_variable(&file_id, line, col, 20);
+
+    assert!(resp.ok, "trace_variable should succeed");
+    let path = resp
+        .result
+        .as_ref()
+        .expect("trace_variable should produce a result for Java");
+
+    let kinds: Vec<DataFlowKind> = path.steps.iter().map(|s| s.edge_kind).collect();
+
+    assert!(
+        path.steps.len() >= 2,
+        "Java canonical path should have at least 2 steps, got {}: {:?}",
+        path.steps.len(), kinds
+    );
+
+    // Must have FieldLoad for req.body.name chain
+    assert!(
+        kinds.contains(&DataFlowKind::FieldLoad),
+        "Java canonical path should contain FieldLoad, got: {:?}", kinds
+    );
+
+    // Must have Assign for local variable assignments
+    assert!(
+        kinds.contains(&DataFlowKind::Assign),
+        "Java canonical path should contain Assign, got: {:?}", kinds
+    );
+
+    for step in &path.steps {
+        assert!(step.evidence.is_some(), "step {:?} should have evidence", step.edge_kind);
+    }
+
+    assert!(path.confidence > 0.0, "path should have positive confidence");
+}
+
+// ────────────────────────────────────────────────────────────────
+// Additional canonical traces for C#, Go, Rust
+// ────────────────────────────────────────────────────────────────
+
+/// C#: canonical provenance path — param → local → call → return.
+///
+/// Uses direct store queries rather than TraceEngine because C# inter-procedural
+/// trace bridging has zero steps from the final local — the call graph reference
+/// resolution may not bridge across classes in the same file.
+#[cfg(feature = "csharp")]
+#[test]
+fn vfy_csharp_canonical_provenance_path_call_to_return() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("Provenance.cs");
+    let source = r#"class Processor {
+    static string Helper(string input) { return input.Trim(); }
+    string Process(string name) { string clean = Helper(name); return clean; }
+}
+"#;
+    let frontend = create_frontend(Language::CSharp).unwrap();
+    let facts = extract_file(&frontend, file_id, std::path::Path::new("Provenance.cs"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "C# should have Parameter (name)");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "C# should have Local (clean)");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "C# should have CallTarget (Helper)");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallArg), "C# should have CallArg");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "C# should have Return");
+
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    assert!(!edges.is_empty(), "C# should produce dataflow edges");
+    let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
+    let has_argtocall = edges.iter().any(|e| e.kind == DataFlowKind::ArgToCall);
+    assert!(has_assign || has_argtocall,
+        "C# should produce Assign or ArgToCall edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+}
+
+/// Go: canonical provenance path — param → local → call → return.
+#[cfg(feature = "go")]
+#[test]
+fn vfy_go_canonical_provenance_path_call_to_return() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "provenance.go",
+        r#"package p
+
+func helper(input string) string {
+    return input
+}
+
+func process(name string) string {
+    clean := helper(name)
+    return clean
+}
+"#,
+    )];
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("provenance.go");
+
+    let nodes = store.find_data_nodes_by_file(&file_id).unwrap();
+    let clean_node = nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("clean") && n.kind == DataNodeKind::Local)
+        .expect("data node 'clean' not found");
+    let (line, col) = mid_point(
+        clean_node.range.start_line, clean_node.range.start_column,
+        clean_node.range.end_line, clean_node.range.end_column,
+    );
+
+    let engine = TraceEngine::new(store);
+    let resp = engine.trace_variable(&file_id, line, col, 20);
+    assert!(resp.ok, "trace_variable should succeed");
+    let path = resp.result.as_ref().expect("Go should produce a result");
+    let kinds: Vec<DataFlowKind> = path.steps.iter().map(|s| s.edge_kind).collect();
+    assert!(path.steps.len() >= 1, "Go path should have steps, got: {:?}", kinds);
+    assert!(kinds.iter().any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ArgToCall | DataFlowKind::ArgToParam)),
+        "Go path should have Assign/ArgToCall/ArgToParam, got: {:?}", kinds);
+    for step in &path.steps {
+        assert!(step.evidence.is_some(), "step {:?} should have evidence", step.edge_kind);
+    }
+    assert!(path.confidence > 0.0);
+}
+
+/// Rust: canonical provenance path — param → local → tail return.
+#[cfg(feature = "rust")]
+#[test]
+fn vfy_rust_canonical_provenance_path_let_to_return() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "provenance.rs",
+        r#"fn helper(input: &str) -> String {
+    input.to_string()
+}
+
+fn process(name: &str) -> String {
+    let clean = helper(name);
+    clean
+}
+"#,
+    )];
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("provenance.rs");
+
+    let nodes = store.find_data_nodes_by_file(&file_id).unwrap();
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "Rust should have Parameter");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "Rust should have Local");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "Rust should have Return");
+
+    let clean_node = nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("clean") && n.kind == DataNodeKind::Local)
+        .expect("data node 'clean' not found");
+    let (line, col) = mid_point(
+        clean_node.range.start_line, clean_node.range.start_column,
+        clean_node.range.end_line, clean_node.range.end_column,
+    );
+
+    let engine = TraceEngine::new(store);
+    let resp = engine.trace_variable(&file_id, line, col, 20);
+    assert!(resp.ok, "trace_variable should succeed");
+    let path = resp.result.as_ref().expect("Rust should produce a result");
+    let kinds: Vec<DataFlowKind> = path.steps.iter().map(|s| s.edge_kind).collect();
+    assert!(path.steps.len() >= 1, "Rust path should have steps, got: {:?}", kinds);
+    assert!(kinds.iter().any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ArgToCall | DataFlowKind::ArgToParam)),
+        "Rust path should have Assign/ArgToCall/ArgToParam, got: {:?}", kinds);
+    for step in &path.steps {
+        assert!(step.evidence.is_some(), "step {:?} should have evidence", step.edge_kind);
+    }
+    assert!(path.confidence > 0.0);
 }

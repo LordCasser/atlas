@@ -12,7 +12,7 @@ use types::{FileId, Language};
 use crate::frontend::NormalizeCtx;
 
 /// Per-file extraction context shared by every domain-level extraction helper.
-pub(crate) struct ExtractionCtx<'a> {
+pub struct ExtractionCtx<'a> {
     pub ts_lang: &'a tree_sitter::Language,
     pub root: tree_sitter::Node<'a>,
     pub source: &'a str,

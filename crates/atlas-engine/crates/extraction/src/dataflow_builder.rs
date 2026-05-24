@@ -38,7 +38,7 @@
 //! - Each DataNode has exactly one function_id (or None for top-level).
 //! - Per-function dataflow only (interprocedural deferred to analysis layer).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use types::CallsiteId;
 use types::ScopeDef;
@@ -54,7 +54,7 @@ use crate::extraction_ctx::ExtractionCtx;
 /// Key for mapping tree-sitter capture positions to DataNodeIds.
 /// (start_byte, end_byte, DataNodeKind) uniquely identifies a data node
 /// within a file.
-type NodePosKey = (u32, u32, types::enums::DataNodeKind);
+pub(crate) type NodePosKey = (u32, u32, types::enums::DataNodeKind);
 
 /// Result of dataflow builder extraction.
 #[derive(Debug, Clone, Default)]
@@ -127,6 +127,27 @@ impl DataFlowBuilder {
             }
         }
 
+        // ── Deduplicate DataNodes ─────────────────────────────────────────
+        // When multiple captures produce nodes at the same (range, kind),
+        // node_pos_map tracks the last-write-wins DataNodeId.  Remove any
+        // pushed node whose ID does not match the winning entry so that
+        // duplicate nodes don't inflate O(N²) edge building.
+        if nodes.len() > 1 {
+            let keep_ids: HashSet<DataNodeId> = node_pos_map.values().copied().collect();
+            let before = nodes.len();
+            nodes.retain(|n| keep_ids.contains(&n.id));
+            let after = nodes.len();
+            if before != after {
+                tracing::debug!(
+                    file_id = ?ctx.file_id,
+                    before,
+                    after,
+                    removed = before - after,
+                    "DataNode dedup",
+                );
+            }
+        }
+
     // Post-process: resolve bindings to nodes
     resolve_bindings_to_nodes(&mut nodes, bindings, scopes);
 
@@ -145,7 +166,7 @@ impl DataFlowBuilder {
     );
 
     // Language-specific edge building (e.g., destructuring, tuple unpacking)
-    dataflow_spec.build_language_edges(&nodes, bindings, scopes, &mut edges)?;
+    dataflow_spec.build_language_edges(ctx, &node_pos_map, &nodes, bindings, scopes, &mut edges)?;
 
         Ok(DataFlowResult { nodes, edges })
     }
@@ -202,6 +223,14 @@ fn resolve_bindings_to_nodes(nodes: &mut [DataNode], bindings: &[BindingDef], sc
     // a binding whose range contains the node is preferred over one
     // whose range precedes it.
     for node in nodes.iter_mut() {
+        // Field nodes represent property access (e.g. `obj.prop` has
+        // name == "prop"). The property name is NOT a variable binding,
+        // so skip binding resolution for Field nodes to avoid falsely
+        // linking a FieldLoad edge to a same-named local variable.
+        if node.kind == DataNodeKind::Field {
+            continue;
+        }
+
         let name = match &node.name {
             Some(n) => n,
             None => continue,
@@ -307,7 +336,7 @@ fn closest_binding_by_range<'a>(
 /// then gap‑fill).
 fn walk_for_assign_edges(
     node: tree_sitter::Node,
-    _source: &str,
+    source: &str,
     pos_map: &HashMap<NodePosKey, DataNodeId>,
     _all_nodes: &[DataNode],
     edges: &mut Vec<DataFlowEdge>,
@@ -315,10 +344,14 @@ fn walk_for_assign_edges(
     let kind = node.kind();
 
     // variable_declarator: name (Local) ← value (Expr)
+    // C# uses equals_value_clause instead of "value" for the initializer.
+    // Fall back to equals_value_clause when "value" field is absent.
     if kind == "variable_declarator" {
+        let value_node = node.child_by_field_name("value")
+            .or_else(|| node.child_by_field_name("equals_value_clause"));
         if let (Some(name_node), Some(value_node)) = (
             node.child_by_field_name("name"),
-            node.child_by_field_name("value"),
+            value_node,
         ) {
             let name_kind = name_node.kind();
             if name_kind == "object_pattern" || name_kind == "array_pattern"
@@ -388,15 +421,70 @@ fn walk_for_assign_edges(
         ) {
             let left_start = left_node.start_byte() as u32;
             let left_end = left_node.end_byte() as u32;
-            let (target_id, edge_kind) = if let Some(&id) = pos_map.get(&(left_start, left_end, DataNodeKind::Field)) {
-                (id, DataFlowKind::FieldStore)
+            // Try simple (non‑destructuring) target first
+            if let Some(&id) = pos_map.get(&(left_start, left_end, DataNodeKind::Field)) {
+                let right_key = (right_node.start_byte() as u32, right_node.end_byte() as u32, DataNodeKind::Expr);
+                if let Some(&source_id) = pos_map.get(&right_key) {
+                    let eid = DataFlowEdgeId::generate(&source_id, &id, DataFlowKind::FieldStore.as_str());
+                    edges.push(DataFlowEdge::new(eid, source_id, id, DataFlowKind::FieldStore, ts_node_range(&left_node), 0.90));
+                }
             } else if let Some(&id) = pos_map.get(&(left_start, left_end, DataNodeKind::Local)) {
-                (id, DataFlowKind::Assign)
-            } else { return; };
-            let right_key = (right_node.start_byte() as u32, right_node.end_byte() as u32, DataNodeKind::Expr);
-            if let Some(&source_id) = pos_map.get(&right_key) {
-                let eid = DataFlowEdgeId::generate(&source_id, &target_id, edge_kind.as_str());
-                edges.push(DataFlowEdge::new(eid, source_id, target_id, edge_kind, ts_node_range(&left_node), 0.90));
+                let right_key = (right_node.start_byte() as u32, right_node.end_byte() as u32, DataNodeKind::Expr);
+                if let Some(&source_id) = pos_map.get(&right_key) {
+                    let eid = DataFlowEdgeId::generate(&source_id, &id, DataFlowKind::Assign.as_str());
+                    edges.push(DataFlowEdge::new(eid, source_id, id, DataFlowKind::Assign, ts_node_range(&left_node), 0.90));
+                }
+            }
+            // Destructuring assignment: a, b = expr
+            // The left node is pattern_list / tuple_pattern / list_pattern.
+            // Create Assign edges from the RHS expression to each identifier target.
+            else if matches!(left_node.kind(), "pattern_list" | "tuple_pattern" | "list_pattern") {
+                let right_key = (right_node.start_byte() as u32, right_node.end_byte() as u32, DataNodeKind::Expr);
+                if let Some(&source_id) = pos_map.get(&right_key) {
+                    for i in 0..left_node.child_count() {
+                        if let Some(child) = left_node.child(i) {
+                            if child.is_named() && child.kind() == "identifier" {
+                                let child_key = (child.start_byte() as u32, child.end_byte() as u32, DataNodeKind::Local);
+                                if let Some(&target_id) = pos_map.get(&child_key) {
+                                    let eid = DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+                                    edges.push(DataFlowEdge::new(eid, source_id, target_id, DataFlowKind::Assign, ts_node_range(&child), 0.90));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // ── Kotlin assignment fallback ────────────────────────────
+            // tree-sitter-kotlin's `assignment` node has children.multiple
+            // (no named fields).  When no left/right branch matches, fall
+            // back to child ordering: first named = target, unnamed `=` =
+            // separator, next named = value.
+            else if kind == "assignment" {
+                let mut target: Option<tree_sitter::Node> = None;
+                let mut value: Option<tree_sitter::Node> = None;
+                let mut found_eq = false;
+                for i in 0..node.child_count() {
+                    let Some(child) = node.child(i) else { continue };
+                    if child.is_named() {
+                        if target.is_none() {
+                            target = Some(child);
+                        } else if found_eq && value.is_none() {
+                            value = Some(child);
+                        }
+                    } else if !found_eq {
+                        if let Ok(t) = child.utf8_text(source.as_bytes()) {
+                            if t == "=" { found_eq = true; }
+                        }
+                    }
+                }
+                if let (Some(t), Some(v)) = (target, value) {
+                    let t_key = (t.start_byte() as u32, t.end_byte() as u32, DataNodeKind::Local);
+                    let v_key = (v.start_byte() as u32, v.end_byte() as u32, DataNodeKind::Expr);
+                    if let (Some(&tid), Some(&sid)) = (pos_map.get(&t_key), pos_map.get(&v_key)) {
+                        let eid = DataFlowEdgeId::generate(&sid, &tid, DataFlowKind::Assign.as_str());
+                        edges.push(DataFlowEdge::new(eid, sid, tid, DataFlowKind::Assign, ts_node_range(&t), 0.85));
+                    }
+                }
             }
         }
     }
@@ -488,13 +576,29 @@ fn walk_for_assign_edges(
             node.child_by_field_name("pattern"),
             node.child_by_field_name("value"),
         ) {
-            // pattern may be identifier or destructuring pattern
-            if pattern_node.kind() == "identifier" {
-                let name_key = (pattern_node.start_byte() as u32, pattern_node.end_byte() as u32, DataNodeKind::Local);
-                let value_key = (value_node.start_byte() as u32, value_node.end_byte() as u32, DataNodeKind::Expr);
-                if let (Some(&target_id), Some(&source_id)) = (pos_map.get(&name_key), pos_map.get(&value_key)) {
-                    let edge_id = DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
-                    edges.push(DataFlowEdge::new(edge_id, source_id, target_id, DataFlowKind::Assign, ts_node_range(&pattern_node), 0.90));
+            let value_key = (value_node.start_byte() as u32, value_node.end_byte() as u32, DataNodeKind::Expr);
+            if let Some(&source_id) = pos_map.get(&value_key) {
+                // Simple identifier pattern: let x = expr
+                if pattern_node.kind() == "identifier" {
+                    let name_key = (pattern_node.start_byte() as u32, pattern_node.end_byte() as u32, DataNodeKind::Local);
+                    if let Some(&target_id) = pos_map.get(&name_key) {
+                        let edge_id = DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+                        edges.push(DataFlowEdge::new(edge_id, source_id, target_id, DataFlowKind::Assign, ts_node_range(&pattern_node), 0.90));
+                    }
+                }
+                // Destructuring pattern: let (a, b) = expr
+                else if matches!(pattern_node.kind(), "tuple_pattern" | "tuple_struct_pattern") {
+                    for i in 0..pattern_node.child_count() {
+                        if let Some(child) = pattern_node.child(i) {
+                            if child.is_named() && child.kind() == "identifier" {
+                                let child_key = (child.start_byte() as u32, child.end_byte() as u32, DataNodeKind::Local);
+                                if let Some(&target_id) = pos_map.get(&child_key) {
+                                    let edge_id = DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+                                    edges.push(DataFlowEdge::new(edge_id, source_id, target_id, DataFlowKind::Assign, ts_node_range(&child), 0.90));
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -529,7 +633,7 @@ fn walk_for_assign_edges(
     // Recurse into children
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            walk_for_assign_edges(child, _source, pos_map, _all_nodes, edges);
+            walk_for_assign_edges(child, source, pos_map, _all_nodes, edges);
         }
     }
 }
@@ -550,14 +654,18 @@ fn create_assign_edges_from_expression_lists(
         .filter(|c| c.is_named())
         .collect();
     for (i, left_node) in left_nodes.iter().enumerate() {
-        let target_kind = if left_node.kind().contains("identifier") { DataNodeKind::Local } else { DataNodeKind::Field };
+        let (target_kind, edge_kind) = if left_node.kind().contains("identifier") {
+            (DataNodeKind::Local, DataFlowKind::Assign)
+        } else {
+            (DataNodeKind::Field, DataFlowKind::FieldStore)
+        };
         let left_key = (left_node.start_byte() as u32, left_node.end_byte() as u32, target_kind);
         let right_node = right_nodes.get(i).or(right_nodes.first());
         if let Some(right_node) = right_node {
             let right_key = (right_node.start_byte() as u32, right_node.end_byte() as u32, DataNodeKind::Expr);
             if let (Some(&target_id), Some(&source_id)) = (pos_map.get(&left_key), pos_map.get(&right_key)) {
-                let edge_id = DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
-                edges.push(DataFlowEdge::new(edge_id, source_id, target_id, DataFlowKind::Assign, ts_node_range(left_node), 0.90));
+                let edge_id = DataFlowEdgeId::generate(&source_id, &target_id, edge_kind.as_str());
+                edges.push(DataFlowEdge::new(edge_id, source_id, target_id, edge_kind, ts_node_range(left_node), 0.90));
             }
         }
     }
@@ -605,11 +713,19 @@ fn build_dataflow_edges(
     // ── AST‑driven Assign edges ─────────────────────────────────────
     walk_for_assign_edges(ctx.root, ctx.source, pos_map, nodes, edges);
 
-    // ── FieldLoad edges (function‑scoped, binding‑aware) ───────────
-    // For each Field data node, find the base variable DataNode within
-    // the same function and (when available) with matching binding_id.
-    // Falls back to name-only within the same function when binding_id
-    // is absent (languages without lexical binder).
+    // ── FieldLoad edges (function‑scoped, access‑path‑aware) ───────
+    // For each Field data node, find the base data node within the same
+    // function.  Strategy (in order):
+    //
+    //   1.  Match a parent Field node whose access_path is the parent
+    //       path of the current field (e.g.  req.body.name → req.body).
+    //       This handles chained access like a.b.c.d correctly.
+    //   2.  Fall back to name-based matching for Local / Parameter /
+    //       Receiver nodes whose name equals base_name_from_access_path.
+    //
+    //  Note: binding_id is intentionally NOT used for Field nodes
+    //  because Field nodes carry the property name (not the base
+    //  variable name) and could falsely match a same‑named local.
     let field_nodes: Vec<&DataNode> = nodes
         .iter()
         .filter(|n| n.kind == DataNodeKind::Field)
@@ -617,28 +733,27 @@ fn build_dataflow_edges(
 
     for field_node in &field_nodes {
         if let Some(ref access_path) = field_node.access_path {
-            let base_name = base_name_from_access_path(access_path);
-
-            // Find the best-matching base node within the same function.
-            // Prefer binding_id match; fall back to name-only.
-            let base_node = field_node.binding_id.and_then(|bid| {
+            // 1. Try parent access-path match against another Field node
+            let base_node = parent_access_path(access_path).and_then(|parent_path| {
                 nodes
                     .iter()
                     .find(|n| {
                         n.function_id == field_node.function_id
-                            && n.binding_id == Some(bid)
-                            && n.kind != DataNodeKind::Field
+                            && n.access_path.as_deref() == Some(parent_path)
                             && n.range.start_byte < field_node.range.start_byte
                     })
             }).or_else(|| {
-                // Fallback: same function, same name, Local/Parameter before field
+                // 2. Fallback: name-based match for root access
+                let base_name = base_name_from_access_path(access_path);
                 nodes
                     .iter()
                     .find(|n| {
                         n.function_id == field_node.function_id
                             && n.name.as_deref() == Some(base_name)
                             && (n.kind == DataNodeKind::Local
-                                || n.kind == DataNodeKind::Parameter)
+                                || n.kind == DataNodeKind::Parameter
+                                || n.kind == DataNodeKind::Receiver
+                                || n.kind == DataNodeKind::Global)
                             && n.range.start_byte < field_node.range.start_byte
                     })
             });
@@ -845,6 +960,12 @@ fn build_dataflow_edges(
 /// When `binding_id` is not set, falls back to grouping by
 /// `(function_id, name)` as a conservative heuristic.
 ///
+/// **Field nodes are excluded** from use-def resolution: field dataflow
+/// is expressed through access_path / FieldLoad edges rather than
+/// name-based grouping.  This prevents false edges when a property name
+/// (e.g. "name" in `req.body.name`) accidentally matches a same‑named
+/// local variable or parameter.
+///
 /// Edge creation: for backward‑slice provenance tracing, each definition
 /// connects to ALL subsequent uses within its group.  This preserves the
 /// full assignment chain (x = a; x = b; x = c; return x) that a backward
@@ -890,15 +1011,16 @@ fn resolve_use_def(data_nodes: &[DataNode]) -> Vec<DataFlowEdge> {
                 if use_node.id == def_node.id {
                     continue;
                 }
-                // Connect to nodes that are Expr, CallArg, Return, Field, or
+                // Connect to nodes that are Expr, CallArg, Return, or
                 // Local uses (Local for multi-assignment chains like
                 // x = a; x = b; return x).
+                // Field nodes intentionally excluded — field dataflow uses
+                // access_path / FieldLoad edges, not name-based use-def.
                 if matches!(
                     use_node.kind,
                     DataNodeKind::VariableUse
                         | DataNodeKind::Expr
                         | DataNodeKind::CallArg
-                        | DataNodeKind::Field
                         | DataNodeKind::Return
                         | DataNodeKind::Local
                 ) {
@@ -944,6 +1066,13 @@ struct UseDefKey {
 fn use_def_key(node: &DataNode) -> Option<UseDefKey> {
     let name = node.name.clone();
     if node.binding_id.is_none() && name.is_none() {
+        return None;
+    }
+    // Field nodes express dataflow through access_path / FieldLoad edges.
+    // Excluding them from name-based use-def prevents false edges where
+    // a property name (e.g. "name" in req.body.name) matches a same-named
+    // local variable or parameter.
+    if node.kind == DataNodeKind::Field {
         return None;
     }
     Some(UseDefKey {
@@ -1001,31 +1130,81 @@ pub(crate) fn resolve_dataflow_function_ids(nodes: &mut [DataNode], symbols: &[S
 
 /// Extract the base variable name from an access path string.
 ///
-/// Handles common field access syntax across languages:
-/// - Dot: `obj.field` → `obj`
-/// - Arrow: `ptr->field` → `ptr`
-/// - Bracket/Index: `arr[i]`, `params[:name]`, `$_GET["name"]` → `arr` / `params` / `$_GET`
-/// - Static: `Class::method` → `Class`
-/// - Optional: `obj?.field` → `obj`
+/// Recognised separators (multi‑char tokens checked before single‑char):
+/// - Dot:           `obj.field`       → `obj`
+/// - Arrow:         `ptr->field`      → `ptr`
+/// - Optional chain:`obj?.field`      → `obj`
+/// - Static/method: `Class::method`   → `Class`
+/// - Bracket/index: `arr[i]`, `hash[:k]`, `$_GET["k"]` → `arr` / `hash` / `$_GET`
+///
+/// Single `-`, `:` and `?` are NOT treated as separators to avoid false
+/// splits on names that contain them or on unrelated operators.
 fn base_name_from_access_path(raw: &str) -> &str {
-    // Find the first separator character
-    for (i, c) in raw.char_indices() {
-        match c {
-            '.' | '-' | '[' | ':' | '?' => {
-                if i > 0 {
-                    return &raw[..i];
-                }
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            // Dot: obj.field
+            b'.' => {
+                if i > 0 { return &raw[..i]; }
+                i += 1;
             }
-            _ => {}
-        }
-        // Handle "->" as two chars
-        if c == '-' && raw.as_bytes().get(i + 1) == Some(&b'>') {
-            if i > 0 {
-                return &raw[..i];
+            // Arrow: ptr->field
+            b'-' if bytes.get(i + 1) == Some(&b'>') => {
+                if i > 0 { return &raw[..i]; }
+                i += 2;
+            }
+            // Optional chaining: obj?.field
+            b'?' if bytes.get(i + 1) == Some(&b'.') => {
+                if i > 0 { return &raw[..i]; }
+                i += 1; // skip '?'; '.' will be handled next iteration
+            }
+            // Static/method resolution: Class::method
+            b':' if bytes.get(i + 1) == Some(&b':') => {
+                if i > 0 { return &raw[..i]; }
+                i += 2;
+            }
+            // Bracket/index: arr[i]
+            b'[' => {
+                if i > 0 { return &raw[..i]; }
+                i += 1;
+            }
+            _ => {
+                i += 1;
             }
         }
     }
     raw
+}
+
+/// Given an access path like `req.body.name`, return the parent access path
+/// (`req.body`) by stripping the last component. Returns `None` when the path
+/// has no separator (it is already a root name).
+///
+/// Supports `.`, `->`, `[`, `?.`, and `::` separators.
+fn parent_access_path(raw: &str) -> Option<&str> {
+    let bytes = raw.as_bytes();
+    let mut i = bytes.len();
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            // Dot — but check for optional chain ?. first
+            b'.' => {
+                if i > 0 && bytes[i - 1] == b'?' {
+                    return Some(&raw[..i - 1]); // cut before '?'
+                }
+                return Some(&raw[..i]);
+            }
+            // Bracket/index
+            b'[' => return Some(&raw[..i]),
+            // Arrow: ->
+            b'>' if i > 0 && bytes[i - 1] == b'-' => return Some(&raw[..i - 1]),
+            // Static/method resolution: ::
+            b':' if i > 0 && bytes[i - 1] == b':' => return Some(&raw[..i - 1]),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Recursively collect all identifier binding nodes from a destructuring pattern
@@ -1094,6 +1273,7 @@ mod tests {
         let root = tree.root_node();
 
         let bindings: Vec<BindingDef> = vec![];
+        let symbols: Vec<SymbolDef> = vec![];
         let scopes: Vec<ScopeDef> = vec![];
         let file_path = PathBuf::from("test.ts");
 
@@ -1106,7 +1286,7 @@ mod tests {
             language: types::Language::TypeScript,
         };
 
-        let result = DataFlowBuilder::extract(dataflow_spec, &ctx, &bindings, &scopes).unwrap();
+        let result = DataFlowBuilder::extract(dataflow_spec, &ctx, &bindings, &scopes, &symbols).unwrap();
 
         // We should have some data nodes (at minimum, the variable declarations and returns)
         assert!(!result.nodes.is_empty(), "Should have data nodes");
@@ -1309,5 +1489,70 @@ mod tests {
             cross2.is_none(),
             "Should NOT connect inner def to outer use (different scopes)"
         );
+    }
+
+    // ── access path helper tests ──────────────────────────────────────
+
+    #[test]
+    fn test_base_name_from_access_path() {
+        // Dot notation
+        assert_eq!(base_name_from_access_path("req.body.name"), "req");
+        assert_eq!(base_name_from_access_path("obj.field"), "obj");
+        assert_eq!(base_name_from_access_path("x"), "x"); // no separator
+
+        // Arrow
+        assert_eq!(base_name_from_access_path("ptr->field"), "ptr");
+        assert_eq!(base_name_from_access_path("ptr->field->nested"), "ptr");
+
+        // Optional chaining
+        assert_eq!(base_name_from_access_path("obj?.field"), "obj");
+        assert_eq!(base_name_from_access_path("obj?.field?.nested"), "obj");
+
+        // Static/method resolution
+        assert_eq!(base_name_from_access_path("Class::method"), "Class");
+        assert_eq!(base_name_from_access_path("NS::Class::method"), "NS");
+
+        // Bracket/index
+        assert_eq!(base_name_from_access_path("arr[0]"), "arr");
+        assert_eq!(base_name_from_access_path("arr[0].field"), "arr");
+        assert_eq!(base_name_from_access_path("$_GET[\"name\"]"), "$_GET");
+        assert_eq!(base_name_from_access_path("hash[:key]"), "hash");
+
+        // Single ? : - should NOT be treated as separators on their own
+        // (the function requires a following . for ? and following : / > for : / -)
+        assert_eq!(base_name_from_access_path("no-sep-name"), "no-sep-name");
+        assert_eq!(base_name_from_access_path("no:sep:name"), "no:sep:name");
+        assert_eq!(base_name_from_access_path("no?sep"), "no?sep");
+    }
+
+    #[test]
+    fn test_parent_access_path() {
+        // Dot chain
+        assert_eq!(parent_access_path("req.body.name"), Some("req.body"));
+        assert_eq!(parent_access_path("req.body"), Some("req"));
+        assert_eq!(parent_access_path("req"), None);
+
+        // Arrow chain
+        assert_eq!(parent_access_path("ptr->field->nested"), Some("ptr->field"));
+        assert_eq!(parent_access_path("ptr->field"), Some("ptr"));
+
+        // Optional chaining
+        assert_eq!(
+            parent_access_path("obj?.field?.nested"),
+            Some("obj?.field")
+        );
+        assert_eq!(parent_access_path("obj?.field"), Some("obj"));
+
+        // Static resolution
+        assert_eq!(
+            parent_access_path("NS::Class::method"),
+            Some("NS::Class")
+        );
+        assert_eq!(parent_access_path("Class::method"), Some("Class"));
+
+        // Mixed separators
+        assert_eq!(parent_access_path("obj.field->ptr"), Some("obj.field"));
+        assert_eq!(parent_access_path("arr[0].field"), Some("arr[0]"));
+        assert_eq!(parent_access_path("arr[0]->field"), Some("arr[0]"));
     }
 }

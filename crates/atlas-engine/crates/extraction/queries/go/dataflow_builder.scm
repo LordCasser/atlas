@@ -66,5 +66,8 @@
 
 ;; --- Field assignment (obj.field = val) ---
 (assignment_statement
-  right: (expression_list (_) @df.assign_value))
+  left: (expression_list
+    (selector_expression) @df.assign_field_target)
+  right: (expression_list
+    (_) @df.assign_value))
 

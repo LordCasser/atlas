@@ -1274,9 +1274,9 @@ mod tests {
     }
 
     #[test]
-    fn test_java_is_symbolic_only() {
+    fn test_java_is_dataflow_basic() {
         let p = LanguageCapabilityProfile::for_language(Language::Java);
-        assert_eq!(p.capability_level, CapabilityLevel::Symbolic);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowBasic);
     }
 
     #[test]
@@ -1338,13 +1338,16 @@ mod tests {
             CapabilityLevel::DataflowBasic
         );
 
-        // Java: no dataflow → Symbolic
+        // Java: local_dataflow + use_def now supported → DataflowBasic
         let java = LanguageCapabilityProfile::for_language(Language::Java);
         let matrix = java
             .features
             .as_ref()
             .expect("Java should have FeatureMatrix");
-        assert_eq!(matrix.derive_capability_level(), CapabilityLevel::Symbolic);
+        assert_eq!(
+            matrix.derive_capability_level(),
+            CapabilityLevel::DataflowBasic
+        );
     }
 
     #[test]
@@ -1382,12 +1385,12 @@ mod tests {
     }
 
     #[test]
-    fn test_python_feature_matrix_lexical_bindings_unsupported() {
+    fn test_python_feature_matrix_lexical_bindings_supported() {
         let py = LanguageCapabilityProfile::for_language(Language::Python);
         let matrix = py.features.as_ref().unwrap();
         assert!(
-            !matrix.lexical_bindings.is_supported(),
-            "Python lexical_bindings should be unsupported"
+            matrix.lexical_bindings.is_supported(),
+            "Python lexical_bindings should be supported"
         );
         assert!(
             matrix.local_dataflow.is_supported(),
@@ -1400,20 +1403,20 @@ mod tests {
     }
 
     #[test]
-    fn test_java_feature_matrix_dataflow_unsupported() {
+    fn test_java_feature_matrix_dataflow_supported() {
         let java = LanguageCapabilityProfile::for_language(Language::Java);
         let matrix = java.features.as_ref().unwrap();
         assert!(
-            !matrix.local_dataflow.is_supported(),
-            "Java local_dataflow should be unsupported"
+            matrix.local_dataflow.is_supported(),
+            "Java local_dataflow should be supported"
         );
         assert!(
             matrix.call_graph.is_supported(),
             "Java call_graph should be supported"
         );
         assert!(
-            !matrix.use_def.is_supported(),
-            "Java use_def should be unsupported"
+            matrix.use_def.is_supported(),
+            "Java use_def should be supported"
         );
     }
 

@@ -20,13 +20,16 @@
 //! `LanguageFrontend::from_parts()`.
 
 use crate::callsite_spec::CallsiteExtractorSpec;
+use crate::dataflow_builder::NodePosKey;
+use crate::extraction_ctx::ExtractionCtx;
 use types::bindings::BindingDef;
 use types::capability::{FeatureMatrix, FeatureSupport, LanguageCapabilityProfile};
 use types::dataflow::{DataFlowEdge, DataNode};
 use types::enums::Language;
-use types::ids::FileId;
+use types::ids::{DataNodeId, FileId};
 use types::structs::{ImportDef, ReferenceUse, ScopeDef, SymbolDef};
 
+use std::collections::HashMap;
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
@@ -142,15 +145,19 @@ pub trait DataflowSpec: Send + Sync {
     /// Build language-specific dataflow edges after normalization.
     ///
     /// Called by [`DataFlowBuilder`] after all captures are normalized and
-    /// the default edges are built.  Each language adapter can override this
-    /// to add edges for language-specific AST patterns (e.g., destructuring,
-    /// tuple unpacking, Go short-var, Rust match bindings, etc.).
+    /// the default (shared) edges are built.  Each language adapter can
+    /// override this to add edges for language-specific AST patterns such as
+    /// destructuring, tuple unpacking, match bindings, multi‑return, etc.
     ///
-    /// The default implementation is a no-op — all edge building for standard
-    /// patterns (assignment, field access, containment, return) is handled by
-    /// the shared builder.
+    /// The default implementation is a no‑op — all edge building for standard
+    /// patterns (assignment, field access, containment, return) happens in the
+    /// shared builder.  Language adapters that need custom AST walking can use
+    /// `ctx.root` to walk the tree and `pos_map` to look up DataNodeIds by
+    /// byte range and kind.
     fn build_language_edges(
         &self,
+        _ctx: &ExtractionCtx<'_>,
+        _pos_map: &HashMap<NodePosKey, DataNodeId>,
         _nodes: &[DataNode],
         _bindings: &[BindingDef],
         _scopes: &[ScopeDef],

@@ -26,6 +26,26 @@
   left: (identifier) @df.assign_target
   right: (_) @df.assign_value)
 
+;; --- Destructuring assignment: a, b = expr ---
+;; Targets (each identifier in the pattern_list / tuple)
+(pattern_list
+  (identifier) @df.assign_target)
+(tuple_pattern
+  (identifier) @df.assign_target)
+(list_pattern
+  (identifier) @df.assign_target)
+
+;; RHS value for destructuring assignments
+(assignment
+  left: (pattern_list)
+  right: (_) @df.assign_value)
+(assignment
+  left: (tuple_pattern)
+  right: (_) @df.assign_value)
+(assignment
+  left: (list_pattern)
+  right: (_) @df.assign_value)
+
 ;; --- Return statements ---
 (return_statement (_) @df.return_value)
 
