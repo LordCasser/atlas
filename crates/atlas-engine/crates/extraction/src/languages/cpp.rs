@@ -215,7 +215,7 @@ impl DataflowSpec for CppAdapter {
         include_str!("../../queries/cpp/dataflow_builder.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::supported_with_limitations(0.65, vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"])
+        FeatureSupport::supported_with_limitations(0.65, vec!["AST-driven local dataflow with language-specific gaps"])
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> (Option<DataNode>, Option<DataFlowEdge>) {
         normalize_cpp_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)

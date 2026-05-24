@@ -238,7 +238,7 @@ impl DataflowSpec for PhpAdapter {
         FeatureSupport::supported_with_limitations(
             0.6,
             vec![
-                "capture-order assignment pairing (Nth target ≈ Nth expr)",
+                "AST-driven local dataflow with language-specific gaps",
                 "dynamic calls / variable-variables not resolved",
             ],
         )

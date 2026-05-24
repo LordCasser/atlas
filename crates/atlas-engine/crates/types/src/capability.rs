@@ -229,9 +229,9 @@ pub enum CapabilityLevel {
     /// Symbol-level analysis only: symbol defs, references, import resolution,
     /// call-graph edges. No dataflow edges.
     Symbolic,
-    /// Lexical bindings + intra-statement dataflow (heuristic name-based
-    /// binding, capture-order assignment pairing). Use-def resolution exists
-    /// but may miss shadowed variables or complex expression trees.
+    /// Lexical bindings + AST-driven intra-statement dataflow (heuristic
+    /// name-based binding with language-specific gaps). Use-def resolution
+    /// exists but may miss shadowed variables or complex expression trees.
     DataflowBasic,
     /// Cross-statement use-def (scope-aware, shadowing-safe), backward trace
     /// with access-path chains, caller-path exploration, interprocedural flow.
@@ -450,7 +450,7 @@ mod profiles {
             limitations: vec![
                 "shares TypeScript adapter (TSX-only constructs may trigger warnings)".into(),
                 "name-based binding (no proper shadowing)".into(),
-                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
+                "AST-driven local dataflow with language-specific gaps".into(),
             ],
             confidence_floor: 0.55,
             features: Some(FeatureMatrix {
@@ -465,7 +465,7 @@ mod profiles {
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
                     0.55,
-                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
+                    vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
                     0.55,
@@ -505,7 +505,7 @@ mod profiles {
             ],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
-                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
+                "AST-driven local dataflow with language-specific gaps".into(),
                 "assignment LHS treated as binding definition".into(),
             ],
             confidence_floor: 0.50,
@@ -521,7 +521,7 @@ mod profiles {
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
                     0.50,
-                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
+                    vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
                     0.50,
@@ -561,7 +561,7 @@ mod profiles {
             ],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
-                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
+                "AST-driven local dataflow with language-specific gaps".into(),
             ],
             confidence_floor: 0.65,
             features: Some(FeatureMatrix {
@@ -576,7 +576,7 @@ mod profiles {
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
                     0.65,
-                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
+                    vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
                     0.65,
@@ -616,7 +616,7 @@ mod profiles {
             ],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
-                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
+                "AST-driven local dataflow with language-specific gaps".into(),
                 "macro expansion and #include resolution may produce incomplete facts".into(),
             ],
             confidence_floor: 0.65,
@@ -632,7 +632,7 @@ mod profiles {
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
                     0.65,
-                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
+                    vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
                     0.65,
@@ -672,7 +672,7 @@ mod profiles {
             ],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
-                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
+                "AST-driven local dataflow with language-specific gaps".into(),
                 "template instantiation not followed".into(),
                 "ADL and overload resolution not modeled".into(),
             ],
@@ -689,7 +689,7 @@ mod profiles {
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
                     0.60,
-                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
+                    vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
                     0.60,
@@ -841,7 +841,7 @@ mod profiles {
             ],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
-                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
+                "AST-driven local dataflow with language-specific gaps".into(),
                 "generic type parameters not captured in dataflow layer".into(),
             ],
             confidence_floor: 0.70,
@@ -857,7 +857,7 @@ mod profiles {
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
                     0.70,
-                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
+                    vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
                     0.70,
@@ -897,7 +897,7 @@ mod profiles {
             ],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
-                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
+                "AST-driven local dataflow with language-specific gaps".into(),
                 "partial classes across files not merged".into(),
             ],
             confidence_floor: 0.70,
@@ -913,7 +913,7 @@ mod profiles {
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
                     0.70,
-                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
+                    vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
                     0.70,
@@ -953,7 +953,7 @@ mod profiles {
             ],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
-                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
+                "AST-driven local dataflow with language-specific gaps".into(),
                 "macro_rules! body patterns not analyzed".into(),
                 "borrow checker semantics not modeled".into(),
             ],
@@ -970,7 +970,7 @@ mod profiles {
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
                     0.60,
-                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
+                    vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
                     0.60,
@@ -1010,7 +1010,7 @@ mod profiles {
             ],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
-                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
+                "AST-driven local dataflow with language-specific gaps".into(),
                 "dynamic method calls via variable not resolved".into(),
                 "namespace aliases resolved at reference resolution layer".into(),
             ],
@@ -1027,7 +1027,7 @@ mod profiles {
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
                     0.55,
-                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
+                    vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
                     0.55,
@@ -1067,7 +1067,7 @@ mod profiles {
             ],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
-                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
+                "AST-driven local dataflow with language-specific gaps".into(),
                 "method_missing / define_method dynamic methods not captured".into(),
                 "block/yield implicit calls not tracked".into(),
             ],
@@ -1084,7 +1084,7 @@ mod profiles {
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
                     0.50,
-                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
+                    vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
                     0.50,
@@ -1187,7 +1187,7 @@ mod profiles {
             ],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
-                "capture-order assignment pairing (Nth target ≈ Nth expr)".into(),
+                "AST-driven local dataflow with language-specific gaps".into(),
                 "extension functions treated as regular functions".into(),
             ],
             confidence_floor: 0.65,
@@ -1203,7 +1203,7 @@ mod profiles {
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
                     0.65,
-                    vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
+                    vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
                     0.65,

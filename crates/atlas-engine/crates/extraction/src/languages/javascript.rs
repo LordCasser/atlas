@@ -196,7 +196,7 @@ impl DataflowSpec for JavaScriptAdapter {
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
             0.55,
-            vec!["capture-order assignment pairing (Nth target ≈ Nth expr)"],
+            vec!["AST-driven local dataflow with language-specific gaps"],
         )
     }
     fn normalize(
