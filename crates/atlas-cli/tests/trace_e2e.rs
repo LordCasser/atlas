@@ -3164,3 +3164,87 @@ fn vfy_python_destructuring_produces_assign_to_locals() {
     assert!(kinds.iter().any(|k| *k == DataFlowKind::Assign),
         "Python destructuring should produce Assign edges, got: {:?}", kinds);
 }
+
+/// C#: same-class method call — DataNode + Edge verification.
+///
+/// TraceEngine path is empty for C# when call-graph bridging is not wired;
+/// verifying DataNodes and edges is the current baseline.
+#[cfg(feature = "csharp")]
+#[test]
+fn vfy_csharp_same_class_method_call_dataflow() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("samecls.cs");
+    let source = r#"class C {
+    string H(string input) { return input.Trim(); }
+    string P(string name) { string clean = H(name); return clean; }
+}
+"#;
+    let frontend = create_frontend(Language::CSharp).unwrap();
+    let facts = extract_file(&frontend, file_id, Path::new("samecls.cs"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local clean");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "calltarget H");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return");
+
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let kinds: Vec<_> = edges.iter().map(|e| e.kind).collect();
+    assert!(!edges.is_empty(), "C# should produce dataflow edges");
+    assert!(kinds.iter().any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ArgToCall)),
+        "C# should produce Assign/ArgToCall, got: {:?}", kinds);
+}
+
+/// C++: basic variable + return dataflow.
+#[cfg(feature = "cpp")]
+#[test]
+fn vfy_cpp_variable_and_return_dataflow() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("var.cpp");
+    let source = r#"int f(int n) {
+    int x = n + 1;
+    return x;
+}
+"#;
+    let frontend = create_frontend(Language::Cpp).unwrap();
+    let facts = extract_file(&frontend, file_id, Path::new("var.cpp"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param n");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local x");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return");
+
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let kinds: Vec<_> = edges.iter().map(|e| e.kind).collect();
+    assert!(!edges.is_empty(), "C++ should produce dataflow edges");
+    assert!(kinds.iter().any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ReturnValue)),
+        "C++ should produce Assign/ReturnValue, got: {:?}", kinds);
+}
+
+/// ArkTS: parameter → return dataflow (not just TS delegate).
+#[cfg(feature = "arkts")]
+#[test]
+fn vfy_arkts_parameter_to_return_dataflow() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("flow.ets");
+    let source = "function process(input: string): string {\n  let x = input;\n  return x;\n}\n";
+    let frontend = create_frontend(Language::ArkTS).unwrap();
+    let facts = extract_file(&frontend, file_id, Path::new("flow.ets"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param input");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local x");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return");
+
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let kinds: Vec<_> = edges.iter().map(|e| e.kind).collect();
+    assert!(!edges.is_empty(), "ArkTS should produce dataflow edges");
+    assert!(kinds.iter().any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ReturnValue)),
+        "ArkTS should produce Assign or ReturnValue, got: {:?}", kinds);
+}
