@@ -1188,6 +1188,129 @@ fn p0_trace_engine_variable_on_dataflow_language() {
     }
 }
 
+// ────────────────────────────────────────────────────────────────
+// Kotlin / PHP / Ruby path-level trace verification
+// ────────────────────────────────────────────────────────────────
+
+/// Kotlin: provenance path — param → local → call → return.
+///
+/// Uses DataNode + Edge verification (TraceEngine path may be empty for
+/// Kotlin when call-graph edges are intra-file but not yet bridged).
+#[cfg(feature = "kotlin")]
+#[test]
+fn vfy_kotlin_canonical_provenance_path_call_to_return() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("provenance.kt");
+    let source = r#"fun helper(input: String): String {
+    return input.trim()
+}
+fun process(name: String): String {
+    val clean = helper(name)
+    return clean
+}
+"#;
+    let frontend = create_frontend(Language::Kotlin).unwrap();
+    let facts = extract_file(&frontend, file_id, Path::new("provenance.kt"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "Kotlin should have Parameter");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "Kotlin should have Local");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "Kotlin should have CallTarget");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallArg), "Kotlin should have CallArg");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "Kotlin should have Return");
+
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let kinds: Vec<_> = edges.iter().map(|e| e.kind).collect();
+    assert!(!edges.is_empty(), "Kotlin should produce dataflow edges");
+    assert!(kinds.iter().any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ArgToCall)),
+        "Kotlin should produce Assign or ArgToCall, got: {:?}", kinds);
+}
+
+/// PHP: provenance path — superglobal → field → local → call → return.
+///
+/// Uses DataNode + Edge verification (TraceEngine path is empty for PHP
+/// when inter-procedural bridging is not wired).
+#[cfg(feature = "php")]
+#[test]
+fn vfy_php_canonical_provenance_path_superglobal_to_return() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let file_id = FileId::generate("provenance.php");
+    let source = r#"<?php
+function helper($input) {
+    return trim($input);
+}
+function process($req) {
+    $name = $_GET['name'];
+    $clean = helper($name);
+    return $clean;
+}
+"#;
+    let frontend = create_frontend(Language::Php).unwrap();
+    let facts = extract_file(&frontend, file_id, Path::new("provenance.php"), source, "h").expect("extract");
+    store.insert_file_facts(&facts).expect("insert");
+
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "PHP should have Parameter");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Global), "PHP should have Global _GET");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Field), "PHP should have Field for _GET['name']");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "PHP should have Local");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "PHP should have CallTarget");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "PHP should have Return");
+
+    let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let kinds: Vec<_> = edges.iter().map(|e| e.kind).collect();
+    assert!(!edges.is_empty(), "PHP should produce dataflow edges");
+    assert!(kinds.iter().any(|k| matches!(k, DataFlowKind::FieldLoad | DataFlowKind::Assign | DataFlowKind::ArgToCall)),
+        "PHP should produce FieldLoad/Assign/ArgToCall, got: {:?}", kinds);
+}
+
+/// Ruby: provenance path — param → hash access → local → call → implicit return.
+#[cfg(feature = "ruby")]
+#[test]
+fn vfy_ruby_canonical_provenance_path_hash_to_return() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "provenance.rb",
+        r#"def helper(input)
+  input.strip
+end
+def process(params)
+  name = params[:name]
+  clean = helper(name)
+  clean
+end
+"#,
+    )];
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("provenance.rb");
+
+    let nodes = store.find_data_nodes_by_file(&file_id).unwrap();
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "Ruby should have Parameter");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "Ruby should have Local");
+    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "Ruby should have implicit Return");
+
+    let clean_node = nodes.iter()
+        .find(|n| n.name.as_deref() == Some("clean") && n.kind == DataNodeKind::Local)
+        .expect("data node 'clean' not found");
+    let (line, col) = mid_point(clean_node.range.start_line, clean_node.range.start_column, clean_node.range.end_line, clean_node.range.end_column);
+
+    let engine = TraceEngine::new(store);
+    let resp = engine.trace_variable(&file_id, line, col, 20);
+    assert!(resp.ok);
+    let path = resp.result.as_ref().expect("Ruby trace should produce a result");
+    let kinds: Vec<DataFlowKind> = path.steps.iter().map(|s| s.edge_kind).collect();
+    assert!(path.steps.len() >= 1, "Ruby path should have steps, got {}: {:?}", path.steps.len(), kinds);
+    assert!(kinds.iter().any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ArgToCall | DataFlowKind::ArgToParam | DataFlowKind::ReturnValue)),
+        "Ruby path should have Assign/ArgToCall/ReturnValue, got: {:?}", kinds);
+    for step in &path.steps { assert!(step.evidence.is_some()); }
+    assert!(path.confidence > 0.0);
+}
+
 #[test]
 fn p0_trace_engine_callers_produces_chain() {
     let _ = tracing_subscriber::fmt::try_init();
