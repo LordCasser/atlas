@@ -329,8 +329,14 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
                     per_lang.record_file(ef.lang, 0, true, Some("db_insert_error"));
                 }
             }
-            // Log the batch error but continue
-            tracing::warn!("Batch insert failed ({} files): {:#}", chunk.len(), e);
+            // Log the batch error with file context for debugging
+            let failed_paths: Vec<_> = chunk.iter()
+                .map(|ef| ef.rel_path.to_string_lossy().to_string())
+                .collect();
+            tracing::warn!(
+                "Batch insert failed ({} files): {:#}. Failed paths: {:?}",
+                chunk.len(), e, failed_paths
+            );
         }
     }
     let insert_timing = insert_timer
