@@ -20,7 +20,8 @@
   (variable_declaration
     (variable_declarator
       name: (identifier) @df.assign_target
-      (_) @df.assign_value)))
+      (equals_value_clause
+        (_) @df.assign_value))))
 
 ;; --- Return statements ---
 (return_statement
