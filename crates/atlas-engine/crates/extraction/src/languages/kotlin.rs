@@ -529,6 +529,14 @@ mod tests {
     }
 
     #[test]
+    fn test_dataflow_builder_query_parses() {
+        let spec = super::kotlin_frontend();
+        let lang = spec.parser.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.dataflow.dataflow_builder_query());
+        assert!(query.is_ok(), "dataflow query must compile: {:?}", query.err());
+    }
+
+    #[test]
     fn test_dataflow_normalize_smoke() {
         let frontend = kotlin_frontend();
         let ts_lang = frontend.parser.tree_sitter_language();
