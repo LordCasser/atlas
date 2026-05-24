@@ -22,11 +22,11 @@
       (identifier) @lexical.local)))
 
 ;; --- Catch variable (catch (exception& e)) ---
-(catch_clause
-  (parameter_declaration
-    declarator: (identifier) @lexical.catch_variable))
+;; NOTE: tree-sitter-cpp catch_clause has children.multiple; identifier
+;; is not a valid direct child.  Catch bindings are captured via the
+;; parameter_declaration pattern at the top of this file instead.
+;; (catch_clause ...) intentionally omitted.
 
 ;; --- Lambda parameter ---
-(lambda_expression
-  (parameter_declaration
-    declarator: (identifier) @lexical.parameter))
+;; Lambda parameters are captured by the parameter_declaration pattern above.
+;; (lambda_expression ...) intentionally omitted.

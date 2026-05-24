@@ -819,3 +819,40 @@ mod tests {
         }
     }
 }
+
+    /// Verify that every language with lexical support has a compilable lexical query.
+    #[test]
+    fn test_all_lexical_queries_compile() {
+        use crate::languages::create_frontend;
+        use types::enums::Language;
+
+        let languages_with_lexical = [
+            #[cfg(feature = "typescript")] Language::TypeScript,
+            #[cfg(feature = "javascript")] Language::JavaScript,
+            #[cfg(feature = "python")] Language::Python,
+            #[cfg(feature = "java")] Language::Java,
+            #[cfg(feature = "c")] Language::C,
+            #[cfg(feature = "cpp")] Language::Cpp,
+            #[cfg(feature = "arkts")] Language::ArkTS,
+            #[cfg(feature = "go")] Language::Go,
+            #[cfg(feature = "csharp")] Language::CSharp,
+            #[cfg(feature = "rust")] Language::Rust,
+            #[cfg(feature = "php")] Language::Php,
+            #[cfg(feature = "ruby")] Language::Ruby,
+            #[cfg(feature = "kotlin")] Language::Kotlin,
+        ];
+
+        for &lang in &languages_with_lexical {
+            let Some(frontend) = create_frontend(lang) else { continue };
+            if !frontend.lexical.capability().is_supported() { continue; }
+            let ts_lang = frontend.parser.tree_sitter_language();
+            let query_src = frontend.lexical.lexical_query();
+            let q = tree_sitter::Query::new(&ts_lang, query_src);
+            assert!(
+                q.is_ok(),
+                "{:?} lexical query must compile: {:?}",
+                lang,
+                q.err()
+            );
+        }
+    }

@@ -8,7 +8,7 @@
 
 ;; --- Foreach loop variable (foreach ($a as $v)) ---
 (foreach_statement
-  value: (variable_name) @lexical.local)
+  (variable_name) @lexical.local)
 
 ;; --- Catch variable (catch (Exception $e)) ---
 (catch_clause
