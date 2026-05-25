@@ -9,13 +9,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use atlas_engine::{
-    ExtractionMode, FileId, FileLock, GraphBuilder, Language, LanguageRegistry,
-    ParseWorkerPool, PhaseTimer, ReferenceResolver, Store, WorkerConfig,
-    create_frontend,
+    ExtractionMode, FileId, FileLock, GraphBuilder, Language, LanguageRegistry, ParseWorkerPool,
+    PhaseTimer, ReferenceResolver, Store, WorkerConfig, create_frontend,
     discovery::{DiscoveryConfig, discover_files},
 };
 
 use super::ToolRouter;
+use serde_json::json;
 
 /// Result of an atlas_index invocation.
 #[derive(serde::Serialize, Clone)]
@@ -47,6 +47,14 @@ impl ToolRouter {
     ///
     /// Returns a JSON IndexResult with indexing statistics.
     pub(crate) fn handle_index(&self, args: &serde_json::Value) -> (String, bool) {
+        let background = args
+            .get("background")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if background {
+            return self.handle_index_background(args);
+        }
+
         let start = std::time::Instant::now();
         let analysis = args["analysis"].as_str().unwrap_or("manifest");
         let mode = match analysis {
@@ -57,12 +65,20 @@ impl ToolRouter {
 
         let exclude_patterns: Vec<String> = args["exclude"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let include_patterns: Vec<String> = args["include"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let mut result = IndexResult {
@@ -99,7 +115,14 @@ impl ToolRouter {
         // Run the index pipeline
         let progress_sender = self.progress_sender.clone();
         let is_manifest = matches!(mode, ExtractionMode::Manifest);
-        match run_index(&self.store, &self.project_root, mode, &include_patterns, &exclude_patterns, progress_sender) {
+        match run_index(
+            &self.store,
+            &self.project_root,
+            mode,
+            &include_patterns,
+            &exclude_patterns,
+            progress_sender,
+        ) {
             Ok(stats) => {
                 result.ok = true;
                 result.files_discovered = stats.discovered;
@@ -115,7 +138,7 @@ impl ToolRouter {
 
         result.duration_ms = start.elapsed().as_millis() as u64;
 
-        // ── Large project warning ─────────────────────────────────────────
+        // ── Large project / background guidance ────────────────────────────
         if result.duration_ms > 30_000 {
             let mut msg = "Indexing took over 30 seconds. ".to_string();
             if !is_manifest {
@@ -124,18 +147,142 @@ impl ToolRouter {
                 );
             }
             msg.push_str(
-                "For very large projects, consider running 'atlas index' locally before connecting via MCP to avoid timeout issues.",
+                "For large projects, use background=true to run indexing asynchronously, then call wait_for_task with the returned task_id to block until completion.",
             );
             result.warning = Some(msg);
         } else if result.files_discovered > 5_000 && !is_manifest {
             result.warning = Some(
-                "Large project detected. Consider using the default analysis=\"manifest\" mode for a fast initial index. Structural/full analysis is triggered on-demand via lazy structural."
+                "Large project detected. Use background=true to run indexing asynchronously, then call wait_for_task with the returned task_id to block until completion. Also consider the default analysis=\"manifest\" for a faster initial index."
+                    .into(),
+            );
+        } else if result.files_discovered > 5_000 {
+            result.warning = Some(
+                "Large project detected. For subsequent deep indexing (analysis=\"structural\"/\"full\"), use background=true and wait_for_task to avoid blocking the MCP connection."
                     .into(),
             );
         }
 
         let json = serde_json::to_string(&result).unwrap_or_else(|e| e.to_string());
         (json, !result.ok)
+    }
+
+    fn handle_index_background(&self, args: &serde_json::Value) -> (String, bool) {
+        let task_id = self.task_manager.create_task("index", "index");
+        let tid = task_id.clone();
+        let task_manager = self.task_manager.clone();
+        let store = self.store.clone();
+        let project_root = self.project_root.clone();
+
+        let analysis = args["analysis"].as_str().unwrap_or("manifest").to_string();
+        let mode = match analysis.as_str() {
+            "structural" => ExtractionMode::Structural,
+            "full" => ExtractionMode::Full,
+            _ => ExtractionMode::Manifest,
+        };
+        let exclude_patterns: Vec<String> = args["exclude"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let include_patterns: Vec<String> = args["include"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            task_manager.update_progress(&tid, 1.0, "Starting index...");
+
+            let is_persistent = store.db_path() != std::path::Path::new(":memory:");
+            let _lock_guard = if is_persistent {
+                match FileLock::acquire(&store) {
+                    Ok(g) => Some(g),
+                    Err(e) => {
+                        task_manager.fail_task(
+                            &tid,
+                            &format!(
+                                "Cannot acquire exclusive lock (another atlas process may be indexing): {:#}",
+                                e
+                            ),
+                        );
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+
+            task_manager.update_progress(&tid, 5.0, "Discovering and indexing files...");
+            let is_manifest = matches!(mode, ExtractionMode::Manifest);
+            match run_index(
+                &store,
+                &project_root,
+                mode,
+                &include_patterns,
+                &exclude_patterns,
+                None,
+            ) {
+                Ok(stats) => {
+                    let mut result = IndexResult {
+                        ok: true,
+                        files_discovered: stats.discovered,
+                        files_indexed: stats.indexed,
+                        files_failed: stats.failed,
+                        symbols_found: stats.symbols,
+                        references_resolved: stats.resolved,
+                        errors: Vec::new(),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        warning: None,
+                    };
+                    if result.duration_ms > 30_000 {
+                        let mut msg = "Indexing took over 30 seconds. ".to_string();
+                        if !is_manifest {
+                            msg.push_str(
+                                "For a faster first index, use the default analysis=\"manifest\" mode (top-level symbols only). Full structural analysis is triggered on-demand via lazy structural. ",
+                            );
+                        }
+                        msg.push_str(
+                            "For very large projects, consider running 'atlas index' locally before connecting via MCP to avoid timeout issues.",
+                        );
+                        result.warning = Some(msg);
+                    } else if result.files_discovered > 5_000 && !is_manifest {
+                        result.warning = Some(
+                            "Large project detected. Consider using the default analysis=\"manifest\" mode for a fast initial index. Structural/full analysis is triggered on-demand via lazy structural."
+                                .into(),
+                        );
+                    }
+                    task_manager.complete_task(
+                        &tid,
+                        serde_json::to_value(&result)
+                            .unwrap_or_else(|e| json!({ "ok": false, "error": e.to_string() })),
+                    );
+                }
+                Err(e) => {
+                    task_manager.fail_task(&tid, &format!("Index failed: {:#}", e));
+                }
+            }
+        });
+
+        (
+            serde_json::to_string_pretty(&json!({
+                "background": true,
+                "task_id": task_id,
+                "tool_name": "index",
+                "method": "index",
+                "status": "running",
+                "progress": null,
+                "note": "Index is running in background. Use task_status to poll or wait_for_task to block for completion."
+            }))
+            .unwrap_or_else(|e| e.to_string()),
+            false,
+        )
     }
 }
 
@@ -174,14 +321,25 @@ pub(crate) fn run_index(
     let discovered = discover_files(project_root, &config)?;
     if discovered.is_empty() {
         return Ok(IndexStats {
-            discovered: 0, indexed: 0, failed: 0, symbols: 0, resolved: 0,
+            discovered: 0,
+            indexed: 0,
+            failed: 0,
+            symbols: 0,
+            resolved: 0,
         });
     }
 
     // ── Progress: discovery complete ─────────────────────────────────────
     let total_files = discovered.len() as f64;
     if let Some(ref sender) = progress_sender {
-        let _ = sender.send((0.10, Some(1.0), Some(format!("Discovered {} files, starting extraction...", discovered.len()))));
+        let _ = sender.send((
+            0.10,
+            Some(1.0),
+            Some(format!(
+                "Discovered {} files, starting extraction...",
+                discovered.len()
+            )),
+        ));
     }
 
     // ── Language init ──────────────────────────────────────────────────────
@@ -189,7 +347,9 @@ pub(crate) fn run_index(
         .iter()
         .filter_map(|p| Language::from_path(p))
         .fold(Vec::new(), |mut acc, lang| {
-            if !acc.contains(&lang) { acc.push(lang); }
+            if !acc.contains(&lang) {
+                acc.push(lang);
+            }
             acc
         });
 
@@ -243,7 +403,14 @@ pub(crate) fn run_index(
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
         let file_id = FileId::generate(&rel_path.to_string_lossy());
 
-        match pool.extract_one(frontend, file_id, &abs_path, &source, &content_hash, mode.clone()) {
+        match pool.extract_one(
+            frontend,
+            file_id,
+            &abs_path,
+            &source,
+            &content_hash,
+            mode.clone(),
+        ) {
             Ok(facts) => {
                 total_symbols += facts.symbols.len();
                 // Insert facts into a separate write Store connection
@@ -257,7 +424,11 @@ pub(crate) fn run_index(
             }
             Err(e) => {
                 failed += 1;
-                tracing::warn!("Extraction failed for {}: {}", rel_path.display(), e.message);
+                tracing::warn!(
+                    "Extraction failed for {}: {}",
+                    rel_path.display(),
+                    e.message
+                );
             }
         }
 
@@ -265,8 +436,13 @@ pub(crate) fn run_index(
         if let Some(ref sender) = progress_sender {
             if i % 50 == 0 || i == discovered.len() - 1 {
                 let fraction = 0.10 + 0.50 * (indexed + failed) as f64 / total_files.max(1.0);
-                let msg = format!("Extracting files... {}/{} processed ({} indexed, {} failed)", 
-                    indexed + failed, discovered.len(), indexed, failed);
+                let msg = format!(
+                    "Extracting files... {}/{} processed ({} indexed, {} failed)",
+                    indexed + failed,
+                    discovered.len(),
+                    indexed,
+                    failed
+                );
                 let _ = sender.send((fraction.min(0.60), Some(1.0), Some(msg)));
             }
         }
@@ -274,15 +450,23 @@ pub(crate) fn run_index(
 
     // ── Progress: extraction complete ────────────────────────────────────
     if let Some(ref sender) = progress_sender {
-        let _ = sender.send((0.65, Some(1.0), Some(format!(
-            "Extraction complete: {} indexed, {} failed ({} symbols found)",
-            indexed, failed, total_symbols
-        ))));
+        let _ = sender.send((
+            0.65,
+            Some(1.0),
+            Some(format!(
+                "Extraction complete: {} indexed, {} failed ({} symbols found)",
+                indexed, failed, total_symbols
+            )),
+        ));
     }
 
     // ── Reference resolution ──────────────────────────────────────────────
     if let Some(ref sender) = progress_sender {
-        let _ = sender.send((0.75, Some(1.0), Some("Resolving symbol references...".into())));
+        let _ = sender.send((
+            0.75,
+            Some(1.0),
+            Some("Resolving symbol references...".into()),
+        ));
     }
     let mut resolver = ReferenceResolver::new(store.clone());
     let (resolved_refs, _stats) = match resolver.resolve_all() {
@@ -301,10 +485,14 @@ pub(crate) fn run_index(
 
     // ── Progress: indexing complete ──────────────────────────────────────
     if let Some(ref sender) = progress_sender {
-        let _ = sender.send((1.0, Some(1.0), Some(format!(
-            "Indexing complete: {} files indexed ({} failed), {} symbols, {} resolved",
-            indexed, failed, total_symbols, _stats.resolved
-        ))));
+        let _ = sender.send((
+            1.0,
+            Some(1.0),
+            Some(format!(
+                "Indexing complete: {} files indexed ({} failed), {} symbols, {} resolved",
+                indexed, failed, total_symbols, _stats.resolved
+            )),
+        ));
     }
 
     Ok(IndexStats {

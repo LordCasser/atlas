@@ -6,8 +6,9 @@
 //! Handler methods are organized by capability category in sub-modules:
 //!   status, search, graph, context, trace, capability.
 
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use atlas_engine::ContextBuilder;
 use atlas_engine::FileId;
@@ -24,6 +25,16 @@ use serde_json::{Value, json};
 pub(crate) type ProgressReport = (f64, Option<f64>, Option<String>);
 /// Channel sender for progress updates during long-running operations.
 pub(crate) type ProgressSender = tokio::sync::mpsc::UnboundedSender<ProgressReport>;
+
+/// Prepared project state produced by `open_project(background=true)`.
+///
+/// The background worker cannot mutate the live router safely, so it stores the
+/// prepared store/root here. `task_status` and `wait_for_task` activate it after
+/// the task reaches `completed`.
+pub(crate) struct PendingProjectActivation {
+    pub(crate) project_root: std::path::PathBuf,
+    pub(crate) store: Arc<Store>,
+}
 
 // -------------------------------------------------------------------
 // Sub-modules — one per capability category
@@ -68,6 +79,8 @@ pub struct ToolRouter {
     pub(crate) progress_sender: Option<ProgressSender>,
     /// Background task manager for `background: true` mode.
     pub(crate) task_manager: Arc<crate::task_manager::TaskManager>,
+    /// Project activations prepared by background `open_project` tasks.
+    pub(crate) pending_project_activations: Arc<Mutex<HashMap<String, PendingProjectActivation>>>,
 }
 
 impl ToolRouter {
@@ -97,6 +110,7 @@ impl ToolRouter {
             last_signature_check: std::time::Instant::now(),
             progress_sender: None,
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
+            pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -118,6 +132,7 @@ impl ToolRouter {
             last_signature_check: std::time::Instant::now(),
             progress_sender: None,
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
+            pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -145,6 +160,21 @@ impl ToolRouter {
                 | "impact"
                 | "context"
         )
+    }
+
+    /// Return whether this concrete tool call needs the graph before dispatch.
+    ///
+    /// Background-capable tools must not perform expensive graph construction in
+    /// the foreground before returning their `task_id`.
+    pub fn tool_call_requires_graph(name: &str, arguments: &Value) -> bool {
+        let background = arguments
+            .get("background")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if background && matches!(name, "search") {
+            return false;
+        }
+        Self::tool_requires_graph(name)
     }
 
     /// Build the graph engine on first use.
@@ -217,6 +247,20 @@ impl ToolRouter {
         self.cached_signature.clear();
         self.last_graph_signature.clear();
         self.last_signature_check = std::time::Instant::now();
+    }
+
+    /// Activate a prepared background `open_project` result, if one exists.
+    pub(crate) fn activate_pending_project_for_task(&mut self, task_id: &str) -> Option<String> {
+        let pending = self
+            .pending_project_activations
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.remove(task_id));
+        pending.map(|activation| {
+            let project = activation.project_root.display().to_string();
+            self.activate_project(activation.project_root, activation.store);
+            project
+        })
     }
 
     /// Refresh the graph snapshot if an external index/sync has changed the DB.
@@ -308,7 +352,7 @@ impl ToolRouter {
         }
     }
 
-    pub(crate) fn handle_task_status(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_task_status(&mut self, args: &serde_json::Value) -> (String, bool) {
         let task_id = get_str(args, "task_id");
         if task_id.is_empty() {
             return ("Missing task_id parameter".to_string(), true);
@@ -323,6 +367,7 @@ impl ToolRouter {
                 let mut response = json!({
                     "task_id": info.task_id,
                     "tool_name": info.tool_name,
+                    "method": info.method,
                     "status": status_str,
                     "progress": info.progress,
                     "progress_message": info.progress_message,
@@ -334,7 +379,19 @@ impl ToolRouter {
                 if let Some(ref error) = info.error {
                     response["error"] = serde_json::Value::String(error.clone());
                 }
-                (serde_json::to_string_pretty(&response).unwrap_or_else(|e| e.to_string()), false)
+                if status_str == "completed" && info.method == "open_project" {
+                    if let Some(project) = self.activate_pending_project_for_task(&info.task_id) {
+                        response["activation"] = serde_json::Value::String("activated".into());
+                        response["activated_project"] = serde_json::Value::String(project);
+                    } else {
+                        response["activation"] =
+                            serde_json::Value::String("already_activated".into());
+                    }
+                }
+                (
+                    serde_json::to_string_pretty(&response).unwrap_or_else(|e| e.to_string()),
+                    false,
+                )
             }
             None => (format!("Task not found: {}", task_id), true),
         }
@@ -380,28 +437,32 @@ pub fn make_all_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "index".into(),
-            description: "Index/re-index the project. Triggers extraction→resolution→graph pipeline. Default analysis=\"manifest\" is fastest (top-level symbols only, <5s for large projects). Use analysis=\"structural\" for symbols+callgraph or analysis=\"full\" for complete dataflow/CFG. Lazy structural extraction upgrades manifest data on-demand. Parameters: analysis (\"manifest\" default | \"structural\" | \"full\"), include (glob patterns to restrict to), exclude (glob patterns to skip).".into(),
+            description: "Index/re-index the project. Default analysis=\"manifest\" (fast, top-level only). Use background=true + wait_for_task for large projects to avoid blocking. analysis=\"structural\" for callgraph, \"full\" for dataflow. Lazy structural upgrades manifest data on-demand. Parameters: analysis (\"manifest\" default), include/exclude glob patterns, background (default false).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
-                    "analysis": { "type": "string", "description": "Analysis depth: \"manifest\" (default, fastest, top-level symbols only), \"structural\" (symbols+callgraph), or \"full\" (slow, complete dataflow+CFG)" },
+                    "analysis": { "type": "string", "enum": ["manifest", "structural", "full"], "description": "Analysis depth: \"manifest\" (default, fastest, top-level symbols only), \"structural\" (symbols+callgraph), or \"full\" (slow, complete dataflow/CFG)" },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns to restrict indexing to specific directories/files (e.g. [\"src/**\"])" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns for directories/files to skip (e.g. [\"**/test/**\", \"**/*.spec.ts\"])" },
+                    "background": { "type": "boolean", "description": "Run indexing as a background task (returns task_id for task_status/wait_for_task)" },
                 })),
                 required: None,
             },
         },
         Tool {
             name: "open_project".into(),
-            description: "Open and activate a project. Always prefer the default analysis=\"manifest\" for fast indexing (<5s even on large projects); only use \"structural\" or \"full\" when you specifically need deep callgraph or dataflow analysis. Lazy structural upgrades manifest data on-demand at query time. Defaults to storage=\"memory\", index=false. Parameters: project_path (required, absolute path), storage (\"memory\" default | \"persistent\"), index (default false), analysis (\"manifest\" default | \"structural\" | \"full\"), include (list of glob patterns), exclude (list of glob patterns).".into(),
+            description: "Open and activate a project. For large projects, use background=true + wait_for_task to avoid blocking the MCP connection. Defaults to storage=\"memory\", index=false for fast switching. Parameters: project_path (required), storage (\"memory\" default), index (default false), analysis (\"manifest\" default), include/exclude, scan_files, background.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "project_path": { "type": "string", "description": "Absolute path to the project directory to open" },
-                    "storage": { "type": "string", "description": "Storage mode: \"memory\" (in-memory, zero footprint, default) or \"persistent\" (project/.atlas/atlas.db)" },
-                    "index": { "type": "boolean", "description": "Whether to run the index pipeline after opening (default true)" },
-                    "analysis": { "type": "string", "description": "Analysis depth: prefer \"manifest\" (default, fastest, top-level only). Use \"structural\" only for deep callgraph/symbol queries, \"full\" only for dataflow" },
+                    "storage": { "type": "string", "enum": ["memory", "persistent"], "description": "Storage mode: \"memory\" (in-memory, zero footprint, default) or \"persistent\" (project/.atlas/atlas.db)" },
+                    "index": { "type": "boolean", "description": "Whether to run the index pipeline after opening (default false)" },
+                    "analysis": { "type": "string", "enum": ["manifest", "structural", "full"], "description": "Analysis depth: prefer \"manifest\" (default, fastest, top-level only). Use \"structural\" only for deep callgraph/symbol queries, \"full\" only for dataflow" },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns to restrict indexing to specific directories/files" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns for directories/files to skip" },
+                    "scan_files": { "type": "boolean", "description": "Run pre-index file discovery to estimate file_count (default false; can be slow on very large trees)" },
+                    "background": { "type": "boolean", "description": "Prepare/open in a background task; task_status/wait_for_task activates the completed project" },
                 })),
                 required: Some(vec!["project_path".into()]),
             },
@@ -637,22 +698,22 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "task_status".into(),
-            description: "Check the status of a background task started with background=true on index or search tools. Returns task status (running/completed/failed), progress percentage, and result when complete.".into(),
+            description: "Check the status of a background task started with background=true. Returns task status (running/completed/failed), progress percentage, and result when complete.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
-                    "task_id": { "type": "string", "description": "Task ID returned by index/search when background=true" },
+                    "task_id": { "type": "string", "description": "Task ID returned by a tool when background=true" },
                 })),
                 required: Some(vec!["task_id".into()]),
             },
         },
         Tool {
             name: "wait_for_task".into(),
-            description: "Block until a background task completes. Use after index/search with background=true to get the final result without polling. Parameters: task_id (required), timeout_secs (default 30, max 300), poll_interval_secs (default 2, 1-10).".into(),
+            description: "Block until a background task completes. Use after any tool that returns background=true and a task_id. For long operations: call index/open_project with background=true, then immediately call wait_for_task with the returned task_id to block until done. Parameters: task_id (required), timeout_secs (default 30, max 300), poll_interval_secs (default 2).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
-                    "task_id": { "type": "string", "description": "Task ID from index/search background=true response" },
+                    "task_id": { "type": "string", "description": "Task ID from a background=true response" },
                     "timeout_secs": { "type": "integer", "description": "Max seconds to wait (default 30, max 300)" },
                     "poll_interval_secs": { "type": "integer", "description": "Seconds between polls (default 2, 1-10)" },
                 })),
