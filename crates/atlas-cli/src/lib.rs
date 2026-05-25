@@ -106,6 +106,9 @@ pub enum Commands {
     Sync {
         #[arg(short, long, default_value = ".")]
         project: String,
+        /// Analysis depth: "structural" (default) | "manifest" (top-level only) | "full"
+        #[arg(long, default_value = "structural")]
+        analysis: String,
     },
     /// Search for symbols
     Search {

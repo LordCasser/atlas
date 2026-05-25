@@ -30,14 +30,17 @@ use std::time::Instant;
 pub struct SyncEngine {
     store: Arc<Store>,
     project_root: PathBuf,
+    mode: ExtractionMode,
 }
 
 impl SyncEngine {
     pub fn new(store: Arc<Store>, project_root: PathBuf) -> Self {
-        Self {
-            store,
-            project_root,
-        }
+        Self { store, project_root, mode: ExtractionMode::Structural }
+    }
+
+    /// Create a SyncEngine with a specific extraction mode.
+    pub fn with_mode(store: Arc<Store>, project_root: PathBuf, mode: ExtractionMode) -> Self {
+        Self { store, project_root, mode }
     }
 
     /// Perform a full incremental sync:
@@ -93,6 +96,8 @@ impl SyncEngine {
                 .delete_edges_for_file_references(&file_id)
                 .with_context(|| format!("failed to delete edges for {}", path.display()))?;
             self.store.delete_file_data(&file_id)?;
+            // Also clean per-file index layer records
+            let _ = self.store.delete_file_index_layers(&file_id);
             stats.files_removed += 1;
         }
 
@@ -112,6 +117,8 @@ impl SyncEngine {
                 .delete_edges_for_file_references(&file_id)
                 .with_context(|| format!("failed to delete edges for {}", path.display()))?;
             self.store.delete_file_data(&file_id)?;
+            // Also clean per-file index layer records
+            let _ = self.store.delete_file_index_layers(&file_id);
         }
         let del_count = changed.deleted.len() + changed.modified.len();
         let del_timing = del_timer.items(del_count as u64).finish();
@@ -271,7 +278,7 @@ impl SyncEngine {
         let file_id = types::ids::FileId::generate(sp.as_str());
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
 
-        let facts = extract_file_with_mode(&frontend, file_id, relative, &source, &content_hash, ExtractionMode::Structural)?;
+        let facts = extract_file_with_mode(&frontend, file_id, relative, &source, &content_hash, self.mode.clone())?;
 
         self.store.insert_file_facts(&facts)?;
         Ok(())

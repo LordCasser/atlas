@@ -48,30 +48,25 @@ pub fn run(
     }
 
     let results = search.search(query, limit, &options)?;
-    if results.is_empty() {
-        // Try lazy structural extraction for the query name
-        lazy_structural_for_query(&store_arc, root, query)?;
-        // Re-run search after potential lazy extraction
-        let results = search.search(query, limit, &options)?;
-        if results.is_empty() {
-            println!("No results found for '{}'", query);
-            return Ok(());
-        }
-        display_results(query, root, &results, json)?;
+
+    // Transparent lazy structural: if no results or only manifest-layer,
+    // trigger extraction silently and re-search.
+    let needs_lazy = results.is_empty()
+        || results.iter().any(|r| r.symbol.layer == "manifest");
+
+    let final_results = if needs_lazy {
+        let _ = lazy_structural_for_query(&store_arc, root, query);
+        search.search(query, limit, &options)?
+    } else {
+        results
+    };
+
+    if final_results.is_empty() {
+        println!("No results found for '{}'", query);
         return Ok(());
     }
 
-    // Check if any results are from manifest layer — trigger lazy structural
-    let has_manifest = results.iter().any(|r| r.symbol.layer == "manifest");
-    if has_manifest {
-        eprintln!("Note: some symbols are from manifest index. Triggering structural extraction...");
-        lazy_structural_for_query(&store_arc, root, query)?;
-        let results = search.search(query, limit, &options)?;
-        display_results(query, root, &results, json)?;
-        return Ok(());
-    }
-
-    display_results(query, root, &results, json)
+    display_results(query, root, &final_results, json)
 }
 
 // ── Display ───────────────────────────────────────────────────────────────
@@ -139,10 +134,7 @@ fn lazy_structural_for_query(
     let lazy = LazyStructuralService::new(Arc::clone(store), Some(root.clone()));
     let result = lazy.ensure_structural_for_symbol(query)?;
     if result.files_built > 0 {
-        eprintln!(
-            "  Lazy structural: extracted {} files ({} cached, budget exceeded: {})",
-            result.files_built, result.files_cached, result.budget_exceeded
-        );
+        tracing::info!("Lazy structural: extracted {} files for '{}'", result.files_built, query);
     }
     Ok(())
 }

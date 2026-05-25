@@ -3,14 +3,21 @@
 use crate::runtime::{CommandContext, DbMode};
 use anyhow::{Context, Result};
 use atlas_engine::FileLock;
+use atlas_engine::ExtractionMode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub fn run(project: &str) -> Result<()> {
+pub fn run(project: &str, analysis: &str) -> Result<()> {
+    let mode = match analysis {
+        "manifest" => ExtractionMode::Manifest,
+        "full" => ExtractionMode::Full,
+        _ => ExtractionMode::Structural,
+    };
+
     let ctx = CommandContext::open(project, DbMode::ExistingReadWrite)?;
     let _lock = FileLock::acquire(&ctx.store)
         .context("Another atlas process is modifying this project. Wait for it to finish, or stop the other process first.")?;
 
-    let engine = atlas_engine::SyncEngine::new(ctx.store.clone(), ctx.root);
+    let engine = atlas_engine::SyncEngine::with_mode(ctx.store.clone(), ctx.root, mode);
 
     // Detect and report changes
     let changed = engine.detect_changes()?;

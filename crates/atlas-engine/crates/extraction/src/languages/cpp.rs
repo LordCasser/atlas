@@ -154,6 +154,9 @@ impl SymbolExtractorSpec for CppAdapter {
     fn definition_query(&self) -> &str {
         include_str!("../../queries/cpp/definitions.scm")
     }
+    fn manifest_query(&self) -> &str {
+        include_str!("../../queries/cpp/manifest.scm")
+    }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported()
     }

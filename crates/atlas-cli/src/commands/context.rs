@@ -5,6 +5,7 @@ use anyhow::Context;
 use atlas_engine::ContextBuilder;
 use atlas_engine::Store;
 use atlas_engine::GraphEngine;
+use atlas_engine::LazyStructuralService;
 use atlas_engine::SymbolDef;
 use std::sync::Arc;
 
@@ -12,6 +13,12 @@ pub fn run(query: &str, project: &str) -> anyhow::Result<()> {
     let ctx = CommandContext::open(project, DbMode::ExistingReadOnly)?;
     let store = ctx.store;
     let root = &ctx.root;
+
+    // Transparent lazy structural: ensure the query symbol has structural data
+    {
+        let lazy = LazyStructuralService::new(Arc::clone(&store), Some(root.clone()));
+        let _ = lazy.ensure_structural_for_symbol(query);
+    }
 
     let graph = GraphEngine::from_store(&store, 0.3).context("Failed to load graph snapshot")?;
     let graph = Arc::new(graph);

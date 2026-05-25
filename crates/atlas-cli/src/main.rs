@@ -46,9 +46,9 @@ fn main() -> anyhow::Result<()> {
             let _span = tracing::info_span!("index", project = %project).entered();
             atlas_cli::commands::index::run(project, &include, &scope, &exclude, analysis)?;
         }
-        Commands::Sync { project } => {
+        Commands::Sync { project, analysis } => {
             let _span = tracing::info_span!("sync", project = %project).entered();
-            atlas_cli::commands::sync::run(project)?;
+            atlas_cli::commands::sync::run(project, analysis)?;
         }
         Commands::Search {
             query,

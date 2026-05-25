@@ -10,6 +10,7 @@
 
 use crate::runtime::{CommandContext, DbMode};
 use atlas_engine::{RawTraceEngine, TraceQueryResponse};
+use atlas_engine::LazyStructuralService;
 use atlas_engine::SymbolId;
 
 /// Helper: in JSON mode, always output a TraceQueryResponse envelope, even for
@@ -54,6 +55,12 @@ pub fn run_point(
             );
         }
     };
+
+    // Transparent lazy structural: ensure the target file has structural data
+    {
+        let lazy = LazyStructuralService::new(ctx.store.clone(), Some(ctx.root.clone()));
+        let _ = lazy.ensure_structural_for_file(&file_id);
+    }
 
     let resp = engine.trace_point(&file_id, line, column);
 
@@ -161,6 +168,12 @@ pub fn run_variable(
             );
         }
     };
+
+    // Transparent lazy structural: ensure the target file has structural data
+    {
+        let lazy = LazyStructuralService::new(ctx.store.clone(), Some(ctx.root.clone()));
+        let _ = lazy.ensure_structural_for_file(&file_id);
+    }
 
     let resp = engine.trace_variable(&file_id, line, column, max_depth);
 
