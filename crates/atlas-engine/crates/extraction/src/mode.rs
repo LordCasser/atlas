@@ -10,27 +10,36 @@ use types::lazy::LazyWindow;
 ///
 /// # Phase matrix
 ///
-/// | Phase                | Structural | LazyDataflow | Full |
-/// |----------------------|:----------:|:------------:|:----:|
-/// | 1. parse            | ✓          | ✓            | ✓    |
-/// | 2. symbols          | ✓          | ✗ (reuse)    | ✓    |
-/// | 3. references       | ✓          | ✗ (reuse)    | ✓    |
-/// | 4. imports          | ✓          | ✗ (reuse)    | ✓    |
-/// | 5. scopes           | ✓          | ✗ (reuse)    | ✓    |
-/// | 7. scope_tree       | ✓          | ✗ (reuse)    | ✓    |
-/// | 7a. lexical_bindings| ✓          | window only   | ✓    |
-/// | 7b. dataflow        | ✗          | window only   | ✓    |
-/// | 7c. use-def         | ✗          | window only   | ✓    |
-/// | 7e. cfg             | ✗          | window only   | ✓    |
-/// | 8. semantic_bind    | ✓          | ✗ (reuse)    | ✓    |
-/// | 8a. ref binding uses| ✗ (skip)   | window only   | ✓    |
-/// | 9. callsites        | ✓          | ✗ (reuse)    | ✓    |
-/// | 9a. backfill        | partial*   | data_node_id  | ✓    |
-/// | 10. exports         | ✓          | ✗ (reuse)    | ✓    |
+/// | Phase                | Manifest | Structural | LazyDataflow | Full |
+/// |----------------------|:--------:|:----------:|:------------:|:----:|
+/// | 1. parse            | ✓        | ✓          | ✓            | ✓    |
+/// | 2. symbols          | top-level| ✓          | ✗ (reuse)    | ✓    |
+/// | 3. references       | ✗        | ✓          | ✗ (reuse)    | ✓    |
+/// | 4. imports          | ✗        | ✓          | ✗ (reuse)    | ✓    |
+/// | 5. scopes           | ✗        | ✓          | ✗ (reuse)    | ✓    |
+/// | 7. scope_tree       | ✗        | ✓          | ✗ (reuse)    | ✓    |
+/// | 7a. lexical_bindings| ✗        | ✓          | window only   | ✓    |
+/// | 7b. dataflow        | ✗        | ✗          | window only   | ✓    |
+/// | 7c. use-def         | ✗        | ✗          | window only   | ✓    |
+/// | 7e. cfg             | ✗        | ✗          | window only   | ✓    |
+/// | 8. semantic_bind    | ✗        | ✓          | ✗ (reuse)    | ✓    |
+/// | 8a. ref binding uses| ✗        | ✗ (skip)   | window only   | ✓    |
+/// | 9. callsites        | ✗        | ✓          | ✗ (reuse)    | ✓    |
+/// | 9a. backfill        | ✗        | partial*   | data_node_id  | ✓    |
+/// | 10. exports         | ✗        | ✓          | ✗ (reuse)    | ✓    |
 ///
+/// *Manifest: only top-level symbols (file-scope declarations), no references/scopes/etc.
 /// *Structural: backfills callsite range/callee only (no data_node_id).
 #[derive(Debug, Clone)]
 pub enum ExtractionMode {
+    /// Lightweight manifest mode (`--analysis manifest`).
+    ///
+    /// Produces only top-level symbols (file-scope function/struct/enum/typedef
+    /// declarations).  Does NOT produce references, scopes, imports, dataflow,
+    /// cfg, callsites, or exports.  Intended for fast global candidate indexing
+    /// that feeds the query-driven LazyStructuralService.
+    Manifest,
+
     /// Default indexing mode.
     ///
     /// Produces: symbols, references, imports, scopes, scope tree,
@@ -58,6 +67,11 @@ pub enum ExtractionMode {
 }
 
 impl ExtractionMode {
+    /// Whether manifest-level facts (top-level symbols only) should be produced.
+    pub fn produces_manifest(&self) -> bool {
+        matches!(self, Self::Manifest)
+    }
+
     /// Whether structural facts (symbols, references, scopes, imports,
     /// callsites, exports) should be produced.
     pub fn produces_structural(&self) -> bool {

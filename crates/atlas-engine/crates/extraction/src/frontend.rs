@@ -81,6 +81,13 @@ pub trait ParserSpec: Send + Sync {
 pub trait SymbolExtractorSpec: Send + Sync {
     /// S-expression query for symbol definitions.
     fn definition_query(&self) -> &str;
+    /// S-expression query for manifest-level (top-level only) symbol definitions.
+    ///
+    /// Defaults to [`definition_query`] for languages that don't have a
+    /// separate manifest query yet.
+    fn manifest_query(&self) -> &str {
+        self.definition_query()
+    }
     /// Feature support for symbol extraction.
     fn capability(&self) -> FeatureSupport;
     /// Normalize a definition capture into a [`SymbolDef`], or `None`

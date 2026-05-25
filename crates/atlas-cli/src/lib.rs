@@ -89,9 +89,12 @@ pub enum Commands {
         /// Project root directory
         #[arg(short, long, default_value = ".")]
         project: String,
-        /// Only include files matching this glob pattern (e.g. "src/**/*.rs")
+        /// Only include files matching these glob patterns (can be specified multiple times, e.g. --include "src/**")
         #[arg(long)]
-        include: Option<String>,
+        include: Vec<String>,
+        /// Restrict indexing to these directories (convenience: --scope drivers/net is equivalent to --include "drivers/net/**")
+        #[arg(long)]
+        scope: Vec<String>,
         /// Exclude files matching these glob patterns (can be specified multiple times, e.g. "**/*.test.ts")
         #[arg(long)]
         exclude: Vec<String>,

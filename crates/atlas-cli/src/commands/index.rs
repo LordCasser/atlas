@@ -54,9 +54,10 @@ struct HashCheckResult {
     deleted: Vec<PathBuf>,
 }
 
-pub fn run(project: &str, include: Option<&str>, exclude: &[String], analysis: &str) -> anyhow::Result<()> {
+pub fn run(project: &str, includes: &[String], scopes: &[String], exclude: &[String], analysis: &str) -> anyhow::Result<()> {
     // Determine extraction mode from --analysis flag
     let mode = match analysis {
+        "manifest" => ExtractionMode::Manifest,
         "full" => ExtractionMode::Full,
         _ => ExtractionMode::Structural, // default
     };
@@ -70,12 +71,20 @@ pub fn run(project: &str, include: Option<&str>, exclude: &[String], analysis: &
     let pipeline_start = Instant::now();
     let mut phase_timings = PhaseTimings::new();
 
+    // Merge --include and --scope into a single include_patterns list.
+    // --scope "drivers/net" is converted to "drivers/net/**".
+    let mut include_patterns: Vec<String> = includes.to_vec();
+    for scope in scopes {
+        let pattern = scope_to_glob(scope);
+        include_patterns.push(pattern);
+    }
+
     // ── Phase: Discovery ───────────────────────────────────────────────────
     println!("Discovering source files...");
     let disc_timer = PhaseTimer::start("Discovery");
     let mut config = DiscoveryConfig::default();
-    if let Some(pat) = include {
-        config.include_patterns = vec![pat.to_string()];
+    if !include_patterns.is_empty() {
+        config.include_patterns = include_patterns.clone();
     }
     if !exclude.is_empty() {
         config.exclude_patterns = exclude.iter().map(|s| s.to_string()).collect();
@@ -202,6 +211,13 @@ pub fn run(project: &str, include: Option<&str>, exclude: &[String], analysis: &
     }
     if !hash_result.deleted.is_empty() {
         println!("  {} deleted files cleaned up", hash_result.deleted.len());
+    }
+    // Show the indexed scope when include/scope filters are active
+    if !include_patterns.is_empty() {
+        println!("  Index scope:");
+        for pat in &include_patterns {
+            println!("    - {}", pat);
+        }
     }
     println!("\nExtracting files...");
 
@@ -522,6 +538,9 @@ pub fn run(project: &str, include: Option<&str>, exclude: &[String], analysis: &
     ctx.store.set_metadata("last_index_time", &now)?;
     ctx.store
         .set_metadata("last_index_root", &root.display().to_string())?;
+    // Record indexed scope for completeness tracking
+    ctx.store
+        .set_metadata("indexed_scope", &indexed_scope_json(&include_patterns))?;
 
     // ── Phase timing summary ─────────────────────────────────────────────
     let total_elapsed = pipeline_start.elapsed();
@@ -733,9 +752,62 @@ fn print_per_language_stats(stats: &PerLanguageStats) {
     }
 }
 
+// ── Scope helpers ──────────────────────────────────────────────────────────
+
+/// Convert a --scope directory argument into a recursive glob.
+///
+/// If the argument already contains a `*`, it is returned as-is
+/// (user supplied their own glob).  Otherwise `"/**"` is appended
+/// so that `drivers/net` becomes `drivers/net/**`.
+fn scope_to_glob(scope: &str) -> String {
+    if scope.contains('*') {
+        scope.to_string()
+    } else {
+        format!("{}/**", scope.trim_end_matches('/'))
+    }
+}
+
+/// Serialise the active include_patterns as a JSON array for `project_metadata`.
+fn indexed_scope_json(patterns: &[String]) -> String {
+    if patterns.is_empty() {
+        "[]".to_string()
+    } else {
+        serde_json::to_string(patterns).unwrap_or_else(|_| "[]".to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scope_to_glob_bare_dir() {
+        assert_eq!(scope_to_glob("drivers/net"), "drivers/net/**");
+    }
+
+    #[test]
+    fn scope_to_glob_trailing_slash() {
+        assert_eq!(scope_to_glob("net/"), "net/**");
+    }
+
+    #[test]
+    fn scope_to_glob_already_glob() {
+        assert_eq!(scope_to_glob("src/**/*.rs"), "src/**/*.rs");
+        assert_eq!(scope_to_glob("*.ts"), "*.ts");
+    }
+
+    #[test]
+    fn indexed_scope_json_empty() {
+        assert_eq!(indexed_scope_json(&[]), "[]");
+    }
+
+    #[test]
+    fn indexed_scope_json_nonempty() {
+        let patterns = vec!["drivers/net/**".to_string(), "net/**".to_string()];
+        let json = indexed_scope_json(&patterns);
+        assert!(json.contains("drivers/net/**"));
+        assert!(json.contains("net/**"));
+    }
 
     #[test]
     fn format_duration_ms() {

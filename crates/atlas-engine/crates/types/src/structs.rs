@@ -116,6 +116,14 @@ pub struct SymbolDef {
     /// Namespace path segments (e.g. ["std", "collections"] for C++).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub namespace_path: Vec<String>,
+
+    /// Extraction layer: "manifest" (top-level only), "structural" (full), "dataflow".
+    #[serde(default = "default_layer")]
+    pub layer: String,
+}
+
+fn default_layer() -> String {
+    "structural".to_string()
 }
 
 impl SymbolDef {
@@ -538,6 +546,11 @@ pub struct FileFacts {
     /// When true, the dataflow data may be incomplete (truncated nodes/edges).
     #[serde(default)]
     pub budget_exceeded: bool,
+
+    /// Extraction layer: "manifest" (top-level only), "structural" (full symbols+refs),
+    /// or "dataflow". Defaults to "structural" for backward compatibility.
+    #[serde(default = "default_layer")]
+    pub layer: String,
 }
 
 impl FileFacts {
@@ -713,6 +726,7 @@ mod tests {
             scope_id: None,
             package_name: None,
             namespace_path: vec![],
+            layer: "structural".to_string(),
         }
     }
 

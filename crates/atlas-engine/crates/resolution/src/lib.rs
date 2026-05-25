@@ -146,6 +146,66 @@ impl ReferenceResolver {
         Ok((all_resolved, stats))
     }
 
+    /// Resolve references scoped to a specific set of files (lazy structural).
+    ///
+    /// Unlike [`resolve_all`], this does not scan every file — it only
+    /// processes unresolved references that belong to `file_ids`.  This
+    /// is the incremental path used by [`LazyStructuralService`].
+    pub fn resolve_for_files(
+        &mut self,
+        file_ids: &[FileId],
+    ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
+        if self.global_index.is_none() {
+            self.global_index = Some(GlobalSymbolIndex::build(&self.store)?);
+        }
+
+        let mut all_refs = Vec::new();
+        for fid in file_ids {
+            let refs = self.store.find_references_by_file(fid)?;
+            all_refs.extend(refs);
+        }
+        let total_refs = all_refs.len();
+        let mut stats = ResolutionStats::default();
+        stats.total_refs = total_refs;
+
+        let mut pending_resolutions: Vec<(ReferenceId, ResolvedTarget)> = Vec::new();
+        let mut all_resolved: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
+        let batch_size = 500;
+
+        for reference in &all_refs {
+            // Load context per-file on demand
+            let ctx = match ResolutionContext::build(&self.store, reference.file_id) {
+                Ok(c) => c,
+                Err(e) => {
+                    stats.add_warning(format!("failed to build context: {}", e));
+                    continue;
+                }
+            };
+
+            match self.resolve_one(reference, &ctx) {
+                Some(target) => {
+                    pending_resolutions.push((reference.id, target.clone()));
+                    all_resolved.push((reference.clone(), target.clone()));
+                    stats.resolved += 1;
+                    *stats
+                        .by_strategy
+                        .entry(target.strategy.as_str().to_string())
+                        .or_default() += 1;
+                }
+                None => {
+                    stats.unresolved += 1;
+                }
+            }
+
+            if pending_resolutions.len() >= batch_size {
+                self.flush_resolutions(&mut pending_resolutions, &mut stats);
+            }
+        }
+
+        self.flush_resolutions(&mut pending_resolutions, &mut stats);
+        Ok((all_resolved, stats))
+    }
+
     /// Flush pending resolution updates to the store in batch.
     fn flush_resolutions(
         &self,

@@ -85,6 +85,72 @@ impl GraphBuilder {
         }
     }
 
+    /// Build edges scoped to specific files (lazy structural).
+    ///
+    /// Filters the resolved references to only those originating from
+    /// `file_ids`, then delegates to the standard edge creation path.
+    pub fn build_for_files(
+        &self,
+        resolved: &[(ReferenceUse, ResolvedTarget)],
+        file_ids: &[FileId],
+    ) -> GraphBuilderStats {
+        let file_set: std::collections::HashSet<FileId> = file_ids.iter().copied().collect();
+        let scoped: Vec<&(ReferenceUse, ResolvedTarget)> = resolved
+            .iter()
+            .filter(|(r, _)| file_set.contains(&r.file_id))
+            .collect();
+
+        if scoped.is_empty() {
+            return GraphBuilderStats {
+                edges_built: 0,
+                edges_written: 0,
+                warnings: Vec::new(),
+            };
+        }
+
+        // Delegate to the same parallel edge-creation logic
+        let warnings: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let edges: Vec<RawEdge> = scoped
+            .par_iter()
+            .filter_map(|(reference, target)| {
+                match self.create_edges_for_reference(reference, target) {
+                    Ok(edges) => Some(edges),
+                    Err(e) => {
+                        if let Ok(mut w) = warnings.lock() {
+                            w.push(format!(
+                                "failed to create edges for reference {:?}: {}",
+                                reference.id, e
+                            ));
+                        }
+                        None
+                    }
+                }
+            })
+            .flatten()
+            .collect();
+
+        let edge_count = edges.len();
+        let mut warnings: Vec<String> = warnings.into_inner().unwrap_or_default();
+
+        let edges_written = if !edges.is_empty() {
+            match self.store.batch_insert_edges(&edges) {
+                Ok(()) => edge_count,
+                Err(e) => {
+                    warnings.push(format!("batch edge insert failed ({} edges): {}", edge_count, e));
+                    0
+                }
+            }
+        } else {
+            0
+        };
+
+        GraphBuilderStats {
+            edges_built: edge_count,
+            edges_written,
+            warnings,
+        }
+    }
+
     /// Create structural edges from a resolved reference.
     ///
     /// Produces:

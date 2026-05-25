@@ -217,6 +217,7 @@ mod tests {
             symbol_path: vec![],
             package_name: None,
             namespace_path: vec![],
+            layer: "structural".to_string(),
         }
     }
 

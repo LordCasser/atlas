@@ -40,6 +40,9 @@ impl SymbolExtractorSpec for TypeScriptFrontendSpec {
     fn definition_query(&self) -> &str {
         include_str!("../../queries/typescript/definitions.scm")
     }
+    fn manifest_query(&self) -> &str {
+        include_str!("../../queries/typescript/manifest.scm")
+    }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported()
     }

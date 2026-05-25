@@ -121,13 +121,53 @@ pub fn extract_file_with_mode(
     };
 
     // 2. Extract and normalize definitions
+    // Use manifest_query() for Manifest mode (top-level only), definition_query() otherwise.
+    let definition_src = if mode.produces_manifest() {
+        frontend.symbols.manifest_query()
+    } else {
+        frontend.symbols.definition_query()
+    };
     let mut symbols = extract_and_normalize(
         &ectx,
-        frontend.symbols.definition_query(),
+        definition_src,
         &mut diagnostics,
         "symbols",
         |ctx, capture| frontend.symbols.normalize(ctx, capture),
     )?;
+
+    // Manifest mode: early return — symbols only, no references/scopes/dataflow.
+    if mode.produces_manifest() {
+        let file_path_str = file_path.display().to_string().replace('\\', "/");
+        return Ok(FileFacts {
+            file: FileInfo {
+                file_id,
+                path: file_path_str,
+                language,
+                content_hash: content_hash.to_string(),
+                status: if root.has_error() {
+                    ParseStatus::Partial
+                } else {
+                    ParseStatus::Success
+                },
+            },
+            symbols,
+            scopes: vec![],
+            references: vec![],
+            imports: vec![],
+            exports: vec![],
+            raw_edges: vec![],
+            callsites: vec![],
+            bindings: vec![],
+            binding_uses: vec![],
+            data_nodes: vec![],
+            dataflow_edges: vec![],
+            cfg_nodes: vec![],
+            cfg_edges: vec![],
+            diagnostics,
+            budget_exceeded: false,
+            layer: "manifest".to_string(),
+        });
+    }
 
     // 3. Extract and normalize references
     let mut references = extract_and_normalize(
@@ -576,6 +616,11 @@ pub fn extract_file_with_mode(
         cfg_nodes,
         cfg_edges,
         budget_exceeded,
+        layer: if matches!(mode, ExtractionMode::LazyDataflow { .. }) {
+            "dataflow"
+        } else {
+            "structural"
+        }.to_string(),
     })
 }
 

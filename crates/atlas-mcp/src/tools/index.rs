@@ -46,11 +46,17 @@ impl ToolRouter {
         let start = std::time::Instant::now();
         let analysis = args["analysis"].as_str().unwrap_or("structural");
         let mode = match analysis {
+            "manifest" => ExtractionMode::Manifest,
             "full" => ExtractionMode::Full,
             _ => ExtractionMode::Structural,
         };
 
         let exclude_patterns: Vec<String> = args["exclude"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        let include_patterns: Vec<String> = args["include"]
             .as_array()
             .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default();
@@ -88,7 +94,7 @@ impl ToolRouter {
 
         // Run the index pipeline
         let progress_sender = self.progress_sender.clone();
-        match run_index(&self.store, &self.project_root, mode, &exclude_patterns, progress_sender) {
+        match run_index(&self.store, &self.project_root, mode, &include_patterns, &exclude_patterns, progress_sender) {
             Ok(stats) => {
                 result.ok = true;
                 result.files_discovered = stats.discovered;
@@ -136,12 +142,16 @@ pub(crate) fn run_index(
     store: &Arc<Store>,
     project_root: &std::path::Path,
     mode: ExtractionMode,
+    include_patterns: &[String],
     exclude_patterns: &[String],
     progress_sender: Option<super::ProgressSender>,
 ) -> anyhow::Result<IndexStats> {
     // ── Discovery ──────────────────────────────────────────────────────────
     let _disc_timer = PhaseTimer::start("discovery");
     let mut config = DiscoveryConfig::default();
+    if !include_patterns.is_empty() {
+        config.include_patterns = include_patterns.to_vec();
+    }
     if !exclude_patterns.is_empty() {
         config.exclude_patterns = exclude_patterns.to_vec();
     }

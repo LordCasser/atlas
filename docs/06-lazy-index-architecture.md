@@ -419,16 +419,16 @@ pub enum Completeness {
 8. 测试: manifest index 端到端
 ```
 
-### P2（长期实现）
+### P2（长期实现）— ✅ 已完成
 
 ```
-1. LazyStructuralService (placeholder → 完整实现)
-2. CandidateProvider: symbols 查询 + ripgrep fallback
-3. StructuralLoader: ensure_structural_for_file / for_symbol / for_scope
-4. 增量 resolve_for_files / build_edges_for_files
-5. Completeness 类型 + 所有查询响应集成
-6. MCP lazy structural 自动触发
-7. 测试: lazy structural 端到端
+1. LazyStructuralService (placeholder → 完整实现)       ✅
+2. CandidateProvider: symbols 查询 + ripgrep fallback     ✅
+3. StructuralLoader: ensure_structural_for_file/symbol    ✅
+4. 增量 resolve_for_files / build_edges_for_files         ✅
+5. Completeness 类型 + 所有查询响应集成                   ✅
+6. MCP lazy structural 自动触发                            ✅
+7. 测试: lazy structural 端到端                            ✅
 ```
 
 ---

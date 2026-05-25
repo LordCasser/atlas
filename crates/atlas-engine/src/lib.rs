@@ -34,6 +34,13 @@ use ::lazy as lazy_crate;
 /// Lazy dataflow service: planner + loader for on-demand dataflow.
 pub use lazy_crate::LazyDataflowService;
 
+// ── Internal modules ──────────────────────────────────────────────────────
+
+mod lazy_structural;
+
+/// Lazy structural service: on-demand full structural extraction.
+pub use lazy_structural::{EnsureStructuralResult, LazyStructuralService};
+
 // ─── Re-exports ────────────────────────────────────────────────────────────
 
 /// All core IR types (SymbolDef, ReferenceUse, FileFacts, etc.).
@@ -67,7 +74,7 @@ pub use analysis::trace;
 pub use analysis::trace::TraceEngine as RawTraceEngine;
 pub use analysis::trace::TraceQueryResponse;
 /// Search layer: FTS5 + fuzzy search engine.
-pub use search::{SearchEngine, SearchOptions};
+pub use search::{SearchEngine, SearchOptions, SearchResult};
 /// Context layer: AI context builder (callers, callees, peers).
 pub use context::ContextBuilder;
 /// Sync layer: incremental sync engine, file lock, file discovery.
@@ -90,6 +97,7 @@ pub use filesync::{SyncEngine, SyncStats, FileLock, discovery};
 pub struct Engine {
     store: Arc<Store>,
     lazy_service: lazy_crate::LazyDataflowService,
+    lazy_structural: LazyStructuralService,
     trace: analysis::trace::TraceEngine,
 }
 
@@ -104,8 +112,9 @@ impl Engine {
         let store = Store::open_db(db_path)?;
         let store = Arc::new(store);
         let lazy_service = lazy_crate::LazyDataflowService::new(store.clone(), None);
+        let lazy_structural = LazyStructuralService::new(store.clone(), None);
         let trace = analysis::trace::TraceEngine::new(store.clone());
-        Ok(Self { store, lazy_service, trace })
+        Ok(Self { store, lazy_service, lazy_structural, trace })
     }
 
     /// Open a database file with a project root for snippet extraction.
@@ -116,8 +125,9 @@ impl Engine {
         let store = Store::open_db(db_path)?;
         let store = Arc::new(store);
         let lazy_service = lazy_crate::LazyDataflowService::new(store.clone(), Some(project_root.to_path_buf()));
+        let lazy_structural = LazyStructuralService::new(store.clone(), Some(project_root.to_path_buf()));
         let trace = analysis::trace::TraceEngine::new_with_root(store.clone(), project_root.to_path_buf());
-        Ok(Self { store, lazy_service, trace })
+        Ok(Self { store, lazy_service, lazy_structural, trace })
     }
 
     /// Open an in-memory database (for testing).
@@ -126,8 +136,9 @@ impl Engine {
         store.init_schema()?;
         let store = Arc::new(store);
         let lazy_service = lazy_crate::LazyDataflowService::new(store.clone(), None);
+        let lazy_structural = LazyStructuralService::new(store.clone(), None);
         let trace = analysis::trace::TraceEngine::new(store.clone());
-        Ok(Self { store, lazy_service, trace })
+        Ok(Self { store, lazy_service, lazy_structural, trace })
     }
 
     /// Access the underlying database store.
@@ -138,6 +149,11 @@ impl Engine {
     /// Access the underlying trace engine.
     pub fn trace_engine(&self) -> &analysis::trace::TraceEngine {
         &self.trace
+    }
+
+    /// Access the lazy structural service for on-demand extraction.
+    pub fn lazy_structural(&self) -> &LazyStructuralService {
+        &self.lazy_structural
     }
 
     // ── Extraction ─────────────────────────────────────────────────────

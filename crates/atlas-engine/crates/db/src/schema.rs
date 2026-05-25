@@ -31,7 +31,7 @@
 /// When this value is raised, add matching entries to [`MIGRATIONS`] so
 /// existing databases can be upgraded or explicitly reported as needing a
 /// rebuild.
-pub const CURRENT_SCHEMA_VERSION: i64 = 1;
+pub const CURRENT_SCHEMA_VERSION: i64 = 2;
 /// Complete DDL for a fresh database.
 pub const SCHEMA_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS symbols (
     container_id         BLOB REFERENCES symbols(symbol_id),
     scope_id             BLOB,
     package_name         TEXT,
-    namespace_path_json  TEXT NOT NULL DEFAULT '[]'
+    namespace_path_json  TEXT NOT NULL DEFAULT '[]',
+    layer                TEXT NOT NULL DEFAULT 'structural'     -- manifest | structural
 );
 
 CREATE TABLE IF NOT EXISTS scopes (
@@ -280,6 +281,21 @@ CREATE TABLE IF NOT EXISTS analysis_artifacts (
 CREATE INDEX IF NOT EXISTS idx_artifacts_file
     ON analysis_artifacts(file_id);
 
+-- Per-file per-layer index status: tracks manifest/structural/dataflow
+-- completeness independent of content_hash matching.
+CREATE TABLE IF NOT EXISTS file_index_layers (
+    file_id         BLOB NOT NULL,
+    layer           TEXT NOT NULL,      -- 'manifest' | 'structural' | 'dataflow'
+    content_hash    TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'complete',  -- complete | partial | failed
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (file_id, layer),
+    FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_index_layers_file
+    ON file_index_layers(file_id);
+
 -- FTS5 virtual table for symbol name search
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     name,
@@ -450,12 +466,22 @@ pub struct Migration {
 /// ];
 /// ```
 pub const MIGRATIONS: &[Migration] = &[
-    // V1→V2 example (uncomment and fill when needed):
-    // Migration {
-    //     from_version: 1,
-    //     sql: "ALTER TABLE symbols ADD COLUMN new_field TEXT;",
-    //     description: "v2: add new_field to symbols",
-    // },
+    Migration {
+        from_version: 1,
+        sql: "ALTER TABLE symbols ADD COLUMN layer TEXT NOT NULL DEFAULT 'structural';
+              CREATE TABLE IF NOT EXISTS file_index_layers (
+                  file_id         BLOB NOT NULL,
+                  layer           TEXT NOT NULL,
+                  content_hash    TEXT NOT NULL,
+                  status          TEXT NOT NULL DEFAULT 'complete',
+                  updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                  PRIMARY KEY (file_id, layer),
+                  FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
+              );
+              CREATE INDEX IF NOT EXISTS idx_file_index_layers_file
+                  ON file_index_layers(file_id);",
+        description: "v2: add symbols.layer + file_index_layers table",
+    },
 ];
 
 /// Run pending migrations on a database connection.
@@ -649,8 +675,9 @@ mod tests {
     }
 
     #[test]
-    fn test_migrations_array_is_empty_at_v1() {
-        // V1 is the current version — no migrations needed yet
-        assert!(super::MIGRATIONS.is_empty());
+    fn test_migrations_v1_to_v2_defined() {
+        // V1→V2 migration exists
+        assert_eq!(super::MIGRATIONS.len(), 1);
+        assert_eq!(super::MIGRATIONS[0].from_version, 1);
     }
 }

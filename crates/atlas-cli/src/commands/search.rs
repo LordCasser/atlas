@@ -1,11 +1,12 @@
-//! `atlas search` command — full-text + graph-aware symbol search.
+//! `atlas search` command — full-text + graph-aware symbol search, with lazy structural support.
 
 use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
 use atlas_engine::SearchEngine;
 use atlas_engine::SearchOptions;
-use atlas_engine::{Language, SymbolKind};
+use atlas_engine::{LazyStructuralService, Language, SymbolKind};
 use serde::Serialize;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 pub fn run(
@@ -41,21 +42,46 @@ pub fn run(
     }
     if let Some(lang_str) = language {
         match Language::from_str(lang_str) {
-            Some(lang) => {
-                options.language = Some(lang);
-            }
-            None => {
-                anyhow::bail!("Unknown language '{}'", lang_str);
-            }
+            Some(lang) => { options.language = Some(lang); }
+            None => anyhow::bail!("Unknown language '{}'", lang_str),
         }
     }
 
     let results = search.search(query, limit, &options)?;
     if results.is_empty() {
-        println!("No results found for '{}'", query);
+        // Try lazy structural extraction for the query name
+        lazy_structural_for_query(&store_arc, root, query)?;
+        // Re-run search after potential lazy extraction
+        let results = search.search(query, limit, &options)?;
+        if results.is_empty() {
+            println!("No results found for '{}'", query);
+            return Ok(());
+        }
+        display_results(query, root, &results, json)?;
         return Ok(());
     }
 
+    // Check if any results are from manifest layer — trigger lazy structural
+    let has_manifest = results.iter().any(|r| r.symbol.layer == "manifest");
+    if has_manifest {
+        eprintln!("Note: some symbols are from manifest index. Triggering structural extraction...");
+        lazy_structural_for_query(&store_arc, root, query)?;
+        let results = search.search(query, limit, &options)?;
+        display_results(query, root, &results, json)?;
+        return Ok(());
+    }
+
+    display_results(query, root, &results, json)
+}
+
+// ── Display ───────────────────────────────────────────────────────────────
+
+fn display_results(
+    query: &str,
+    root: &std::path::Path,
+    results: &[atlas_engine::SearchResult],
+    json: bool,
+) -> anyhow::Result<()> {
     if json {
         let json_results: Vec<JsonSearchResult> = results
             .iter()
@@ -66,7 +92,7 @@ pub fn run(
                     kind: r.symbol.kind.as_str().to_string(),
                     qualified_name: r.symbol.qualified_name.clone(),
                     file_path: r.file_path.clone().unwrap_or_default(),
-                    line: r.symbol.range.start_line + 1, // 1-indexed for editor compatibility
+                    line: r.symbol.range.start_line + 1,
                     signature: r.symbol.signature.clone(),
                     snippet,
                     score: (r.score.total * 1000.0).round() / 1000.0,
@@ -80,20 +106,16 @@ pub fn run(
         for (i, r) in results.iter().enumerate() {
             println!(
                 "{:>3}. {:<30} [{:<12}] score={:.3}",
-                i + 1,
-                &r.symbol.name,
-                r.symbol.kind.as_str(),
-                r.score.total,
+                i + 1, &r.symbol.name, r.symbol.kind.as_str(), r.score.total,
             );
-            // Human-readable file path + line number (1-indexed for editor compatibility)
             let path_display = r.file_path.as_deref().unwrap_or("<unknown>");
-            let line = r.symbol.range.start_line + 1; // tree-sitter rows are 0-indexed
+            let line = r.symbol.range.start_line + 1;
             println!("      file:  {}:{}", path_display, line);
             println!("      qname: {}", r.symbol.qualified_name);
+            println!("      layer: {}", r.symbol.layer);
             if let Some(ref sig) = r.symbol.signature {
                 println!("      sig:   {}", sig);
             }
-            // Source code snippet (the definition line + next line for context)
             if let Some(snippet) = read_source_snippet(root, &r.file_path, line) {
                 println!("      code:  {}", snippet.trim());
             }
@@ -104,12 +126,29 @@ pub fn run(
         }
         println!("{} results shown.", results.len());
     }
-
     Ok(())
 }
 
-/// Read a source line from the file for snippet display.
-/// Returns the line at `line_num` (1-indexed) with at most 1 trailing line for context.
+// ── Lazy structural trigger ───────────────────────────────────────────────
+
+fn lazy_structural_for_query(
+    store: &Arc<atlas_engine::Store>,
+    root: &PathBuf,
+    query: &str,
+) -> anyhow::Result<()> {
+    let lazy = LazyStructuralService::new(Arc::clone(store), Some(root.clone()));
+    let result = lazy.ensure_structural_for_symbol(query)?;
+    if result.files_built > 0 {
+        eprintln!(
+            "  Lazy structural: extracted {} files ({} cached, budget exceeded: {})",
+            result.files_built, result.files_cached, result.budget_exceeded
+        );
+    }
+    Ok(())
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+
 fn read_source_snippet(
     project_root: &std::path::Path,
     file_path: &Option<String>,
@@ -118,7 +157,6 @@ fn read_source_snippet(
     let path_str = file_path.as_ref()?;
     let full_path = project_root.join(path_str);
     let canonical = full_path.canonicalize().ok()?;
-    // Canonicalize root too — macOS /var→/private/var symlink
     let canonical_root = project_root.canonicalize().ok()?;
     if !canonical.starts_with(&canonical_root) {
         return None;
@@ -126,15 +164,11 @@ fn read_source_snippet(
     let content = std::fs::read_to_string(&canonical).ok()?;
     let lines: Vec<&str> = content.lines().collect();
     let idx = (line_num as usize).saturating_sub(1);
-    if idx >= lines.len() {
-        return None;
-    }
-    // Return the line at the symbol, plus the next line if available
+    if idx >= lines.len() { return None; }
     let end = (idx + 2).min(lines.len());
     Some(lines[idx..end].join("\n       "))
 }
 
-/// JSON-serializable search result for --json output.
 #[derive(Serialize)]
 struct JsonSearchResult {
     name: String,
@@ -147,29 +181,11 @@ struct JsonSearchResult {
     score: f64,
 }
 
-/// List all valid symbol kind strings for error messages.
 fn valid_kinds() -> Vec<&'static str> {
     vec![
-        "file",
-        "module",
-        "class",
-        "struct",
-        "interface",
-        "trait",
-        "enum",
-        "enum_member",
-        "function",
-        "method",
-        "property",
-        "field",
-        "variable",
-        "constant",
-        "type_alias",
-        "namespace",
-        "parameter",
-        "constructor",
-        "macro",
-        "decorator",
-        "package",
+        "file", "module", "class", "struct", "interface", "trait", "enum",
+        "enum_member", "function", "method", "property", "field", "variable",
+        "constant", "type_alias", "namespace", "parameter", "constructor",
+        "macro", "decorator", "package",
     ]
 }

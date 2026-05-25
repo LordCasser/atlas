@@ -151,6 +151,7 @@ mod tests {
             scope_id,
             package_name: None,
             namespace_path: vec![],
+            layer: "structural".to_string(),
         }
     }
 

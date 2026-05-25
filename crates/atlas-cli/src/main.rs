@@ -39,11 +39,12 @@ fn main() -> anyhow::Result<()> {
         Commands::Index {
             project,
             include,
+            scope,
             exclude,
             analysis,
         } => {
             let _span = tracing::info_span!("index", project = %project).entered();
-            atlas_cli::commands::index::run(project, include.as_deref(), &exclude, analysis)?;
+            atlas_cli::commands::index::run(project, &include, &scope, &exclude, analysis)?;
         }
         Commands::Sync { project } => {
             let _span = tracing::info_span!("sync", project = %project).entered();

@@ -124,10 +124,16 @@ impl ToolRouter {
         let do_index = args["index"].as_bool().unwrap_or(true);
         let analysis = args["analysis"].as_str().unwrap_or("structural");
         let mode = match analysis {
+            "manifest" => ExtractionMode::Manifest,
             "full" => ExtractionMode::Full,
             _ => ExtractionMode::Structural,
         };
         let exclude_patterns: Vec<String> = args["exclude"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        let include_patterns: Vec<String> = args["include"]
             .as_array()
             .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default();
@@ -241,7 +247,7 @@ impl ToolRouter {
                 None
             };
 
-            match super::index::run_index(&store, &canonical, mode, &exclude_patterns, None) {
+            match super::index::run_index(&store, &canonical, mode, &include_patterns, &exclude_patterns, None) {
                 Ok(stats) => {
                     index_result = Some(super::index::IndexResult {
                         ok: true,

@@ -101,6 +101,7 @@ impl SymbolDefBuilder {
             scope_id: None,
             package_name: None,
             namespace_path: Vec::new(),
+            layer: "structural".to_string(),
         }
     }
 }

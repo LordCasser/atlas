@@ -14,7 +14,7 @@ impl Store {
         if symbols.is_empty() {
             return Ok(());
         }
-        self.with_transaction(|tx| write_symbols(tx, symbols))
+        self.with_transaction(|tx| write_symbols(tx, symbols, "structural"))
     }
 
     /// Find all symbols in a file.
@@ -28,7 +28,7 @@ impl Store {
                     name_start_byte, name_end_byte, name_start_line, name_start_column,
                     name_end_line, name_end_column,
                     signature, visibility, exported, static_, async_,
-                    container_id, scope_id, package_name, namespace_path_json
+                    container_id, scope_id, package_name, namespace_path_json, layer, layer
              FROM symbols WHERE file_id = ?1 ORDER BY qualified_name",
         )?;
         let rows = stmt.query_map(params![file_id], row_to_symbol)?;
@@ -68,7 +68,7 @@ impl Store {
                           s.name_start_byte, s.name_end_byte, s.name_start_line,
                           s.name_start_column, s.name_end_line, s.name_end_column,
                           s.signature, s.visibility, s.exported, s.static_, s.async_,
-                          s.container_id, s.scope_id, s.package_name, s.namespace_path_json
+                          s.container_id, s.scope_id, s.package_name, s.namespace_path_json, s.layer
                    FROM symbols s
                    JOIN symbols_fts fts ON s.rowid = fts.rowid
                    WHERE symbols_fts MATCH ?1 AND s.kind = ?2
@@ -85,7 +85,7 @@ impl Store {
                           s.name_start_byte, s.name_end_byte, s.name_start_line,
                           s.name_start_column, s.name_end_line, s.name_end_column,
                           s.signature, s.visibility, s.exported, s.static_, s.async_,
-                          s.container_id, s.scope_id, s.package_name, s.namespace_path_json
+                          s.container_id, s.scope_id, s.package_name, s.namespace_path_json, s.layer
                    FROM symbols s
                    JOIN symbols_fts fts ON s.rowid = fts.rowid
                    WHERE symbols_fts MATCH ?1
@@ -144,7 +144,7 @@ impl Store {
                       s.name_start_byte, s.name_end_byte, s.name_start_line,
                       s.name_start_column, s.name_end_line, s.name_end_column,
                       s.signature, s.visibility, s.exported, s.static_, s.async_,
-                      s.container_id, s.scope_id, s.package_name, s.namespace_path_json
+                      s.container_id, s.scope_id, s.package_name, s.namespace_path_json, s.layer
                FROM symbols s
                WHERE {}
                LIMIT {}"#,
@@ -197,7 +197,7 @@ impl Store {
                     name_start_byte, name_end_byte, name_start_line, name_start_column,
                     name_end_line, name_end_column,
                     signature, visibility, exported, static_, async_,
-                    container_id, scope_id, package_name, namespace_path_json
+                    container_id, scope_id, package_name, namespace_path_json, layer
              FROM symbols WHERE qualified_name = ?1",
         )?;
         let rows = stmt.query_map(params![qname], row_to_symbol)?;
@@ -217,7 +217,7 @@ impl Store {
                     name_start_byte, name_end_byte, name_start_line, name_start_column,
                     name_end_line, name_end_column,
                     signature, visibility, exported, static_, async_,
-                    container_id, scope_id, package_name, namespace_path_json
+                    container_id, scope_id, package_name, namespace_path_json, layer
              FROM symbols",
         )?;
         let rows = stmt.query_map([], row_to_symbol)?;
@@ -243,7 +243,7 @@ impl Store {
                     name_start_byte, name_end_byte, name_start_line, name_start_column,
                     name_end_line, name_end_column,
                     signature, visibility, exported, static_, async_,
-                    container_id, scope_id, package_name, namespace_path_json
+                    container_id, scope_id, package_name, namespace_path_json, layer
              FROM symbols WHERE name = ?1 ORDER BY qualified_name",
         )?;
         let rows = stmt.query_map(params![name], row_to_symbol)?;

@@ -42,7 +42,7 @@ fn init_and_index(files: &[(&str, &str)]) -> (TempDir, Arc<Store>) {
     init::run(&project).expect("atlas init");
 
     // Run index
-    index::run(&project, None, &[], "structural").expect("atlas index");
+    index::run(&project, &[], &[], &[], "structural").expect("atlas index");
 
     // Open store for queries
     let store = Arc::new(Store::open_db(&tmp.path().join(".atlas/atlas.db")).expect("open store"));
@@ -684,7 +684,7 @@ fn p0_cli_persistence_across_init_index() {
     init::run(&project).expect("init");
 
     // Index
-    index::run(&project, None, &[], "structural").expect("index");
+    index::run(&project, &[], &[], &[], "structural").expect("index");
 
     // Open store from disk (not the in-memory one from init)
     let store = Arc::new(Store::open_db(&root.join(".atlas/atlas.db")).expect("open store"));
@@ -1077,7 +1077,7 @@ export function run(): number { return compute(5); }
     // ── Run init + index ──
     let project = tmp.path().to_string_lossy().to_string();
     atlas_cli::commands::init::run(&project).expect("atlas init");
-    atlas_cli::commands::index::run(&project, None, &[], "structural").expect("atlas index");
+    atlas_cli::commands::index::run(&project, &[], &[], &[], "structural").expect("atlas index");
 
     // ── Verify resolution ──
     let store = Arc::new(Store::open_db(&tmp.path().join(".atlas/atlas.db")).expect("open store"));

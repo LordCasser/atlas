@@ -52,6 +52,9 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     // Show capability summary
     print_capability_summary(&stats.files_by_language);
 
+    // Show indexed scope when set
+    print_indexed_scope(&ctx);
+
     // List indexed files if any
     if stats.total_files > 0 && stats.total_files <= 20 {
         let files = ctx.store.list_files().context("Failed to list files")?;
@@ -141,4 +144,23 @@ fn print_feature(name: &str, fs: &FeatureSupport) {
         }
     };
     println!("      {:<20} {}{}", name, status, detail);
+}
+
+/// Show the indexed scope when set in project metadata.
+fn print_indexed_scope(ctx: &crate::runtime::CommandContext) {
+    if let Ok(Some(json)) = ctx.store.get_metadata("indexed_scope") {
+        if json == "[]" {
+            return;
+        }
+        // Try to parse as a JSON array of strings
+        if let Ok(patterns) = serde_json::from_str::<Vec<String>>(&json) {
+            if !patterns.is_empty() {
+                println!();
+                println!("  Index scope:");
+                for p in &patterns {
+                    println!("    - {}", p);
+                }
+            }
+        }
+    }
 }

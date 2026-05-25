@@ -508,6 +508,7 @@ mod tests {
             scope_id: None,
             package_name: None,
             namespace_path: vec![],
+            layer: "structural".to_string(),
         }
     }
 

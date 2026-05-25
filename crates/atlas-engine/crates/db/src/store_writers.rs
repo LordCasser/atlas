@@ -19,7 +19,7 @@ const EMPTY_JSON_ARRAY: &str = "[]";
 /// Max rows per multi-row INSERT (limited by SQLite variable binding limit).
 const BATCH_CHUNK_SIZE: usize = 50;
 
-pub(crate) fn write_symbols(conn: &Connection, symbols: &[SymbolDef]) -> anyhow::Result<()> {
+pub(crate) fn write_symbols(conn: &Connection, symbols: &[SymbolDef], layer: &str) -> anyhow::Result<()> {
     if symbols.is_empty() {
         return Ok(());
     }
@@ -33,19 +33,20 @@ pub(crate) fn write_symbols(conn: &Connection, symbols: &[SymbolDef]) -> anyhow:
          name_start_byte, name_end_byte, name_start_line, name_start_column,
          name_end_line, name_end_column,
          signature, visibility, exported, static_, async_,
-         container_id, scope_id, package_name, namespace_path_json)
+         container_id, scope_id, package_name, namespace_path_json,
+         layer)
      VALUES "#;
 
     for chunk in symbols.chunks(BATCH_CHUNK_SIZE) {
         let placeholders: Vec<String> = (0..chunk.len())
             .map(|i| {
-                let o = i * 28;
+                let o = i * 29;
                 format!(
                     "(?{o1},?{o2},?{o3},?{o4},?{o5},?{o6},?{o7},\
                       ?{o8},?{o9},?{o10},?{o11},?{o12},?{o13},\
                       ?{o14},?{o15},?{o16},?{o17},?{o18},?{o19},\
                       ?{o20},?{o21},?{o22},?{o23},?{o24},\
-                      ?{o25},?{o26},?{o27},?{o28})",
+                      ?{o25},?{o26},?{o27},?{o28},?{o29})",
                     o1 = o + 1,
                     o2 = o + 2,
                     o3 = o + 3,
@@ -74,6 +75,7 @@ pub(crate) fn write_symbols(conn: &Connection, symbols: &[SymbolDef]) -> anyhow:
                     o26 = o + 26,
                     o27 = o + 27,
                     o28 = o + 28,
+                    o29 = o + 29,
                 )
             })
             .collect();
@@ -81,7 +83,7 @@ pub(crate) fn write_symbols(conn: &Connection, symbols: &[SymbolDef]) -> anyhow:
 
         // Collect all params for this chunk
         let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> =
-            Vec::with_capacity(chunk.len() * 28);
+            Vec::with_capacity(chunk.len() * 29);
         for s in chunk {
             let path_json = if s.symbol_path.is_empty() {
                 EMPTY_JSON_ARRAY.to_string()
@@ -126,6 +128,7 @@ pub(crate) fn write_symbols(conn: &Connection, symbols: &[SymbolDef]) -> anyhow:
             all_params.push(Box::new(s.scope_id));
             all_params.push(Box::new(s.package_name.clone()));
             all_params.push(Box::new(ns_json));
+            all_params.push(Box::new(layer.to_string()));
         }
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             all_params.iter().map(|p| p.as_ref()).collect();

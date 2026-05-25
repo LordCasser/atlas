@@ -36,6 +36,7 @@ mod cfg;
 mod dataflow;
 mod edges;
 mod files;
+mod index_layers;
 mod lifecycle;
 mod scopes;
 mod stats;
@@ -88,7 +89,7 @@ impl StoreReader {
                     name_start_byte, name_end_byte, name_start_line, name_start_column,
                     name_end_line, name_end_column,
                     signature, visibility, exported, static_, async_,
-                    container_id, scope_id, package_name, namespace_path_json
+                    container_id, scope_id, package_name, namespace_path_json, layer
              FROM symbols WHERE symbol_id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], row_to_symbol)?;
@@ -114,7 +115,7 @@ impl StoreReader {
                     name_start_byte, name_end_byte, name_start_line, name_start_column,
                     name_end_line, name_end_column,
                     signature, visibility, exported, static_, async_,
-                    container_id, scope_id, package_name, namespace_path_json
+                    container_id, scope_id, package_name, namespace_path_json, layer
              FROM symbols WHERE symbol_id IN ({})",
             placeholders.join(","),
         );
@@ -232,7 +233,7 @@ impl Store {
             )?;
 
             if !facts.symbols.is_empty() {
-                write_symbols(&tx, &facts.symbols)?;
+                write_symbols(&tx, &facts.symbols, &facts.layer)?;
             }
             if !facts.scopes.is_empty() {
                 write_scopes(&tx, &facts.scopes)?;
@@ -384,6 +385,15 @@ impl Store {
                     write_cfg_edges(&tx, &safe_cfg_edges)?;
                 }
             }
+
+            // Record per-file per-layer index status
+            let status = if facts.budget_exceeded { "partial" } else { "complete" };
+            tx.execute(
+                "INSERT OR REPLACE INTO file_index_layers
+                    (file_id, layer, content_hash, status, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, datetime('now'))",
+                params![facts.file.file_id, facts.layer, facts.file.content_hash, status],
+            )?;
         }
 
         tx.commit()?;
@@ -635,6 +645,7 @@ mod tests {
             scope_id: None,
             package_name: None,
             namespace_path: vec![],
+            layer: "structural".to_string(),
         }
     }
 
