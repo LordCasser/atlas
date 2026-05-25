@@ -16,16 +16,27 @@ impl ToolRouter {
         let file_id = match resolve_file_id(&self.store, &self.project_root, file_hex, file_path) {
             Ok(Some(fid)) => fid,
             Ok(None) => {
+                let msg = if file_hex.is_some() || file_path.is_some() {
+                    if !self.has_indexed_files() {
+                        "No files indexed yet. Please run the 'index' tool first to build the code index, then retry this query."
+                    } else {
+                        "File not found in index. Check that the file_id or file_path is correct and belongs to the indexed project."
+                    }
+                } else {
+                    "Missing file_id or file_path"
+                };
                 let resp: TraceQueryResponse<()> =
-                    TraceQueryResponse::err("trace_point", "Missing file_id or file_path");
+                    TraceQueryResponse::err("trace_point", msg);
                 return (
                     serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
                     true,
                 );
             }
             Err(e) => {
+                let mut err_msg = format!("Error resolving file: {}", e);
+                err_msg.push_str(self.index_not_run_guidance());
                 let resp: TraceQueryResponse<()> =
-                    TraceQueryResponse::err("trace_point", &format!("Error resolving file: {}", e));
+                    TraceQueryResponse::err("trace_point", &err_msg);
                 return (
                     serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
                     true,
@@ -65,17 +76,28 @@ impl ToolRouter {
         let file_id = match resolve_file_id(&self.store, &self.project_root, file_hex, file_path) {
             Ok(Some(fid)) => fid,
             Ok(None) => {
+                let msg = if file_hex.is_some() || file_path.is_some() {
+                    if !self.has_indexed_files() {
+                        "No files indexed yet. Please run the 'index' tool first to build the code index, then retry this query."
+                    } else {
+                        "File not found in index. Check that the file_id or file_path is correct and belongs to the indexed project."
+                    }
+                } else {
+                    "Missing file_id or file_path"
+                };
                 let resp: TraceQueryResponse<()> =
-                    TraceQueryResponse::err("trace_variable", "Missing file_id or file_path");
+                    TraceQueryResponse::err("trace_variable", msg);
                 return (
                     serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
                     true,
                 );
             }
             Err(e) => {
+                let mut err_msg = format!("Error resolving file: {}", e);
+                err_msg.push_str(self.index_not_run_guidance());
                 let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                     "trace_variable",
-                    &format!("Error resolving file: {}", e),
+                    &err_msg,
                 );
                 return (
                     serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),

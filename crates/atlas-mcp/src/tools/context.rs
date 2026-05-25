@@ -9,11 +9,19 @@ impl ToolRouter {
         let qname = get_str(args, "symbol");
         let symbols = match self.store.find_symbols_by_qname(qname) {
             Ok(s) => s,
-            Err(e) => return (format!("Lookup error: {}", e), true),
+            Err(e) => {
+                let mut err = format!("Lookup error: {}", e);
+                err.push_str(self.index_not_run_guidance());
+                return (err, true);
+            }
         };
         let sid = match symbols.first().map(|s| s.id) {
             Some(id) => id,
-            None => return (format!("Symbol not found: {}", qname), true),
+            None => {
+                let mut err = format!("Symbol not found: {}", qname);
+                err.push_str(self.index_not_run_guidance());
+                return (err, true);
+            }
         };
         match self.context_builder().build_context_for_symbol(&sid) {
             Ok(view) => {

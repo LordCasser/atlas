@@ -197,11 +197,19 @@ impl ToolRouter {
 
         let symbols = match self.store.find_symbols_by_qname(qname) {
             Ok(s) => s,
-            Err(e) => return (format!("Lookup error: {}", e), true),
+            Err(e) => {
+                let mut err = format!("Lookup error: {}", e);
+                err.push_str(self.index_not_run_guidance());
+                return (err, true);
+            }
         };
         let sym = match symbols.first() {
             Some(s) => s,
-            None => return (format!("Symbol not found: {}", qname), true),
+            None => {
+                let mut err = format!("Symbol not found: {}", qname);
+                err.push_str(self.index_not_run_guidance());
+                return (err, true);
+            }
         };
 
         let graph = self.context_builder().graph_snapshot();

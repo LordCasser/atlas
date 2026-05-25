@@ -6,6 +6,10 @@
 //!         ├── initialize/list_tools handled by `ServerHandler`
 //!         │
 //!         └── tools/call ──► ToolRouter::call_tool()
+//!
+//! Progress notifications for long-running operations (e.g. `index`) follow
+//! the MCP spec: a progressToken from `_meta` triggers `notifications/progress`
+//! updates through the `peer` transport. See https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/progress.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -15,6 +19,7 @@ use atlas_engine::Workspace;
 use rmcp::ServerHandler;
 use rmcp::ServiceExt;
 use rmcp::model as rmcp_model;
+use rmcp::model::RequestParamsMeta;
 use rmcp::service::RequestContext;
 
 use self::tools::ToolRouter;
@@ -159,44 +164,109 @@ impl ServerHandler for AtlasMcpService {
     fn call_tool(
         &self,
         request: rmcp_model::CallToolRequestParams,
-        _context: RequestContext<rmcp::RoleServer>,
+        context: RequestContext<rmcp::RoleServer>,
     ) -> impl Future<Output = Result<rmcp_model::CallToolResult, rmcp::ErrorData>> + Send + '_ {
         let start = std::time::Instant::now();
         let tool_name = request.name.to_string();
-        let result = self.lock_router().and_then(|mut router| {
-            if ToolRouter::tool_requires_graph(&tool_name) {
-                router.ensure_graph_initialized().map_err(|err| {
-                    rmcp::ErrorData::internal_error(
-                        format!("Failed to initialize graph snapshot: {err:#}"),
-                        None,
-                    )
-                })?;
-                router.maybe_refresh_graph().map_err(|err| {
-                    rmcp::ErrorData::internal_error(
-                        format!("Failed to refresh graph snapshot: {err:#}"),
-                        None,
-                    )
-                })?;
+        let progress_token = request.progress_token();
+
+        async move {
+            // ── For index tool with progress token, set up progress channel ─
+            let _progress_task = if tool_name == "index" && progress_token.is_some() {
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<
+                    tools::ProgressReport,
+                >();
+                let token = progress_token.unwrap();
+                let peer = context.peer.clone();
+
+                // Store the sender on the router so handle_index can use it.
+                {
+                    let mut router = self
+                        .router
+                        .lock()
+                        .map_err(|_| {
+                            rmcp::ErrorData::internal_error(
+                                "Atlas MCP router lock poisoned",
+                                None,
+                            )
+                        })?;
+                    router.progress_sender = Some(tx);
+                }
+
+                // Spawn a task that forwards progress reports to MCP notifications.
+                Some(tokio::spawn(async move {
+                    while let Some((progress, total, message)) = rx.recv().await {
+                        let mut params =
+                            rmcp_model::ProgressNotificationParam::new(token.clone(), progress);
+                        if let Some(t) = total {
+                            params = params.with_total(t);
+                        }
+                        if let Some(m) = message {
+                            params = params.with_message(m);
+                        }
+                        let _ = peer.notify_progress(params).await;
+                    }
+                }))
+            } else {
+                None
+            };
+
+            // ── Standard tool dispatch ────────────────────────────────────
+            let result = self.lock_router().and_then(|mut router| {
+                if ToolRouter::tool_requires_graph(&tool_name) {
+                    router.ensure_graph_initialized().map_err(|err| {
+                        rmcp::ErrorData::internal_error(
+                            format!("Failed to initialize graph snapshot: {err:#}"),
+                            None,
+                        )
+                    })?;
+                    router.maybe_refresh_graph().map_err(|err| {
+                        rmcp::ErrorData::internal_error(
+                            format!("Failed to refresh graph snapshot: {err:#}"),
+                            None,
+                        )
+                    })?;
+                }
+
+                let args = request
+                    .arguments
+                    .map(serde_json::Value::Object)
+                    .unwrap_or(serde_json::Value::Null);
+                let tool_result = router.call_tool(&tool_name, &args);
+                let tool_error = tool_result.is_error.unwrap_or(false);
+                let duration_ms = start.elapsed().as_millis() as u64;
+                let _span = tracing::info_span!(
+                    "mcp_request",
+                    method = "tools/call",
+                    tool_name = %tool_name,
+                    tool_error = tool_error,
+                    duration_ms = duration_ms,
+                    ok = !tool_error,
+                );
+                tracing::info!(parent: &_span, "request handled");
+                Ok(Self::to_rmcp_result(tool_result))
+            });
+
+            // ── Clean up progress sender ──────────────────────────────────
+            {
+                let mut router = self
+                    .router
+                    .lock()
+                    .map_err(|_| {
+                        rmcp::ErrorData::internal_error(
+                            "Atlas MCP router lock poisoned",
+                            None,
+                        )
+                    })?;
+                router.progress_sender = None;
             }
 
-            let args = request
-                .arguments
-                .map(serde_json::Value::Object)
-                .unwrap_or(serde_json::Value::Null);
-            let tool_result = router.call_tool(&tool_name, &args);
-            let tool_error = tool_result.is_error.unwrap_or(false);
-            let duration_ms = start.elapsed().as_millis() as u64;
-            let _span = tracing::info_span!(
-                "mcp_request",
-                method = "tools/call",
-                tool_name = %tool_name,
-                tool_error = tool_error,
-                duration_ms = duration_ms,
-                ok = !tool_error,
-            );
-            tracing::info!(parent: &_span, "request handled");
-            Ok(Self::to_rmcp_result(tool_result))
-        });
-        std::future::ready(result)
+            // Wait for the progress notification task to finish (receiver dropped).
+            if let Some(handle) = _progress_task {
+                let _ = handle.await;
+            }
+
+            result
+        }
     }
 }

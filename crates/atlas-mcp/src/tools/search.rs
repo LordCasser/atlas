@@ -22,6 +22,12 @@ impl ToolRouter {
         };
 
         match results {
+            Ok(entries) if entries.is_empty() && !self.has_indexed_files() => (
+                format!(
+                    "No indexed files found — the project has not been indexed yet. Please run the 'index' tool first (with no arguments) to build the code index, then retry your search."
+                ),
+                true,
+            ),
             Ok(entries) => (
                 serde_json::to_string_pretty(&json!({
                     "query": query,
@@ -38,7 +44,11 @@ impl ToolRouter {
                 .unwrap_or_else(|e| e.to_string()),
                 false,
             ),
-            Err(e) => (format!("Search error: {}", e), true),
+            Err(e) => {
+                let mut err = format!("Search error: {}", e);
+                err.push_str(self.index_not_run_guidance());
+                (err, true)
+            }
         }
     }
 
@@ -46,11 +56,19 @@ impl ToolRouter {
         let qname = get_str(args, "qualified_name");
         let symbols = match self.store.find_symbols_by_qname(qname) {
             Ok(s) => s,
-            Err(e) => return (format!("Lookup error: {}", e), true),
+            Err(e) => {
+                let mut err = format!("Lookup error: {}", e);
+                err.push_str(self.index_not_run_guidance());
+                return (err, true);
+            }
         };
         let sym = match symbols.first() {
             Some(s) => s,
-            None => return (format!("Symbol not found: {}", qname), true),
+            None => {
+                let mut err = format!("Symbol not found: {}", qname);
+                err.push_str(self.index_not_run_guidance());
+                return (err, true);
+            }
         };
 
         let graph = self.search_engine().graph_snapshot();

@@ -32,6 +32,13 @@ impl ToolRouter {
             "structural"
         };
 
+        // Build an index hint when no files are indexed
+        let index_hint = if stats.total_files == 0 {
+            Some("The project has not been indexed yet. Run the 'index' tool to populate the code index before querying symbols, searching, or tracing.")
+        } else {
+            None
+        };
+
         // Build per-language capability summary for languages present in the project.
         let mut lang_caps = Vec::new();
         for (lang_name, _count) in &stats.files_by_language {
@@ -77,6 +84,7 @@ impl ToolRouter {
                 "index": {
                     "mode": index_mode,
                     "lazy_dataflow": lazy_dataflow,
+                    "hint": index_hint,
                 },
                 "database": {
                     "sqlite_version": stats.sqlite_version,

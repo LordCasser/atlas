@@ -241,7 +241,7 @@ impl ToolRouter {
                 None
             };
 
-            match super::index::run_index(&store, &canonical, mode, &exclude_patterns) {
+            match super::index::run_index(&store, &canonical, mode, &exclude_patterns, None) {
                 Ok(stats) => {
                     index_result = Some(super::index::IndexResult {
                         ok: true,
@@ -252,6 +252,7 @@ impl ToolRouter {
                         references_resolved: stats.resolved,
                         errors: Vec::new(),
                         duration_ms: start.elapsed().as_millis() as u64,
+                        warning: None,
                     });
                 }
                 Err(e) => {
@@ -269,6 +270,7 @@ impl ToolRouter {
                             references_resolved: 0,
                             errors: vec![format!("{:#}", e)],
                             duration_ms: start.elapsed().as_millis() as u64,
+                            warning: None,
                         }),
                         error: Some("Index failed".into()),
                     };

@@ -20,6 +20,11 @@ use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolI
 
 use serde_json::{Value, json};
 
+/// Progress report tuple: (progress, total, message)
+pub(crate) type ProgressReport = (f64, Option<f64>, Option<String>);
+/// Channel sender for progress updates during long-running operations.
+pub(crate) type ProgressSender = tokio::sync::mpsc::UnboundedSender<ProgressReport>;
+
 // -------------------------------------------------------------------
 // Sub-modules — one per capability category
 // -------------------------------------------------------------------
@@ -58,6 +63,8 @@ pub struct ToolRouter {
     cached_signature: String,
     /// When the cached signature was last checked (avoids re-query within cooldown).
     last_signature_check: std::time::Instant,
+    /// Optional progress sender for long-running operations (set per-call in lib.rs).
+    pub(crate) progress_sender: Option<ProgressSender>,
 }
 
 impl ToolRouter {
@@ -85,6 +92,7 @@ impl ToolRouter {
             graph_initialized: true,
             cached_signature: last_graph_signature,
             last_signature_check: std::time::Instant::now(),
+            progress_sender: None,
         }
     }
 
@@ -104,6 +112,7 @@ impl ToolRouter {
             graph_initialized: false,
             cached_signature: String::new(),
             last_signature_check: std::time::Instant::now(),
+            progress_sender: None,
         }
     }
 
@@ -161,6 +170,20 @@ impl ToolRouter {
     /// Access the context builder (panics if graph not initialized).
     pub(crate) fn context_builder(&self) -> &ContextBuilder {
         self.context.as_ref().expect("graph not initialized")
+    }
+
+    /// Check if the store has any indexed files (fast COUNT query).
+    pub(crate) fn has_indexed_files(&self) -> bool {
+        self.store.count_files().unwrap_or(0) > 0
+    }
+
+    /// Return a guidance string when the project has not been indexed yet.
+    pub(crate) fn index_not_run_guidance(&self) -> &'static str {
+        if !self.has_indexed_files() {
+            "\nHint: The project has not been indexed yet. Please run the 'index' tool first (with no arguments) to build the code index, then retry this query."
+        } else {
+            ""
+        }
     }
 
     /// Switch the active project to a new store+root, clearing graph/cache state.
@@ -272,15 +295,20 @@ impl ToolRouter {
     // -------------------------------------------------------------------
 
     /// Resolve a qualified name to a SymbolId, returning error string on failure.
+    /// When the store has no indexed files, the error includes guidance to run `index`.
     pub(crate) fn resolve_qname(&self, qname: &str) -> Result<SymbolId, String> {
         let symbols = self
             .store
             .find_symbols_by_qname(qname)
             .map_err(|e| format!("Lookup error: {}", e))?;
-        symbols
-            .first()
-            .map(|s| s.id)
-            .ok_or_else(|| format!("Symbol not found: {}", qname))
+        match symbols.first() {
+            Some(s) => Ok(s.id),
+            None => {
+                let mut err = format!("Symbol not found: {}", qname);
+                err.push_str(self.index_not_run_guidance());
+                Err(err)
+            }
+        }
     }
 
     /// Render a node from the graph snapshot to JSON.

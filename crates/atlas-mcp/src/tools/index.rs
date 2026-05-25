@@ -26,6 +26,9 @@ pub(crate) struct IndexResult {
     pub(crate) references_resolved: usize,
     pub(crate) errors: Vec<String>,
     pub(crate) duration_ms: u64,
+    /// Warning for large projects that may cause MCP timeout.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) warning: Option<String>,
 }
 
 impl ToolRouter {
@@ -34,6 +37,9 @@ impl ToolRouter {
     /// Parameters:
     ///   analysis: "structural" (default, no dataflow) | "full" (complete analysis)
     ///   exclude: list of glob patterns to skip (e.g. ["**/test/**", "**/*.test.ts"])
+    ///
+    /// If [`Self::progress_sender`] is set, progress notifications are sent at each
+    /// pipeline phase (discovery, extraction, resolution, graph build).
     ///
     /// Returns a JSON IndexResult with indexing statistics.
     pub(crate) fn handle_index(&self, args: &serde_json::Value) -> (String, bool) {
@@ -58,6 +64,7 @@ impl ToolRouter {
             references_resolved: 0,
             errors: Vec::new(),
             duration_ms: 0,
+            warning: None,
         };
 
         // Acquire FileLock for persistent stores to prevent races with CLI
@@ -80,7 +87,8 @@ impl ToolRouter {
         };
 
         // Run the index pipeline
-        match run_index(&self.store, &self.project_root, mode, &exclude_patterns) {
+        let progress_sender = self.progress_sender.clone();
+        match run_index(&self.store, &self.project_root, mode, &exclude_patterns, progress_sender) {
             Ok(stats) => {
                 result.ok = true;
                 result.files_discovered = stats.discovered;
@@ -95,6 +103,14 @@ impl ToolRouter {
         }
 
         result.duration_ms = start.elapsed().as_millis() as u64;
+
+        // ── Large project warning ─────────────────────────────────────────
+        if result.duration_ms > 30_000 {
+            result.warning = Some(
+                "Indexing took over 30 seconds. For large projects, consider running 'atlas index' locally before connecting via MCP to avoid timeout issues. The CLI command is: atlas index --analysis structural"
+                    .into(),
+            );
+        }
 
         let json = serde_json::to_string(&result).unwrap_or_else(|e| e.to_string());
         (json, !result.ok)
@@ -113,7 +129,16 @@ pub(crate) struct IndexStats {
 ///
 /// Writes directly to the provided store. The caller is responsible for
 /// FileLock coordination in persistent mode.
-pub(crate) fn run_index(store: &Arc<Store>, project_root: &std::path::Path, mode: ExtractionMode, exclude_patterns: &[String]) -> anyhow::Result<IndexStats> {
+///
+/// If `progress_sender` is provided, progress reports are sent at each major
+/// phase: discovery (10%), extraction (10%-60%), resolution (80%), graph (95%).
+pub(crate) fn run_index(
+    store: &Arc<Store>,
+    project_root: &std::path::Path,
+    mode: ExtractionMode,
+    exclude_patterns: &[String],
+    progress_sender: Option<super::ProgressSender>,
+) -> anyhow::Result<IndexStats> {
     // ── Discovery ──────────────────────────────────────────────────────────
     let _disc_timer = PhaseTimer::start("discovery");
     let mut config = DiscoveryConfig::default();
@@ -125,6 +150,12 @@ pub(crate) fn run_index(store: &Arc<Store>, project_root: &std::path::Path, mode
         return Ok(IndexStats {
             discovered: 0, indexed: 0, failed: 0, symbols: 0, resolved: 0,
         });
+    }
+
+    // ── Progress: discovery complete ─────────────────────────────────────
+    let total_files = discovered.len() as f64;
+    if let Some(ref sender) = progress_sender {
+        let _ = sender.send((0.10, Some(1.0), Some(format!("Discovered {} files, starting extraction...", discovered.len()))));
     }
 
     // ── Language init ──────────────────────────────────────────────────────
@@ -164,7 +195,7 @@ pub(crate) fn run_index(store: &Arc<Store>, project_root: &std::path::Path, mode
     let mut failed = 0usize;
     let mut total_symbols = 0usize;
 
-    for rel_path in &discovered {
+    for (i, rel_path) in discovered.iter().enumerate() {
         let abs_path = project_root.join(rel_path);
         let lang = match Language::from_path(rel_path) {
             Some(l) => l,
@@ -203,9 +234,30 @@ pub(crate) fn run_index(store: &Arc<Store>, project_root: &std::path::Path, mode
                 tracing::warn!("Extraction failed for {}: {}", rel_path.display(), e.message);
             }
         }
+
+        // ── Progress: extraction (10%-60%, report every 50 files) ────────
+        if let Some(ref sender) = progress_sender {
+            if i % 50 == 0 || i == discovered.len() - 1 {
+                let fraction = 0.10 + 0.50 * (indexed + failed) as f64 / total_files.max(1.0);
+                let msg = format!("Extracting files... {}/{} processed ({} indexed, {} failed)", 
+                    indexed + failed, discovered.len(), indexed, failed);
+                let _ = sender.send((fraction.min(0.60), Some(1.0), Some(msg)));
+            }
+        }
+    }
+
+    // ── Progress: extraction complete ────────────────────────────────────
+    if let Some(ref sender) = progress_sender {
+        let _ = sender.send((0.65, Some(1.0), Some(format!(
+            "Extraction complete: {} indexed, {} failed ({} symbols found)",
+            indexed, failed, total_symbols
+        ))));
     }
 
     // ── Reference resolution ──────────────────────────────────────────────
+    if let Some(ref sender) = progress_sender {
+        let _ = sender.send((0.75, Some(1.0), Some("Resolving symbol references...".into())));
+    }
     let mut resolver = ReferenceResolver::new(store.clone());
     let (resolved_refs, _stats) = match resolver.resolve_all() {
         Ok(r) => r,
@@ -215,8 +267,19 @@ pub(crate) fn run_index(store: &Arc<Store>, project_root: &std::path::Path, mode
     };
 
     // ── Graph build ───────────────────────────────────────────────────────
+    if let Some(ref sender) = progress_sender {
+        let _ = sender.send((0.90, Some(1.0), Some("Building symbol graph...".into())));
+    }
     let builder = GraphBuilder::new(store.clone());
     let _build_stats = builder.build_all(&resolved_refs);
+
+    // ── Progress: indexing complete ──────────────────────────────────────
+    if let Some(ref sender) = progress_sender {
+        let _ = sender.send((1.0, Some(1.0), Some(format!(
+            "Indexing complete: {} files indexed ({} failed), {} symbols, {} resolved",
+            indexed, failed, total_symbols, _stats.resolved
+        ))));
+    }
 
     Ok(IndexStats {
         discovered: discovered.len(),
