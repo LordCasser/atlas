@@ -168,6 +168,7 @@ dependencies = [
  "anyhow",
  "atlas-engine",
  "blake3",
+ "hex",
  "rmcp",
  "serde",
  "serde_json",

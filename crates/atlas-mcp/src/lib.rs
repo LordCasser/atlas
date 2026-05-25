@@ -25,6 +25,7 @@ use rmcp::service::RequestContext;
 use self::tools::ToolRouter;
 
 pub mod protocol;
+pub mod task_manager;
 pub mod tools;
 
 // Re-export for integration tests and diagnostics

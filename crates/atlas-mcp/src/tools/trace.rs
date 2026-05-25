@@ -1,8 +1,9 @@
 //! Trace tools: symbol and variable trace queries with dataflow/caller-path
-//! traversal.
+//! traversal.  Includes transparent lazy structural extraction with progress
+//! notifications to prevent MCP timeout during on-demand extraction.
 
 use atlas_engine::SymbolId;
-use atlas_engine::{LazySummary, RawTraceEngine, TraceDiagnostic, TraceQueryResponse};
+use atlas_engine::{LazyStructuralService, LazySummary, RawTraceEngine, TraceDiagnostic, TraceQueryResponse};
 
 use super::{ToolRouter, get_str_opt, get_u64, resolve_file_id};
 
@@ -56,8 +57,17 @@ impl ToolRouter {
             }
         };
 
+        // Transparent lazy structural: ensure file has structural data before tracing
+        self.send_progress(0.3, "Ensuring structural index...");
+        {
+            let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
+            let _ = lazy.ensure_structural_for_file(&file_id);
+        }
+
         let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
+        self.send_progress(0.8, "Running trace point...");
         let resp = engine.trace_point(&file_id, line, column);
+        self.send_progress(1.0, "Trace complete");
         let is_error = !resp.ok;
 
         (
@@ -117,6 +127,13 @@ impl ToolRouter {
                 );
             }
         };
+
+        // Transparent lazy structural: ensure file has structural data before dataflow
+        self.send_progress(0.2, "Ensuring structural index...");
+        {
+            let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
+            let _ = lazy.ensure_structural_for_file(&file_id);
+        }
 
         // Lazy-load dataflow before tracing, so Locator can find data nodes.
         let lazy_start = std::time::Instant::now();

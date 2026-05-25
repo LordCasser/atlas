@@ -65,6 +65,8 @@ pub struct ToolRouter {
     last_signature_check: std::time::Instant,
     /// Optional progress sender for long-running operations (set per-call in lib.rs).
     pub(crate) progress_sender: Option<ProgressSender>,
+    /// Background task manager for `background: true` mode.
+    pub(crate) task_manager: Arc<crate::task_manager::TaskManager>,
 }
 
 impl ToolRouter {
@@ -93,6 +95,7 @@ impl ToolRouter {
             cached_signature: last_graph_signature,
             last_signature_check: std::time::Instant::now(),
             progress_sender: None,
+            task_manager: Arc::new(crate::task_manager::TaskManager::new()),
         }
     }
 
@@ -113,6 +116,7 @@ impl ToolRouter {
             cached_signature: String::new(),
             last_signature_check: std::time::Instant::now(),
             progress_sender: None,
+            task_manager: Arc::new(crate::task_manager::TaskManager::new()),
         }
     }
 
@@ -282,6 +286,7 @@ impl ToolRouter {
             "usages" => self.handle_usages(arguments),
             "dependencies" => self.handle_dependencies(arguments),
             "dependents" => self.handle_dependents(arguments),
+            "task_status" => self.handle_task_status(arguments),
             _ => (format!("Unknown tool: {}", name), true),
         };
 
@@ -298,6 +303,38 @@ impl ToolRouter {
         CallToolResult {
             content,
             is_error: Some(is_error),
+        }
+    }
+
+    pub(crate) fn handle_task_status(&self, args: &serde_json::Value) -> (String, bool) {
+        let task_id = get_str(args, "task_id");
+        if task_id.is_empty() {
+            return ("Missing task_id parameter".to_string(), true);
+        }
+        match self.task_manager.get_task(task_id) {
+            Some(info) => {
+                let status_str = match info.status {
+                    crate::task_manager::TaskStatus::Running => "running",
+                    crate::task_manager::TaskStatus::Completed => "completed",
+                    crate::task_manager::TaskStatus::Failed => "failed",
+                };
+                let mut response = json!({
+                    "task_id": info.task_id,
+                    "tool_name": info.tool_name,
+                    "status": status_str,
+                    "progress": info.progress,
+                    "progress_message": info.progress_message,
+                    "elapsed_secs": info.elapsed_secs(),
+                });
+                if let Some(ref result) = info.result {
+                    response["result"] = result.clone();
+                }
+                if let Some(ref error) = info.error {
+                    response["error"] = serde_json::Value::String(error.clone());
+                }
+                (serde_json::to_string_pretty(&response).unwrap_or_else(|e| e.to_string()), false)
+            }
+            None => (format!("Task not found: {}", task_id), true),
         }
     }
 
@@ -386,13 +423,15 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "search".into(),
-            description: "Search symbols by name (FTS5 + fuzzy). Supports kind filter.".into(),
+            description: "Search symbols by name (FTS5 + fuzzy). Supports kind filter, scope directory limit, and background=true for long queries.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "query": { "type": "string", "description": "Search query text" },
                     "kind": { "type": "string", "description": "Optional SymbolKind filter (function, class, ...)" },
                     "limit": { "type": "integer", "description": "Max results (default 20)" },
+                    "scope": { "type": "string", "description": "Restrict results to files under this directory (e.g. 'drivers/net')" },
+                    "background": { "type": "boolean", "description": "Run search as background task (returns task_id for task_status polling)" },
                 })),
                 required: Some(vec!["query".into()]),
             },
@@ -591,6 +630,17 @@ pub fn make_all_tools() -> Vec<Tool> {
                     "limit": { "type": "integer", "description": "Max results (default 50)" },
                 })),
                 required: Some(vec!["file_id".into()]),
+            },
+        },
+        Tool {
+            name: "task_status".into(),
+            description: "Check the status of a background task started with background=true on index or search tools. Returns task status (running/completed/failed), progress percentage, and result when complete.".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "task_id": { "type": "string", "description": "Task ID returned by index/search when background=true" },
+                })),
+                required: Some(vec!["task_id".into()]),
             },
         },
     ]
