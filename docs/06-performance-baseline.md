@@ -112,7 +112,7 @@ Consistently ~2.2s for 146-156 files, regardless of language count. This suggest
 - **Recommendation**: Profile batch insert transaction vs individual inserts. Consider larger batches or lower isolation level.
 
 ### 3. New language extraction is fast and reliable
-All 7 new languages (Go, C#, Rust, PHP, Ruby, Kotlin, Bash) extracted correctly with 0 errors across the Atlas codebase itself. Parse/extract times are reasonable:
+All 6 new DataflowBasic languages (Go, C#, Rust, PHP, Ruby, Kotlin) extracted correctly with 0 errors across the Atlas codebase itself. Bash (opt-in Symbolic) was also tested separately. Parse/extract times are reasonable:
 - Fastest: Go (2.3ms/file), C (7ms/file)
 - Slowest: Ruby (59ms/file), Kotlin (58ms/file), C# (53ms/file)
 

@@ -33,7 +33,7 @@ MVP 固定支持：
 | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | tree-sitter-cpp |
 | ArkTS | `.ets`, `.sts` | MVP 复用 TypeScript grammar，但 language 存为 `arkts` |
 
-Cangjie 暂时作为不完善支持语言保留，必须显式启用 `cangjie` feature，不进入默认 features、`all-languages` 或 MVP 验收。
+Cangjie（Symbolic）已接入 `all-languages` 编译集合（自 tree-sitter 0.26 起 ABI 兼容），但仍为 experimental opt-in，基础定义/引用/导入抽取可用，dataflow/CFG/trace 尚未实现。不进入默认 features。
 
 当前代码已经接入 Go、Rust、C#、PHP、Ruby、Kotlin 的 experimental DataflowBasic frontends，并纳入 `all-languages` 编译集合；Bash 是显式 opt-in experimental frontend，不在 `all-languages`。这些语言已具备基础 dataflow 抽取能力（参数、赋值、调用、字段访问、返回）和 e2e smoke 测试，但完整 path‑level 验收、CFG 和跨函数 summary 仍待补齐，详见各语言的 capability profile limitations。
 
@@ -58,7 +58,7 @@ MVP 可以 best-effort：
 
 - C/C++ include-aware direct call graph。
 - ArkTS via TypeScript grammar。
-- Cangjie grammar-based minimal extraction（仅显式启用 `cangjie` feature 时）。
+- Cangjie grammar-based minimal extraction（Symbolic 级别，启用 `all-languages` 或显式启用 `cangjie` feature 时可用）。
 - Go/Rust/C#/PHP/Ruby/Kotlin 的基础 DataflowBasic 抽取和调用图（启用 `all-languages` 时）；完整 path-level 变量来源追踪、CFG 和跨函数 summary 仍以 capability limitations 和测试覆盖为准。
 - Bash 的低置信度命令调用抽取（仅显式启用 `bash` feature 时）。
 - 低置信度 name-based resolution。

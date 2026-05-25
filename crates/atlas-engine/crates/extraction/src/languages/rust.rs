@@ -283,7 +283,7 @@ fn walk_rust_assign_edges(
                     }
                 } else if matches!(pattern_node.kind(), "tuple_pattern" | "tuple_struct_pattern") {
                     for i in 0..pattern_node.child_count() {
-                        if let Some(child) = pattern_node.child(i) {
+                        if let Some(child) = pattern_node.child(i as u32) {
                             if child.is_named() && child.kind() == "identifier" {
                                 let child_key = NodePosKey { start_byte: child.start_byte() as u32, end_byte: child.end_byte() as u32, kind: DataNodeKind::Local };
                                 if let Some(&target_id) = pos_map.get(&child_key) {
@@ -298,7 +298,7 @@ fn walk_rust_assign_edges(
         }
     }
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             walk_rust_assign_edges(child, pos_map, edges);
         }
     }
@@ -718,7 +718,7 @@ mod tests {
 
         let mut nodes: Vec<DataNode> = Vec::new();
         let mut captures = cursor.captures(&query, root, source.as_bytes());
-        use streaming_iterator::StreamingIterator;
+        use tree_sitter::StreamingIterator;
         while let Some((m, idx)) = captures.next() {
             let cap = m.captures[*idx];
             let name = query.capture_names()[cap.index as usize].to_string();

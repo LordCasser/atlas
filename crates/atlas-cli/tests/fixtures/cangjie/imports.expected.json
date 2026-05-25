@@ -1,0 +1,33 @@
+{
+  "symbols": [
+    {
+      "name": "main",
+      "kind": "function"
+    }
+  ],
+  "references": [
+    {
+      "text": "println",
+      "kind": "call"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "",
+      "kind": "file"
+    },
+    {
+      "name": "func main(): Unit {\n    println(\"Hello, Cangjie!\")\n}",
+      "kind": "function"
+    },
+    {
+      "name": "{\n    println(\"Hello, Cangjie!\")\n}",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "main"
+    }
+  ]
+}

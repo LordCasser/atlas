@@ -71,6 +71,8 @@ pub trait DataflowReader {
     fn find_dataflow_edges_by_target(&self, target: &DataNodeId) -> Result<Vec<DataFlowEdge>>;
     /// Batch lookup of dataflow edges with sources in the given set.
     fn find_dataflow_edges_by_sources(&self, sources: &[DataNodeId]) -> Result<Vec<DataFlowEdge>>;
+    /// Find dataflow edges whose source nodes belong to the given file.
+    fn find_dataflow_edges_by_file(&self, file_id: &FileId) -> Result<Vec<DataFlowEdge>>;
 }
 
 // ── Call Graph Reader ──────────────────────────────────────────────────────

@@ -279,7 +279,7 @@ fn walk_kotlin_assign_edges(
         let mut name_node: Option<tree_sitter::Node> = None;
         let mut value_node: Option<tree_sitter::Node> = None;
         for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
+            if let Some(child) = node.child(i as u32) {
                 if child.is_named() {
                     if child.kind() == "simple_identifier" && name_node.is_none() {
                         name_node = Some(child);
@@ -305,7 +305,7 @@ fn walk_kotlin_assign_edges(
         let mut value: Option<tree_sitter::Node> = None;
         let mut found_eq = false;
         for i in 0..node.child_count() {
-            let Some(child) = node.child(i) else { continue };
+            let Some(child) = node.child(i as u32) else { continue };
             if child.is_named() {
                 if target.is_none() {
                     target = Some(child);
@@ -330,7 +330,7 @@ fn walk_kotlin_assign_edges(
 
     // Recurse
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             walk_kotlin_assign_edges(child, source, pos_map, edges);
         }
     }
@@ -668,7 +668,7 @@ mod tests {
 
         let mut nodes: Vec<DataNode> = Vec::new();
         let mut captures = cursor.captures(&query, root, source.as_bytes());
-        use streaming_iterator::StreamingIterator;
+        use tree_sitter::StreamingIterator;
         while let Some((m, idx)) = captures.next() {
             let cap = m.captures[*idx];
             let name = query.capture_names()[cap.index as usize].to_string();

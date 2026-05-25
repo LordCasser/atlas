@@ -225,17 +225,23 @@ impl ReferenceResolver {
         // ---- Strategy 5: Import/include resolution ----
         for import in &ctx.imports {
             if let Ok(candidates) = self.import_resolver.resolve_import(import) {
-                if let Some(matched) = self.name_matcher.best_match(
-                    &candidates,
-                    &reference.name,
-                    Confidence::certain(),
-                ) {
-                    return Some(ResolvedTarget {
-                        symbol_id: matched.symbol_id,
-                        confidence: Confidence::new(0.8),
-                        strategy: ResolutionStrategy::ImportResolved,
-                        provenance: Provenance::Heuristic,
-                    });
+                // Try re-export chain walking first (barrel files)
+                if let Ok(chain_candidates) = self
+                    .import_resolver
+                    .resolve_through_reexports(import, candidates)
+                {
+                    if let Some(matched) = self.name_matcher.best_match(
+                        &chain_candidates,
+                        &reference.name,
+                        Confidence::certain(),
+                    ) {
+                        return Some(ResolvedTarget {
+                            symbol_id: matched.symbol_id,
+                            confidence: Confidence::new(0.8),
+                            strategy: ResolutionStrategy::ImportResolved,
+                            provenance: Provenance::Heuristic,
+                        });
+                    }
                 }
             }
         }

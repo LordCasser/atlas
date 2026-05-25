@@ -2,10 +2,11 @@
 //!
 //! Takes a source file (bytes) and queries, parses the source,
 //! executes the capture queries, and returns structured query results.
+//!
+//! tree-sitter 0.25+ bundles its own `StreamingIterator` re-export.
 
 use anyhow::Context;
-use streaming_iterator::StreamingIterator;
-use tree_sitter::{Query, QueryCursor};
+use tree_sitter::{Query, QueryCursor, StreamingIterator};
 
 /// Raw captures from running all 4 queries against a file.
 #[derive(Debug)]

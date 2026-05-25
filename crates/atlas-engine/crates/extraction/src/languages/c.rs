@@ -549,7 +549,7 @@ mod tests {
         let mut has_field = false;
         let mut has_return = false;
         let mut captures = cursor.captures(&query, root, source.as_bytes());
-        use streaming_iterator::StreamingIterator;
+        use tree_sitter::StreamingIterator;
         while let Some((m, idx)) = captures.next() {
             let cap = m.captures[*idx];
             let name = query.capture_names()[cap.index as usize].to_string();

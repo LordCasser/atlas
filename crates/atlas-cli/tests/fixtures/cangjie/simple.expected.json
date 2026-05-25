@@ -1,0 +1,30 @@
+{
+  "symbols": [
+    {
+      "name": "greet",
+      "kind": "function"
+    },
+    {
+      "name": "message",
+      "kind": "variable"
+    },
+    {
+      "name": "world",
+      "kind": "variable"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "",
+      "kind": "file"
+    },
+    {
+      "name": "func greet(name: String): String {\n    let message = \"Hello, \" + name\n    return message\n}",
+      "kind": "function"
+    },
+    {
+      "name": "{\n    let message = \"Hello, \" + name\n    return message\n}",
+      "kind": "block"
+    }
+  ]
+}

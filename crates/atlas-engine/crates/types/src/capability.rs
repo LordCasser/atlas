@@ -1339,8 +1339,7 @@ mod tests {
             Language::TypeScript,
             Language::JavaScript,
             Language::Python,
-            // ArkTS delegates to the TypeScript frontend but does NOT support
-            // dataflow extraction, so access_path is unavailable.
+            // ArkTS is DataflowBasic (delegates to TypeScript frontend, confidence 0.45).
         ] {
             let p = LanguageCapabilityProfile::for_language(*lang);
             assert!(
@@ -1486,6 +1485,91 @@ mod tests {
             matrix.symbols.is_supported(),
             "Cangjie symbols should be supported"
         );
+    }
+
+    #[test]
+    fn test_bash_capability_is_symbolic() {
+        let bash = LanguageCapabilityProfile::for_language(Language::Bash);
+        assert_eq!(
+            bash.capability_level,
+            CapabilityLevel::Symbolic,
+            "Bash should be Symbolic, not DataflowBasic"
+        );
+        let matrix = bash.features.as_ref().unwrap();
+        assert!(
+            matrix.symbols.is_supported(),
+            "Bash symbols should be supported"
+        );
+        assert!(
+            matrix.references.is_supported(),
+            "Bash references should be supported"
+        );
+        assert!(
+            !matrix.local_dataflow.is_supported(),
+            "Bash dataflow should be unsupported"
+        );
+        assert!(
+            !matrix.cfg.is_supported(),
+            "Bash CFG should be unsupported"
+        );
+        assert!(
+            !matrix.lexical_bindings.is_supported(),
+            "Bash lexical_bindings should be unsupported"
+        );
+    }
+
+    /// Verify that `all_compiled()` correctly gates experimental languages by feature flag.
+    #[test]
+    fn test_experimental_languages_in_all_compiled() {
+        let profiles = LanguageCapabilityProfile::all_compiled();
+
+        // Cangjie: should appear in all_compiled (now in all-languages)
+        #[cfg(feature = "cangjie")]
+        {
+            let cangjie = profiles.iter().find(|p| p.language == "cangjie");
+            assert!(
+                cangjie.is_some(),
+                "Cangjie should be in all_compiled when cangjie feature is enabled"
+            );
+            if let Some(cj) = cangjie {
+                assert_eq!(
+                    cj.capability_level,
+                    CapabilityLevel::Symbolic,
+                    "Cangjie capability level should be Symbolic"
+                );
+            }
+        }
+        #[cfg(not(feature = "cangjie"))]
+        {
+            assert!(
+                !profiles.iter().any(|p| p.language == "cangjie"),
+                "Cangjie should NOT be in all_compiled when cangjie feature is disabled"
+            );
+        }
+
+        // Bash: opt-in only, should appear only when feature is enabled
+        #[cfg(feature = "bash")]
+        {
+            let bash = profiles.iter().find(|p| p.language == "bash");
+            assert!(
+                bash.is_some(),
+                "Bash should be in all_compiled when bash feature is enabled"
+            );
+            if let Some(b) = bash {
+                assert_eq!(
+                    b.capability_level,
+                    CapabilityLevel::Symbolic,
+                    "Bash capability level should be Symbolic"
+                );
+            }
+        }
+        #[cfg(not(feature = "bash"))]
+        {
+            assert!(
+                !profiles.iter().any(|p| p.language == "bash"),
+                "Bash should NOT be in all_compiled when bash feature is disabled"
+            );
+        }
     }
 
     #[test]

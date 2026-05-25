@@ -277,4 +277,22 @@ impl Store {
         let rows = stmt.query_map(params.as_slice(), row_to_dataflow_edge)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
+
+    /// Find all dataflow edges whose source or target node belongs to the given file.
+    pub fn find_dataflow_edges_by_file(
+        &self,
+        file_id: &FileId,
+    ) -> anyhow::Result<Vec<DataFlowEdge>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT e.dataflow_edge_id, e.source, e.target, e.kind,
+                    e.location_0, e.location_1, e.location_2,
+                    e.location_3, e.location_4, e.location_5, e.confidence
+             FROM dataflow_edges e
+             JOIN data_nodes d ON d.data_node_id = e.source
+             WHERE d.file_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![file_id], row_to_dataflow_edge)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
 }

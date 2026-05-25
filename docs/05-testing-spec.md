@@ -182,7 +182,7 @@
 - fixture 必须经过 extraction -> store -> resolution -> GraphBuilder -> dataflow/call graph -> trace query。
 - CLI、MCP 或等价 public API 必须能查询 trace path，并返回 bounded、结构化输出。
 - 测试必须断言每个 path step 的 kind、file、range、confidence/provenance 和截断行为。
-- Java/C/C++/ArkTS 如果只能支持 Level 0/1/2，测试必须断言 capability profile、unsupported diagnostics 或 lower-confidence best-effort 输出；Go/Rust/C#/PHP/Ruby/Kotlin 已升级为 experimental DataflowBasic frontends，必须至少覆盖 symbols/references/imports/calls golden fixture 和 dataflow edge/path smoke 测试；Bash/Cangjie 只在显式启用对应 feature 的实验测试中覆盖。
+- 全部 13 种 DataflowBasic 语言必须至少覆盖 symbols/references/imports/calls golden fixture 和 dataflow edge/path smoke 测试；各语言的具体能力边界通过 capability profile 和 unsupported/partial diagnostics 暴露，测试需覆盖 partial result 场景；Bash/Cangjie（Symbolic）只在显式启用对应 feature 的实验测试中覆盖。
 - 每种 MVP 语言至少有一个 capability profile 快照测试；能力等级升级时必须同步更新 fixture 和用户可见输出断言。
 
 ### `atlas-engine` facade 稳定阶段
@@ -198,7 +198,7 @@
 - engine crate 有独立单元和集成测试。
 - CLI crate 有命令级 smoke/E2E 测试。
 - MCP crate 有 tool schema、routing、bounded output 测试。
-- 原有 default、all-languages、mcp 组合测试继续通过；`all-languages` 当前包含 Go/Rust/C#/PHP/Ruby/Kotlin，但不包含 Bash/Cangjie。
+- 原有 default、all-languages、mcp 组合测试继续通过；`all-languages` 当前包含 Go/Rust/C#/PHP/Ruby/Kotlin/Cangjie，但不包含 Bash。
 
 ### Corpus 分支启动后
 
@@ -236,12 +236,15 @@ cargo test -p atlas-cli --features "all-languages,mcp"
 
 ## 6. 当前项目的测试缺口
 
-当前已知缺口应优先修复：
+以下缺口按状态分列。已解决的标记为 ✅，待处理标记为 ⚠️。
 
-1. 调用实参事实源已统一为 `callsites.args_json` + call-arg `DataNode`；`callsite_args` 表已移除。需要补 DataNode/callsite arg 的 insert/query/delete/cascade 测试。
-2. `dataflow_edges` 的 `TextRange` 持久化已补全（6 字段完整 byte/line/column），需补 trace evidence 完整往返的 golden 测试。
-3. 变量来源追踪与调用路径查询仍需要更多真实源码端到端 fixture，尤其是跨文件调用、参数位置和 unsupported/partial 结果。
-4. Go/Rust/C#/PHP/Ruby/Kotlin 已加入 `all-languages` 并声明 DataflowBasic，需要补齐每种语言的 capability snapshot、golden fixtures、dataflow smoke，以及 CFG/跨函数等 unsupported 或 partial trace CLI/MCP 断言。
-5. Bash/Cangjie 需要 opt-in feature 的最小编译/doctor/capability 测试，避免被误认为默认支持语言。
-6. path alias 已通过 `resolve_by_module_path()` 接入主解析路径并可接 E2E 测试；barrel re-export 仍需要结构化实现（ExportResolver 已移除）。
-7. 旧 `RawEdge` dataflow 路径已移除，不再需要双轨隔离。
+### 已解决 ✅
+
+1. **dataflow_edges TextRange 持久化** — `ts_dataflow_edges_complete_textrange` 和 `ts_dataflow_textrange_complete_roundtrip`（`integration.rs:645,598`）验证了 6 字段完整 byte/line/column 往返，注释明确标注了"原 bug 只存了 3/6 字段"的历史。
+2. **Trace 端到端 fixture** — 四个测试文件共 135 个 trace 测试，覆盖跨文件调用（9+）、参数位置定位、unsupported/partial 结果（8+）、MCP 契约和 CLI 工作流。
+3. **Go/Rust/C#/PHP/Ruby/Kotlin 能力快照与 dataflow smoke** — 每种语言 4 个 golden fixture（simple/imports/calls/class）；每种语言 2-3 个 dataflow smoke 测试，验证 DataNode 种类和 DataFlowEdge 产出。
+4. **旧 RawEdge dataflow 路径移除** — `extract.rs:1082` 显式断言 `facts.raw_edges.is_empty()`；代码中 zero `RawEdge.*dataflow` 匹配项。RawEdge 仅用于 symbol_edges（Calls/Contains/Imports）。
+5. **Bash/Cangjie capability 测试** — `test_bash_capability_is_symbolic`（`capability.rs`）断言 Bash 为 Symbolic 级别，dataflow/CFG/lexical_bindings 均为 unsupported；`test_cangjie_feature_matrix_no_call_graph` 断言 Cangjie call_graph 为 unsupported；`test_experimental_languages_in_all_compiled` 验证 feature flag gating 行为。
+6. **Cangjie golden fixtures** — `golden_cangjie_{simple,imports,calls}` 三个 fixture 覆盖基本定义、引用、导入抽取（`golden.rs`，bootstrap 模式自动生成 expected.json）。
+7. **DataNode cascade 删除** — `ts_delete_file_cascades_dataflow`（`integration.rs`）端到端验证：index → 确认 DataNode/DataFlowEdge 存在 → `delete_file_data` → 确认全部级联清理。SQLite `ON DELETE CASCADE` 外键约束保证一致性。
+8. **Barrel re-export 链步行** — `ts_barrel_reexport_chain_resolves_to_source`（`integration.rs`）端到端验证：`main.ts` import barrel → barrel `export * from` → 原始定义文件，解析链路完整。`resolve_through_reexports` + `follow_reexport_chain` 支持递归链步行（最大深度 10，循环守卫），`resolve_relative_module` 处理 `./` 和 `../` 路径解析。

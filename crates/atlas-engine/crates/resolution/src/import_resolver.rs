@@ -107,6 +107,102 @@ impl ImportResolver {
         Ok(results)
     }
 
+    /// Resolve through barrel re-export chains.
+    ///
+    /// When an import resolves to a file that has ExportFrom facts
+    /// (i.e. it's a barrel file with `export * from './lib'`), this method
+    /// follows the re-export chain to find the original symbol definition.
+    pub fn resolve_through_reexports(
+        &self,
+        import: &ImportDef,
+        candidates: Vec<SymbolDef>,
+    ) -> anyhow::Result<Vec<SymbolDef>> {
+        // Only follow re-exports when the import target name is known
+        if import.kind == ImportKind::ExportFrom {
+            return Ok(candidates);
+        }
+        let target_name = import
+            .local_name
+            .as_deref()
+            .unwrap_or(&import.imported_name);
+        if target_name.is_empty() {
+            return Ok(candidates);
+        }
+
+        let mut resolved: Vec<SymbolDef> = Vec::new();
+        let mut visited: std::collections::HashSet<FileId> = std::collections::HashSet::new();
+
+        for sym in &candidates {
+            visited.insert(sym.file_id);
+            if let Some(chain_sym) =
+                self.follow_reexport_chain(&sym.file_id, target_name, &mut visited, 0)
+            {
+                resolved.push(chain_sym);
+            } else {
+                resolved.push(sym.clone());
+            }
+        }
+        Ok(resolved)
+    }
+
+    /// Recursively follow re-export chains from a barrel file to find the
+    /// actual symbol definition.  Returns None if the chain dead-ends.
+    fn follow_reexport_chain(
+        &self,
+        file_id: &FileId,
+        name: &str,
+        visited: &mut std::collections::HashSet<FileId>,
+        depth: u32,
+    ) -> Option<SymbolDef> {
+        if depth > 10 {
+            return None;
+        }
+
+        // Get ExportFrom facts for this barrel file
+        let exports = self.store.find_imports_by_file(file_id).ok()?;
+        let reexports: Vec<_> = exports
+            .iter()
+            .filter(|i| i.kind == ImportKind::ExportFrom)
+            .collect();
+        if reexports.is_empty() {
+            return None;
+        }
+
+        for reexport in &reexports {
+            let module_path = &reexport.module;
+            if module_path.is_empty() {
+                continue;
+            }
+
+            // Resolve relative module path to target files
+            let target_files = self
+                .store
+                .resolve_relative_module(file_id, module_path)
+                .ok()
+                .unwrap_or_default();
+
+            for tf in &target_files {
+                if !visited.insert(tf.file_id) {
+                    continue; // cycle guard
+                }
+
+                // Search for the symbol in the target file
+                let symbols = self.store.find_symbols_by_file(&tf.file_id).ok()?;
+                if let Some(sym) = symbols.iter().find(|s| s.name == name) {
+                    return Some(sym.clone());
+                }
+
+                // Recurse: target file might itself be a barrel
+                if let Some(chain_sym) =
+                    self.follow_reexport_chain(&tf.file_id, name, visited, depth + 1)
+                {
+                    return Some(chain_sym);
+                }
+            }
+        }
+        None
+    }
+
     /// Look up a symbol by name in files whose DB path matches `resolved_module`.
     ///
     /// Matching rule: a file path matches `resolved_module` when:
@@ -195,6 +291,16 @@ impl ImportResolver {
                         .and_then(|s| s.rsplit('.').next())
                         .unwrap_or(effective_module.as_str());
                     candidates.push(stem.to_string());
+                }
+            }
+            // ExportFrom behaves like Import for candidate QName generation:
+            // the re-exported name is looked up in the importing file's scope.
+            ImportKind::ExportFrom => {
+                if !name.is_empty() {
+                    candidates.push(name.to_string());
+                }
+                if !local.is_empty() {
+                    candidates.push(local.to_string());
                 }
             }
         }

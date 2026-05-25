@@ -774,7 +774,7 @@ mod tests {
 
         let mut hits = 0;
         let mut captures = cursor.captures(&query, root, source.as_bytes());
-        use streaming_iterator::StreamingIterator;
+        use tree_sitter::StreamingIterator;
         while let Some((m, idx)) = captures.next() {
             let cap = m.captures[*idx];
             let name = query.capture_names()[cap.index as usize].to_string();
@@ -807,7 +807,7 @@ mod tests {
 
         let mut node_hits = 0;
         let mut captures = cursor.captures(&query, root, source.as_bytes());
-        use streaming_iterator::StreamingIterator;
+        use tree_sitter::StreamingIterator;
         while let Some((m, idx)) = captures.next() {
             let cap = m.captures[*idx];
             let name = query.capture_names()[cap.index as usize].to_string();
@@ -845,7 +845,7 @@ mod tests {
         let mut has_call_arg = false;
         let mut has_call_target = false;
         let mut captures = cursor.captures(&query, root, source.as_bytes());
-        use streaming_iterator::StreamingIterator;
+        use tree_sitter::StreamingIterator;
         while let Some((m, idx)) = captures.next() {
             let cap = m.captures[*idx];
             let name = query.capture_names()[cap.index as usize].to_string();
@@ -885,7 +885,7 @@ mod tests {
         let mut field_nodes: Vec<DataNode> = Vec::new();
         let mut call_target_nodes: Vec<DataNode> = Vec::new();
         let mut captures = cursor.captures(&query, root, source.as_bytes());
-        use streaming_iterator::StreamingIterator;
+        use tree_sitter::StreamingIterator;
         while let Some((m, idx)) = captures.next() {
             let cap = m.captures[*idx];
             let name = query.capture_names()[cap.index as usize].to_string();

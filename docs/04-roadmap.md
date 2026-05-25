@@ -1,6 +1,6 @@
 # Atlas Roadmap
 
-This roadmap tracks **current and future work only**. Completed milestones, historical plans, and superseded implementation notes are archived under [`docs/archive/`](./archive/).
+This roadmap tracks **current and future work only**.
 
 ## 1. Current release focus: V1 basic usability
 
@@ -16,7 +16,7 @@ Goal: ship a first version where the CLI and MCP tools are basically usable by e
 ### 1.2 User-facing documentation
 
 - Keep `README.md` as the primary user entry point: installation, quickstart, CLI, MCP, architecture, language support, limitations.
-- Keep `docs/trace-contract.md` as the stable reference for trace JSON output.
+- Keep `docs/07-trace-contract.md` as the stable reference for trace JSON output.
 - Add or maintain troubleshooting notes for:
   - missing `.atlas/atlas.db`
   - stale indexes after source changes
@@ -55,6 +55,8 @@ Goal: ship a first version where the CLI and MCP tools are basically usable by e
   - forward migration promise starting at V1.
 - Make `.atlas/` cleanup and rebuild guidance explicit.
 - Keep JSON output stable for scripted use.
+- Publish verified performance baselines: small/medium/large project index time, DB size, MCP query latency, memory ceiling.
+- Release packaging: version numbers, CHANGELOG, license confirmation, platform matrix.
 
 ### 1.5 Release smoke tests
 
@@ -135,7 +137,7 @@ TraceEngine         -> composes symbol graph + local readers + summaries
 
 ### 3.2 Performance targets
 
-- Keep `docs/08-performance-baseline.md` updated with release baselines.
+- Keep `docs/06-performance-baseline.md` updated with release baselines.
 - Track index time, DB size, memory use, and MCP query latency on small/medium/large repositories.
 - Prioritize resolution and DB write bottlenecks before adding expensive new analysis passes.
 
@@ -153,7 +155,17 @@ Before calling the engine API stable:
 
 ## 5. Future product lines
 
-### 5.1 Atlas mainline
+### 5.1 Inter-procedural Summary Layer (design direction)
+
+Current trace bridges caller→callee via runtime `SummaryEdgeProvider` (virtual edges, not persisted). A future persistent summary layer is designed but not scheduled for V1:
+
+- **Schema**: three new tables (`function_summaries`, `summary_param_sources`, `summary_return_sinks`), per-function summary with progressive precision tiers
+- **Phases**: (1) in-memory cache → (2) persistent DB storage → (3) incremental invalidation via call graph
+- **Priority languages for first adoption**: TypeScript, Python (strongest local dataflow + call graph + TraceEngine path)
+
+Details: see `FunctionSummary` in code and current `SummaryEdgeProvider` implementation.
+
+### 5.2 Atlas mainline
 
 Continue focusing on local, single-repository, single-version indexing:
 
@@ -163,7 +175,7 @@ Continue focusing on local, single-repository, single-version indexing:
 - variable provenance and caller-path tracing
 - MCP-driven agent context
 
-### 5.2 Corpus is out of scope for V1
+### 5.3 Corpus is out of scope for V1
 
 A multi-version source corpus system for Linux/U-Boot/BusyBox-style repositories remains a separate future product line. It should not be merged into Atlas V1 because it needs a different identity model:
 

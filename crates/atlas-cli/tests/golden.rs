@@ -466,3 +466,23 @@ fn golden_bash_simple() {
 fn golden_bash_calls() {
     run_golden("bash", "calls", "sh", Language::Bash);
 }
+
+// -- Cangjie (Symbolic, opt-in, reduced fixtures) --
+
+#[cfg(feature = "cangjie")]
+#[test]
+fn golden_cangjie_simple() {
+    run_golden("cangjie", "simple", "cj", Language::Cangjie);
+}
+
+#[cfg(feature = "cangjie")]
+#[test]
+fn golden_cangjie_imports() {
+    run_golden("cangjie", "imports", "cj", Language::Cangjie);
+}
+
+#[cfg(feature = "cangjie")]
+#[test]
+fn golden_cangjie_calls() {
+    run_golden("cangjie", "calls", "cj", Language::Cangjie);
+}

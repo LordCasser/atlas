@@ -471,7 +471,7 @@ fn walk_for_assign_edges(
                 let right_key = NodePosKey { start_byte: right_node.start_byte() as u32, end_byte: right_node.end_byte() as u32, kind: DataNodeKind::Expr };
                 if let Some(&source_id) = pos_map.get(&right_key) {
                     for i in 0..left_node.child_count() {
-                        if let Some(child) = left_node.child(i) {
+                        if let Some(child) = left_node.child(i as u32) {
                             if child.is_named() && child.kind() == "identifier" {
                                 let child_key = NodePosKey { start_byte: child.start_byte() as u32, end_byte: child.end_byte() as u32, kind: DataNodeKind::Local };
                                 if let Some(&target_id) = pos_map.get(&child_key) {
@@ -512,7 +512,7 @@ fn walk_for_assign_edges(
 
     // Recurse into children
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             walk_for_assign_edges(child, source, pos_map, _all_nodes, edges);
         }
     }
@@ -527,11 +527,11 @@ pub(crate) fn create_assign_edges_from_expression_lists(
     edges: &mut Vec<DataFlowEdge>,
 ) {
     let left_nodes: Vec<tree_sitter::Node> = (0..left_list.child_count())
-        .filter_map(|i| left_list.child(i))
+        .filter_map(|i| left_list.child(i as u32))
         .filter(|c| c.is_named())
         .collect();
     let right_nodes: Vec<tree_sitter::Node> = (0..right_list.child_count())
-        .filter_map(|i| right_list.child(i))
+        .filter_map(|i| right_list.child(i as u32))
         .filter(|c| c.is_named())
         .collect();
     for (i, left_node) in left_nodes.iter().enumerate() {
@@ -556,7 +556,7 @@ pub(crate) fn create_assign_edges_from_expression_lists(
 fn find_identifier_child(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
     if node.kind() == "identifier" { return Some(node); }
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             if let Some(found) = find_identifier_child(child) { return Some(found); }
         }
     }
@@ -1102,7 +1102,7 @@ pub(crate) fn collect_pattern_bindings<'a>(pattern_node: tree_sitter::Node<'a>, 
         // Python destructuring: a, b = pair  /  (a, b) = pair
         "pattern_list" | "tuple_pattern" | "list_pattern" => {
             for i in 0..pattern_node.child_count() {
-                if let Some(child) = pattern_node.child(i) {
+                if let Some(child) = pattern_node.child(i as u32) {
                     if child.kind() == "identifier" {
                         out.push(child);
                     } else {
@@ -1113,14 +1113,14 @@ pub(crate) fn collect_pattern_bindings<'a>(pattern_node: tree_sitter::Node<'a>, 
         }
         "object_pattern" | "array_pattern" | "rest_pattern" => {
             for i in 0..pattern_node.child_count() {
-                if let Some(child) = pattern_node.child(i) {
+                if let Some(child) = pattern_node.child(i as u32) {
                     collect_pattern_bindings(child, out);
                 }
             }
         }
         _ => {
             for i in 0..pattern_node.child_count() {
-                if let Some(child) = pattern_node.child(i) {
+                if let Some(child) = pattern_node.child(i as u32) {
                     collect_pattern_bindings(child, out);
                 }
             }

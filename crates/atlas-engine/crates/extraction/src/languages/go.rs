@@ -302,7 +302,7 @@ fn walk_go_assign_edges(
             };
             if let Some(val_list) = node.child_by_field_name("value") {
                 for i in 0..val_list.child_count() {
-                    if let Some(val_node) = val_list.child(i) {
+                    if let Some(val_node) = val_list.child(i as u32) {
                         if val_node.is_named() {
                             let value_key = NodePosKey {
                                 start_byte: val_node.start_byte() as u32,
@@ -330,7 +330,7 @@ fn walk_go_assign_edges(
 
     // Recurse
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             walk_go_assign_edges(child, pos_map, edges);
         }
     }
@@ -716,7 +716,7 @@ func foo(x int) int {
 
         let mut nodes: Vec<DataNode> = Vec::new();
         let mut captures = cursor.captures(&query, root, source.as_bytes());
-        use streaming_iterator::StreamingIterator;
+        use tree_sitter::StreamingIterator;
         while let Some((m, idx)) = captures.next() {
             let cap = m.captures[*idx];
             let name = query.capture_names()[cap.index as usize].to_string();

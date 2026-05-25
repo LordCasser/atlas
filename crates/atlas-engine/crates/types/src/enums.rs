@@ -413,6 +413,8 @@ pub enum ImportKind {
     #[default]
     Import,
     FromImport,
+    /// Re-export from another module (`export * from './foo'` or `export { X } from './foo'`)
+    ExportFrom,
     Package,
     Use,
 }
@@ -423,6 +425,7 @@ impl ImportKind {
             Self::Include => "include",
             Self::Import => "import",
             Self::FromImport => "from_import",
+            Self::ExportFrom => "export_from",
             Self::Package => "package",
             Self::Use => "use",
         }
@@ -433,6 +436,7 @@ impl ImportKind {
             "include" => Some(Self::Include),
             "import" => Some(Self::Import),
             "from_import" => Some(Self::FromImport),
+            "export_from" => Some(Self::ExportFrom),
             "package" => Some(Self::Package),
             "use" => Some(Self::Use),
             _ => None,

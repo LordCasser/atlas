@@ -1,7 +1,8 @@
 //! Language registry: loads tree-sitter grammars for enabled Atlas languages.
 //!
-//! The MVP compile set excludes incomplete/experimental languages such as
-//! Cangjie. Those languages must be enabled explicitly with their own feature.
+//! All languages (including Cangjie) are ABI-compatible with tree-sitter 0.26
+//! (MAX_ABI ≥ 15).  Experimental languages like Cangjie and Bash remain opt-in
+//! at the capability level, but no longer require ABI-version workarounds.
 
 use anyhow::{Result, bail};
 use types::Language;

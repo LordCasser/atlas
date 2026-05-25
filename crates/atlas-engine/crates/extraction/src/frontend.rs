@@ -541,7 +541,7 @@ mod tests {
     fn test_create_frontend_slot_normalize() {
         use types::ids::FileId;
         use std::path::Path;
-        use streaming_iterator::StreamingIterator;
+        use tree_sitter::StreamingIterator;
 
         let frontend = crate::languages::create_frontend(Language::TypeScript)
             .expect("create_frontend should return TS frontend");
@@ -595,7 +595,7 @@ mod tests {
     fn test_create_frontend_slot_normalize_lexical_dataflow() {
         use types::ids::FileId;
         use std::path::Path;
-        use streaming_iterator::StreamingIterator;
+        use tree_sitter::StreamingIterator;
 
         let frontend = crate::languages::create_frontend(Language::TypeScript)
             .expect("create_frontend should return TS frontend");

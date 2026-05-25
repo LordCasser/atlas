@@ -341,8 +341,6 @@ mod tests {
         assert!(!spec.reference_query().is_empty());
         assert!(!spec.import_query().is_empty());
         assert!(!spec.scope_query().is_empty());
-        // tree-sitter-cangjie may be version-incompatible with current tree-sitter;
-        // skip grammar validation here and rely on the query_parses test below.
     }
 
     #[test]
@@ -350,23 +348,10 @@ mod tests {
         let spec = CangjieAdapter;
         let lang = spec.tree_sitter_language();
 
-        // tree-sitter-cangjie requires language version 15 which is
-        // incompatible with tree-sitter 0.24 (max version 14).
-        // Query compilation will succeed once tree-sitter is upgraded to 0.25+.
+        // tree-sitter 0.26+ supports language ABI versions 13-15,
+        // making Cangjie (ABI 15) fully compatible.
         let def_q = tree_sitter::Query::new(&lang, spec.definition_query());
-        assert!(
-            def_q.is_ok()
-                || def_q
-                    .as_ref()
-                    .unwrap_err()
-                    .message
-                    .contains("language version"),
-            "definitions query: {:?}",
-            def_q.err()
-        );
-        if def_q.is_err() {
-            return;
-        }
+        assert!(def_q.is_ok(), "definitions query: {:?}", def_q.err());
 
         let ref_q = tree_sitter::Query::new(&lang, spec.reference_query());
         assert!(ref_q.is_ok(), "references query: {:?}", ref_q.err());

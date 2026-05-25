@@ -691,8 +691,8 @@ fn ts_dataflow_edges_complete_textrange() {
             edges_with_column,
             "expected at least one dataflow edge with non-zero column info (start_column/end_column). \
              This indicates the dataflow_edges TextRange column fields (location_3/5) are not being persisted."
-        );
-    }
+    );
+}
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -1224,5 +1224,102 @@ fn mcp_tools_are_registered() {
     assert!(
         tool_names.contains(&"context"),
         "context tool missing from MCP"
+    );
+}
+
+/// Verify that DataNodes and dataflow_edges are cascade-deleted
+/// when the owning file is removed.  SQLite FOREIGN KEY ON DELETE CASCADE
+/// handles this automatically, but this test guards against regression.
+#[test]
+fn ts_delete_file_cascades_dataflow() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cascade_test.ts",
+        r#"
+function add(a: number, b: number): number {
+    let sum = a + b;
+    return sum;
+}
+let result = add(1, 2);
+"#,
+    )];
+
+    let (store, _) = index_files(files);
+    let file_id = FileId::generate("cascade_test.ts");
+
+    // Verify dataflow records exist
+    let nodes = store.find_data_nodes_by_file(&file_id).unwrap();
+    assert!(!nodes.is_empty(), "DataNodes should exist after index");
+    let edges = store.find_dataflow_edges_by_file(&file_id).unwrap();
+    assert!(!edges.is_empty(), "DataFlowEdges should exist after index");
+
+    // Delete
+    store.delete_file_data(&file_id).unwrap();
+
+    // Verify cascade
+    let nodes_after = store.find_data_nodes_by_file(&file_id).unwrap();
+    assert!(nodes_after.is_empty(), "DataNodes must be cascade-deleted after file delete");
+    let edges_after = store.find_dataflow_edges_by_file(&file_id).unwrap();
+    assert!(edges_after.is_empty(), "DataFlowEdges must be cascade-deleted after file delete");
+}
+
+/// Barrel re-export chain: main.ts imports `{ greet }` from barrel/index.ts,
+/// which re-exports via `export * from './lib'` where greet is defined.
+/// Verifies that resolution follows the chain to the actual definition.
+#[test]
+fn ts_barrel_reexport_chain_resolves_to_source() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[
+        (
+            "lib/helper.ts",
+            r#"export function greet(name: string): string {
+    return "Hello, " + name;
+}
+"#,
+        ),
+        (
+            "src/index.ts",
+            r#"export * from '../lib/helper';
+"#,
+        ),
+        (
+            "src/app.ts",
+            r#"import { greet } from './index';
+
+function main() {
+    console.log(greet("World"));
+}
+"#,
+        ),
+    ];
+
+    let (store, stats) = index_files(files);
+
+    // The import from './index' should resolve through the barrel's
+    // `export * from '../lib/helper'` to lib/helper.ts::greet.
+    let lib_file_id = FileId::generate("lib/helper.ts");
+    let lib_syms = store.find_symbols_by_file(&lib_file_id).unwrap();
+    assert!(
+        lib_syms.iter().any(|s| s.name == "greet"),
+        "greet should be defined in lib/helper.ts"
+    );
+
+    // Verify edges were created from resolution
+    let all_edges = store.get_all_edges().unwrap();
+    assert!(
+        !all_edges.is_empty(),
+        "resolution should produce edges (including through barrel chain)"
+    );
+
+    // The greet symbol from lib/helper.ts should be a target of some edge
+    let greet_sym = lib_syms.iter().find(|s| s.name == "greet").unwrap();
+    let has_reference = all_edges
+        .iter()
+        .any(|e| e.target == greet_sym.id && e.kind == EdgeKind::Calls);
+    assert!(
+        has_reference,
+        "greet from lib/helper.ts should be referenced via barrel re-export \
+         (no edge found targeting greet). edges built: {}",
+        stats.edges_built,
     );
 }

@@ -520,6 +520,12 @@ impl DataflowReader for Store {
     ) -> anyhow::Result<Vec<DataFlowEdge>> {
         Store::find_dataflow_edges_by_sources(self, sources)
     }
+    fn find_dataflow_edges_by_file(
+        &self,
+        file_id: &FileId,
+    ) -> anyhow::Result<Vec<DataFlowEdge>> {
+        Store::find_dataflow_edges_by_file(self, file_id)
+    }
 }
 
 impl CallGraphReader for Store {

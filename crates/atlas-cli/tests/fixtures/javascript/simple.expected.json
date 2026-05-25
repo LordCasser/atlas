@@ -62,6 +62,10 @@
     },
     {
       "module": "express"
+    },
+    {
+      "module": "",
+      "imported_name": "createServer"
     }
   ],
   "scopes": [

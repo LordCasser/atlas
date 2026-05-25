@@ -1,0 +1,53 @@
+{
+  "symbols": [
+    {
+      "name": "add",
+      "kind": "function"
+    },
+    {
+      "name": "compute",
+      "kind": "function"
+    },
+    {
+      "name": "x",
+      "kind": "variable"
+    },
+    {
+      "name": "y",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "add",
+      "kind": "call"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "",
+      "kind": "file"
+    },
+    {
+      "name": "func add(a: Int64, b: Int64): Int64 {\n    return a + b\n}",
+      "kind": "function"
+    },
+    {
+      "name": "{\n    return a + b\n}",
+      "kind": "block"
+    },
+    {
+      "name": "func compute(): Int64 {\n    let x = 10\n    let y = 20\n    return add(x, y)\n}",
+      "kind": "function"
+    },
+    {
+      "name": "{\n    let x = 10\n    let y = 20\n    return add(x, y)\n}",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "compute"
+    }
+  ]
+}

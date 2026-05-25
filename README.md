@@ -51,7 +51,7 @@ source code ──parse/extract──▶ .atlas/atlas.db ──query──▶ CL
 ### Build from source
 
 ```bash
-git clone https://github.com/<your-org>/atlas.git
+git clone https://github.com/LordCasser/atlas.git
 cd atlas
 cargo build --release -p atlas-cli --features "all-languages,mcp"
 ```
@@ -67,22 +67,24 @@ cargo install --path crates/atlas-cli --features "all-languages,mcp"
 ## Quick start
 
 ```bash
-# Create <project>/.atlas/ and initialize the SQLite schema
-atlas init --project /path/to/project
+# Run from your project root — `--project` defaults to `.`
+# Create .atlas/ and initialize the SQLite schema
+atlas init
 
 # Build the first full index
-atlas index --project /path/to/project
+atlas index
 
 # Inspect index health and database statistics
-atlas status --project /path/to/project
-atlas doctor --project /path/to/project
+atlas status
+atlas doctor
 
 # Query symbols and context
-atlas search "UserService" --project /path/to/project
-atlas context "my.module.UserService" --project /path/to/project
+atlas search "UserService"
+atlas context "my.module.UserService"
 ```
 
-When running commands from the project root, omit `--project`; it defaults to `.`.
+All commands accept `--project <path>` when running from outside the project
+directory (supports both relative and absolute paths).
 
 ## CLI
 
@@ -105,7 +107,7 @@ Examples:
 
 ```bash
 atlas search "kind:function lang:typescript handle*" --limit 20
-atlas files --project .
+atlas files
 atlas trace point --file src/app.ts --line 12 --column 18 --json
 atlas trace variable --file src/app.ts --line 12 --column 18 --max-depth 30 --json
 ```
@@ -115,23 +117,64 @@ atlas trace variable --file src/app.ts --line 12 --column 18 --max-depth 30 --js
 Start the server after indexing the target project:
 
 ```bash
-atlas init --project /path/to/project
-atlas index --project /path/to/project
-atlas mcp --project /path/to/project
+# From your project root:
+atlas init
+atlas index
+atlas mcp
 ```
 
 > MCP reads an existing `.atlas/atlas.db`. Re-run `atlas sync` or `atlas index` after code changes.
 
 ### Client configuration
 
-Claude Desktop / Cursor-style JSON:
+`--project` defaults to `.`, so atlas uses the client's working directory.
+This enables a **global configuration** that works across all projects without
+hardcoding project paths. You can also switch projects at runtime with the
+`open_project` MCP tool.
+
+> Some clients (e.g., Claude Desktop) start from unpredictable working
+> directories. For those clients, use **project mode** with an explicit
+> `--project <path>`.
+
+Config files by client:
+
+| Client | Global config |
+|---|---|
+| Claude Code | `~/.claude.json` |
+| Codex CLI | `~/.codex/config.toml` |
+| OpenCode | `~/.config/opencode/opencode.json` |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) |
+| Cursor | Cursor Settings → MCP → Add new MCP server |
+
+> Claude Code and OpenCode also support project-level config:
+> `.claude/settings.local.json` and `.opencode/opencode.json`.
+
+#### Global mode — no `--project`
+
+Recommended for agents that start from the project directory (Claude Code,
+Codex CLI, OpenCode). One config works for every project.
+
+Claude Code (`~/.claude.json`):
 
 ```json
 {
   "mcpServers": {
     "atlas": {
-      "command": "/absolute/path/to/atlas",
-      "args": ["mcp", "--project", "/absolute/path/to/project"]
+      "command": "/path/to/atlas",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+OpenCode (`~/.config/opencode/opencode.json`):
+
+```json
+{
+  "mcpServers": {
+    "atlas": {
+      "command": "/path/to/atlas",
+      "args": ["mcp"]
     }
   }
 }
@@ -141,8 +184,38 @@ Codex CLI (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.atlas]
-command = "/absolute/path/to/atlas"
-args = ["mcp", "--project", "/absolute/path/to/project"]
+command = "/path/to/atlas"
+args = ["mcp"]
+enabled = true
+```
+
+#### Project mode — explicit `--project`
+
+Use when the client's working directory is unpredictable, or when you want
+to lock atlas to a specific codebase.
+
+Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "atlas": {
+      "command": "/path/to/atlas",
+      "args": ["mcp", "--project", "/path/to/project"]
+    }
+  }
+}
+```
+
+Claude Code, OpenCode, Cursor — same JSON format as above. Just add
+`"--project"` and the path to the `args` array.
+
+Codex CLI (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.atlas]
+command = "/path/to/atlas"
+args = ["mcp", "--project", "/path/to/project"]
 enabled = true
 ```
 
@@ -157,9 +230,9 @@ enabled = true
 | Trace | `trace_point`, `trace_variable`, `trace_caller_path` |
 | File dependencies | `dependencies`, `dependents` |
 
-> `open_project` supports switching the active project at runtime. It defaults to `storage: "memory"` for zero-footprint temporary sessions. See [`docs/architecture.md`](docs/architecture.md) for details.
+> `open_project` supports switching the active project at runtime. It defaults to `storage: "memory"` for zero-footprint temporary sessions. See [`docs/03-current-architecture.md`](docs/03-current-architecture.md) for details.
 
-Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/trace-contract.md`](docs/trace-contract.md): `ok`, `kind`, `capability`, `partial_result`, `diagnostics`, and `result`.
+Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/07-trace-contract.md`](docs/07-trace-contract.md): `ok`, `kind`, `capability`, `partial_result`, `diagnostics`, and `result`.
 
 ## Architecture
 
@@ -182,8 +255,7 @@ atlas/
 │           ├── search            # FTS5 + LIKE + fuzzy search and query parsing
 │           ├── context           # agent-facing Markdown context builder
 │           └── filesync          # file discovery, content hashing, incremental sync, locks
-├── docs/                         # maintained user/contributor documentation
-├── docs/archive/                 # completed/superseded development plans and phase logs
+├── docs/                          # architectural and release documentation
 ├── skills/atlas/                 # Agent Skill for using Atlas
 ├── Cargo.toml                    # workspace manifest
 └── README.md
@@ -256,13 +328,13 @@ Default build:
 | PHP | `.php` | DataflowBasic best-effort |
 | Ruby | `.rb` | DataflowBasic best-effort |
 | Kotlin | `.kt`, `.kts` | DataflowBasic best-effort |
+| Cangjie | `.cj`, `.cangjie` | Symbolic best-effort |
 
-Experimental features:
+Experimental (opt-in only):
 
 | Language | Extensions | Feature |
 | --- | --- | --- |
 | Bash | `.sh`, `.bash` | `bash` |
-| Cangjie | `.cj`, `.cangjie` | `cangjie` |
 
 Build variants:
 
@@ -270,24 +342,21 @@ Build variants:
 cargo build --release -p atlas-cli
 cargo build --release -p atlas-cli --features all-languages
 cargo build --release -p atlas-cli --features "all-languages,mcp"
-cargo build --release -p atlas-cli --features "all-languages,mcp,bash,cangjie"
+cargo build --release -p atlas-cli --features "all-languages,mcp,bash"
 ```
 
 ## Documentation
 
 Maintained documents:
 
-- [`docs/architecture.md`](docs/architecture.md) — 完整技术架构详解（中文）：从 tree-sitter 到惰性数据流的演进路径、技术局限、架构权衡。
 - [`docs/01-requirements.md`](docs/01-requirements.md) — product scope and acceptance criteria.
 - [`docs/02-architecture-constraints.md`](docs/02-architecture-constraints.md) — architectural rules and module boundaries.
-- [`docs/03-current-architecture.md`](docs/03-current-architecture.md) — implemented architecture details.
-- [`docs/05-roadmap.md`](docs/05-roadmap.md) — current and future work; completed roadmap items are archived.
-- [`docs/07-testing-spec.md`](docs/07-testing-spec.md) — test layers, feature matrix, and release checks.
-- [`docs/08-performance-baseline.md`](docs/08-performance-baseline.md) — measured performance baselines.
-- [`docs/trace-contract.md`](docs/trace-contract.md) — trace JSON contract and diagnostics model.
+- [`docs/03-current-architecture.md`](docs/03-current-architecture.md) — implemented architecture + authoritative language capability table.
+- [`docs/04-roadmap.md`](docs/04-roadmap.md) — current and future work.
+- [`docs/05-testing-spec.md`](docs/05-testing-spec.md) — test layers, feature matrix, and release checks.
+- [`docs/06-performance-baseline.md`](docs/06-performance-baseline.md) — measured performance baselines.
+- [`docs/07-trace-contract.md`](docs/07-trace-contract.md) — trace JSON contract and diagnostics model.
 - [`skills/atlas/SKILL.md`](skills/atlas/SKILL.md) — Agent Skill for using Atlas from another agent.
-
-Current and future work is tracked in [`docs/05-roadmap.md`](docs/05-roadmap.md). Completed or superseded development notes are kept under [`docs/archive/`](docs/archive/) and are not required for normal use.
 
 ## Development
 
@@ -306,9 +375,9 @@ Conventions:
 
 1. Keep crate dependencies acyclic and aligned with the architecture above.
 2. Add or update fixtures when changing extraction, resolution, graph, or trace behavior.
-3. Update [`docs/trace-contract.md`](docs/trace-contract.md) and tests when trace response fields or diagnostics change.
+3. Update [`docs/07-trace-contract.md`](docs/07-trace-contract.md) and tests when trace response fields or diagnostics change.
 4. Update [`docs/03-current-architecture.md`](docs/03-current-architecture.md) when implemented module boundaries, schema, CLI, MCP, or analysis behavior changes.
-5. Keep release-facing documentation in `README.md` and `docs/`; put historical plans in `docs/archive/`.
+5. Keep release-facing documentation in `docs/`; delete obsolete content rather than accumulating stale docs.
 
 ## Known limitations
 
@@ -319,6 +388,114 @@ Conventions:
 - TypeScript barrel/re-export chains use best-effort name fallback rather than a full export graph.
 - Dataflow and trace precision varies by language; inspect `atlas doctor` or `atlas_language_capabilities` before relying on a trace result.
 - MCP serves a local SQLite index; run `atlas sync` or `atlas index` after source changes.
+
+## How tree-sitter powers dataflow extraction
+
+Atlas builds its code facts entirely from tree-sitter's Concrete Syntax Tree (CST). Here is the pipeline from raw source to traceable dataflow:
+
+### 1. Parse → CST
+
+```text
+source code
+  → tree_sitter::Parser (per-language grammar)
+  → tree_sitter::Tree (CST)
+```
+
+Tree-sitter is an incremental, error-tolerant parser. Atlas uses **14 language grammars** (TypeScript, Python, Java, C, C++, Go, C#, Rust, PHP, Ruby, Kotlin, ArkTS, Bash, Cangjie), each compiled from a `grammar.js` into a parser. Parsing is done per-file via a thread-local `Parser` to avoid allocation overhead.
+
+### 2. Query → captures
+
+```text
+CST root node
+  → tree_sitter::Query (per-language .scm queries)
+  → (capture_name, Node) pairs
+```
+
+Four tree-sitter queries run against every file:
+
+| Query | `.scm` file | Captures |
+|-------|-----------|----------|
+| **definitions** | `definitions.scm` | `(class_declaration) @definition.class`, `(function_declaration) @definition.function`, etc. |
+| **references** | `references.scm` | `(call_expression) @reference.call`, `(member_expression) @reference.field`, etc. |
+| **imports** | `imports.scm` | `(import_statement) @import`, module path extraction |
+| **scopes** | `scopes.scm` | `(function_declaration) @scope`, `(block) @scope`, etc. |
+
+Each capture includes its **byte range** and **source text** from the CST node. Queries are compiled once per language, then executed against every parsed file via `QueryCursor::captures()`.
+
+### 3. Normalize → FileFacts
+
+```text
+(capture_name, Node) pairs
+  → LanguageAdapter::normalize()
+  → Symbol, Reference, Import, ScopeDef (deterministic ID via blake3)
+```
+
+Each language has a `LanguageAdapter` that maps tree-sitter capture names to Atlas types. For example, a `@definition.function` capture becomes a `Symbol` with `SymbolKind::Function`, and its qualified name is built by walking `child_by_field_name("name")` up the CST. All IDs are deterministic — the same file always produces the same facts.
+
+### 4. Lexical binding → scope-aware variable resolution
+
+```text
+Symbols + Scopes
+  → LexicalBinder (walks CST for `(identifier) @binding.use`)
+  → BindingDef (declaration sites) + BindingUse (usage sites)
+```
+
+The `LexicalBinder` scans every identifier in the AST. For each usage, it walks the scope chain upward to find the nearest enclosing declaration with a matching name. This produces `BindingDef`/`BindingUse` pairs that connect variable uses to their definitions within the same file.
+
+### 5. Dataflow → intra-procedural edges
+
+```text
+CST root + Bindings + Scopes
+  → DataFlowBuilder (walks AST for assignment, call, field access, return patterns)
+  → DataNode + DataFlowEdge
+```
+
+The `DataFlowBuilder` does NOT use tree-sitter queries — it walks the CST directly via `Node::child()`, `child_by_field_name()`, and `named_children()`. For each language, it pattern-matches against known AST node types:
+
+| Pattern | AST nodes matched | Produces |
+|---------|------------------|----------|
+| Assignment | `variable_declaration`, `assignment_expression` | `Assign` edge: RHS → LHS |
+| Call arguments | `call_expression` → `arguments` → children | `ArgToCall` edge: arg → call parameter slot |
+| Field access | `member_expression` → `property_identifier` | `FieldLoad`/`FieldStore` edges |
+| Return values | `return_statement` → child expression | `ReturnValue` edge |
+| Destructuring | `pattern_list`, `tuple_pattern`, `object_pattern` | Multi-target `Assign` edges |
+
+`DataNode` records the source location (byte range), kind (Local, Param, Field, CallArg, Return, Expr), and function scope. `DataFlowEdge` connects a source node to a target node with a directed kind and confidence score.
+
+### 6. CFG → control flow (TypeScript/JavaScript only)
+
+```text
+CST root (per function)
+  → CfgBuilder (walks function body, matching branch/loop/break AST patterns)
+  → CfgNode + CfgEdge (Entry → blocks → Exit)
+```
+
+CFG construction walks the function AST, identifying control-flow splits (`if_statement`, `switch_case`, `try_statement`, `for_statement`, `while_statement`) and building a graph of basic blocks. Each `CfgNode` records the byte range it covers, and `CfgEdge` connects predecessor → successor.
+
+### 7. Trace → cross-procedural variable provenance
+
+```text
+Symbol graph + DataFlow graph + CFG
+  → TraceEngine (backward slice from user-specified location)
+  → TracePath (step-by-step provenance: kind, range, file, confidence, evidence)
+```
+
+The `TraceEngine` combines symbol-level call graphs with intra-procedural dataflow. At call boundaries, `SummaryEdgeProvider` materializes virtual edges (`ArgToParam`, `ReturnToCall`) on-demand, bridging the gap between caller and callee without pre-computing all inter-procedural summaries.
+
+### Where to find the code
+
+| Component | Crate | Key files |
+|-----------|-------|-----------|
+| Grammar registry | `extraction` | [`grammar.rs`](crates/atlas-engine/crates/extraction/src/grammar.rs) |
+| Queries | `extraction` | [`queries/<lang>/*.scm`](crates/atlas-engine/crates/extraction/queries/) |
+| Language adapters | `extraction` | [`languages/<lang>.rs`](crates/atlas-engine/crates/extraction/src/languages/) |
+| Normalize pipeline | `extraction` | [`extract.rs`](crates/atlas-engine/crates/extraction/src/extract.rs) |
+| Query helpers | `extraction` | [`query_helpers.rs`](crates/atlas-engine/crates/extraction/src/query_helpers.rs) |
+| Lexical binding | `extraction` | [`lexical_binder.rs`](crates/atlas-engine/crates/extraction/src/lexical_binder.rs) |
+| DataFlow builder | `extraction` | [`dataflow_builder.rs`](crates/atlas-engine/crates/extraction/src/dataflow_builder.rs) |
+| CFG builder | `extraction` | [`cfg_builder.rs`](crates/atlas-engine/crates/extraction/src/cfg_builder.rs) |
+| Capability profiles | `types` | [`capability.rs`](crates/atlas-engine/crates/types/src/capability.rs) |
+| Trace engine | `analysis` | [`trace/engine.rs`](crates/atlas-engine/crates/analysis/src/trace/engine.rs) |
 
 ## License
 

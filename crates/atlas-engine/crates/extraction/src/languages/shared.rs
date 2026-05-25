@@ -115,7 +115,7 @@ impl SymbolDefBuilder {
 pub fn node_name_range(node: tree_sitter::Node, name: &str, source: &str) -> Option<TextRange> {
     // For simple cases where the name is the first identifier child
     for i in 0..node.child_count() {
-        let child = node.child(i)?;
+        let child = node.child(i as u32)?;
         let kind = child.kind();
         // Handle common identifier-like node types
         if matches!(
@@ -134,7 +134,7 @@ pub fn node_name_range(node: tree_sitter::Node, name: &str, source: &str) -> Opt
     }
     // Fall back to the first identifier child
     for i in 0..node.child_count() {
-        let child = node.child(i)?;
+        let child = node.child(i as u32)?;
         if child.kind().contains("identifier") {
             return Some(super::node_range(child));
         }

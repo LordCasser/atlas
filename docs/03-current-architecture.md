@@ -1,6 +1,6 @@
 # Atlas 当前架构实现
 
-本文描述当前代码已经落地的实现状态。当前和未来工作见 [Roadmap](./05-roadmap.md)；已完成或被替代的历史设计归档在 [`docs/archive/`](./archive/)。
+本文描述当前代码已经落地的实现状态。当前和未来工作见 [Roadmap](./04-roadmap.md)。
 
 ## 1. 代码结构
 
@@ -230,10 +230,11 @@ ruby
 kotlin
 ```
 
-不完善/实验语言 features 目前是 opt-in，不计入 MVP 验收，也不在 `all-languages`：
+不完善/实验语言 features 目前是 opt-in，不计入 MVP 验收：
+- Cangjie（Symbolic）已纳入 `all-languages`（自 tree-sitter 0.26 ABI 兼容）
+- Bash 不在 `all-languages`，需显式启用 `bash` feature
 
 ```text
-cangjie
 bash
 ```
 
@@ -277,3 +278,28 @@ atlas-engine/crates/workspace: 项目根目录与路径抽象
 ```
 
 后续演进可在此边界上分叉为 Atlas 单仓库单版本索引和 Corpus 多版本源码索引。
+
+## 10. 相关文档
+
+- 架构约束与不变式：见 [`02-architecture-constraints.md`](./02-architecture-constraints.md)
+- 语言能力权威表（从代码 capability profile 导出）：
+
+| Language | Level | CFG | Confidence | In all-languages? |
+|----------|-------|:---:|:---:|:---:|
+| TypeScript | DataflowBasic | ✓ | 0.55 | ✓ (default) |
+| JavaScript | DataflowBasic | ✓ | 0.55 | ✓ (default) |
+| Python | DataflowBasic | ✗ | 0.50 | ✓ (default) |
+| Java | DataflowBasic | ✗ | 0.65 | ✓ |
+| C | DataflowBasic | ✗ | 0.65 | ✓ |
+| C++ | DataflowBasic | ✗ | 0.60 | ✓ |
+| ArkTS | DataflowBasic | ✗ | 0.45 | ✓ |
+| Go | DataflowBasic | ✗ | 0.70 | ✓ |
+| C# | DataflowBasic | ✗ | 0.70 | ✓ |
+| Rust | DataflowBasic | ✗ | 0.60 | ✓ |
+| PHP | DataflowBasic | ✗ | 0.55 | ✓ |
+| Ruby | DataflowBasic | ✗ | 0.50 | ✓ |
+| Kotlin | DataflowBasic | ✗ | 0.65 | ✓ |
+| Cangjie | Symbolic | ✗ | 0.60 | ✓ |
+| Bash | Symbolic | ✗ | 0.40 | ✗ (opt-in) |
+
+- Lazy dataflow 设计：analysis 层按需加载 dataflow facts（而非全量预加载），通过 `LazyWindow` 控制分析范围，`ExtractionMode::LazyDataflow` 支持增量按需抽取。详见 `dataflow_builder.rs` 和 `extraction_ctx.rs`。

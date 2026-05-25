@@ -8,5 +8,6 @@
 ;; Field access: obj.field
 (fieldAccess (atomicVariable) @reference.field)
 
-;; Type reference in declarations (type hints)
-(typeAnnotation (scoped_identifier) @reference.type)
+;; NOTE: typeAnnotation node type is not yet present in the Cangjie grammar.
+;; Type reference capture via scoped_identifier is deferred until the grammar
+;; is updated. See: https://gitcode.com/Cangjie-SIG/tree-sitter-cangjie

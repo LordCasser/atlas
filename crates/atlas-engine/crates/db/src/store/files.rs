@@ -72,4 +72,49 @@ impl Store {
         let rows = stmt.query_map([], row_to_file_info)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
+
+    /// Resolve a relative module path against a source file to find matching indexed files.
+    ///
+    /// For barrel re-export chain walking: given `src/barrel/index.ts` and `./lib`,
+    /// resolves to files matching `src/barrel/lib%` (handles `lib.ts`, `lib/index.ts`, etc.).
+    /// Handles `../` parent directory traversal.
+    pub fn resolve_relative_module(
+        &self,
+        source_file_id: &FileId,
+        relative_module: &str,
+    ) -> anyhow::Result<Vec<FileInfo>> {
+        // Get source file path
+        let source_path: String = self
+            .lock_read()
+            .query_row(
+                "SELECT path FROM files WHERE file_id = ?1",
+                rusqlite::params![source_file_id],
+                |row| row.get(0),
+            )?;
+
+        // Extract directory from source path
+        let source_dir = std::path::Path::new(&source_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // Resolve relative path against source directory
+        let resolved = std::path::Path::new(&source_dir)
+            .join(relative_module)
+            .to_string_lossy()
+            .to_string();
+
+        // Normalize and build LIKE pattern (handles extension variations:
+        // "lib" → matches "lib.ts", "lib/index.ts", "lib.js", etc.)
+        let normalized = resolved.replace('\\', "/");
+        let pattern = format!("{}%", normalized);
+
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT file_id, path, language, content_hash, status
+             FROM files WHERE path LIKE ?1 ESCAPE '\\'",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![pattern], row_to_file_info)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
 }

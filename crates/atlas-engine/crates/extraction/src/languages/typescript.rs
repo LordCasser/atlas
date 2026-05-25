@@ -197,7 +197,9 @@ pub(crate) fn normalize_ts_import(
     let range = node_range(node);
     let local_name = imported_name.clone();
     let is_relative = module.starts_with('.');
-    let is_wildcard = capture_name.contains("wildcard");
+    let is_wildcard = capture_name.contains("wildcard")
+        // `export.module` without an accompanying `export.name` = wildcard re-export
+        || (capture_name == "export.module");
 
     let import_id = ImportId::generate(
         &file_id,
@@ -767,6 +769,21 @@ fn ts_import_info(
             let module = extract_module_from_ancestor(node, source);
             Some((ImportKind::Import, module, name))
         }
+        // ── Barrel re-exports ──────────────────────────────────────────
+        "export.module" => {
+            let module_path = node_text(node, source)?;
+            let cleaned = module_path
+                .trim_matches(|c| c == '"' || c == '\'')
+                .to_string();
+            // Wildcard re-export: `export * from './bar'`
+            Some((ImportKind::ExportFrom, cleaned, String::new()))
+        }
+        "export.name" | "export.alias" => {
+            let name = node_text(node, source)?;
+            // Walk up to the enclosing export_statement to find the module source
+            let module = extract_export_module_from_ancestor(node, source);
+            Some((ImportKind::ExportFrom, module, name))
+        }
         _ => None,
     }
 }
@@ -777,6 +794,25 @@ fn extract_module_from_ancestor(node: tree_sitter::Node, source: &str) -> String
     let mut current = node;
     while let Some(parent) = current.parent() {
         if parent.kind() == "import_statement" {
+            if let Some(source_child) = parent.child_by_field_name("source") {
+                if let Some(module_path) = node_text(source_child, source) {
+                    return module_path
+                        .trim_matches(|c| c == '"' || c == '\'')
+                        .to_string();
+                }
+            }
+            break;
+        }
+        current = parent;
+    }
+    String::new()
+}
+
+/// Walk up from a node inside an export_statement to find the `source` field.
+fn extract_export_module_from_ancestor(node: tree_sitter::Node, source: &str) -> String {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        if parent.kind() == "export_statement" {
             if let Some(source_child) = parent.child_by_field_name("source") {
                 if let Some(module_path) = node_text(source_child, source) {
                     return module_path
@@ -905,7 +941,7 @@ mod tests {
         let mut has_name_target = false;
         let mut has_val_target = false;
         let mut captures = cursor.captures(&query, root, source.as_bytes());
-        use streaming_iterator::StreamingIterator;
+        use tree_sitter::StreamingIterator;
         while let Some((m, idx)) = captures.next() {
             let cap = m.captures[*idx];
             let capture_name = query.capture_names()[cap.index as usize].to_string();
@@ -932,5 +968,58 @@ mod tests {
             has_val_target,
             "should create Local DataNode for pair-pattern destructured 'val'"
         );
+    }
+
+    /// Verify that barrel re-export statements (`export * from './bar'`,
+    /// `export { foo } from './bar'`) are captured as ImportDef with
+    /// ImportKind::ExportFrom.
+    #[test]
+    fn test_export_extraction() {
+        use tree_sitter::StreamingIterator;
+
+        let spec = TypeScriptFrontendSpec;
+        let ts_lang = spec.tree_sitter_language();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+
+        let source = r#"
+export * from './helpers';
+export { greet } from './utils';
+export { add as plus } from './math';
+"#;
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        let bytes = source.as_bytes();
+
+        let query = tree_sitter::Query::new(&ts_lang, spec.import_query())
+            .expect("import query (with export patterns) must compile");
+        let capture_names: Vec<String> = query.capture_names().iter().map(|s| s.to_string()).collect();
+
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut captures = cursor.captures(&query, root, bytes);
+        let mut found_export_module = false;
+        let mut found_export_name = false;
+
+        while let Some((m, capture_index)) = captures.next() {
+            if let Some(cap) = m.captures.get(*capture_index) {
+                let name = &capture_names[cap.index as usize];
+                match name.as_str() {
+                    "export.module" => {
+                        let text = cap.node.utf8_text(bytes).unwrap();
+                        assert!(text.contains("helpers") || text.contains("utils") || text.contains("math"));
+                        found_export_module = true;
+                    }
+                    "export.name" => {
+                        let text = cap.node.utf8_text(bytes).unwrap();
+                        assert!(!text.is_empty());
+                        found_export_name = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(found_export_module, "should capture `export * from` module");
+        assert!(found_export_name,
+            "should capture named re-export");
     }
 }

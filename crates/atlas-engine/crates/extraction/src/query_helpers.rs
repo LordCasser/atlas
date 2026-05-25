@@ -3,8 +3,11 @@
 //! Contains utilities shared between `extract.rs` and other extraction modules
 //! (lexical_binder, dataflow_builder, etc.) that need to run tree-sitter queries
 //! independent of the main extractor pipeline.
+//!
+//! tree-sitter 0.25+ bundles its own `StreamingIterator` re-export instead of
+//! requiring the external `streaming_iterator` crate.
 
-use tree_sitter::{Node, Query, QueryCursor};
+use tree_sitter::{Node, Query, QueryCursor, StreamingIterator};
 
 use crate::error::{ExtractionFailure, ExtractionFailureKind};
 
@@ -20,8 +23,6 @@ pub(crate) fn collect_captures<'a>(
     source_bytes: &[u8],
     slot: &'static str,
 ) -> Result<Vec<(String, Node<'a>)>, ExtractionFailure> {
-    use streaming_iterator::StreamingIterator;
-
     let trimmed = query_src.trim();
     if trimmed.is_empty() {
         return Ok(Vec::new());

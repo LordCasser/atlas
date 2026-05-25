@@ -48,5 +48,5 @@ kotlin = ["types/kotlin", "extraction/kotlin"]
 
 all-languages = [
     "typescript", "javascript", "python", "java",
-    "c", "cpp", "arkts", "go", "csharp", "rust", "php", "ruby", "kotlin",
+    "c", "cpp", "arkts", "cangjie", "go", "csharp", "rust", "php", "ruby", "kotlin",
 ]
