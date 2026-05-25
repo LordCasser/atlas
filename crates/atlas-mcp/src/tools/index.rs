@@ -94,6 +94,7 @@ impl ToolRouter {
 
         // Run the index pipeline
         let progress_sender = self.progress_sender.clone();
+        let is_manifest = matches!(mode, ExtractionMode::Manifest);
         match run_index(&self.store, &self.project_root, mode, &include_patterns, &exclude_patterns, progress_sender) {
             Ok(stats) => {
                 result.ok = true;
@@ -112,8 +113,19 @@ impl ToolRouter {
 
         // ── Large project warning ─────────────────────────────────────────
         if result.duration_ms > 30_000 {
+            let mut msg = "Indexing took over 30 seconds. ".to_string();
+            if !is_manifest {
+                msg.push_str(
+                    "For a faster first index, use the default analysis=\"manifest\" mode (top-level symbols only). Full structural analysis is triggered on-demand via lazy structural. ",
+                );
+            }
+            msg.push_str(
+                "For very large projects, consider running 'atlas index' locally before connecting via MCP to avoid timeout issues.",
+            );
+            result.warning = Some(msg);
+        } else if result.files_discovered > 5_000 && !is_manifest {
             result.warning = Some(
-                "Indexing took over 30 seconds. For large projects, consider running 'atlas index' locally before connecting via MCP to avoid timeout issues. The CLI command is: atlas index --analysis structural"
+                "Large project detected. Consider using the default analysis=\"manifest\" mode for a fast initial index. Structural/full analysis is triggered on-demand via lazy structural."
                     .into(),
             );
         }
