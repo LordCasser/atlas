@@ -219,9 +219,9 @@ impl ToolRouter {
 
     /// Handle tools/call — dispatch by tool name.
     ///
-    /// Graph-backed engines are NOT refreshed here — use the `atlas_status`
-    /// or an explicit server restart for snapshot updates. The graph is built
-    /// once at server startup.
+    /// Graph initialization and signature-refresh are handled by the MCP
+    /// server layer ([`AtlasMcpService::call_tool`]) before this method is
+    /// called. The dispatcher itself only routes to handlers.
     pub fn call_tool(&mut self, name: &str, arguments: &Value) -> CallToolResult {
         // No per-request graph rebuild — engines were initialized at startup.
         // Each handler returns (result_text, is_error).

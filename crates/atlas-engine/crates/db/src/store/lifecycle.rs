@@ -55,7 +55,11 @@ impl Store {
         })
     }
 
-    /// Open in-memory (for tests).
+    /// Open an empty in-memory database (no file on disk).
+    ///
+    /// Used by tests and by [`open_project`] with `storage: "memory"`.
+    /// No WAL journal (single-connection, no concurrency).  The returned
+    /// store is isolated to the current process and destroyed on drop.
     pub fn open_in_memory() -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;

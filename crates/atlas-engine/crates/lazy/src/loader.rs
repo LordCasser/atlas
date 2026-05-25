@@ -38,10 +38,10 @@ impl DataflowPayload {
             bindings: vec![],
             binding_uses: vec![],
             cfg_nodes: vec![],
-        cfg_edges: vec![],
-        budget_exceeded: false,
+            cfg_edges: vec![],
+            budget_exceeded: false,
+        }
     }
-}
 }
 
 /// Result of a lazy-load invocation.
