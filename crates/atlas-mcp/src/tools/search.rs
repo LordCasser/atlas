@@ -40,6 +40,7 @@ impl ToolRouter {
                         "score": e.score.total,
                         "file": e.file_path.as_deref().unwrap_or(""),
                         "file_id": e.symbol.file_id.to_hex(),
+                        "file_hash": e.symbol.file_id.short_hex(),
                     })).collect::<Vec<_>>(),
                 }))
                 .unwrap_or_else(|e| e.to_string()),
@@ -86,6 +87,7 @@ impl ToolRouter {
                 "signature": sym.signature,
                 "file": self.resolve_file_path(&sym.file_id),
                 "file_id": sym.file_id.to_hex(),
+                "file_hash": sym.file_id.short_hex(),
                 "range": {
                     "line": sym.range.start_line,
                     "column": sym.range.start_column,

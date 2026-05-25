@@ -87,6 +87,7 @@ fn display_results(
                     kind: r.symbol.kind.as_str().to_string(),
                     qualified_name: r.symbol.qualified_name.clone(),
                     file_path: r.file_path.clone().unwrap_or_default(),
+                    file_hash: r.symbol.file_id.short_hex(),
                     line: r.symbol.range.start_line + 1,
                     signature: r.symbol.signature.clone(),
                     snippet,
@@ -105,7 +106,7 @@ fn display_results(
             );
             let path_display = r.file_path.as_deref().unwrap_or("<unknown>");
             let line = r.symbol.range.start_line + 1;
-            println!("      file:  {}:{}", path_display, line);
+            println!("      file:  {}:{}  [{}]", path_display, line, r.symbol.file_id.short_hex());
             println!("      qname: {}", r.symbol.qualified_name);
             if r.symbol.layer != "structural" {
                 println!("      layer: {}", r.symbol.layer);
@@ -169,6 +170,7 @@ struct JsonSearchResult {
     kind: String,
     qualified_name: String,
     file_path: String,
+    file_hash: String,
     line: u32,
     signature: Option<String>,
     snippet: Option<String>,

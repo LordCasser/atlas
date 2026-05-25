@@ -48,6 +48,11 @@ macro_rules! define_id {
             pub fn to_hex(&self) -> String {
                 hex::encode(self.0)
             }
+
+            /// GitHub-style short hex (first 7 chars).
+            pub fn short_hex(&self) -> String {
+                hex::encode(&self.0[..4])
+            }
         }
 
         impl fmt::Display for $name {
