@@ -384,3 +384,39 @@ pub(crate) fn row_to_cfg_edge(row: &Row) -> rusqlite::Result<CfgEdge> {
         kind,
     })
 }
+
+// ── analysis_artifacts ──────────────────────────────────────────────────────
+
+/// Record tracking lazy dataflow/CFG build status for one AnalysisUnit.
+#[derive(Debug, Clone)]
+pub struct ArtifactRecord {
+    pub file_id: types::ids::FileId,
+    pub unit_id: [u8; 16],
+    pub layer: String,
+    pub content_hash: String,
+    pub status: String,
+    pub node_count: Option<i64>,
+    pub edge_count: Option<i64>,
+    pub budget_exceeded: bool,
+    pub built_at: String,
+}
+
+pub(crate) fn row_to_artifact(row: &Row) -> rusqlite::Result<ArtifactRecord> {
+    use types::ids::FileId;
+    Ok(ArtifactRecord {
+        file_id: row.get::<_, FileId>(0)?,
+        unit_id: {
+            let blob: Vec<u8> = row.get(1)?;
+            let mut arr = [0u8; 16];
+            arr.copy_from_slice(&blob);
+            arr
+        },
+        layer: row.get(2)?,
+        content_hash: row.get(3)?,
+        status: row.get(4)?,
+        node_count: row.get(5)?,
+        edge_count: row.get(6)?,
+        budget_exceeded: row.get::<_, i32>(7)? != 0,
+        built_at: row.get(8)?,
+    })
+}

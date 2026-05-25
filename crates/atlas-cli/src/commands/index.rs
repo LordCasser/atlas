@@ -24,6 +24,7 @@ use atlas_engine::{self, LanguageRegistry, ParseWorkerPool, WorkerConfig};
 use atlas_engine::FileLock;
 use atlas_engine::discovery::{DiscoveryConfig, discover_files};
 use atlas_engine::ExtractionError;
+use atlas_engine::ExtractionMode;
 use atlas_engine::FailureCategory;
 use atlas_engine::Language;
 use atlas_engine::{PerLanguageStats, PhaseTimer, PhaseTiming, PhaseTimings};
@@ -53,7 +54,13 @@ struct HashCheckResult {
     deleted: Vec<PathBuf>,
 }
 
-pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyhow::Result<()> {
+pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>, analysis: &str) -> anyhow::Result<()> {
+    // Determine extraction mode from --analysis flag
+    let mode = match analysis {
+        "full" => ExtractionMode::Full,
+        _ => ExtractionMode::Structural, // default
+    };
+
     // ── Phase: Open store ──────────────────────────────────────────────────
     let _store_timer = PhaseTimer::start("Open store");
     let ctx = CommandContext::open(project, DbMode::CreateOrOpenReadWrite)?;
@@ -208,7 +215,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>) -> anyho
 
             // Time per-file extraction
             let file_start = Instant::now();
-            let result = extract_one_with_frontend(&pool, &abs_path, root, lang, frontend);
+            let result = extract_one_with_frontend(&pool, &abs_path, root, lang, frontend, mode.clone());
             let extract_ms = file_start.elapsed().as_millis() as u64;
 
             let count = extracted_count.fetch_add(1, Ordering::Relaxed);
@@ -597,6 +604,7 @@ fn extract_one_with_frontend(
     root: &Path,
     _lang: Language,
     frontend: &LanguageFrontend,
+    mode: atlas_engine::ExtractionMode,
 ) -> Result<atlas_engine::FileFacts, ExtractionError> {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -628,7 +636,7 @@ fn extract_one_with_frontend(
     })?;
     let file_id = atlas_engine::FileId::generate(sp.as_str());
 
-    pool.extract_one(frontend, file_id, relative, &source, &content_hash)
+    pool.extract_one(frontend, file_id, relative, &source, &content_hash, mode)
 }
 
 // ── Timing output formatting ──────────────────────────────────────────────

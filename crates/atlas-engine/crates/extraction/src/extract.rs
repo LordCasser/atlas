@@ -13,6 +13,7 @@ use tree_sitter::Parser;
 
 use types::Language;
 use types::bindings::{BindingDef, BindingUse};
+use types::dataflow::{DataFlowEdge, DataNode};
 use types::ids::{BindingUseId, CallsiteId, FileId, ScopeId};
 use types::{
     ArgumentFact, Callsite, DataNodeKind, DiagnosticLevel, ExtractDiagnostic, FileFacts, FileInfo,
@@ -26,6 +27,7 @@ use super::error::{ExtractionFailure, ExtractionFailureKind};
 use super::frontend::{Capture, LanguageFrontend, NormalizeCtx};
 use super::languages::node_range;
 use super::lexical_binder::LexicalBindingResult;
+use super::mode::ExtractionMode;
 use super::semantic_binder::SemanticBinder;
 
 // ── Per-file extraction context ───────────────────────────────────────────
@@ -78,12 +80,18 @@ fn tl_parse(
 }
 
 /// Extract a single file's facts using the given language frontend.
-pub fn extract_file(
+///
+/// `mode` controls which extraction phases are executed:
+///   - [`ExtractionMode::Structural`] — default indexing (no dataflow/CFG)
+///   - [`ExtractionMode::LazyDataflow`] — on-demand dataflow for a window of units
+///   - [`ExtractionMode::Full`] — complete analysis, all phases
+pub fn extract_file_with_mode(
     frontend: &LanguageFrontend,
     file_id: FileId,
     file_path: &Path,
     source: &str,
     content_hash: &str,
+    mode: ExtractionMode,
 ) -> Result<FileFacts> {
     let mut diagnostics = Vec::new();
 
@@ -208,8 +216,10 @@ pub fn extract_file(
         (vec![], vec![])
     };
 
-    // 7b. Build dataflow graph (P7: skip if unsupported)
-    let (mut data_nodes, dataflow_edges) = if frontend.dataflow.capability().is_supported() {
+    // 7b. Build dataflow graph (P7: skip in Structural mode)
+    let (mut data_nodes, dataflow_edges) = if mode.produces_dataflow()
+        && frontend.dataflow.capability().is_supported()
+    {
         let dataflow_result = super::dataflow_builder::DataFlowBuilder::extract(
             frontend.dataflow.as_ref(),
             &ectx,
@@ -234,16 +244,26 @@ pub fn extract_file(
         let mut all_edges = edges;
         all_edges.extend(use_def_edges);
 
-        (nodes, all_edges)
+        // In LazyDataflow mode: filter nodes and edges to only those
+        // whose ranges fall within the window units.
+        if let ExtractionMode::LazyDataflow { ref window } = mode {
+            let filtered_data = filter_dataflow_to_window(
+                &nodes, &all_edges, window, file_id,
+            );
+            (filtered_data.nodes, filtered_data.edges)
+        } else {
+            (nodes, all_edges)
+        }
     } else {
         (vec![], vec![])
     };
 
-    // 7e. Build per-function control-flow graphs (P7: skip if CFG unsupported)
-    let (cfg_nodes, cfg_edges) = if frontend
-        .capability
-        .supported_features
-        .contains(&"cfg".to_string())
+    // 7e. Build per-function control-flow graphs (P7: skip in Structural mode)
+    let (cfg_nodes, cfg_edges) = if mode.produces_cfg()
+        && frontend
+            .capability
+            .supported_features
+            .contains(&"cfg".to_string())
     {
         let cfg_result = super::cfg_builder::build_cfg_for_functions(root, &symbols, source_bytes)
             .unwrap_or_else(|e| {
@@ -273,15 +293,23 @@ pub fn extract_file(
     // nodes and creates additional BindingUse records for usage sites,
     // resolved against the lexical binding table via scope-chain-aware
     // name lookup.  Declaration sites are skipped to avoid duplicates.
+    //
+    // In Structural mode this step is skipped entirely — there is no
+    // dataflow context to justify a full AST identifier scan.  Callers
+    // receive binding_uses from declaration sites only (from step 7a).
     let reference_binding_uses: Vec<BindingUse> =
-        build_reference_binding_uses(&ectx, &bindings, &scopes).unwrap_or_else(|e| {
-            diagnostics.push(ExtractDiagnostic {
-                level: DiagnosticLevel::Warning,
-                message: format!("Identifier-use binding scan failed: {e}"),
-                range: None,
-            });
+        if mode.produces_reference_binding_uses() {
+            build_reference_binding_uses(&ectx, &bindings, &scopes).unwrap_or_else(|e| {
+                diagnostics.push(ExtractDiagnostic {
+                    level: DiagnosticLevel::Warning,
+                    message: format!("Identifier-use binding scan failed: {e}"),
+                    range: None,
+                });
+                vec![]
+            })
+        } else {
             vec![]
-        });
+        };
 
     // Merge declaration-site uses with identifier-use uses.
     let binding_uses: Vec<BindingUse> = {
@@ -448,6 +476,65 @@ pub fn extract_file(
 
     let file_path_str = file_path.display().to_string().replace('\\', "/");
 
+    // In LazyDataflow mode, filter bindings, cfg, and dataflow to the window.
+    // (data_nodes/dataflow_edges are already filtered in step 7b/7c above.)
+    let (bindings, binding_uses, cfg_nodes, cfg_edges) =
+        if let ExtractionMode::LazyDataflow { ref window } = mode {
+            let file_units: Vec<&types::lazy::AnalysisUnit> = window
+                .units
+                .iter()
+                .filter(|u| u.file_id == file_id)
+                .collect();
+            let is_inside = |r: &TextRange| -> bool {
+                file_units.iter().any(|u| range_inside(r, &u.range))
+            };
+
+            // Filter bindings to window
+            let bindings: Vec<_> = bindings.into_iter().filter(|b| is_inside(&b.range)).collect();
+            let binding_ids: std::collections::HashSet<_> =
+                bindings.iter().map(|b| b.id).collect();
+            let binding_uses: Vec<_> = binding_uses
+                .into_iter()
+                .filter(|u| {
+                    is_inside(&u.range)
+                        && u.binding_id.map(|bid| binding_ids.contains(&bid)).unwrap_or(true)
+                })
+                .collect();
+
+            // Filter CFG to window
+            let cfg_nodes: Vec<_> = cfg_nodes
+                .into_iter()
+                .filter(|n| {
+                    file_units.iter().any(|u| {
+                        u.symbol_id.map(|sid| n.function_id == sid).unwrap_or(false)
+                    })
+                })
+                .collect();
+            let cfg_node_ids: std::collections::HashSet<_> =
+                cfg_nodes.iter().map(|n| n.id).collect();
+            let cfg_edges: Vec<_> = cfg_edges
+                .into_iter()
+                .filter(|e| {
+                    cfg_node_ids.contains(&e.source) && cfg_node_ids.contains(&e.target)
+                })
+                .collect();
+
+            (bindings, binding_uses, cfg_nodes, cfg_edges)
+        } else {
+            (bindings, binding_uses, cfg_nodes, cfg_edges)
+        };
+
+    // In LazyDataflow mode, the caller already has structural facts in DB.
+    // We only build dataflow for the window — clear structural fields so
+    // the caller does not accidentally overwrite existing DB rows.
+    let (symbols_out, scopes_out, references_out, imports_out, exports_out,
+         raw_edges_out, callsites_out) =
+        if matches!(mode, ExtractionMode::LazyDataflow { .. }) {
+            (vec![], vec![], vec![], vec![], vec![], vec![], vec![])
+        } else {
+            (symbols, scopes, references, imports, exports, raw_edges, callsites)
+        };
+
     Ok(FileFacts {
         file: FileInfo {
             file_id,
@@ -456,21 +543,37 @@ pub fn extract_file(
             content_hash: content_hash.to_string(),
             status,
         },
-        symbols,
-        scopes,
-        references,
-        imports,
-        exports,
-        raw_edges, // Symbol-level dataflow edges from normalize_dataflow (old path)
-        callsites, // Derived from Call references (resolved later)
+        symbols: symbols_out,
+        scopes: scopes_out,
+        references: references_out,
+        imports: imports_out,
+        exports: exports_out,
+        raw_edges: raw_edges_out,
+        callsites: callsites_out,
         diagnostics,
-        bindings,       // lexical binding definitions
-        binding_uses,   // lexical binding use sites
-        data_nodes,     // per-function dataflow nodes
-        dataflow_edges, // DataNode→DataNode dataflow edges
-        cfg_nodes,      // per-function control-flow graph nodes
-        cfg_edges,      // per-function control-flow graph edges
+        bindings,
+        binding_uses,
+        data_nodes,
+        dataflow_edges,
+        cfg_nodes,
+        cfg_edges,
     })
+}
+
+/// Extract a single file's facts with full analysis (all phases).
+///
+/// This is the backward-compatible entry point — existing callers that
+/// do not specify a mode get [`ExtractionMode::Full`].  New production
+/// code should use [`extract_file_with_mode`] with an explicit mode.
+#[inline]
+pub fn extract_file(
+    frontend: &LanguageFrontend,
+    file_id: FileId,
+    file_path: &Path,
+    source: &str,
+    content_hash: &str,
+) -> Result<FileFacts> {
+    extract_file_with_mode(frontend, file_id, file_path, source, content_hash, ExtractionMode::Full)
 }
 
 // ---------------------------------------------------------------------------
@@ -664,6 +767,71 @@ fn extract_and_normalize<'a, T>(
     }
 
     Ok(results)
+}
+
+// ---------------------------------------------------------------------------
+// Lazy window helpers
+// ---------------------------------------------------------------------------
+
+/// Check if range `inner` is fully contained within `outer`.
+fn range_inside(inner: &TextRange, outer: &TextRange) -> bool {
+    inner.start_byte >= outer.start_byte && inner.end_byte <= outer.end_byte
+}
+
+/// Filter data nodes and dataflow edges to a lazy window.
+///
+/// Only nodes whose byte range falls within one of the window units
+/// for the given file are kept.  Edges are kept only if both source
+/// and target nodes survive the filter.
+fn filter_dataflow_to_window(
+    nodes: &[DataNode],
+    edges: &[DataFlowEdge],
+    window: &types::lazy::LazyWindow,
+    file_id: FileId,
+) -> FilteredDataflow {
+    let file_units: Vec<&types::lazy::AnalysisUnit> = window
+        .units
+        .iter()
+        .filter(|u| u.file_id == file_id)
+        .collect();
+
+    if file_units.is_empty() {
+        return FilteredDataflow {
+            nodes: vec![],
+            edges: vec![],
+        };
+    }
+
+    let filtered_nodes: Vec<DataNode> = nodes
+        .iter()
+        .filter(|n| {
+            file_units
+                .iter()
+                .any(|u| range_inside(&n.range, &u.range))
+        })
+        .cloned()
+        .collect();
+
+    let kept_ids: std::collections::HashSet<types::ids::DataNodeId> =
+        filtered_nodes.iter().map(|n| n.id).collect();
+
+    let filtered_edges: Vec<DataFlowEdge> = edges
+        .iter()
+        .filter(|e| {
+            kept_ids.contains(&e.source) && kept_ids.contains(&e.target)
+        })
+        .cloned()
+        .collect();
+
+    FilteredDataflow {
+        nodes: filtered_nodes,
+        edges: filtered_edges,
+    }
+}
+
+struct FilteredDataflow {
+    nodes: Vec<DataNode>,
+    edges: Vec<DataFlowEdge>,
 }
 
 #[cfg(test)]

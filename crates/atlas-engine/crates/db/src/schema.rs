@@ -261,6 +261,25 @@ CREATE TABLE IF NOT EXISTS cfg_edges (
     kind                 TEXT NOT NULL
 );
 
+-- Lazy dataflow artifact tracking: records which AnalysisUnits
+-- have had their dataflow/CFG built and persisted.
+CREATE TABLE IF NOT EXISTS analysis_artifacts (
+    file_id         BLOB NOT NULL,
+    unit_id         BLOB NOT NULL,
+    layer           TEXT NOT NULL,      -- 'dataflow' | 'cfg'
+    content_hash    TEXT NOT NULL,      -- file content_hash at build time
+    status          TEXT NOT NULL DEFAULT 'complete',
+    node_count      INTEGER,
+    edge_count      INTEGER,
+    budget_exceeded INTEGER NOT NULL DEFAULT 0,
+    built_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (file_id, unit_id, layer),
+    FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifacts_file
+    ON analysis_artifacts(file_id);
+
 -- FTS5 virtual table for symbol name search
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     name,

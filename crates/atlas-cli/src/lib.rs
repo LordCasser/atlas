@@ -95,6 +95,9 @@ pub enum Commands {
         /// Exclude files matching this glob pattern (e.g. "**/*.test.ts")
         #[arg(long)]
         exclude: Option<String>,
+        /// Analysis depth: "full" for complete dataflow/CFG indexing (default: structural only)
+        #[arg(long, default_value = "structural")]
+        analysis: String,
     },
     /// Incremental sync
     Sync {

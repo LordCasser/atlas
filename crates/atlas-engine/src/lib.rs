@@ -28,6 +28,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
+// lazy crate (aliased to avoid name conflict with types::lazy module)
+use ::lazy as lazy_crate;
+
 // ─── Re-exports ────────────────────────────────────────────────────────────
 
 /// All core IR types (SymbolDef, ReferenceUse, FileFacts, etc.).
@@ -39,7 +42,7 @@ pub use workspace::{ProjectRoot, SourcePath, Workspace};
 /// Extraction layer: language frontends, parser pool, grammar registry.
 pub use extraction::{
     LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig, create_frontend,
-    extract_file,
+    extract_file, extract_file_with_mode, ExtractionMode,
 };
 /// Resolution layer: reference resolver, path aliases, config hashing.
 pub use resolution::{
@@ -77,6 +80,7 @@ pub use filesync::{SyncEngine, SyncStats, FileLock, discovery};
 /// ```
 pub struct Engine {
     store: Arc<Store>,
+    lazy_service: lazy_crate::LazyDataflowService,
     trace: analysis::trace::TraceEngine,
 }
 
@@ -90,8 +94,9 @@ impl Engine {
     pub fn open(db_path: &Path) -> anyhow::Result<Self> {
         let store = Store::open_db(db_path)?;
         let store = Arc::new(store);
+        let lazy_service = lazy_crate::LazyDataflowService::new(store.clone());
         let trace = analysis::trace::TraceEngine::new(store.clone());
-        Ok(Self { store, trace })
+        Ok(Self { store, lazy_service, trace })
     }
 
     /// Open a database file with a project root for snippet extraction.
@@ -101,8 +106,9 @@ impl Engine {
     pub fn open_with_root(db_path: &Path, project_root: &Path) -> anyhow::Result<Self> {
         let store = Store::open_db(db_path)?;
         let store = Arc::new(store);
+        let lazy_service = lazy_crate::LazyDataflowService::new(store.clone());
         let trace = analysis::trace::TraceEngine::new_with_root(store.clone(), project_root.to_path_buf());
-        Ok(Self { store, trace })
+        Ok(Self { store, lazy_service, trace })
     }
 
     /// Open an in-memory database (for testing).
@@ -110,8 +116,9 @@ impl Engine {
         let store = Store::open_in_memory()?;
         store.init_schema()?;
         let store = Arc::new(store);
+        let lazy_service = lazy_crate::LazyDataflowService::new(store.clone());
         let trace = analysis::trace::TraceEngine::new(store.clone());
-        Ok(Self { store, trace })
+        Ok(Self { store, lazy_service, trace })
     }
 
     /// Access the underlying database store.
@@ -128,14 +135,25 @@ impl Engine {
 
     /// Extract facts from a single source file.
     ///
-    /// Returns [`FileFacts`] containing symbols, references, imports, scopes,
-    /// and (if supported) dataflow facts.  Does NOT write to the database.
+    /// Uses [`ExtractionMode::Full`] by default for backward compatibility.
+    /// For index-time usage, prefer the mode-aware variant.
     pub fn extract_file(&self, path: &Path, source: &str, language: Language) -> anyhow::Result<FileFacts> {
+        self.extract_file_with_mode(path, source, language, extraction::ExtractionMode::Full)
+    }
+
+    /// Extract facts from a single source file with explicit mode control.
+    pub fn extract_file_with_mode(
+        &self,
+        path: &Path,
+        source: &str,
+        language: Language,
+        mode: extraction::ExtractionMode,
+    ) -> anyhow::Result<FileFacts> {
         let frontend = extraction::create_frontend(language)
             .ok_or_else(|| anyhow::anyhow!("Language frontend not available for {:?}", language))?;
         let file_id = FileId::generate(path.to_string_lossy().as_ref());
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
-        let facts = extraction::extract_file(&frontend, file_id, path, source, &content_hash)?;
+        let facts = extraction::extract_file_with_mode(&frontend, file_id, path, source, &content_hash, mode)?;
         Ok(facts)
     }
 
@@ -155,6 +173,15 @@ impl Engine {
     /// Get capability profiles for all compiled-in languages.
     pub fn all_capabilities() -> Vec<LanguageCapabilityProfile> {
         LanguageCapabilityProfile::all_compiled()
+    }
+
+    /// Resolve the language capability profile for a file on the fly.
+    fn resolve_capability(&self, file_id: &FileId) -> Option<LanguageCapabilityProfile> {
+        self.store
+            .get_file(file_id)
+            .ok()
+            .flatten()
+            .map(|fi| LanguageCapabilityProfile::for_language(fi.language))
     }
 
     // ── Trace ──────────────────────────────────────────────────────────
@@ -177,6 +204,10 @@ impl Engine {
     /// Requires `DataflowBasic` capability for the language.  If the language
     /// does not support dataflow, returns a partial result with an
     /// `unsupported_language` diagnostic.
+    ///
+    /// Before executing the trace, this method automatically ensures that
+    /// lazy dataflow has been built for the query's surrounding functions
+    /// via [`LazyDataflowService::ensure_for_position`].
     pub fn trace_variable(
         &self,
         file_id: &FileId,
@@ -184,7 +215,55 @@ impl Engine {
         column: u32,
         max_depth: usize,
     ) -> analysis::trace::TraceQueryResponse<TracePath> {
-        self.trace.trace_variable(file_id, line, column, max_depth)
+        // Resolve capability for gating
+        let cap = self.resolve_capability(file_id);
+
+        // Check dataflow support
+        let dataflow_supported = cap
+            .as_ref()
+            .and_then(|c| c.features.as_ref())
+            .map(|f| f.local_dataflow.is_supported())
+            .unwrap_or(false);
+
+        if !dataflow_supported {
+            return TraceQueryResponse::partial(
+                "trace_variable",
+                TraceDiagnostic::warning("Dataflow not supported for this language")
+                    .with_code("unsupported_language"),
+                cap,
+            );
+        }
+
+        // Lazy-load dataflow for the query window
+        let mut partial = false;
+        let mut lazy_diagnostics: Vec<TraceDiagnostic> = Vec::new();
+        match self.lazy_service.ensure_for_position(file_id, line, column) {
+            Ok(window) => {
+                if window.truncated {
+                    partial = true;
+                    lazy_diagnostics.push(
+                        TraceDiagnostic::warning(
+                            "Dataflow window truncated by budget. Re-index with --analysis full for complete coverage."
+                        ).with_code("lazy_dataflow_budget_exceeded")
+                    );
+                }
+            }
+            Err(e) => {
+                // Lazy load failed — proceed with whatever is in DB (may be empty)
+                partial = true;
+                lazy_diagnostics.push(
+                    TraceDiagnostic::warning(&format!(
+                        "Lazy dataflow build failed: {e}"
+                    )).with_code("lazy_dataflow_build_failed")
+                );
+            }
+        }
+
+        // Delegate to analysis TraceEngine
+        let mut response = self.trace.trace_variable(file_id, line, column, max_depth);
+        response.partial_result = response.partial_result || partial;
+        response.diagnostics.extend(lazy_diagnostics);
+        response
     }
 
     /// Trace the call chain backward from a target symbol.

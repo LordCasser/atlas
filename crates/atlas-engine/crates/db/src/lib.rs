@@ -7,7 +7,7 @@ pub mod readers;
 mod schema;
 mod store;
 pub(crate) mod store_fts;
-pub(crate) mod store_rows;
+pub mod store_rows;
 pub(crate) mod store_writers;
 
 pub use readers::{CallGraphReader, DataflowReader, FileReader, SymbolReader, TraceStore};

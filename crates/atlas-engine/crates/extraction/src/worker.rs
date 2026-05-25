@@ -19,8 +19,9 @@ use types::FileFacts;
 use types::IndexReport;
 use types::ids::FileId;
 
-use super::extract_file;
+use super::extract_file_with_mode;
 use super::frontend::LanguageFrontend;
+use crate::mode::ExtractionMode;
 
 use crate::error::{ExtractionFailure, ExtractionFailureKind};
 
@@ -92,6 +93,7 @@ impl ParseWorkerPool {
         file_path: &Path,
         source: &str,
         content_hash: &str,
+        mode: ExtractionMode,
     ) -> Result<FileFacts, ExtractionError> {
         let file_path_str = file_path.to_string_lossy().to_string();
 
@@ -115,7 +117,7 @@ impl ParseWorkerPool {
 
         // 2. Extract with panic isolation
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            extract_file(frontend, file_id, file_path, source, content_hash)
+            extract_file_with_mode(frontend, file_id, file_path, source, content_hash, mode.clone())
         }));
 
         match result {
@@ -309,7 +311,7 @@ mod tests {
         let frontend = crate::create_frontend(types::Language::TypeScript)
             .expect("TypeScript frontend available");
 
-        let result = pool.extract_one(&frontend, fid, Path::new("test.ts"), &source, "abc");
+        let result = pool.extract_one(&frontend, fid, Path::new("test.ts"), &source, "abc", ExtractionMode::Full);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.category, FailureCategory::MaxFileSizeExceeded);

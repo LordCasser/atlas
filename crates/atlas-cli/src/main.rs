@@ -40,9 +40,10 @@ fn main() -> anyhow::Result<()> {
             project,
             include,
             exclude,
+            analysis,
         } => {
             let _span = tracing::info_span!("index", project = %project).entered();
-            atlas_cli::commands::index::run(project, include.as_deref(), exclude.as_deref())?;
+            atlas_cli::commands::index::run(project, include.as_deref(), exclude.as_deref(), analysis)?;
         }
         Commands::Sync { project } => {
             let _span = tracing::info_span!("sync", project = %project).entered();

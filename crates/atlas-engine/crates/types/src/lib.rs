@@ -27,6 +27,7 @@ pub mod cfg;
 pub mod dataflow;
 pub mod enums;
 pub mod ids;
+pub mod lazy;
 pub mod structs;
 pub mod summary;
 pub mod timing;
@@ -79,6 +80,9 @@ pub use summary::{CallArgFlow, FunctionSummary, ParameterFlow, ReturnFlow};
 
 // --- Timing types ---
 pub use timing::{LanguageEntry, PerLanguageStats, PhaseTimer, PhaseTiming, PhaseTimings};
+
+// --- Lazy types ---
+pub use lazy::{AnalysisUnit, LazyWindow, VariableFocus};
 
 // --- Utilities ---
 

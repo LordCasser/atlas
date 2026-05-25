@@ -16,6 +16,7 @@ analysis = { path = "crates/analysis" }
 search = { path = "crates/search" }
 context = { path = "crates/context" }
 filesync = { path = "crates/filesync" }
+lazy = { path = "crates/lazy" }
 anyhow = "1"
 blake3 = "1"
 hex = "0.4"

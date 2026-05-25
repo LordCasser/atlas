@@ -1,0 +1,14 @@
+[package]
+name = "lazy"
+version = "0.1.0"
+edition = "2024"
+description = "Atlas lazy dataflow engine — planner, loader, and hardcoded budgets"
+license = "MIT"
+
+[dependencies]
+types = { path = "../types" }
+db = { path = "../db" }
+extraction = { path = "../extraction" }
+workspace = { path = "../workspace" }
+anyhow = "1"
+blake3 = "1"

@@ -150,6 +150,7 @@ dependencies = [
  "filesync",
  "graph",
  "hex",
+ "lazy",
  "resolution",
  "search",
  "serde",
@@ -758,6 +759,18 @@ checksum = "07293a4e297ac234359b510362495713f75ea345d5307140414f20c69ffeb087"
 dependencies = [
  "bitflags 2.11.1",
  "libc",
+]
+
+[[package]]
+name = "lazy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "db",
+ "extraction",
+ "types",
+ "workspace",
 ]
 
 [[package]]

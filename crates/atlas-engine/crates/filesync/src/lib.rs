@@ -17,7 +17,8 @@ use anyhow::{Context, Result};
 use db::Store;
 use extraction::LanguageRegistry;
 use extraction::create_frontend;
-use extraction::extract_file;
+use extraction::extract_file_with_mode;
+use extraction::ExtractionMode;
 use graph::{GraphBuilder, GraphEngine, GraphSnapshot};
 use types::{PhaseTimer, PhaseTimings};
 use workspace::SourcePath;
@@ -262,7 +263,7 @@ impl SyncEngine {
         let file_id = types::ids::FileId::generate(sp.as_str());
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
 
-        let facts = extract_file(&frontend, file_id, relative, &source, &content_hash)?;
+        let facts = extract_file_with_mode(&frontend, file_id, relative, &source, &content_hash, ExtractionMode::Structural)?;
 
         self.store.insert_file_facts(&facts)?;
         Ok(())

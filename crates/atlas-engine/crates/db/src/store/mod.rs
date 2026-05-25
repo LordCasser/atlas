@@ -31,6 +31,7 @@ use types::*;
 use crate::store_rows::*;
 use crate::store_writers::*;
 
+mod artifacts;
 mod cfg;
 mod dataflow;
 mod edges;

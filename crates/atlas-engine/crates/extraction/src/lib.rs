@@ -22,6 +22,7 @@ pub mod frontend;
 mod grammar;
 pub(crate) mod languages;
 mod lexical_binder;
+pub mod mode;
 mod query_helpers;
 mod scope_tree;
 mod semantic_binder;
@@ -36,7 +37,7 @@ pub use callsite_spec::{
 pub use cfg_builder::{CfgBuilder, CfgResult};
 pub use dataflow_builder::{DataFlowBuilder, DataFlowResult};
 pub use error::{ExtractionFailure, ExtractionFailureKind};
-pub use extract::extract_file;
+pub use extract::{extract_file, extract_file_with_mode};
 pub use frontend::{
     FrontendParts, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec,
     ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec, SymbolExtractorSpec, UnsupportedSpec,
@@ -44,6 +45,7 @@ pub use frontend::{
 pub use grammar::LanguageRegistry;
 pub use languages::create_frontend;
 pub use lexical_binder::{LexicalBinder, LexicalBindingResult};
+pub use mode::ExtractionMode;
 pub use scope_tree::build_scope_tree;
 pub use semantic_binder::SemanticBinder;
 pub use symbol_registry::{SymbolRegistry, all_edge_sources_known, all_reference_sources_known};
