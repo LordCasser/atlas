@@ -92,9 +92,9 @@ pub enum Commands {
         /// Only include files matching this glob pattern (e.g. "src/**/*.rs")
         #[arg(long)]
         include: Option<String>,
-        /// Exclude files matching this glob pattern (e.g. "**/*.test.ts")
+        /// Exclude files matching these glob patterns (can be specified multiple times, e.g. "**/*.test.ts")
         #[arg(long)]
-        exclude: Option<String>,
+        exclude: Vec<String>,
         /// Analysis depth: "full" for complete dataflow/CFG indexing (default: structural only)
         #[arg(long, default_value = "structural")]
         analysis: String,

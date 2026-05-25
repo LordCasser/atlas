@@ -54,7 +54,7 @@ struct HashCheckResult {
     deleted: Vec<PathBuf>,
 }
 
-pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>, analysis: &str) -> anyhow::Result<()> {
+pub fn run(project: &str, include: Option<&str>, exclude: &[String], analysis: &str) -> anyhow::Result<()> {
     // Determine extraction mode from --analysis flag
     let mode = match analysis {
         "full" => ExtractionMode::Full,
@@ -76,8 +76,8 @@ pub fn run(project: &str, include: Option<&str>, exclude: Option<&str>, analysis
     if let Some(pat) = include {
         config.include_patterns = vec![pat.to_string()];
     }
-    if let Some(pat) = exclude {
-        config.exclude_patterns = vec![pat.to_string()];
+    if !exclude.is_empty() {
+        config.exclude_patterns = exclude.iter().map(|s| s.to_string()).collect();
     }
     let discovered = discover_files(root, &config).context("Failed to discover source files")?;
 

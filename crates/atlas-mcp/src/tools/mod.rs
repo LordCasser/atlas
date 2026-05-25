@@ -283,11 +283,12 @@ pub fn make_all_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "atlas_index".into(),
-            description: "Index/re-index the project. Triggers extraction→resolution→graph pipeline. Use this before querying when files have changed or on first connection to a project. Parameter: analysis (\"structural\" default, \"full\" for complete dataflow/CFG).".into(),
+            description: "Index/re-index the project. Triggers extraction→resolution→graph pipeline. Use this before querying when files have changed or on first connection to a project. Parameters: analysis (\"structural\" default, \"full\" for complete dataflow/CFG), exclude (list of glob patterns to skip, e.g. [\"**/test/**\", \"**/*.test.ts\"]).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "analysis": { "type": "string", "description": "Analysis depth: \"structural\" (fast, symbols+callgraph only) or \"full\" (complete dataflow+CFG)" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns for directories/files to skip (e.g. [\"**/test/**\", \"**/*.spec.ts\"])" },
                 })),
                 required: None,
             },

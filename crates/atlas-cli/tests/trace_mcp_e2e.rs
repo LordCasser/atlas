@@ -48,7 +48,7 @@ fn build_router(files: &[(&str, &str)]) -> (TempDir, ToolRouter) {
 
     let project = tmp.path().to_string_lossy().to_string();
     init::run(&project).expect("init");
-    index::run(&project, None, None, "structural").expect("index");
+    index::run(&project, None, &[], "structural").expect("index");
 
     let store = Arc::new(Store::open_db(&tmp.path().join(".atlas/atlas.db")).expect("open store"));
     let graph = Arc::new(GraphEngine::from_store(&store, 0.3).expect("graph engine"));

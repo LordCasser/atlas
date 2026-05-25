@@ -33,6 +33,7 @@ impl ToolRouter {
     ///
     /// Parameters:
     ///   analysis: "structural" (default, no dataflow) | "full" (complete analysis)
+    ///   exclude: list of glob patterns to skip (e.g. ["**/test/**", "**/*.test.ts"])
     ///
     /// Returns a JSON IndexResult with indexing statistics.
     pub(crate) fn handle_index(&self, args: &serde_json::Value) -> (String, bool) {
@@ -42,6 +43,11 @@ impl ToolRouter {
             "full" => ExtractionMode::Full,
             _ => ExtractionMode::Structural,
         };
+
+        let exclude_patterns: Vec<String> = args["exclude"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
 
         let mut result = IndexResult {
             ok: false,
@@ -55,7 +61,7 @@ impl ToolRouter {
         };
 
         // Run the index pipeline
-        match run_index(&self.store, &self.project_root, mode) {
+        match run_index(&self.store, &self.project_root, mode, &exclude_patterns) {
             Ok(stats) => {
                 result.ok = true;
                 result.files_discovered = stats.discovered;
@@ -88,10 +94,13 @@ struct IndexStats {
 ///
 /// Opens a separate Store connection for writes (WAL mode allows concurrent
 /// readers + one writer, so the MCP server's read connection is not blocked).
-fn run_index(store: &Arc<Store>, project_root: &std::path::Path, mode: ExtractionMode) -> anyhow::Result<IndexStats> {
+fn run_index(store: &Arc<Store>, project_root: &std::path::Path, mode: ExtractionMode, exclude_patterns: &[String]) -> anyhow::Result<IndexStats> {
     // ── Discovery ──────────────────────────────────────────────────────────
     let _disc_timer = PhaseTimer::start("discovery");
-    let config = DiscoveryConfig::default();
+    let mut config = DiscoveryConfig::default();
+    if !exclude_patterns.is_empty() {
+        config.exclude_patterns = exclude_patterns.to_vec();
+    }
     let discovered = discover_files(project_root, &config)?;
     if discovered.is_empty() {
         return Ok(IndexStats {
