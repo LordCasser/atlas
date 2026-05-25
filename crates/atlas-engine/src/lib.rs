@@ -244,22 +244,36 @@ impl Engine {
         }
 
         // Lazy-load dataflow for the query window
+        let lazy_start = std::time::Instant::now();
         let mut partial = false;
         let mut lazy_diagnostics: Vec<TraceDiagnostic> = Vec::new();
+        let mut lazy_summary: Option<LazySummary> = None;
         match self.lazy_service.ensure_for_position(file_id, line, column) {
             Ok(window) => {
+                lazy_summary = Some(LazySummary {
+                    triggered: true,
+                    units_built: window.units_built,
+                    units_cached: window.units_cached,
+                    truncated: window.truncated,
+                    duration_ms: lazy_start.elapsed().as_millis() as u64,
+                });
                 if window.truncated {
                     partial = true;
                     lazy_diagnostics.push(
                         TraceDiagnostic::warning(
-                            "Dataflow window truncated by budget. Re-index with --analysis full for complete coverage."
+                            "Lazy dataflow reached its internal budget. Result is partial. For full offline coverage, run `atlas index --analysis full`."
                         ).with_code("lazy_dataflow_budget_exceeded")
                     );
                 }
             }
             Err(e) => {
-                // Lazy load failed — proceed with whatever is in DB (may be empty)
                 partial = true;
+                lazy_summary = Some(LazySummary {
+                    triggered: true,
+                    units_built: 0, units_cached: 0,
+                    truncated: true,
+                    duration_ms: lazy_start.elapsed().as_millis() as u64,
+                });
                 lazy_diagnostics.push(
                     TraceDiagnostic::warning(&format!(
                         "Lazy dataflow build failed: {e}"
@@ -269,10 +283,13 @@ impl Engine {
         }
 
         // Delegate to analysis TraceEngine
-        let mut response = self.trace.trace_variable(file_id, line, column, max_depth);
-        response.partial_result = response.partial_result || partial;
-        response.diagnostics.extend(lazy_diagnostics);
-        response
+        let mut resp = self.trace.trace_variable(file_id, line, column, max_depth);
+        resp.partial_result = resp.partial_result || partial;
+        resp.diagnostics.extend(lazy_diagnostics);
+        if let Some(ref mut path) = resp.result {
+            path.lazy_summary = lazy_summary;
+        }
+        resp
     }
 
     /// Trace the call chain backward from a target symbol.
@@ -387,10 +404,14 @@ mod tests {
 
         let file_id = FileId::generate(rel_path);
 
+        // Use the actual content hash so the lazy loader's stale-index
+        // check passes (it compares DB hash with disk hash).
+        let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+
         // Index with Structural mode directly via extract_file_with_mode
         let frontend = extraction::create_frontend(Language::TypeScript).unwrap();
         let facts = extraction::extract_file_with_mode(
-            &frontend, file_id, &abs_path, source, "test_hash",
+            &frontend, file_id, &abs_path, source, &content_hash,
             extraction::ExtractionMode::Structural,
         ).expect("extract structural");
         engine.insert_facts(&facts).expect("insert structural");
@@ -426,10 +447,12 @@ mod tests {
 
         let file_id = FileId::generate(rel_path);
 
+        let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+
         // Index structurally
         let frontend = extraction::create_frontend(Language::TypeScript).unwrap();
         let facts = extraction::extract_file_with_mode(
-            &frontend, file_id, &abs_path, source, "test_hash",
+            &frontend, file_id, &abs_path, source, &content_hash,
             extraction::ExtractionMode::Structural,
         ).expect("extract structural");
         engine.insert_facts(&facts).expect("insert");

@@ -2,8 +2,7 @@
 //! traversal.
 
 use atlas_engine::SymbolId;
-use atlas_engine::{RawTraceEngine, TraceQueryResponse};
-use atlas_engine::TraceDiagnostic;
+use atlas_engine::{LazySummary, RawTraceEngine, TraceDiagnostic, TraceQueryResponse};
 
 use super::{ToolRouter, get_str_opt, get_u64, resolve_file_id};
 
@@ -98,22 +97,37 @@ impl ToolRouter {
         };
 
         // Lazy-load dataflow before tracing, so Locator can find data nodes.
-        // If the window was truncated by budget, we proceed with partial data.
+        let lazy_start = std::time::Instant::now();
         let mut partial = false;
         let mut lazy_diags: Vec<TraceDiagnostic> = Vec::new();
+        let mut lazy_summary: Option<LazySummary> = None;
         match self.lazy_service.ensure_for_position(&file_id, line, column) {
             Ok(window) => {
+                lazy_summary = Some(LazySummary {
+                    triggered: true,
+                    units_built: window.units_built,
+                    units_cached: window.units_cached,
+                    truncated: window.truncated,
+                    duration_ms: lazy_start.elapsed().as_millis() as u64,
+                });
                 if window.truncated {
                     partial = true;
                     lazy_diags.push(
                         TraceDiagnostic::warning(
-                            "Dataflow window truncated by budget. Re-index with --analysis full for complete coverage."
+                            "Lazy dataflow reached its internal budget. Result is partial. For full offline coverage, run `atlas index --analysis full`."
                         ).with_code("lazy_dataflow_budget_exceeded")
                     );
                 }
             }
             Err(e) => {
                 partial = true;
+                lazy_summary = Some(LazySummary {
+                    triggered: true,
+                    units_built: 0,
+                    units_cached: 0,
+                    truncated: true,
+                    duration_ms: lazy_start.elapsed().as_millis() as u64,
+                });
                 lazy_diags.push(
                     TraceDiagnostic::warning(&format!(
                         "Lazy dataflow build failed: {e}"
@@ -126,6 +140,9 @@ impl ToolRouter {
         let mut resp = engine.trace_variable(&file_id, line, column, max_depth);
         resp.partial_result = resp.partial_result || partial;
         resp.diagnostics.extend(lazy_diags);
+        if let Some(ref mut path) = resp.result {
+            path.lazy_summary = lazy_summary;
+        }
         let is_error = !resp.ok;
 
         (

@@ -82,6 +82,12 @@ pub struct LazyWindow {
     pub variable_focus: Option<VariableFocus>,
     /// Whether this window was truncated by a hard budget cap.
     pub truncated: bool,
+    /// Units whose dataflow was built from scratch (populated at runtime).
+    #[serde(default)]
+    pub units_built: usize,
+    /// Units whose dataflow was already cached (populated at runtime).
+    #[serde(default)]
+    pub units_cached: usize,
 }
 
 // ---------------------------------------------------------------------------

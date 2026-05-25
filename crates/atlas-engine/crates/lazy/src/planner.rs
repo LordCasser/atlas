@@ -150,6 +150,8 @@ impl LazyDataflowPlanner {
             units,
             variable_focus,
             truncated,
+            units_built: 0,
+            units_cached: 0,
         })
     }
 
@@ -215,6 +217,8 @@ impl LazyDataflowPlanner {
             units,
             variable_focus: None,
             truncated,
+            units_built: 0,
+            units_cached: 0,
         })
     }
 }

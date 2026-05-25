@@ -207,6 +207,30 @@ pub struct TracePath {
     /// Structured diagnostics.
     #[serde(default)]
     pub diagnostics: Vec<TraceDiagnostic>,
+    /// Metadata about lazy dataflow loading that occurred during this trace.
+    /// None if lazy loading was not triggered (e.g., dataflow already existed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lazy_summary: Option<LazySummary>,
+}
+
+/// Summary of lazy dataflow loading triggered by a trace query.
+///
+/// Agents can use this to understand query performance:
+///   - `triggered` + `units_built > 0` → cold start, retry will hit cache
+///   - `units_cached > 0` → dataflow was already available
+///   - `truncated` → result may be incomplete due to budget limits
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LazySummary {
+    /// Whether lazy loading was triggered during this trace.
+    pub triggered: bool,
+    /// Number of AnalysisUnits whose dataflow was built from scratch.
+    pub units_built: usize,
+    /// Number of AnalysisUnits whose dataflow was already cached.
+    pub units_cached: usize,
+    /// Whether any unit hit the internal budget limit (partial result).
+    pub truncated: bool,
+    /// Wall-clock time spent on lazy dataflow loading (milliseconds).
+    pub duration_ms: u64,
 }
 
 /// A single step in a trace path — connects two data nodes via a dataflow edge.

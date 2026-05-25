@@ -12,6 +12,21 @@ impl ToolRouter {
             Ok(s) => s,
             Err(e) => return (format!("Error getting stats: {}", e), true),
         };
+        let lazy_stats = self.store.get_lazy_stats().ok();
+
+        // Determine index mode: "none" if no files, "structural" if no dataflow,
+        // "full" if dataflow was explicitly built, "hybrid" if lazy artifacts exist.
+        let index_mode = if stats.total_files == 0 {
+            "none"
+        } else if lazy_stats.as_ref().map_or(false, |l| l.has_dataflow) {
+            "full"
+        } else {
+            "structural"
+        };
+        // If lazy artifacts exist without explicit full index, it's hybrid.
+        let index_mode = if lazy_stats.as_ref().map_or(false, |l| l.total_artifacts > 0 && !l.has_dataflow) {
+            "structural+lazy"
+        } else { index_mode };
 
         // Build per-language capability summary for languages present in the project.
         let mut lang_caps = Vec::new();
@@ -26,6 +41,17 @@ impl ToolRouter {
             }
         }
 
+        // Build lazy_dataflow block
+        let lazy_dataflow = lazy_stats.as_ref().map(|l| json!({
+            "enabled": true,
+            "artifacts": l.total_artifacts,
+            "partial_artifacts": l.partial_artifacts,
+        })).unwrap_or(json!({
+            "enabled": true,
+            "artifacts": 0,
+            "partial_artifacts": 0,
+        }));
+
         (
             serde_json::to_string_pretty(&json!({
                 "summary": {
@@ -34,6 +60,10 @@ impl ToolRouter {
                     "references": stats.total_references,
                     "edges": stats.total_edges,
                     "unresolved_references": stats.unresolved_references,
+                },
+                "index": {
+                    "mode": index_mode,
+                    "lazy_dataflow": lazy_dataflow,
                 },
                 "database": {
                     "sqlite_version": stats.sqlite_version,

@@ -283,7 +283,7 @@ pub fn make_all_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "atlas_index".into(),
-            description: "Index/re-index the project. Triggers extraction→resolution→graph pipeline. Use this before querying when files have changed or on first connection to a project. Parameters: analysis (\"structural\" default, \"full\" for complete dataflow/CFG), exclude (list of glob patterns to skip, e.g. [\"**/test/**\", \"**/*.test.ts\"]).".into(),
+            description: "Index/re-index the project. Triggers extraction\u{2192}resolution\u{2192}graph pipeline. Use this before querying when files have changed or on first connection. Default analysis=\"structural\" is fast and suitable for daily use; analysis=\"full\" is slower and intended for offline complete analysis. Parameters: analysis (\"structural\" default, \"full\"), exclude (list of glob patterns to skip).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({

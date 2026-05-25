@@ -258,6 +258,7 @@ impl Slicer {
             capability: sink_point.capability.clone(),
             partial_result: partial,
             diagnostics,
+            lazy_summary: None,
         }))
     }
 }

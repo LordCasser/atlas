@@ -54,6 +54,8 @@ impl LazyDataflowService {
             planner::LazyDataflowPlanner::plan_for_position(&self.store, file_id, line, column)?;
         let result = loader::LazyDataflowLoader::ensure(&self.store, &window, self.project_root.as_deref())?;
         window.truncated = window.truncated || result.budget_exceeded;
+        window.units_built = result.units_built;
+        window.units_cached = result.units_cached;
         Ok(window)
     }
 
@@ -63,6 +65,8 @@ impl LazyDataflowService {
             planner::LazyDataflowPlanner::plan_for_function(&self.store, symbol_id)?;
         let result = loader::LazyDataflowLoader::ensure(&self.store, &window, self.project_root.as_deref())?;
         window.truncated = window.truncated || result.budget_exceeded;
+        window.units_built = result.units_built;
+        window.units_cached = result.units_cached;
         Ok(window)
     }
 }

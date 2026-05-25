@@ -317,4 +317,35 @@ impl Store {
 
         Ok(())
     }
+
+    /// Get lazy dataflow statistics for status display.
+    pub fn get_lazy_stats(&self) -> anyhow::Result<LazyStats> {
+        let conn = self.lock_read();
+        let total_artifacts: i64 = conn
+            .query_row("SELECT COUNT(*) FROM analysis_artifacts", [], |r| r.get(0))?;
+        let partial_artifacts: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM analysis_artifacts WHERE budget_exceeded = 1",
+            [],
+            |r| r.get(0),
+        )?;
+        let has_dataflow: bool = conn
+            .query_row("SELECT COUNT(*) FROM data_nodes LIMIT 1", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        Ok(LazyStats {
+            total_artifacts,
+            partial_artifacts,
+            has_dataflow,
+        })
+    }
+}
+
+/// Summary of lazy dataflow state for atlas_status.
+#[derive(Debug, Clone)]
+pub struct LazyStats {
+    pub total_artifacts: i64,
+    pub partial_artifacts: i64,
+    pub has_dataflow: bool,
 }
