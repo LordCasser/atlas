@@ -470,10 +470,8 @@ mod tests {
             .expect("Python frontend should exist");
         assert_eq!(frontend.language(), Language::Python);
         assert!(frontend.dataflow.capability().is_supported());
-        assert!(
-            !frontend.lexical.capability().is_supported(),
-            "Python lexical should be unsupported"
-        );
+        // Python lexical bindings are now supported (see capability.rs)
+        assert!(frontend.lexical.capability().is_supported());
     }
 
     #[cfg(feature = "java")]
