@@ -380,11 +380,12 @@ pub fn make_all_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "index".into(),
-            description: "Index/re-index the project. Triggers extraction→resolution→graph pipeline. Default analysis=\"manifest\" is fastest (top-level symbols only, <5s for large projects). Use analysis=\"structural\" for symbols+callgraph or analysis=\"full\" for complete dataflow/CFG. Lazy structural extraction upgrades manifest data on-demand. Parameters: analysis (\"manifest\" default | \"structural\" | \"full\"), exclude (glob patterns to skip).".into(),
+            description: "Index/re-index the project. Triggers extraction→resolution→graph pipeline. Default analysis=\"manifest\" is fastest (top-level symbols only, <5s for large projects). Use analysis=\"structural\" for symbols+callgraph or analysis=\"full\" for complete dataflow/CFG. Lazy structural extraction upgrades manifest data on-demand. Parameters: analysis (\"manifest\" default | \"structural\" | \"full\"), include (glob patterns to restrict to), exclude (glob patterns to skip).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "analysis": { "type": "string", "description": "Analysis depth: \"manifest\" (default, fastest, top-level symbols only), \"structural\" (symbols+callgraph), or \"full\" (slow, complete dataflow+CFG)" },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns to restrict indexing to specific directories/files (e.g. [\"src/**\"])" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns for directories/files to skip (e.g. [\"**/test/**\", \"**/*.spec.ts\"])" },
                 })),
                 required: None,

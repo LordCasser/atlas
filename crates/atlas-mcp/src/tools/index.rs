@@ -1,7 +1,9 @@
 //! `atlas_index` MCP tool — trigger project indexing from MCP clients.
 //!
-//! Accepts `analysis` mode ("structural" or "full") and runs the full
-//! extraction → resolution → graph pipeline against the project root.
+//! Accepts `analysis` mode ("manifest" default | "structural" | "full") and
+//! runs the extraction → resolution → graph pipeline against the project root.
+//! Manifest mode is fastest (top-level symbols only); structural/full
+//! extraction can be triggered on-demand via LazyStructuralService.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,7 +37,9 @@ impl ToolRouter {
     /// Handle `atlas_index` tool call.
     ///
     /// Parameters:
-    ///   analysis: "structural" (default, no dataflow) | "full" (complete analysis)
+    ///   analysis: "manifest" (default, top-level symbols only) | "structural"
+    ///             (symbols+callgraph) | "full" (complete dataflow+CFG)
+    ///   include: list of glob patterns to restrict indexing to
     ///   exclude: list of glob patterns to skip (e.g. ["**/test/**", "**/*.test.ts"])
     ///
     /// If [`Self::progress_sender`] is set, progress notifications are sent at each
