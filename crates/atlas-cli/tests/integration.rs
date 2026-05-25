@@ -1198,31 +1198,31 @@ fn mcp_tools_are_registered() {
 
     // Core tools must be present
     assert!(
-        tool_names.contains(&"atlas_status"),
-        "atlas_status tool missing from MCP"
+        tool_names.contains(&"status"),
+        "status tool missing from MCP"
     );
     assert!(
-        tool_names.contains(&"atlas_search"),
-        "atlas_search tool missing from MCP"
+        tool_names.contains(&"search"),
+        "search tool missing from MCP"
     );
     assert!(
-        tool_names.contains(&"atlas_symbol"),
-        "atlas_symbol tool missing from MCP"
+        tool_names.contains(&"symbol"),
+        "symbol tool missing from MCP"
     );
     assert!(
-        tool_names.contains(&"atlas_callgraph"),
-        "atlas_callgraph tool missing from MCP"
+        tool_names.contains(&"callgraph"),
+        "callgraph tool missing from MCP"
     );
     assert!(
-        tool_names.contains(&"atlas_path"),
-        "atlas_path tool missing from MCP"
+        tool_names.contains(&"path"),
+        "path tool missing from MCP"
     );
     assert!(
-        tool_names.contains(&"atlas_explore"),
-        "atlas_explore tool missing from MCP"
+        tool_names.contains(&"explore"),
+        "explore tool missing from MCP"
     );
     assert!(
-        tool_names.contains(&"atlas_context"),
-        "atlas_context tool missing from MCP"
+        tool_names.contains(&"context"),
+        "context tool missing from MCP"
     );
 }

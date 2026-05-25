@@ -119,16 +119,16 @@ impl ToolRouter {
     pub(crate) fn tool_requires_graph(name: &str) -> bool {
         matches!(
             name,
-            "atlas_search"
-                | "atlas_symbol"
-                | "atlas_neighbors"
-                | "atlas_callers"
-                | "atlas_callees"
-                | "atlas_callgraph"
-                | "atlas_path"
-                | "atlas_explore"
-                | "atlas_impact"
-                | "atlas_context"
+            "search"
+                | "symbol"
+                | "neighbors"
+                | "callers"
+                | "callees"
+                | "callgraph"
+                | "path"
+                | "explore"
+                | "impact"
+                | "context"
         )
     }
 
@@ -209,23 +209,23 @@ impl ToolRouter {
         // Each handler returns (result_text, is_error).
         // is_error=true only for genuine failures (lookup errors, I/O errors, unknown tool).
         let (result, is_error) = match name {
-            "atlas_index" => self.handle_index(arguments),
-            "atlas_status" => self.handle_status(),
-            "atlas_files" => self.handle_files(),
-            "atlas_search" => self.handle_search(arguments),
-            "atlas_symbol" => self.handle_symbol(arguments),
-            "atlas_neighbors" => self.handle_neighbors(arguments),
-            "atlas_callers" => self.handle_callers(arguments),
-            "atlas_callees" => self.handle_callees(arguments),
-            "atlas_callgraph" => self.handle_callgraph(arguments),
-            "atlas_path" => self.handle_path(arguments),
-            "atlas_explore" => self.handle_explore(arguments),
-            "atlas_impact" => self.handle_impact(arguments),
-            "atlas_context" => self.handle_context(arguments),
-            "atlas_trace_point" => self.handle_trace_point(arguments),
-            "atlas_trace_variable" => self.handle_trace_variable(arguments),
-            "atlas_trace_caller_path" => self.handle_trace_caller_path(arguments),
-            "atlas_language_capabilities" => self.handle_language_capabilities(),
+            "index" => self.handle_index(arguments),
+            "status" => self.handle_status(),
+            "files" => self.handle_files(),
+            "search" => self.handle_search(arguments),
+            "symbol" => self.handle_symbol(arguments),
+            "neighbors" => self.handle_neighbors(arguments),
+            "callers" => self.handle_callers(arguments),
+            "callees" => self.handle_callees(arguments),
+            "callgraph" => self.handle_callgraph(arguments),
+            "path" => self.handle_path(arguments),
+            "explore" => self.handle_explore(arguments),
+            "impact" => self.handle_impact(arguments),
+            "context" => self.handle_context(arguments),
+            "trace_point" => self.handle_trace_point(arguments),
+            "trace_variable" => self.handle_trace_variable(arguments),
+            "trace_caller_path" => self.handle_trace_caller_path(arguments),
+            "language_capabilities" => self.handle_language_capabilities(),
             "usages" => self.handle_usages(arguments),
             "dependencies" => self.handle_dependencies(arguments),
             "dependents" => self.handle_dependents(arguments),
@@ -282,7 +282,7 @@ impl ToolRouter {
 pub fn make_all_tools() -> Vec<Tool> {
     vec![
         Tool {
-            name: "atlas_index".into(),
+            name: "index".into(),
             description: "Index/re-index the project. Triggers extraction\u{2192}resolution\u{2192}graph pipeline. Use this before querying when files have changed or on first connection. Default analysis=\"structural\" is fast and suitable for daily use; analysis=\"full\" is slower and intended for offline complete analysis. Parameters: analysis (\"structural\" default, \"full\"), exclude (list of glob patterns to skip).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
@@ -294,7 +294,7 @@ pub fn make_all_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "atlas_status".into(),
+            name: "status".into(),
             description: "Show project overview: file/symbol/edge counts, DB stats, per-language capability profiles.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
@@ -303,7 +303,7 @@ pub fn make_all_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "atlas_files".into(),
+            name: "files".into(),
             description: "List all indexed files with language and parse status.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
@@ -312,7 +312,7 @@ pub fn make_all_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "atlas_search".into(),
+            name: "search".into(),
             description: "Search symbols by name (FTS5 + fuzzy). Supports kind filter.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
@@ -325,7 +325,7 @@ pub fn make_all_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "atlas_symbol".into(),
+            name: "symbol".into(),
             description: "Get detailed info for a symbol by qualified name with caller/callee counts.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
@@ -336,7 +336,7 @@ pub fn make_all_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "atlas_neighbors".into(),
+            name: "neighbors".into(),
             description: "Get graph neighbors of a symbol (all edge kinds, configurable direction/depth).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
@@ -350,7 +350,7 @@ pub fn make_all_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "atlas_callers".into(),
+            name: "callers".into(),
             description: "List symbols that call a given symbol (incoming Calls/Instantiates/Implements edges).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
@@ -362,7 +362,7 @@ pub fn make_all_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "atlas_callees".into(),
+            name: "callees".into(),
             description: "List symbols called by a given symbol (outgoing Calls/Instantiates/Implements edges).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
@@ -374,7 +374,7 @@ pub fn make_all_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "atlas_callgraph".into(),
+            name: "callgraph".into(),
             description: "Build call graph around a symbol: all callers and callees up to configurable depth (BFS).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
@@ -387,7 +387,7 @@ pub fn make_all_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "atlas_path".into(),
+            name: "path".into(),
             description: "Find the shortest path between two symbols through the graph (BFS).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
@@ -400,7 +400,7 @@ pub fn make_all_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "atlas_explore".into(),
+            name: "explore".into(),
             description: "Explore a symbol: detail info + all immediate neighbors grouped by edge kind.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
@@ -411,7 +411,7 @@ pub fn make_all_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "atlas_impact".into(),
+            name: "impact".into(),
             description: "Compute impact analysis: all symbols reachable from a given symbol (BFS outward).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
@@ -423,7 +423,7 @@ pub fn make_all_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "atlas_context".into(),
+            name: "context".into(),
             description: "Build rich context for a symbol: callers, callees, imports, file peers (markdown).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
@@ -434,7 +434,7 @@ pub fn make_all_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "atlas_trace_point".into(),
+            name: "trace_point".into(),
             description: "Resolve a source position (file_id or file_path + line + column) to its full context: reference, symbol, data node, scope, bindings, and incident dataflow edges.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
@@ -448,7 +448,7 @@ pub fn make_all_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "atlas_trace_variable".into(),
+            name: "trace_variable".into(),
             description: "Trace where a variable's value comes from. Walks backward through dataflow edges from a source position to find origins (parameters, literals, globals). Returns the full trace path with steps.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
@@ -463,7 +463,7 @@ pub fn make_all_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "atlas_trace_caller_path".into(),
+            name: "trace_caller_path".into(),
             description: "Trace how a function gets invoked. Walks backward through call edges (Calls/Instantiates/Implements) from a target symbol to its farthest caller. Returns the full caller chain.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
@@ -476,7 +476,7 @@ pub fn make_all_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "atlas_language_capabilities".into(),
+            name: "language_capabilities".into(),
             description: "Show per-language analysis capability profiles: supported features, limitations, confidence floor.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),

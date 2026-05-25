@@ -135,15 +135,15 @@ fn p0_mcp_tools_list_includes_trace_tools() {
     let tool_names: Vec<&str> = list.tools.iter().map(|t| t.name.as_str()).collect();
 
     assert!(
-        tool_names.contains(&"atlas_trace_point"),
+        tool_names.contains(&"trace_point"),
         "tools/list must include atlas_trace_point"
     );
     assert!(
-        tool_names.contains(&"atlas_trace_variable"),
+        tool_names.contains(&"trace_variable"),
         "tools/list must include atlas_trace_variable"
     );
     assert!(
-        tool_names.contains(&"atlas_trace_caller_path"),
+        tool_names.contains(&"trace_caller_path"),
         "tools/list must include atlas_trace_caller_path"
     );
 
@@ -151,13 +151,13 @@ fn p0_mcp_tools_list_includes_trace_tools() {
     let trace_point = list
         .tools
         .iter()
-        .find(|t| t.name == "atlas_trace_point")
-        .expect("atlas_trace_point tool");
+        .find(|t| t.name == "trace_point")
+        .expect("trace_point tool");
     let props = trace_point
         .input_schema
         .properties
         .as_ref()
-        .expect("atlas_trace_point must have inputSchema.properties");
+        .expect("trace_point must have inputSchema.properties");
     assert!(
         props.get("file_path").is_some(),
         "schema must have file_path"
@@ -169,13 +169,13 @@ fn p0_mcp_tools_list_includes_trace_tools() {
     let caller_path = list
         .tools
         .iter()
-        .find(|t| t.name == "atlas_trace_caller_path")
-        .expect("atlas_trace_caller_path tool");
+        .find(|t| t.name == "trace_caller_path")
+        .expect("trace_caller_path tool");
     let cp_props = caller_path
         .input_schema
         .properties
         .as_ref()
-        .expect("atlas_trace_caller_path must have inputSchema.properties");
+        .expect("trace_caller_path must have inputSchema.properties");
     assert!(cp_props.get("symbol").is_some(), "schema must have symbol");
 }
 
@@ -206,7 +206,7 @@ function main(): void {
         "line": 6,
         "column": 20,
     });
-    let (content_json, is_error) = call_tool(&router, "atlas_trace_point", args);
+    let (content_json, is_error) = call_tool(&router, "trace_point", args);
 
     assert!(!is_error, "valid trace_point call must not set isError");
     assert_envelope_fields(&content_json);
@@ -237,7 +237,7 @@ fn p0_mcp_trace_point_missing_params_returns_error() {
     let (_tmp, router) = build_router(files);
 
     let args = json!({});
-    let (content_json, is_error) = call_tool(&router, "atlas_trace_point", args);
+    let (content_json, is_error) = call_tool(&router, "trace_point", args);
 
     assert!(is_error, "missing params must set isError=true");
     // Must return a TraceQueryResponse envelope with ok=false
@@ -272,7 +272,7 @@ fn p0_mcp_trace_point_with_file_path_resolves() {
         "line": 1,
         "column": 10,
     });
-    let (content_json, is_error) = call_tool(&router, "atlas_trace_point", args);
+    let (content_json, is_error) = call_tool(&router, "trace_point", args);
 
     assert!(!is_error, "file_path-based trace_point must succeed");
     assert_envelope_fields(&content_json);
@@ -309,7 +309,7 @@ fn p0_mcp_trace_variable_returns_dataflow_result() {
         "column": 22,
         "max_depth": 20,
     });
-    let (content_json, is_error) = call_tool(&router, "atlas_trace_variable", args);
+    let (content_json, is_error) = call_tool(&router, "trace_variable", args);
 
     assert!(
         !is_error,
@@ -333,7 +333,7 @@ fn p0_mcp_trace_variable_missing_params_returns_error() {
     let (_tmp, router) = build_router(files);
 
     let args = json!({});
-    let (content_json, is_error) = call_tool(&router, "atlas_trace_variable", args);
+    let (content_json, is_error) = call_tool(&router, "trace_variable", args);
 
     assert!(is_error, "missing file_id/file_path must set isError");
     // Must return a TraceQueryResponse envelope with ok=false
@@ -377,7 +377,7 @@ function outer(z: number): void {
     let symbol_hex = inner.id.to_hex();
 
     let args = json!({ "symbol": symbol_hex, "max_depth": 10 });
-    let (content_json, is_error) = call_tool(&router, "atlas_trace_caller_path", args);
+    let (content_json, is_error) = call_tool(&router, "trace_caller_path", args);
 
     assert!(
         !is_error,
@@ -405,7 +405,7 @@ fn p0_mcp_trace_caller_path_invalid_symbol_returns_error() {
     let (_tmp, router) = build_router(files);
 
     let args = json!({ "symbol": "not-a-valid-hex-id", "max_depth": 10 });
-    let (content_json, is_error) = call_tool(&router, "atlas_trace_caller_path", args);
+    let (content_json, is_error) = call_tool(&router, "trace_caller_path", args);
 
     assert!(is_error, "invalid symbol hex must set isError");
     // Must return a TraceQueryResponse envelope with ok=false
@@ -433,7 +433,7 @@ fn p0_mcp_trace_caller_path_root_function_returns_partial_not_error() {
     let symbol_hex = standalone.id.to_hex();
 
     let args = json!({ "symbol": symbol_hex, "max_depth": 10 });
-    let (content_json, is_error) = call_tool(&router, "atlas_trace_caller_path", args);
+    let (content_json, is_error) = call_tool(&router, "trace_caller_path", args);
 
     assert!(
         !is_error,
@@ -497,15 +497,15 @@ main();
 
     let trace_cases: Vec<(&str, Value)> = vec![
         (
-            "atlas_trace_point",
+            "trace_point",
             json!({ "file_id": file_id.to_hex(), "line": 2, "column": 30 }),
         ),
         (
-            "atlas_trace_variable",
+            "trace_variable",
             json!({ "file_id": file_id.to_hex(), "line": 2, "column": 30, "max_depth": 10 }),
         ),
         (
-            "atlas_trace_caller_path",
+            "trace_caller_path",
             json!({ "symbol": symbol_hex, "max_depth": 10 }),
         ),
     ];
@@ -541,7 +541,7 @@ fn p0_mcp_partial_result_not_is_error() {
     let file_id = find_file_id(&store, _tmp.path(), "fn.ts");
 
     let args = json!({ "file_id": file_id.to_hex(), "line": 1, "column": 10 });
-    let (content_json, is_error) = call_tool(&router, "atlas_trace_variable", args);
+    let (content_json, is_error) = call_tool(&router, "trace_variable", args);
 
     assert!(!is_error, "partial result must NOT set isError=true");
     assert_envelope_fields(&content_json);
@@ -569,11 +569,11 @@ fn p2_mcp_output_truncation_safety() {
     let args = json!({ "file_id": file_id.to_hex(), "line": 1, "column": 10 });
 
     for tool_name in &[
-        "atlas_trace_point",
-        "atlas_trace_variable",
-        "atlas_trace_caller_path",
+        "trace_point",
+        "trace_variable",
+        "trace_caller_path",
     ] {
-        let tool_args = if *tool_name == "atlas_trace_caller_path" {
+        let tool_args = if *tool_name == "trace_caller_path" {
             let syms = store.find_symbols_by_file(&file_id).expect("find symbols");
             if let Some(sym) = syms.first() {
                 json!({ "symbol": sym.id.to_hex(), "max_depth": 5 })
@@ -616,7 +616,7 @@ fn p1_mcp_java_trace_variable_is_partial() {
     let file_id = find_file_id(&store, _tmp.path(), "App.java");
 
     let args = json!({ "file_id": file_id.to_hex(), "line": 3, "column": 17 });
-    let (content_json, is_error) = call_tool(&router, "atlas_trace_variable", args);
+    let (content_json, is_error) = call_tool(&router, "trace_variable", args);
 
     assert!(!is_error, "Java variable trace must not be an error");
     let diags = content_json
@@ -676,7 +676,7 @@ func main() {
     let file_id = find_file_id(&store, _tmp.path(), "main.go");
 
     let args = json!({ "file_id": file_id.to_hex(), "line": 6, "column": 8 });
-    let (content_json, is_error) = call_tool(&router, "atlas_trace_variable", args);
+    let (content_json, is_error) = call_tool(&router, "trace_variable", args);
 
     assert!(!is_error, "Go variable trace must not be an error");
     let diags = content_json
@@ -733,7 +733,7 @@ function caller(): void {
     // Call by hex
     let (json_hex, is_err_hex) = call_tool(
         &router,
-        "atlas_trace_caller_path",
+        "trace_caller_path",
         json!({
             "symbol": target_id,
         }),
@@ -743,7 +743,7 @@ function caller(): void {
     // Call by name
     let (json_name, is_err_name) = call_tool(
         &router,
-        "atlas_trace_caller_path",
+        "trace_caller_path",
         json!({
             "symbol_name": "target",
         }),
@@ -782,7 +782,7 @@ fn p5_mcp_caller_path_by_name_nonexistent() {
 
     let (json, is_error) = call_tool(
         &router,
-        "atlas_trace_caller_path",
+        "trace_caller_path",
         json!({
             "symbol_name": "ghost_function",
         }),
@@ -832,7 +832,7 @@ function outer(v: number): number {
 
     let (json, is_error) = call_tool(
         &router,
-        "atlas_trace_caller_path",
+        "trace_caller_path",
         json!({
             "symbol": target_id.to_hex(),
         }),
@@ -876,7 +876,7 @@ def transform(x):
 
     let (json, is_error) = call_tool(
         &router,
-        "atlas_trace_variable",
+        "trace_variable",
         json!({
             "file_path": "app.py",
             "line": 2,
@@ -917,7 +917,7 @@ function c(): number { return d(); }
 
     let (json, is_error) = call_tool(
         &router,
-        "atlas_trace_caller_path",
+        "trace_caller_path",
         json!({
             "symbol": target_id.to_hex(),
             "max_depth": 2,
@@ -955,7 +955,7 @@ fn p12_mcp_trace_point_out_of_bounds() {
 
     let (json, is_error) = call_tool(
         &router,
-        "atlas_trace_point",
+        "trace_point",
         json!({
             "file_path": "small.ts",
             "line": 999,
@@ -1007,7 +1007,7 @@ fn p12a_mcp_graph_error_returns_structured_response() {
     // atlas_callgraph with a valid pre-built graph should succeed
     let (json, is_error) = call_tool(
         &router,
-        "atlas_callgraph",
+        "callgraph",
         json!({
             "symbol": "f",
             "depth": 2,
@@ -1054,7 +1054,7 @@ fn p7a_mcp_trace_variable_truncation_diagnostic() {
     // Trace from `c` on the console.log line — BFS will hit max_depth=1 quickly
     let (json, is_error) = call_tool(
         &router,
-        "atlas_trace_variable",
+        "trace_variable",
         json!({
             "file_path": "chain.ts",
             "line": 5,
@@ -1107,7 +1107,7 @@ function d(): number { return 42; }
 
     let (json, is_error) = call_tool(
         &router,
-        "atlas_trace_caller_path",
+        "trace_caller_path",
         json!({
             "symbol": target_id.to_hex(),
             "max_depth": 1,
@@ -1156,7 +1156,7 @@ greet("World");
     let greet_id = find_symbol(&store, &file_id, "greet");
 
     let (json, is_error) = call_tool(&router, "usages", json!({ "symbol": greet_id.to_hex() }));
-    assert!(!is_error, "atlas_usages should succeed");
+    assert!(!is_error, "usages should succeed");
     assert!(json.get("usages").is_some(), "should have usages array");
 }
 
@@ -1179,7 +1179,7 @@ fn mcp_dependencies_returns_imports() {
         "dependencies",
         json!({ "file_id": file_id.to_hex() }),
     );
-    assert!(!is_error, "atlas_dependencies should succeed");
+    assert!(!is_error, "dependencies should succeed");
     let deps = json.get("dependencies").and_then(|d| d.as_array());
     assert!(deps.is_some(), "should have dependencies array");
     assert!(
@@ -1200,7 +1200,7 @@ fn mcp_usages_empty_for_unreferenced() {
     let (json, is_error) = call_tool(&router, "usages", json!({ "symbol": sym_id.to_hex() }));
     assert!(
         !is_error,
-        "atlas_usages should succeed even for unused symbols"
+        "usages should succeed even for unused symbols"
     );
     let total = json
         .get("total_usages")
