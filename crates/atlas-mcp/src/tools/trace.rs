@@ -2,7 +2,7 @@
 //! traversal.
 
 use atlas_engine::SymbolId;
-use atlas_engine::{TraceEngine, TraceQueryResponse};
+use atlas_engine::{RawTraceEngine, TraceQueryResponse};
 use atlas_engine::TraceDiagnostic;
 
 use super::{ToolRouter, get_str_opt, get_u64, resolve_file_id};
@@ -46,7 +46,7 @@ impl ToolRouter {
             }
         };
 
-        let engine = TraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
+        let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
         let resp = engine.trace_point(&file_id, line, column);
         let is_error = !resp.ok;
 
@@ -122,7 +122,7 @@ impl ToolRouter {
             }
         }
 
-        let engine = TraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
+        let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
         let mut resp = engine.trace_variable(&file_id, line, column, max_depth);
         resp.partial_result = resp.partial_result || partial;
         resp.diagnostics.extend(lazy_diags);
@@ -139,7 +139,7 @@ impl ToolRouter {
         let symbol_name = args["symbol_name"].as_str().filter(|s| !s.is_empty());
         let max_depth = args["max_depth"].as_u64().unwrap_or(20) as usize;
 
-        let engine = TraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
+        let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
         let resp = if let Some(hex) = symbol_hex {
             let target_id: SymbolId = match hex.parse() {
                 Ok(id) => id,

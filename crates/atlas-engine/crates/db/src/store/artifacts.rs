@@ -102,15 +102,11 @@ impl Store {
         cfg_nodes: &[CfgNode],
         cfg_edges: &[CfgEdge],
     ) -> anyhow::Result<()> {
-        if data_nodes.is_empty()
-            && dataflow_edges.is_empty()
-            && bindings.is_empty()
-            && binding_uses.is_empty()
-            && cfg_nodes.is_empty()
-            && cfg_edges.is_empty()
-        {
-            return Ok(());
-        }
+        // Always run the delete+insert transaction, even when the new payload
+        // is empty.  An empty replacement means the unit no longer has any
+        // dataflow — but stale rows from a previous build must still be
+        // cleaned.  Skipping the delete phase would leave orphan dataflow
+        // rows referencing structures that no longer exist.
 
         self.with_transaction(|tx| {
             // ── DELETE old rows ─────────────────────────────────────────

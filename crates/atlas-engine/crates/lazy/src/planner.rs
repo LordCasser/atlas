@@ -12,7 +12,7 @@ use db::Store;
 use types::ids::{FileId, SymbolId};
 use types::lazy::{AnalysisUnit, LazyWindow, VariableFocus};
 use types::structs::{ReferenceUse, ScopeDef, SymbolDef, TextRange};
-use types::enums::{ScopeKind, SymbolKind};
+use types::enums::{EdgeKind, ScopeKind, SymbolKind};
 
 use crate::constants::{
     LAZY_DATAFLOW_MAX_DEPTH, LAZY_DATAFLOW_MAX_UNITS,
@@ -85,16 +85,20 @@ impl LazyDataflowPlanner {
         });
 
         // 6. Expand window
+        // depth 0 = seed unit (already in units)
+        // depth 1 = direct callers/callees of seed
+        // depth 2 = transitive callers/callees
         let mut units: Vec<AnalysisUnit> = vec![seed_unit.clone()];
         let mut seen: HashSet<[u8; 16]> = HashSet::new();
         seen.insert(seed_unit.unit_id);
         let mut frontier: Vec<AnalysisUnit> = vec![seed_unit.clone()];
+        let mut broke_on_cap = false;
 
-        for depth in 0..LAZY_DATAFLOW_MAX_DEPTH {
-            if depth > 0 && frontier.is_empty() {
+        for depth in 1..=LAZY_DATAFLOW_MAX_DEPTH {
+            if frontier.is_empty() {
                 break;
             }
-            if depth > 0 {
+            {
                 let mut next_frontier: Vec<AnalysisUnit> = Vec::new();
                 for unit in &frontier {
                     if let Some(sid) = unit.symbol_id {
@@ -113,12 +117,16 @@ impl LazyDataflowPlanner {
                             }
                         }
 
-                        // Callers: functions that call this unit
+                        // Callers: functions that call this unit (Calls edges only)
                         if let Ok(edges) = store.find_edges_by_target(&sid) {
                             for edge in edges {
-                                add_if_new_by_id(
-                                    store, edge.source, &mut units, &mut seen, &mut next_frontier,
-                                );
+                                if edge.kind == EdgeKind::Calls
+                                    || edge.kind == EdgeKind::Instantiates
+                                {
+                                    add_if_new_by_id(
+                                        store, edge.source, &mut units, &mut seen, &mut next_frontier,
+                                    );
+                                }
                             }
                         }
                     }
@@ -127,12 +135,13 @@ impl LazyDataflowPlanner {
             }
 
             if units.len() >= LAZY_DATAFLOW_MAX_UNITS {
+                broke_on_cap = true;
                 break;
             }
         }
 
-        let truncated = units.len() > LAZY_DATAFLOW_MAX_UNITS;
-        if truncated {
+        let truncated = units.len() > LAZY_DATAFLOW_MAX_UNITS || broke_on_cap;
+        if truncated && units.len() > LAZY_DATAFLOW_MAX_UNITS {
             units.truncate(LAZY_DATAFLOW_MAX_UNITS);
         }
 
@@ -159,9 +168,10 @@ impl LazyDataflowPlanner {
         let mut seen: HashSet<[u8; 16]> = HashSet::new();
         seen.insert(seed_unit.unit_id);
         let mut frontier: Vec<AnalysisUnit> = vec![seed_unit.clone()];
+        let mut broke_on_cap = false;
 
-        for depth in 0..LAZY_DATAFLOW_MAX_DEPTH {
-            if depth > 0 {
+        for depth in 1..=LAZY_DATAFLOW_MAX_DEPTH {
+            {
                 let mut next_frontier: Vec<AnalysisUnit> = Vec::new();
                 for unit in &frontier {
                     if let Some(sid) = unit.symbol_id {
@@ -178,7 +188,11 @@ impl LazyDataflowPlanner {
                         }
                         if let Ok(edges) = store.find_edges_by_target(&sid) {
                             for edge in edges {
-                                add_if_new_by_id(store, edge.source, &mut units, &mut seen, &mut next_frontier);
+                                if edge.kind == EdgeKind::Calls
+                                    || edge.kind == EdgeKind::Instantiates
+                                {
+                                    add_if_new_by_id(store, edge.source, &mut units, &mut seen, &mut next_frontier);
+                                }
                             }
                         }
                     }
@@ -186,12 +200,13 @@ impl LazyDataflowPlanner {
                 frontier = next_frontier;
             }
             if units.len() >= LAZY_DATAFLOW_MAX_UNITS {
+                broke_on_cap = true;
                 break;
             }
         }
 
-        let truncated = units.len() > LAZY_DATAFLOW_MAX_UNITS;
-        if truncated {
+        let truncated = units.len() > LAZY_DATAFLOW_MAX_UNITS || broke_on_cap;
+        if truncated && units.len() > LAZY_DATAFLOW_MAX_UNITS {
             units.truncate(LAZY_DATAFLOW_MAX_UNITS);
         }
 

@@ -9,7 +9,7 @@
 //!   function to its farthest caller.
 
 use crate::runtime::{CommandContext, DbMode};
-use atlas_engine::{TraceEngine, TraceQueryResponse};
+use atlas_engine::{RawTraceEngine, TraceQueryResponse};
 use atlas_engine::SymbolId;
 
 /// Helper: in JSON mode, always output a TraceQueryResponse envelope, even for
@@ -38,7 +38,7 @@ pub fn run_point(
     json: bool,
 ) -> anyhow::Result<()> {
     let ctx = CommandContext::open(project, DbMode::ExistingReadOnly)?;
-    let engine = TraceEngine::new_with_root(ctx.store.clone(), ctx.root.clone());
+    let engine = RawTraceEngine::new_with_root(ctx.store.clone(), ctx.root.clone());
 
     let file_id = match engine.resolve_file_id_with_root(ctx.workspace.root(), file_path)? {
         Some(fid) => fid,
@@ -145,7 +145,7 @@ pub fn run_variable(
     json: bool,
 ) -> anyhow::Result<()> {
     let ctx = CommandContext::open(project, DbMode::ExistingReadOnly)?;
-    let engine = TraceEngine::new_with_root(ctx.store.clone(), ctx.root.clone());
+    let engine = RawTraceEngine::new_with_root(ctx.store.clone(), ctx.root.clone());
 
     let file_id = match engine.resolve_file_id_with_root(ctx.workspace.root(), file_path)? {
         Some(fid) => fid,
@@ -226,7 +226,7 @@ pub fn run_caller_path(
     json: bool,
 ) -> anyhow::Result<()> {
     let ctx = CommandContext::open(project, DbMode::ExistingReadOnly)?;
-    let engine = TraceEngine::new_with_root(ctx.store.clone(), ctx.root.clone());
+    let engine = RawTraceEngine::new_with_root(ctx.store.clone(), ctx.root.clone());
 
     let resp = if let Some(hex) = symbol_hex.filter(|h| !h.is_empty()) {
         let target_id: SymbolId = match hex.parse() {

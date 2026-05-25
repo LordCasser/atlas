@@ -58,8 +58,14 @@ pub use graph::{
     TraversalDirection,
 };
 /// Analysis layer: trace engine and query responses.
+///
+/// [`RawTraceEngine`] is the low-level analysis engine — it does NOT
+/// automatically trigger lazy dataflow loading.  Callers must run
+/// [`LazyDataflowService::ensure_for_position`] first, or use the
+/// high-level [`Engine::trace_variable`] which wraps both.
 pub use analysis::trace;
-pub use analysis::trace::{TraceEngine, TraceQueryResponse};
+pub use analysis::trace::TraceEngine as RawTraceEngine;
+pub use analysis::trace::TraceQueryResponse;
 /// Search layer: FTS5 + fuzzy search engine.
 pub use search::{SearchEngine, SearchOptions};
 /// Context layer: AI context builder (callers, callees, peers).

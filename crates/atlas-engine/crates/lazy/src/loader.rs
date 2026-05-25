@@ -118,7 +118,11 @@ fn get_or_build(
             .map(|f| f.content_hash)
             .unwrap_or_default();
         if artifact.content_hash == current_hash {
-            return Ok((true, DataflowPayload::empty())); // cache hit
+            // Cache hit — but if the artifact was built under budget pressure,
+            // propagate the truncation flag so the caller can surface it.
+            let mut payload = DataflowPayload::empty();
+            payload.budget_exceeded = artifact.budget_exceeded;
+            return Ok((true, payload));
         }
     }
 
@@ -144,15 +148,16 @@ fn get_or_build(
     store.update_callsite_arg_data_nodes(unit, &payload.data_nodes)?;
 
     // 4. Record artifact
+    let status = if payload.budget_exceeded { "partial" } else { "complete" };
     store.upsert_artifact(&db::store_rows::ArtifactRecord {
         file_id: unit.file_id,
         unit_id: unit.unit_id,
         layer: "dataflow".to_string(),
         content_hash: current_hash,
-        status: "complete".to_string(),
+        status: status.to_string(),
         node_count: Some(payload.data_nodes.len() as i64),
         edge_count: Some(payload.dataflow_edges.len() as i64),
-        budget_exceeded: false,
+        budget_exceeded: payload.budget_exceeded,
         built_at: String::new(), // upsert_artifact fills datetime('now')
     })?;
 
@@ -188,6 +193,21 @@ fn build_dataflow_for_unit(
         .with_context(|| format!("failed to read source: {}", resolved_path.display()))?;
 
     let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+
+    // 3.5. Verify structural index is not stale.
+    // The planner's unit ranges came from the DB structural index.  If the
+    // file has been modified on disk since then, the ranges may not match
+    // the current text — reject with a clear diagnostic instead of building
+    // dataflow on mismatched coordinates.
+    if content_hash != file_info.content_hash {
+        anyhow::bail!(
+            "Structural index is stale for {} (DB hash: {}, disk hash: {}). \
+             Run atlas index or atlas_sync first.",
+            file_info.path,
+            &file_info.content_hash[..8.min(file_info.content_hash.len())],
+            &content_hash[..8.min(content_hash.len())]
+        );
+    }
 
     // 4. Extract with LazyDataflow mode
     let file_path = std::path::Path::new(&file_info.path);
