@@ -341,7 +341,7 @@ pub fn make_all_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "index".into(),
-            description: "Index/re-index the project. Triggers extraction\u{2192}resolution\u{2192}graph pipeline. Use this before querying when files have changed or on first connection. Default analysis=\"structural\" is fast and suitable for daily use; analysis=\"full\" is slower and intended for offline complete analysis. Parameters: analysis (\"structural\" default, \"full\"), exclude (list of glob patterns to skip).".into(),
+            description: "Index/re-index the project. Triggers extraction→resolution→graph pipeline. analysis='manifest' (fast top-level symbols, for large projects), analysis='structural' (default, symbols+refs+scopes), analysis='full' (complete with dataflow). Use 'manifest' for large projects — full structural extraction happens lazily on query. Parameters: analysis, include (glob patterns), exclude (glob patterns).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
@@ -353,7 +353,7 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "open_project".into(),
-            description: "Open, optionally index, and activate a project at an arbitrary path. Defaults to storage=\"memory\" for temporary zero-footprint sessions. Use storage=\"persistent\" to create/use project/.atlas/atlas.db. The active project is switched immediately on success. Parameters: project_path (required, absolute path), storage (\"memory\" default | \"persistent\"), index (default true), analysis (\"structural\" default | \"full\"), exclude (list of glob patterns).".into(),
+            description: "Open and activate a project. Defaults to storage=\"memory\" with index=false for instant query-first sessions. For large projects (>5k files), the response includes a suggestion to use analysis=\"manifest\" for fast lightweight indexing (full structural extraction is deferred to query-time via lazy structural). Parameters: project_path (required, absolute path), storage (\"memory\" default | \"persistent\"), index (default false), analysis (\"structural\" default | \"manifest\" | \"full\"), include (list of glob patterns), exclude (list of glob patterns).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({

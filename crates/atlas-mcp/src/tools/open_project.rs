@@ -1,10 +1,13 @@
 //! `open_project` MCP tool — open, index, and activate an arbitrary project.
 //!
 //! Unlike the MCP server's initial project (which is always persistent),
-//! `open_project` defaults to `storage: "memory".to_string()` for zero-footprint
-//! temporary sessions.  Switching back to the original project requires
-//! another `open_project` call with the original path and
-//! `storage: "persistent".to_string()`.
+//! `open_project` defaults to `storage: "memory"` and `index: false` for
+//! zero-footprint, instant-start temporary sessions.  Indexing must be
+//! explicitly requested with `index: true`.
+//!
+//! For large projects (>10k files), the tool automatically suggests using
+//! `analysis: "manifest"` for a fast lightweight scan, with structural
+//! extraction deferred to query-time via the LazyStructuralService.
 
 use std::sync::Arc;
 
@@ -21,11 +24,19 @@ struct OpenProjectResult {
     active_project: String,
     db_path: String,
     storage: String,
+    /// Approximate file count discovered (set even when index=false).
+    file_count: Option<usize>,
     /// Present only when `index: true` was requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     index: Option<super::index::IndexResult>,
+    /// Suggestion for large projects (e.g. "use analysis='manifest'").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suggestion: Option<String>,
     error: Option<String>,
 }
+
+/// Threshold above which we suggest using manifest mode.
+const LARGE_PROJECT_FILE_COUNT: usize = 5_000;
 
 impl ToolRouter {
     /// Handle `open_project` tool call.
@@ -33,8 +44,9 @@ impl ToolRouter {
     /// Parameters:
     ///   project_path (required): absolute path to the project directory.
     ///   storage (optional): "memory" (default) | "persistent".
-    ///   index (optional): whether to run the index pipeline (default: true).
-    ///   analysis (optional): "structural" (default) | "full".
+    ///   index (optional): whether to run the index pipeline (default: false).
+    ///   analysis (optional): "structural" | "manifest" | "full" (default: "structural").
+    ///   include (optional): list of glob patterns to restrict indexing to.
     ///   exclude (optional): list of glob patterns to skip.
     ///
     /// This handler always switches the active project on success.
@@ -54,7 +66,9 @@ impl ToolRouter {
                     active_project: String::new(),
                     db_path: String::new(),
                     storage: String::new(),
+                    file_count: None,
                     index: None,
+                    suggestion: None,
                     error: Some("Missing required parameter: project_path".into()),
                 };
                 return (
@@ -73,7 +87,9 @@ impl ToolRouter {
                     active_project: String::new(),
                     db_path: String::new(),
                     storage: String::new(),
+                    file_count: None,
                     index: None,
+                    suggestion: None,
                     error: Some(format!(
                         "Project path not found or not accessible: {} ({})",
                         project_path, e
@@ -92,7 +108,9 @@ impl ToolRouter {
                 active_project: String::new(),
                 db_path: String::new(),
                 storage: String::new(),
+                file_count: None,
                 index: None,
+                suggestion: None,
                 error: Some(format!("Not a directory: {}", canonical.display())),
             };
             return (
@@ -103,14 +121,15 @@ impl ToolRouter {
 
         // ── Storage mode ─────────────────────────────────────────────────
         let storage = args["storage"].as_str().unwrap_or("memory").to_string();
-        // Reject unknown storage values to prevent silent misbehavior.
         if storage != "memory" && storage != "persistent" {
             let resp = OpenProjectResult {
                 ok: false,
                 active_project: String::new(),
                 db_path: String::new(),
                 storage: storage.clone(),
+                file_count: None,
                 index: None,
+                suggestion: None,
                 error: Some(format!(
                     "Unknown storage mode '{}'. Valid choices: 'memory', 'persistent'.",
                     storage
@@ -121,7 +140,9 @@ impl ToolRouter {
                 true,
             );
         }
-        let do_index = args["index"].as_bool().unwrap_or(true);
+
+        // ── Index default: false (MCP is query-first) ────────────────────
+        let do_index = args["index"].as_bool().unwrap_or(false);
         let analysis = args["analysis"].as_str().unwrap_or("structural");
         let mode = match analysis {
             "manifest" => ExtractionMode::Manifest,
@@ -132,7 +153,6 @@ impl ToolRouter {
             .as_array()
             .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default();
-
         let include_patterns: Vec<String> = args["include"]
             .as_array()
             .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
@@ -148,7 +168,9 @@ impl ToolRouter {
                         active_project: String::new(),
                         db_path: String::new(),
                         storage: "persistent".to_string(),
+                        file_count: None,
                         index: None,
+                        suggestion: None,
                         error: Some(format!(
                             "Failed to create .atlas directory at {}: {}",
                             atlas_dir.display(), e
@@ -168,7 +190,9 @@ impl ToolRouter {
                             active_project: String::new(),
                             db_path: db_path.display().to_string(),
                             storage: "persistent".to_string(),
+                            file_count: None,
                             index: None,
+                            suggestion: None,
                             error: Some(format!("Failed to open database: {:#}", e)),
                         };
                         return (
@@ -179,7 +203,6 @@ impl ToolRouter {
                 }
             }
             "memory" => {
-                // In-memory store
                 match Store::open_in_memory() {
                     Ok(s) => Arc::new(s),
                     Err(e) => {
@@ -188,7 +211,9 @@ impl ToolRouter {
                             active_project: String::new(),
                             db_path: String::new(),
                             storage: "memory".to_string(),
+                            file_count: None,
                             index: None,
+                            suggestion: None,
                             error: Some(format!("Failed to open in-memory store: {:#}", e)),
                         };
                         return (
@@ -208,7 +233,9 @@ impl ToolRouter {
                 active_project: canonical.display().to_string(),
                 db_path: store.db_path().display().to_string(),
                 storage: storage.clone(),
+                file_count: None,
                 index: None,
+                suggestion: None,
                 error: Some(format!("Schema init failed: {:#}", e)),
             };
             return (
@@ -217,11 +244,36 @@ impl ToolRouter {
             );
         }
 
+        // ── Quick file count (fast, git-aware) ───────────────────────────
+        let mut file_count: Option<usize> = None;
+        let mut suggestion: Option<String> = None;
+
+        if storage == "memory" {
+            // Quick scan: discover files without parsing
+            let mut config = atlas_engine::discovery::DiscoveryConfig::default();
+            if !include_patterns.is_empty() {
+                config.include_patterns = include_patterns.clone();
+            }
+            if !exclude_patterns.is_empty() {
+                config.exclude_patterns = exclude_patterns.clone();
+            }
+            if let Ok(discovered) = atlas_engine::discovery::discover_files(&canonical, &config) {
+                file_count = Some(discovered.len());
+                if discovered.len() > LARGE_PROJECT_FILE_COUNT {
+                    suggestion = Some(format!(
+                        "Large project detected ({} files). For a fast start, use analysis='manifest' for lightweight global indexing. Full structural analysis will be triggered on-demand by queries (lazy structural).",
+                        discovered.len()
+                    ));
+                }
+            }
+        }
+
         // ── Index (optional) ─────────────────────────────────────────────
         let mut index_result: Option<super::index::IndexResult> = None;
         if do_index {
-            // For persistent mode, try to acquire FileLock to avoid
-            // concurrent writes with CLI. Memory mode needs no lock.
+            let progress_sender = self.progress_sender.clone();
+
+            // For persistent mode, try to acquire FileLock
             let _lock_guard = if storage == "persistent" {
                 match atlas_engine::FileLock::acquire(&store) {
                     Ok(g) => Some(g),
@@ -231,7 +283,9 @@ impl ToolRouter {
                             active_project: canonical.display().to_string(),
                             db_path: store.db_path().display().to_string(),
                             storage: storage.clone(),
+                            file_count,
                             index: None,
+                            suggestion: None,
                             error: Some(format!(
                                 "Cannot acquire exclusive lock for indexing: {:#}",
                                 e
@@ -247,7 +301,9 @@ impl ToolRouter {
                 None
             };
 
-            match super::index::run_index(&store, &canonical, mode, &include_patterns, &exclude_patterns, None) {
+            match super::index::run_index(
+                &store, &canonical, mode, &include_patterns, &exclude_patterns, progress_sender,
+            ) {
                 Ok(stats) => {
                     index_result = Some(super::index::IndexResult {
                         ok: true,
@@ -267,6 +323,7 @@ impl ToolRouter {
                         active_project: canonical.display().to_string(),
                         db_path: store.db_path().display().to_string(),
                         storage: storage.clone(),
+                        file_count,
                         index: Some(super::index::IndexResult {
                             ok: false,
                             files_discovered: 0,
@@ -278,6 +335,7 @@ impl ToolRouter {
                             duration_ms: start.elapsed().as_millis() as u64,
                             warning: None,
                         }),
+                        suggestion: None,
                         error: Some("Index failed".into()),
                     };
                     return (
@@ -286,7 +344,6 @@ impl ToolRouter {
                     );
                 }
             }
-            // FileLock guard is dropped here (if it exists), releasing the lock.
             drop(_lock_guard);
         }
 
@@ -306,7 +363,9 @@ impl ToolRouter {
             active_project,
             db_path,
             storage,
+            file_count,
             index: index_result,
+            suggestion,
             error: None,
         };
 
