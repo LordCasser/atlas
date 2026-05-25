@@ -12,7 +12,7 @@
 //!     │
 //!     v
 //! LazyStructuralService
-//!     ├─ CandidateProvider  (symbols table → FileId)
+//!     ├─ CandidateProvider  (pluggable: FTS5 + ripgrep by default)
 //!     └─ StructuralLoader   (re-extract + re-resolve + rebuild edges)
 //! ```
 //!
@@ -22,6 +22,8 @@
 //!   incremental `resolve_for_files` / `build_for_files` instead.
 //! - Leverages `file_index_layers` table for cache decisions.
 //! - Respects the same `ExtractionMode::Structural` pipeline as `atlas index`.
+//! - [`CandidateProvider`] is a trait — swap implementations for different
+//!   discovery strategies (e.g. compile_commands.json, ctags, custom heuristics).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,7 +41,93 @@ const MAX_CANDIDATE_FILES: usize = 20;
 const LAZY_STRUCTURAL_BUDGET_MS: u64 = 30_000;
 
 // ---------------------------------------------------------------------------
-// Public API
+// CandidateProvider trait
+// ---------------------------------------------------------------------------
+
+/// Pluggable strategy for discovering which files need structural extraction.
+///
+/// The default implementation queries the `symbols` table (FTS5) and falls
+/// back to `ripgrep` when no indexed symbols match.  Alternative providers
+/// could use `compile_commands.json`, ctags indexes, or custom heuristics.
+pub trait CandidateProvider: Send + Sync {
+    /// Find files that likely contain a definition or reference to `name`.
+    fn candidates_for_symbol(&self, name: &str) -> Result<Vec<FileId>>;
+
+    /// Find files matching the given path pattern.
+    ///
+    /// Default: treats `path` as a literal file path, generating a single
+    /// [`FileId`] from it.  Providers that index by path can override this.
+    fn candidates_for_path(&self, path: &str) -> Result<Vec<FileId>> {
+        Ok(vec![FileId::generate(path)])
+    }
+}
+
+/// Default candidate provider: FTS5 on symbols table + ripgrep fallback.
+pub struct DefaultCandidateProvider {
+    store: Arc<Store>,
+    project_root: Option<PathBuf>,
+}
+
+impl DefaultCandidateProvider {
+    pub fn new(store: Arc<Store>, project_root: Option<PathBuf>) -> Self {
+        Self { store, project_root }
+    }
+}
+
+impl CandidateProvider for DefaultCandidateProvider {
+    fn candidates_for_symbol(&self, name: &str) -> Result<Vec<FileId>> {
+        // 1. Try FTS5 on symbols
+        let candidates = self.candidates_from_symbols(name)?;
+        if !candidates.is_empty() {
+            return Ok(candidates);
+        }
+        // 2. Fallback: ripgrep
+        self.candidates_from_ripgrep(name)
+    }
+
+    fn candidates_for_path(&self, path: &str) -> Result<Vec<FileId>> {
+        Ok(vec![FileId::generate(path)])
+    }
+}
+
+impl DefaultCandidateProvider {
+    fn candidates_from_symbols(&self, name: &str) -> Result<Vec<FileId>> {
+        let symbols = self.store.find_symbols_by_name(name)?;
+        let mut seen = std::collections::HashSet::new();
+        let mut file_ids = Vec::new();
+        for sym in symbols.iter().take(MAX_CANDIDATE_FILES) {
+            if seen.insert(sym.file_id) {
+                file_ids.push(sym.file_id);
+            }
+        }
+        Ok(file_ids)
+    }
+
+    fn candidates_from_ripgrep(&self, name: &str) -> Result<Vec<FileId>> {
+        let project_root = match &self.project_root {
+            Some(r) => r.clone(),
+            None => return Ok(Vec::new()),
+        };
+        let output = std::process::Command::new("rg")
+            .args(["--files-with-matches", "--no-heading", "--word-regexp", "--fixed-strings", "--max-count=1", name])
+            .current_dir(&project_root)
+            .output();
+        let output = match output {
+            Ok(o) if o.status.success() => o,
+            _ => return Ok(Vec::new()),
+        };
+        let mut file_ids = Vec::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines().take(MAX_CANDIDATE_FILES) {
+            let line = line.trim();
+            if line.is_empty() { continue; }
+            file_ids.push(FileId::generate(line));
+        }
+        Ok(file_ids)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LazyStructuralService
 // ---------------------------------------------------------------------------
 
 /// Outcome of a lazy structural ensure invocation.
@@ -51,19 +139,35 @@ pub struct EnsureStructuralResult {
 }
 
 /// Entry point for query-driven lazy structural extraction.
+///
+/// Holds a [`CandidateProvider`] for file discovery and a [`Store`] for
+/// cache checks and re-extraction.  By default uses [`DefaultCandidateProvider`].
 pub struct LazyStructuralService {
     store: Arc<Store>,
     project_root: Option<PathBuf>,
+    candidate_provider: Box<dyn CandidateProvider>,
 }
 
 impl LazyStructuralService {
+    /// Create a service with the default candidate provider.
     pub fn new(store: Arc<Store>, project_root: Option<PathBuf>) -> Self {
-        Self { store, project_root }
+        let provider = DefaultCandidateProvider::new(store.clone(), project_root.clone());
+        Self { store, project_root, candidate_provider: Box::new(provider) }
+    }
+
+    /// Create a service with a custom candidate provider.
+    #[allow(dead_code)]
+    pub fn with_provider(
+        store: Arc<Store>,
+        project_root: Option<PathBuf>,
+        provider: Box<dyn CandidateProvider>,
+    ) -> Self {
+        Self { store, project_root, candidate_provider: provider }
     }
 
     /// Ensure the file containing `symbol_name` has full structural facts.
     pub fn ensure_structural_for_symbol(&self, name: &str) -> Result<EnsureStructuralResult> {
-        let candidates = self.candidate_files_for_symbol(name)?;
+        let candidates = self.candidate_provider.candidates_for_symbol(name)?;
         if candidates.is_empty() {
             return Ok(EnsureStructuralResult { files_built: 0, files_cached: 0, budget_exceeded: false });
         }
@@ -167,50 +271,6 @@ impl LazyStructuralService {
         Ok(())
     }
 
-    // ── CandidateProvider ───────────────────────────────────────────────
-
-    fn candidate_files_for_symbol(&self, name: &str) -> Result<Vec<FileId>> {
-        let candidates = self.candidates_from_symbols(name)?;
-        if !candidates.is_empty() {
-            return Ok(candidates);
-        }
-        self.candidates_from_ripgrep(name)
-    }
-
-    fn candidates_from_symbols(&self, name: &str) -> Result<Vec<FileId>> {
-        let symbols = self.store.find_symbols_by_name(name)?;
-        let mut seen = std::collections::HashSet::new();
-        let mut file_ids = Vec::new();
-        for sym in symbols.iter().take(MAX_CANDIDATE_FILES) {
-            if seen.insert(sym.file_id) {
-                file_ids.push(sym.file_id);
-            }
-        }
-        Ok(file_ids)
-    }
-
-    fn candidates_from_ripgrep(&self, name: &str) -> Result<Vec<FileId>> {
-        let project_root = match &self.project_root {
-            Some(r) => r.clone(),
-            None => return Ok(Vec::new()),
-        };
-        let output = std::process::Command::new("rg")
-            .args(["--files-with-matches", "--no-heading", "--word-regexp", "--fixed-strings", "--max-count=1", name])
-            .current_dir(&project_root)
-            .output();
-        let output = match output {
-            Ok(o) if o.status.success() => o,
-            _ => return Ok(Vec::new()),
-        };
-        let mut file_ids = Vec::new();
-        for line in String::from_utf8_lossy(&output.stdout).lines().take(MAX_CANDIDATE_FILES) {
-            let line = line.trim();
-            if line.is_empty() { continue; }
-            file_ids.push(FileId::generate(line));
-        }
-        Ok(file_ids)
-    }
-
     fn resolve_file_path(&self, relative: &str) -> PathBuf {
         match &self.project_root {
             Some(root) => root.join(relative),
@@ -218,6 +278,10 @@ impl LazyStructuralService {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -236,5 +300,14 @@ mod tests {
         let svc = LazyStructuralService::new(store, None);
         let fid = FileId::generate("test.rs");
         assert!(!svc.has_structural_layer(&fid).unwrap());
+    }
+
+    #[test]
+    fn test_candidate_provider_default_path() {
+        // Default path provider generates a single FileId from the path string
+        let store = test_store();
+        let provider = DefaultCandidateProvider::new(store, None);
+        let candidates = provider.candidates_for_path("src/main.rs").unwrap();
+        assert_eq!(candidates.len(), 1);
     }
 }

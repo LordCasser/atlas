@@ -39,7 +39,9 @@ pub use lazy_crate::LazyDataflowService;
 mod lazy_structural;
 
 /// Lazy structural service: on-demand full structural extraction.
-pub use lazy_structural::{EnsureStructuralResult, LazyStructuralService};
+pub use lazy_structural::{
+    CandidateProvider, DefaultCandidateProvider, EnsureStructuralResult, LazyStructuralService,
+};
 
 // ─── Re-exports ────────────────────────────────────────────────────────────
 
