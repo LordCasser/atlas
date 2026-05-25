@@ -2,11 +2,13 @@
 
 ## Installation and MCP configuration
 
-Build with MCP enabled:
+Build with all languages and MCP:
 
 ```bash
-cargo build --release -p atlas-cli --features "all-languages,mcp"
+cargo build --release -p atlas-cli --features "all-languages,mcp,bash"
 ```
+
+> `all-languages` includes TypeScript, JavaScript, Python, Java, C, C++, Go, C#, Rust, PHP, Ruby, Kotlin, ArkTS, and Cangjie. Add `bash` for Bash support (Symbolic tier, no dataflow).
 
 Initialize and index a project before starting MCP:
 
