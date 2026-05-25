@@ -182,7 +182,7 @@ impl ToolRouter {
                 ok: false,
                 active_project: canonical.display().to_string(),
                 db_path: store.db_path().display().to_string(),
-                storage,
+                storage: storage.clone(),
                 index: None,
                 error: Some(format!("Schema init failed: {:#}", e)),
             };
@@ -205,7 +205,7 @@ impl ToolRouter {
                             ok: false,
                             active_project: canonical.display().to_string(),
                             db_path: store.db_path().display().to_string(),
-                            storage,
+                            storage: storage.clone(),
                             index: None,
                             error: Some(format!(
                                 "Cannot acquire exclusive lock for indexing: {:#}",
@@ -240,7 +240,7 @@ impl ToolRouter {
                         ok: false,
                         active_project: canonical.display().to_string(),
                         db_path: store.db_path().display().to_string(),
-                        storage,
+                        storage: storage.clone(),
                         index: Some(super::index::IndexResult {
                             ok: false,
                             files_discovered: 0,
