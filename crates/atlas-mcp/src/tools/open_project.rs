@@ -143,11 +143,11 @@ impl ToolRouter {
 
         // ── Index default: false (MCP is query-first) ────────────────────
         let do_index = args["index"].as_bool().unwrap_or(false);
-        let analysis = args["analysis"].as_str().unwrap_or("structural");
+        let analysis = args["analysis"].as_str().unwrap_or("manifest");
         let mode = match analysis {
-            "manifest" => ExtractionMode::Manifest,
+            "structural" => ExtractionMode::Structural,
             "full" => ExtractionMode::Full,
-            _ => ExtractionMode::Structural,
+            _ => ExtractionMode::Manifest,
         };
         let exclude_patterns: Vec<String> = args["exclude"]
             .as_array()

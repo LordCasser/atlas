@@ -185,7 +185,7 @@ impl ToolRouter {
     /// Return a guidance string when the project has not been indexed yet.
     pub(crate) fn index_not_run_guidance(&self) -> &'static str {
         if !self.has_indexed_files() {
-            "\nHint: The project has not been indexed yet. Please run the 'index' tool first (with no arguments) to build the code index, then retry this query."
+            "\nHint: The project has not been indexed yet. Please run the 'index' tool first (defaults to analysis=\"manifest\", very fast) to build the code index, then retry this query."
         } else {
             ""
         }
@@ -380,11 +380,11 @@ pub fn make_all_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "index".into(),
-            description: "Index/re-index the project. Triggers extraction→resolution→graph pipeline. analysis='manifest' (fast top-level symbols, for large projects), analysis='structural' (default, symbols+refs+scopes), analysis='full' (complete with dataflow). Use 'manifest' for large projects — full structural extraction happens lazily on query. Parameters: analysis, include (glob patterns), exclude (glob patterns).".into(),
+            description: "Index/re-index the project. Triggers extraction→resolution→graph pipeline. Default analysis=\"manifest\" is fastest (top-level symbols only, <5s for large projects). Use analysis=\"structural\" for symbols+callgraph or analysis=\"full\" for complete dataflow/CFG. Lazy structural extraction upgrades manifest data on-demand. Parameters: analysis (\"manifest\" default | \"structural\" | \"full\"), exclude (glob patterns to skip).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
-                    "analysis": { "type": "string", "description": "Analysis depth: \"structural\" (fast, symbols+callgraph only) or \"full\" (complete dataflow+CFG)" },
+                    "analysis": { "type": "string", "description": "Analysis depth: \"manifest\" (default, fastest, top-level symbols only), \"structural\" (symbols+callgraph), or \"full\" (slow, complete dataflow+CFG)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns for directories/files to skip (e.g. [\"**/test/**\", \"**/*.spec.ts\"])" },
                 })),
                 required: None,
@@ -392,14 +392,14 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "open_project".into(),
-            description: "Open and activate a project. Defaults to storage=\"memory\" with index=false for instant query-first sessions. For large projects (>5k files), the response includes a suggestion to use analysis=\"manifest\" for fast lightweight indexing (full structural extraction is deferred to query-time via lazy structural). Parameters: project_path (required, absolute path), storage (\"memory\" default | \"persistent\"), index (default false), analysis (\"structural\" default | \"manifest\" | \"full\"), include (list of glob patterns), exclude (list of glob patterns).".into(),
+            description: "Open and activate a project. Defaults to storage=\"memory\" with index=false for instant query-first sessions. For large projects (>5k files), the response includes a suggestion to use analysis=\"manifest\" for fast lightweight indexing (full structural extraction is deferred to query-time via lazy structural). Parameters: project_path (required, absolute path), storage (\"memory\" default | \"persistent\"), index (default false), analysis (\"manifest\" default | \"structural\" | \"full\"), include (list of glob patterns), exclude (list of glob patterns).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "project_path": { "type": "string", "description": "Absolute path to the project directory to open" },
                     "storage": { "type": "string", "description": "Storage mode: \"memory\" (in-memory, zero footprint, default) or \"persistent\" (project/.atlas/atlas.db)" },
                     "index": { "type": "boolean", "description": "Whether to run the index pipeline after opening (default true)" },
-                    "analysis": { "type": "string", "description": "Analysis depth when indexing: \"structural\" (default) or \"full\"" },
+                    "analysis": { "type": "string", "description": "Analysis depth when indexing: \"manifest\" (default, fastest), \"structural\" (symbols+callgraph), or \"full\" (slow, complete)" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns for directories/files to skip" },
                 })),
                 required: Some(vec!["project_path".into()]),
