@@ -103,6 +103,24 @@ impl ToolRouter {
 
         // ── Storage mode ─────────────────────────────────────────────────
         let storage = args["storage"].as_str().unwrap_or("memory").to_string();
+        // Reject unknown storage values to prevent silent misbehavior.
+        if storage != "memory" && storage != "persistent" {
+            let resp = OpenProjectResult {
+                ok: false,
+                active_project: String::new(),
+                db_path: String::new(),
+                storage: storage.clone(),
+                index: None,
+                error: Some(format!(
+                    "Unknown storage mode '{}'. Valid choices: 'memory', 'persistent'.",
+                    storage
+                )),
+            };
+            return (
+                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                true,
+            );
+        }
         let do_index = args["index"].as_bool().unwrap_or(true);
         let analysis = args["analysis"].as_str().unwrap_or("structural");
         let mode = match analysis {
@@ -154,8 +172,8 @@ impl ToolRouter {
                     }
                 }
             }
-            _ => {
-                // "memory" or unknown → in-memory
+            "memory" => {
+                // In-memory store
                 match Store::open_in_memory() {
                     Ok(s) => Arc::new(s),
                     Err(e) => {
@@ -174,6 +192,7 @@ impl ToolRouter {
                     }
                 }
             }
+            _ => unreachable!("storage validated above"),
         };
 
         // ── Init schema ──────────────────────────────────────────────────

@@ -87,13 +87,11 @@ impl LazyDataflowLoader {
             // get_or_build
             let (cached, payload) = get_or_build(store, unit, window, project_root)?;
 
+            result.budget_exceeded |= payload.budget_exceeded;
             if cached {
                 result.units_cached += 1;
             } else {
                 result.units_built += 1;
-                if payload.budget_exceeded {
-                    result.budget_exceeded = true;
-                }
             }
         }
 

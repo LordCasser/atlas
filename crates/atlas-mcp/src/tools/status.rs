@@ -14,19 +14,23 @@ impl ToolRouter {
         };
         let lazy_stats = self.store.get_lazy_stats().ok();
 
-        // Determine index mode: "none" if no files, "structural" if no dataflow,
-        // "full" if dataflow was explicitly built, "hybrid" if lazy artifacts exist.
+        // Determine index mode:
+        //   "none"           — no files indexed
+        //   "structural+lazy"— analysis_artifacts exist (lazy query was triggered)
+        //   "full"           — dataflow was explicitly built via index --analysis full
+        //                       (data_nodes exist but NO lazy artifacts)
+        //   "structural"     — files indexed, no dataflow, no lazy artifacts
         let index_mode = if stats.total_files == 0 {
             "none"
+        } else if lazy_stats.as_ref().map_or(false, |l| l.total_artifacts > 0) {
+            // Lazy artifacts exist — the index was structural, dataflow came from lazy.
+            "structural+lazy"
         } else if lazy_stats.as_ref().map_or(false, |l| l.has_dataflow) {
+            // Dataflow exists but no lazy artifacts — explicit full index.
             "full"
         } else {
             "structural"
         };
-        // If lazy artifacts exist without explicit full index, it's hybrid.
-        let index_mode = if lazy_stats.as_ref().map_or(false, |l| l.total_artifacts > 0 && !l.has_dataflow) {
-            "structural+lazy"
-        } else { index_mode };
 
         // Build per-language capability summary for languages present in the project.
         let mut lang_caps = Vec::new();

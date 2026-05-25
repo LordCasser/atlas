@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use atlas_engine::{
-    ExtractionMode, FileId, GraphBuilder, Language, LanguageRegistry,
+    ExtractionMode, FileId, FileLock, GraphBuilder, Language, LanguageRegistry,
     ParseWorkerPool, PhaseTimer, ReferenceResolver, Store, WorkerConfig,
     create_frontend,
     discovery::{DiscoveryConfig, discover_files},
@@ -58,6 +58,25 @@ impl ToolRouter {
             references_resolved: 0,
             errors: Vec::new(),
             duration_ms: 0,
+        };
+
+        // Acquire FileLock for persistent stores to prevent races with CLI
+        // or other MCP processes writing the same .atlas/atlas.db.
+        let is_persistent = self.store.db_path() != std::path::Path::new(":memory:");
+        let _lock_guard = if is_persistent {
+            match FileLock::acquire(&self.store) {
+                Ok(g) => Some(g),
+                Err(e) => {
+                    result.errors.push(format!(
+                        "Cannot acquire exclusive lock (another atlas process may be indexing): {:#}",
+                        e
+                    ));
+                    let json = serde_json::to_string(&result).unwrap_or_else(|e| e.to_string());
+                    return (json, true);
+                }
+            }
+        } else {
+            None
         };
 
         // Run the index pipeline
