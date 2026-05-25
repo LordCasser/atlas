@@ -8,7 +8,11 @@
 use crate::runtime::{CommandContext, DbMode};
 
 pub fn run(project: &str) -> anyhow::Result<()> {
-    let ctx = CommandContext::find_and_open(project, DbMode::ExistingReadOnly)?;
+    // Use CreateOrOpenReadWrite so the MCP server auto-initialises
+    // the database and schema when pointed at a fresh project.
+    // Without this, users would need to run `atlas init` or
+    // `atlas index` before starting the MCP server.
+    let ctx = CommandContext::find_and_open(project, DbMode::CreateOrOpenReadWrite)?;
 
     tracing::info!("Starting Atlas MCP server...");
     tracing::info!("Project: {}", ctx.workspace.root().display());

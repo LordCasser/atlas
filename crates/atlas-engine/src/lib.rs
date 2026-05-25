@@ -31,6 +31,9 @@ use std::sync::Arc;
 // lazy crate (aliased to avoid name conflict with types::lazy module)
 use ::lazy as lazy_crate;
 
+/// Lazy dataflow service: planner + loader for on-demand dataflow.
+pub use lazy_crate::LazyDataflowService;
+
 // ─── Re-exports ────────────────────────────────────────────────────────────
 
 /// All core IR types (SymbolDef, ReferenceUse, FileFacts, etc.).
@@ -94,7 +97,7 @@ impl Engine {
     pub fn open(db_path: &Path) -> anyhow::Result<Self> {
         let store = Store::open_db(db_path)?;
         let store = Arc::new(store);
-        let lazy_service = lazy_crate::LazyDataflowService::new(store.clone());
+        let lazy_service = lazy_crate::LazyDataflowService::new(store.clone(), None);
         let trace = analysis::trace::TraceEngine::new(store.clone());
         Ok(Self { store, lazy_service, trace })
     }
@@ -106,7 +109,7 @@ impl Engine {
     pub fn open_with_root(db_path: &Path, project_root: &Path) -> anyhow::Result<Self> {
         let store = Store::open_db(db_path)?;
         let store = Arc::new(store);
-        let lazy_service = lazy_crate::LazyDataflowService::new(store.clone());
+        let lazy_service = lazy_crate::LazyDataflowService::new(store.clone(), Some(project_root.to_path_buf()));
         let trace = analysis::trace::TraceEngine::new_with_root(store.clone(), project_root.to_path_buf());
         Ok(Self { store, lazy_service, trace })
     }
@@ -116,7 +119,7 @@ impl Engine {
         let store = Store::open_in_memory()?;
         store.init_schema()?;
         let store = Arc::new(store);
-        let lazy_service = lazy_crate::LazyDataflowService::new(store.clone());
+        let lazy_service = lazy_crate::LazyDataflowService::new(store.clone(), None);
         let trace = analysis::trace::TraceEngine::new(store.clone());
         Ok(Self { store, lazy_service, trace })
     }

@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use atlas_engine::ContextBuilder;
 use atlas_engine::FileId;
+use atlas_engine::LazyDataflowService;
 use atlas_engine::SearchEngine;
 use atlas_engine::Store;
 use atlas_engine::SymbolId;
@@ -40,6 +41,7 @@ pub(crate) mod usages;
 /// Dispatches tools/list and tools/call.
 pub struct ToolRouter {
     pub(crate) store: Arc<Store>,
+    pub(crate) lazy_service: LazyDataflowService,
     /// Graph engines built lazily on first request (after MCP handshake).
     pub(crate) search: Option<SearchEngine>,
     pub(crate) context: Option<ContextBuilder>,
@@ -69,8 +71,10 @@ impl ToolRouter {
         project_root: std::path::PathBuf,
     ) -> Self {
         let last_graph_signature = store.index_signature().unwrap_or_default();
+        let lazy_service = LazyDataflowService::new(store.clone(), Some(project_root.clone()));
         Self {
-            store,
+            store: store.clone(),
+            lazy_service,
             search: Some(search),
             context: Some(context),
             project_root,
@@ -86,8 +90,10 @@ impl ToolRouter {
     /// Graph is built lazily on the first request via `ensure_graph_initialized`.
     pub fn new_empty(store: Arc<Store>, project_root: std::path::PathBuf) -> Self {
         let tools = make_all_tools();
+        let lazy_service = LazyDataflowService::new(store.clone(), Some(project_root.clone()));
         Self {
-            store,
+            store: store.clone(),
+            lazy_service,
             search: None,
             context: None,
             project_root,

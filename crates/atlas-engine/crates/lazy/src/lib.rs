@@ -12,6 +12,7 @@ mod constants;
 mod loader;
 mod planner;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -26,12 +27,16 @@ use types::lazy::LazyWindow;
 /// to `analysis::TraceEngine`.
 pub struct LazyDataflowService {
     store: Arc<Store>,
+    project_root: Option<PathBuf>,
 }
 
 impl LazyDataflowService {
     /// Create a new service backed by the given store.
-    pub fn new(store: Arc<Store>) -> Self {
-        Self { store }
+    ///
+    /// When `project_root` is provided, the loader resolves relative file
+    /// paths against it when reading source files for lazy extraction.
+    pub fn new(store: Arc<Store>, project_root: Option<PathBuf>) -> Self {
+        Self { store, project_root }
     }
 
     /// Plan a window and ensure all units have dataflow built.
@@ -47,7 +52,7 @@ impl LazyDataflowService {
     ) -> Result<LazyWindow> {
         let mut window =
             planner::LazyDataflowPlanner::plan_for_position(&self.store, file_id, line, column)?;
-        let result = loader::LazyDataflowLoader::ensure(&self.store, &window)?;
+        let result = loader::LazyDataflowLoader::ensure(&self.store, &window, self.project_root.as_deref())?;
         window.truncated = window.truncated || result.budget_exceeded;
         Ok(window)
     }
@@ -56,7 +61,7 @@ impl LazyDataflowService {
     pub fn ensure_for_function(&self, symbol_id: &SymbolId) -> Result<LazyWindow> {
         let mut window =
             planner::LazyDataflowPlanner::plan_for_function(&self.store, symbol_id)?;
-        let result = loader::LazyDataflowLoader::ensure(&self.store, &window)?;
+        let result = loader::LazyDataflowLoader::ensure(&self.store, &window, self.project_root.as_deref())?;
         window.truncated = window.truncated || result.budget_exceeded;
         Ok(window)
     }

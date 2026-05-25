@@ -72,6 +72,7 @@ impl LazyDataflowLoader {
     pub(crate) fn ensure(
         store: &Store,
         window: &LazyWindow,
+        project_root: Option<&std::path::Path>,
     ) -> Result<EnsureResult> {
         let start = Instant::now();
         let mut result = EnsureResult::default();
@@ -84,7 +85,7 @@ impl LazyDataflowLoader {
             }
 
             // get_or_build
-            let (cached, payload) = get_or_build(store, unit, window)?;
+            let (cached, payload) = get_or_build(store, unit, window, project_root)?;
 
             if cached {
                 result.units_cached += 1;
@@ -108,6 +109,7 @@ fn get_or_build(
     store: &Store,
     unit: &AnalysisUnit,
     window: &LazyWindow,
+    project_root: Option<&std::path::Path>,
 ) -> Result<(bool, DataflowPayload)> {
     // 1. Check artifact cache
     if let Some(artifact) = store.get_artifact(&unit.file_id, &unit.unit_id, "dataflow")? {
@@ -121,7 +123,7 @@ fn get_or_build(
     }
 
     // 2. Cache miss — build
-    let payload = build_dataflow_for_unit(store, unit, window)?;
+    let payload = build_dataflow_for_unit(store, unit, window, project_root)?;
 
     // 3. Write to DB
     let current_hash = store
@@ -163,6 +165,7 @@ fn build_dataflow_for_unit(
     store: &Store,
     unit: &AnalysisUnit,
     window: &LazyWindow,
+    project_root: Option<&std::path::Path>,
 ) -> Result<DataflowPayload> {
     // 1. Get file info to determine language and path
     let file_info = store
@@ -173,12 +176,16 @@ fn build_dataflow_for_unit(
     let frontend = get_cached_frontend(file_info.language)
         .ok_or_else(|| anyhow::anyhow!("frontend not available for {:?}", file_info.language))?;
 
-    // 3. Read source file from disk
-    // We need the file path relative to some root. The file_info.path is already
-    // relative. We'll try to resolve it from the current working directory or
-    // from the extracted location. For now, read directly using the stored path.
-    let source = std::fs::read_to_string(&file_info.path)
-        .with_context(|| format!("failed to read source: {}", file_info.path))?;
+    // 3. Read source file from disk.
+    // If a project_root is provided, resolve relative paths against it.
+    // Otherwise try the path as-is (for absolute paths or in-memory stores).
+    let resolved_path = if let Some(root) = project_root {
+        root.join(&file_info.path)
+    } else {
+        std::path::PathBuf::from(&file_info.path)
+    };
+    let source = std::fs::read_to_string(&resolved_path)
+        .with_context(|| format!("failed to read source: {}", resolved_path.display()))?;
 
     let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
 

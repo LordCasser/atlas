@@ -3,6 +3,7 @@
 
 use atlas_engine::SymbolId;
 use atlas_engine::{TraceEngine, TraceQueryResponse};
+use atlas_engine::TraceDiagnostic;
 
 use super::{ToolRouter, get_str_opt, get_u64, resolve_file_id};
 
@@ -96,8 +97,35 @@ impl ToolRouter {
             }
         };
 
+        // Lazy-load dataflow before tracing, so Locator can find data nodes.
+        // If the window was truncated by budget, we proceed with partial data.
+        let mut partial = false;
+        let mut lazy_diags: Vec<TraceDiagnostic> = Vec::new();
+        match self.lazy_service.ensure_for_position(&file_id, line, column) {
+            Ok(window) => {
+                if window.truncated {
+                    partial = true;
+                    lazy_diags.push(
+                        TraceDiagnostic::warning(
+                            "Dataflow window truncated by budget. Re-index with --analysis full for complete coverage."
+                        ).with_code("lazy_dataflow_budget_exceeded")
+                    );
+                }
+            }
+            Err(e) => {
+                partial = true;
+                lazy_diags.push(
+                    TraceDiagnostic::warning(&format!(
+                        "Lazy dataflow build failed: {e}"
+                    )).with_code("lazy_dataflow_build_failed")
+                );
+            }
+        }
+
         let engine = TraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
-        let resp = engine.trace_variable(&file_id, line, column, max_depth);
+        let mut resp = engine.trace_variable(&file_id, line, column, max_depth);
+        resp.partial_result = resp.partial_result || partial;
+        resp.diagnostics.extend(lazy_diags);
         let is_error = !resp.ok;
 
         (
