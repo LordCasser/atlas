@@ -16,11 +16,9 @@ pub(crate) const LAZY_DATAFLOW_MAX_DEPTH: usize = 2;
 /// Hard cap on the total number of AnalysisUnits in a single LazyWindow.
 pub(crate) const LAZY_DATAFLOW_MAX_UNITS: usize = 64;
 
-/// Maximum DataNode count for a single AnalysisUnit (excess nodes dropped).
-pub(crate) const LAZY_DATAFLOW_MAX_NODES_PER_UNIT: usize = 2_000;
-
-/// Maximum DataFlowEdge count for a single AnalysisUnit.
-pub(crate) const LAZY_DATAFLOW_MAX_EDGES_PER_UNIT: usize = 20_000;
-
 /// Wall-clock time budget for a single lazy-load operation (milliseconds).
 pub(crate) const LAZY_DATAFLOW_BUDGET_MS: u64 = 25_000;
+
+// Note: per-unit node/edge caps (LAZY_MAX_NODES_PER_UNIT, LAZY_MAX_EDGES_PER_UNIT)
+// are defined in extraction/src/mode.rs because extraction cannot depend on this
+// crate.  Keep the two versions in sync when adjusting.

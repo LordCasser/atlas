@@ -94,7 +94,7 @@ impl LazyDataflowPlanner {
         let mut frontier: Vec<AnalysisUnit> = vec![seed_unit.clone()];
         let mut broke_on_cap = false;
 
-        for depth in 1..=LAZY_DATAFLOW_MAX_DEPTH {
+        for _depth in 1..=LAZY_DATAFLOW_MAX_DEPTH {
             if frontier.is_empty() {
                 break;
             }
@@ -172,7 +172,7 @@ impl LazyDataflowPlanner {
         let mut frontier: Vec<AnalysisUnit> = vec![seed_unit.clone()];
         let mut broke_on_cap = false;
 
-        for depth in 1..=LAZY_DATAFLOW_MAX_DEPTH {
+        for _depth in 1..=LAZY_DATAFLOW_MAX_DEPTH {
             {
                 let mut next_frontier: Vec<AnalysisUnit> = Vec::new();
                 for unit in &frontier {

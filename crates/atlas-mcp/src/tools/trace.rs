@@ -100,7 +100,7 @@ impl ToolRouter {
         let lazy_start = std::time::Instant::now();
         let mut partial = false;
         let mut lazy_diags: Vec<TraceDiagnostic> = Vec::new();
-        let mut lazy_summary: Option<LazySummary> = None;
+        let lazy_summary: Option<LazySummary>;
         match self.lazy_service.ensure_for_position(&file_id, line, column) {
             Ok(window) => {
                 lazy_summary = Some(LazySummary {

@@ -1,8 +1,6 @@
 //! Lazy dataflow artifact tracking: CRUD for analysis_artifacts table,
 //! plus `replace_dataflow_for_unit` and `update_callsite_arg_data_nodes`.
 
-use std::collections::HashSet;
-
 use types::*;
 use rusqlite::params;
 
@@ -114,7 +112,7 @@ impl Store {
 
             // Identify data_node_ids to delete
             {
-                let mut stmt = if let Some(ref func_id) = unit.symbol_id {
+                let mut stmt = if unit.symbol_id.is_some() {
                     tx.prepare("SELECT data_node_id FROM data_nodes WHERE function_id = ?1")?
                 } else {
                     tx.prepare(
@@ -155,7 +153,7 @@ impl Store {
 
             // Clean up cfg_edges → cfg_nodes
             {
-                let mut stmt = if let Some(ref func_id) = unit.symbol_id {
+                let mut stmt = if unit.symbol_id.is_some() {
                     tx.prepare("SELECT cfg_node_id FROM cfg_nodes WHERE function_id = ?1")?
                 } else {
                     tx.prepare(
