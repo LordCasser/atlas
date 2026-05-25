@@ -34,11 +34,7 @@ jobs:
             os: ubuntu-latest
             cross: true
 
-          # ── macOS ─────────────────────────────────────────────
-          - target: x86_64-apple-darwin
-            os: macos-13
-            cross: false
-
+          # ── macOS (Apple Silicon, mainstream) ──────────────────
           - target: aarch64-apple-darwin
             os: macos-latest
             cross: false
@@ -48,39 +44,36 @@ jobs:
             os: windows-latest
             cross: false
 
-          # ── Windows ARM (cross from Linux via cross-rs) ───────
+          # ── Windows ARM (cross from Linux via cargo-xwin) ─────
           - target: aarch64-pc-windows-msvc
             os: ubuntu-latest
-            cross: true
+            xwin: true
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        if: ${{ !matrix.cross }}
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
 
-      - name: Install Rust toolchain (cross-compile)
-        if: matrix.cross
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-
       - name: Install cross
         if: matrix.cross
         run: cargo install cross --locked
 
+      - name: Install cargo-xwin
+        if: matrix.xwin
+        run: cargo install cargo-xwin --locked
+
+      - name: Install LLVM linker (xwin)
+        if: matrix.xwin
+        run: sudo apt-get update && sudo apt-get install -y lld
+
       - name: Build (native)
-        if: ${{ !matrix.cross }}
-        run: |
-          cargo build --release \
-            --target ${{ matrix.target }} \
-            -p atlas-cli \
-            --features "all-languages,mcp"
+        if: ${{ !matrix.cross && !matrix.xwin }}
+        run: cargo build --release --target ${{ matrix.target }} -p atlas-cli --features "all-languages,mcp"
 
       - name: Build (cross-compile)
         if: matrix.cross
@@ -89,6 +82,10 @@ jobs:
             --target ${{ matrix.target }} \
             -p atlas-cli \
             --features "all-languages,mcp"
+
+      - name: Build (xwin)
+        if: matrix.xwin
+        run: cargo xwin build --release --target ${{ matrix.target }} -p atlas-cli --features "all-languages,mcp"
 
       - name: Package (Linux / macOS / cross-compiled Windows)
         if: runner.os != 'Windows'
