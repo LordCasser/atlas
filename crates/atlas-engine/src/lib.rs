@@ -353,4 +353,87 @@ mod tests {
         assert!(json.contains(r#""kind""#));
         assert!(json.contains(r#""capability""#));
     }
+
+    // ── Lazy dataflow integration tests ─────────────────────────────────
+
+    /// 7b: trace_variable triggers lazy dataflow build automatically.
+    /// Index with Structural mode (no dataflow), then trace_variable
+    /// should trigger the build and produce a trace path.
+    #[test]
+    #[cfg(feature = "typescript")]
+    fn trace_variable_triggers_lazy_dataflow() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = {
+            let db_path = dir.path().join(".atlas/atlas.db");
+            std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+            Engine::open(&db_path).expect("open engine")
+        };
+        // Initialize schema — Engine::open doesn't init schema
+        engine.store().init_schema().expect("init schema");
+
+        let source = "function compute(x: number): number {\n  let y = x * 2;\n  return y;\n}\n";
+        let rel_path = "test_lazy.ts";
+        let abs_path = dir.path().join(rel_path);
+        std::fs::write(&abs_path, source).expect("write source");
+
+        let file_id = FileId::generate(rel_path);
+
+        // Index with Structural mode directly via extract_file_with_mode
+        let frontend = extraction::create_frontend(Language::TypeScript).unwrap();
+        let facts = extraction::extract_file_with_mode(
+            &frontend, file_id, &abs_path, source, "test_hash",
+            extraction::ExtractionMode::Structural,
+        ).expect("extract structural");
+        engine.insert_facts(&facts).expect("insert structural");
+
+        // Verify no dataflow exists before trace
+        let dn_before = engine.store().find_data_nodes_by_file(&file_id).unwrap();
+        assert!(dn_before.is_empty(), "no data nodes before lazy load");
+
+        // trace_variable triggers lazy load
+        // Line 2, column 5 is inside `let y = x * 2;` — the variable `y`
+        let resp = engine.trace_variable(&file_id, 2, 5, 10);
+
+        // After trace_variable, data_nodes should exist in DB
+        let dn_after = engine.store().find_data_nodes_by_file(&file_id).unwrap();
+        assert!(!dn_after.is_empty(), "data nodes should exist after trace_variable triggers lazy load");
+    }
+
+    /// 7c: Cache hit — second trace_variable call should reuse lazy dataflow
+    /// without re-extracting.
+    #[test]
+    #[cfg(feature = "typescript")]
+    fn lazy_dataflow_cache_hit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join(".atlas/atlas.db");
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let engine = Engine::open(&db_path).expect("open engine");
+        engine.store().init_schema().expect("init schema");
+
+        let source = "function mul(a: number, b: number): number {\n  return a * b;\n}\n";
+        let rel_path = "test_cache.ts";
+        let abs_path = dir.path().join(rel_path);
+        std::fs::write(&abs_path, source).expect("write source");
+
+        let file_id = FileId::generate(rel_path);
+
+        // Index structurally
+        let frontend = extraction::create_frontend(Language::TypeScript).unwrap();
+        let facts = extraction::extract_file_with_mode(
+            &frontend, file_id, &abs_path, source, "test_hash",
+            extraction::ExtractionMode::Structural,
+        ).expect("extract structural");
+        engine.insert_facts(&facts).expect("insert");
+
+        // First call — triggers lazy build
+        let _resp1 = engine.trace_variable(&file_id, 1, 10, 10);
+        let dn1 = engine.store().find_data_nodes_by_file(&file_id).unwrap();
+        let count1 = dn1.len();
+        assert!(count1 > 0, "should have data nodes after first call");
+
+        // Second call — should hit cache (same data nodes, no rebuild)
+        let _resp2 = engine.trace_variable(&file_id, 1, 10, 10);
+        let dn2 = engine.store().find_data_nodes_by_file(&file_id).unwrap();
+        assert_eq!(dn2.len(), count1, "data node count unchanged on cache hit");
+    }
 }

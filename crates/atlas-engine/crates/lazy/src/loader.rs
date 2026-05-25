@@ -27,6 +27,7 @@ struct DataflowPayload {
     binding_uses: Vec<types::BindingUse>,
     cfg_nodes: Vec<types::CfgNode>,
     cfg_edges: Vec<types::CfgEdge>,
+    budget_exceeded: bool,
 }
 
 impl DataflowPayload {
@@ -37,9 +38,10 @@ impl DataflowPayload {
             bindings: vec![],
             binding_uses: vec![],
             cfg_nodes: vec![],
-            cfg_edges: vec![],
-        }
+        cfg_edges: vec![],
+        budget_exceeded: false,
     }
+}
 }
 
 /// Result of a lazy-load invocation.
@@ -82,12 +84,15 @@ impl LazyDataflowLoader {
             }
 
             // get_or_build
-            let (cached, _payload) = get_or_build(store, unit, window)?;
+            let (cached, payload) = get_or_build(store, unit, window)?;
 
             if cached {
                 result.units_cached += 1;
             } else {
                 result.units_built += 1;
+                if payload.budget_exceeded {
+                    result.budget_exceeded = true;
+                }
             }
         }
 
@@ -197,6 +202,7 @@ fn build_dataflow_for_unit(
         binding_uses: facts.binding_uses,
         cfg_nodes: facts.cfg_nodes,
         cfg_edges: facts.cfg_edges,
+        budget_exceeded: facts.budget_exceeded,
     })
 }
 

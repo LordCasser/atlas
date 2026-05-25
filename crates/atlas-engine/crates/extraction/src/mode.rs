@@ -80,3 +80,16 @@ impl ExtractionMode {
         matches!(self, Self::LazyDataflow { .. } | Self::Full)
     }
 }
+
+// ── Lazy dataflow budget constants (internal, per-unit caps) ──────────────
+//
+// These mirror the constants in the `lazy` crate.  They are duplicated here
+// because `extraction` cannot depend on `lazy`.  Values must be kept in sync.
+//
+// Not exposed to MCP tools, CLI parameters, or external configuration.
+
+/// Maximum DataNode count for a single AnalysisUnit.
+pub(crate) const LAZY_MAX_NODES_PER_UNIT: usize = 2_000;
+
+/// Maximum DataFlowEdge count for a single AnalysisUnit.
+pub(crate) const LAZY_MAX_EDGES_PER_UNIT: usize = 20_000;

@@ -217,6 +217,7 @@ pub fn extract_file_with_mode(
     };
 
     // 7b. Build dataflow graph (P7: skip in Structural mode)
+    let mut budget_exceeded = false;
     let (mut data_nodes, dataflow_edges) = if mode.produces_dataflow()
         && frontend.dataflow.capability().is_supported()
     {
@@ -250,6 +251,7 @@ pub fn extract_file_with_mode(
             let filtered_data = filter_dataflow_to_window(
                 &nodes, &all_edges, window, file_id,
             );
+            budget_exceeded = filtered_data.truncated;
             (filtered_data.nodes, filtered_data.edges)
         } else {
             (nodes, all_edges)
@@ -557,6 +559,7 @@ pub fn extract_file_with_mode(
         dataflow_edges,
         cfg_nodes,
         cfg_edges,
+        budget_exceeded,
     })
 }
 
@@ -789,6 +792,8 @@ fn filter_dataflow_to_window(
     window: &types::lazy::LazyWindow,
     file_id: FileId,
 ) -> FilteredDataflow {
+    use super::mode::{LAZY_MAX_EDGES_PER_UNIT, LAZY_MAX_NODES_PER_UNIT};
+
     let file_units: Vec<&types::lazy::AnalysisUnit> = window
         .units
         .iter()
@@ -799,10 +804,14 @@ fn filter_dataflow_to_window(
         return FilteredDataflow {
             nodes: vec![],
             edges: vec![],
+            truncated: false,
         };
     }
 
-    let filtered_nodes: Vec<DataNode> = nodes
+    let max_nodes = file_units.len() * LAZY_MAX_NODES_PER_UNIT;
+    let max_edges = file_units.len() * LAZY_MAX_EDGES_PER_UNIT;
+
+    let mut filtered_nodes: Vec<DataNode> = nodes
         .iter()
         .filter(|n| {
             file_units
@@ -812,10 +821,16 @@ fn filter_dataflow_to_window(
         .cloned()
         .collect();
 
+    let mut filtered_truncated = false;
+    if filtered_nodes.len() > max_nodes {
+        filtered_nodes.truncate(max_nodes);
+        filtered_truncated = true;
+    }
+
     let kept_ids: std::collections::HashSet<types::ids::DataNodeId> =
         filtered_nodes.iter().map(|n| n.id).collect();
 
-    let filtered_edges: Vec<DataFlowEdge> = edges
+    let mut filtered_edges: Vec<DataFlowEdge> = edges
         .iter()
         .filter(|e| {
             kept_ids.contains(&e.source) && kept_ids.contains(&e.target)
@@ -823,15 +838,22 @@ fn filter_dataflow_to_window(
         .cloned()
         .collect();
 
+    if filtered_edges.len() > max_edges {
+        filtered_edges.truncate(max_edges);
+        filtered_truncated = true;
+    }
+
     FilteredDataflow {
         nodes: filtered_nodes,
         edges: filtered_edges,
+        truncated: filtered_truncated,
     }
 }
 
 struct FilteredDataflow {
     nodes: Vec<DataNode>,
     edges: Vec<DataFlowEdge>,
+    truncated: bool,
 }
 
 #[cfg(test)]
@@ -1375,5 +1397,99 @@ int main() {
         store.init_schema().unwrap();
         let result = store.insert_file_facts(&facts);
         assert!(result.is_ok(), "Insert failed: {:?}", result.err());
+    }
+
+    // ── Lazy dataflow integration tests ─────────────────────────────────
+
+    /// 7a: Structural mode produces no dataflow/CFG, but keeps bindings.
+    #[test]
+    #[cfg(feature = "typescript")]
+    fn structural_mode_produces_no_dataflow() {
+        let frontend = ts_frontend();
+        let source = "function add(a: number, b: number): number {\n  let sum = a + b;\n  return sum;\n}\n";
+        let file_id = FileId::generate("test_7a.ts");
+        let path = std::path::Path::new("test_7a.ts");
+
+        let facts = extract_file_with_mode(
+            &frontend, file_id, path, source, "abc",
+            ExtractionMode::Structural,
+        ).unwrap();
+
+        assert!(!facts.symbols.is_empty(), "Structural: should have symbols");
+        assert!(!facts.scopes.is_empty(), "Structural: should have scopes");
+        assert!(facts.data_nodes.is_empty(), "Structural: data_nodes must be empty");
+        assert!(facts.dataflow_edges.is_empty(), "Structural: dataflow_edges must be empty");
+        assert!(facts.cfg_nodes.is_empty(), "Structural: cfg_nodes must be empty");
+        assert!(facts.cfg_edges.is_empty(), "Structural: cfg_edges must be empty");
+        // LexicalBinder should still produce bindings (declaration sites)
+        assert!(!facts.bindings.is_empty(), "Structural: bindings should exist (LexicalBinder runs)");
+        // Step 8a (identifier-use binding scan) is skipped in Structural
+        // so binding_uses only has declaration-site uses
+    }
+
+    /// 7d: Full mode produces the same data as the backward-compat extract_file().
+    #[test]
+    #[cfg(feature = "typescript")]
+    fn full_mode_identical_to_backward_compat() {
+        let frontend = ts_frontend();
+        let source = "const x = 1;\nfunction f() { return x + 2; }\nf();\n";
+        let file_id = FileId::generate("test_7d.ts");
+        let path = std::path::Path::new("test_7d.ts");
+
+        let facts_compat = extract_file(&frontend, file_id, path, source, "abc").unwrap();
+        let facts_full = extract_file_with_mode(
+            &frontend, file_id, path, source, "abc",
+            ExtractionMode::Full,
+        ).unwrap();
+
+        assert_eq!(facts_compat.symbols.len(), facts_full.symbols.len());
+        assert_eq!(facts_compat.data_nodes.len(), facts_full.data_nodes.len());
+        assert_eq!(facts_compat.dataflow_edges.len(), facts_full.dataflow_edges.len());
+        assert_eq!(facts_compat.bindings.len(), facts_full.bindings.len());
+    }
+
+    /// 7e: Budget truncation — a file with many nodes triggers budget_exceeded.
+    #[test]
+    #[cfg(feature = "typescript")]
+    fn lazy_dataflow_budget_truncation() {
+        use types::lazy::{AnalysisUnit, LazyWindow};
+
+        let frontend = ts_frontend();
+        let mut source = String::from("function big() {\n");
+        for i in 0..3000 {
+            source.push_str(&format!("  let v{} = {};\n", i, i));
+        }
+        source.push_str("  return v0;\n}\n");
+        let file_id = FileId::generate("test_7e.ts");
+        let path = std::path::Path::new("test_7e.ts");
+
+        // Build a minimal window that covers this file's function
+        let symbols = {
+            let facts = extract_file_with_mode(
+                &frontend, file_id, path, &source, "abc",
+                ExtractionMode::Full, // need symbols for unit construction
+            ).unwrap();
+            facts.symbols
+        };
+        let func_sym = symbols.iter().find(|s| s.name == "big").expect("function 'big' not found");
+
+        let window = LazyWindow {
+            seed_unit: AnalysisUnit::from_function(file_id, func_sym.id, func_sym.range),
+            units: vec![AnalysisUnit::from_function(file_id, func_sym.id, func_sym.range)],
+            truncated: false,
+        };
+
+        let facts = extract_file_with_mode(
+            &frontend, file_id, path, &source, "abc",
+            ExtractionMode::LazyDataflow { window },
+        ).unwrap();
+
+        // With 3000 variable declarations, we should exceed LAZY_MAX_NODES_PER_UNIT (2000)
+        // and the filter should have set budget_exceeded
+        assert!(facts.budget_exceeded, "7e: budget_exceeded should be true for 3000-variable function");
+        assert!(
+            facts.data_nodes.len() <= crate::mode::LAZY_MAX_NODES_PER_UNIT,
+            "7e: data_nodes should be capped at LAZY_MAX_NODES_PER_UNIT"
+        );
     }
 }

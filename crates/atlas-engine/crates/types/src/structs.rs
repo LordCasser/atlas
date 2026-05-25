@@ -533,6 +533,11 @@ pub struct FileFacts {
     /// Control-flow graph edges (per-function CFG).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cfg_edges: Vec<CfgEdge>,
+
+    /// Whether the lazy dataflow budget was exceeded during extraction.
+    /// When true, the dataflow data may be incomplete (truncated nodes/edges).
+    #[serde(default)]
+    pub budget_exceeded: bool,
 }
 
 impl FileFacts {

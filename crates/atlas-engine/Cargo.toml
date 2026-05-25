@@ -24,6 +24,7 @@ serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 serde_json = "1"
+tempfile = "3"
 
 [features]
 default = ["typescript", "javascript", "python"]

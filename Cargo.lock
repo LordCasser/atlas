@@ -155,6 +155,7 @@ dependencies = [
  "search",
  "serde",
  "serde_json",
+ "tempfile",
  "types",
  "workspace",
 ]
