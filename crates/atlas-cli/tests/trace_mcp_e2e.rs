@@ -80,7 +80,15 @@ fn find_symbol(store: &Store, file_id: &FileId, name: &str) -> SymbolId {
 }
 
 /// Call a tool and return the parsed content JSON plus is_error.
+/// Mirrors the MCP server's call_tool flow: ensures graph init for
+/// graph-backed tools before dispatching.
 fn call_tool(router: &mut ToolRouter, name: &str, args: Value) -> (Value, bool) {
+    if ToolRouter::tool_requires_graph(name) {
+        if let Err(e) = router.ensure_graph_initialized() {
+            let err = json!({ "ok": false, "error": format!("{:#}", e) });
+            return (err, true);
+        }
+    }
     let result = router.call_tool(name, &args);
     // Parse the first content block as JSON
     let text = match result.content.first() {
@@ -197,7 +205,7 @@ function main(): void {
 }
 "#,
     )];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "src/app.ts");
 
@@ -234,7 +242,7 @@ function main(): void {
 fn p0_mcp_trace_point_missing_params_returns_error() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[("app.ts", "export const x = 1;\n")];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
 
     let args = json!({});
     let (content_json, is_error) = call_tool(&mut router, "trace_point", args);
@@ -265,7 +273,7 @@ fn p0_mcp_trace_point_with_file_path_resolves() {
 }
 "#,
     )];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
 
     let args = json!({
         "file_path": "src/calc.ts",
@@ -299,7 +307,7 @@ fn p0_mcp_trace_variable_returns_dataflow_result() {
 }
 "#,
     )];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "calc.ts");
 
@@ -330,7 +338,7 @@ fn p0_mcp_trace_variable_returns_dataflow_result() {
 fn p0_mcp_trace_variable_missing_params_returns_error() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[("app.ts", "export const x = 1;\n")];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
 
     let args = json!({});
     let (content_json, is_error) = call_tool(&mut router, "trace_variable", args);
@@ -365,7 +373,7 @@ function outer(z: number): void {
 }
 "#,
     )];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "chain.ts");
 
@@ -402,7 +410,7 @@ function outer(z: number): void {
 fn p0_mcp_trace_caller_path_invalid_symbol_returns_error() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[("app.ts", "export const x = 1;\n")];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
 
     let args = json!({ "symbol": "not-a-valid-hex-id", "max_depth": 10 });
     let (content_json, is_error) = call_tool(&mut router, "trace_caller_path", args);
@@ -421,7 +429,7 @@ fn p0_mcp_trace_caller_path_invalid_symbol_returns_error() {
 fn p0_mcp_trace_caller_path_root_function_returns_partial_not_error() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[("root.ts", "function standalone(): number { return 42; }\n")];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "root.ts");
 
@@ -464,7 +472,7 @@ fn p0_mcp_trace_caller_path_root_function_returns_partial_not_error() {
 fn p0_mcp_unknown_tool_returns_error() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[("app.ts", "export const x = 1;\n")];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
 
     let (_content_json, is_error) = call_tool(&mut router, "nonexistent_tool", json!({}));
     assert!(is_error, "unknown tool must set isError=true");
@@ -484,7 +492,7 @@ function main(): void { const r = helper(21); }
 main();
 "#,
     )];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "code.ts");
 
@@ -536,7 +544,7 @@ main();
 fn p0_mcp_partial_result_not_is_error() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[("fn.ts", "declare function foo(): void;\n")];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "fn.ts");
 
@@ -562,7 +570,7 @@ fn p0_mcp_partial_result_not_is_error() {
 fn p2_mcp_output_truncation_safety() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[("app.ts", "export const VERSION = '1.0.0';\n")];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "app.ts");
 
@@ -611,7 +619,7 @@ fn p1_mcp_java_trace_variable_is_partial() {
 }
 "#,
     )];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "App.java");
 
@@ -671,7 +679,7 @@ func main() {
 }
 "#,
     )];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "main.go");
 
@@ -725,14 +733,14 @@ function caller(): void {
 }
 "#,
     )];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "app.ts");
     let target_id = find_symbol(&store, &file_id, "target").to_hex();
 
     // Call by hex
     let (json_hex, is_err_hex) = call_tool(
-        &router,
+        &mut router,
         "trace_caller_path",
         json!({
             "symbol": target_id,
@@ -742,7 +750,7 @@ function caller(): void {
 
     // Call by name
     let (json_name, is_err_name) = call_tool(
-        &router,
+        &mut router,
         "trace_caller_path",
         json!({
             "symbol_name": "target",
@@ -778,10 +786,10 @@ function caller(): void {
 fn p5_mcp_caller_path_by_name_nonexistent() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[("app.ts", "export const x = 1;\n")];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
 
     let (json, is_error) = call_tool(
-        &router,
+        &mut router,
         "trace_caller_path",
         json!({
             "symbol_name": "ghost_function",
@@ -825,13 +833,13 @@ function outer(v: number): number {
 "#,
         ),
     ];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
     let store = router.store();
     let file_id = find_file_id(&store, _tmp.path(), "lib.ts");
     let target_id = find_symbol(&store, &file_id, "inner");
 
     let (json, is_error) = call_tool(
-        &router,
+        &mut router,
         "trace_caller_path",
         json!({
             "symbol": target_id.to_hex(),
@@ -870,12 +878,12 @@ def transform(x):
     return x.upper()
 "#,
     )];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
     let store = router.store();
     let _file_id = find_file_id(&store, _tmp.path(), "app.py");
 
     let (json, is_error) = call_tool(
-        &router,
+        &mut router,
         "trace_variable",
         json!({
             "file_path": "app.py",
@@ -910,13 +918,13 @@ function e(): number { return 42; }
 function c(): number { return d(); }
 "#,
     )];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
     let store = router.store();
     let file_id = find_file_id(&store, _tmp.path(), "deep.ts");
     let target_id = find_symbol(&store, &file_id, "e");
 
     let (json, is_error) = call_tool(
-        &router,
+        &mut router,
         "trace_caller_path",
         json!({
             "symbol": target_id.to_hex(),
@@ -951,10 +959,10 @@ function c(): number { return d(); }
 fn p12_mcp_trace_point_out_of_bounds() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[("small.ts", "const x = 1;\n")];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
 
     let (json, is_error) = call_tool(
-        &router,
+        &mut router,
         "trace_point",
         json!({
             "file_path": "small.ts",
@@ -1002,11 +1010,11 @@ fn p12a_mcp_graph_error_returns_structured_response() {
 
     // Graph is built once at startup; engine holds the valid snapshot.
     // Per-request rebuild was removed — graph queries use the static snapshot.
-    let router = ToolRouter::new(store, search, context, tmp.path().to_path_buf());
+    let mut router = ToolRouter::new(store, search, context, tmp.path().to_path_buf());
 
     // atlas_callgraph with a valid pre-built graph should succeed
     let (json, is_error) = call_tool(
-        &router,
+        &mut router,
         "callgraph",
         json!({
             "symbol": "f",
@@ -1049,11 +1057,11 @@ fn p7a_mcp_trace_variable_truncation_diagnostic() {
 }
 "#,
     )];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
 
     // Trace from `c` on the console.log line — BFS will hit max_depth=1 quickly
     let (json, is_error) = call_tool(
-        &router,
+        &mut router,
         "trace_variable",
         json!({
             "file_path": "chain.ts",
@@ -1100,13 +1108,13 @@ function c(): number { return d(); }
 function d(): number { return 42; }
 "#,
     )];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
     let store = router.store();
     let file_id = find_file_id(&store, _tmp.path(), "deep.ts");
     let target_id = find_symbol(&store, &file_id, "d");
 
     let (json, is_error) = call_tool(
-        &router,
+        &mut router,
         "trace_caller_path",
         json!({
             "symbol": target_id.to_hex(),
@@ -1150,7 +1158,7 @@ fn mcp_usages_returns_references() {
 greet("World");
 "#,
     )];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "app.ts");
     let greet_id = find_symbol(&store, &file_id, "greet");
@@ -1170,12 +1178,12 @@ fn mcp_dependencies_returns_imports() {
             "import { VERSION } from './lib';\nconsole.log(VERSION);",
         ),
     ];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "app.ts");
 
     let (json, is_error) = call_tool(
-        &router,
+        &mut router,
         "dependencies",
         json!({ "file_id": file_id.to_hex() }),
     );
@@ -1192,7 +1200,7 @@ fn mcp_dependencies_returns_imports() {
 fn mcp_usages_empty_for_unreferenced() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[("app.ts", "function unused(): void {}\n// never called\n")];
-    let (_tmp, router) = build_router(files);
+    let (_tmp, mut router) = build_router(files);
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "app.ts");
     let sym_id = find_symbol(&store, &file_id, "unused");
@@ -1207,4 +1215,260 @@ fn mcp_usages_empty_for_unreferenced() {
         .and_then(|v| v.as_u64())
         .unwrap_or(999);
     assert_eq!(total, 0, "unused function should have 0 usages");
+}
+
+// ────────────────────────────────────────────────────────────────
+// open_project tests
+// ────────────────────────────────────────────────────────────────
+
+#[test]
+fn open_project_in_tools_list() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[("app.ts", "export const x = 1;\n")];
+    let (_tmp, router) = build_router(files);
+
+    let list = router.list_tools();
+    let tool_names: Vec<&str> = list.tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(
+        tool_names.contains(&"open_project"),
+        "tools/list must include open_project"
+    );
+
+    // Verify open_project has required project_path schema
+    let tool = list
+        .tools
+        .iter()
+        .find(|t| t.name == "open_project")
+        .expect("open_project tool");
+    let required = tool.input_schema.required.as_ref()
+        .expect("open_project must have required params");
+    assert!(
+        required.iter().any(|r| r == "project_path"),
+        "open_project must require project_path"
+    );
+}
+
+#[test]
+fn open_project_missing_project_path_returns_error() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[("app.ts", "export const x = 1;\n")];
+    let (_tmp, mut router) = build_router(files);
+
+    let (json, is_error) = call_tool(
+        &mut router,
+        "open_project",
+        json!({}),
+    );
+    assert!(is_error, "open_project without project_path must return is_error=true");
+
+    let err_msg = json
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(err_msg.contains("project_path"), "error should mention missing project_path");
+}
+
+#[test]
+fn open_project_nonexistent_path_returns_error() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[("app.ts", "export const x = 1;\n")];
+    let (_tmp, mut router) = build_router(files);
+
+    let (json, is_error) = call_tool(
+        &mut router,
+        "open_project",
+        json!({ "project_path": "/nonexistent/path/12345" }),
+    );
+    assert!(is_error, "open_project with nonexistent path must return is_error=true");
+    assert!(!json["ok"].as_bool().unwrap_or(true), "ok must be false");
+}
+
+#[test]
+fn open_project_memory_no_index_switches_project() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // Create a fresh project with source files
+    let tmp = TempDir::new().expect("temp dir");
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("lib.ts"), "export function greet() { return 'hello'; }\n").unwrap();
+
+    // Start router with initial project (dummy)
+    let files = &[("dummy.ts", "export const x = 1;\n")];
+    let (_tmp_initial, mut router) = build_router(files);
+
+    // Open the fresh project without indexing
+    let (json, is_error) = call_tool(
+        &mut router,
+        "open_project",
+        json!({
+            "project_path": tmp.path().to_string_lossy(),
+            "storage": "memory",
+            "index": false,
+        }),
+    );
+    assert!(!is_error, "open_project (memory, index=false) should succeed: {:?}", json);
+    assert!(json["ok"].as_bool().unwrap_or(false), "ok must be true");
+
+    // Status should reflect the new project
+    let (status_json, status_error) = call_tool(&mut router, "status", json!({}));
+    assert!(!status_error, "status should succeed");
+    assert_eq!(
+        status_json["project"]["storage"].as_str().unwrap_or(""),
+        "memory",
+        "storage should be memory"
+    );
+    let active = status_json["project"]["active_project"].as_str().unwrap_or("");
+    assert!(
+        active.contains(&tmp.path().display().to_string()),
+        "active_project should point to new project"
+    );
+}
+
+#[test]
+fn open_project_memory_with_index_enables_search() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // Create a fresh project with source files
+    let tmp = TempDir::new().expect("temp dir");
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("lib.ts"),
+        "export function greet(name: string): string {\n  return `Hello, ${name}`;\n}\n",
+    ).unwrap();
+
+    // Start router with initial dummy project
+    let files = &[("dummy.ts", "export const x = 1;\n")];
+    let (_tmp_initial, mut router) = build_router(files);
+
+    // Open and index the fresh project
+    let (json, is_error) = call_tool(
+        &mut router,
+        "open_project",
+        json!({
+            "project_path": tmp.path().to_string_lossy(),
+            "storage": "memory",
+            "index": true,
+            "analysis": "structural",
+        }),
+    );
+    assert!(!is_error, "open_project (memory, index=true) should succeed: {:?}", json);
+    assert!(json["ok"].as_bool().unwrap_or(false), "ok must be true");
+
+    // Index result should show discovered files
+    let index = &json["index"];
+    assert!(index["files_discovered"].as_u64().unwrap_or(0) >= 1,
+        "should discover at least 1 file, got: {:?}", index);
+
+    // Status should show indexed files
+    let (status_json, status_error) = call_tool(&mut router, "status", json!({}));
+    assert!(!status_error, "status should succeed");
+    assert!(status_json["summary"]["files"].as_i64().unwrap_or(0) >= 1,
+        "status should show indexed files");
+
+    // Search should find the greet function
+    let (search_json, search_error) = call_tool(
+        &mut router,
+        "search",
+        json!({ "query": "greet" }),
+    );
+    assert!(!search_error, "search should succeed");
+    let results = search_json["results"].as_array()
+        .expect("search should have results array");
+    assert!(!results.is_empty(), "search for 'greet' should find results");
+
+    // trace_variable should work with lazy dataflow
+    // First get the file_id from files tool
+    let (files_json, _) = call_tool(&mut router, "files", json!({}));
+    let file_list = files_json["files"].as_array().expect("files should be array");
+    let _greet_file = file_list.iter()
+        .find(|f| f["path"].as_str().map_or(false, |p| p.contains("lib.ts")))
+        .expect("should find lib.ts");
+
+    // trace_point should resolve the greet function
+    let (trace_json, trace_error) = call_tool(
+        &mut router,
+        "trace_point",
+        json!({
+            "file_path": "src/lib.ts",
+            "line": 1,
+            "column": 17,
+        }),
+    );
+    assert!(!trace_error, "trace_point should succeed: {:?}", trace_json);
+}
+
+#[test]
+fn open_project_persistent_creates_db_and_survives_reopen() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let tmp = TempDir::new().expect("temp dir");
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("util.ts"),
+        "export function add(a: number, b: number): number { return a + b; }\n",
+    ).unwrap();
+
+    // Start router with initial dummy project
+    let files = &[("dummy.ts", "export const x = 1;\n")];
+    let (_tmp_initial, mut router) = build_router(files);
+
+    // First: open + index with persistent storage
+    let (json1, is_error1) = call_tool(
+        &mut router,
+        "open_project",
+        json!({
+            "project_path": tmp.path().to_string_lossy(),
+            "storage": "persistent",
+            "index": true,
+        }),
+    );
+    assert!(!is_error1, "first open_project should succeed: {:?}", json1);
+    assert!(json1["ok"].as_bool().unwrap_or(false), "ok must be true");
+
+    // Verify .atlas/atlas.db exists
+    let db_path = tmp.path().join(".atlas/atlas.db");
+    assert!(db_path.exists(), ".atlas/atlas.db should exist after persistent open_project");
+
+    // Status should show persistent
+    let (status_json, _) = call_tool(&mut router, "status", json!({}));
+    assert_eq!(
+        status_json["project"]["storage"].as_str().unwrap_or(""),
+        "persistent",
+        "storage should be persistent"
+    );
+    assert!(status_json["summary"]["files"].as_i64().unwrap_or(0) >= 1,
+        "status should show indexed files");
+
+    // Search should find the add function
+    let (search_json, _) = call_tool(
+        &mut router,
+        "search",
+        json!({ "query": "add" }),
+    );
+    let results = search_json["results"].as_array().unwrap();
+    assert!(!results.is_empty(), "search for 'add' should find results");
+
+    // Re-open the same project (no index) — should work from existing DB
+    let (json2, is_error2) = call_tool(
+        &mut router,
+        "open_project",
+        json!({
+            "project_path": tmp.path().to_string_lossy(),
+            "storage": "persistent",
+            "index": false,
+        }),
+    );
+    assert!(!is_error2, "re-open should succeed: {:?}", json2);
+
+    // Search should still find add after reopen without re-index
+    let (search_json2, _) = call_tool(
+        &mut router,
+        "search",
+        json!({ "query": "add" }),
+    );
+    let results2 = search_json2["results"].as_array().unwrap();
+    assert!(!results2.is_empty(), "search after reopen should still find 'add'");
 }

@@ -117,7 +117,7 @@ impl ToolRouter {
     /// Store-backed tools intentionally do not force graph construction. This
     /// keeps MCP `initialize`, `tools/list`, status, files, trace, usages,
     /// dependencies, dependents and capabilities responsive on large projects.
-    pub(crate) fn tool_requires_graph(name: &str) -> bool {
+    pub fn tool_requires_graph(name: &str) -> bool {
         matches!(
             name,
             "search"
@@ -136,7 +136,7 @@ impl ToolRouter {
     /// Build the graph engine on first use.
     /// This is called only for graph-backed tool calls after the MCP handshake
     /// completes, so the client doesn't timeout waiting for a startup response.
-    pub(crate) fn ensure_graph_initialized(&mut self) -> anyhow::Result<()> {
+    pub fn ensure_graph_initialized(&mut self) -> anyhow::Result<()> {
         if self.graph_initialized {
             return Ok(());
         }
