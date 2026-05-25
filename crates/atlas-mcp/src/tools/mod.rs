@@ -29,6 +29,7 @@ pub(crate) mod context;
 pub(crate) mod dependencies;
 pub(crate) mod dependents;
 pub(crate) mod graph;
+pub(crate) mod index;
 pub(crate) mod search;
 pub(crate) mod status;
 pub(crate) mod trace;
@@ -208,6 +209,7 @@ impl ToolRouter {
         // Each handler returns (result_text, is_error).
         // is_error=true only for genuine failures (lookup errors, I/O errors, unknown tool).
         let (result, is_error) = match name {
+            "atlas_index" => self.handle_index(arguments),
             "atlas_status" => self.handle_status(),
             "atlas_files" => self.handle_files(),
             "atlas_search" => self.handle_search(arguments),
@@ -279,6 +281,17 @@ impl ToolRouter {
 
 pub fn make_all_tools() -> Vec<Tool> {
     vec![
+        Tool {
+            name: "atlas_index".into(),
+            description: "Index/re-index the project. Triggers extraction→resolution→graph pipeline. Use this before querying when files have changed or on first connection to a project. Parameter: analysis (\"structural\" default, \"full\" for complete dataflow/CFG).".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "analysis": { "type": "string", "description": "Analysis depth: \"structural\" (fast, symbols+callgraph only) or \"full\" (complete dataflow+CFG)" },
+                })),
+                required: None,
+            },
+        },
         Tool {
             name: "atlas_status".into(),
             description: "Show project overview: file/symbol/edge counts, DB stats, per-language capability profiles.".into(),

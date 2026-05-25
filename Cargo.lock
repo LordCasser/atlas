@@ -166,6 +166,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "atlas-engine",
+ "blake3",
  "rmcp",
  "serde",
  "serde_json",
