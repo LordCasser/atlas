@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── Linux (native) ───────────────────────────────────
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: false
+
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            cross: false
+
+          # ── Linux (cross-compile) ─────────────────────────────
+          - target: riscv64gc-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
+
+          # ── macOS ─────────────────────────────────────────────
+          - target: x86_64-apple-darwin
+            os: macos-13
+            cross: false
+
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            cross: false
+
+          # ── Windows (native) ──────────────────────────────────
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            cross: false
+
+          # ── Windows ARM (cross from Linux via cross-rs) ───────
+          - target: aarch64-pc-windows-msvc
+            os: ubuntu-latest
+            cross: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        if: ${{ !matrix.cross }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Install Rust toolchain (cross-compile)
+        if: matrix.cross
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build (native)
+        if: ${{ !matrix.cross }}
+        run: |
+          cargo build --release \
+            --target ${{ matrix.target }} \
+            -p atlas-cli \
+            --features "all-languages,mcp"
+
+      - name: Build (cross-compile)
+        if: matrix.cross
+        run: |
+          cross build --release \
+            --target ${{ matrix.target }} \
+            -p atlas-cli \
+            --features "all-languages,mcp"
+
+      - name: Package (Linux / macOS / cross-compiled Windows)
+        if: runner.os != 'Windows'
+        run: |
+          EXE=${{ contains(matrix.target, 'windows') && 'atlas.exe' || 'atlas' }}
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../atlas-${{ matrix.target }}.tar.gz "$EXE"
+
+      - name: Package (Windows native)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd target\${{ matrix.target }}\release
+          Compress-Archive -Path atlas.exe -DestinationPath ..\..\..\atlas-${{ matrix.target }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-${{ matrix.target }}
+          path: atlas-${{ matrix.target }}.*
+
+      - name: Upload to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: atlas-${{ matrix.target }}.*
+          fail_on_unmatched_files: false
