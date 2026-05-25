@@ -40,6 +40,7 @@ pub(crate) mod search;
 pub(crate) mod status;
 pub(crate) mod trace;
 pub(crate) mod usages;
+pub(crate) mod wait_for;
 
 // -------------------------------------------------------------------
 // ToolRouter
@@ -287,6 +288,7 @@ impl ToolRouter {
             "dependencies" => self.handle_dependencies(arguments),
             "dependents" => self.handle_dependents(arguments),
             "task_status" => self.handle_task_status(arguments),
+            "wait_for_task" => self.handle_wait_for_task(arguments),
             _ => (format!("Unknown tool: {}", name), true),
         };
 
@@ -639,6 +641,19 @@ pub fn make_all_tools() -> Vec<Tool> {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "task_id": { "type": "string", "description": "Task ID returned by index/search when background=true" },
+                })),
+                required: Some(vec!["task_id".into()]),
+            },
+        },
+        Tool {
+            name: "wait_for_task".into(),
+            description: "Block until a background task completes. Use after index/search with background=true to get the final result without polling. Parameters: task_id (required), timeout_secs (default 30, max 300), poll_interval_secs (default 2, 1-10).".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "task_id": { "type": "string", "description": "Task ID from index/search background=true response" },
+                    "timeout_secs": { "type": "integer", "description": "Max seconds to wait (default 30, max 300)" },
+                    "poll_interval_secs": { "type": "integer", "description": "Seconds between polls (default 2, 1-10)" },
                 })),
                 required: Some(vec!["task_id".into()]),
             },
