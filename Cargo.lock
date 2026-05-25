@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "analysis"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "db",
@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "atlas-engine",
@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-engine"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "analysis",
  "anyhow",
@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-mcp"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "atlas-engine",
@@ -300,7 +300,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "context"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "db",
@@ -350,7 +350,7 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
 name = "db"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "rusqlite",
@@ -389,7 +389,7 @@ dependencies = [
 
 [[package]]
 name = "extraction"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "db",
@@ -434,7 +434,7 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "filesync"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "graph"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "db",
@@ -765,7 +765,7 @@ dependencies = [
 
 [[package]]
 name = "lazy"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1024,7 +1024,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "resolution"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1145,7 +1145,7 @@ dependencies = [
 
 [[package]]
 name = "search"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "db",
@@ -1590,7 +1590,7 @@ dependencies = [
 
 [[package]]
 name = "types"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1995,7 +1995,7 @@ dependencies = [
 
 [[package]]
 name = "workspace"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "tempfile",

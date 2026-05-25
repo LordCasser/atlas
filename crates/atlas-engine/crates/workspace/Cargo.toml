@@ -1,6 +1,6 @@
 [package]
 name = "workspace"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 description = "Atlas workspace abstraction — project root, well-known paths, and path resolution"
 license = "MIT"
