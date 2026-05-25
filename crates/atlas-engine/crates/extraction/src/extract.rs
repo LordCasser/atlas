@@ -218,6 +218,21 @@ pub fn extract_file_with_mode(
 
     // 7b. Build dataflow graph (P7: skip in Structural mode)
     let mut budget_exceeded = false;
+
+    // In LazyDataflow mode: compute capture byte ranges from window
+    let capture_ranges: Option<Vec<(u32, u32)>> =
+        if let ExtractionMode::LazyDataflow { ref window } = mode {
+            Some(
+                window.units.iter()
+                    .filter(|u| u.file_id == file_id)
+                    .map(|u| (u.range.start_byte, u.range.end_byte))
+                    .collect(),
+            )
+        } else {
+            None
+        };
+    let capture_ranges_ref: Option<&[(u32, u32)]> = capture_ranges.as_deref();
+
     let (mut data_nodes, dataflow_edges) = if mode.produces_dataflow()
         && frontend.dataflow.capability().is_supported()
     {
@@ -227,6 +242,7 @@ pub fn extract_file_with_mode(
             &bindings,
             &scopes,
             &symbols,
+            capture_ranges_ref,
         )
         .unwrap_or_else(|e| {
             diagnostics.push(ExtractDiagnostic {
@@ -1476,6 +1492,7 @@ int main() {
         let window = LazyWindow {
             seed_unit: AnalysisUnit::from_function(file_id, func_sym.id, func_sym.range),
             units: vec![AnalysisUnit::from_function(file_id, func_sym.id, func_sym.range)],
+            variable_focus: None,
             truncated: false,
         };
 
@@ -1491,5 +1508,54 @@ int main() {
             facts.data_nodes.len() <= crate::mode::LAZY_MAX_NODES_PER_UNIT,
             "7e: data_nodes should be capped at LAZY_MAX_NODES_PER_UNIT"
         );
+    }
+
+    /// Gap-2: TopLevel unit — dataflow can be built for file-scope code
+    /// (variables/functions not inside any enclosing function).
+    #[test]
+    #[cfg(feature = "typescript")]
+    fn toplevel_unit_produces_dataflow() {
+        use types::lazy::{AnalysisUnit, LazyWindow};
+
+        let frontend = ts_frontend();
+        let source = "const GLOBAL = 42;\nlet count = GLOBAL + 1;\nfunction f() { return count; }\n";
+        let file_id = FileId::generate("test_toplevel.ts");
+        let path = std::path::Path::new("test_toplevel.ts");
+
+        // First extract structurally to get symbol info
+        let facts_full = extract_file_with_mode(
+            &frontend, file_id, path, source, "abc",
+            ExtractionMode::Full,
+        ).unwrap();
+
+        // Build a window covering the top-level scope
+        // Top-level range is the whole file (approximate via largest scope)
+        let file_range = facts_full.scopes.iter()
+            .find(|s| s.parent_id.is_none())
+            .map(|s| s.range)
+            .unwrap_or(TextRange {
+                start_byte: 0, end_byte: source.len() as u32,
+                start_line: 0, start_column: 0,
+                end_line: 10, end_column: 0,
+            });
+
+        let window = LazyWindow {
+            seed_unit: AnalysisUnit::from_top_level(file_id, file_range),
+            units: vec![AnalysisUnit::from_top_level(file_id, file_range)],
+            variable_focus: None,
+            truncated: false,
+        };
+
+        let facts_lazy = extract_file_with_mode(
+            &frontend, file_id, path, source, "abc",
+            ExtractionMode::LazyDataflow { window },
+        ).unwrap();
+
+        // Top-level dataflow should produce data nodes (e.g., for GLOBAL, count)
+        assert!(!facts_lazy.data_nodes.is_empty(),
+            "top-level scope should produce dataflow nodes");
+        // Structural fields should be empty in LazyDataflow mode
+        assert!(facts_lazy.symbols.is_empty(),
+            "LazyDataflow mode should clear structural fields");
     }
 }

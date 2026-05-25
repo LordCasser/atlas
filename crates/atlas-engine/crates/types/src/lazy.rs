@@ -78,6 +78,8 @@ pub struct LazyWindow {
     pub seed_unit: AnalysisUnit,
     /// All units to build, ordered depth 0 → 1 → 2.
     pub units: Vec<AnalysisUnit>,
+    /// Variable-level focus for more precise range filtering (trace_variable only).
+    pub variable_focus: Option<VariableFocus>,
     /// Whether this window was truncated by a hard budget cap.
     pub truncated: bool,
 }

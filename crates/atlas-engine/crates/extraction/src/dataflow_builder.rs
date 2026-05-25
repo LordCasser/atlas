@@ -80,12 +80,19 @@ impl DataFlowBuilder {
     /// capture.  Intra-function dataflow edges are created by matching
     /// assignment targets to values, return expressions to return nodes,
     /// and call argument expressions to call argument nodes.
+    /// Run the dataflow query, normalize captures, build edges.
+    ///
+    /// When `capture_byte_ranges` is provided, only captures whose byte span
+    /// falls inside at least one of the given `(start, end)` ranges are
+    /// kept.  This is used by lazy dataflow loading to avoid building
+    /// dataflow for the entire file when only a window of functions is needed.
     pub(crate) fn extract(
         dataflow_spec: &dyn DataflowSpec,
         ctx: &ExtractionCtx<'_>,
         bindings: &[BindingDef],
         scopes: &[ScopeDef],
         symbols: &[SymbolDef],
+        capture_byte_ranges: Option<&[(u32, u32)]>,
     ) -> anyhow::Result<DataFlowResult> {
         let query_src = dataflow_spec.dataflow_builder_query();
         if query_src.trim().is_empty() {
@@ -109,6 +116,23 @@ impl DataFlowBuilder {
             };
             anyhow::Error::new(filled)
         })?;
+
+        // Lazy dataflow: filter captures to requested byte ranges.
+        let captures: Vec<_> = if let Some(ranges) = capture_byte_ranges {
+            if ranges.is_empty() {
+                return Ok(DataFlowResult::default());
+            }
+            captures
+                .into_iter()
+                .filter(|(_, node)| {
+                    let s = node.start_byte() as u32;
+                    let e = node.end_byte() as u32;
+                    ranges.iter().any(|&(rs, re)| s >= rs && e <= re)
+                })
+                .collect()
+        } else {
+            captures
+        };
 
         let mut nodes: Vec<DataNode> = Vec::new();
         let mut edges: Vec<DataFlowEdge> = Vec::new();
@@ -1142,7 +1166,7 @@ mod tests {
             language: types::Language::TypeScript,
         };
 
-        let result = DataFlowBuilder::extract(dataflow_spec, &ctx, &bindings, &scopes, &symbols).unwrap();
+        let result = DataFlowBuilder::extract(dataflow_spec, &ctx, &bindings, &scopes, &symbols, None).unwrap();
 
         // We should have some data nodes (at minimum, the variable declarations and returns)
         assert!(!result.nodes.is_empty(), "Should have data nodes");

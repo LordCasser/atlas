@@ -76,8 +76,8 @@ impl LazyDataflowPlanner {
             AnalysisUnit::from_top_level(*file_id, range)
         };
 
-        // 5. Variable focus (used by caller, not stored in window currently)
-        let _variable_focus = reference.as_ref().map(|r| VariableFocus {
+        // 5. Variable focus (stored in window for downstream use)
+        let variable_focus = reference.as_ref().map(|r| VariableFocus {
             name: r.name.clone(),
             reference_range: r.range,
             reference_id: Some(r.id),
@@ -139,6 +139,7 @@ impl LazyDataflowPlanner {
         Ok(LazyWindow {
             seed_unit,
             units,
+            variable_focus,
             truncated,
         })
     }
@@ -197,6 +198,7 @@ impl LazyDataflowPlanner {
         Ok(LazyWindow {
             seed_unit,
             units,
+            variable_focus: None,
             truncated,
         })
     }
