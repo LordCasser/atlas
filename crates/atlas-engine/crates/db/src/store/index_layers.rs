@@ -56,4 +56,19 @@ impl Store {
         )?;
         Ok(())
     }
+
+    /// Count files by layer and status.
+    ///
+    /// Returns a Vec of `(layer, status, count)` tuples sorted by layer.
+    pub fn count_file_index_layers(&self) -> anyhow::Result<Vec<(String, String, i64)>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT layer, status, COUNT(*) FROM file_index_layers
+             GROUP BY layer, status ORDER BY layer, status",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
 }

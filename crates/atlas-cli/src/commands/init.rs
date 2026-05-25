@@ -3,12 +3,16 @@
 use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
 use atlas_engine::Language;
+use atlas_engine::discovery::{DiscoveryConfig, discover_files};
+
+/// Threshold for suggesting manifest mode on first index.
+const LARGE_PROJECT_THRESHOLD: usize = 5_000;
 
 pub fn run(project: &str) -> anyhow::Result<()> {
     let ctx = CommandContext::open(project, DbMode::InitOrCreate)?;
     let ws = &ctx.workspace;
 
-    // Validate it looks like a code project (has at least one source file)
+    // Validate it looks like a code project
     let has_code = has_source_files(ws.root());
     if !has_code {
         eprintln!(
@@ -20,6 +24,19 @@ pub fn run(project: &str) -> anyhow::Result<()> {
 
     println!("Atlas initialized successfully!");
     println!("  Database: {}/atlas.db", ws.atlas_dir().display());
+
+    // Quick file count (git-aware, no parsing)
+    let config = DiscoveryConfig::default();
+    if let Ok(files) = discover_files(ws.root(), &config) {
+        println!("  Files:    {} source files detected", files.len());
+        if files.len() > LARGE_PROJECT_THRESHOLD {
+            println!();
+            println!("  ⚡ Large project detected! For a fast first pass:");
+            println!("    atlas index --analysis manifest");
+            println!("  This extracts top-level symbols in seconds.");
+            println!("  Full analysis is triggered on-demand when you query.");
+        }
+    }
 
     // Show loaded language support
     let store_stats = ctx

@@ -225,6 +225,15 @@ pub fn run(project: &str, includes: &[String], scopes: &[String], exclude: &[Str
     let extract_start = Instant::now();
     let pool = ParseWorkerPool::new(WorkerConfig::default());
     let dirty_total = dirty.len();
+
+    // Large project guidance: suggest manifest mode for first-time indexing
+    if dirty_total > 5_000 && !mode.produces_manifest() && reused == 0 {
+        println!();
+        println!("  ⚠ {} files to index. For a faster first pass, try:", dirty_total);
+        println!("    atlas index --analysis manifest");
+        println!("  This extracts only top-level symbols (seconds instead of minutes).");
+        println!("  Full structural data will be built on-demand when you query.");
+    }
     let extracted_count = AtomicUsize::new(0);
     let per_lang_mutex = Mutex::new(PerLanguageStats::new());
     let fc = &frontend_cache; // P2: shared reference to cached frontends

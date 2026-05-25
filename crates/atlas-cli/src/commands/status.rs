@@ -55,6 +55,9 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     // Show indexed scope when set
     print_indexed_scope(&ctx);
 
+    // Show file index layers summary
+    print_layer_summary(&ctx);
+
     // List indexed files if any
     if stats.total_files > 0 && stats.total_files <= 20 {
         let files = ctx.store.list_files().context("Failed to list files")?;
@@ -161,6 +164,18 @@ fn print_indexed_scope(ctx: &crate::runtime::CommandContext) {
                     println!("    - {}", p);
                 }
             }
+        }
+    }
+}
+
+/// Show file index layer counts (manifest/structural/dataflow).
+fn print_layer_summary(ctx: &crate::runtime::CommandContext) {
+    if let Ok(layers) = ctx.store.count_file_index_layers() {
+        if layers.is_empty() { return; }
+        println!();
+        println!("  Index layers:");
+        for (layer, status, count) in &layers {
+            println!("    {:<14} {}={}", layer, status, count);
         }
     }
 }

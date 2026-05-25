@@ -98,7 +98,7 @@ pub enum Commands {
         /// Exclude files matching these glob patterns (can be specified multiple times, e.g. "**/*.test.ts")
         #[arg(long)]
         exclude: Vec<String>,
-        /// Analysis depth: "structural" (fast, symbols+callgraph, default) or "full" (slower, complete dataflow/CFG — intended for offline analysis)
+        /// Analysis depth: "manifest" (fastest, top-level symbols only), "structural" (default, symbols+references+callgraph), or "full" (slower, complete dataflow/CFG)
         #[arg(long, default_value = "structural")]
         analysis: String,
     },
