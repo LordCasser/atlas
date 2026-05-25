@@ -1494,6 +1494,8 @@ int main() {
             units: vec![AnalysisUnit::from_function(file_id, func_sym.id, func_sym.range)],
             variable_focus: None,
             truncated: false,
+            units_built: 0,
+            units_cached: 0,
         };
 
         let facts = extract_file_with_mode(
@@ -1544,6 +1546,8 @@ int main() {
             units: vec![AnalysisUnit::from_top_level(file_id, file_range)],
             variable_focus: None,
             truncated: false,
+            units_built: 0,
+            units_cached: 0,
         };
 
         let facts_lazy = extract_file_with_mode(
