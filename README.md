@@ -37,7 +37,7 @@ source code ──parse/extract──▶ .atlas/atlas.db ──query──▶ CL
 - **Local-first**: writes all index data to `<project>/.atlas/atlas.db`; no cloud service required.
 - **Deterministic extraction**: tree-sitter AST queries and stable blake3-based IDs instead of model guesses.
 - **Incremental sync**: content-hash based dirty-file detection with Git-aware file discovery.
-- **Agent-native MCP**: stdio MCP server exposing 20 bounded tools for search, graph, context, dependencies, trace, and project management.
+- **Agent-native MCP**: stdio MCP server exposing 23 bounded tools for search, graph, context, dependencies, trace, background tasks, and project management.
 - **Graph + trace queries**: callers, callees, shortest path, impact, source-position lookup, variable origin tracing, and caller-path tracing.
 - **Explicit capability boundaries**: language capability metadata and trace diagnostics report partial results instead of silently overclaiming precision.
 
@@ -229,8 +229,9 @@ enabled = true
 | Context | `context` |
 | Trace | `trace_point`, `trace_variable`, `trace_caller_path` |
 | File dependencies | `dependencies`, `dependents` |
+| Background tasks | `task_status`, `wait_for_task` |
 
-> `open_project` supports switching the active project at runtime. It defaults to `storage: "memory"` for zero-footprint temporary sessions. See [`docs/03-current-architecture.md`](docs/03-current-architecture.md) for details.
+> `open_project` supports switching the active project at runtime. It defaults to `storage: "memory"`, `index: false`, and `scan_files: false` for zero-footprint, fast project switching. Use `background: true` for large trees or `index: true`; then call `task_status` or `wait_for_task` with the returned `task_id`.
 
 Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/07-trace-contract.md`](docs/07-trace-contract.md): `ok`, `kind`, `capability`, `partial_result`, `diagnostics`, and `result`.
 
@@ -386,7 +387,7 @@ Conventions:
 - Java classpath, Maven, and Gradle resolution are not fully modeled.
 - Python dynamic runtime constructs and generated symbols are outside the static extraction model.
 - TypeScript barrel/re-export chains use best-effort name fallback rather than a full export graph.
-- Dataflow and trace precision varies by language; inspect `atlas doctor` or `atlas_language_capabilities` before relying on a trace result.
+- Dataflow and trace precision varies by language; inspect `atlas doctor` or `language_capabilities` before relying on a trace result.
 - MCP serves a local SQLite index; run `atlas sync` or `atlas index` after source changes.
 
 ## How tree-sitter powers dataflow extraction

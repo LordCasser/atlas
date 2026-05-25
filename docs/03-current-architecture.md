@@ -160,7 +160,7 @@ MCP：
 
 - 基于官方 Rust SDK `rmcp` 的 stdio transport。
 - 工具按能力分类组织在 `crates/atlas-mcp/src/tools/` 目录。
-- 当前 MCP 注册 19 个 Agent-facing 工具：`atlas_status`、`atlas_files`、`atlas_search`、`atlas_symbol`、`atlas_neighbors`、`atlas_callers`、`atlas_callees`、`atlas_callgraph`、`atlas_path`、`atlas_explore`、`atlas_impact`、`atlas_context`、`atlas_trace_point`、`atlas_trace_variable`、`atlas_trace_caller_path`、`atlas_language_capabilities`、`usages`、`dependencies`、`dependents`。命名策略是 Atlas 专属工具使用 `atlas_` 前缀，通用语义工具保持短名。
+- 当前 MCP 注册 23 个 Agent-facing 短名工具：`open_project`、`index`、`status`、`files`、`search`、`symbol`、`neighbors`、`callers`、`callees`、`callgraph`、`path`、`explore`、`impact`、`context`、`trace_point`、`trace_variable`、`trace_caller_path`、`language_capabilities`、`usages`、`dependencies`、`dependents`、`task_status`、`wait_for_task`。当前公开契约使用无 `atlas_` 前缀的短名；`task_status`/`wait_for_task` 用于消费 `background=true` 返回的后台任务。
 
 CLI：
 

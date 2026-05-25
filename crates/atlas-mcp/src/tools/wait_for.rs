@@ -12,17 +12,19 @@ use super::get_str;
 use serde_json::json;
 
 impl ToolRouter {
-    pub(crate) fn handle_wait_for_task(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_wait_for_task(&mut self, args: &serde_json::Value) -> (String, bool) {
         let task_id = get_str(args, "task_id");
         if task_id.is_empty() {
             return ("Missing task_id parameter".to_string(), true);
         }
 
-        let timeout_secs = args.get("timeout_secs")
+        let timeout_secs = args
+            .get("timeout_secs")
             .and_then(|v| v.as_u64())
             .unwrap_or(30)
             .min(300) as u64; // cap at 5 minutes
-        let poll_interval_secs = args.get("poll_interval_secs")
+        let poll_interval_secs = args
+            .get("poll_interval_secs")
             .and_then(|v| v.as_u64())
             .unwrap_or(2)
             .clamp(1, 10) as u64;
@@ -47,6 +49,7 @@ impl ToolRouter {
                 let mut response = json!({
                     "task_id": info.task_id,
                     "tool_name": info.tool_name,
+                    "method": info.method,
                     "status": status_str,
                     "progress": info.progress,
                     "progress_message": info.progress_message,
@@ -58,13 +61,27 @@ impl ToolRouter {
                 if let Some(ref error) = info.error {
                     response["error"] = serde_json::Value::String(error.clone());
                 }
-                return (serde_json::to_string_pretty(&response).unwrap_or_else(|e| e.to_string()), false);
+                if status_str == "completed" && info.method == "open_project" {
+                    if let Some(project) = self.activate_pending_project_for_task(&info.task_id) {
+                        response["activation"] = serde_json::Value::String("activated".into());
+                        response["activated_project"] = serde_json::Value::String(project);
+                    } else {
+                        response["activation"] =
+                            serde_json::Value::String("already_activated".into());
+                    }
+                }
+                return (
+                    serde_json::to_string_pretty(&response).unwrap_or_else(|e| e.to_string()),
+                    false,
+                );
             }
 
             // Check timeout
             if timeout_secs == 0 || Instant::now() >= deadline {
                 return (serde_json::to_string_pretty(&json!({
                     "task_id": info.task_id,
+                    "tool_name": info.tool_name,
+                    "method": info.method,
                     "status": "running",
                     "progress": info.progress,
                     "progress_message": info.progress_message,
@@ -76,10 +93,15 @@ impl ToolRouter {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let sleep_for = std::cmp::min(poll_duration, remaining);
             if sleep_for.is_zero() {
-                return (serde_json::to_string_pretty(&json!({
-                    "task_id": info.task_id, "status": "running",
-                    "progress": info.progress, "note": "Timeout reached."
-                })).unwrap_or_else(|e| e.to_string()), false);
+                return (
+                    serde_json::to_string_pretty(&json!({
+                        "task_id": info.task_id, "status": "running",
+                        "tool_name": info.tool_name, "method": info.method,
+                        "progress": info.progress, "note": "Timeout reached."
+                    }))
+                    .unwrap_or_else(|e| e.to_string()),
+                    false,
+                );
             }
             std::thread::sleep(sleep_for);
         }

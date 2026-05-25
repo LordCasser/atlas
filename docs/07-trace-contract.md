@@ -16,7 +16,7 @@ User Query
     │
     ├─ CLI:  atlas trace point/variable/caller-path --json
     │
-    └─ MCP:  tools/call { "name": "atlas_trace_point", ... }
+    └─ MCP:  tools/call { "name": "trace_point", ... }
               │
               ▼
          TraceEngine
@@ -284,12 +284,12 @@ Gating uses the **FeatureMatrix** (not the coarse `CapabilityLevel`):
 
 ```json
 {
-  "name": "atlas_trace_point",
+  "name": "trace_point",
   "description": "Resolve a code position...",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "file_id": { "type": "string", "description": "File ID hex from atlas_files" },
+      "file_id": { "type": "string", "description": "File ID hex from files" },
       "file_path": { "type": "string", "description": "Relative file path" },
       "line": { "type": "integer", "minimum": 1 },
       "column": { "type": "integer", "minimum": 1 }
@@ -299,8 +299,8 @@ Gating uses the **FeatureMatrix** (not the coarse `CapabilityLevel`):
 }
 ```
 
-Same pattern for `atlas_trace_variable` (+ `max_depth`) and
-`atlas_trace_caller_path` (takes `symbol` hex ID or `symbol_name` instead of `file_id`/`file_path`/`line`/`column`). The current MCP schema permits either file identity form and validates missing arguments inside the handler so errors can use the same `TraceQueryResponse` envelope.
+Same pattern for `trace_variable` (+ `max_depth`) and
+`trace_caller_path` (takes `symbol` hex ID or `symbol_name` instead of `file_id`/`file_path`/`line`/`column`). The current MCP schema permits either file identity form and validates missing arguments inside the handler so errors can use the same `TraceQueryResponse` envelope.
 
 ### All three return `CallToolResult`:
 
@@ -353,7 +353,7 @@ atlas trace point --file src/app.ts --line 10 --column 15
 ```json
 // Request
 { "method": "tools/call", "params": {
-    "name": "atlas_trace_variable",
+    "name": "trace_variable",
     "arguments": { "file_path": "src/app.ts", "line": 4, "column": 18, "max_depth": 20 }
 }}
 

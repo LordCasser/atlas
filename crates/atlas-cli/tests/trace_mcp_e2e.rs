@@ -1246,6 +1246,163 @@ fn open_project_in_tools_list() {
         required.iter().any(|r| r == "project_path"),
         "open_project must require project_path"
     );
+    let props = tool
+        .input_schema
+        .properties
+        .as_ref()
+        .expect("open_project must have properties");
+    assert!(
+        props.get("include").is_some(),
+        "open_project schema must expose include"
+    );
+    assert!(
+        props.get("scan_files").is_some(),
+        "open_project schema must expose scan_files"
+    );
+    assert!(
+        props.get("background").is_some(),
+        "open_project schema must expose background"
+    );
+    let index_prop = props.get("index").expect("index property");
+    assert!(
+        index_prop
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .contains("default false"),
+        "open_project.index schema must document default false"
+    );
+}
+
+#[test]
+fn index_schema_supports_background_and_include() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[("app.ts", "export const x = 1;\n")];
+    let (_tmp, router) = build_router(files);
+
+    let list = router.list_tools();
+    let tool = list
+        .tools
+        .iter()
+        .find(|t| t.name == "index")
+        .expect("index tool");
+    let props = tool
+        .input_schema
+        .properties
+        .as_ref()
+        .expect("index must have properties");
+    assert!(
+        props.get("include").is_some(),
+        "index schema must expose include"
+    );
+    assert!(
+        props.get("background").is_some(),
+        "index schema must expose background"
+    );
+    let analysis = props.get("analysis").expect("analysis property");
+    assert!(
+        analysis.get("enum").is_some(),
+        "index analysis schema should constrain valid modes"
+    );
+}
+
+#[test]
+fn open_project_background_activates_on_wait_for_task() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[("app.ts", "export const x = 1;\n")];
+    let (_tmp, mut router) = build_router(files);
+
+    let target = TempDir::new().expect("target temp dir");
+    std::fs::write(target.path().join("other.ts"), "export const y = 2;\n")
+        .expect("write target file");
+    let expected = target
+        .path()
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+
+    let result = router.call_tool(
+        "open_project",
+        &json!({
+            "project_path": target.path().to_string_lossy(),
+            "storage": "memory",
+            "index": false,
+            "background": true
+        }),
+    );
+    assert_eq!(result.is_error, Some(false));
+    let text = match &result.content[0] {
+        atlas_mcp::protocol::ContentBlock::Text { text } => text,
+    };
+    let started: Value = serde_json::from_str(text).expect("background response json");
+    let task_id = started["task_id"].as_str().expect("task_id").to_string();
+
+    let wait = router.call_tool(
+        "wait_for_task",
+        &json!({
+            "task_id": task_id,
+            "timeout_secs": 5,
+            "poll_interval_secs": 1
+        }),
+    );
+    assert_eq!(wait.is_error, Some(false));
+    let wait_text = match &wait.content[0] {
+        atlas_mcp::protocol::ContentBlock::Text { text } => text,
+    };
+    let completed: Value = serde_json::from_str(wait_text).expect("wait response json");
+    assert_eq!(completed["status"], "completed");
+    assert_eq!(completed["activation"], "activated");
+    assert_eq!(completed["activated_project"], expected);
+
+    let status = router.call_tool("status", &json!({}));
+    let status_text = match &status.content[0] {
+        atlas_mcp::protocol::ContentBlock::Text { text } => text,
+    };
+    let status_json: Value = serde_json::from_str(status_text).expect("status json");
+    assert_eq!(status_json["project"]["active_project"], expected);
+    assert_eq!(status_json["project"]["storage"], "memory");
+}
+
+#[test]
+fn index_background_completes_via_wait_for_task() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[("app.ts", "export const x = 1;\n")];
+    let (_tmp, mut router) = build_router(files);
+
+    let started = router.call_tool(
+        "index",
+        &json!({
+            "analysis": "manifest",
+            "background": true
+        }),
+    );
+    assert_eq!(started.is_error, Some(false));
+    let started_text = match &started.content[0] {
+        atlas_mcp::protocol::ContentBlock::Text { text } => text,
+    };
+    let started_json: Value = serde_json::from_str(started_text).expect("index task json");
+    let task_id = started_json["task_id"].as_str().expect("task_id").to_string();
+
+    let wait = router.call_tool(
+        "wait_for_task",
+        &json!({
+            "task_id": task_id,
+            "timeout_secs": 5,
+            "poll_interval_secs": 1
+        }),
+    );
+    assert_eq!(wait.is_error, Some(false));
+    let wait_text = match &wait.content[0] {
+        atlas_mcp::protocol::ContentBlock::Text { text } => text,
+    };
+    let completed: Value = serde_json::from_str(wait_text).expect("index wait json");
+    assert_eq!(completed["status"], "completed");
+    assert_eq!(completed["result"]["ok"], true);
+    assert!(
+        completed["result"]["files_indexed"].as_u64().unwrap_or(0) >= 1,
+        "background index should report indexed files"
+    );
 }
 
 #[test]

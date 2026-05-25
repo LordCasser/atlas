@@ -172,25 +172,19 @@ impl ServerHandler for AtlasMcpService {
         let progress_token = request.progress_token();
 
         async move {
-            // ── For index tool with progress token, set up progress channel ─
-            let _progress_task = if tool_name == "index" && progress_token.is_some() {
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<
-                    tools::ProgressReport,
-                >();
+            // ── For long-running tools with progress token, set up progress channel ─
+            let _progress_task = if matches!(tool_name.as_str(), "index" | "open_project")
+                && progress_token.is_some()
+            {
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<tools::ProgressReport>();
                 let token = progress_token.unwrap();
                 let peer = context.peer.clone();
 
                 // Store the sender on the router so handle_index can use it.
                 {
-                    let mut router = self
-                        .router
-                        .lock()
-                        .map_err(|_| {
-                            rmcp::ErrorData::internal_error(
-                                "Atlas MCP router lock poisoned",
-                                None,
-                            )
-                        })?;
+                    let mut router = self.router.lock().map_err(|_| {
+                        rmcp::ErrorData::internal_error("Atlas MCP router lock poisoned", None)
+                    })?;
                     router.progress_sender = Some(tx);
                 }
 
@@ -212,9 +206,14 @@ impl ServerHandler for AtlasMcpService {
                 None
             };
 
+            let args = request
+                .arguments
+                .map(serde_json::Value::Object)
+                .unwrap_or(serde_json::Value::Null);
+
             // ── Standard tool dispatch ────────────────────────────────────
             let result = self.lock_router().and_then(|mut router| {
-                if ToolRouter::tool_requires_graph(&tool_name) {
+                if ToolRouter::tool_call_requires_graph(&tool_name, &args) {
                     router.ensure_graph_initialized().map_err(|err| {
                         rmcp::ErrorData::internal_error(
                             format!("Failed to initialize graph snapshot: {err:#}"),
@@ -229,10 +228,6 @@ impl ServerHandler for AtlasMcpService {
                     })?;
                 }
 
-                let args = request
-                    .arguments
-                    .map(serde_json::Value::Object)
-                    .unwrap_or(serde_json::Value::Null);
                 let tool_result = router.call_tool(&tool_name, &args);
                 let tool_error = tool_result.is_error.unwrap_or(false);
                 let duration_ms = start.elapsed().as_millis() as u64;
@@ -250,15 +245,9 @@ impl ServerHandler for AtlasMcpService {
 
             // ── Clean up progress sender ──────────────────────────────────
             {
-                let mut router = self
-                    .router
-                    .lock()
-                    .map_err(|_| {
-                        rmcp::ErrorData::internal_error(
-                            "Atlas MCP router lock poisoned",
-                            None,
-                        )
-                    })?;
+                let mut router = self.router.lock().map_err(|_| {
+                    rmcp::ErrorData::internal_error("Atlas MCP router lock poisoned", None)
+                })?;
                 router.progress_sender = None;
             }
 

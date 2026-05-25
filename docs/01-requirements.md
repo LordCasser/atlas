@@ -222,23 +222,16 @@ CLI、MCP 和 context 输出都必须包含语言能力信息。最小字段：
 
 ### MCP
 
-MCP 使用 JSON-RPC over stdio。核心工具：
+MCP 使用 JSON-RPC over stdio。当前公开工具名使用无 `atlas_` 前缀的短名。核心工具：
 
-- `atlas_status`
-- `atlas_files`
-- `atlas_search`
-- `atlas_symbol`
-- `atlas_neighbors`
-- `atlas_callers`
-- `atlas_callees`
-- `atlas_callgraph`
-- `atlas_impact`
-- `atlas_path`
-- `atlas_context`
-- `atlas_explore`
-- trace tools: `atlas_trace_point`, `atlas_trace_variable`, `atlas_trace_caller_path` where implemented
-- `atlas_language_capabilities`
-- `usages`、`dependencies`、`dependents` 工具当前已实现，并作为通用语义工具保持无 `atlas_` 前缀；V1 前需要在 MCP 工具契约中明确命名策略。
+- project/index/status: `open_project`, `index`, `status`, `files`, `language_capabilities`
+- symbol/search: `search`, `symbol`, `usages`
+- graph: `neighbors`, `callers`, `callees`, `callgraph`, `impact`, `path`, `context`, `explore`
+- trace: `trace_point`, `trace_variable`, `trace_caller_path`
+- file dependencies: `dependencies`, `dependents`
+- background tasks: `task_status`, `wait_for_task`
+
+耗时工具必须能避免 MCP 客户端普通 tool-call 超时：`search`、`index`、`open_project` 支持 `background=true` 时应立即返回 `task_id`；客户端随后用 `task_status` 轮询或 `wait_for_task` 阻塞等待。`open_project(background=true)` 完成后由 `task_status`/`wait_for_task` 激活准备好的项目。
 
 工具输出必须 bounded、结构化，并在涉及启发式关系时暴露 confidence/provenance。
 
