@@ -51,7 +51,7 @@ pub use enums::{
 pub use structs::{
     ArgumentFact, Callsite, DiagnosticLevel, ExtractDiagnostic, ExtractionError, FailureCategory,
     FileFacts, FileInfo, ImportDef, IndexReport, RawEdge, ReferenceUse, ResolvedTarget, ScopeDef,
-    SymbolDef, TextRange,
+    SymbolDef, TextRange, layer, status,
 };
 
 // --- Binding types ---

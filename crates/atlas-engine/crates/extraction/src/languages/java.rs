@@ -166,6 +166,9 @@ impl SymbolExtractorSpec for JavaAdapter {
     fn definition_query(&self) -> &str {
         include_str!("../../queries/java/definitions.scm")
     }
+    fn manifest_query(&self) -> &str {
+        include_str!("../../queries/java/manifest.scm")
+    }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported()
     }

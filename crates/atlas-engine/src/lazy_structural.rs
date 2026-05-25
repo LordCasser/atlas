@@ -30,6 +30,7 @@ use anyhow::{Context, Result};
 use db::Store;
 use extraction::{ExtractionMode, create_frontend, extract_file_with_mode};
 use types::ids::FileId;
+use types::{layer, status};
 
 /// Maximum candidate files to consider for lazy structural loading.
 const MAX_CANDIDATE_FILES: usize = 20;
@@ -81,9 +82,9 @@ impl LazyStructuralService {
         let Some(current_hash) = current_hash else {
             return Ok(false);
         };
-        let layer = self.store.get_file_index_layer(file_id, "structural")?;
-        Ok(layer.map_or(false, |(status, hash)| {
-            status == "complete" && hash == *current_hash
+        let layer = self.store.get_file_index_layer(file_id, layer::STRUCTURAL)?;
+        Ok(layer.map_or(false, |(s, hash)| {
+            s == status::COMPLETE && hash == *current_hash
         }))
     }
 
@@ -121,6 +122,15 @@ impl LazyStructuralService {
         Ok(result)
     }
 
+    /// Re-extract a single file with Structural mode.
+    ///
+    /// **Safety**: Callers must ensure no concurrent writer is active on the
+    /// same store (e.g. via [`FileLock`]).  This method performs
+    /// delete-then-insert which is not atomic across calls — a concurrent
+    /// index or sync process could observe the file in a partially-deleted
+    /// state.  CLI commands that invoke this service open the store in
+    /// read-only mode; the actual write happens through the store's internal
+    /// write path which does not acquire the project-level FileLock.
     fn reindex_file_structural(&self, file_id: &FileId) -> Result<()> {
         let file_info = self.store.get_file(file_id)?
             .ok_or_else(|| anyhow::anyhow!("file not found: {:?}", file_id))?;

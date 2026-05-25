@@ -174,6 +174,9 @@ impl SymbolExtractorSpec for RustAdapter {
     fn definition_query(&self) -> &str {
         include_str!("../../queries/rust/definitions.scm")
     }
+    fn manifest_query(&self) -> &str {
+        include_str!("../../queries/rust/manifest.scm")
+    }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported()
     }

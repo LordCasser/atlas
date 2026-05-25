@@ -438,6 +438,9 @@ impl SymbolExtractorSpec for PythonAdapter {
     fn definition_query(&self) -> &str {
         include_str!("../../queries/python/definitions.scm")
     }
+    fn manifest_query(&self) -> &str {
+        include_str!("../../queries/python/manifest.scm")
+    }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported()
     }

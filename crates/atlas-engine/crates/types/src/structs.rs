@@ -126,6 +126,26 @@ fn default_layer() -> String {
     "structural".to_string()
 }
 
+/// Named constants for `SymbolDef.layer` and `file_index_layers.layer` values.
+pub mod layer {
+    /// Top-level symbols only (from `--analysis manifest`).
+    pub const MANIFEST: &str = "manifest";
+    /// Full symbols + references + scopes (from `--analysis structural`).
+    pub const STRUCTURAL: &str = "structural";
+    /// Dataflow nodes/edges (from lazy dataflow or `--analysis full`).
+    pub const DATAFLOW: &str = "dataflow";
+}
+
+/// Named constants for `file_index_layers.status` values.
+pub mod status {
+    /// Layer extraction completed successfully.
+    pub const COMPLETE: &str = "complete";
+    /// Layer extraction was truncated (budget exceeded).
+    pub const PARTIAL: &str = "partial";
+    /// Layer extraction failed.
+    pub const FAILED: &str = "failed";
+}
+
 impl SymbolDef {
     /// Human-readable label for this symbol.
     pub fn display_name(&self) -> &str {

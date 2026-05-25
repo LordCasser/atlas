@@ -173,6 +173,9 @@ impl SymbolExtractorSpec for GoAdapter {
     fn definition_query(&self) -> &str {
         include_str!("../../queries/go/definitions.scm")
     }
+    fn manifest_query(&self) -> &str {
+        include_str!("../../queries/go/manifest.scm")
+    }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported()
     }

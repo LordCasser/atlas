@@ -34,6 +34,7 @@ pub struct SyncEngine {
 }
 
 impl SyncEngine {
+    /// Create a SyncEngine with the default extraction mode (Structural).
     pub fn new(store: Arc<Store>, project_root: PathBuf) -> Self {
         Self { store, project_root, mode: ExtractionMode::Structural }
     }

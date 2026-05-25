@@ -149,8 +149,9 @@ impl ReferenceResolver {
     /// Resolve references scoped to a specific set of files (lazy structural).
     ///
     /// Unlike [`resolve_all`], this does not scan every file — it only
-    /// processes unresolved references that belong to `file_ids`.  This
-    /// is the incremental path used by [`LazyStructuralService`].
+    /// processes unresolved references that belong to `file_ids`.  References
+    /// are grouped by file so that [`ResolutionContext`] is built once per
+    /// file (same optimization as [`resolve_all`]).
     pub fn resolve_for_files(
         &mut self,
         file_ids: &[FileId],
@@ -159,12 +160,15 @@ impl ReferenceResolver {
             self.global_index = Some(GlobalSymbolIndex::build(&self.store)?);
         }
 
-        let mut all_refs = Vec::new();
+        // Collect references from all target files, grouped by file_id
+        let mut by_file: HashMap<FileId, Vec<ReferenceUse>> = HashMap::new();
         for fid in file_ids {
-            let refs = self.store.find_references_by_file(fid)?;
-            all_refs.extend(refs);
+            for r in self.store.find_references_by_file(fid)? {
+                by_file.entry(r.file_id).or_default().push(r);
+            }
         }
-        let total_refs = all_refs.len();
+
+        let total_refs: usize = by_file.values().map(|v| v.len()).sum();
         let mut stats = ResolutionStats::default();
         stats.total_refs = total_refs;
 
@@ -172,9 +176,8 @@ impl ReferenceResolver {
         let mut all_resolved: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
         let batch_size = 500;
 
-        for reference in &all_refs {
-            // Load context per-file on demand
-            let ctx = match ResolutionContext::build(&self.store, reference.file_id) {
+        for (file_id, refs) in &by_file {
+            let ctx = match ResolutionContext::build(&self.store, *file_id) {
                 Ok(c) => c,
                 Err(e) => {
                     stats.add_warning(format!("failed to build context: {}", e));
@@ -182,18 +185,20 @@ impl ReferenceResolver {
                 }
             };
 
-            match self.resolve_one(reference, &ctx) {
-                Some(target) => {
-                    pending_resolutions.push((reference.id, target.clone()));
-                    all_resolved.push((reference.clone(), target.clone()));
-                    stats.resolved += 1;
-                    *stats
-                        .by_strategy
-                        .entry(target.strategy.as_str().to_string())
-                        .or_default() += 1;
-                }
-                None => {
-                    stats.unresolved += 1;
+            for reference in refs {
+                match self.resolve_one(reference, &ctx) {
+                    Some(target) => {
+                        pending_resolutions.push((reference.id, target.clone()));
+                        all_resolved.push((reference.clone(), target.clone()));
+                        stats.resolved += 1;
+                        *stats
+                            .by_strategy
+                            .entry(target.strategy.as_str().to_string())
+                            .or_default() += 1;
+                    }
+                    None => {
+                        stats.unresolved += 1;
+                    }
                 }
             }
 

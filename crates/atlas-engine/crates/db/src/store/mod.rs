@@ -386,7 +386,9 @@ impl Store {
                 }
             }
 
-            // Record per-file per-layer index status
+            // Record per-file per-layer index status.
+            // INSERT OR REPLACE semantics: overwrites existing row on
+            // (file_id, layer) conflict — no audit trail needed here.
             let status = if facts.budget_exceeded { "partial" } else { "complete" };
             tx.execute(
                 "INSERT OR REPLACE INTO file_index_layers

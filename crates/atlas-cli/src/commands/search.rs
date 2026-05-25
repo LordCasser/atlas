@@ -107,7 +107,9 @@ fn display_results(
             let line = r.symbol.range.start_line + 1;
             println!("      file:  {}:{}", path_display, line);
             println!("      qname: {}", r.symbol.qualified_name);
-            println!("      layer: {}", r.symbol.layer);
+            if r.symbol.layer != "structural" {
+                println!("      layer: {}", r.symbol.layer);
+            }
             if let Some(ref sig) = r.symbol.signature {
                 println!("      sig:   {}", sig);
             }
