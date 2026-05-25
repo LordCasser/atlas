@@ -29,7 +29,8 @@ impl ToolRouter {
     }
 
     fn handle_search_sync(&self, query: &str, limit: usize, kind: Option<&str>, scope: Option<&str>) -> (String, bool) {
-        self.send_progress(0.1, &format!("Searching for '{}'...", query));
+        let scope_display = scope.unwrap_or("(all)");
+        self.send_progress(0.1, &format!("Searching for '{}' in {}...", query, scope_display));
         let entries = match self.do_search(query, limit, kind) {
             Ok(e) => self.filter_by_scope(e, scope),
             Err(err) => { let mut s = format!("Search error: {}", err); s.push_str(self.index_not_run_guidance()); return (s, true); }
@@ -53,7 +54,7 @@ impl ToolRouter {
     fn filter_by_scope(&self, entries: Vec<atlas_engine::SearchResult>, scope: Option<&str>) -> Vec<atlas_engine::SearchResult> {
         let Some(scope) = scope else { return entries; };
         let scope = scope.trim_end_matches('/');
-        entries.into_iter().filter(|e| e.file_path.as_ref().map_or(false, |p| p.starts_with(scope))).collect()
+        entries.into_iter().filter(|e| e.file_path.as_ref().map_or(true, |p| p.starts_with(scope))).collect()
     }
 
     fn handle_search_background(&self, query: &str, limit: usize, kind: Option<&str>, scope: Option<&str>) -> (String, bool) {
@@ -89,7 +90,7 @@ impl ToolRouter {
             } else { entries };
             let final_entries = if let Some(ref s) = sc {
                 let s = s.trim_end_matches('/');
-                final_entries.into_iter().filter(|e| e.file_path.as_ref().map_or(false, |p| p.starts_with(s))).collect()
+                final_entries.into_iter().filter(|e| e.file_path.as_ref().map_or(true, |p| p.starts_with(s))).collect()
             } else { final_entries };
             task_manager.complete_task(&tid, json!({
                 "query": q, "count": final_entries.len(),

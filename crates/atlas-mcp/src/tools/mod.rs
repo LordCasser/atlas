@@ -426,14 +426,14 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "search".into(),
-            description: "Search symbols by name (FTS5 + fuzzy). Supports kind filter, scope directory limit, and background=true for long queries.".into(),
+            description: "Search symbols by name (FTS5 + fuzzy). IMPORTANT: always provide a scope parameter to restrict results to a specific directory (e.g. 'drivers/net', 'src/'). Without scope, results may be overwhelming on large projects. Supports kind filter and background=true for long queries.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "query": { "type": "string", "description": "Search query text" },
+                    "scope": { "type": "string", "description": "Directory to restrict search to (strongly recommended, e.g. 'drivers/net', 'src/', 'kernel/'). Use 'files' tool to discover available directories." },
                     "kind": { "type": "string", "description": "Optional SymbolKind filter (function, class, ...)" },
                     "limit": { "type": "integer", "description": "Max results (default 20)" },
-                    "scope": { "type": "string", "description": "Restrict results to files under this directory (e.g. 'drivers/net')" },
                     "background": { "type": "boolean", "description": "Run search as background task (returns task_id for task_status polling)" },
                 })),
                 required: Some(vec!["query".into()]),
