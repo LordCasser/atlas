@@ -71,6 +71,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: &[String], analysis: &
     let mut phase_timings = PhaseTimings::new();
 
     // ── Phase: Discovery ───────────────────────────────────────────────────
+    println!("Discovering source files...");
     let disc_timer = PhaseTimer::start("Discovery");
     let mut config = DiscoveryConfig::default();
     if let Some(pat) = include {
@@ -82,9 +83,11 @@ pub fn run(project: &str, include: Option<&str>, exclude: &[String], analysis: &
     let discovered = discover_files(root, &config).context("Failed to discover source files")?;
 
     if discovered.is_empty() {
+        println!("No recognizable source files found in {}", root.display());
         anyhow::bail!("No recognizable source files found in {}", root.display());
     }
     let total = discovered.len();
+    println!("  Found {} source files", total);
     let disc_timing = disc_timer.items(total as u64).finish();
     let disc_ms = disc_timing.duration_ms;
     phase_timings.push(disc_timing);
@@ -92,6 +95,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: &[String], analysis: &
 
     // ── Phase: Hash check (P1) ─────────────────────────────────────────────
     // Compute current hashes in parallel, compare with DB, classify files.
+    println!("Computing content hashes...");
     let hash_timer = PhaseTimer::start("Hash check");
     let hash_result = build_dirty_set(&ctx.store, &discovered, root)?;
     let dirty = &hash_result.dirty;
@@ -112,6 +116,10 @@ pub fn run(project: &str, include: Option<&str>, exclude: &[String], analysis: &
 
     // ── Phase: Delete stale data for deleted files ─────────────────────────
     if !hash_result.deleted.is_empty() {
+        println!(
+            "Cleaning up {} deleted files...",
+            hash_result.deleted.len()
+        );
         let del_timer = PhaseTimer::start("Delete stale");
         for rel_path in &hash_result.deleted {
             let sp = SourcePath::try_from_relative(&rel_path.to_string_lossy())
@@ -145,6 +153,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: &[String], analysis: &
             });
 
     // ── Phase: Language init ───────────────────────────────────────────────
+    println!("Initializing language frontends...");
     let lang_timer = PhaseTimer::start("Language init");
     let _registry = match LanguageRegistry::new(&languages) {
         Ok(r) => r,
@@ -194,7 +203,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: &[String], analysis: &
     if !hash_result.deleted.is_empty() {
         println!("  {} deleted files cleaned up", hash_result.deleted.len());
     }
-    println!();
+    println!("\nExtracting files...");
 
     // ── Phase 1: Parallel extraction (dirty files only) ────────────────────
     let extract_start = Instant::now();
@@ -257,6 +266,16 @@ pub fn run(project: &str, include: Option<&str>, exclude: &[String], analysis: &
 
     let extracted = results;
     let extracted_count = extracted.len();
+    let failed_count = dirty_total.saturating_sub(extracted_count);
+    println!(
+        "  Extracted {}/{} files in {:.1}s",
+        extracted_count,
+        dirty_total,
+        extract_elapsed.as_secs_f64()
+    );
+    if failed_count > 0 {
+        println!("  {} extraction(s) failed (see logs for details)", failed_count);
+    }
     let avg_ms = if extracted_count > 0 {
         extract_elapsed.as_millis() as u64 / extracted_count as u64
     } else {
@@ -292,6 +311,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: &[String], analysis: &
     // "ghost" facts.  `delete_files_batch` uses FOREIGN KEY CASCADE
     // to wipe all related rows.
     {
+        println!("\nCleaning stale facts for {} re-indexed files...", extracted_count);
         let clean_timer = PhaseTimer::start("Clean stale");
         let file_ids: Vec<_> = extracted.iter().map(|ef| ef.facts.file.file_id).collect();
         // Invalidate cross-file references pointing into these files
@@ -316,6 +336,7 @@ pub fn run(project: &str, include: Option<&str>, exclude: &[String], analysis: &
     }
 
     // ── Phase 2: Batch insertion (P3: single transaction per chunk) ──────
+    println!("\nWriting to database ({} files)...", extracted_count);
     let insert_timer = PhaseTimer::start("DB write");
     let mut insert_failures = 0usize;
     // P3: batch-insert in chunks of 200 files to balance transaction size
@@ -365,6 +386,8 @@ pub fn run(project: &str, include: Option<&str>, exclude: &[String], analysis: &
     // Build index report from pool
     let mut index_report = pool.into_report(dirty_total, 0);
     index_report.files_indexed = extracted_count.saturating_sub(insert_failures);
+
+    println!("  {} files written, {} insert failures", index_report.files_indexed, insert_failures);
 
     // ── Phase 3: Resolve all references ───────────────────────────────────
     println!("\nResolving references...");

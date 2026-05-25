@@ -75,6 +75,7 @@ impl SyncEngine {
         }
 
         // 2. Delete stale data for deleted and modified files
+        println!("\nCleaning stale data...");
         let del_timer = PhaseTimer::start("Delete stale");
         // CRITICAL: FileId must be generated from project-relative paths,
         // matching the path used during extraction (reindex_file).
@@ -149,6 +150,11 @@ impl SyncEngine {
             .chain(changed.modified.iter())
             .collect();
 
+        println!(
+            "Re-extracting {} files...",
+            to_reindex.len()
+        );
+
         let before_symbols = self
             .store
             .count_symbols()
@@ -171,6 +177,7 @@ impl SyncEngine {
         phase_timings.push(ext_timing);
 
         // 4. Re-resolve all unresolved references (P2: two-step pipeline)
+        println!("\nResolving symbol references...");
         let res_timer = PhaseTimer::start("Resolution");
         // P2: Load tsconfig.json or jsconfig.json path aliases if present
         let path_alias = resolution::PathAliasResolver::from_tsconfig(
@@ -192,6 +199,7 @@ impl SyncEngine {
         phase_timings.push(res_timing);
 
         // 4b. Build edges from resolved references
+        println!("\nBuilding symbol graph...");
         let edge_timer = PhaseTimer::start("Graph build");
         let builder = GraphBuilder::new(self.store.clone());
         let build_stats = builder.build_all(&resolved);

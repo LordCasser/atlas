@@ -31,6 +31,7 @@ pub fn run(project: &str) -> Result<()> {
     }
 
     // Run sync
+    println!("\nSyncing...");
     let stats = engine.sync()?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
