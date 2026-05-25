@@ -30,6 +30,7 @@ pub(crate) mod dependencies;
 pub(crate) mod dependents;
 pub(crate) mod graph;
 pub(crate) mod index;
+pub(crate) mod open_project;
 pub(crate) mod search;
 pub(crate) mod status;
 pub(crate) mod trace;
@@ -227,6 +228,7 @@ impl ToolRouter {
         // is_error=true only for genuine failures (lookup errors, I/O errors, unknown tool).
         let (result, is_error) = match name {
             "index" => self.handle_index(arguments),
+            "open_project" => self.handle_open_project(arguments),
             "status" => self.handle_status(),
             "files" => self.handle_files(),
             "search" => self.handle_search(arguments),
@@ -308,6 +310,21 @@ pub fn make_all_tools() -> Vec<Tool> {
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns for directories/files to skip (e.g. [\"**/test/**\", \"**/*.spec.ts\"])" },
                 })),
                 required: None,
+            },
+        },
+        Tool {
+            name: "open_project".into(),
+            description: "Open, optionally index, and activate a project at an arbitrary path. Defaults to storage=\"memory\" for temporary zero-footprint sessions. Use storage=\"persistent\" to create/use project/.atlas/atlas.db. The active project is switched immediately on success. Parameters: project_path (required, absolute path), storage (\"memory\" default | \"persistent\"), index (default true), analysis (\"structural\" default | \"full\"), exclude (list of glob patterns).".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "project_path": { "type": "string", "description": "Absolute path to the project directory to open" },
+                    "storage": { "type": "string", "description": "Storage mode: \"memory\" (in-memory, zero footprint, default) or \"persistent\" (project/.atlas/atlas.db)" },
+                    "index": { "type": "boolean", "description": "Whether to run the index pipeline after opening (default true)" },
+                    "analysis": { "type": "string", "description": "Analysis depth when indexing: \"structural\" (default) or \"full\"" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns for directories/files to skip" },
+                })),
+                required: Some(vec!["project_path".into()]),
             },
         },
         Tool {

@@ -16,16 +16,16 @@ use atlas_engine::{
 use super::ToolRouter;
 
 /// Result of an atlas_index invocation.
-#[derive(serde::Serialize)]
-struct IndexResult {
-    ok: bool,
-    files_discovered: usize,
-    files_indexed: usize,
-    files_failed: usize,
-    symbols_found: usize,
-    references_resolved: usize,
-    errors: Vec<String>,
-    duration_ms: u64,
+#[derive(serde::Serialize, Clone)]
+pub(crate) struct IndexResult {
+    pub(crate) ok: bool,
+    pub(crate) files_discovered: usize,
+    pub(crate) files_indexed: usize,
+    pub(crate) files_failed: usize,
+    pub(crate) symbols_found: usize,
+    pub(crate) references_resolved: usize,
+    pub(crate) errors: Vec<String>,
+    pub(crate) duration_ms: u64,
 }
 
 impl ToolRouter {
@@ -82,19 +82,19 @@ impl ToolRouter {
     }
 }
 
-struct IndexStats {
-    discovered: usize,
-    indexed: usize,
-    failed: usize,
-    symbols: usize,
-    resolved: usize,
+pub(crate) struct IndexStats {
+    pub(crate) discovered: usize,
+    pub(crate) indexed: usize,
+    pub(crate) failed: usize,
+    pub(crate) symbols: usize,
+    pub(crate) resolved: usize,
 }
 
 /// Run the full index pipeline against `project_root`.
 ///
-/// Opens a separate Store connection for writes (WAL mode allows concurrent
-/// readers + one writer, so the MCP server's read connection is not blocked).
-fn run_index(store: &Arc<Store>, project_root: &std::path::Path, mode: ExtractionMode, exclude_patterns: &[String]) -> anyhow::Result<IndexStats> {
+/// Writes directly to the provided store. The caller is responsible for
+/// FileLock coordination in persistent mode.
+pub(crate) fn run_index(store: &Arc<Store>, project_root: &std::path::Path, mode: ExtractionMode, exclude_patterns: &[String]) -> anyhow::Result<IndexStats> {
     // ── Discovery ──────────────────────────────────────────────────────────
     let _disc_timer = PhaseTimer::start("discovery");
     let mut config = DiscoveryConfig::default();

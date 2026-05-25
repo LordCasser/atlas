@@ -52,8 +52,17 @@ impl ToolRouter {
             "partial_artifacts": 0,
         }));
 
+        // Determine storage mode from db_path
+        let db_path = self.store.db_path().to_string_lossy().to_string();
+        let storage = if db_path == ":memory:" { "memory" } else { "persistent" };
+
         (
             serde_json::to_string_pretty(&json!({
+                "project": {
+                    "active_project": self.project_root.to_string_lossy(),
+                    "db_path": db_path,
+                    "storage": storage,
+                },
                 "summary": {
                     "files": stats.total_files,
                     "symbols": stats.total_symbols,
