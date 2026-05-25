@@ -28,6 +28,7 @@ impl ToolRouter {
                 json!({
                     "text": r.text,
                     "kind": r.kind.as_str(),
+                    "file": self.resolve_file_path(&r.file_id),
                     "file_id": r.file_id.to_hex(),
                     "line": r.range.start_line + 1,
                     "column": r.range.start_column + 1,

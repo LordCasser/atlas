@@ -186,6 +186,17 @@ impl ToolRouter {
         }
     }
 
+    /// Resolve a [`FileId`] to its human-readable file path.
+    /// Falls back to the hex representation if the file is not found.
+    pub(crate) fn resolve_file_path(&self, file_id: &FileId) -> String {
+        self.store
+            .get_file(file_id)
+            .ok()
+            .flatten()
+            .map(|f| f.path)
+            .unwrap_or_else(|| file_id.to_hex())
+    }
+
     /// Switch the active project to a new store+root, clearing graph/cache state.
     ///
     /// This is the core mechanism for `atlas_open_project` and project switching.

@@ -38,7 +38,8 @@ impl ToolRouter {
                         "kind": e.symbol.kind.as_str(),
                         "language": e.symbol.language.as_str(),
                         "score": e.score.total,
-                        "file": e.symbol.file_id.to_hex(),
+                        "file": e.file_path.as_deref().unwrap_or(""),
+                        "file_id": e.symbol.file_id.to_hex(),
                     })).collect::<Vec<_>>(),
                 }))
                 .unwrap_or_else(|e| e.to_string()),
@@ -83,7 +84,8 @@ impl ToolRouter {
                 "language": sym.language.as_str(),
                 "visibility": sym.visibility.as_ref().map(|v| v.as_str()),
                 "signature": sym.signature,
-                "file": sym.file_id.to_hex(),
+                "file": self.resolve_file_path(&sym.file_id),
+                "file_id": sym.file_id.to_hex(),
                 "range": {
                     "line": sym.range.start_line,
                     "column": sym.range.start_column,

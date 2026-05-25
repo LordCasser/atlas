@@ -253,7 +253,8 @@ impl ToolRouter {
                     "qualified_name": sym.qualified_name,
                     "kind": sym.kind.as_str(),
                     "language": sym.language.as_str(),
-                    "file": sym.file_id.to_hex(),
+                    "file": self.resolve_file_path(&sym.file_id),
+                    "file_id": sym.file_id.to_hex(),
                     "range": { "line": sym.range.start_line, "column": sym.range.start_column },
                 },
                 "neighbors": {

@@ -30,6 +30,7 @@ impl ToolRouter {
 
         (
             serde_json::to_string_pretty(&json!({
+                "file": self.resolve_file_path(&fid),
                 "file_id": file_id_hex,
                 "total_dependents": deps.len(),
                 "dependents": dependents,
