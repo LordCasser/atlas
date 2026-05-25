@@ -70,9 +70,9 @@ jobs:
         if: matrix.xwin
         run: cargo install cargo-xwin --locked
 
-      - name: Install LLVM linker (xwin)
+      - name: Install LLVM toolchain (xwin)
         if: matrix.xwin
-        run: sudo apt-get update && sudo apt-get install -y lld
+        run: sudo apt-get update && sudo apt-get install -y lld llvm
 
       - name: Build (native)
         if: ${{ !matrix.cross && !matrix.xwin }}
