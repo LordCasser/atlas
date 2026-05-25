@@ -16,9 +16,12 @@ let store = Store::open_db(Path::new("/path/to/.atlas/atlas.db"))?;
 // Initialize the schema (idempotent)
 store.init_schema()?;
 
-// In-memory (for tests)
+// In-memory (for tests and open_project storage="memory")
 let store = Store::open_in_memory()?;
 store.init_schema()?;
+
+// Access the database path
+let path = store.db_path();  // ":memory:" or filesystem path
 ```
 
 Callers are responsible for creating `.atlas/` and any parent directories
@@ -42,5 +45,6 @@ Callers are responsible for creating `.atlas/` and any parent directories
 | `cfg_nodes` | `cfg_node_id BLOB(32)` | Function-local CFG nodes |
 | `cfg_edges` | `cfg_edge_id BLOB(32)` | Function-local CFG edges |
 | `symbols_fts` | (FTS5) | Full-text search over symbol names |
-| `project_metadata` | `key TEXT` | Project-level settings |
+| `project_metadata` | `key TEXT` | Project-level settings, exclusive lock state |
+| `analysis_artifacts` | `(file_id, unit_id, layer)` | Lazy dataflow build cache |
 | `schema_versions` | `version INTEGER` | Schema history marker |

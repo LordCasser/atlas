@@ -37,7 +37,7 @@ source code ──parse/extract──▶ .atlas/atlas.db ──query──▶ CL
 - **Local-first**: writes all index data to `<project>/.atlas/atlas.db`; no cloud service required.
 - **Deterministic extraction**: tree-sitter AST queries and stable blake3-based IDs instead of model guesses.
 - **Incremental sync**: content-hash based dirty-file detection with Git-aware file discovery.
-- **Agent-native MCP**: stdio MCP server exposing 19 bounded tools for search, graph, context, dependencies, and trace.
+- **Agent-native MCP**: stdio MCP server exposing 20 bounded tools for search, graph, context, dependencies, trace, and project management.
 - **Graph + trace queries**: callers, callees, shortest path, impact, source-position lookup, variable origin tracing, and caller-path tracing.
 - **Explicit capability boundaries**: language capability metadata and trace diagnostics report partial results instead of silently overclaiming precision.
 
@@ -150,12 +150,14 @@ enabled = true
 
 | Group | MCP tools |
 | --- | --- |
-| Project status | `atlas_status`, `atlas_files`, `atlas_language_capabilities` |
-| Symbol search/detail | `atlas_search`, `atlas_symbol`, `usages` |
-| Graph navigation | `atlas_neighbors`, `atlas_callers`, `atlas_callees`, `atlas_callgraph`, `atlas_path`, `atlas_explore`, `atlas_impact` |
-| Context | `atlas_context` |
-| Trace | `atlas_trace_point`, `atlas_trace_variable`, `atlas_trace_caller_path` |
+| Project management | `open_project`, `index`, `status`, `files`, `language_capabilities` |
+| Symbol search/detail | `search`, `symbol`, `usages` |
+| Graph navigation | `neighbors`, `callers`, `callees`, `callgraph`, `path`, `explore`, `impact` |
+| Context | `context` |
+| Trace | `trace_point`, `trace_variable`, `trace_caller_path` |
 | File dependencies | `dependencies`, `dependents` |
+
+> `open_project` supports switching the active project at runtime. It defaults to `storage: "memory"` for zero-footprint temporary sessions. See [`docs/architecture.md`](docs/architecture.md) for details.
 
 Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/trace-contract.md`](docs/trace-contract.md): `ok`, `kind`, `capability`, `partial_result`, `diagnostics`, and `result`.
 
@@ -275,6 +277,7 @@ cargo build --release -p atlas-cli --features "all-languages,mcp,bash,cangjie"
 
 Maintained documents:
 
+- [`docs/architecture.md`](docs/architecture.md) — 完整技术架构详解（中文）：从 tree-sitter 到惰性数据流的演进路径、技术局限、架构权衡。
 - [`docs/01-requirements.md`](docs/01-requirements.md) — product scope and acceptance criteria.
 - [`docs/02-architecture-constraints.md`](docs/02-architecture-constraints.md) — architectural rules and module boundaries.
 - [`docs/03-current-architecture.md`](docs/03-current-architecture.md) — implemented architecture details.
