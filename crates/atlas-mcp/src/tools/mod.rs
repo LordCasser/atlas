@@ -162,6 +162,23 @@ impl ToolRouter {
         self.context.as_ref().expect("graph not initialized")
     }
 
+    /// Switch the active project to a new store+root, clearing graph/cache state.
+    ///
+    /// This is the core mechanism for `atlas_open_project` and project switching.
+    /// After activation, the next graph-backed tool call will lazily rebuild the
+    /// snapshot from the new store.
+    pub(crate) fn activate_project(&mut self, project_root: std::path::PathBuf, store: Arc<Store>) {
+        self.project_root = project_root.clone();
+        self.store = store.clone();
+        self.lazy_service = LazyDataflowService::new(store, Some(project_root));
+        self.search = None;
+        self.context = None;
+        self.graph_initialized = false;
+        self.cached_signature.clear();
+        self.last_graph_signature.clear();
+        self.last_signature_check = std::time::Instant::now();
+    }
+
     /// Refresh the graph snapshot if an external index/sync has changed the DB.
     /// Signature is cached for 5 seconds to avoid per-request COUNT queries.
     pub(crate) fn maybe_refresh_graph(&mut self) -> anyhow::Result<()> {
@@ -204,7 +221,7 @@ impl ToolRouter {
     /// Graph-backed engines are NOT refreshed here — use the `atlas_status`
     /// or an explicit server restart for snapshot updates. The graph is built
     /// once at server startup.
-    pub fn call_tool(&self, name: &str, arguments: &Value) -> CallToolResult {
+    pub fn call_tool(&mut self, name: &str, arguments: &Value) -> CallToolResult {
         // No per-request graph rebuild — engines were initialized at startup.
         // Each handler returns (result_text, is_error).
         // is_error=true only for genuine failures (lookup errors, I/O errors, unknown tool).

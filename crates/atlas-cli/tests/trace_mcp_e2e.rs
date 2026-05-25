@@ -80,7 +80,7 @@ fn find_symbol(store: &Store, file_id: &FileId, name: &str) -> SymbolId {
 }
 
 /// Call a tool and return the parsed content JSON plus is_error.
-fn call_tool(router: &ToolRouter, name: &str, args: Value) -> (Value, bool) {
+fn call_tool(router: &mut ToolRouter, name: &str, args: Value) -> (Value, bool) {
     let result = router.call_tool(name, &args);
     // Parse the first content block as JSON
     let text = match result.content.first() {
@@ -206,7 +206,7 @@ function main(): void {
         "line": 6,
         "column": 20,
     });
-    let (content_json, is_error) = call_tool(&router, "trace_point", args);
+    let (content_json, is_error) = call_tool(&mut router, "trace_point", args);
 
     assert!(!is_error, "valid trace_point call must not set isError");
     assert_envelope_fields(&content_json);
@@ -237,7 +237,7 @@ fn p0_mcp_trace_point_missing_params_returns_error() {
     let (_tmp, router) = build_router(files);
 
     let args = json!({});
-    let (content_json, is_error) = call_tool(&router, "trace_point", args);
+    let (content_json, is_error) = call_tool(&mut router, "trace_point", args);
 
     assert!(is_error, "missing params must set isError=true");
     // Must return a TraceQueryResponse envelope with ok=false
@@ -272,7 +272,7 @@ fn p0_mcp_trace_point_with_file_path_resolves() {
         "line": 1,
         "column": 10,
     });
-    let (content_json, is_error) = call_tool(&router, "trace_point", args);
+    let (content_json, is_error) = call_tool(&mut router, "trace_point", args);
 
     assert!(!is_error, "file_path-based trace_point must succeed");
     assert_envelope_fields(&content_json);
@@ -309,7 +309,7 @@ fn p0_mcp_trace_variable_returns_dataflow_result() {
         "column": 22,
         "max_depth": 20,
     });
-    let (content_json, is_error) = call_tool(&router, "trace_variable", args);
+    let (content_json, is_error) = call_tool(&mut router, "trace_variable", args);
 
     assert!(
         !is_error,
@@ -333,7 +333,7 @@ fn p0_mcp_trace_variable_missing_params_returns_error() {
     let (_tmp, router) = build_router(files);
 
     let args = json!({});
-    let (content_json, is_error) = call_tool(&router, "trace_variable", args);
+    let (content_json, is_error) = call_tool(&mut router, "trace_variable", args);
 
     assert!(is_error, "missing file_id/file_path must set isError");
     // Must return a TraceQueryResponse envelope with ok=false
@@ -377,7 +377,7 @@ function outer(z: number): void {
     let symbol_hex = inner.id.to_hex();
 
     let args = json!({ "symbol": symbol_hex, "max_depth": 10 });
-    let (content_json, is_error) = call_tool(&router, "trace_caller_path", args);
+    let (content_json, is_error) = call_tool(&mut router, "trace_caller_path", args);
 
     assert!(
         !is_error,
@@ -405,7 +405,7 @@ fn p0_mcp_trace_caller_path_invalid_symbol_returns_error() {
     let (_tmp, router) = build_router(files);
 
     let args = json!({ "symbol": "not-a-valid-hex-id", "max_depth": 10 });
-    let (content_json, is_error) = call_tool(&router, "trace_caller_path", args);
+    let (content_json, is_error) = call_tool(&mut router, "trace_caller_path", args);
 
     assert!(is_error, "invalid symbol hex must set isError");
     // Must return a TraceQueryResponse envelope with ok=false
@@ -433,7 +433,7 @@ fn p0_mcp_trace_caller_path_root_function_returns_partial_not_error() {
     let symbol_hex = standalone.id.to_hex();
 
     let args = json!({ "symbol": symbol_hex, "max_depth": 10 });
-    let (content_json, is_error) = call_tool(&router, "trace_caller_path", args);
+    let (content_json, is_error) = call_tool(&mut router, "trace_caller_path", args);
 
     assert!(
         !is_error,
@@ -466,7 +466,7 @@ fn p0_mcp_unknown_tool_returns_error() {
     let files = &[("app.ts", "export const x = 1;\n")];
     let (_tmp, router) = build_router(files);
 
-    let (_content_json, is_error) = call_tool(&router, "nonexistent_tool", json!({}));
+    let (_content_json, is_error) = call_tool(&mut router, "nonexistent_tool", json!({}));
     assert!(is_error, "unknown tool must set isError=true");
 }
 
@@ -511,7 +511,7 @@ main();
     ];
 
     for (tool_name, args) in &trace_cases {
-        let (content_json, _is_error) = call_tool(&router, tool_name, args.clone());
+        let (content_json, _is_error) = call_tool(&mut router, tool_name, args.clone());
         assert_envelope_fields(&content_json);
         eprintln!(
             "{} envelope: ok={}, kind={}",
@@ -541,7 +541,7 @@ fn p0_mcp_partial_result_not_is_error() {
     let file_id = find_file_id(&store, _tmp.path(), "fn.ts");
 
     let args = json!({ "file_id": file_id.to_hex(), "line": 1, "column": 10 });
-    let (content_json, is_error) = call_tool(&router, "trace_variable", args);
+    let (content_json, is_error) = call_tool(&mut router, "trace_variable", args);
 
     assert!(!is_error, "partial result must NOT set isError=true");
     assert_envelope_fields(&content_json);
@@ -616,7 +616,7 @@ fn p1_mcp_java_trace_variable_is_partial() {
     let file_id = find_file_id(&store, _tmp.path(), "App.java");
 
     let args = json!({ "file_id": file_id.to_hex(), "line": 3, "column": 17 });
-    let (content_json, is_error) = call_tool(&router, "trace_variable", args);
+    let (content_json, is_error) = call_tool(&mut router, "trace_variable", args);
 
     assert!(!is_error, "Java variable trace must not be an error");
     let diags = content_json
@@ -676,7 +676,7 @@ func main() {
     let file_id = find_file_id(&store, _tmp.path(), "main.go");
 
     let args = json!({ "file_id": file_id.to_hex(), "line": 6, "column": 8 });
-    let (content_json, is_error) = call_tool(&router, "trace_variable", args);
+    let (content_json, is_error) = call_tool(&mut router, "trace_variable", args);
 
     assert!(!is_error, "Go variable trace must not be an error");
     let diags = content_json
@@ -1155,7 +1155,7 @@ greet("World");
     let file_id = find_file_id(&store, _tmp.path(), "app.ts");
     let greet_id = find_symbol(&store, &file_id, "greet");
 
-    let (json, is_error) = call_tool(&router, "usages", json!({ "symbol": greet_id.to_hex() }));
+    let (json, is_error) = call_tool(&mut router, "usages", json!({ "symbol": greet_id.to_hex() }));
     assert!(!is_error, "usages should succeed");
     assert!(json.get("usages").is_some(), "should have usages array");
 }
@@ -1197,7 +1197,7 @@ fn mcp_usages_empty_for_unreferenced() {
     let file_id = find_file_id(&store, _tmp.path(), "app.ts");
     let sym_id = find_symbol(&store, &file_id, "unused");
 
-    let (json, is_error) = call_tool(&router, "usages", json!({ "symbol": sym_id.to_hex() }));
+    let (json, is_error) = call_tool(&mut router, "usages", json!({ "symbol": sym_id.to_hex() }));
     assert!(
         !is_error,
         "usages should succeed even for unused symbols"

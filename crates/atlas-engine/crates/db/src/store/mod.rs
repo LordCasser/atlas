@@ -140,8 +140,14 @@ impl StoreReader {
 /// workspace restructuring (Item 10).
 pub struct Store {
     reader: StoreReader,
-    #[allow(dead_code)]
     db_path: PathBuf,
+}
+
+impl Store {
+    /// Return the SQLite database file path (or `":memory:"` for in-memory stores).
+    pub fn db_path(&self) -> &Path {
+        &self.db_path
+    }
 }
 
 impl Deref for Store {
