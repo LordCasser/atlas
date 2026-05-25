@@ -45,7 +45,7 @@ impl ToolRouter {
     ///   project_path (required): absolute path to the project directory.
     ///   storage (optional): "memory" (default) | "persistent".
     ///   index (optional): whether to run the index pipeline (default: false).
-    ///   analysis (optional): "structural" | "manifest" | "full" (default: "structural").
+    ///   analysis (optional): "manifest" (default, fastest for large projects) | "structural" | "full".
     ///   include (optional): list of glob patterns to restrict indexing to.
     ///   exclude (optional): list of glob patterns to skip.
     ///
@@ -245,11 +245,10 @@ impl ToolRouter {
         }
 
         // ── Quick file count (fast, git-aware) ───────────────────────────
-        let mut file_count: Option<usize> = None;
+        // Runs for all storage modes to detect large projects early.
+        let file_count: Option<usize>;
         let mut suggestion: Option<String> = None;
-
-        if storage == "memory" {
-            // Quick scan: discover files without parsing
+        {
             let mut config = atlas_engine::discovery::DiscoveryConfig::default();
             if !include_patterns.is_empty() {
                 config.include_patterns = include_patterns.clone();
@@ -259,12 +258,15 @@ impl ToolRouter {
             }
             if let Ok(discovered) = atlas_engine::discovery::discover_files(&canonical, &config) {
                 file_count = Some(discovered.len());
-                if discovered.len() > LARGE_PROJECT_FILE_COUNT {
+                let is_manifest = matches!(mode, ExtractionMode::Manifest);
+                if discovered.len() > LARGE_PROJECT_FILE_COUNT && !is_manifest {
                     suggestion = Some(format!(
-                        "Large project detected ({} files). For a fast start, use analysis='manifest' for lightweight global indexing. Full structural analysis will be triggered on-demand by queries (lazy structural).",
-                        discovered.len()
+                        "Large project detected ({} files). You requested analysis=\"{}\" but manifest mode would be much faster. Use the default analysis=\"manifest\" for a fast initial index; lazy structural upgrades data on-demand at query time.",
+                        discovered.len(), analysis
                     ));
                 }
+            } else {
+                file_count = None;
             }
         }
 
