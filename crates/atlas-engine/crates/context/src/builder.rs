@@ -202,7 +202,8 @@ impl ContextView {
             md.push_str("### File Peers\n\n");
             for p in &self.file_peers {
                 if p.id != self.subject.id {
-                    md.push_str(&format!("- `{}`\n", p.qualified_name));
+                    let sig = p.signature.as_deref().unwrap_or("");
+                    md.push_str(&format!("- `{}` `{}` {}\n", p.qualified_name, p.kind.as_str(), sig));
                 }
             }
             md.push('\n');
@@ -223,6 +224,22 @@ impl ContextView {
             }
             md.push('\n');
         }
+
+        // ── Trail: actionable next steps for Agent ──
+        md.push_str("---\n");
+        md.push_str("*Trail — follow these to explore further (no additional lookup needed):*\n");
+        if !self.callee_details.is_empty() {
+            let first_callee = &self.callee_details[0].symbol.qualified_name;
+            md.push_str(&format!("- **Calls** → `atlas_context` with `symbol: \"{}\"`\n", first_callee));
+        }
+        if !self.caller_details.is_empty() {
+            md.push_str(&format!("- **Called by** → `atlas_trace_caller_path` with `symbol_name: \"{}\"`\n", self.subject.name));
+        }
+        md.push_str(&format!("- **Full source** → `atlas_explore` or `codegraph_node(\"{}\")` for the complete function body\n", self.subject.name));
+        if self.dependencies.len() > 1 {
+            md.push_str(&format!("- **Dependencies** → {} imported files\n", self.dependencies.len()));
+        }
+        md.push('\n');
 
         md
     }

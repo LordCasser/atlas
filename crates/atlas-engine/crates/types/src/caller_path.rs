@@ -85,6 +85,12 @@ pub struct CallerChainStep {
     /// callback registration, function pointer, or similar boundary).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boundary: Option<BoundaryMarker>,
+    /// Source code snippet at the call site (the line where `callee` is invoked).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_snippet: Option<String>,
+    /// Source code snippet of the callee definition (first line / signature).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callee_snippet: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +127,8 @@ impl CallerChainStep {
             description: description.to_string(),
             evidence: None,
             boundary: None,
+            caller_snippet: None,
+            callee_snippet: None,
         }
     }
 }

@@ -182,7 +182,10 @@ impl ToolRouter {
             Arc::clone(&self.store),
             Arc::clone(&graph),
         ));
-        self.context = Some(ContextBuilder::new(Arc::clone(&self.store), graph));
+        self.context = Some(
+            ContextBuilder::new(Arc::clone(&self.store), graph)
+                .with_project_root(self.project_root.clone()),
+        );
         self.last_graph_signature = self.store.index_signature().unwrap_or_default();
         self.graph_initialized = true;
         tracing::info!("Graph snapshot ready.");

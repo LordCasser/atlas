@@ -19,6 +19,10 @@ const LIKE_FALLBACK_SCOPE_FILE_LIMIT: usize = 32;
 const PREHEAT_SCOPE_FILE_LIMIT: usize = 64;
 const PREHEAT_FILE_LIMIT: usize = 8;
 const SEARCH_CANDIDATE_MULTIPLIER: usize = 4;
+/// Maximum total indexed files for which scope="." automatically gets full
+/// structural parsing regardless of scope file count.  Applies to fully-indexed
+/// small projects (≤ 200 files total in the index).
+const SMALL_PROJECT_FULL_SCOPE_LIMIT: usize = 200;
 
 #[derive(Debug, Clone, serde::Serialize)]
 struct SearchHit {
@@ -261,7 +265,15 @@ where
         });
     }
 
-    let precise = scope_file_count <= SYNC_STRUCTURAL_SCOPE_FILE_LIMIT;
+    // For fully-indexed small projects (≤ 200 total indexed files), treat the
+    // entire project as "small enough" for structural parsing regardless of the
+    // scope's individual file count.  This avoids the confusing situation where
+    // scope="." on a 99-file project is rejected.
+    let total_indexed = store.count_files().unwrap_or(0);
+    let is_small_project = total_indexed > 0 && total_indexed <= SMALL_PROJECT_FULL_SCOPE_LIMIT;
+
+    let precise = scope_file_count <= SYNC_STRUCTURAL_SCOPE_FILE_LIMIT
+        || (is_small_project && scope_file_count == total_indexed);
     let parse_level = if precise { "structural" } else { "manifest" };
 
     if precise {
@@ -271,8 +283,9 @@ where
                 "Scope is small enough; ensuring structural index...".to_string(),
             );
         }
+        let max_files = scope_file_count.max(SYNC_STRUCTURAL_SCOPE_FILE_LIMIT);
         let file_ids =
-            store.list_file_ids_in_scope(&normalized_scope, SYNC_STRUCTURAL_SCOPE_FILE_LIMIT)?;
+            store.list_file_ids_in_scope(&normalized_scope, max_files)?;
         let lazy = LazyStructuralService::new(store.clone(), Some(project_root.clone()));
         match lazy.ensure_structural_for_file_ids(&file_ids) {
             Ok(result) => {
@@ -288,9 +301,23 @@ where
             )),
         }
     } else {
+        // Single actionable warning — no contradictory "returning manifest results"
+        // when results may actually be empty.
+        let level_desc = if scope_file_count <= LIKE_FALLBACK_SCOPE_FILE_LIMIT {
+            "index search with fuzzy fallback"
+        } else {
+            "exact index search (fuzzy matching disabled for large scopes)"
+        };
         warnings.push(format!(
-            "Scope contains {} indexed files, above the precise parsing limit of {}. Returning manifest-level results only; narrow scope for exact structural parsing.",
-            scope_file_count, SYNC_STRUCTURAL_SCOPE_FILE_LIMIT
+            "Scope has {} files (precise structural parsing: ≤{}{}). Using {}. For best results, narrow scope to a specific directory like 'src/' or 'internal/'.",
+            scope_file_count,
+            SYNC_STRUCTURAL_SCOPE_FILE_LIMIT,
+            if is_small_project {
+                format!(", full-project: ≤{}", SMALL_PROJECT_FULL_SCOPE_LIMIT)
+            } else {
+                String::new()
+            },
+            level_desc,
         ));
     }
 
@@ -306,6 +333,15 @@ where
         scope_file_count,
     )?;
     symbols.truncate(limit);
+
+    // Empty result guidance: when no results and not in precise mode, help the
+    // agent understand why and what to try next.
+    if symbols.is_empty() && !precise {
+        warnings.push(format!(
+            "Search for '{}' returned no results in scope '{}'. Possible causes: (1) symbol not yet structurally parsed — narrow scope to the file; (2) no exact match — try a broader query or use 'atlas_status' to confirm indexing coverage.",
+            query, normalized_scope
+        ));
+    }
 
     let result_file_ids: Vec<_> = symbols
         .iter()

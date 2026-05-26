@@ -77,6 +77,12 @@ impl CallerPathExplorer {
         let mut farthest_depth: usize = 0;
         let mut truncated = false;
 
+        // Path quality scoring: prefer production callers over test/Benchmark
+        // functions.  Uses a scoring heuristic rather than pure depth so that
+        // `ServeHTTP → handleHTTPRequest → Next` wins over deeper test chains.
+        let mut best_candidate_id = target_id.clone();
+        let mut best_score: f64 = 0.0;
+
         while let Some((current_id, depth)) = queue.pop_front() {
             let edges = store.find_edges_by_target(&current_id)?;
             for edge in &edges {
@@ -93,6 +99,16 @@ impl CallerPathExplorer {
 
                 if !visited.contains_key(&caller_key) {
                     let new_depth = depth + 1;
+
+                    // Score this candidate: production callers score higher
+                    // than test/Benchmark functions.
+                    let caller_score = caller_path_score(store, caller, new_depth);
+
+                    // Track best candidate by score (not pure depth)
+                    if caller_score > best_score {
+                        best_score = caller_score;
+                        best_candidate_id = caller.clone();
+                    }
 
                     // If this is a callback boundary, enqueue the caller but
                     // do NOT continue BFS from it — mark it as a boundary stop.
@@ -155,13 +171,22 @@ impl CallerPathExplorer {
             }
         }
 
-        if farthest_id == *target_id {
+        if best_candidate_id == *target_id && farthest_id == *target_id {
             // No callers found — this is already a root
             return Ok(None);
         }
 
+        // Prefer the best-scored candidate over the farthest-depth candidate.
+        // Fall back to farthest if the best candidate wasn't reachable
+        // (shouldn't happen in practice since both use the same BFS).
+        let root_id = if best_candidate_id != *target_id {
+            best_candidate_id
+        } else {
+            farthest_id
+        };
+
         let root = store
-            .find_symbol_by_id(&farthest_id)?
+            .find_symbol_by_id(&root_id)?
             .unwrap_or_else(|| target.clone());
 
         // Reconstruct path from root to target
@@ -182,7 +207,55 @@ impl CallerPathExplorer {
 // helpers
 // ---------------------------------------------------------------------------
 
-/// Only follow structural edges that indicate a call/invoke relationship.
+/// Score a caller candidate for path quality.
+///
+/// Production functions (non-test, non-benchmark) score much higher than
+/// test/Benchmark/Example functions.  Among production callers, medium-depth
+/// paths (2-5 hops) are slightly preferred over very short or very long chains.
+///
+/// Returns 0.0 for the target itself (depth 0, no caller).
+fn caller_path_score(
+    store: &(impl SymbolReader + CallGraphReader),
+    caller_id: &SymbolId,
+    depth: usize,
+) -> f64 {
+    if depth == 0 {
+        return 0.0;
+    }
+    // Look up the caller's name to check if it's a test function.
+    // This is a fast indexed lookup (primary key on SymbolId).
+    let is_test = store
+        .find_symbol_by_id(caller_id)
+        .ok()
+        .flatten()
+        .map(|s| is_likely_test_name(&s.name))
+        .unwrap_or(false);
+
+    let production_bonus: f64 = if is_test { 0.0 } else { 100.0 };
+    // Prefer medium-depth production paths (2-5 hops).
+    // Gently decay beyond 5 to avoid excessively deep chains.
+    let depth_value: f64 = if depth <= 5 {
+        depth as f64 * 0.5
+    } else {
+        2.5 - (depth as f64 - 5.0) * 0.2
+    };
+    production_bonus + depth_value
+}
+
+/// Heuristic: is this function name likely a test or benchmark?
+///
+/// Covers Go conventions (`Test*`, `Benchmark*`, `Example*`) and common
+/// patterns in other languages (`test_*`, `spec_*`).  This is intentionally
+/// simple — false positives only affect scoring, not correctness.
+fn is_likely_test_name(name: &str) -> bool {
+    name.starts_with("Test")
+        || name.starts_with("Benchmark")
+        || name.starts_with("Example")
+        || name.starts_with("test_")
+        || name.starts_with("spec_")
+        || name.starts_with("it_")
+        || name.starts_with("Fuzz")
+}
 /// `RegistersCallback` is included so it appears in the path, but BFS
 /// traversal stops at callback boundaries (handled in the BFS loop above).
 fn is_call_edge(kind: &EdgeKind) -> bool {

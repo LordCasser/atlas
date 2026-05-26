@@ -235,8 +235,23 @@ impl ToolRouter {
     pub(crate) fn handle_trace_forward(&self, args: &serde_json::Value) -> (String, bool) {
         let from_hex = args["from"].as_str().filter(|s| !s.is_empty());
         let to_hex = args["to"].as_str().filter(|s| !s.is_empty());
+        let from_name = args["from_name"].as_str().filter(|s| !s.is_empty());
+        let to_name = args["to_name"].as_str().filter(|s| !s.is_empty());
         let max_depth = args["max_depth"].as_u64().unwrap_or(10) as usize;
 
+        let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
+
+        // Name-based lookup (new path — avoids requiring hex IDs)
+        if let (Some(fname), Some(tname)) = (from_name, to_name) {
+            let resp = engine.trace_forward_by_name(fname, tname, max_depth);
+            let is_error = !resp.ok;
+            return (
+                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                is_error,
+            );
+        }
+
+        // Hex ID path (existing behavior)
         let (from_id, to_id) = match (from_hex, to_hex) {
             (Some(f), Some(t)) => {
                 let fid: SymbolId = match f.parse() {
@@ -270,7 +285,7 @@ impl ToolRouter {
             _ => {
                 let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                     "trace_forward",
-                    "Must provide both 'from' and 'to' symbol hex IDs",
+                    "Provide either (`from` + `to` hex IDs) or (`from_name` + `to_name` symbol names). Mixed hex/name mode is not supported.",
                 );
                 return (
                     serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
@@ -279,7 +294,6 @@ impl ToolRouter {
             }
         };
 
-        let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
         let resp = engine.trace_forward(&from_id, &to_id, max_depth);
         let is_error = !resp.ok;
         (

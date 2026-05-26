@@ -12,33 +12,9 @@ impl ToolRouter {
         let qname = get_str(args, "symbol");
         self.send_progress(0.2, &format!("Building context for '{}'...", qname));
 
-        let symbols = match self.store.find_symbols_by_qname(qname) {
-            Ok(s) => s,
-            Err(e) => {
-                let mut err = format!("Lookup error: {}", e);
-                err.push_str(self.index_not_run_guidance());
-                return (err, true);
-            }
-        };
-        let sid = match symbols.first().map(|s| s.id) {
-            Some(id) => id,
-            None => {
-                // Try lazy structural extraction
-                self.send_progress(0.5, "Extracting structural data...");
-                let lazy =
-                    LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-                let _ = lazy.ensure_structural_for_symbol(qname);
-                // Re-query
-                let retry = self.store.find_symbols_by_qname(qname).unwrap_or_default();
-                match retry.first().map(|s| s.id) {
-                    Some(id) => id,
-                    None => {
-                        let mut err = format!("Symbol not found: {}", qname);
-                        err.push_str(self.index_not_run_guidance());
-                        return (err, true);
-                    }
-                }
-            }
+        let sid = match self.resolve_context_symbol(qname) {
+            Ok(id) => id,
+            Err(err) => return (err, true),
         };
 
         self.send_progress(0.7, "Building context view...");
@@ -56,5 +32,95 @@ impl ToolRouter {
             }
             Err(e) => (format!("Context build error: {}", e), true),
         }
+    }
+
+    /// Resolve a symbol for context display with multi-tier fallback.
+    ///
+    /// Tier 1: exact qualified-name match (e.g. "Engine.Engine")
+    /// Tier 2: name-based match — finds symbols whose simple name matches,
+    ///         then picks the highest-scored unambiguous match
+    /// Tier 3: lazy structural extraction + re-query
+    /// Tier 4: name match with multiple candidates → return suggestions
+    fn resolve_context_symbol(&self, qname: &str) -> Result<atlas_engine::SymbolId, String> {
+        // ── Tier 1: exact qualified-name match ──
+        let symbols = self.store.find_symbols_by_qname(qname).unwrap_or_default();
+        if let Some(id) = symbols.first().map(|s| s.id) {
+            return Ok(id);
+        }
+
+        // ── Tier 2: name-based search (look for symbol by simple name) ──
+        let name_matches = self.store.find_symbols_by_name(qname).unwrap_or_default();
+        if name_matches.len() == 1 {
+            // Unambiguous — use it directly
+            return Ok(name_matches[0].id);
+        }
+        if name_matches.len() > 1 {
+            // Multiple matches — try case-insensitive qualified-name substring
+            // Check if the query is a case-insensitive prefix/suffix of any
+            // qualified name for an unambiguous result.
+            let q_lower = qname.to_lowercase();
+            let matching_qnames: Vec<_> = name_matches
+                .iter()
+                .filter(|s| s.qualified_name.to_lowercase().contains(&q_lower))
+                .collect();
+            if matching_qnames.len() == 1 {
+                return Ok(matching_qnames[0].id);
+            }
+            if matching_qnames.len() > 1 {
+                let suggestions: Vec<&str> = matching_qnames
+                    .iter()
+                    .take(8)
+                    .map(|s| s.qualified_name.as_str())
+                    .collect();
+                let mut err = format!(
+                    "Symbol '{}' matched {} symbols by name. Did you mean one of: [{}]? Use the exact qualified_name from this list in the 'symbol' parameter.",
+                    qname,
+                    matching_qnames.len(),
+                    suggestions.join(", ")
+                );
+                err.push_str(self.index_not_run_guidance());
+                return Err(err);
+            }
+        }
+
+        // ── Tier 3: try lazy structural, then re-query ──
+        self.send_progress(0.5, "Extracting structural data...");
+        let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
+        let _ = lazy.ensure_structural_for_symbol(qname);
+
+        // Re-query after lazy extraction (tier 1 again on freshly-parsed data)
+        let retry = self.store.find_symbols_by_qname(qname).unwrap_or_default();
+        if let Some(sym) = retry.first() {
+            return Ok(sym.id);
+        }
+
+        // Re-check name after lazy extraction
+        let fresh_matches = self.store.find_symbols_by_name(qname).unwrap_or_default();
+        if fresh_matches.len() == 1 {
+            return Ok(fresh_matches[0].id);
+        }
+        if fresh_matches.len() > 1 {
+            let suggestions: Vec<&str> = fresh_matches
+                .iter()
+                .take(8)
+                .map(|s| s.qualified_name.as_str())
+                .collect();
+            let mut err = format!(
+                "Symbol '{}' matched {} symbols by name. Did you mean one of: [{}]? Use the exact qualified_name from this list in the 'symbol' parameter.",
+                qname,
+                fresh_matches.len(),
+                suggestions.join(", ")
+            );
+            err.push_str(self.index_not_run_guidance());
+            return Err(err);
+        }
+
+        // ── Tier 4: nothing found ──
+        let mut err = format!(
+            "Symbol '{}' not found by qualified name or simple name. Try 'atlas_search' first to discover the correct qualified_name for this symbol.",
+            qname
+        );
+        err.push_str(self.index_not_run_guidance());
+        Err(err)
     }
 }

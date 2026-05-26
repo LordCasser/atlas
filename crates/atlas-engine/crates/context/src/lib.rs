@@ -7,6 +7,7 @@
 
 use db::Store;
 use graph::GraphEngine;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use types::{FileId, SymbolDef, SymbolId};
 
@@ -18,6 +19,7 @@ pub use builder::{CalleeDetail, CallerDetail, ContextSlice, ContextView, SourceS
 pub struct ContextBuilder {
     store: Arc<Store>,
     graph: RwLock<Arc<GraphEngine>>,
+    project_root: Option<PathBuf>,
 }
 
 impl ContextBuilder {
@@ -25,7 +27,16 @@ impl ContextBuilder {
         Self {
             store,
             graph: RwLock::new(graph),
+            project_root: None,
         }
+    }
+
+    /// Set a project root for reading source snippets from disk.
+    /// Without this, [`ContextView::subject_source`] and callsite snippets
+    /// will always be empty.
+    pub fn with_project_root(mut self, root: PathBuf) -> Self {
+        self.project_root = Some(root);
+        self
     }
 
     /// Replace the internal graph snapshot with a fresh one.
@@ -77,12 +88,23 @@ impl ContextBuilder {
         let resolved_callees = g.resolve_node_ids(&callee_view.callees);
         drop(g); // release graph lock before store queries
 
-        let caller_syms = resolve_symbols(&self.store, &resolved_callers)?;
-        let callee_syms = resolve_symbols(&self.store, &resolved_callees)?;
+        // Filter out self-referencing edges (e.g. init functions calling
+        // themselves, or resolution fallbacks defaulting to the source symbol).
+        let filtered_callers: Vec<SymbolId> = resolved_callers
+            .into_iter()
+            .filter(|id| id != symbol_id)
+            .collect();
+        let filtered_callees: Vec<SymbolId> = resolved_callees
+            .into_iter()
+            .filter(|id| id != symbol_id)
+            .collect();
+
+        let caller_syms = resolve_symbols(&self.store, &filtered_callers)?;
+        let callee_syms = resolve_symbols(&self.store, &filtered_callees)?;
 
         // Build detailed caller/callee info with source snippets
-        let caller_details = self.build_caller_details(symbol_id, &resolved_callers, &caller_syms)?;
-        let callee_details = self.build_callee_details(symbol_id, &resolved_callees, &callee_syms)?;
+        let caller_details = self.build_caller_details(symbol_id, &filtered_callers, &caller_syms)?;
+        let callee_details = self.build_callee_details(symbol_id, &filtered_callees, &callee_syms)?;
 
         let subject_source = self.read_source_snippet(sym);
 
@@ -155,10 +177,14 @@ impl ContextBuilder {
                 .and_then(|e| e.location.as_ref())
                 .map(|r| r.start_line)
                 .unwrap_or(caller_sym.range.start_line);
+            let callsite_snippet = edge
+                .and_then(|e| e.location.as_ref())
+                .and_then(|loc| self.read_line_snippet(&caller_sym.file_id, loc.start_line))
+                .unwrap_or_default();
             details.push(CallerDetail {
                 symbol: caller_sym.clone(),
                 callsite_line: line,
-                callsite_snippet: String::new(),
+                callsite_snippet,
                 edge_kind: edge.map(|e| e.kind.clone()).unwrap_or(types::EdgeKind::Calls),
             });
         }
@@ -181,10 +207,14 @@ impl ContextBuilder {
                 .and_then(|e| e.location.as_ref())
                 .map(|r| r.start_line)
                 .unwrap_or(callee_sym.range.start_line);
+            let callsite_snippet = edge
+                .and_then(|e| e.location.as_ref())
+                .and_then(|loc| self.read_line_snippet(&callee_sym.file_id, loc.start_line))
+                .unwrap_or_default();
             details.push(CalleeDetail {
                 symbol: callee_sym.clone(),
                 callsite_line: line,
-                callsite_snippet: String::new(),
+                callsite_snippet,
                 edge_kind: edge.map(|e| e.kind.clone()).unwrap_or(types::EdgeKind::Calls),
                 callee_signature: callee_sym.signature.clone(),
             });
@@ -192,12 +222,60 @@ impl ContextBuilder {
         Ok(details)
     }
 
+    /// Read a single line from a source file at the given 0-based line.
+    fn read_line_snippet(&self, file_id: &FileId, line_0based: u32) -> Option<String> {
+        let root = self.project_root.as_ref()?;
+        let file_info = self.store.get_file(file_id).ok().flatten()?;
+        let full_path = root.join(&file_info.path);
+        let canonical = full_path.canonicalize().ok()?;
+        let canonical_root = root.canonicalize().ok()?;
+        if !canonical.starts_with(&canonical_root) {
+            return None;
+        }
+        let content = std::fs::read_to_string(&canonical).ok()?;
+        let line_idx = line_0based as usize;
+        content.lines().nth(line_idx).map(|l| l.trim().to_string())
+    }
+
     /// Read the subject symbol's source code from disk.
     ///
-    /// ContextBuilder does not hold a project_root; source snippet reading
-    /// is delegated to the MCP tool layer which can resolve file paths.
-    fn read_source_snippet(&self, _sym: &SymbolDef) -> Option<SourceSnippet> {
-        None
+    /// When a `project_root` is set, reads the file from disk and extracts
+    /// the symbol's source lines.  Without a project root (legacy path),
+    /// returns `None`.
+    fn read_source_snippet(&self, sym: &SymbolDef) -> Option<SourceSnippet> {
+        let root = self.project_root.as_ref()?;
+        let file_info = self.store.get_file(&sym.file_id).ok().flatten()?;
+        let full_path = root.join(&file_info.path);
+        let canonical = full_path.canonicalize().ok()?;
+        let canonical_root = root.canonicalize().ok()?;
+        if !canonical.starts_with(&canonical_root) {
+            return None;
+        }
+        let content = std::fs::read_to_string(&canonical).ok()?;
+        let all_lines: Vec<&str> = content.lines().collect();
+        let start = sym.range.start_line as usize;
+        let end = (sym.range.end_line as usize + 1).min(all_lines.len());
+        if start >= all_lines.len() {
+            return None;
+        }
+        let snippet_lines: Vec<String> = all_lines[start..end]
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        let total_lines = all_lines.len() as u32;
+        const MAX_CONTEXT_LINES: usize = 60;
+        let truncated = snippet_lines.len() > MAX_CONTEXT_LINES;
+        let lines = if truncated {
+            snippet_lines.into_iter().take(MAX_CONTEXT_LINES).collect()
+        } else {
+            snippet_lines
+        };
+        Some(SourceSnippet {
+            lines,
+            start_line: start as u32,
+            total_lines,
+            truncated,
+        })
     }
 }
 

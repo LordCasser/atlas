@@ -386,7 +386,7 @@ fn fx4_cross_file_return_to_call_bridge() {
 /// because no DataNodes exist for Symbolic‑only languages).
 #[test]
 #[cfg(feature = "java")]
-fn fx5_java_capability_declares_dataflow_basic() {
+fn fx5_java_capability_declares_dataflow_full() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[(
         "App.java",
@@ -415,8 +415,8 @@ fn fx5_java_capability_declares_dataflow_basic() {
         .expect("Java capability must be present");
     assert_eq!(cap.language, "java");
     assert!(
-        cap.capability_level == atlas_engine::capability::CapabilityLevel::DataflowBasic,
-        "Java must be DataflowBasic, got {:?}",
+        cap.capability_level == atlas_engine::capability::CapabilityLevel::DataflowFull,
+        "Java must be DataflowFull, got {:?}",
         cap.capability_level
     );
 
@@ -677,4 +677,1064 @@ const result = outer(inner(5));
     // bridge code path doesn't panic, and extraction produces correct facts.
     // When data_node_id becomes reliable, this can be upgraded to assert
     // ReturnToCall edges.
+}
+
+// ────────────────────────────────────────────────────────────────
+// Fixture 7: Java — Cross‑function ArgToParam
+// ────────────────────────────────────────────────────────────────
+
+/// FX7: When `outer()` calls `inner(x)`, tracing backward from callee param
+/// `p` must include an ArgToParam edge.
+#[test]
+#[cfg(feature = "java")]
+fn fx7_java_cross_function_arg_to_param() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "Bridge.java",
+        r#"class C {
+    int outer() {
+        int x = 42;
+        return inner(x);
+    }
+    int inner(int p) {
+        return p;
+    }
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("Bridge.java");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let param_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Parameter && n.name.as_deref() == Some("p"))
+        .collect();
+    assert!(!param_nodes.is_empty(), "expected parameter 'p' data node");
+    let param_node = param_nodes[0];
+
+    let resp = engine.trace_variable(
+        &file_id,
+        param_node.range.start_line + 1,
+        param_node.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "java");
+
+    let path = resp.result.expect("cross-function trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
+}
+
+// ────────────────────────────────────────────────────────────────
+// Java: Cross‑function ReturnToCall
+// ────────────────────────────────────────────────────────────────
+
+/// FX8: When `outer()` calls `inner()` and assigns result to `y`, tracing
+/// backward from `y` must include a ReturnToCall edge.
+#[test]
+#[cfg(feature = "java")]
+fn fx8_java_cross_function_return_to_call() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "RetBridge.java",
+        r#"class C {
+    int outer() {
+        int y = inner();
+        return y;
+    }
+    int inner() {
+        int data = 42;
+        return data;
+    }
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("RetBridge.java");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "java");
+
+    let path = resp.result.expect("cross-function return trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+}
+
+// ────────────────────────────────────────────────────────────────
+// Go: Cross‑function ArgToParam
+// ────────────────────────────────────────────────────────────────
+
+/// FX9: When `outer()` calls `inner(x)`, tracing backward from callee param
+/// `p` must include an ArgToParam edge.
+#[test]
+#[cfg(feature = "go")]
+fn fx9_go_cross_function_arg_to_param() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "bridge.go",
+        r#"package p
+
+func outer() int {
+    x := 42
+    return inner(x)
+}
+
+func inner(p int) int {
+    return p
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("bridge.go");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let param_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Parameter && n.name.as_deref() == Some("p"))
+        .collect();
+    assert!(!param_nodes.is_empty(), "expected parameter 'p' data node");
+    let param_node = param_nodes[0];
+
+    let resp = engine.trace_variable(
+        &file_id,
+        param_node.range.start_line + 1,
+        param_node.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "go");
+
+    let path = resp.result.expect("cross-function trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
+}
+
+// ────────────────────────────────────────────────────────────────
+// Go: Cross‑function ReturnToCall
+// ────────────────────────────────────────────────────────────────
+
+/// FX10: When `outer()` calls `inner()` and assigns result to `y`, tracing
+/// backward from `y` must include a ReturnToCall edge.
+#[test]
+#[cfg(feature = "go")]
+fn fx10_go_cross_function_return_to_call() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "retbridge.go",
+        r#"package p
+
+func outer() int {
+    y := inner()
+    return y
+}
+
+func inner() int {
+    data := 42
+    return data
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("retbridge.go");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "go");
+
+    let path = resp.result.expect("cross-function return trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+}
+
+// ────────────────────────────────────────────────────────────────
+// C#: Cross‑function ArgToParam
+// ────────────────────────────────────────────────────────────────
+
+/// FX11: When `Outer()` calls `Inner(x)`, tracing backward from callee param
+/// `p` must include an ArgToParam edge.
+#[test]
+#[cfg(feature = "csharp")]
+fn fx11_csharp_cross_function_arg_to_param() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "Bridge.cs",
+        r#"class C {
+    int Outer() {
+        int x = 42;
+        return Inner(x);
+    }
+    int Inner(int p) {
+        return p;
+    }
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("Bridge.cs");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let param_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Parameter && n.name.as_deref() == Some("p"))
+        .collect();
+    assert!(!param_nodes.is_empty(), "expected parameter 'p' data node");
+    let param_node = param_nodes[0];
+
+    let resp = engine.trace_variable(
+        &file_id,
+        param_node.range.start_line + 1,
+        param_node.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "csharp");
+
+    let path = resp.result.expect("cross-function trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
+}
+
+// ────────────────────────────────────────────────────────────────
+// C#: Cross‑function ReturnToCall
+// ────────────────────────────────────────────────────────────────
+
+/// FX12: When `Outer()` calls `Inner()` and assigns result to `y`, tracing
+/// backward from `y` must include a ReturnToCall edge.
+#[test]
+#[cfg(feature = "csharp")]
+fn fx12_csharp_cross_function_return_to_call() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "RetBridge.cs",
+        r#"class C {
+    int Outer() {
+        int y = Inner();
+        return y;
+    }
+    int Inner() {
+        int data = 42;
+        return data;
+    }
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("RetBridge.cs");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    // Use LOCAL y (variable definition) for the sink — find_node returns the
+    // last match, which may be VariableUse/Return y from `return y`.
+    let sink = data_nodes.iter()
+        .find(|n| n.kind == DataNodeKind::Local && n.name.as_deref() == Some("y"))
+        .expect("must find Local y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "csharp");
+
+    let path = resp.result.expect("cross-function return trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+}
+
+// ────────────────────────────────────────────────────────────────
+// Rust: Cross‑function ArgToParam
+// ────────────────────────────────────────────────────────────────
+
+/// FX13: When `outer()` calls `inner(x)`, tracing backward from callee param
+/// `p` must include an ArgToParam edge.
+#[test]
+#[cfg(feature = "rust")]
+fn fx13_rust_cross_function_arg_to_param() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "bridge.rs",
+        r#"fn outer() -> i32 {
+    let x = 42;
+    inner(x)
+}
+
+fn inner(p: i32) -> i32 {
+    p
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("bridge.rs");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let param_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Parameter && n.name.as_deref() == Some("p"))
+        .collect();
+    assert!(!param_nodes.is_empty(), "expected parameter 'p' data node");
+    let param_node = param_nodes[0];
+
+    let resp = engine.trace_variable(
+        &file_id,
+        param_node.range.start_line + 1,
+        param_node.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "rust");
+
+    let path = resp.result.expect("cross-function trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
+}
+
+// ────────────────────────────────────────────────────────────────
+// Rust: Cross‑function ReturnToCall
+// ────────────────────────────────────────────────────────────────
+
+/// FX14: When `outer()` calls `inner()` and assigns result to `y`, tracing
+/// backward from `y` must include a ReturnToCall edge.
+///
+/// GAP: ReturnToCall bridge does not fire for Rust — the trace produces 3 steps
+/// but none is ReturnToCall.  The SummaryEdgeProvider does not bridge the
+/// callee return to the caller assignment.  Fix this before upgrading Rust to
+/// DataflowFull.
+#[test]
+#[should_panic(expected = "expected at least one ReturnToCall edge")]
+#[cfg(feature = "rust")]
+fn fx14_rust_cross_function_return_to_call() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "retbridge.rs",
+        r#"fn outer() -> i32 {
+    let y = inner();
+    y
+}
+
+fn inner() -> i32 {
+    let data = 42;
+    data
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("retbridge.rs");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "rust");
+
+    let path = resp.result.expect("cross-function return trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+}
+
+// ────────────────────────────────────────────────────────────────
+// PHP: Cross‑function ArgToParam
+// ────────────────────────────────────────────────────────────────
+
+/// FX15: When `outer()` calls `inner($x)`, tracing backward from callee param
+/// `$p` must include an ArgToParam edge.
+///
+/// GAP: PHP extraction does not produce DataNode entries for function
+/// parameters — `find_store_data_nodes` returns no Parameter nodes.  The
+/// DataFlowBuilder/lexical binder for PHP needs to emit Parameter DataNodes
+/// before interprocedural bridging can work.  Fix this before upgrading PHP
+/// to DataflowFull.
+#[test]
+#[should_panic(expected = "expected parameter")]
+#[cfg(feature = "php")]
+fn fx15_php_cross_function_arg_to_param() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "bridge.php",
+        r#"<?php
+function outer() {
+    $x = 42;
+    return inner($x);
+}
+function inner($p) {
+    return $p;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("bridge.php");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let param_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Parameter && n.name.as_deref() == Some("p"))
+        .collect();
+    assert!(!param_nodes.is_empty(), "expected parameter 'p' data node");
+    let param_node = param_nodes[0];
+
+    let resp = engine.trace_variable(
+        &file_id,
+        param_node.range.start_line + 1,
+        param_node.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "php");
+
+    let path = resp.result.expect("cross-function trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
+}
+
+// ────────────────────────────────────────────────────────────────
+// PHP: Cross‑function ReturnToCall
+// ────────────────────────────────────────────────────────────────
+
+/// FX16: When `outer()` calls `inner()` and assigns result to `$y`, tracing
+/// backward from `$y` must include a ReturnToCall edge.
+///
+/// GAP: PHP extraction does not produce DataNodes for local variables — the
+/// sink `y` is not found.  Fix extraction before this fixture can pass.
+#[test]
+#[should_panic(expected = "data node 'y' not found")]
+#[cfg(feature = "php")]
+fn fx16_php_cross_function_return_to_call() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "retbridge.php",
+        r#"<?php
+function outer() {
+    $y = inner();
+    return $y;
+}
+function inner() {
+    $data = 42;
+    return $data;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("retbridge.php");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "php");
+
+    let path = resp.result.expect("cross-function return trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+}
+
+// ────────────────────────────────────────────────────────────────
+// Ruby: Cross‑function ArgToParam
+// ────────────────────────────────────────────────────────────────
+
+/// FX17: When `outer()` calls `inner(x)`, tracing backward from callee param
+/// `p` must include an ArgToParam edge.
+#[test]
+#[cfg(feature = "ruby")]
+fn fx17_ruby_cross_function_arg_to_param() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "bridge.rb",
+        r#"def outer
+  x = 42
+  inner(x)
+end
+
+def inner(p)
+  p
+end
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("bridge.rb");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let param_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Parameter && n.name.as_deref() == Some("p"))
+        .collect();
+    assert!(!param_nodes.is_empty(), "expected parameter 'p' data node");
+    let param_node = param_nodes[0];
+
+    let resp = engine.trace_variable(
+        &file_id,
+        param_node.range.start_line + 1,
+        param_node.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "ruby");
+
+    let path = resp.result.expect("cross-function trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
+}
+
+// ────────────────────────────────────────────────────────────────
+// Ruby: Cross‑function ReturnToCall
+// ────────────────────────────────────────────────────────────────
+
+/// FX18: When `outer()` calls `inner()` and assigns result to `y`, tracing
+/// backward from `y` must include a ReturnToCall edge.
+///
+/// GAP: ReturnToCall bridge does not fire for Ruby — the trace path has 3
+/// steps but none is ReturnToCall.  Fix the SummaryEdgeProvider / cross-function
+/// bridge for Ruby before removing this should_panic.
+#[test]
+#[should_panic(expected = "expected at least one ReturnToCall edge")]
+#[cfg(feature = "ruby")]
+fn fx18_ruby_cross_function_return_to_call() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "retbridge.rb",
+        r#"def outer
+  y = inner
+  y
+end
+
+def inner
+  data = 42
+  data
+end
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("retbridge.rb");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "ruby");
+
+    let path = resp.result.expect("cross-function return trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+}
+
+// ────────────────────────────────────────────────────────────────
+// Kotlin: Cross‑function ArgToParam
+// ────────────────────────────────────────────────────────────────
+
+/// FX19: When `outer()` calls `inner(x)`, tracing backward from callee param
+/// `p` must include an ArgToParam edge.
+///
+/// GAP: Kotlin ArgToParam bridge does not fire — trace_variable returns an
+/// empty path.  Fix the SummaryEdgeProvider / cross-function bridge for
+/// Kotlin before removing this should_panic.
+#[test]
+#[should_panic(expected = "cross-function trace must have steps")]
+#[cfg(feature = "kotlin")]
+fn fx19_kotlin_cross_function_arg_to_param() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "bridge.kt",
+        r#"fun outer(): Int {
+    val x = 42
+    return inner(x)
+}
+
+fun inner(p: Int): Int {
+    return p
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("bridge.kt");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let param_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Parameter && n.name.as_deref() == Some("p"))
+        .collect();
+    assert!(!param_nodes.is_empty(), "expected parameter 'p' data node");
+    let param_node = param_nodes[0];
+
+    let resp = engine.trace_variable(
+        &file_id,
+        param_node.range.start_line + 1,
+        param_node.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "kotlin");
+
+    let path = resp.result.expect("cross-function trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
+}
+
+// ────────────────────────────────────────────────────────────────
+// Kotlin: Cross‑function ReturnToCall
+// ────────────────────────────────────────────────────────────────
+
+/// FX20: When `outer()` calls `inner()` and assigns result to `y`, tracing
+/// backward from `y` must include a ReturnToCall edge.
+///
+/// GAP: Kotlin ReturnToCall bridge does not fire — the trace path has 1 step
+/// but none is ReturnToCall.  Fix the SummaryEdgeProvider / cross-function
+/// bridge for Kotlin before removing this should_panic.
+#[test]
+#[should_panic(expected = "expected at least one ReturnToCall edge")]
+#[cfg(feature = "kotlin")]
+fn fx20_kotlin_cross_function_return_to_call() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "retbridge.kt",
+        r#"fun outer(): Int {
+    val y = inner()
+    return y
+}
+
+fun inner(): Int {
+    val data = 42
+    return data
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("retbridge.kt");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "kotlin");
+
+    let path = resp.result.expect("cross-function return trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+}
+
+// ────────────────────────────────────────────────────────────────
+// Python: Cross‑function ArgToParam
+// ────────────────────────────────────────────────────────────────
+
+/// FX21: Python ArgToParam — When `fx_py_arg_to_param_outer()` calls
+/// `fx_py_arg_to_param_inner(x)`, tracing backward from callee param `p` must
+/// include an ArgToParam edge.
+#[test]
+#[cfg(feature = "python")]
+fn fx21_py_cross_function_arg_to_param() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "bridge.py",
+        r#"def fx_py_arg_to_param_outer():
+    x = "source"
+    fx_py_arg_to_param_inner(x)
+
+def fx_py_arg_to_param_inner(p):
+    result = p
+    return result
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("bridge.py");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let param_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Parameter && n.name.as_deref() == Some("p"))
+        .collect();
+    assert!(!param_nodes.is_empty(), "expected parameter 'p' data node");
+    let param_node = param_nodes[0];
+
+    let resp = engine.trace_variable(
+        &file_id,
+        param_node.range.start_line + 1,
+        param_node.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "python");
+
+    let path = resp.result.expect("cross-function trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
+}
+
+// ────────────────────────────────────────────────────────────────
+// Python: Cross‑function ReturnToCall
+// ────────────────────────────────────────────────────────────────
+
+/// FX22: Python ReturnToCall — When `fx_py_return_to_call_process()` calls
+/// `fx_py_return_to_call_get_value()` and assigns result to `y`, tracing
+/// backward from `y` must include a ReturnToCall edge.
+///
+/// GAP: ReturnToCall bridge does not fire for Python — the trace produces 3
+/// steps but none is ReturnToCall.  The SummaryEdgeProvider does not bridge the
+/// callee return to the caller assignment.  Fix this before removing should_panic.
+#[test]
+#[should_panic(expected = "expected at least one ReturnToCall edge")]
+#[cfg(feature = "python")]
+fn fx22_py_cross_function_return_to_call() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "retbridge.py",
+        r#"def fx_py_return_to_call_get_value():
+    data = "result"
+    return data
+
+def fx_py_return_to_call_process():
+    y = fx_py_return_to_call_get_value()
+    result = y
+    return result
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("retbridge.py");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "python");
+
+    let path = resp.result.expect("cross-function return trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+}
+
+// ────────────────────────────────────────────────────────────────
+// C: Cross‑function ArgToParam
+// ────────────────────────────────────────────────────────────────
+
+/// FX23: When `outer()` calls `inner(x)`, tracing backward from callee param
+/// `p` must include an ArgToParam edge.
+#[test]
+#[cfg(feature = "c")]
+fn fx23_c_cross_function_arg_to_param() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "bridge.c",
+        r#"int inner(int p) {
+    return p;
+}
+
+int outer() {
+    int x = 42;
+    return inner(x);
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("bridge.c");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let param_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Parameter && n.name.as_deref() == Some("p"))
+        .collect();
+    assert!(!param_nodes.is_empty(), "expected parameter 'p' data node");
+    let param_node = param_nodes[0];
+
+    let resp = engine.trace_variable(
+        &file_id,
+        param_node.range.start_line + 1,
+        param_node.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "c");
+
+    let path = resp.result.expect("cross-function trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
+}
+
+// ────────────────────────────────────────────────────────────────
+// C: Cross‑function ReturnToCall
+// ────────────────────────────────────────────────────────────────
+
+/// FX24: When `outer()` calls `inner()` and assigns result to `y`, tracing
+/// backward from `y` must include a ReturnToCall edge.
+///
+/// GAP: ReturnToCall bridge does not fire for C — the trace produces 3 steps
+/// but none is ReturnToCall.  Fix the SummaryEdgeProvider / cross-function
+/// bridge for C before removing this should_panic.
+#[test]
+#[should_panic(expected = "expected at least one ReturnToCall edge")]
+#[cfg(feature = "c")]
+fn fx24_c_cross_function_return_to_call() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "retbridge.c",
+        r#"int inner() {
+    int data = 42;
+    return data;
+}
+
+int outer() {
+    int y = inner();
+    return y;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("retbridge.c");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "c");
+
+    let path = resp.result.expect("cross-function return trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+}
+
+// ────────────────────────────────────────────────────────────────
+// C++: Cross‑function ArgToParam
+// ────────────────────────────────────────────────────────────────
+
+/// FX25: When `outer()` calls `inner(x)`, tracing backward from callee param
+/// `p` must include an ArgToParam edge.
+#[test]
+#[cfg(feature = "cpp")]
+fn fx25_cpp_cross_function_arg_to_param() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "bridge.cpp",
+        r#"int inner(int p) {
+    return p;
+}
+
+int outer() {
+    int x = 42;
+    return inner(x);
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("bridge.cpp");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let param_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Parameter && n.name.as_deref() == Some("p"))
+        .collect();
+    assert!(!param_nodes.is_empty(), "expected parameter 'p' data node");
+    let param_node = param_nodes[0];
+
+    let resp = engine.trace_variable(
+        &file_id,
+        param_node.range.start_line + 1,
+        param_node.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "cpp");
+
+    let path = resp.result.expect("cross-function trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
+}
+
+// ────────────────────────────────────────────────────────────────
+// C++: Cross‑function ReturnToCall
+// ────────────────────────────────────────────────────────────────
+
+/// FX26: When `outer()` calls `inner()` and assigns result to `y`, tracing
+/// backward from `y` must include a ReturnToCall edge.
+///
+/// GAP: ReturnToCall bridge does not fire for C++ — the trace produces 3 steps
+/// but none is ReturnToCall.  Fix the SummaryEdgeProvider / cross-function
+/// bridge for C++ before removing this should_panic.
+#[test]
+#[should_panic(expected = "expected at least one ReturnToCall edge")]
+#[cfg(feature = "cpp")]
+fn fx26_cpp_cross_function_return_to_call() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "retbridge.cpp",
+        r#"int inner() {
+    int data = 42;
+    return data;
+}
+
+int outer() {
+    int y = inner();
+    return y;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("retbridge.cpp");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "cpp");
+
+    let path = resp.result.expect("cross-function return trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+}
+
+// ────────────────────────────────────────────────────────────────
+// ArkTS: Cross‑function ArgToParam
+// ────────────────────────────────────────────────────────────────
+
+/// FX27: When `outer()` calls `inner(x)`, tracing backward from callee param
+/// `p` must include an ArgToParam edge.
+#[test]
+#[cfg(feature = "arkts")]
+fn fx27_arkts_cross_function_arg_to_param() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "bridge.ets",
+        r#"function inner(p: number): number {
+    return p;
+}
+
+function outer(): number {
+    let x: number = 42;
+    return inner(x);
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("bridge.ets");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let param_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Parameter && n.name.as_deref() == Some("p"))
+        .collect();
+    assert!(!param_nodes.is_empty(), "expected parameter 'p' data node");
+    let param_node = param_nodes[0];
+
+    let resp = engine.trace_variable(
+        &file_id,
+        param_node.range.start_line + 1,
+        param_node.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "arkts");
+
+    let path = resp.result.expect("cross-function trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
+}
+
+// ────────────────────────────────────────────────────────────────
+// ArkTS: Cross‑function ReturnToCall
+// ────────────────────────────────────────────────────────────────
+
+/// FX28: When `outer()` calls `inner()` and assigns result to `y`, tracing
+/// backward from `y` must include a ReturnToCall edge.
+#[test]
+#[cfg(feature = "arkts")]
+fn fx28_arkts_cross_function_return_to_call() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "retbridge.ets",
+        r#"function inner(): number {
+    let data: number = 42;
+    return data;
+}
+
+function outer(): number {
+    let y: number = inner();
+    return y;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("retbridge.ets");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "arkts");
+
+    let path = resp.result.expect("cross-function return trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
 }

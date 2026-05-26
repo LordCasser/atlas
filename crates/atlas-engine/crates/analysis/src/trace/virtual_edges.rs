@@ -94,6 +94,26 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
             None => return Ok(vec![]),
         };
 
+        // ── Phase 1: try CrossFunctionBridge (persisted summaries) ──
+        let bridge_edges = match target_node.kind {
+            DataNodeKind::Parameter => {
+                crate::cross_function::CrossFunctionBridge::incoming_for_param(target_id, store)
+                    .unwrap_or_default()
+            }
+            DataNodeKind::CallReturn | DataNodeKind::Expr => {
+                crate::cross_function::CrossFunctionBridge::incoming_for_call_result(
+                    target_id, store,
+                )
+                .unwrap_or_default()
+            }
+            _ => vec![],
+        };
+
+        if !bridge_edges.is_empty() {
+            return Ok(bridge_edges);
+        }
+
+        // ── Phase 2: fallback to existing runtime BFS logic ──
         let mut edges: Vec<TraceEdge> = Vec::new();
 
         match target_node.kind {

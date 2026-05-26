@@ -302,6 +302,9 @@ impl TraceEngine {
                     );
                 }
 
+                // Trail: actionable next steps for the Agent
+                add_caller_chain_trail(&mut diagnostics, &chain);
+
                 let partial = chain.truncated || !diagnostics.is_empty();
                 TraceQueryResponse {
                     ok: true,
@@ -341,27 +344,179 @@ impl TraceEngine {
     /// Searches all files for symbols matching `name`, then runs
     /// [`trace_callers`] on the first match. If multiple symbols share the
     /// name, the first one found (alphabetical by file path) is used.
+    ///
+    /// When multiple symbols match the same name (e.g. `bufio.Scanner.Next`
+    /// vs `Context.Next`), the response includes a `multiple_matches`
+    /// diagnostic listing all candidates so the Agent can re-query with a
+    /// specific hex ID.
     pub fn trace_callers_by_name(
         &self,
         name: &str,
         max_depth: usize,
     ) -> TraceQueryResponse<CallerChain> {
-        let ids = match self.find_symbol_ids_by_name(name) {
-            Ok(ids) => ids,
+        let symbols = match self.store.find_symbols_by_name(name) {
+            Ok(s) => s,
             Err(e) => return TraceQueryResponse::err("trace_callers", &e.to_string()),
         };
-        match ids.first() {
-            Some(id) => self.trace_callers(id, max_depth),
-            None => TraceQueryResponse::partial(
+        if symbols.is_empty() {
+            return TraceQueryResponse::partial(
                 "trace_callers",
                 TraceDiagnostic::warning(&format!("Symbol '{}' not found in index", name))
                     .with_code("symbol_not_found"),
                 None,
-            ),
+            );
         }
+
+        // When multiple symbols share the same name, list all candidates
+        // so the Agent can disambiguate.  Do NOT silently pick the first —
+        // this was the root cause of tracing `bufio.Scanner.Next` when the
+        // user meant `Context.Next`.
+        //
+        // Enhancement: annotate each candidate with whether it belongs to
+        // the same project (in_project).  If exactly one in-project candidate
+        // exists, auto-select it (same-project heuristic).
+        if symbols.len() > 1 {
+            let candidates_with_meta: Vec<serde_json::Value> = symbols
+                .iter()
+                .take(10)
+                .map(|s| {
+                    let file_path = self.resolve_file_path(&s.file_id).unwrap_or_default();
+                    let in_project = self.is_file_in_project(&file_path);
+                    let container_info = s.container.map(|cid| {
+                        self.store.find_symbol_by_id(&cid).ok().flatten()
+                            .map(|cs| cs.qualified_name)
+                            .unwrap_or_else(|| cid.to_hex())
+                    });
+                    serde_json::json!({
+                        "hex_id": s.id.to_hex(),
+                        "qualified_name": s.qualified_name,
+                        "kind": s.kind.as_str(),
+                        "file": file_path,
+                        "container": container_info,
+                        "in_project": in_project,
+                    })
+                })
+                .collect();
+
+            // Heuristic: if exactly one candidate is in the same project,
+            // auto-select it.  This handles the common case where a method
+            // name (e.g. "Next") collides with a stdlib symbol.
+            let in_project_candidates: Vec<&serde_json::Value> = candidates_with_meta
+                .iter()
+                .filter(|c| c["in_project"].as_bool().unwrap_or(false))
+                .collect();
+
+            if in_project_candidates.len() == 1 {
+                if let Some(hex) = in_project_candidates[0]["hex_id"].as_str() {
+                    if let Ok(target_id) = hex.parse::<SymbolId>() {
+                        return self.trace_callers(&target_id, max_depth);
+                    }
+                }
+            }
+
+            let candidate_names: Vec<&str> = symbols
+                .iter()
+                .take(5)
+                .map(|s| s.qualified_name.as_str())
+                .collect();
+            let suggested_hint = if in_project_candidates.is_empty() {
+                " All candidates are from outside the project (stdlib/dependencies); inspect `in_project` field to choose manually.".to_string()
+            } else {
+                // in_project > 1 (== 1 already handled by auto-select above)
+                format!(
+                    " {} in-project candidates; inspect `in_project` field in detail to choose.",
+                    in_project_candidates.len()
+                )
+            };
+            let msg = format!(
+                "Symbol '{}' matched {} symbols: [{}].{} Re-run with `symbol: \"<hex_id>\"` to trace a specific symbol.",
+                name,
+                symbols.len(),
+                candidate_names.join(", "),
+                suggested_hint,
+            );
+            return TraceQueryResponse {
+                ok: true,
+                kind: "trace_callers".to_string(),
+                capability: None,
+                partial_result: true,
+                diagnostics: vec![TraceDiagnostic::warning(&msg)
+                    .with_code("multiple_matches")
+                    .with_detail(serde_json::to_string(&candidates_with_meta).unwrap_or_default())],
+                result: None,
+            };
+        }
+
+        // Exactly one match — trace it directly
+        let target_id = &symbols[0].id;
+        self.trace_callers(target_id, max_depth)
     }
 
     // ── Forward trace ──────────────────────────────────────────────────
+
+    /// Trace the forward call chain from `source` to `target` by name.
+    ///
+    /// Resolves both names via indexed lookup.  When either name has multiple
+    /// matches, returns a `multiple_matches` diagnostic listing all candidates
+    /// so the Agent can re-query with specific hex IDs.
+    pub fn trace_forward_by_name(
+        &self,
+        source_name: &str,
+        target_name: &str,
+        max_depth: usize,
+    ) -> TraceQueryResponse<ForwardChain> {
+        let source_symbols = match self.store.find_symbols_by_name(source_name) {
+            Ok(s) => s,
+            Err(e) => return TraceQueryResponse::err("trace_forward", &e.to_string()),
+        };
+        let target_symbols = match self.store.find_symbols_by_name(target_name) {
+            Ok(s) => s,
+            Err(e) => return TraceQueryResponse::err("trace_forward", &e.to_string()),
+        };
+
+        // Check for missing symbols
+        if source_symbols.is_empty() {
+            return TraceQueryResponse::partial(
+                "trace_forward",
+                TraceDiagnostic::warning(&format!("Source symbol '{}' not found in index", source_name))
+                    .with_code("symbol_not_found"),
+                None,
+            );
+        }
+        if target_symbols.is_empty() {
+            return TraceQueryResponse::partial(
+                "trace_forward",
+                TraceDiagnostic::warning(&format!("Target symbol '{}' not found in index", target_name))
+                    .with_code("symbol_not_found"),
+                None,
+            );
+        }
+
+        // Multi-match disambiguation — same pattern as trace_callers_by_name
+        if source_symbols.len() > 1 || target_symbols.len() > 1 {
+            let mut parts: Vec<String> = Vec::new();
+            if source_symbols.len() > 1 {
+                let names: Vec<&str> = source_symbols.iter().take(5).map(|s| s.qualified_name.as_str()).collect();
+                parts.push(format!("source '{}' matched {}: [{}]", source_name, source_symbols.len(), names.join(", ")));
+            }
+            if target_symbols.len() > 1 {
+                let names: Vec<&str> = target_symbols.iter().take(5).map(|s| s.qualified_name.as_str()).collect();
+                parts.push(format!("target '{}' matched {}: [{}]", target_name, target_symbols.len(), names.join(", ")));
+            }
+            return TraceQueryResponse::partial(
+                "trace_forward",
+                TraceDiagnostic::warning(&format!(
+                    "Ambiguous names: {}. Re-run with `from` and `to` hex IDs to trace a specific path.",
+                    parts.join("; ")
+                ))
+                .with_code("multiple_matches"),
+                None,
+            );
+        }
+
+        // Exactly one match each — trace forward
+        self.trace_forward(&source_symbols[0].id, &target_symbols[0].id, max_depth)
+    }
 
     /// Trace the forward call chain from `source_id` to `target_id`.
     ///
@@ -372,19 +527,61 @@ impl TraceEngine {
         target_id: &SymbolId,
         max_depth: usize,
     ) -> TraceQueryResponse<ForwardChain> {
-        let cap = self
+        let source_sym = self
             .store
             .find_symbol_by_id(source_id)
             .ok()
-            .flatten()
-            .map(|s| LanguageCapabilityProfile::for_language(s.language));
+            .flatten();
+
+        // Check symbol existence first — a missing symbol is a different class
+        // of problem than an unsupported language.
+        if source_sym.is_none() {
+            return TraceQueryResponse::partial(
+                "trace_forward",
+                TraceDiagnostic::warning(&format!(
+                    "Source symbol '{}' not found in the index. The symbol may need structural parsing — try narrowing scope with 'atlas_search' on the containing file, or run 'atlas index' to ensure the project is fully indexed.",
+                    source_id.to_hex()
+                ))
+                .with_code("symbol_not_found"),
+                None,
+            );
+        }
+
+        let source = source_sym.as_ref().unwrap();
+        let cap = Some(LanguageCapabilityProfile::for_language(source.language));
 
         // Capability gate — same as trace_callers
         if !self.has_call_graph_cap(&cap) {
+            let lang_name = source.language.as_str();
             return TraceQueryResponse::partial(
                 "trace_forward",
-                TraceDiagnostic::warning("Call graph not supported for this language")
-                    .with_code("unsupported_language"),
+                TraceDiagnostic::warning(&format!(
+                    "Forward call-graph tracing is not available for {}. Consider using 'trace_caller_path' (reverse trace from target) or 'atlas_callgraph' for neighborhood exploration. If you believe call-graph edges should exist, verify that the '{lang_name}' feature is compiled into the Atlas binary (--features {lang_name}).",
+                    lang_name,
+                ))
+                .with_code("unsupported_language")
+                .with_detail(format!(
+                    r#"{{"alternatives":["trace_caller_path","atlas_callgraph","atlas_context"],"language":"{lang_name}"}}"#
+                )),
+                cap,
+            );
+        }
+
+        // Check that target exists too — the source may be fine but the
+        // target was mis-specified or isn't indexed.
+        let target_sym = self
+            .store
+            .find_symbol_by_id(target_id)
+            .ok()
+            .flatten();
+        if target_sym.is_none() {
+            return TraceQueryResponse::partial(
+                "trace_forward",
+                TraceDiagnostic::warning(&format!(
+                    "Target symbol '{}' not found in the index. The symbol may need structural parsing — try running 'atlas_context' with its qualified name to trigger on-demand parsing.",
+                    target_id.to_hex()
+                ))
+                .with_code("target_not_found"),
                 cap,
             );
         }
@@ -410,6 +607,9 @@ impl TraceEngine {
                         .with_code("max_depth_truncated"),
                     );
                 }
+
+                // Trail: actionable next steps for the Agent
+                add_forward_chain_trail(&mut diagnostics, &chain);
 
                 let partial = chain.truncated || !diagnostics.is_empty();
                 TraceQueryResponse {
@@ -460,10 +660,34 @@ impl TraceEngine {
 
     /// Populate [`Evidence`] on every step of a [`CallerChain`].
     ///
-    /// Resolves file paths and caller symbol names from the store.
+    /// Resolves file paths, caller/callee symbol names, and extracts
+    /// multi-line callsite context from the source file.  The evidence
+    /// snippet now shows ~3 lines around the actual call site rather than
+    /// just the caller's first line.
     fn enrich_caller_chain_steps(&self, chain: &mut CallerChain) {
         for step in &mut chain.steps {
-            step.evidence = self.build_step_evidence_symbol(&step.file_id, &step.caller);
+            // Evidence: use callsite location for the snippet (not caller's first line).
+            let callsite_line = step.range.as_ref().map(|r| r.start_line);
+            step.evidence = self.build_step_evidence_with_context(
+                &step.file_id,
+                &step.caller,
+                callsite_line,
+            );
+
+            // Caller snippet: the line where the call is made, with context.
+            if let Ok(Some(sym)) = self.store.find_symbol_by_id(&step.caller) {
+                if let Some(ref fp) = self.resolve_file_path(&sym.file_id) {
+                    if let Some(cs_line) = callsite_line {
+                        step.caller_snippet = self.extract_context_snippet(fp, cs_line, 3);
+                    }
+                }
+            }
+            // Callee snippet: first line of the callee definition (signature).
+            if let Ok(Some(sym)) = self.store.find_symbol_by_id(&step.callee) {
+                if let Some(ref fp) = self.resolve_file_path(&sym.file_id) {
+                    step.callee_snippet = self.extract_snippet(fp, sym.range.start_line);
+                }
+            }
         }
     }
 
@@ -505,6 +729,30 @@ impl TraceEngine {
         })
     }
 
+    /// Build an [`Evidence`] with a multi-line context snippet at a specific
+    /// callsite line (rather than the caller's first line).
+    fn build_step_evidence_with_context(
+        &self,
+        file_id: &FileId,
+        symbol_id: &SymbolId,
+        callsite_line: Option<u32>,
+    ) -> Option<Evidence> {
+        let file_path = self.resolve_file_path(file_id)?;
+        let symbol = self.store.find_symbol_by_id(symbol_id).ok().flatten();
+        let symbol_name = symbol.as_ref().map(|s| s.name.clone());
+        // Use the callsite line for the snippet — this is the actual line
+        // where the call happens, far more useful than the caller's first line.
+        let snippet = match callsite_line {
+            Some(line) => self.extract_context_snippet(&file_path, line, 3),
+            None => None,
+        };
+        Some(Evidence {
+            file_path,
+            snippet,
+            symbol_name,
+        })
+    }
+
     /// Build an [`Evidence`] from a file_id and a symbol id.
     fn build_step_evidence_symbol(
         &self,
@@ -521,6 +769,38 @@ impl TraceEngine {
             snippet,
             symbol_name,
         })
+    }
+
+    /// Extract a multi-line context snippet around the given line.
+    ///
+    /// Returns up to `context_lines` lines before and after the target line,
+    /// joined with newlines.  The target line is included.
+    fn extract_context_snippet(&self, file_path: &str, line_0based: u32, context_lines: usize) -> Option<String> {
+        let root = self.project_root.as_ref()?;
+        let full_path = root.join(file_path);
+        let canonical = full_path.canonicalize().ok()?;
+        let canonical_root = root.canonicalize().ok()?;
+        if !canonical.starts_with(&canonical_root) {
+            return None;
+        }
+        let content = std::fs::read_to_string(&canonical).ok()?;
+        let all_lines: Vec<&str> = content.lines().collect();
+        let center = line_0based as usize;
+        if center >= all_lines.len() {
+            return None;
+        }
+        let start = center.saturating_sub(context_lines);
+        let end = (center + context_lines + 1).min(all_lines.len());
+        let lines: Vec<String> = all_lines[start..end]
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                let actual_line = start + i;
+                let marker = if actual_line == center { ">" } else { " " };
+                format!("{} {}", marker, l)
+            })
+            .collect();
+        Some(lines.join("\n"))
     }
 
     /// Extract a one-line snippet from the source file at the given 0-based line.
@@ -540,6 +820,24 @@ impl TraceEngine {
         let content = std::fs::read_to_string(&canonical).ok()?;
         let line_idx = line_0based as usize;
         content.lines().nth(line_idx).map(|l| l.trim().to_string())
+    }
+
+    /// Check whether a file path belongs to the current project.
+    ///
+    /// Used for same-project heuristic: when multiple symbols share a name
+    /// (e.g. `Context.Next` vs `bufio.Scanner.Next`), prefer the one whose
+    /// source file lives under the project root.
+    fn is_file_in_project(&self, file_path: &str) -> bool {
+        let Some(root) = self.project_root.as_ref() else {
+            return false;
+        };
+        let Ok(full_path) = root.join(file_path).canonicalize() else {
+            return false;
+        };
+        let Ok(canonical_root) = root.canonicalize() else {
+            return false;
+        };
+        full_path.starts_with(&canonical_root)
     }
 
     /// Resolve a file path from a file_id.
@@ -624,6 +922,45 @@ impl HasBoundary for types::caller_path::ForwardChainStep {
     fn boundary(&self) -> Option<&BoundaryMarker> {
         self.boundary.as_ref()
     }
+}
+
+// ── Trail diagnostics: next-step guidance for Agent consumers ──────────────
+
+/// Append actionable next-step diagnostics to a caller-chain response.
+fn add_caller_chain_trail(diagnostics: &mut Vec<TraceDiagnostic>, chain: &CallerChain) {
+    if chain.steps.is_empty() {
+        return;
+    }
+    let root_name = &chain.root.name;
+    let target_name = &chain.target.qualified_name;
+    let hop_count = chain.steps.len();
+    diagnostics.push(
+        TraceDiagnostic::info(&format!(
+            "Trail: {}→{} ({hop_count} hops). Next: `atlas_context` with `symbol: \"{}\"` for full source of root; `trace_caller_path` with `symbol_name: \"{}\"` to trace beyond root; `trace_forward` from root hex to trace the forward chain.",
+            root_name, target_name,
+            chain.root.qualified_name,
+            root_name,
+        ))
+        .with_code("next_steps"),
+    );
+}
+
+/// Append actionable next-step diagnostics to a forward-chain response.
+fn add_forward_chain_trail(diagnostics: &mut Vec<TraceDiagnostic>, chain: &ForwardChain) {
+    if chain.steps.is_empty() {
+        return;
+    }
+    let source_name = &chain.source.name;
+    let target_name = &chain.target.qualified_name;
+    let hop_count = chain.steps.len();
+    diagnostics.push(
+        TraceDiagnostic::info(&format!(
+            "Trail: {}→{} ({hop_count} hops). Next: `atlas_context` with `symbol: \"{}\"` for full target source; `atlas_callgraph` from target to see its callees.",
+            source_name, target_name,
+            chain.target.qualified_name,
+        ))
+        .with_code("next_steps"),
+    );
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────
