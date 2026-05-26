@@ -1,28 +1,29 @@
-// TUI renderer — draws the multi-panel phase list using ratatui.
+// TUI renderer — draws the compact progress display using ratatui.
 //
-// Layout:
+// Layout (Plan B — compact with Gauge progress bar):
 // ```
 // ┌─ Atlas Index ──────────────────────────────────────────
 // │
-// │  ◆ Discovery — 161 files                      0.1s
-// │  ◆ Hash check — 150 dirty / 11 reused         0.2s
-// │  ◌ Parsing code   8,234 files . 1,240/s
-// │  . Storing data                          (pending)
-// │  . Resolving refs                        (pending)
-// │
+// │  ◆ Scanning files · Computing hashes · Cleaning stale data
+// │  Parsing code  ████████░░░░░░░░░░░░  45%
+// │  · Storing data · Resolving refs · Building edges · Finalizing
 // │  Total: 8,234/18,432 | 1,240/s | elapsed 5.2s
 // └────────────────────────────────────────────────────────
 // ```
+//
+// Completed phases are merged into one row, pending phases into another.
+// The currently running phase uses a ratatui `Gauge` widget when the
+// total is known; otherwise it falls back to a text line with a count.
 
 use std::sync::{Arc, Mutex};
 
-use atlas_engine::progress::{PhaseState, ProgressSnapshot};
+use atlas_engine::progress::ProgressSnapshot;
 
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Gauge, Paragraph},
     Frame,
 };
 
@@ -55,103 +56,126 @@ pub fn render(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Phase rows
-    let mut constraints = Vec::new();
-    for _entry in &snap.phases {
-        constraints.push(Constraint::Length(1));
-    }
-    constraints.push(Constraint::Length(1)); // footer
-    let rows = Layout::vertical(constraints).split(inner);
+    // Group phases by state
+    let completed: Vec<&atlas_engine::progress::PhaseEntry> =
+        snap.phases.iter().filter(|e| e.state.is_completed()).collect();
+    let running: Option<&atlas_engine::progress::PhaseEntry> =
+        snap.phases.iter().find(|e| e.state.is_running());
+    let pending: Vec<&atlas_engine::progress::PhaseEntry> =
+        snap.phases.iter().filter(|e| e.state.is_pending()).collect();
 
-    for (i, entry) in snap.phases.iter().enumerate() {
-        if i >= rows.len().saturating_sub(1) {
-            break;
-        }
-        render_phase_row(frame, entry, &snap, rows[i]);
-    }
+    // 4 rows: completed | gauge | pending | footer
+    let rows = Layout::vertical([
+        Constraint::Length(1), // completed
+        Constraint::Length(1), // gauge / running
+        Constraint::Length(1), // pending
+        Constraint::Length(1), // footer
+    ])
+    .split(inner);
 
-    // Footer
-    if let Some(footer_area) = rows.last() {
-        render_footer(frame, &snap, *footer_area);
-    }
+    render_completed_row(frame, &completed, rows[0]);
+    render_gauge_row(frame, running, &snap, rows[1]);
+    render_pending_row(frame, &pending, rows[2]);
+    render_footer(frame, &snap, rows[3]);
 }
 
-fn render_phase_row(
+// ── Completed row ──────────────────────────────────────────────────────
+
+fn render_completed_row(
     frame: &mut Frame,
-    entry: &atlas_engine::progress::PhaseEntry,
-    snap: &ProgressSnapshot,
+    completed: &[&atlas_engine::progress::PhaseEntry],
     area: Rect,
 ) {
-    let name = entry.phase.display_name();
+    if completed.is_empty() {
+        return;
+    }
+
     let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::styled(" ◆ ", Style::new().fg(DONE_COLOR)));
 
-    match &entry.state {
-        PhaseState::Completed { elapsed, note, .. } => {
-            spans.push(Span::styled(
-                format!(" ◆ {}", name),
-                Style::new().fg(DONE_COLOR),
-            ));
-            if let Some(n) = note {
-                spans.push(Span::styled(
-                    format!(" — {}", n),
-                    Style::new().fg(DIM),
-                ));
-            }
-            let s = elapsed.as_secs_f64();
-            if s >= 0.1 {
-                spans.push(Span::styled(
-                    format!("  {:.1}s", s),
-                    Style::new().fg(DIM),
-                ));
-            }
+    for (i, entry) in completed.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", Style::new().fg(DIM)));
         }
-
-        PhaseState::Running { .. } => {
-            if snap.phase2_active && snap.total.is_some() {
-                let pct = snap.percent().unwrap_or(0.0);
-                let current = snap.current;
-                let total = snap.total.unwrap_or(0);
-                spans.push(Span::styled(
-                    format!(" ◌ {}  {:.0}%  {}/{}", name, pct, current, total),
-                    Style::new().fg(ACTIVE_COLOR),
-                ));
-            } else {
-                spans.push(Span::styled(
-                    format!(" ◌ {}", name),
-                    Style::new().fg(ACTIVE_COLOR),
-                ));
-                if snap.current > 0 {
-                    spans.push(Span::styled(
-                        format!("  {} matched", snap.current),
-                        Style::new().fg(DIM),
-                    ));
-                }
-            }
-            if let Some(rate) = snap.rate {
-                spans.push(Span::styled(
-                    format!("  {:.0}/s", rate),
-                    Style::new().fg(DIM),
-                ));
-            }
-            if let Some(ref msg) = snap.message {
-                spans.push(Span::styled(
-                    format!("  {}", msg),
-                    Style::new().fg(DIM),
-                ));
-            }
-        }
-
-        PhaseState::Pending => {
-            spans.push(Span::styled(
-                format!(" · {}  (pending)", name),
-                Style::new().fg(PENDING_COLOR),
-            ));
-        }
+        spans.push(Span::styled(
+            entry.phase.display_name(),
+            Style::new().fg(DONE_COLOR),
+        ));
     }
 
     let line = Line::from(spans);
     frame.render_widget(Paragraph::new(line), area);
 }
+
+// ── Gauge / running row ────────────────────────────────────────────────
+
+fn render_gauge_row(
+    frame: &mut Frame,
+    running: Option<&atlas_engine::progress::PhaseEntry>,
+    snap: &ProgressSnapshot,
+    area: Rect,
+) {
+    let Some(entry) = running else {
+        return; // no running phase, nothing to render
+    };
+    let name = entry.phase.display_name();
+
+    // When the current phase has a known total, render a Gauge bar.
+    // Otherwise (Discovery, LanguageInit, Finalizing) fall back to text.
+    if let Some(pct) = snap.percent() {
+        let label = format!("{}  {:.0}%", name, pct);
+        let gauge = Gauge::default()
+            .gauge_style(Style::new().fg(ACTIVE_COLOR))
+            .percent(pct as u16)
+            .label(Span::styled(label, Style::new()));
+        frame.render_widget(gauge, area);
+    } else {
+        // No total available — render a text line with a spinner and count
+        let mut spans: Vec<Span> = Vec::new();
+        spans.push(Span::styled(
+            format!(" ◌ {}", name),
+            Style::new().fg(ACTIVE_COLOR),
+        ));
+        if snap.current > 0 {
+            spans.push(Span::styled(
+                format!("  {} items", snap.current),
+                Style::new().fg(DIM),
+            ));
+        }
+        let line = Line::from(spans);
+        frame.render_widget(Paragraph::new(line), area);
+    }
+}
+
+// ── Pending row ────────────────────────────────────────────────────────
+
+fn render_pending_row(
+    frame: &mut Frame,
+    pending: &[&atlas_engine::progress::PhaseEntry],
+    area: Rect,
+) {
+    if pending.is_empty() {
+        return;
+    }
+
+    let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::styled(" · ", Style::new().fg(PENDING_COLOR)));
+
+    for (i, entry) in pending.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", Style::new().fg(PENDING_COLOR)));
+        }
+        spans.push(Span::styled(
+            entry.phase.display_name(),
+            Style::new().fg(PENDING_COLOR),
+        ));
+    }
+
+    let line = Line::from(spans);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+// ── Footer ─────────────────────────────────────────────────────────────
 
 fn render_footer(frame: &mut Frame, snap: &ProgressSnapshot, area: Rect) {
     let mut spans: Vec<Span> = Vec::new();

@@ -23,8 +23,9 @@ use ratatui::{TerminalOptions, Viewport};
 use super::render;
 
 /// Number of terminal rows reserved for the inline progress display.
-/// 1 header + 9 phases + 1 footer = 11 rows.  Padding to 12.
-const INLINE_ROWS: u16 = 12;
+/// Compact layout: block borders (2) + 4 content rows (completed, gauge,
+/// pending, footer) + 1 spare = 7 rows.
+const INLINE_ROWS: u16 = 7;
 
 /// Owns the ratatui terminal and drives the render loop.
 pub struct TuiProgress {
