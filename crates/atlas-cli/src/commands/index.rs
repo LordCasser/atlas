@@ -417,9 +417,9 @@ pub fn run(
             // reads cleanly below.
             crate::tui::progress::clear_and_restore();
         } else {
-            // Normal completion: leave the progress display visible on
-            // screen (like wget), exit raw mode and position cursor
-            // below the rendered content.
+            // Normal completion: clear the progress display (process)
+            // and exit raw mode.  The summary printed below fills
+            // the cleared area — 清理的是过程，保留的是结果.
             tui.take().unwrap().finish();
         }
     }
