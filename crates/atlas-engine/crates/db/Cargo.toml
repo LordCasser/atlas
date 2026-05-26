@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 types = { path = "../types" }
 anyhow = "1"
+hex = "0.4"
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde_json = "1"
 

@@ -94,16 +94,36 @@ pub trait CallGraphReader {
     fn find_cfg_edges_by_source(&self, source: &CfgNodeId) -> Result<Vec<CfgEdge>>;
 }
 
+// ── Summary Reader ──────────────────────────────────────────────────────────
+
+/// Read-only access to persisted function summary tables (Schema v3).
+///
+/// Used by [`CrossFunctionBridge`] to perform O(1) cross-function
+/// dataflow bridging without runtime BFS.
+pub trait SummaryReader {
+    /// Query `summary_param_reaches` for a given parameter node.
+    fn query_param_reaches(&self, param_id: &DataNodeId)
+        -> Result<Vec<crate::summary::ParamReachRow>>;
+    /// Query `summary_return_sources` for a given return node.
+    fn query_return_sources(&self, return_id: &DataNodeId)
+        -> Result<Vec<crate::summary::ReturnSourceRow>>;
+    /// Query `summary_call_arg_sources` for a given call-argument node.
+    fn query_call_arg_sources(
+        &self,
+        arg_node_id: &DataNodeId,
+    ) -> Result<Vec<crate::summary::CallArgSourceRow>>;
+}
+
 // ── Composite Traits ────────────────────────────────────────────────────────
 
 /// Composite reader bound for trace/analysis operations that need
-/// symbol, dataflow, and call-graph access in a single trait object.
+/// symbol, dataflow, call-graph, and summary access in a single trait object.
 ///
-/// This is implemented for any type that satisfies all three component
+/// This is implemented for any type that satisfies all four component
 /// reader traits, including [`Store`](crate::Store).
-pub trait TraceStore: SymbolReader + DataflowReader + CallGraphReader {}
+pub trait TraceStore: SymbolReader + DataflowReader + CallGraphReader + SummaryReader {}
 
-impl<T: SymbolReader + DataflowReader + CallGraphReader> TraceStore for T {}
+impl<T: SymbolReader + DataflowReader + CallGraphReader + SummaryReader> TraceStore for T {}
 
 // ── File Reader ────────────────────────────────────────────────────────────
 

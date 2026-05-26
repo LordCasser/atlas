@@ -58,6 +58,10 @@ pub use analysis::trace::TraceQueryResponse;
 pub use context::ContextBuilder;
 /// Database store and schema version.
 pub use db::{CURRENT_SCHEMA_VERSION, MIGRATIONS, Store};
+/// Summary persistence: build and query function summaries.
+pub use db::summary::{SummaryBuildStats, SummaryStore};
+/// Analysis: summary builder.
+pub use analysis::summary::SummaryBuilder;
 /// Extraction layer: language frontends, parser pool, grammar registry.
 pub use extraction::{
     ExtractionMode, LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig,

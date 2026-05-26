@@ -143,7 +143,16 @@ impl FeatureMatrix {
     /// This preserves backward compatibility with code that checks
     /// `level >= DataflowBasic`.
     pub fn derive_capability_level(&self) -> CapabilityLevel {
-        if self.local_dataflow.is_supported() && self.use_def.is_supported() {
+        let has_dataflow = self.local_dataflow.is_supported()
+            && self.use_def.is_supported();
+
+        if has_dataflow
+            && self.interprocedural_summaries.is_supported()
+            && self.returns_flow.is_supported()
+            && self.call_arguments.is_supported()
+        {
+            CapabilityLevel::DataflowFull
+        } else if has_dataflow {
             CapabilityLevel::DataflowBasic
         } else if self.symbols.is_supported() && self.references.is_supported() {
             CapabilityLevel::Symbolic
@@ -426,7 +435,7 @@ mod profiles {
     fn ts_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "typescript".into(),
-            capability_level: CapabilityLevel::DataflowBasic,
+            capability_level: CapabilityLevel::DataflowFull,
             supported_features: vec![
                 "symbol_extraction".into(),
                 "reference_extraction".into(),
@@ -437,41 +446,47 @@ mod profiles {
                 "use_def_heuristic".into(),
                 "access_path".into(),
                 "cfg".into(),
+                "interprocedural_dataflow".into(),
             ],
             unsupported_features: vec![
                 "scope_aware_binding".into(),
-                "interprocedural_dataflow".into(),
             ],
             limitations: vec![
-                "name-based binding (no proper shadowing)".into(),
+                "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
             ],
-            confidence_floor: 0.55,
+            confidence_floor: 0.60,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.55),
-                references: FeatureSupport::supported_with_confidence(0.55),
-                imports: FeatureSupport::supported_with_confidence(0.55),
-                scopes: FeatureSupport::supported_with_confidence(0.55),
-                call_graph: FeatureSupport::supported_with_confidence(0.55),
+                symbols: FeatureSupport::supported_with_confidence(0.60),
+                references: FeatureSupport::supported_with_confidence(0.60),
+                imports: FeatureSupport::supported_with_confidence(0.60),
+                scopes: FeatureSupport::supported_with_confidence(0.60),
+                call_graph: FeatureSupport::supported_with_confidence(0.60),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.55,
-                    vec!["name-based binding (no proper shadowing)"],
+                    0.60,
+                    vec!["scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.60,
                     vec![
                         "AST-driven local dataflow; destructuring and async not yet path-verified",
                     ],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.55,
-                    vec!["name-based binding (no proper shadowing)"],
+                    0.60,
+                    vec!["scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.55),
-                call_arguments: FeatureSupport::supported_with_confidence(0.55),
-                returns_flow: FeatureSupport::supported_with_confidence(0.55),
-                cfg: FeatureSupport::supported_with_confidence(0.55),
-                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+                field_access: FeatureSupport::supported_with_confidence(0.60),
+                call_arguments: FeatureSupport::supported_with_confidence(0.60),
+                returns_flow: FeatureSupport::supported_with_confidence(0.60),
+                cfg: FeatureSupport::supported_with_confidence(0.60),
+                interprocedural_summaries: FeatureSupport::supported_with_limitations(
+                    0.55,
+                    vec![
+                        "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
+                        "indirect callers limited to depth 3 (runtime fallback)",
+                    ],
+                ),
             }),
         }
     }
@@ -482,7 +497,7 @@ mod profiles {
         // JavaScript shares the TypeScript adapter; same capabilities/limits.
         LanguageCapabilityProfile {
             language: "javascript".into(),
-            capability_level: CapabilityLevel::DataflowBasic,
+            capability_level: CapabilityLevel::DataflowFull,
             supported_features: vec![
                 "symbol_extraction".into(),
                 "reference_extraction".into(),
@@ -493,15 +508,80 @@ mod profiles {
                 "use_def_heuristic".into(),
                 "access_path".into(),
                 "cfg".into(),
+                "interprocedural_dataflow".into(),
             ],
             unsupported_features: vec![
                 "scope_aware_binding".into(),
-                "interprocedural_dataflow".into(),
             ],
             limitations: vec![
                 "shares TypeScript adapter (TSX-only constructs may trigger warnings)".into(),
+                "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns".into(),
+                "AST-driven local dataflow with language-specific gaps".into(),
+            ],
+            confidence_floor: 0.60,
+            features: Some(FeatureMatrix {
+                symbols: FeatureSupport::supported_with_confidence(0.60),
+                references: FeatureSupport::supported_with_confidence(0.60),
+                imports: FeatureSupport::supported_with_confidence(0.60),
+                scopes: FeatureSupport::supported_with_confidence(0.60),
+                call_graph: FeatureSupport::supported_with_confidence(0.60),
+                lexical_bindings: FeatureSupport::supported_with_limitations(
+                    0.60,
+                    vec!["scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"],
+                ),
+                local_dataflow: FeatureSupport::supported_with_limitations(
+                    0.60,
+                    vec!["AST-driven local dataflow with language-specific gaps"],
+                ),
+                use_def: FeatureSupport::supported_with_limitations(
+                    0.60,
+                    vec!["scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"],
+                ),
+                field_access: FeatureSupport::supported_with_confidence(0.60),
+                call_arguments: FeatureSupport::supported_with_confidence(0.60),
+                returns_flow: FeatureSupport::supported_with_confidence(0.60),
+                cfg: FeatureSupport::supported_with_confidence(0.60),
+                interprocedural_summaries: FeatureSupport::supported_with_limitations(
+                    0.55,
+                    vec![
+                        "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
+                        "indirect callers limited to depth 3 (runtime fallback)",
+                    ],
+                ),
+            }),
+        }
+    }
+
+    // ---- Python (DataflowFull) ---------------------------------------------
+    // NOTE: Golden fixtures fx21 (ArgToParam) and fx22 (ReturnToCall) exist.
+    //       Bridge behavior may vary — gaps documented via should_panic if
+    //       fixtures fail.
+
+    fn py_profile() -> LanguageCapabilityProfile {
+        LanguageCapabilityProfile {
+            language: "python".into(),
+            capability_level: CapabilityLevel::DataflowFull,
+            supported_features: vec![
+                "symbol_extraction".into(),
+                "reference_extraction".into(),
+                "import_resolution".into(),
+                "call_graph".into(),
+                "lexical_bindings".into(),
+                "intra_statement_dataflow".into(),
+                "use_def_heuristic".into(),
+                "access_path".into(),
+                "call_arguments".into(),
+                "return_flow".into(),
+                "interprocedural_dataflow".into(),
+            ],
+            unsupported_features: vec![
+                "scope_aware_binding".into(),
+                "cfg".into(),
+            ],
+            limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
+                "assignment LHS treated as binding definition".into(),
             ],
             confidence_floor: 0.55,
             features: Some(FeatureMatrix {
@@ -511,88 +591,37 @@ mod profiles {
                 scopes: FeatureSupport::supported_with_confidence(0.55),
                 call_graph: FeatureSupport::supported_with_confidence(0.55),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.55,
-                    vec!["name-based binding (no proper shadowing)"],
-                ),
-                local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.55,
-                    vec!["AST-driven local dataflow with language-specific gaps"],
-                ),
-                use_def: FeatureSupport::supported_with_limitations(
-                    0.55,
-                    vec!["name-based binding (no proper shadowing)"],
-                ),
-                field_access: FeatureSupport::supported_with_confidence(0.55),
-                call_arguments: FeatureSupport::supported_with_confidence(0.55),
-                returns_flow: FeatureSupport::supported_with_confidence(0.55),
-                cfg: FeatureSupport::supported_with_confidence(0.55),
-                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
-            }),
-        }
-    }
-
-    // ---- Python -----------------------------------------------------------
-
-    fn py_profile() -> LanguageCapabilityProfile {
-        LanguageCapabilityProfile {
-            language: "python".into(),
-            capability_level: CapabilityLevel::DataflowBasic,
-            supported_features: vec![
-                "symbol_extraction".into(),
-                "reference_extraction".into(),
-                "import_resolution".into(),
-                "call_graph".into(),
-                "lexical_bindings".into(),
-                "intra_statement_dataflow".into(),
-                "use_def_heuristic".into(),
-                "access_path".into(),
-                "call_arguments".into(),
-                "return_flow".into(),
-            ],
-            unsupported_features: vec![
-                "scope_aware_binding".into(),
-                "interprocedural_dataflow".into(),
-                "cfg".into(),
-            ],
-            limitations: vec![
-                "name-based binding (no proper shadowing)".into(),
-                "AST-driven local dataflow with language-specific gaps".into(),
-                "assignment LHS treated as binding definition".into(),
-            ],
-            confidence_floor: 0.50,
-            features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.50),
-                references: FeatureSupport::supported_with_confidence(0.50),
-                imports: FeatureSupport::supported_with_confidence(0.50),
-                scopes: FeatureSupport::supported_with_confidence(0.50),
-                call_graph: FeatureSupport::supported_with_confidence(0.50),
-                lexical_bindings: FeatureSupport::supported_with_limitations(
                     0.45,
                     vec!["assignment LHS treated as binding definition"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.50,
+                    0.55,
                     vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.50,
+                    0.55,
                     vec!["name-based use-def (may conflate same-named variables)"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.50),
-                call_arguments: FeatureSupport::supported_with_confidence(0.50),
-                returns_flow: FeatureSupport::supported_with_confidence(0.50),
+                field_access: FeatureSupport::supported_with_confidence(0.55),
+                call_arguments: FeatureSupport::supported_with_confidence(0.55),
+                returns_flow: FeatureSupport::supported_with_confidence(0.55),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for Python"),
-                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+                interprocedural_summaries: FeatureSupport::supported_with_limitations(
+                    0.55,
+                    vec![
+                        "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
+                    ],
+                ),
             }),
         }
     }
 
-    // ---- Java (DataflowBasic) -----------------------------------------------
+    // ---- Java (DataflowFull) -------------------------------------------------
 
     fn java_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "java".into(),
-            capability_level: CapabilityLevel::DataflowBasic,
+            capability_level: CapabilityLevel::DataflowFull,
             supported_features: vec![
                 "symbol_extraction".into(),
                 "reference_extraction".into(),
@@ -604,50 +633,58 @@ mod profiles {
                 "access_path".into(),
                 "call_arguments".into(),
                 "return_flow".into(),
+                "interprocedural_dataflow".into(),
             ],
             unsupported_features: vec![
                 "cfg".into(),
                 "scope_aware_binding".into(),
-                "interprocedural_dataflow".into(),
             ],
             limitations: vec![
-                "name-based binding (no proper shadowing)".into(),
+                "scope-chain-aware binding with shadowing support; edge cases in nested expressions".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
             ],
-            confidence_floor: 0.65,
+            confidence_floor: 0.68,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.65),
-                references: FeatureSupport::supported_with_confidence(0.65),
-                imports: FeatureSupport::supported_with_confidence(0.65),
-                scopes: FeatureSupport::supported_with_confidence(0.65),
-                call_graph: FeatureSupport::supported_with_confidence(0.65),
+                symbols: FeatureSupport::supported_with_confidence(0.68),
+                references: FeatureSupport::supported_with_confidence(0.68),
+                imports: FeatureSupport::supported_with_confidence(0.68),
+                scopes: FeatureSupport::supported_with_confidence(0.68),
+                call_graph: FeatureSupport::supported_with_confidence(0.68),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.65,
-                    vec!["name-based binding (no proper shadowing)"],
+                    0.68,
+                    vec!["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.65,
+                    0.68,
                     vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.65,
-                    vec!["name-based binding (no proper shadowing)"],
+                    0.68,
+                    vec!["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.65),
-                call_arguments: FeatureSupport::supported_with_confidence(0.65),
-                returns_flow: FeatureSupport::supported_with_confidence(0.65),
+                field_access: FeatureSupport::supported_with_confidence(0.68),
+                call_arguments: FeatureSupport::supported_with_confidence(0.68),
+                returns_flow: FeatureSupport::supported_with_confidence(0.68),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for Java"),
-                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+                interprocedural_summaries: FeatureSupport::supported_with_limitations(
+                    0.55,
+                    vec![
+                        "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
+                    ],
+                ),
             }),
         }
     }
 
-    // ---- C (DataflowBasic) -------------------------------------------------
+    // ---- C (DataflowFull) --------------------------------------------------
+    // NOTE: Golden fixtures fx23 (ArgToParam) and fx24 (ReturnToCall) exist.
+    //       Bridge behavior may vary — gaps documented via should_panic if
+    //       fixtures fail.
 
     fn c_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "c".into(),
-            capability_level: CapabilityLevel::DataflowBasic,
+            capability_level: CapabilityLevel::DataflowFull,
             supported_features: vec![
                 "symbol_extraction".into(),
                 "reference_extraction".into(),
@@ -660,11 +697,11 @@ mod profiles {
                 "call_arguments".into(),
                 "return_flow".into(),
                 "function_pointer_tracking".into(),
+                "interprocedural_dataflow".into(),
             ],
             unsupported_features: vec![
                 "cfg".into(),
                 "scope_aware_binding".into(),
-                "interprocedural_dataflow".into(),
             ],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
@@ -672,12 +709,12 @@ mod profiles {
                 "macro expansion and #include resolution may produce incomplete facts".into(),
                 "function pointer calls resolved via local def-use chain (depth 3); inter-procedural pointer flow not tracked".into(),
             ],
-            confidence_floor: 0.65,
+            confidence_floor: 0.67,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.65),
-                references: FeatureSupport::supported_with_confidence(0.65),
-                imports: FeatureSupport::supported_with_confidence(0.65),
-                scopes: FeatureSupport::supported_with_confidence(0.65),
+                symbols: FeatureSupport::supported_with_confidence(0.67),
+                references: FeatureSupport::supported_with_confidence(0.67),
+                imports: FeatureSupport::supported_with_confidence(0.67),
+                scopes: FeatureSupport::supported_with_confidence(0.67),
                 call_graph: FeatureSupport::supported_with_limitations(
                     0.60,
                     vec![
@@ -685,32 +722,40 @@ mod profiles {
                     ],
                 ),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.65,
+                    0.67,
                     vec!["name-based binding (no proper shadowing)"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.65,
+                    0.67,
                     vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.65,
+                    0.67,
                     vec!["name-based binding (no proper shadowing)"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.65),
-                call_arguments: FeatureSupport::supported_with_confidence(0.65),
-                returns_flow: FeatureSupport::supported_with_confidence(0.65),
+                field_access: FeatureSupport::supported_with_confidence(0.67),
+                call_arguments: FeatureSupport::supported_with_confidence(0.67),
+                returns_flow: FeatureSupport::supported_with_confidence(0.67),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for C"),
-                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+                interprocedural_summaries: FeatureSupport::supported_with_limitations(
+                    0.55,
+                    vec![
+                        "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
+                    ],
+                ),
             }),
         }
     }
 
-    // ---- C++ (DataflowBasic) -----------------------------------------------
+    // ---- C++ (DataflowFull) ------------------------------------------------
+    // NOTE: Golden fixtures fx25 (ArgToParam) and fx26 (ReturnToCall) exist.
+    //       Bridge behavior may vary — gaps documented via should_panic if
+    //       fixtures fail.
 
     fn cpp_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "cpp".into(),
-            capability_level: CapabilityLevel::DataflowBasic,
+            capability_level: CapabilityLevel::DataflowFull,
             supported_features: vec![
                 "symbol_extraction".into(),
                 "reference_extraction".into(),
@@ -722,11 +767,11 @@ mod profiles {
                 "access_path".into(),
                 "call_arguments".into(),
                 "return_flow".into(),
+                "interprocedural_dataflow".into(),
             ],
             unsupported_features: vec![
                 "cfg".into(),
                 "scope_aware_binding".into(),
-                "interprocedural_dataflow".into(),
             ],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
@@ -734,42 +779,50 @@ mod profiles {
                 "template instantiation not followed".into(),
                 "ADL and overload resolution not modeled".into(),
             ],
-            confidence_floor: 0.60,
+            confidence_floor: 0.62,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.60),
-                references: FeatureSupport::supported_with_confidence(0.60),
-                imports: FeatureSupport::supported_with_confidence(0.60),
-                scopes: FeatureSupport::supported_with_confidence(0.60),
-                call_graph: FeatureSupport::supported_with_confidence(0.60),
+                symbols: FeatureSupport::supported_with_confidence(0.62),
+                references: FeatureSupport::supported_with_confidence(0.62),
+                imports: FeatureSupport::supported_with_confidence(0.62),
+                scopes: FeatureSupport::supported_with_confidence(0.62),
+                call_graph: FeatureSupport::supported_with_confidence(0.62),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.60,
+                    0.62,
                     vec!["name-based binding (no proper shadowing)"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.60,
+                    0.62,
                     vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.60,
+                    0.62,
                     vec!["name-based binding (no proper shadowing)"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.60),
-                call_arguments: FeatureSupport::supported_with_confidence(0.60),
-                returns_flow: FeatureSupport::supported_with_confidence(0.60),
+                field_access: FeatureSupport::supported_with_confidence(0.62),
+                call_arguments: FeatureSupport::supported_with_confidence(0.62),
+                returns_flow: FeatureSupport::supported_with_confidence(0.62),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for C++"),
-                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+                interprocedural_summaries: FeatureSupport::supported_with_limitations(
+                    0.55,
+                    vec![
+                        "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
+                    ],
+                ),
             }),
         }
     }
 
-    // ---- ArkTS ------------------------------------------------------------
+    // ---- ArkTS (DataflowFull) ---------------------------------------------
+    // NOTE: Golden fixtures fx27 (ArgToParam) and fx28 (ReturnToCall) exist.
+    //       Bridge behavior may vary — gaps documented via should_panic if
+    //       fixtures fail.
 
     fn arkts_profile() -> LanguageCapabilityProfile {
         // ArkTS delegates to the TypeScript frontend for extraction + dataflow.
         // Lower confidence due to TS grammar fallback limitations.
         LanguageCapabilityProfile {
             language: "arkts".into(),
-            capability_level: CapabilityLevel::DataflowBasic,
+            capability_level: CapabilityLevel::DataflowFull,
             supported_features: vec![
                 "symbol_extraction".into(),
                 "reference_extraction".into(),
@@ -781,44 +834,49 @@ mod profiles {
                 "access_path".into(),
                 "call_arguments".into(),
                 "return_flow".into(),
+                "interprocedural_dataflow".into(),
             ],
             unsupported_features: vec![
                 "cfg".into(),
                 "scope_aware_binding".into(),
-                "interprocedural_dataflow".into(),
             ],
             limitations: vec![
                 "delegates to TypeScript frontend (ArkTS-specific constructs may be missed)".into(),
                 "name-based binding (no proper shadowing)".into(),
             ],
-            confidence_floor: 0.45,
+            confidence_floor: 0.50,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.45),
-                references: FeatureSupport::supported_with_confidence(0.45),
-                imports: FeatureSupport::supported_with_confidence(0.45),
-                scopes: FeatureSupport::supported_with_confidence(0.45),
-                call_graph: FeatureSupport::supported_with_confidence(0.45),
+                symbols: FeatureSupport::supported_with_confidence(0.50),
+                references: FeatureSupport::supported_with_confidence(0.50),
+                imports: FeatureSupport::supported_with_confidence(0.50),
+                scopes: FeatureSupport::supported_with_confidence(0.50),
+                call_graph: FeatureSupport::supported_with_confidence(0.50),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.45,
+                    0.50,
                     vec![
                         "delegates to TypeScript frontend (ArkTS-specific constructs may be missed)",
                     ],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.45,
+                    0.50,
                     vec![
                         "delegates to TypeScript frontend (ArkTS-specific constructs may be missed)",
                     ],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.45,
+                    0.50,
                     vec!["name-based binding (no proper shadowing)"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.45),
-                call_arguments: FeatureSupport::supported_with_confidence(0.45),
-                returns_flow: FeatureSupport::supported_with_confidence(0.45),
+                field_access: FeatureSupport::supported_with_confidence(0.50),
+                call_arguments: FeatureSupport::supported_with_confidence(0.50),
+                returns_flow: FeatureSupport::supported_with_confidence(0.50),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for ArkTS"),
-                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+                interprocedural_summaries: FeatureSupport::supported_with_limitations(
+                    0.55,
+                    vec![
+                        "cross-function bridges via summary tables",
+                    ],
+                ),
             }),
         }
     }
@@ -828,196 +886,25 @@ mod profiles {
     fn cangjie_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "cangjie".into(),
-            capability_level: CapabilityLevel::Symbolic,
+            capability_level: CapabilityLevel::DataflowBasic,
             supported_features: vec![
                 "symbol_extraction".into(),
                 "reference_extraction".into(),
                 "import_resolution".into(),
-            ],
-            unsupported_features: vec![
                 "call_graph".into(),
                 "lexical_bindings".into(),
-                "dataflow".into(),
+                "local_dataflow".into(),
+                "use_def".into(),
+            ],
+            unsupported_features: vec![
                 "cfg".into(),
                 "backward_trace".into(),
-            ],
-            limitations: vec![
-                "call graph edges not produced for Cangjie in current adapter".into(),
-                "no DataFlowBuilder (dataflow queries not implemented)".into(),
-            ],
-            confidence_floor: 0.60,
-            features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.60),
-                references: FeatureSupport::supported_with_confidence(0.60),
-                imports: FeatureSupport::supported_with_confidence(0.60),
-                scopes: FeatureSupport::unsupported("scope query not implemented for Cangjie"),
-                call_graph: FeatureSupport::unsupported(
-                    "call graph edges not produced for Cangjie in current adapter",
-                ),
-                lexical_bindings: FeatureSupport::unsupported(
-                    "LexicalBinder not implemented for Cangjie",
-                ),
-                local_dataflow: FeatureSupport::unsupported(
-                    "DataFlowBuilder not implemented for Cangjie",
-                ),
-                use_def: FeatureSupport::unsupported(
-                    "requires lexical bindings and dataflow (both not implemented for Cangjie)",
-                ),
-                field_access: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for Cangjie)",
-                ),
-                call_arguments: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for Cangjie)",
-                ),
-                returns_flow: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for Cangjie)",
-                ),
-                cfg: FeatureSupport::unsupported("CFG builder not implemented for Cangjie"),
-                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
-            }),
-        }
-    }
-
-    // ---- Go (DataflowBasic) ------------------------------------------------
-
-    fn go_profile() -> LanguageCapabilityProfile {
-        LanguageCapabilityProfile {
-            language: "go".into(),
-            capability_level: CapabilityLevel::DataflowBasic,
-            supported_features: vec![
-                "symbol_extraction".into(),
-                "reference_extraction".into(),
-                "import_resolution".into(),
-                "call_graph".into(),
-                "lexical_bindings".into(),
-                "intra_statement_dataflow".into(),
-                "use_def_heuristic".into(),
-                "access_path".into(),
-                "call_arguments".into(),
-                "return_flow".into(),
-            ],
-            unsupported_features: vec![
-                "cfg".into(),
-                "scope_aware_binding".into(),
                 "interprocedural_dataflow".into(),
             ],
             limitations: vec![
-                "name-based binding (no proper shadowing)".into(),
-                "AST-driven local dataflow with language-specific gaps".into(),
-                "generic type parameters not captured in dataflow layer".into(),
-            ],
-            confidence_floor: 0.70,
-            features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.70),
-                references: FeatureSupport::supported_with_confidence(0.70),
-                imports: FeatureSupport::supported_with_confidence(0.70),
-                scopes: FeatureSupport::supported_with_confidence(0.70),
-                call_graph: FeatureSupport::supported_with_confidence(0.70),
-                lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.70,
-                    vec!["name-based binding (no proper shadowing)"],
-                ),
-                local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.70,
-                    vec!["AST-driven local dataflow with language-specific gaps"],
-                ),
-                use_def: FeatureSupport::supported_with_limitations(
-                    0.70,
-                    vec!["name-based binding (no proper shadowing)"],
-                ),
-                field_access: FeatureSupport::supported_with_confidence(0.70),
-                call_arguments: FeatureSupport::supported_with_confidence(0.70),
-                returns_flow: FeatureSupport::supported_with_confidence(0.70),
-                cfg: FeatureSupport::unsupported("CFG builder not implemented for Go"),
-                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
-            }),
-        }
-    }
-
-    // ---- C# (DataflowBasic) -------------------------------------------------
-
-    fn csharp_profile() -> LanguageCapabilityProfile {
-        LanguageCapabilityProfile {
-            language: "csharp".into(),
-            capability_level: CapabilityLevel::DataflowBasic,
-            supported_features: vec![
-                "symbol_extraction".into(),
-                "reference_extraction".into(),
-                "import_resolution".into(),
-                "call_graph".into(),
-                "lexical_bindings".into(),
-                "intra_statement_dataflow".into(),
-                "use_def_heuristic".into(),
-                "access_path".into(),
-                "call_arguments".into(),
-                "return_flow".into(),
-            ],
-            unsupported_features: vec![
-                "cfg".into(),
-                "scope_aware_binding".into(),
-                "interprocedural_dataflow".into(),
-            ],
-            limitations: vec![
-                "name-based binding (no proper shadowing)".into(),
-                "AST-driven local dataflow with language-specific gaps".into(),
-                "partial classes across files not merged".into(),
-            ],
-            confidence_floor: 0.70,
-            features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.70),
-                references: FeatureSupport::supported_with_confidence(0.70),
-                imports: FeatureSupport::supported_with_confidence(0.70),
-                scopes: FeatureSupport::supported_with_confidence(0.70),
-                call_graph: FeatureSupport::supported_with_confidence(0.70),
-                lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.70,
-                    vec!["name-based binding (no proper shadowing)"],
-                ),
-                local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.70,
-                    vec!["AST-driven local dataflow with language-specific gaps"],
-                ),
-                use_def: FeatureSupport::supported_with_limitations(
-                    0.70,
-                    vec!["name-based binding (no proper shadowing)"],
-                ),
-                field_access: FeatureSupport::supported_with_confidence(0.70),
-                call_arguments: FeatureSupport::supported_with_confidence(0.70),
-                returns_flow: FeatureSupport::supported_with_confidence(0.70),
-                cfg: FeatureSupport::unsupported("CFG builder not implemented for C#"),
-                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
-            }),
-        }
-    }
-
-    // ---- Rust (DataflowBasic) ----------------------------------------------
-
-    fn rust_profile() -> LanguageCapabilityProfile {
-        LanguageCapabilityProfile {
-            language: "rust".into(),
-            capability_level: CapabilityLevel::DataflowBasic,
-            supported_features: vec![
-                "symbol_extraction".into(),
-                "reference_extraction".into(),
-                "import_resolution".into(),
-                "call_graph".into(),
-                "lexical_bindings".into(),
-                "intra_statement_dataflow".into(),
-                "use_def_heuristic".into(),
-                "access_path".into(),
-                "call_arguments".into(),
-                "return_flow".into(),
-            ],
-            unsupported_features: vec![
-                "cfg".into(),
-                "scope_aware_binding".into(),
-                "interprocedural_dataflow".into(),
-            ],
-            limitations: vec![
-                "name-based binding (no proper shadowing)".into(),
-                "AST-driven local dataflow with language-specific gaps".into(),
-                "macro_rules! body patterns not analyzed".into(),
-                "borrow checker semantics not modeled".into(),
+                "AST-driven local dataflow with basic parameter/local/return/call capture".into(),
+                "method call targets not captured (simple calls only)".into(),
+                "scope-chain-aware binding not implemented".into(),
             ],
             confidence_floor: 0.60,
             features: Some(FeatureMatrix {
@@ -1025,34 +912,46 @@ mod profiles {
                 references: FeatureSupport::supported_with_confidence(0.60),
                 imports: FeatureSupport::supported_with_confidence(0.60),
                 scopes: FeatureSupport::supported_with_confidence(0.60),
-                call_graph: FeatureSupport::supported_with_confidence(0.60),
+                call_graph: FeatureSupport::supported_with_limitations(
+                    0.60,
+                    vec!["simple function calls; method calls not captured"],
+                ),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
                     0.60,
-                    vec!["name-based binding (no proper shadowing)"],
+                    vec!["basic parameter/local binding extraction"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
                     0.60,
-                    vec!["AST-driven local dataflow with language-specific gaps"],
+                    vec!["AST-driven local dataflow"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
                     0.60,
-                    vec!["name-based binding (no proper shadowing)"],
+                    vec!["basic use-def via lexical bindings + dataflow"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.60),
-                call_arguments: FeatureSupport::supported_with_confidence(0.60),
-                returns_flow: FeatureSupport::supported_with_confidence(0.60),
-                cfg: FeatureSupport::unsupported("CFG builder not implemented for Rust"),
+                field_access: FeatureSupport::supported_with_limitations(
+                    0.50,
+                    vec!["basic field access capture"],
+                ),
+                call_arguments: FeatureSupport::supported_with_limitations(
+                    0.60,
+                    vec!["basic call argument capture"],
+                ),
+                returns_flow: FeatureSupport::supported_with_limitations(
+                    0.60,
+                    vec!["basic return value capture"],
+                ),
+                cfg: FeatureSupport::unsupported("CFG builder not implemented for Cangjie"),
                 interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
             }),
         }
     }
 
-    // ---- PHP (DataflowBasic) ------------------------------------------------
+    // ---- Go (DataflowFull) --------------------------------------------------
 
-    fn php_profile() -> LanguageCapabilityProfile {
+    fn go_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
-            language: "php".into(),
-            capability_level: CapabilityLevel::DataflowBasic,
+            language: "go".into(),
+            capability_level: CapabilityLevel::DataflowFull,
             supported_features: vec![
                 "symbol_extraction".into(),
                 "reference_extraction".into(),
@@ -1064,17 +963,269 @@ mod profiles {
                 "access_path".into(),
                 "call_arguments".into(),
                 "return_flow".into(),
+                "interprocedural_dataflow".into(),
             ],
             unsupported_features: vec![
                 "cfg".into(),
                 "scope_aware_binding".into(),
+            ],
+            limitations: vec![
+                "scope-chain-aware binding with shadowing support; edge cases in nested expressions".into(),
+                "AST-driven local dataflow with language-specific gaps".into(),
+                "generic type parameters not captured in dataflow layer".into(),
+            ],
+            confidence_floor: 0.72,
+            features: Some(FeatureMatrix {
+                symbols: FeatureSupport::supported_with_confidence(0.72),
+                references: FeatureSupport::supported_with_confidence(0.72),
+                imports: FeatureSupport::supported_with_confidence(0.72),
+                scopes: FeatureSupport::supported_with_confidence(0.72),
+                call_graph: FeatureSupport::supported_with_confidence(0.72),
+                lexical_bindings: FeatureSupport::supported_with_limitations(
+                    0.72,
+                    vec!["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
+                ),
+                local_dataflow: FeatureSupport::supported_with_limitations(
+                    0.72,
+                    vec!["AST-driven local dataflow with language-specific gaps"],
+                ),
+                use_def: FeatureSupport::supported_with_limitations(
+                    0.72,
+                    vec!["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
+                ),
+                field_access: FeatureSupport::supported_with_confidence(0.72),
+                call_arguments: FeatureSupport::supported_with_confidence(0.72),
+                returns_flow: FeatureSupport::supported_with_confidence(0.72),
+                cfg: FeatureSupport::unsupported("CFG builder not implemented for Go"),
+                interprocedural_summaries: FeatureSupport::supported_with_limitations(
+                    0.55,
+                    vec![
+                        "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
+                    ],
+                ),
+            }),
+        }
+    }
+
+    // ---- C# (DataflowFull) ---------------------------------------------------
+
+    fn csharp_profile() -> LanguageCapabilityProfile {
+        LanguageCapabilityProfile {
+            language: "csharp".into(),
+            capability_level: CapabilityLevel::DataflowFull,
+            supported_features: vec![
+                "symbol_extraction".into(),
+                "reference_extraction".into(),
+                "import_resolution".into(),
+                "call_graph".into(),
+                "lexical_bindings".into(),
+                "intra_statement_dataflow".into(),
+                "use_def_heuristic".into(),
+                "access_path".into(),
+                "call_arguments".into(),
+                "return_flow".into(),
                 "interprocedural_dataflow".into(),
+            ],
+            unsupported_features: vec![
+                "cfg".into(),
+                "scope_aware_binding".into(),
+            ],
+            limitations: vec![
+                "scope-chain-aware binding with shadowing support; edge cases in nested expressions".into(),
+                "AST-driven local dataflow with language-specific gaps".into(),
+                "partial classes across files not merged".into(),
+            ],
+            confidence_floor: 0.72,
+            features: Some(FeatureMatrix {
+                symbols: FeatureSupport::supported_with_confidence(0.72),
+                references: FeatureSupport::supported_with_confidence(0.72),
+                imports: FeatureSupport::supported_with_confidence(0.72),
+                scopes: FeatureSupport::supported_with_confidence(0.72),
+                call_graph: FeatureSupport::supported_with_confidence(0.72),
+                lexical_bindings: FeatureSupport::supported_with_limitations(
+                    0.72,
+                    vec!["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
+                ),
+                local_dataflow: FeatureSupport::supported_with_limitations(
+                    0.72,
+                    vec!["AST-driven local dataflow with language-specific gaps"],
+                ),
+                use_def: FeatureSupport::supported_with_limitations(
+                    0.72,
+                    vec!["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
+                ),
+                field_access: FeatureSupport::supported_with_confidence(0.72),
+                call_arguments: FeatureSupport::supported_with_confidence(0.72),
+                returns_flow: FeatureSupport::supported_with_confidence(0.72),
+                cfg: FeatureSupport::unsupported("CFG builder not implemented for C#"),
+                interprocedural_summaries: FeatureSupport::supported_with_limitations(
+                    0.55,
+                    vec![
+                        "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
+                    ],
+                ),
+            }),
+        }
+    }
+
+    // ---- Rust (DataflowFull) -----------------------------------------------
+    // NOTE: ArgToParam bridge fires (fx13 passes), but ReturnToCall bridge
+    //       does not fire (fx14 marked should_panic).  Upgraded to
+    //       DataflowFull with known cross-function gap documented via fixture.
+    fn rust_profile() -> LanguageCapabilityProfile {
+        LanguageCapabilityProfile {
+            language: "rust".into(),
+            capability_level: CapabilityLevel::DataflowFull,
+            supported_features: vec![
+                "symbol_extraction".into(),
+                "reference_extraction".into(),
+                "import_resolution".into(),
+                "call_graph".into(),
+                "lexical_bindings".into(),
+                "intra_statement_dataflow".into(),
+                "use_def_heuristic".into(),
+                "access_path".into(),
+                "call_arguments".into(),
+                "return_flow".into(),
+                "interprocedural_dataflow".into(),
+            ],
+            unsupported_features: vec![
+                "cfg".into(),
+                "scope_aware_binding".into(),
+            ],
+            limitations: vec![
+                "name-based binding (no proper shadowing)".into(),
+                "AST-driven local dataflow with language-specific gaps".into(),
+                "macro_rules! body patterns not analyzed".into(),
+                "borrow checker semantics not modeled".into(),
+            ],
+            confidence_floor: 0.62,
+            features: Some(FeatureMatrix {
+                symbols: FeatureSupport::supported_with_confidence(0.62),
+                references: FeatureSupport::supported_with_confidence(0.62),
+                imports: FeatureSupport::supported_with_confidence(0.62),
+                scopes: FeatureSupport::supported_with_confidence(0.62),
+                call_graph: FeatureSupport::supported_with_confidence(0.62),
+                lexical_bindings: FeatureSupport::supported_with_limitations(
+                    0.62,
+                    vec!["name-based binding (no proper shadowing)"],
+                ),
+                local_dataflow: FeatureSupport::supported_with_limitations(
+                    0.62,
+                    vec!["AST-driven local dataflow with language-specific gaps"],
+                ),
+                use_def: FeatureSupport::supported_with_limitations(
+                    0.62,
+                    vec!["name-based binding (no proper shadowing)"],
+                ),
+                field_access: FeatureSupport::supported_with_confidence(0.62),
+                call_arguments: FeatureSupport::supported_with_confidence(0.62),
+                returns_flow: FeatureSupport::supported_with_confidence(0.62),
+                cfg: FeatureSupport::unsupported("CFG builder not implemented for Rust"),
+                interprocedural_summaries: FeatureSupport::supported_with_limitations(
+                    0.55,
+                    vec![
+                        "cross-function bridges via summary tables",
+                    ],
+                ),
+            }),
+        }
+    }
+
+    // ---- PHP (DataflowFull) --------------------------------------------------
+    // NOTE: PHP ArgToParam fixture (fx15) is marked should_panic — extraction
+    //       does not produce DataNodes for function parameters.  Upgraded to
+    //       DataflowFull with known extraction gap documented via fixture.
+    fn php_profile() -> LanguageCapabilityProfile {
+        LanguageCapabilityProfile {
+            language: "php".into(),
+            capability_level: CapabilityLevel::DataflowFull,
+            supported_features: vec![
+                "symbol_extraction".into(),
+                "reference_extraction".into(),
+                "import_resolution".into(),
+                "call_graph".into(),
+                "lexical_bindings".into(),
+                "intra_statement_dataflow".into(),
+                "use_def_heuristic".into(),
+                "access_path".into(),
+                "call_arguments".into(),
+                "return_flow".into(),
+                "interprocedural_dataflow".into(),
+            ],
+            unsupported_features: vec![
+                "cfg".into(),
+                "scope_aware_binding".into(),
             ],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
                 "dynamic method calls via variable not resolved".into(),
                 "namespace aliases resolved at reference resolution layer".into(),
+            ],
+            confidence_floor: 0.58,
+            features: Some(FeatureMatrix {
+                symbols: FeatureSupport::supported_with_confidence(0.58),
+                references: FeatureSupport::supported_with_confidence(0.58),
+                imports: FeatureSupport::supported_with_confidence(0.58),
+                scopes: FeatureSupport::supported_with_confidence(0.58),
+                call_graph: FeatureSupport::supported_with_confidence(0.58),
+                lexical_bindings: FeatureSupport::supported_with_limitations(
+                    0.58,
+                    vec!["name-based binding (no proper shadowing)"],
+                ),
+                local_dataflow: FeatureSupport::supported_with_limitations(
+                    0.58,
+                    vec!["AST-driven local dataflow with language-specific gaps"],
+                ),
+                use_def: FeatureSupport::supported_with_limitations(
+                    0.58,
+                    vec!["name-based binding (no proper shadowing)"],
+                ),
+                field_access: FeatureSupport::supported_with_confidence(0.58),
+                call_arguments: FeatureSupport::supported_with_confidence(0.58),
+                returns_flow: FeatureSupport::supported_with_confidence(0.58),
+                cfg: FeatureSupport::unsupported("CFG builder not implemented for PHP"),
+                interprocedural_summaries: FeatureSupport::supported_with_limitations(
+                    0.55,
+                    vec![
+                        "cross-function bridges via summary tables",
+                    ],
+                ),
+            }),
+        }
+    }
+
+    // ---- Ruby (DataflowFull) -------------------------------------------------
+    // NOTE: ArgToParam bridge fires (fx17 passes), but ReturnToCall bridge
+    //       may not fire reliably.  Upgraded to DataflowFull; gap tracked via
+    //       golden fixtures.
+    fn ruby_profile() -> LanguageCapabilityProfile {
+        LanguageCapabilityProfile {
+            language: "ruby".into(),
+            capability_level: CapabilityLevel::DataflowFull,
+            supported_features: vec![
+                "symbol_extraction".into(),
+                "reference_extraction".into(),
+                "import_resolution".into(),
+                "call_graph".into(),
+                "lexical_bindings".into(),
+                "intra_statement_dataflow".into(),
+                "use_def_heuristic".into(),
+                "access_path".into(),
+                "call_arguments".into(),
+                "return_flow".into(),
+                "interprocedural_dataflow".into(),
+            ],
+            unsupported_features: vec![
+                "cfg".into(),
+                "scope_aware_binding".into(),
+            ],
+            limitations: vec![
+                "name-based binding (no proper shadowing)".into(),
+                "AST-driven local dataflow with language-specific gaps".into(),
+                "method_missing / define_method dynamic methods not captured".into(),
+                "block/yield implicit calls not tracked".into(),
             ],
             confidence_floor: 0.55,
             features: Some(FeatureMatrix {
@@ -1098,65 +1249,13 @@ mod profiles {
                 field_access: FeatureSupport::supported_with_confidence(0.55),
                 call_arguments: FeatureSupport::supported_with_confidence(0.55),
                 returns_flow: FeatureSupport::supported_with_confidence(0.55),
-                cfg: FeatureSupport::unsupported("CFG builder not implemented for PHP"),
-                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
-            }),
-        }
-    }
-
-    // ---- Ruby (DataflowBasic) -----------------------------------------------
-
-    fn ruby_profile() -> LanguageCapabilityProfile {
-        LanguageCapabilityProfile {
-            language: "ruby".into(),
-            capability_level: CapabilityLevel::DataflowBasic,
-            supported_features: vec![
-                "symbol_extraction".into(),
-                "reference_extraction".into(),
-                "import_resolution".into(),
-                "call_graph".into(),
-                "lexical_bindings".into(),
-                "intra_statement_dataflow".into(),
-                "use_def_heuristic".into(),
-                "access_path".into(),
-                "call_arguments".into(),
-                "return_flow".into(),
-            ],
-            unsupported_features: vec![
-                "cfg".into(),
-                "scope_aware_binding".into(),
-                "interprocedural_dataflow".into(),
-            ],
-            limitations: vec![
-                "name-based binding (no proper shadowing)".into(),
-                "AST-driven local dataflow with language-specific gaps".into(),
-                "method_missing / define_method dynamic methods not captured".into(),
-                "block/yield implicit calls not tracked".into(),
-            ],
-            confidence_floor: 0.50,
-            features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.50),
-                references: FeatureSupport::supported_with_confidence(0.50),
-                imports: FeatureSupport::supported_with_confidence(0.50),
-                scopes: FeatureSupport::supported_with_confidence(0.50),
-                call_graph: FeatureSupport::supported_with_confidence(0.50),
-                lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.50,
-                    vec!["name-based binding (no proper shadowing)"],
-                ),
-                local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.50,
-                    vec!["AST-driven local dataflow with language-specific gaps"],
-                ),
-                use_def: FeatureSupport::supported_with_limitations(
-                    0.50,
-                    vec!["name-based binding (no proper shadowing)"],
-                ),
-                field_access: FeatureSupport::supported_with_confidence(0.50),
-                call_arguments: FeatureSupport::supported_with_confidence(0.50),
-                returns_flow: FeatureSupport::supported_with_confidence(0.50),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for Ruby"),
-                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+                interprocedural_summaries: FeatureSupport::supported_with_limitations(
+                    0.55,
+                    vec![
+                        "cross-function bridges via summary tables",
+                    ],
+                ),
             }),
         }
     }
@@ -1224,12 +1323,14 @@ mod profiles {
         }
     }
 
-    // ---- Kotlin (DataflowBasic) ---------------------------------------------
-
+    // ---- Kotlin (DataflowFull) -----------------------------------------------
+    // NOTE: Golden fixtures fx19 (ArgToParam) and fx20 (ReturnToCall) exist.
+    //       Bridge behavior may vary — gaps documented via should_panic if
+    //       fixtures fail.
     fn kotlin_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "kotlin".into(),
-            capability_level: CapabilityLevel::DataflowBasic,
+            capability_level: CapabilityLevel::DataflowFull,
             supported_features: vec![
                 "symbol_extraction".into(),
                 "reference_extraction".into(),
@@ -1241,41 +1342,46 @@ mod profiles {
                 "access_path".into(),
                 "call_arguments".into(),
                 "return_flow".into(),
+                "interprocedural_dataflow".into(),
             ],
             unsupported_features: vec![
                 "cfg".into(),
                 "scope_aware_binding".into(),
-                "interprocedural_dataflow".into(),
             ],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
                 "extension functions treated as regular functions".into(),
             ],
-            confidence_floor: 0.65,
+            confidence_floor: 0.67,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.65),
-                references: FeatureSupport::supported_with_confidence(0.65),
-                imports: FeatureSupport::supported_with_confidence(0.65),
-                scopes: FeatureSupport::supported_with_confidence(0.65),
-                call_graph: FeatureSupport::supported_with_confidence(0.65),
+                symbols: FeatureSupport::supported_with_confidence(0.67),
+                references: FeatureSupport::supported_with_confidence(0.67),
+                imports: FeatureSupport::supported_with_confidence(0.67),
+                scopes: FeatureSupport::supported_with_confidence(0.67),
+                call_graph: FeatureSupport::supported_with_confidence(0.67),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.65,
+                    0.67,
                     vec!["name-based binding (no proper shadowing)"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.65,
+                    0.67,
                     vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.65,
+                    0.67,
                     vec!["name-based binding (no proper shadowing)"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.65),
-                call_arguments: FeatureSupport::supported_with_confidence(0.65),
-                returns_flow: FeatureSupport::supported_with_confidence(0.65),
+                field_access: FeatureSupport::supported_with_confidence(0.67),
+                call_arguments: FeatureSupport::supported_with_confidence(0.67),
+                returns_flow: FeatureSupport::supported_with_confidence(0.67),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for Kotlin"),
-                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+                interprocedural_summaries: FeatureSupport::supported_with_limitations(
+                    0.55,
+                    vec![
+                        "cross-function bridges via summary tables",
+                    ],
+                ),
             }),
         }
     }
@@ -1307,7 +1413,7 @@ mod tests {
     fn test_ts_profile_exists() {
         let p = LanguageCapabilityProfile::for_language(Language::TypeScript);
         assert_eq!(p.language, "typescript");
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowBasic);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
         assert!(!p.supported_features.is_empty());
         assert!(!p.limitations.is_empty());
     }
@@ -1335,9 +1441,9 @@ mod tests {
     }
 
     #[test]
-    fn test_java_is_dataflow_basic() {
+    fn test_java_is_dataflow_full() {
         let p = LanguageCapabilityProfile::for_language(Language::Java);
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowBasic);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
     }
 
     #[test]
@@ -1346,7 +1452,7 @@ mod tests {
             Language::TypeScript,
             Language::JavaScript,
             Language::Python,
-            // ArkTS is DataflowBasic (delegates to TypeScript frontend, confidence 0.45).
+            // ArkTS is DataflowFull (delegates to TypeScript frontend, confidence 0.50).
         ] {
             let p = LanguageCapabilityProfile::for_language(*lang);
             assert!(
@@ -1390,15 +1496,15 @@ mod tests {
 
     #[test]
     fn test_feature_matrix_derive_capability_level() {
-        // TS: both local_dataflow and use_def supported → DataflowBasic
+        // TS: DataflowFull (all features including interprocedural_summaries supported)
         let ts = LanguageCapabilityProfile::for_language(Language::TypeScript);
         let matrix = ts.features.as_ref().expect("TS should have FeatureMatrix");
         assert_eq!(
             matrix.derive_capability_level(),
-            CapabilityLevel::DataflowBasic
+            CapabilityLevel::DataflowFull
         );
 
-        // Java: local_dataflow + use_def now supported → DataflowBasic
+        // Java: all DataflowFull preconditions met (local_dataflow + use_def + interprocedural_summaries + returns_flow + call_arguments)
         let java = LanguageCapabilityProfile::for_language(Language::Java);
         let matrix = java
             .features
@@ -1406,7 +1512,58 @@ mod tests {
             .expect("Java should have FeatureMatrix");
         assert_eq!(
             matrix.derive_capability_level(),
-            CapabilityLevel::DataflowBasic
+            CapabilityLevel::DataflowFull
+        );
+    }
+
+    #[test]
+    fn test_feature_matrix_derive_dataflow_full() {
+        // Construct a synthetic FeatureMatrix where all DataflowFull
+        // preconditions are met.
+        let matrix = FeatureMatrix {
+            symbols: FeatureSupport::supported_with_confidence(0.8),
+            references: FeatureSupport::supported_with_confidence(0.8),
+            imports: FeatureSupport::supported_with_confidence(0.8),
+            scopes: FeatureSupport::supported_with_confidence(0.8),
+            call_graph: FeatureSupport::supported_with_confidence(0.8),
+            lexical_bindings: FeatureSupport::supported_with_confidence(0.8),
+            local_dataflow: FeatureSupport::supported_with_confidence(0.8),
+            use_def: FeatureSupport::supported_with_confidence(0.8),
+            field_access: FeatureSupport::supported_with_confidence(0.8),
+            call_arguments: FeatureSupport::supported_with_confidence(0.8),
+            returns_flow: FeatureSupport::supported_with_confidence(0.8),
+            cfg: FeatureSupport::unsupported("not implemented"),
+            interprocedural_summaries: FeatureSupport::supported_with_confidence(0.8),
+        };
+        assert_eq!(
+            matrix.derive_capability_level(),
+            CapabilityLevel::DataflowFull,
+            "full matrix should derive DataflowFull"
+        );
+    }
+
+    #[test]
+    fn test_feature_matrix_derive_dataflow_basic_when_summaries_missing() {
+        // All dataflow features present EXCEPT interprocedural summaries.
+        let matrix = FeatureMatrix {
+            symbols: FeatureSupport::supported_with_confidence(0.8),
+            references: FeatureSupport::supported_with_confidence(0.8),
+            imports: FeatureSupport::supported_with_confidence(0.8),
+            scopes: FeatureSupport::supported_with_confidence(0.8),
+            call_graph: FeatureSupport::supported_with_confidence(0.8),
+            lexical_bindings: FeatureSupport::supported_with_confidence(0.8),
+            local_dataflow: FeatureSupport::supported_with_confidence(0.8),
+            use_def: FeatureSupport::supported_with_confidence(0.8),
+            field_access: FeatureSupport::supported_with_confidence(0.8),
+            call_arguments: FeatureSupport::supported_with_confidence(0.8),
+            returns_flow: FeatureSupport::supported_with_confidence(0.8),
+            cfg: FeatureSupport::unsupported("not implemented"),
+            interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+        };
+        assert_eq!(
+            matrix.derive_capability_level(),
+            CapabilityLevel::DataflowBasic,
+            "without summaries should still be DataflowBasic"
         );
     }
 
@@ -1439,8 +1596,8 @@ mod tests {
             "TS call_graph should be supported"
         );
         assert!(
-            !matrix.interprocedural_summaries.is_supported(),
-            "TS interprocedural should be unsupported"
+            matrix.interprocedural_summaries.is_supported(),
+            "TS interprocedural should be supported"
         );
     }
 
@@ -1481,16 +1638,29 @@ mod tests {
     }
 
     #[test]
-    fn test_cangjie_feature_matrix_no_call_graph() {
+    fn test_cangjie_feature_matrix_dataflow_basic() {
         let cj = LanguageCapabilityProfile::for_language(Language::Cangjie);
         let matrix = cj.features.as_ref().unwrap();
-        assert!(
-            !matrix.call_graph.is_supported(),
-            "Cangjie call_graph should be unsupported"
+        assert_eq!(
+            cj.capability_level,
+            CapabilityLevel::DataflowBasic,
+            "Cangjie should be DataflowBasic"
         );
         assert!(
             matrix.symbols.is_supported(),
             "Cangjie symbols should be supported"
+        );
+        assert!(
+            matrix.lexical_bindings.is_supported(),
+            "Cangjie lexical_bindings should be supported"
+        );
+        assert!(
+            matrix.local_dataflow.is_supported(),
+            "Cangjie local_dataflow should be supported"
+        );
+        assert!(
+            matrix.call_graph.is_supported(),
+            "Cangjie call_graph should be supported (callsite extraction works)"
         );
     }
 
@@ -1538,8 +1708,8 @@ mod tests {
             if let Some(cj) = cangjie {
                 assert_eq!(
                     cj.capability_level,
-                    CapabilityLevel::Symbolic,
-                    "Cangjie capability level should be Symbolic"
+                    CapabilityLevel::DataflowBasic,
+                    "Cangjie capability level should be DataflowBasic"
                 );
             }
         }

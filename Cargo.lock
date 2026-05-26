@@ -490,6 +490,7 @@ name = "db"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "hex",
  "rusqlite",
  "serde_json",
  "tempfile",

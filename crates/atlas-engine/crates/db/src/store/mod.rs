@@ -12,6 +12,7 @@
 //! | `scopes`    | Scopes + imports |
 //! | `dataflow`  | Bindings, data nodes, dataflow edges |
 //! | `cfg`       | Control-flow graph |
+//! | `summary`   | Function summaries (persistence + query) |
 //! | `stats`     | Metadata, stats, path resolution |
 //!
 //! ## Reader / Writer trait split
@@ -41,6 +42,7 @@ mod index_layers;
 mod lifecycle;
 mod scopes;
 mod stats;
+pub mod summary;
 mod symbols;
 
 // ---------------------------------------------------------------------------

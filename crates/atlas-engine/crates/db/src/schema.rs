@@ -1,12 +1,12 @@
 //! Atlas-native SQLite schema DDL — with migration infrastructure.
 //!
-//! The schema is currently at **V1**.  Schema changes during development
+//! The schema is currently at **V3**.  Schema changes during development
 //! are made in-place.  Migration from V1 to future versions is supported
 //! via the ordered [`MIGRATIONS`] chain.  When no migration path exists
 //! (future→past downgrade or very old DB), the user is directed to
 //! `atlas init` for a fresh rebuild.
 //!
-//! Schema version: 1
+//! Schema version: 3
 //!
 //! ## Tables
 //! - `files`          — per-file metadata
@@ -22,6 +22,12 @@
 //! - `dataflow_edges` — dataflow edges between DataNodes
 //! - `cfg_nodes`      — control-flow graph nodes per function
 //! - `cfg_edges`      — control-flow graph edges
+//! - `function_summaries`        — per-function summary metadata
+//! - `summary_param_reaches`     — parameter → downstream target reachability
+//! - `summary_return_sources`    — return → upstream source mapping
+//! - `summary_call_arg_sources`  — call argument → upstream source mapping
+//! - `analysis_artifacts` — lazy dataflow/CFG artifact tracking
+//! - `file_index_layers` — per-file per-layer index status
 //! - `project_metadata` — key-value project configuration
 //! - `symbols_fts`    — FTS5 index on symbol names
 //! - `schema_versions` — migration tracking
@@ -31,7 +37,7 @@
 /// When this value is raised, add matching entries to [`MIGRATIONS`] so
 /// existing databases can be upgraded or explicitly reported as needing a
 /// rebuild.
-pub const CURRENT_SCHEMA_VERSION: i64 = 2;
+pub const CURRENT_SCHEMA_VERSION: i64 = 3;
 /// Complete DDL for a fresh database.
 pub const SCHEMA_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -296,6 +302,59 @@ CREATE TABLE IF NOT EXISTS file_index_layers (
 CREATE INDEX IF NOT EXISTS idx_file_index_layers_file
     ON file_index_layers(file_id);
 
+-- ===== Summary tables (Schema v3) =====
+
+-- Function summary metadata: one row per function.
+CREATE TABLE IF NOT EXISTS function_summaries (
+    function_id     BLOB PRIMARY KEY NOT NULL,
+    node_count      INTEGER NOT NULL,
+    edge_count      INTEGER NOT NULL,
+    content_hash    TEXT NOT NULL,
+    computed_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (function_id) REFERENCES symbols(symbol_id) ON DELETE CASCADE
+);
+
+-- Parameter P's downstream reachable targets T ("param → call_arg / return / field").
+CREATE TABLE IF NOT EXISTS summary_param_reaches (
+    function_id     BLOB NOT NULL,
+    param_id        BLOB NOT NULL,
+    param_index     INTEGER NOT NULL,
+    param_name      TEXT NOT NULL,
+    target_kind     TEXT NOT NULL,             -- 'call_arg' | 'return' | 'field'
+    target_node_id  BLOB NOT NULL,
+    confidence      REAL NOT NULL DEFAULT 0.85,
+    provenance      TEXT NOT NULL DEFAULT 'intraprocedural_dataflow',
+    FOREIGN KEY (function_id) REFERENCES function_summaries(function_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_spr_function ON summary_param_reaches(function_id);
+CREATE INDEX IF NOT EXISTS idx_spr_param   ON summary_param_reaches(param_id);
+
+-- Return node R's upstream sources S ("return ← param / local").
+CREATE TABLE IF NOT EXISTS summary_return_sources (
+    function_id     BLOB NOT NULL,
+    return_id       BLOB NOT NULL,
+    source_node_id  BLOB NOT NULL,
+    confidence      REAL NOT NULL DEFAULT 0.85,
+    provenance      TEXT NOT NULL DEFAULT 'intraprocedural_dataflow',
+    FOREIGN KEY (function_id) REFERENCES function_summaries(function_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_srs_function ON summary_return_sources(function_id);
+CREATE INDEX IF NOT EXISTS idx_srs_return   ON summary_return_sources(return_id);
+
+-- Call argument A's upstream sources S ("call_arg ← param / local").
+CREATE TABLE IF NOT EXISTS summary_call_arg_sources (
+    function_id     BLOB NOT NULL,
+    callsite_id     BLOB NOT NULL,
+    arg_index       INTEGER NOT NULL,
+    arg_node_id     BLOB NOT NULL,
+    source_node_id  BLOB NOT NULL,
+    confidence      REAL NOT NULL DEFAULT 0.85,
+    provenance      TEXT NOT NULL DEFAULT 'intraprocedural_dataflow',
+    FOREIGN KEY (function_id) REFERENCES function_summaries(function_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_scas_function ON summary_call_arg_sources(function_id);
+CREATE INDEX IF NOT EXISTS idx_scas_callsite ON summary_call_arg_sources(callsite_id);
+
 -- FTS5 virtual table for symbol name search
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     name,
@@ -465,22 +524,71 @@ pub struct Migration {
 ///     Migration { from_version: 2, sql: "CREATE INDEX ...", description: "v3: ..." },
 /// ];
 /// ```
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    from_version: 1,
-    sql: "ALTER TABLE symbols ADD COLUMN layer TEXT NOT NULL DEFAULT 'structural';
-              CREATE TABLE IF NOT EXISTS file_index_layers (
-                  file_id         BLOB NOT NULL,
-                  layer           TEXT NOT NULL,
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        from_version: 1,
+        sql: "ALTER TABLE symbols ADD COLUMN layer TEXT NOT NULL DEFAULT 'structural';
+                  CREATE TABLE IF NOT EXISTS file_index_layers (
+                      file_id         BLOB NOT NULL,
+                      layer           TEXT NOT NULL,
+                      content_hash    TEXT NOT NULL,
+                      status          TEXT NOT NULL DEFAULT 'complete',
+                      updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                      PRIMARY KEY (file_id, layer),
+                      FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
+                  );
+                  CREATE INDEX IF NOT EXISTS idx_file_index_layers_file
+                      ON file_index_layers(file_id);",
+        description: "v2: add symbols.layer + file_index_layers table",
+    },
+    Migration {
+        from_version: 2,
+        sql: "CREATE TABLE IF NOT EXISTS function_summaries (
+                  function_id     BLOB PRIMARY KEY NOT NULL,
+                  node_count      INTEGER NOT NULL,
+                  edge_count      INTEGER NOT NULL,
                   content_hash    TEXT NOT NULL,
-                  status          TEXT NOT NULL DEFAULT 'complete',
-                  updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-                  PRIMARY KEY (file_id, layer),
-                  FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
+                  computed_at     TEXT NOT NULL DEFAULT (datetime('now')),
+                  FOREIGN KEY (function_id) REFERENCES symbols(symbol_id) ON DELETE CASCADE
               );
-              CREATE INDEX IF NOT EXISTS idx_file_index_layers_file
-                  ON file_index_layers(file_id);",
-    description: "v2: add symbols.layer + file_index_layers table",
-}];
+              CREATE TABLE IF NOT EXISTS summary_param_reaches (
+                  function_id     BLOB NOT NULL,
+                  param_id        BLOB NOT NULL,
+                  param_index     INTEGER NOT NULL,
+                  param_name      TEXT NOT NULL,
+                  target_kind     TEXT NOT NULL,
+                  target_node_id  BLOB NOT NULL,
+                  confidence      REAL NOT NULL DEFAULT 0.85,
+                  provenance      TEXT NOT NULL DEFAULT 'intraprocedural_dataflow',
+                  FOREIGN KEY (function_id) REFERENCES function_summaries(function_id) ON DELETE CASCADE
+              );
+              CREATE INDEX IF NOT EXISTS idx_spr_function ON summary_param_reaches(function_id);
+              CREATE INDEX IF NOT EXISTS idx_spr_param   ON summary_param_reaches(param_id);
+              CREATE TABLE IF NOT EXISTS summary_return_sources (
+                  function_id     BLOB NOT NULL,
+                  return_id       BLOB NOT NULL,
+                  source_node_id  BLOB NOT NULL,
+                  confidence      REAL NOT NULL DEFAULT 0.85,
+                  provenance      TEXT NOT NULL DEFAULT 'intraprocedural_dataflow',
+                  FOREIGN KEY (function_id) REFERENCES function_summaries(function_id) ON DELETE CASCADE
+              );
+              CREATE INDEX IF NOT EXISTS idx_srs_function ON summary_return_sources(function_id);
+              CREATE INDEX IF NOT EXISTS idx_srs_return   ON summary_return_sources(return_id);
+              CREATE TABLE IF NOT EXISTS summary_call_arg_sources (
+                  function_id     BLOB NOT NULL,
+                  callsite_id     BLOB NOT NULL,
+                  arg_index       INTEGER NOT NULL,
+                  arg_node_id     BLOB NOT NULL,
+                  source_node_id  BLOB NOT NULL,
+                  confidence      REAL NOT NULL DEFAULT 0.85,
+                  provenance      TEXT NOT NULL DEFAULT 'intraprocedural_dataflow',
+                  FOREIGN KEY (function_id) REFERENCES function_summaries(function_id) ON DELETE CASCADE
+              );
+              CREATE INDEX IF NOT EXISTS idx_scas_function ON summary_call_arg_sources(function_id);
+              CREATE INDEX IF NOT EXISTS idx_scas_callsite ON summary_call_arg_sources(callsite_id);",
+        description: "v3: add function_summaries + summary_param_reaches + summary_return_sources + summary_call_arg_sources tables",
+    },
+];
 
 /// Run pending migrations on a database connection.
 ///
@@ -633,6 +741,11 @@ mod tests {
         assert!(tables.contains(&"symbols_fts".to_string()));
         assert!(tables.contains(&"project_metadata".to_string()));
         assert!(tables.contains(&"schema_versions".to_string()));
+        // Schema v3: summary tables
+        assert!(tables.contains(&"function_summaries".to_string()));
+        assert!(tables.contains(&"summary_param_reaches".to_string()));
+        assert!(tables.contains(&"summary_return_sources".to_string()));
+        assert!(tables.contains(&"summary_call_arg_sources".to_string()));
     }
 
     #[test]
@@ -673,9 +786,10 @@ mod tests {
     }
 
     #[test]
-    fn test_migrations_v1_to_v2_defined() {
-        // V1→V2 migration exists
-        assert_eq!(super::MIGRATIONS.len(), 1);
+    fn test_migrations_v1_to_v3_defined() {
+        // V1→V2 and V2→V3 migrations exist
+        assert_eq!(super::MIGRATIONS.len(), 2);
         assert_eq!(super::MIGRATIONS[0].from_version, 1);
+        assert_eq!(super::MIGRATIONS[1].from_version, 2);
     }
 }

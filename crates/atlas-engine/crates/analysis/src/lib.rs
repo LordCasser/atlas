@@ -6,6 +6,9 @@
 //!   (production API exposed via CLI and MCP)
 //! - `summary` — query-time FunctionSummary builder for intraprocedural
 //!   reachability (parameter → return / call-arg / field)
+//! - `cross_function` — inter-procedural bridging via persisted summaries
+//!   (CrossFunctionBridge) with runtime fallback
 
+pub mod cross_function;
 pub mod summary;
 pub mod trace;
