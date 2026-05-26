@@ -559,6 +559,8 @@ pub enum ResolutionStrategy {
     Heuristic,
     ImportResolved,
     Builtin,
+    /// Resolved via local dataflow def-use chain (e.g. function pointer call).
+    DataflowPointer,
 }
 
 impl ResolutionStrategy {
@@ -570,6 +572,7 @@ impl ResolutionStrategy {
             Self::Heuristic => "heuristic",
             Self::ImportResolved => "import_resolved",
             Self::Builtin => "builtin",
+            Self::DataflowPointer => "dataflow_pointer",
         }
     }
 
@@ -581,6 +584,7 @@ impl ResolutionStrategy {
             "heuristic" => Some(Self::Heuristic),
             "import_resolved" => Some(Self::ImportResolved),
             "builtin" => Some(Self::Builtin),
+            "dataflow_pointer" => Some(Self::DataflowPointer),
             _ => None,
         }
     }

@@ -16,6 +16,7 @@ use std::sync::Arc;
 use db::Store;
 use rayon::prelude::*;
 use types::*;
+use types::enums::{DataFlowKind, DataNodeKind};
 
 /// Builds symbol-level edges from resolved references.
 ///
@@ -190,6 +191,29 @@ impl GraphBuilder {
                 SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor => {
                     EdgeKind::Calls
                 }
+                SymbolKind::Variable => {
+                    // Function pointer call: try to resolve the actual callee
+                    // via local def-use dataflow chain.
+                    // e.g. void (*fp)(int) = &handler; fp(42);
+                    match try_resolve_function_pointer(&self.store, reference) {
+                        Ok(Some(resolved)) => {
+                            let resolved_target = ResolvedTarget {
+                                symbol_id: resolved,
+                                confidence: Confidence::certain() * 0.9f32, // penalty for indirect resolution
+                                strategy: ResolutionStrategy::DataflowPointer,
+                                provenance: target.provenance,
+                            };
+                            let mut pointer_edges = self.create_edges_for_reference(
+                                reference,
+                                &resolved_target,
+                            )?;
+                            edges.append(&mut pointer_edges);
+                            return Ok(edges);
+                        }
+                        Ok(None) => return Ok(edges),
+                        Err(_) => return Ok(edges),
+                    }
+                }
                 _ => return Ok(edges), // Non-callable target — no structural edge
             }
         } else if reference.kind == ReferenceKind::Inheritance {
@@ -269,6 +293,98 @@ impl GraphBuilder {
     }
 }
 
+/// Attempt to resolve a function pointer call through local def-use dataflow.
+///
+/// For code like:
+/// ```c
+/// void (*fp)(int) = &handler;
+/// fp(42);
+/// ```
+/// the reference `fp` resolves to a `Variable` symbol (the function pointer),
+/// not a `Function`.  This function follows the intra-procedural dataflow
+/// graph from the CallTarget node backwards to find the actual function.
+///
+/// Algorithm: BFS up to depth 3 following incoming Assign/Read edges.
+/// Returns `Some(SymbolId)` if a Function symbol is found, `None` if
+/// the chain cannot be resolved.
+fn try_resolve_function_pointer(
+    store: &Arc<Store>,
+    reference: &ReferenceUse,
+) -> anyhow::Result<Option<SymbolId>> {
+    // 1. Find the CallTarget DataNode at this reference position
+    let file_nodes = store.find_data_nodes_by_file(&reference.file_id)?;
+    let call_target = match file_nodes.iter().find(|n| {
+        n.kind == DataNodeKind::CallTarget
+            && n.range.start_byte == reference.range.start_byte
+            && n.range.end_byte == reference.range.end_byte
+    }) {
+        Some(node) => node,
+        None => return Ok(None),
+    };
+
+    // 2. BFS over incoming dataflow edges (up to depth 3)
+    let mut visited: std::collections::HashSet<types::DataNodeId> =
+        std::collections::HashSet::new();
+    let mut queue: std::collections::VecDeque<(types::DataNodeId, usize)> =
+        std::collections::VecDeque::new();
+
+    queue.push_back((call_target.id, 0));
+    visited.insert(call_target.id);
+
+    while let Some((current_id, depth)) = queue.pop_front() {
+        if depth > 3 {
+            continue;
+        }
+
+        // Check all incoming edges to the current node
+        let incoming = store.find_dataflow_edges_by_target(&current_id)?;
+        for edge in &incoming {
+            // Only follow edges that represent data flow (not call/return bridges)
+            match edge.kind {
+                DataFlowKind::Assign
+                | DataFlowKind::Read
+                | DataFlowKind::FieldLoad
+                | DataFlowKind::Phi => {}
+                _ => continue,
+            }
+
+            if visited.contains(&edge.source) {
+                continue;
+            }
+            visited.insert(edge.source);
+
+            // Look up the source node
+            let source_node = match store.get_data_node(&edge.source)? {
+                Some(node) => node,
+                None => continue,
+            };
+
+            // Check if this source node's name corresponds to a Function symbol.
+            // The source could be:
+            // - An Expr node: `&handler` → name = "handler" (from pointer_expression capture)
+            // - A VariableUse node: `handler` read from a variable → name = "handler"
+            if let Some(ref name) = source_node.name {
+                // Search for a Function symbol with this name
+                if let Ok(candidates) = store.find_symbols_by_name(name) {
+                    for sym in &candidates {
+                        if sym.kind == SymbolKind::Function
+                            && sym.file_id == reference.file_id
+                        {
+                            // Found a function match in the same file
+                            return Ok(Some(sym.id));
+                        }
+                    }
+                }
+            }
+
+            // Continue BFS from this source node
+            queue.push_back((edge.source, depth + 1));
+        }
+    }
+
+    Ok(None)
+}
+
 /// Statistics from a GraphBuilder run.
 #[derive(Debug, Clone, Default)]
 pub struct GraphBuilderStats {
@@ -341,6 +457,207 @@ main();
             stats.edges_built > 0,
             "Expected >0 edges, got {}",
             stats.edges_built
+        );
+    }
+
+    /// Test that `try_resolve_function_pointer` follows a local def-use
+    /// chain from a CallTarget through an Assign edge to find the actual
+    /// function.  Simulates `void (*fp)(void) = &handler; fp();`.
+    #[test]
+    fn test_resolve_function_pointer_via_dataflow() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        let file_id = FileId::generate("src/example.c");
+        let range = TextRange {
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 11,
+        };
+
+        // Insert file
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: "src/example.c".into(),
+                language: Language::C,
+                content_hash: "abc".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+
+        // Create function symbol "handler" and variable symbol "fp"
+        let handler_id = SymbolId::generate(&file_id, "c", "handler", "function", None);
+        let handler_sym = SymbolDef {
+            id: handler_id,
+            kind: SymbolKind::Function,
+            name: "handler".to_string(),
+            qualified_name: "handler".to_string(),
+            symbol_path: vec!["handler".to_string()],
+            file_id,
+            language: Language::C,
+            range,
+            name_range: range,
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".to_string(),
+        };
+
+        let fp_id = SymbolId::generate(&file_id, "c", "fp", "variable", None);
+        let fp_sym = SymbolDef {
+            id: fp_id,
+            kind: SymbolKind::Variable,
+            name: "fp".to_string(),
+            qualified_name: "fp".to_string(),
+            symbol_path: vec!["fp".to_string()],
+            file_id,
+            language: Language::C,
+            range,
+            name_range: range,
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".to_string(),
+        };
+
+        store
+            .insert_file_facts(&FileFacts {
+                file: FileInfo {
+                    file_id,
+                    path: "src/example.c".into(),
+                    language: Language::C,
+                    content_hash: "abc".into(),
+                    status: ParseStatus::Success,
+                },
+                symbols: vec![handler_sym, fp_sym.clone()],
+                ..Default::default()
+            })
+            .unwrap();
+
+        // Create data nodes: CallTarget "fp" and Expr "&handler"
+        // Ranges must match the reference position for lookup.
+        let call_range = TextRange {
+            start_byte: 100,
+            end_byte: 102,
+            start_line: 5,
+            start_column: 1,
+            end_line: 5,
+            end_column: 3,
+        };
+        let expr_range = range; // reuse the default range
+
+        let call_target_id = DataNodeId::generate(
+            &file_id,
+            Some(&fp_id),
+            "call_target",
+            Some("fp"),
+            Some("fp"),
+            call_range.start_byte,
+        );
+        let expr_id = DataNodeId::generate(
+            &file_id,
+            Some(&fp_id),
+            "expr",
+            Some("handler"),
+            Some("handler"),
+            50,
+        );
+
+        let call_target = DataNode::call_target(
+            call_target_id,
+            file_id,
+            Some(fp_id),
+            None,
+            "fp",
+            "fp",
+            call_range,
+        );
+        let expr_node = DataNode {
+            id: expr_id,
+            file_id,
+            function_id: Some(fp_id),
+            kind: DataNodeKind::Expr,
+            binding_id: None,
+            callsite_id: None,
+            name: Some("handler".to_string()),
+            access_path: Some("handler".to_string()),
+            arg_index: None,
+            range: expr_range,
+        };
+
+        // Create an Assign edge: Expr("handler") → CallTarget("fp")
+        let edge_id = DataFlowEdgeId::generate(&expr_id, &call_target_id, "assign");
+        let assign_edge = DataFlowEdge {
+            id: edge_id,
+            source: expr_id,
+            target: call_target_id,
+            kind: DataFlowKind::Assign,
+            location: range,
+            confidence: 1.0,
+        };
+
+        // Write data nodes + edge via lazy build path
+        store
+            .insert_data_nodes(&[call_target, expr_node])
+            .unwrap();
+        store
+            .insert_dataflow_edges(&[assign_edge])
+            .unwrap();
+
+        // Create a reference at the CallTarget position resolving to `fp`
+        let ref_id = ReferenceId::generate(
+            &file_id,
+            Some(&fp_id), // source_symbol = enclosing function
+            100,          // start_byte of call_target
+            102,          // end_byte
+            "fp",
+            ReferenceKind::Call,
+        );
+        let reference = ReferenceUse {
+            id: ref_id,
+            file_id,
+            source_symbol: Some(fp_id),
+            scope_id: None,
+            kind: ReferenceKind::Call,
+            text: "fp".to_string(),
+            name: "fp".to_string(),
+            receiver: None,
+            arity: Some(0),
+            range: TextRange {
+                start_byte: 100,
+                end_byte: 102,
+                start_line: 5,
+                start_column: 1,
+                end_line: 5,
+                end_column: 3,
+            },
+            binding_id: None,
+            resolved: None,
+        };
+
+        // Try to resolve via dataflow
+        let result =
+            try_resolve_function_pointer(&store, &reference).expect("resolution should not error");
+        assert_eq!(
+            result,
+            Some(handler_id),
+            "function pointer should resolve to handler"
         );
     }
 }

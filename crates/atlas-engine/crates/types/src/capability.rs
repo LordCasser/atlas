@@ -659,6 +659,7 @@ mod profiles {
                 "access_path".into(),
                 "call_arguments".into(),
                 "return_flow".into(),
+                "function_pointer_tracking".into(),
             ],
             unsupported_features: vec![
                 "cfg".into(),
@@ -669,6 +670,7 @@ mod profiles {
                 "name-based binding (no proper shadowing)".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
                 "macro expansion and #include resolution may produce incomplete facts".into(),
+                "function pointer calls resolved via local def-use chain (depth 3); inter-procedural pointer flow not tracked".into(),
             ],
             confidence_floor: 0.65,
             features: Some(FeatureMatrix {
@@ -676,7 +678,12 @@ mod profiles {
                 references: FeatureSupport::supported_with_confidence(0.65),
                 imports: FeatureSupport::supported_with_confidence(0.65),
                 scopes: FeatureSupport::supported_with_confidence(0.65),
-                call_graph: FeatureSupport::supported_with_confidence(0.65),
+                call_graph: FeatureSupport::supported_with_limitations(
+                    0.60,
+                    vec![
+                        "function pointer calls resolved via local def-use (depth 3, intra-procedural only)",
+                    ],
+                ),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
                     0.65,
                     vec!["name-based binding (no proper shadowing)"],
