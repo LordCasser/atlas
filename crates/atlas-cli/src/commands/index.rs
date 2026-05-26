@@ -412,7 +412,16 @@ pub fn run(
 
     // ── Restore terminal ──
     if has_tty {
-        crate::tui::progress::clear_and_restore();
+        if was_interrupted {
+            // Ctrl+C: clear the progress area so the interrupt message
+            // reads cleanly below.
+            crate::tui::progress::clear_and_restore();
+        } else {
+            // Normal completion: leave the progress display visible on
+            // screen (like wget), exit raw mode and position cursor
+            // below the rendered content.
+            tui.take().unwrap().finish();
+        }
     }
 
     // ── Handle interrupt BEFORE joining worker ──

@@ -131,16 +131,25 @@ impl TuiProgress {
         }
     }
 
-    /// Restore terminal state.  Clears the inline progress area before
-    /// exiting raw mode so no residual TUI junk is left on screen.
-    pub fn finish(self) {
-        // Write ANSI: move cursor up INLINE_ROWS rows, clear to end of screen.
-        let clear = format!("\x1b[{}A\x1b[J", INLINE_ROWS);
-        let _ = std::io::Write::write_all(&mut std::io::stdout(), clear.as_bytes());
-        let _ = std::io::Write::flush(&mut std::io::stdout());
-        // Now exit raw mode.  The terminal is clean.
+    /// Finish the TUI on normal completion — leaves the progress display
+    /// visible on screen (like `wget`) and positions the cursor below the
+    /// rendered area so subsequent output starts on a fresh line.
+    pub fn finish(mut self) {
+        // Render one final frame so the display shows completion state
+        // (100% gauge, all phases completed) before shutting down.
+        let _ = self.draw();
+
+        // Drop the terminal.  The Drop impl calls ratatui::try_restore(),
+        // which disables raw mode and restores the cursor to its
+        // pre-init position (above the rendered inline content).
         drop(self);
-        let _ = ratatui::try_restore();
+
+        // Move cursor forward by INLINE_ROWS to land below the rendered
+        // content.  ANSI escapes work in both raw and cooked mode — the
+        // terminal emulator interprets them regardless of line discipline.
+        let down = format!("\x1b[{}B", INLINE_ROWS);
+        let _ = std::io::Write::write_all(&mut std::io::stdout(), down.as_bytes());
+        let _ = std::io::Write::flush(&mut std::io::stdout());
     }
 }
 
