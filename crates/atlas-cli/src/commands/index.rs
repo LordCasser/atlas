@@ -367,6 +367,16 @@ pub fn run(
         let _build_stats = builder.build_all(&resolved);
         ps.lock().unwrap().set_current(resolved.len() as u64);
 
+        // ── Summary build (Schema v3: persist function summaries) ──
+        ps.lock().unwrap().start_phase(
+            ProgressPhase::Finalizing,
+            Some("Building summaries...".into()),
+        );
+        let _summary_stats = atlas_engine::SummaryStore::build_all(&store, |s, fid| {
+            atlas_engine::SummaryBuilder::build(s, fid, None)
+        })?;
+        if interrupted() { return Ok(()); }
+
         // ── Finalize ──
         if tsconfig_changed {
             atlas_engine::commit_config_hashes(&store, &root, &["tsconfig.json"])?;
