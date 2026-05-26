@@ -413,9 +413,14 @@ fn normalize_java_lexical(
 
 /// Find a call expression ancestor for a dataflow node.
 fn find_call_expression_java(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    let kinds: &[&str] = &["method_invocation", "object_creation_expression"];
+    // Check current node first — the captured node may itself be the call expression
+    // (e.g. when `df.assign_value` captures a method_invocation directly).
+    if kinds.contains(&node.kind()) {
+        return Some(node);
+    }
     let mut current = node;
     while let Some(parent) = current.parent() {
-        let kinds: &[&str] = &["method_invocation", "object_creation_expression"];
         if kinds.contains(&parent.kind()) {
             return Some(parent);
         }

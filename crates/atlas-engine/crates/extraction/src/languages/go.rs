@@ -66,6 +66,18 @@ fn normalize_go_reference(
     let name = text.clone();
     let range = node_range(node);
 
+    // Extract receiver for method calls like `obj.Method()`.
+    // The reference.scm query captures `field_identifier` inside
+    // `selector_expression` → check parent for the operand.
+    let receiver = if capture_name == "reference.call" {
+        node.parent()
+            .filter(|p| p.kind() == "selector_expression")
+            .and_then(|sel| sel.child_by_field_name("operand"))
+            .and_then(|op| node_text(op, source))
+    } else {
+        None
+    };
+
     // source_symbol is resolved by SemanticBinder after extraction.
     let ref_id = ReferenceId::generate(
         &file_id,
@@ -84,7 +96,7 @@ fn normalize_go_reference(
         kind,
         text,
         name,
-        receiver: None,
+        receiver,
         arity: None,
         range,
         resolved: None,
@@ -537,6 +549,11 @@ fn normalize_go_lexical(
 // ── Dataflow normalize ─────────────────────────────────────────────────
 
 fn find_call_expression_go(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    // Check current node first — the captured node may itself be the call expression
+    // (e.g. when `df.assign_value` captures a call_expression directly).
+    if node.kind() == "call_expression" {
+        return Some(node);
+    }
     let mut current = node;
     while let Some(parent) = current.parent() {
         if parent.kind() == "call_expression" {

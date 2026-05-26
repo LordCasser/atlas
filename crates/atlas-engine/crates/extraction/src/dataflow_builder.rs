@@ -374,17 +374,42 @@ fn walk_for_assign_edges(
     pos_map: &HashMap<NodePosKey, DataNodeId>,
     _all_nodes: &[DataNode],
     edges: &mut Vec<DataFlowEdge>,
+    is_csharp: bool,
 ) {
     let kind = node.kind();
 
     // variable_declarator: name (Local) ← value (Expr)
-    // C# uses equals_value_clause instead of "value" for the initializer.
-    // Fall back to equals_value_clause when "value" field is absent.
+    // tree-sitter-csharp ≥ 0.23 uses a flat structure: `name` field +
+    // `expression` child (no wrapper field like `value` or
+    // `equals_value_clause`).  Other languages may provide `value` directly.
     if kind == "variable_declarator" {
-        let value_node = node
+        let name_node_opt = node.child_by_field_name("name");
+        let raw_value = node
             .child_by_field_name("value")
-            .or_else(|| node.child_by_field_name("equals_value_clause"));
-        if let (Some(name_node), Some(value_node)) = (node.child_by_field_name("name"), value_node)
+            .or_else(|| node.child_by_field_name("equals_value_clause"))
+            .or_else(|| {
+                // C# (ts-csharp >= 0.23): no field for the initializer —
+                // fall back to the last named child that isn't the name.
+                if !is_csharp {
+                    return None;
+                }
+                (0..node.child_count())
+                    .rev()
+                    .filter_map(|i| node.child(i as u32))
+                    .find(|c| c.is_named())
+                    .filter(|c| name_node_opt.map_or(true, |n| c.id() != n.id()))
+            });
+        // C#: equals_value_clause (if present in older grammars) wraps `=
+        // expr` — unwrap it to the actual expression so byte-range lookup
+        // matches the Expr data node.
+        let value_node = raw_value.and_then(|v| {
+            if v.kind() == "equals_value_clause" {
+                v.named_child(0).or(Some(v))
+            } else {
+                Some(v)
+            }
+        });
+        if let (Some(name_node), Some(value_node)) = (name_node_opt, value_node)
         {
             let name_kind = name_node.kind();
             if name_kind == "object_pattern"
@@ -609,7 +634,7 @@ fn walk_for_assign_edges(
     // Recurse into children
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {
-            walk_for_assign_edges(child, source, pos_map, _all_nodes, edges);
+            walk_for_assign_edges(child, source, pos_map, _all_nodes, edges, is_csharp);
         }
     }
 }
@@ -709,7 +734,8 @@ fn build_dataflow_edges(
     edges: &mut Vec<DataFlowEdge>,
 ) {
     // ── AST‑driven Assign edges ─────────────────────────────────────
-    walk_for_assign_edges(ctx.root, ctx.source, pos_map, nodes, edges);
+    let is_csharp = matches!(ctx.language, types::enums::Language::CSharp);
+    walk_for_assign_edges(ctx.root, ctx.source, pos_map, nodes, edges, is_csharp);
 
     // ── FieldLoad edges (function‑scoped, access‑path‑aware) ───────
     // For each Field data node, find the base data node within the same

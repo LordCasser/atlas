@@ -411,9 +411,14 @@ fn normalize_csharp_lexical(
 // ── Dataflow normalize ─────────────────────────────────────────────────
 
 fn find_call_expression_csharp(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    let kinds: &[&str] = &["invocation_expression", "object_creation_expression"];
+    // Check current node first — the captured node may itself be the call expression
+    // (e.g. when `df.assign_value` captures an invocation_expression directly).
+    if kinds.contains(&node.kind()) {
+        return Some(node);
+    }
     let mut current = node;
     while let Some(parent) = current.parent() {
-        let kinds: &[&str] = &["invocation_expression", "object_creation_expression"];
         if kinds.contains(&parent.kind()) {
             return Some(parent);
         }
@@ -835,3 +840,4 @@ mod tests {
         );
     }
 }
+
