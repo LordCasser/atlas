@@ -20,7 +20,7 @@ impl Store {
     /// `Workspace::ensure_atlas_dir`).
     ///
     /// Performance PRAGMAs (WAL journal, NORMAL sync, foreign keys, busy
-    /// timeout, ~20 MB cache) are applied on open.
+    /// timeout, mmap, temp memory, ~64 MB cache) are applied on open.
     pub fn open_db(db_path: &Path) -> anyhow::Result<Self> {
         let conn = Connection::open(db_path)?;
 
@@ -30,8 +30,10 @@ impl Store {
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous = NORMAL;
             PRAGMA foreign_keys = ON;
-            PRAGMA busy_timeout = 5000;
-            PRAGMA cache_size = -20000; -- ~20 MB
+            PRAGMA busy_timeout = 10000;
+            PRAGMA cache_size = -65536; -- ~64 MB
+            PRAGMA temp_store = MEMORY;
+            PRAGMA mmap_size = 268435456; -- 256 MB
             "#,
         )?;
 
@@ -42,7 +44,10 @@ impl Store {
         read_conn.execute_batch(
             r#"
             PRAGMA query_only = ON;
-            PRAGMA cache_size = -20000;
+            PRAGMA busy_timeout = 10000;
+            PRAGMA cache_size = -65536;
+            PRAGMA temp_store = MEMORY;
+            PRAGMA mmap_size = 268435456;
             "#,
         )?;
 

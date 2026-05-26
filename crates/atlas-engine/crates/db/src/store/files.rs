@@ -82,12 +82,12 @@ impl Store {
         if normalized.is_empty() {
             return self.count_files();
         }
-        let prefix = format!("{}/%", escape_like(&normalized));
+        let (lower, upper) = scope_child_bounds(&normalized);
         let conn = self.lock_read();
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM files
-             WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'",
-            params![normalized, prefix],
+             WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
+            params![normalized, lower, upper],
             |row| row.get(0),
         )?;
         Ok(count as usize)
@@ -99,16 +99,16 @@ impl Store {
         if normalized.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        let prefix = format!("{}/%", escape_like(&normalized));
+        let (lower, upper) = scope_child_bounds(&normalized);
         let conn = self.lock_read();
         let mut stmt = conn.prepare(&format!(
             "SELECT file_id FROM files
-             WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'
+             WHERE path = ?1 OR (path >= ?2 AND path < ?3)
              ORDER BY path
              LIMIT {}",
             limit
         ))?;
-        let rows = stmt.query_map(params![normalized, prefix], |row| row.get(0))?;
+        let rows = stmt.query_map(params![normalized, lower, upper], |row| row.get(0))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -144,7 +144,7 @@ impl Store {
         // Normalize and build LIKE pattern (handles extension variations:
         // "lib" → matches "lib.ts", "lib/index.ts", "lib.js", etc.)
         let normalized = resolved.replace('\\', "/");
-        let pattern = format!("{}%", normalized);
+        let pattern = format!("{}%", escape_like(&normalized));
 
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
@@ -170,4 +170,11 @@ pub(crate) fn escape_like(value: &str) -> String {
         .replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
+}
+
+pub(crate) fn scope_child_bounds(scope: &str) -> (String, String) {
+    let lower = format!("{}/", scope);
+    let mut upper = lower.clone();
+    upper.push(char::MAX);
+    (lower, upper)
 }

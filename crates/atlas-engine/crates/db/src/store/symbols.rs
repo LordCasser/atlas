@@ -4,7 +4,7 @@ use rusqlite::params;
 use types::*;
 
 use super::Store;
-use super::files::{escape_like, normalize_scope};
+use super::files::{normalize_scope, scope_child_bounds};
 use crate::store_fts::sanitize_fts5_query;
 use crate::store_rows::row_to_symbol;
 use crate::store_writers::write_symbols;
@@ -122,7 +122,7 @@ impl Store {
             return Ok(Vec::new());
         }
         let match_query = format!("{}*", safe_query);
-        let scope_prefix = format!("{}/%", escape_like(&scope));
+        let (scope_lower, scope_upper) = scope_child_bounds(&scope);
         let conn = self.lock_read();
         let sql = if kind_filter.is_some() {
             format!(
@@ -138,8 +138,8 @@ impl Store {
                    JOIN symbols_fts fts ON s.rowid = fts.rowid
                    JOIN files f ON f.file_id = s.file_id
                    WHERE symbols_fts MATCH ?1
-                     AND (f.path = ?2 OR f.path LIKE ?3 ESCAPE '\')
-                     AND s.kind = ?4
+                     AND (f.path = ?2 OR (f.path >= ?3 AND f.path < ?4))
+                     AND s.kind = ?5
                    ORDER BY rank
                    LIMIT {}"#,
                 limit
@@ -158,7 +158,7 @@ impl Store {
                    JOIN symbols_fts fts ON s.rowid = fts.rowid
                    JOIN files f ON f.file_id = s.file_id
                    WHERE symbols_fts MATCH ?1
-                     AND (f.path = ?2 OR f.path LIKE ?3 ESCAPE '\')
+                     AND (f.path = ?2 OR (f.path >= ?3 AND f.path < ?4))
                    ORDER BY rank
                    LIMIT {}"#,
                 limit
@@ -167,11 +167,14 @@ impl Store {
         let mut stmt = conn.prepare(&sql)?;
         let rows = if let Some(kind) = kind_filter {
             stmt.query_map(
-                params![match_query, scope, scope_prefix, kind.as_str()],
+                params![match_query, scope, scope_lower, scope_upper, kind.as_str()],
                 row_to_symbol,
             )?
         } else {
-            stmt.query_map(params![match_query, scope, scope_prefix], row_to_symbol)?
+            stmt.query_map(
+                params![match_query, scope, scope_lower, scope_upper],
+                row_to_symbol,
+            )?
         };
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -192,7 +195,7 @@ impl Store {
         if scope.is_empty() || name.trim().is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        let scope_prefix = format!("{}/%", escape_like(&scope));
+        let (scope_lower, scope_upper) = scope_child_bounds(&scope);
         let conn = self.lock_read();
         let sql = if kind_filter.is_some() {
             format!(
@@ -207,8 +210,8 @@ impl Store {
                    FROM symbols s
                    JOIN files f ON f.file_id = s.file_id
                    WHERE s.name = ?1
-                     AND (f.path = ?2 OR f.path LIKE ?3 ESCAPE '\')
-                     AND s.kind = ?4
+                     AND (f.path = ?2 OR (f.path >= ?3 AND f.path < ?4))
+                     AND s.kind = ?5
                    ORDER BY s.qualified_name
                    LIMIT {}"#,
                 limit
@@ -226,7 +229,7 @@ impl Store {
                    FROM symbols s
                    JOIN files f ON f.file_id = s.file_id
                    WHERE s.name = ?1
-                     AND (f.path = ?2 OR f.path LIKE ?3 ESCAPE '\')
+                     AND (f.path = ?2 OR (f.path >= ?3 AND f.path < ?4))
                    ORDER BY s.qualified_name
                    LIMIT {}"#,
                 limit
@@ -235,11 +238,14 @@ impl Store {
         let mut stmt = conn.prepare(&sql)?;
         let rows = if let Some(kind) = kind_filter {
             stmt.query_map(
-                params![name, scope, scope_prefix, kind.as_str()],
+                params![name, scope, scope_lower, scope_upper, kind.as_str()],
                 row_to_symbol,
             )?
         } else {
-            stmt.query_map(params![name, scope, scope_prefix], row_to_symbol)?
+            stmt.query_map(
+                params![name, scope, scope_lower, scope_upper],
+                row_to_symbol,
+            )?
         };
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -332,13 +338,13 @@ impl Store {
         if like_pattern.len() <= 2 {
             return Ok(Vec::new());
         }
-        let scope_prefix = format!("{}/%", escape_like(&scope));
+        let (scope_lower, scope_upper) = scope_child_bounds(&scope);
 
         let mut where_clauses = vec![
             "(s.name LIKE ?1 OR s.qualified_name LIKE ?2)".to_string(),
-            "(f.path = ?3 OR f.path LIKE ?4 ESCAPE '\\')".to_string(),
+            "(f.path = ?3 OR (f.path >= ?4 AND f.path < ?5))".to_string(),
         ];
-        let mut param_idx = 5;
+        let mut param_idx = 6;
 
         if language.is_some() {
             where_clauses.push(format!("s.language = ?{}", param_idx));
@@ -378,22 +384,37 @@ impl Store {
                     like_pattern,
                     like_pattern,
                     scope,
-                    scope_prefix,
+                    scope_lower,
+                    scope_upper,
                     lang_str,
                     kind_str
                 ],
                 row_to_symbol,
             )?,
             (true, false) => stmt.query_map(
-                params![like_pattern, like_pattern, scope, scope_prefix, lang_str],
+                params![
+                    like_pattern,
+                    like_pattern,
+                    scope,
+                    scope_lower,
+                    scope_upper,
+                    lang_str
+                ],
                 row_to_symbol,
             )?,
             (false, true) => stmt.query_map(
-                params![like_pattern, like_pattern, scope, scope_prefix, kind_str],
+                params![
+                    like_pattern,
+                    like_pattern,
+                    scope,
+                    scope_lower,
+                    scope_upper,
+                    kind_str
+                ],
                 row_to_symbol,
             )?,
             (false, false) => stmt.query_map(
-                params![like_pattern, like_pattern, scope, scope_prefix],
+                params![like_pattern, like_pattern, scope, scope_lower, scope_upper],
                 row_to_symbol,
             )?,
         };
