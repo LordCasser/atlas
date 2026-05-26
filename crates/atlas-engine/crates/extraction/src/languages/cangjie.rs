@@ -10,7 +10,11 @@ use crate::frontend::{
     SymbolExtractorSpec,
 };
 use crate::languages::shared::SymbolDefBuilder;
+use types::bindings::BindingDef;
 use types::capability::FeatureSupport;
+use types::dataflow::{DataFlowEdge, DataNode};
+use types::enums::{BindingKind, DataNodeKind};
+use types::ids::{BindingId, CallsiteId, DataNodeId, ScopeId};
 use types::*;
 
 /// Cangjie frontend spec.
@@ -203,29 +207,29 @@ impl ScopeExtractorSpec for CangjieAdapter {
 
 impl LexicalBindingSpec for CangjieAdapter {
     fn lexical_query(&self) -> &str {
-        ""
+        include_str!("../../queries/cangjie/lexical.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::unsupported("Cangjie does not support lexical binding extraction")
+        FeatureSupport::supported_with_limitations(0.60, vec!["basic parameter/local binding extraction"])
     }
-    fn normalize(&self, _ctx: NormalizeCtx<'_>, _capture: Capture<'_>) -> Option<BindingDef> {
-        None
+    fn normalize(&self, _ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
+        normalize_cangjie_lexical(&capture.name, capture.node, _ctx.source, _ctx.file_id)
     }
 }
 
 impl DataflowSpec for CangjieAdapter {
     fn dataflow_builder_query(&self) -> &str {
-        ""
+        include_str!("../../queries/cangjie/dataflow_builder.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::unsupported("Cangjie does not support dataflow extraction")
+        FeatureSupport::supported_with_limitations(0.60, vec!["AST-driven local dataflow"])
     }
     fn normalize(
         &self,
         _ctx: NormalizeCtx<'_>,
-        _capture: Capture<'_>,
+        capture: Capture<'_>,
     ) -> (Option<DataNode>, Option<DataFlowEdge>) {
-        (None, None)
+        normalize_cangjie_dataflow(&capture.name, capture.node, _ctx.source, _ctx.file_id)
     }
 }
 
@@ -330,6 +334,299 @@ fn cj_scope_kind(capture: &str) -> Option<ScopeKind> {
     }
 }
 
+// ── Lexical binding normalize ──────────────────────────────────────────
+
+fn cj_binding_kind(capture_name: &str) -> Option<BindingKind> {
+    match capture_name {
+        "lexical.parameter" => Some(BindingKind::Parameter),
+        "lexical.local" => Some(BindingKind::Local),
+        _ => None,
+    }
+}
+
+fn normalize_cangjie_lexical(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> Option<BindingDef> {
+    let kind = cj_binding_kind(capture_name)?;
+    let name = node_text(node, source)?;
+    let range = node_range(node);
+    let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
+    let id = BindingId::generate(&file_id, &scope_id, kind.as_str(), &name, range.start_byte);
+    Some(BindingDef {
+        id,
+        file_id,
+        function_id: None,
+        scope_id,
+        kind,
+        name,
+        symbol_id: None,
+        range,
+    })
+}
+
+// ── Dataflow normalize ─────────────────────────────────────────────────
+
+/// Find the enclosing call expression (postfixExpression with callSuffix).
+/// Checks the current node first, then walks up the parent chain.
+fn find_call_expression_cangjie(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    // Check current node
+    if is_cangjie_call_expr(node) {
+        return Some(node);
+    }
+    // Walk up
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        if is_cangjie_call_expr(parent) {
+            return Some(parent);
+        }
+        current = parent;
+    }
+    None
+}
+
+fn is_cangjie_call_expr(node: tree_sitter::Node) -> bool {
+    if node.kind() != "postfixExpression" {
+        return false;
+    }
+    (0..node.child_count()).any(|i| {
+        node.child(i as u32)
+            .map_or(false, |c| c.kind() == "callSuffix")
+    })
+}
+
+fn normalize_cangjie_dataflow(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> (Option<DataNode>, Option<DataFlowEdge>) {
+    let range = node_range(node);
+    match capture_name {
+        "df.parameter" => node_text(node, source)
+            .map(|name| {
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "parameter",
+                    Some(&name),
+                    Some(&name),
+                    range.start_byte,
+                );
+                let dn = DataNode::parameter(node_id, file_id, None, None, &name, range);
+                (Some(dn), None)
+            })
+            .unwrap_or((None, None)),
+        "df.assign_target" => node_text(node, source)
+            .map(|name| {
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "local",
+                    Some(&name),
+                    Some(&name),
+                    range.start_byte,
+                );
+                let dn = DataNode::local(node_id, file_id, None, None, &name, range);
+                (Some(dn), None)
+            })
+            .unwrap_or((None, None)),
+        "df.assign_value" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let callsite_id = find_call_expression_cangjie(node)
+                .map(|ce| CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "expr",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: DataNodeKind::Expr,
+                binding_id: None,
+                callsite_id,
+                name: Some(text),
+                access_path: None,
+                arg_index: None,
+                range,
+            };
+            (Some(dn), None)
+        }
+        "df.return_value" => {
+            // node is jumpExpression — find the expression child (last named child)
+            let expr_node = (0..node.child_count())
+                .rev()
+                .find_map(|i| {
+                    let c = node.child(i as u32)?;
+                    if c.is_named() {
+                        Some(c)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(node);
+            let text = node_text(expr_node, source).unwrap_or_default();
+            let callsite_id = find_call_expression_cangjie(expr_node)
+                .map(|ce| CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "return",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: DataNodeKind::Return,
+                binding_id: None,
+                callsite_id,
+                name: Some(text),
+                access_path: None,
+                arg_index: None,
+                range,
+            };
+            (Some(dn), None)
+        }
+        "df.call_target" => node_text(node, source)
+            .map(|name| {
+                let access_path = name.clone();
+                let callsite_id = find_call_expression_cangjie(node).map(|ce| {
+                    CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+                });
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "call_target",
+                    Some(&name),
+                    Some(&access_path),
+                    range.start_byte,
+                );
+                let dn = DataNode::call_target(
+                    node_id,
+                    file_id,
+                    None,
+                    callsite_id,
+                    &name,
+                    &access_path,
+                    range,
+                );
+                (Some(dn), None)
+            })
+            .unwrap_or((None, None)),
+        "df.call_arg" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let callsite_id = find_call_expression_cangjie(node)
+                .map(|ce| CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "call_arg",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn =
+                DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range);
+            (Some(dn), None)
+        }
+        "df.field_name" | "df.receiver" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let kind = if capture_name == "df.field_name" {
+                DataNodeKind::Field
+            } else {
+                DataNodeKind::Receiver
+            };
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                if capture_name == "df.field_name" {
+                    "field"
+                } else {
+                    "receiver"
+                },
+                Some(&text),
+                Some(&text),
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text.clone()),
+                access_path: Some(text),
+                arg_index: None,
+                range,
+            };
+            (Some(dn), None)
+        }
+        "df.literal" => {
+            let text = node_text(node, source).unwrap_or_default();
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "literal",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: DataNodeKind::Literal,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text),
+                access_path: None,
+                arg_index: None,
+                range,
+            };
+            (Some(dn), None)
+        }
+        "df.identifier_use" => {
+            let text = node_text(node, source).unwrap_or_default();
+            if text.is_empty() {
+                return (None, None);
+            }
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "identifier_use",
+                Some(&text),
+                Some(&text),
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: DataNodeKind::VariableUse,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text.clone()),
+                access_path: Some(text),
+                arg_index: None,
+                range,
+            };
+            (Some(dn), None)
+        }
+        _ => (None, None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,6 +638,8 @@ mod tests {
         assert!(!spec.reference_query().is_empty());
         assert!(!spec.import_query().is_empty());
         assert!(!spec.scope_query().is_empty());
+        assert!(!spec.lexical_query().is_empty());
+        assert!(!spec.dataflow_builder_query().is_empty());
     }
 
     #[test]
@@ -361,6 +660,12 @@ mod tests {
 
         let sc_q = tree_sitter::Query::new(&lang, spec.scope_query());
         assert!(sc_q.is_ok(), "scopes query: {:?}", sc_q.err());
+
+        let lex_q = tree_sitter::Query::new(&lang, spec.lexical_query());
+        assert!(lex_q.is_ok(), "lexical query: {:?}", lex_q.err());
+
+        let df_q = tree_sitter::Query::new(&lang, spec.dataflow_builder_query());
+        assert!(df_q.is_ok(), "dataflow query: {:?}", df_q.err());
     }
 
     #[test]
@@ -393,5 +698,187 @@ mod tests {
     fn test_cj_import_info_mapping() {
         // import_info requires a real tree-sitter Node (from a parse tree)
         // — tests are deferred to E2E fixture-based tests.
+    }
+
+    #[test]
+    fn test_cj_lexical_query_produces_bindings() {
+        let lang: tree_sitter::Language = tree_sitter_cangjie::LANGUAGE.into();
+        let query_src = include_str!("../../queries/cangjie/lexical.scm");
+        let source = r#"func greet(name: String): String {
+    let message = "Hello"
+}
+"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let query = tree_sitter::Query::new(&lang, query_src).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let file_id = FileId::generate("test.cj");
+
+        let mut bindings: Vec<BindingDef> = Vec::new();
+        let mut captures = cursor.captures(&query, root, source.as_bytes());
+        use tree_sitter::StreamingIterator;
+        while let Some((m, idx)) = captures.next() {
+            let cap = m.captures[*idx];
+            let name = query.capture_names()[cap.index as usize].to_string();
+            if let Some(bd) =
+                normalize_cangjie_lexical(&name, cap.node, source, file_id)
+            {
+                bindings.push(bd);
+            }
+        }
+
+        assert_eq!(bindings.len(), 2, "expected 2 bindings, got {:?}", bindings);
+        assert!(
+            bindings.iter().any(|b| b.kind == BindingKind::Parameter),
+            "missing parameter binding"
+        );
+        assert!(
+            bindings.iter().any(|b| b.kind == BindingKind::Local),
+            "missing local binding"
+        );
+    }
+
+    #[test]
+    fn test_cj_dataflow_query_produces_nodes() {
+        let lang: tree_sitter::Language = tree_sitter_cangjie::LANGUAGE.into();
+        let query_src = include_str!("../../queries/cangjie/dataflow_builder.scm");
+        let source = r#"func greet(name: String): String {
+    let message = "Hello"
+    return message
+}
+"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let query = tree_sitter::Query::new(&lang, query_src).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let file_id = FileId::generate("test.cj");
+
+        let mut nodes: Vec<DataNode> = Vec::new();
+        let mut captures = cursor.captures(&query, root, source.as_bytes());
+        use tree_sitter::StreamingIterator;
+        while let Some((m, idx)) = captures.next() {
+            let cap = m.captures[*idx];
+            let name = query.capture_names()[cap.index as usize].to_string();
+            let (dn, _de) =
+                normalize_cangjie_dataflow(&name, cap.node, source, file_id);
+            if let Some(dn) = dn {
+                nodes.push(dn);
+            }
+        }
+
+        assert!(
+            !nodes.is_empty(),
+            "expected dataflow nodes, got none"
+        );
+        assert!(
+            nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+            "missing parameter node"
+        );
+        assert!(
+            nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+            "missing local node"
+        );
+        assert!(
+            nodes.iter().any(|n| n.kind == DataNodeKind::Return),
+            "missing return node"
+        );
+        assert!(
+            nodes.iter().any(|n| n.kind == DataNodeKind::Literal),
+            "missing literal node"
+        );
+    }
+
+    #[test]
+    fn test_cj_dataflow_call_capture() {
+        let lang: tree_sitter::Language = tree_sitter_cangjie::LANGUAGE.into();
+        let query_src = include_str!("../../queries/cangjie/dataflow_builder.scm");
+        let source = r#"func compute(x: Int64): Int64 {
+    return add(x, 42)
+}
+"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let query = tree_sitter::Query::new(&lang, query_src).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let file_id = FileId::generate("test.cj");
+
+        let mut nodes: Vec<DataNode> = Vec::new();
+        let mut captures = cursor.captures(&query, root, source.as_bytes());
+        use tree_sitter::StreamingIterator;
+        while let Some((m, idx)) = captures.next() {
+            let cap = m.captures[*idx];
+            let name = query.capture_names()[cap.index as usize].to_string();
+            let (dn, _de) =
+                normalize_cangjie_dataflow(&name, cap.node, source, file_id);
+            if let Some(dn) = dn {
+                nodes.push(dn);
+            }
+        }
+
+        assert!(
+            nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget),
+            "missing call target node"
+        );
+        assert!(
+            nodes.iter().any(|n| n.kind == DataNodeKind::CallArg),
+            "missing call arg node"
+        );
+        let call_target = nodes
+            .iter()
+            .find(|n| n.kind == DataNodeKind::CallTarget)
+            .unwrap();
+        assert!(
+            call_target.callsite_id.is_some(),
+            "call target should have callsite_id"
+        );
+        let call_args: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == DataNodeKind::CallArg)
+            .collect();
+        assert_eq!(call_args.len(), 2, "expected 2 call args");
+        for arg in &call_args {
+            assert!(
+                arg.callsite_id.is_some(),
+                "call arg should have callsite_id"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cj_binding_kind_mapping() {
+        assert_eq!(
+            cj_binding_kind("lexical.parameter"),
+            Some(BindingKind::Parameter)
+        );
+        assert_eq!(
+            cj_binding_kind("lexical.local"),
+            Some(BindingKind::Local)
+        );
+        assert_eq!(cj_binding_kind("unknown"), None);
+    }
+
+    #[test]
+    fn test_cj_frontend_has_capability() {
+        let frontend = cangjie_frontend();
+        let cap = &frontend.capability;
+        assert!(
+            cap.supported_features.contains(&"lexical_bindings".to_string()),
+            "should list lexical_bindings as supported, got: {:?}",
+            cap.supported_features
+        );
+        assert!(
+            cap.supported_features.contains(&"local_dataflow".to_string()),
+            "should list local_dataflow as supported, got: {:?}",
+            cap.supported_features
+        );
     }
 }
