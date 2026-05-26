@@ -14,10 +14,13 @@
       (simple_identifier) @df.parameter)))
 
 ;; --- Variable declarations: val x = expr ---
-;; The value expression is captured here so the AST-driven assign edge
-;; walker can create Assign edges (Expr → Local) for initializers.
-(variable_declaration
-  (simple_identifier) @df.assign_target
+;; In tree-sitter-kotlin v0.3.5+, variable_declaration only contains
+;; simple_identifier + optional type.  The = expr part lives in
+;; property_declaration.  Capture the target from the nested
+;; variable_declaration and the value expression from property_declaration.
+(property_declaration
+  (variable_declaration
+    (simple_identifier) @df.assign_target)
   (_) @df.assign_value)
 
 (property_declaration

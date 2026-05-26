@@ -210,24 +210,70 @@ impl CallsiteExtractorSpec for GenericCallsiteExtractor {
 /// Extract argument ranges from a call expression node.
 ///
 /// This is a generic best-effort implementation that looks for children
-/// of the call node that are in an "arguments" or "argument_list" child.
+/// of the call node that are in an "arguments", "argument_list",
+/// "value_arguments", "callSuffix", or "call_suffix" child.
+///
+/// For Kotlin's `call_suffix` → `value_arguments` → `value_argument` → `expr`
+/// nesting, the innermost named child of each `value_argument` is returned so
+/// that the range matches the DataNode's capture range.
 fn extract_argument_ranges(call_node: &tree_sitter::Node, _source: &str) -> Vec<TextRange> {
     let mut args = Vec::new();
 
-    // Look for an "arguments" or "argument_list" child
+    let arg_container_kinds: &[&str] = &[
+        "arguments",
+        "argument_list",
+        "parenthesized_list",
+        "value_arguments",     // Kotlin (when direct child of call node)
+        "callSuffix",          // Cangjie
+        "call_suffix",         // Kotlin (tree-sitter-kotlin wraps args)
+    ];
+
+    // Look for an argument container child
     let mut cursor = call_node.walk();
     for child in call_node.children(&mut cursor) {
         let kind = child.kind();
-        if kind == "arguments" || kind == "argument_list" || kind == "parenthesized_list" {
-            // Walk the argument children
-            let mut arg_cursor = child.walk();
-            for arg_child in child.children(&mut arg_cursor) {
-                let arg_kind = arg_child.kind();
-                // Skip punctuation (commas, parens)
-                if arg_kind == "," || arg_kind == "(" || arg_kind == ")" || arg_kind.is_empty() {
-                    continue;
+        if arg_container_kinds.contains(&kind) {
+            match kind {
+                "callSuffix" => {
+                    // Cangjie: argument expressions are direct named children
+                    // of callSuffix (unnamed children are '(' and ')').
+                    let mut arg_cursor = child.walk();
+                    for arg_child in child.children(&mut arg_cursor) {
+                        if arg_child.is_named() {
+                            args.push(crate::languages::node_range(arg_child));
+                        }
+                    }
                 }
-                args.push(crate::languages::node_range(arg_child));
+                "call_suffix" => {
+                    // Kotlin: call_suffix contains value_arguments.
+                    // Look for value_arguments inside call_suffix.
+                    let mut suffix_cursor = child.walk();
+                    for inner in child.children(&mut suffix_cursor) {
+                        if inner.kind() == "value_arguments" {
+                            extract_value_arguments(&inner, &mut args);
+                            break;
+                        }
+                    }
+                }
+                "value_arguments" => {
+                    extract_value_arguments(&child, &mut args);
+                }
+                _ => {
+                    // Walk the argument children inside the container
+                    let mut arg_cursor = child.walk();
+                    for arg_child in child.children(&mut arg_cursor) {
+                        let arg_kind = arg_child.kind();
+                        // Skip punctuation (commas, parens)
+                        if arg_kind == ","
+                            || arg_kind == "("
+                            || arg_kind == ")"
+                            || arg_kind.is_empty()
+                        {
+                            continue;
+                        }
+                        args.push(crate::languages::node_range(arg_child));
+                    }
+                }
             }
             break;
         }
@@ -235,6 +281,29 @@ fn extract_argument_ranges(call_node: &tree_sitter::Node, _source: &str) -> Vec<
 
     args
 }
+
+/// Extract argument expression ranges from a Kotlin `value_arguments` node.
+///
+/// `value_arguments` contains `value_argument` wrappers; the DataNode capture
+/// is on the expression inside `value_argument`, so we extract the innermost
+/// named child of each `value_argument`.
+fn extract_value_arguments(va_node: &tree_sitter::Node, args: &mut Vec<TextRange>) {
+    let mut arg_cursor = va_node.walk();
+    for outer in va_node.children(&mut arg_cursor) {
+        if !outer.is_named() {
+            continue;
+        }
+        // Each named child is a value_argument; use the
+        // first named child's range (the expression).
+        let mut inner_cursor = outer.walk();
+        let expr = outer
+            .named_children(&mut inner_cursor)
+            .next()
+            .unwrap_or(outer);
+        args.push(crate::languages::node_range(expr));
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // Language-specific constructors
@@ -408,14 +477,19 @@ pub fn rust_callsite_extractor() -> GenericCallsiteExtractor {
 }
 pub fn cangjie_callsite_extractor() -> GenericCallsiteExtractor {
     GenericCallsiteExtractor::new(
-        &["invocation_expression"],
-        &["class_creation_expression"],
+        // Cangjie uses postfixExpression + callSuffix for function/method calls
+        // (not invocation_expression).  Only ReferenceKind::Call references
+        // enter the callsite pipeline, so matching postfixExpression is safe
+        // even though it also covers index/member access — those have different
+        // reference kinds (FieldAccess) and won't be processed.
+        &["postfixExpression"],
+        &[],
         &[],
         &[
             "block",
-            "function_declaration",
-            "class_declaration",
-            "program",
+            "functionDefinition",
+            "classDefinition",
+            "translationUnit",
         ],
     )
 }
