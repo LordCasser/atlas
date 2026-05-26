@@ -271,53 +271,153 @@ mod tests {
     use types::*;
     use super::ForwardPathExplorer;
 
+    /// Helper: build a minimal test store with a few functions.
+    struct TestHarness {
+        store: Arc<Store>,
+        file_id: FileId,
+    }
+
+    impl TestHarness {
+        fn new() -> Self {
+            let store = Arc::new(Store::open_in_memory().unwrap());
+            store.init_schema().unwrap();
+            let fid = FileId::generate("test.c");
+            let _ = store.upsert_file(&FileInfo {
+                file_id: fid, path: "test.c".into(), language: Language::C,
+                content_hash: "abc".into(), status: ParseStatus::Success,
+            });
+            Self { store, file_id: fid }
+        }
+
+        fn make_fun(&self, name: &str) -> SymbolDef {
+            let fid = self.file_id;
+            SymbolDef {
+                id: SymbolId::generate(&fid, "c", name, "Function", None),
+                file_id: fid, kind: SymbolKind::Function, name: name.into(),
+                qualified_name: name.into(), symbol_path: vec![name.into()],
+                language: Language::C,
+                range: TextRange::default(), name_range: TextRange::default(),
+                signature: None, visibility: None, exported: false, static_: false,
+                async_: false, container: None, scope_id: None, package_name: None,
+                namespace_path: vec![], layer: "structural".into(),
+            }
+        }
+
+        fn connect(&self, caller: &SymbolDef, callee: &SymbolDef, kind: EdgeKind) {
+            self.store.batch_insert_edges(&[RawEdge::new(
+                EdgeId::generate(&caller.id, &callee.id, kind.as_str(), None, "test"),
+                caller.id, callee.id, kind, Confidence::certain(), Provenance::TreeSitter,
+            )]).unwrap();
+        }
+
+        fn seed(&self, syms: &[SymbolDef]) {
+            self.store.insert_symbols(syms).unwrap();
+        }
+
+        fn store_ref(&self) -> &Store { &self.store }
+    }
+
     #[test]
     fn test_forward_smoke() {
-        let store = Arc::new(Store::open_in_memory().unwrap());
-        store.init_schema().unwrap();
+        let h = TestHarness::new();
+        let main = h.make_fun("main");
+        let helper = h.make_fun("helper");
+        h.seed(&[main.clone(), helper.clone()]);
+        h.connect(&main, &helper, EdgeKind::Calls);
 
-        let fid = FileId::generate("test.c");
-        // Insert file
-        let _ = store.upsert_file(&FileInfo {
-            file_id: fid,
-            path: "test.c".into(),
-            language: Language::C,
-            content_hash: "abc".into(),
-            status: ParseStatus::Success,
-        });
-
-        // Build symbols inline
-        let main = SymbolDef {
-            id: SymbolId::generate(&fid, "c", "main", "Function", None),
-            file_id: fid, kind: SymbolKind::Function, name: "main".into(),
-            qualified_name: "main".into(), symbol_path: vec!["main".into()],
-            language: Language::C,
-            range: TextRange::default(), name_range: TextRange::default(),
-            signature: None, visibility: None, exported: false, static_: false,
-            async_: false, container: None, scope_id: None, package_name: None,
-            namespace_path: vec![], layer: "structural".into(),
-        };
-        let helper = SymbolDef {
-            id: SymbolId::generate(&fid, "c", "helper", "Function", None),
-            file_id: fid, kind: SymbolKind::Function, name: "helper".into(),
-            qualified_name: "helper".into(), symbol_path: vec!["helper".into()],
-            language: Language::C,
-            range: TextRange::default(), name_range: TextRange::default(),
-            signature: None, visibility: None, exported: false, static_: false,
-            async_: false, container: None, scope_id: None, package_name: None,
-            namespace_path: vec![], layer: "structural".into(),
-        };
-
-        store.insert_symbols(&[main.clone(), helper.clone()]).unwrap();
-        let edge = RawEdge::new(
-            EdgeId::generate(&main.id, &helper.id, "calls", None, "test"),
-            main.id, helper.id, EdgeKind::Calls, Confidence::certain(), Provenance::TreeSitter,
-        );
-        store.batch_insert_edges(&[edge]).unwrap();
-
-        let chain = ForwardPathExplorer::explore(store.as_ref(), &main.id, &helper.id, 10)
+        let chain = ForwardPathExplorer::explore(h.store_ref(), &main.id, &helper.id, 10)
             .unwrap()
             .expect("should find path");
         assert_eq!(chain.steps.len(), 1);
+    }
+
+    #[test]
+    fn test_forward_multi_step() {
+        let h = TestHarness::new();
+        let a = h.make_fun("a"); let b = h.make_fun("b"); let c = h.make_fun("c");
+        h.seed(&[a.clone(), b.clone(), c.clone()]);
+        h.connect(&a, &b, EdgeKind::Calls);
+        h.connect(&b, &c, EdgeKind::Calls);
+
+        let chain = ForwardPathExplorer::explore(h.store_ref(), &a.id, &c.id, 10)
+            .unwrap()
+            .expect("should find a→b→c");
+        assert_eq!(chain.steps.len(), 2);
+        assert_eq!(chain.source.name, "a");
+        assert_eq!(chain.target.name, "c");
+        assert!(!chain.truncated);
+    }
+
+    #[test]
+    fn test_forward_no_path() {
+        let h = TestHarness::new();
+        let a = h.make_fun("a"); let b = h.make_fun("b");
+        h.seed(&[a.clone(), b.clone()]);
+        // No edge → a cannot reach b
+        let result = ForwardPathExplorer::explore(h.store_ref(), &a.id, &b.id, 10).unwrap();
+        assert!(result.is_none(), "disconnected graph should yield None");
+    }
+
+    #[test]
+    fn test_forward_source_equals_target() {
+        let h = TestHarness::new();
+        let a = h.make_fun("a");
+        h.seed(&[a.clone()]);
+        // source == target: trivial path → None
+        let result = ForwardPathExplorer::explore(h.store_ref(), &a.id, &a.id, 10).unwrap();
+        assert!(result.is_none(), "source == target should return None");
+    }
+
+    #[test]
+    fn test_forward_max_depth_truncation() {
+        let h = TestHarness::new();
+        let a = h.make_fun("a"); let b = h.make_fun("b"); let c = h.make_fun("c");
+        h.seed(&[a.clone(), b.clone(), c.clone()]);
+        h.connect(&a, &b, EdgeKind::Calls);
+        h.connect(&b, &c, EdgeKind::Calls);
+
+        // max_depth=1: can only reach b, not c
+        let result = ForwardPathExplorer::explore(h.store_ref(), &a.id, &c.id, 1).unwrap();
+        assert!(result.is_none(), "should not reach c within max_depth=1");
+    }
+
+    #[test]
+    fn test_forward_registers_callback_marker() {
+        let h = TestHarness::new();
+        let registrant = h.make_fun("set_callback");
+        let callback = h.make_fun("on_event");
+        h.seed(&[registrant.clone(), callback.clone()]);
+        h.connect(&registrant, &callback, EdgeKind::RegistersCallback);
+
+        let chain = ForwardPathExplorer::explore(h.store_ref(), &registrant.id, &callback.id, 10)
+            .unwrap()
+            .expect("should find callback registration");
+        assert_eq!(chain.steps.len(), 1);
+        let step = &chain.steps[0];
+        assert!(step.boundary.is_some(), "RegistersCallback step must have boundary marker");
+        let marker = step.boundary.as_ref().unwrap();
+        assert!(marker.message.contains("callback"), "message should mention callback");
+        assert!(marker.suggestion.contains("explore"), "suggestion should mention explore");
+        assert!(marker.bridge_target.is_some(), "should have bridge_target");
+    }
+
+    #[test]
+    fn test_forward_branching_picks_shortest() {
+        let h = TestHarness::new();
+        let a = h.make_fun("a"); let b = h.make_fun("b"); let c = h.make_fun("c");
+        let d = h.make_fun("d"); let e = h.make_fun("e");
+        h.seed(&[a.clone(), b.clone(), c.clone(), d.clone(), e.clone()]);
+        // Two paths to e:  a→b→e (2 hops)  and  a→c→d→e (3 hops)
+        h.connect(&a, &b, EdgeKind::Calls);
+        h.connect(&b, &e, EdgeKind::Calls);
+        h.connect(&a, &c, EdgeKind::Calls);
+        h.connect(&c, &d, EdgeKind::Calls);
+        h.connect(&d, &e, EdgeKind::Calls);
+
+        let chain = ForwardPathExplorer::explore(h.store_ref(), &a.id, &e.id, 10)
+            .unwrap()
+            .expect("should find path");
+        // BFS guarantees shortest path: a→b→e = 2 steps
+        assert_eq!(chain.steps.len(), 2);
     }
 }

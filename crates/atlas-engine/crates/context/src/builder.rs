@@ -259,3 +259,133 @@ impl ContextSlice {
         md
     }
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// tests
+// ───────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use types::ids::SymbolId;
+    use types::enums::{EdgeKind, SymbolKind, Language, Visibility};
+    use types::structs::TextRange;
+    use types::SymbolDef;
+
+    fn make_sym(name: &str) -> SymbolDef {
+        let fid = types::ids::FileId::generate("test.c");
+        SymbolDef {
+            id: SymbolId::generate(&fid, "c", name, "Function", None),
+            file_id: fid,
+            kind: SymbolKind::Function,
+            name: name.into(),
+            qualified_name: name.into(),
+            symbol_path: vec![name.into()],
+            language: Language::C,
+            range: TextRange::default(),
+            name_range: TextRange::default(),
+            signature: Some("void fn()".into()),
+            visibility: Some(Visibility::Public),
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".into(),
+        }
+    }
+
+    #[test]
+    fn context_view_to_markdown_basic() {
+        let subject = make_sym("do_work");
+        let view = ContextView {
+            subject: subject.clone(),
+            subject_source: None,
+            callers: vec![],
+            callees: vec![],
+            caller_details: vec![],
+            callee_details: vec![],
+            file_peers: vec![],
+            importers: vec![],
+            dependencies: vec![],
+        };
+        let md = view.to_markdown();
+        assert!(md.contains("do_work"), "must include symbol name");
+        assert!(md.contains("function"), "must include kind (lowercase)");
+        assert!(md.contains("void fn()"), "must include signature");
+        assert!(md.contains("Language"), "must include language");
+    }
+
+    #[test]
+    fn context_view_callback_boundary_note() {
+        let subject = make_sym("register_handlers");
+        let handler = make_sym("on_frame");
+        let callee_detail = CalleeDetail {
+            symbol: handler,
+            callsite_line: 42,
+            callsite_snippet: "  set_callback(session, on_frame);".into(),
+            edge_kind: EdgeKind::RegistersCallback,
+            callee_signature: Some("void on_frame()".into()),
+        };
+        let view = ContextView {
+            subject,
+            subject_source: None,
+            callers: vec![],
+            callees: vec![],
+            caller_details: vec![],
+            callee_details: vec![callee_detail],
+            file_peers: vec![],
+            importers: vec![],
+            dependencies: vec![],
+        };
+        let md = view.to_markdown();
+        assert!(md.contains("⚠"), "must show boundary warning for RegistersCallback");
+        assert!(md.contains("Callback boundary"), "must explain callback boundary");
+        assert!(md.contains("on_frame"), "must include callee name");
+        assert!(md.contains("registers_callback"), "must show edge kind");
+    }
+
+    #[test]
+    fn context_view_normal_callee_no_warning() {
+        let subject = make_sym("main");
+        let helper = make_sym("helper");
+        let callee_detail = CalleeDetail {
+            symbol: helper,
+            callsite_line: 10,
+            callsite_snippet: "  helper();".into(),
+            edge_kind: EdgeKind::Calls,
+            callee_signature: None,
+        };
+        let view = ContextView {
+            subject,
+            subject_source: None,
+            callers: vec![],
+            callees: vec![],
+            caller_details: vec![],
+            callee_details: vec![callee_detail],
+            file_peers: vec![],
+            importers: vec![],
+            dependencies: vec![],
+        };
+        let md = view.to_markdown();
+        assert!(!md.contains("⚠"), "normal Calls edge must not show warning");
+        assert!(md.contains("calls"), "must show edge kind as section header");
+    }
+
+    #[test]
+    fn context_slice_format() {
+        let subject = make_sym("helper");
+        let caller = make_sym("main");
+        let slice = ContextSlice {
+            subject,
+            callers: vec![caller],
+            callees: vec![],
+        };
+        let md = slice.to_markdown();
+        assert!(md.contains("helper"), "must include subject");
+        assert!(md.contains("main"), "must include caller name");
+        assert!(md.contains("called by"), "must show call direction");
+    }
+}

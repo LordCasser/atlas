@@ -709,4 +709,47 @@ mod tests {
             "partial response must still contain capability field (null)"
         );
     }
+
+    #[test]
+    fn boundary_diagnostics_from_callback_registration() {
+        let marker = BoundaryMarker {
+            kind: BoundaryKind::CallbackRegistration {
+                registrant: "set_callback".into(),
+                callback: "on_event".into(),
+            },
+            message: "boundary hit".into(),
+            suggestion: "explore".into(),
+            bridge_target: Some("abc123".into()),
+        };
+        let diagnostics = build_boundary_diagnostics([&marker]);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code.as_deref(), Some("callback_registration_boundary"));
+        assert!(diagnostics[0].detail.is_some(), "detail must contain serialized marker");
+        // detail should be valid JSON representing the marker
+        let d: BoundaryMarker =
+            serde_json::from_str(diagnostics[0].detail.as_ref().unwrap()).unwrap();
+        assert!(matches!(d.kind, BoundaryKind::CallbackRegistration { .. }));
+    }
+
+    #[test]
+    fn boundary_diagnostics_empty_for_no_markers() {
+        let diagnostics = build_boundary_diagnostics(std::iter::empty());
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn boundary_marker_json_roundtrip() {
+        let marker = BoundaryMarker {
+            kind: BoundaryKind::FunctionPointer { pointer_name: "fn_ptr".into() },
+            message: "function pointer detected".into(),
+            suggestion: "resolve at runtime".into(),
+            bridge_target: None,
+        };
+        let json = serde_json::to_string(&marker).unwrap();
+        let back: BoundaryMarker = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back.kind, BoundaryKind::FunctionPointer { .. }));
+        assert_eq!(back.message, marker.message);
+        assert_eq!(back.suggestion, marker.suggestion);
+        assert!(back.bridge_target.is_none());
+    }
 }
