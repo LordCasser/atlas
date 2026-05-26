@@ -179,6 +179,7 @@ impl Store {
     ///
     /// Sets `synchronous = OFF` (skip fsync per transaction) and
     /// `foreign_keys = OFF` (skip FK enforcement — caller must pre-validate).
+    /// Also boosts cache and mmap for the write phase.
     /// Call `end_bulk_write()` after the write phase to restore defaults.
     ///
     /// **The database may be corrupted on power loss or crash while
@@ -189,7 +190,8 @@ impl Store {
         conn.execute_batch(
             "PRAGMA synchronous = OFF;
              PRAGMA foreign_keys = OFF;
-             PRAGMA wal_autocheckpoint = 0;",
+             PRAGMA cache_size = -524288;   -- 512 MB
+             PRAGMA mmap_size = 1073741824; -- 1 GB",
         )?;
         Ok(())
     }
@@ -200,7 +202,8 @@ impl Store {
         conn.execute_batch(
             "PRAGMA synchronous = NORMAL;
              PRAGMA foreign_keys = ON;
-             PRAGMA wal_autocheckpoint = 1000;",
+             PRAGMA cache_size = -65536;     -- 64 MB
+             PRAGMA mmap_size = 268435456;   -- 256 MB",
         )?;
         Ok(())
     }

@@ -293,18 +293,23 @@ pub fn run(
         );
         ps.lock().unwrap().set_total(extracted_count as u64);
 
-        // Bulk-write mode: disable synchronous & FK checks for maximum
-        // throughput.  The FK guards in insert_file_facts_impl already
-        // pre-validate, so disabling the pragma-level check just skips
-        // redundant work.  WAL auto-checkpoint is also disabled — we
-        // truncate at the end.
+        // Bulk-write mode: disable synchronous & FK checks.  Keep
+        // wal_autocheckpoint at default (1000 pages) so the WAL
+        // self-truncates — for full-analysis, each batch easily
+        // produces > 1000 pages of WAL, and a growing WAL makes
+        // subsequent transactions O(WAL-size) slower.
         store.begin_bulk_write()?;
 
         let mut _insert_failures = 0usize;
-        // Larger batch = fewer transactions = less overhead.
-        // 1000 files/txn is a good balance between throughput and memory.
-        const BATCH_SIZE: usize = 1000;
+        // 100 files/txn — full-analysis data is dense (thousands of
+        // rows per file for dataflow/CFG/bindings).  Larger batches
+        // choke SQLite's B-tree with millions of rows per transaction.
+        const BATCH_SIZE: usize = 100;
         let mut written = 0u64;
+        // PASSIVE WAL checkpoint every 500 files to keep the WAL
+        // below ~200 MB even under full-analysis load.
+        const CHECKPOINT_INTERVAL: u64 = 500;
+        let mut next_checkpoint = CHECKPOINT_INTERVAL;
         for chunk in extracted.chunks(BATCH_SIZE) {
             let facts: Vec<_> = chunk.iter().map(|ef| ef.facts.clone()).collect();
             if let Err(_e) = store.insert_file_facts_batch(&facts) {
@@ -319,6 +324,10 @@ pub fn run(
                 }
             }
             written += chunk.len() as u64;
+            if written >= next_checkpoint {
+                let _ = store.checkpoint_wal();
+                next_checkpoint = written + CHECKPOINT_INTERVAL;
+            }
             ps.lock().unwrap().set_current(written);
         }
 
