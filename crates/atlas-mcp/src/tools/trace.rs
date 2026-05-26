@@ -231,4 +231,60 @@ impl ToolRouter {
             is_error,
         )
     }
+
+    pub(crate) fn handle_trace_forward(&self, args: &serde_json::Value) -> (String, bool) {
+        let from_hex = args["from"].as_str().filter(|s| !s.is_empty());
+        let to_hex = args["to"].as_str().filter(|s| !s.is_empty());
+        let max_depth = args["max_depth"].as_u64().unwrap_or(10) as usize;
+
+        let (from_id, to_id) = match (from_hex, to_hex) {
+            (Some(f), Some(t)) => {
+                let fid: SymbolId = match f.parse() {
+                    Ok(id) => id,
+                    Err(e) => {
+                        let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                            "trace_forward",
+                            &format!("Invalid 'from' symbol ID: {}", e),
+                        );
+                        return (
+                            serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                            true,
+                        );
+                    }
+                };
+                let tid: SymbolId = match t.parse() {
+                    Ok(id) => id,
+                    Err(e) => {
+                        let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                            "trace_forward",
+                            &format!("Invalid 'to' symbol ID: {}", e),
+                        );
+                        return (
+                            serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                            true,
+                        );
+                    }
+                };
+                (fid, tid)
+            }
+            _ => {
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                    "trace_forward",
+                    "Must provide both 'from' and 'to' symbol hex IDs",
+                );
+                return (
+                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                    true,
+                );
+            }
+        };
+
+        let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
+        let resp = engine.trace_forward(&from_id, &to_id, max_depth);
+        let is_error = !resp.ok;
+        (
+            serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+            is_error,
+        )
+    }
 }

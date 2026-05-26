@@ -285,6 +285,9 @@ pub enum EdgeKind {
     Writes,
     FieldRead,
     FieldWrite,
+    /// Callback registration: registrant function → callback target
+    /// e.g. `nghttp2_session_callbacks_set_on_frame_recv_callback → on_frame_recv`
+    RegistersCallback,
 }
 
 impl EdgeKind {
@@ -311,6 +314,7 @@ impl EdgeKind {
             Self::Writes => "writes",
             Self::FieldRead => "field_read",
             Self::FieldWrite => "field_write",
+            Self::RegistersCallback => "registers_callback",
         }
     }
 
@@ -337,6 +341,7 @@ impl EdgeKind {
             "writes" => Some(Self::Writes),
             "field_read" => Some(Self::FieldRead),
             "field_write" => Some(Self::FieldWrite),
+            "registers_callback" => Some(Self::RegistersCallback),
             _ => None,
         }
     }
@@ -602,6 +607,8 @@ pub enum Provenance {
     TreeSitter,
     Scip,
     Heuristic,
+    /// Detected via callback registration pattern match.
+    CallbackPattern,
 }
 
 impl Provenance {
@@ -610,6 +617,7 @@ impl Provenance {
             Self::TreeSitter => "tree_sitter",
             Self::Scip => "scip",
             Self::Heuristic => "heuristic",
+            Self::CallbackPattern => "callback_pattern",
         }
     }
 
@@ -618,6 +626,7 @@ impl Provenance {
             "tree_sitter" => Some(Self::TreeSitter),
             "scip" => Some(Self::Scip),
             "heuristic" => Some(Self::Heuristic),
+            "callback_pattern" => Some(Self::CallbackPattern),
             _ => None,
         }
     }

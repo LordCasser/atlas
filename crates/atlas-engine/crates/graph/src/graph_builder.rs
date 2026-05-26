@@ -130,11 +130,18 @@ impl GraphBuilder {
             .flatten()
             .collect();
 
-        let edge_count = edges.len();
+        // Post-process: detect callback registrations and create RegistersCallback edges
+        let callback_edges = Self::detect_callback_registrations(&edges, &self.store);
+        let all_edges: Vec<RawEdge> = edges
+            .into_iter()
+            .chain(callback_edges)
+            .collect();
+
+        let edge_count = all_edges.len();
         let mut warnings: Vec<String> = warnings.into_inner().unwrap_or_default();
 
-        let edges_written = if !edges.is_empty() {
-            match self.store.batch_insert_edges(&edges) {
+        let edges_written = if !all_edges.is_empty() {
+            match self.store.batch_insert_edges(&all_edges) {
                 Ok(()) => edge_count,
                 Err(e) => {
                     warnings.push(format!(
@@ -659,5 +666,180 @@ main();
             Some(handler_id),
             "function pointer should resolve to handler"
         );
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Callback registration detection
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Known callback registration patterns: (callee name contains pattern, callback arg index).
+const CALLBACK_PATTERNS: &[(&str, usize)] = &[
+    ("_set_", 1),                 // nghttp2_session_callbacks_set_*
+    ("_callback", 1),             // set_callback(..., handler)
+    ("pthread_create", 2),        // pthread_create(_, _, thread_fn, _)
+    ("signal", 1),                // signal(SIGINT, handler)
+    ("atexit", 0),               // atexit(cleanup)
+    ("qsort", 3),                // qsort(base, n, sz, cmp)
+    ("on_", 0),                  // on_click(handler), on_frame_recv(session, ...)
+    ("add_listener", 1),          // add_listener(event, handler)
+    ("register", 0),             // register_handler(handler)
+];
+
+impl GraphBuilder {
+    /// After building standard call edges, scan for callback registration
+    /// patterns and create `RegistersCallback` edges.
+    fn detect_callback_registrations(
+        edges: &[RawEdge],
+        store: &Arc<Store>,
+    ) -> Vec<RawEdge> {
+        let mut result = Vec::new();
+
+        for edge in edges {
+            if edge.kind != EdgeKind::Calls {
+                continue;
+            }
+
+            // Look up callee symbol name
+            let callee_name = match store
+                .find_symbol_by_id(&edge.target)
+                .ok()
+                .flatten()
+                .map(|s| s.name)
+            {
+                Some(name) => name,
+                None => continue,
+            };
+
+            // Check if callee matches any callback pattern
+            let matching_pattern = CALLBACK_PATTERNS
+                .iter()
+                .find(|(pattern, _)| callee_name.contains(pattern));
+
+            let (_pattern, arg_index) = match matching_pattern {
+                Some(p) => p,
+                None => continue,
+            };
+
+            // Try to resolve the callback argument to a function symbol.
+            // Skip if callsite or data nodes are not available.
+            let ref_id = match &edge.ref_id {
+                Some(rid) => rid,
+                None => continue,
+            };
+
+            let callsite = match store
+                .find_callsite_by_reference_id(ref_id)
+                .ok()
+                .flatten()
+            {
+                Some(cs) => cs,
+                None => continue,
+            };
+
+            // The callback is at args[arg_index]; look up its data_node_id
+            let callback_dn = match callsite.args.get(*arg_index) {
+                Some(arg) => arg,
+                None => continue,
+            };
+
+            let callback_dn_id = match &callback_dn.data_node_id {
+                Some(dn_id) => dn_id,
+                None => continue,
+            };
+
+            let callback_node = match store.get_data_node(callback_dn_id).ok().flatten() {
+                Some(dn) => dn,
+                None => continue,
+            };
+
+            let callback_name = match &callback_node.name {
+                Some(name) => name.clone(),
+                None => continue,
+            };
+
+            // Attempt to find a function symbol matching the callback name.
+            let candidates = match store.find_symbols_by_name(&callback_name) {
+                Ok(syms) if !syms.is_empty() => syms,
+                _ => continue,
+            };
+
+            let callsite = match store
+                .find_callsite_by_reference_id(ref_id)
+                .ok()
+                .flatten()
+            {
+                Some(cs) => cs,
+                None => continue,
+            };
+
+            // The callback is at args[arg_index]; look up its data_node_id
+            let callback_dn = match callsite.args.get(*arg_index) {
+                Some(arg) => arg,
+                None => continue,
+            };
+
+            let callback_dn_id = match &callback_dn.data_node_id {
+                Some(dn_id) => dn_id,
+                None => continue,
+            };
+
+            let callback_node = match store.get_data_node(callback_dn_id).ok().flatten() {
+                Some(dn) => dn,
+                None => continue,
+            };
+
+            let callback_name = match &callback_node.name {
+                Some(name) => name.clone(),
+                None => continue,
+            };
+
+            // Attempt to find a function symbol matching the callback name.
+            // Prefer symbols in the same file as the registrant.
+            let candidates = match store.find_symbols_by_name(&callback_name) {
+                Ok(syms) => syms,
+                Err(_) => continue,
+            };
+
+            // Get the file_id of the edge source (registrant function)
+            let registrant_file = match store
+                .find_symbol_by_id(&edge.source)
+                .ok()
+                .flatten()
+                .map(|s| s.file_id)
+            {
+                Some(fid) => fid,
+                None => continue,
+            };
+
+            let callback_sym = match candidates
+                .iter()
+                .find(|s| s.file_id == registrant_file)
+                .or_else(|| candidates.first())
+            {
+                Some(sym) => sym,
+                None => continue,
+            };
+
+            // Create the RegistersCallback edge: registrant → callback
+            let rcb_edge = RawEdge::new(
+                types::ids::EdgeId::generate(
+                    &edge.source,
+                    &callback_sym.id,
+                    "registers_callback",
+                    Some(ref_id),
+                    "callback_pattern",
+                ),
+                edge.source.clone(),
+                callback_sym.id,
+                EdgeKind::RegistersCallback,
+                types::Confidence::new(0.65),
+                types::Provenance::CallbackPattern,
+            );
+
+            result.push(rcb_edge);
+        }
+
+        result
     }
 }

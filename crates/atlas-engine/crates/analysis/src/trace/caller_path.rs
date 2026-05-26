@@ -2,7 +2,9 @@
 //!
 //! The caller path explorer walks backward through `Calls`, `Instantiates`,
 //! and `Implements` symbol edges to reconstruct the chain of callers from an
-//! entry-point down to a target function.
+//! entry-point down to a target function.  `RegistersCallback` edges are
+//! included in the path but annotated with a [`BoundaryMarker`] and halt
+//! further backward traversal.
 //!
 //! # Algorithm
 //!
@@ -16,8 +18,10 @@
 //! # Limitations
 //!
 //! - Recursive calls create cycles; a visited set prevents infinite loops.
-//! - Only direct `Calls`/`Instantiates`/`Implements` edges are followed.
-//!   Transitive dependencies (e.g. via `References`) are not included.
+//! - Only direct `Calls`/`Instantiates`/`Implements` edges are followed for
+//!   traversal continuation.  `RegistersCallback` edges are shown but stop
+//!   the traversal (dynamic dispatch boundary).
+//! - Transitive dependencies (e.g. via `References`) are not included.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -26,6 +30,7 @@ use types::caller_path::{CallerChain, CallerChainStep};
 use types::enums::EdgeKind;
 use types::ids::{ReferenceId, SymbolId};
 use types::structs::TextRange;
+use types::trace::{BoundaryKind, BoundaryMarker};
 
 /// Default maximum depth for caller-chain traversal.
 #[allow(dead_code)]
@@ -75,16 +80,42 @@ impl CallerPathExplorer {
         while let Some((current_id, depth)) = queue.pop_front() {
             let edges = store.find_edges_by_target(&current_id)?;
             for edge in &edges {
-                // Only follow call-related edges
+                // Only follow call-related edges (include RegistersCallback for
+                // path display, but they halt further BFS traversal).
                 if !is_call_edge(&edge.kind) {
                     continue;
                 }
+
+                let is_boundary = edge.kind == EdgeKind::RegistersCallback;
 
                 let caller = &edge.source;
                 let caller_key = hex::encode(caller.as_bytes());
 
                 if !visited.contains_key(&caller_key) {
                     let new_depth = depth + 1;
+
+                    // If this is a callback boundary, enqueue the caller but
+                    // do NOT continue BFS from it — mark it as a boundary stop.
+                    if is_boundary {
+                        let current_key = hex::encode(current_id.as_bytes());
+                        visited.insert(caller_key.clone(), new_depth);
+                        predecessors.insert(
+                            current_key,
+                            (
+                                caller.clone(),
+                                edge.kind.clone(),
+                                edge.ref_id.clone(),
+                                edge.location.clone(),
+                            ),
+                        );
+                        // Record this as farthest, but do NOT push to queue
+                        if new_depth > farthest_depth {
+                            farthest_depth = new_depth;
+                            farthest_id = caller.clone();
+                        }
+                        continue;
+                    }
+
                     if new_depth >= max_depth {
                         // Budget exhausted — check if this caller has unexplored
                         // callers of its own (not just the edge we already followed).
@@ -152,10 +183,15 @@ impl CallerPathExplorer {
 // ---------------------------------------------------------------------------
 
 /// Only follow structural edges that indicate a call/invoke relationship.
+/// `RegistersCallback` is included so it appears in the path, but BFS
+/// traversal stops at callback boundaries (handled in the BFS loop above).
 fn is_call_edge(kind: &EdgeKind) -> bool {
     matches!(
         kind,
-        EdgeKind::Calls | EdgeKind::Instantiates | EdgeKind::Implements
+        EdgeKind::Calls
+            | EdgeKind::Instantiates
+            | EdgeKind::Implements
+            | EdgeKind::RegistersCallback
     )
 }
 
@@ -245,16 +281,41 @@ fn reconstruct_call_path(
         let caller_name = caller_sym.map(|s| s.name.clone()).unwrap_or_default();
         let callee_name = callee_sym.map(|s| s.name.clone()).unwrap_or_default();
 
+        let desc = match &kind {
+            EdgeKind::RegistersCallback => format!("{} registers {}", caller_name, callee_name),
+            _ => format!("{} → {}", caller_name, callee_name),
+        };
+
         let mut step = CallerChainStep::new(
             idx as u32,
             caller,
             callee,
-            kind,
+            kind.clone(),
             file_id,
             range,
-            &format!("{} → {}", caller_name, callee_name),
+            &desc,
         );
         step.callsite = callsite;
+
+        // Populate boundary marker for callback registrations
+        if kind == EdgeKind::RegistersCallback {
+            step.boundary = Some(BoundaryMarker {
+                kind: BoundaryKind::CallbackRegistration {
+                    registrant: caller_name.clone(),
+                    callback: callee_name.clone(),
+                },
+                message: format!(
+                    "'{}' is registered as a callback by '{}'. It will be invoked dynamically. Static call-graph tracing stops here.",
+                    callee_name, caller_name
+                ),
+                suggestion: format!(
+                    "Use explore on '{}' to find its own callers and understand the invocation context.",
+                    callee_name
+                ),
+                bridge_target: Some(callee.to_hex()),
+            });
+        }
+
         steps.push(step);
     }
 
@@ -293,5 +354,10 @@ mod tests {
     #[test]
     fn is_not_call_edge_contains() {
         assert!(!is_call_edge(&EdgeKind::Contains));
+    }
+
+    #[test]
+    fn is_call_edge_registers_callback() {
+        assert!(is_call_edge(&EdgeKind::RegistersCallback));
     }
 }

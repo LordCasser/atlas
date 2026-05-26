@@ -43,6 +43,9 @@ pub struct TraceDiagnostic {
     pub message: String,
     /// Optional machine-readable code (e.g. "no_data_node", "unsupported_language").
     pub code: Option<String>,
+    /// Optional structured detail payload (e.g. boundary marker JSON).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 impl TraceDiagnostic {
@@ -51,6 +54,7 @@ impl TraceDiagnostic {
             level: DiagnosticLevel::Info,
             message: message.to_string(),
             code: None,
+            detail: None,
         }
     }
     pub fn warning(message: &str) -> Self {
@@ -58,6 +62,7 @@ impl TraceDiagnostic {
             level: DiagnosticLevel::Warning,
             message: message.to_string(),
             code: None,
+            detail: None,
         }
     }
     pub fn error(message: &str) -> Self {
@@ -65,10 +70,17 @@ impl TraceDiagnostic {
             level: DiagnosticLevel::Error,
             message: message.to_string(),
             code: None,
+            detail: None,
         }
     }
     pub fn with_code(mut self, code: &str) -> Self {
         self.code = Some(code.to_string());
+        self
+    }
+
+    /// Attach a structured detail payload (e.g. a serialized BoundaryMarker).
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
         self
     }
 }
@@ -290,6 +302,62 @@ impl TracePathStep {
             evidence: None,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// BoundaryMarker — dynamic dispatch / truncation boundary
+// ---------------------------------------------------------------------------
+
+/// Marks a boundary where static call-graph tracing cannot continue.
+///
+/// Unlike silent truncation, a `BoundaryMarker` explicitly tells the consumer
+/// WHY the path stopped, and suggests a remediation (e.g. manually exploring
+/// the callback target).  This is critical for security analysis to avoid
+/// false negatives: a path that "ends" at a callback boundary is NOT the same
+/// as a path that truly terminates at a root function.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoundaryMarker {
+    /// The type of boundary encountered.
+    pub kind: BoundaryKind,
+    /// Human-readable message explaining the boundary.
+    pub message: String,
+    /// Actionable suggestion for the consumer (e.g. "Use explore on 'X'").
+    pub suggestion: String,
+    /// The symbol to bridge to if manual tracing should continue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_target: Option<String>,
+}
+
+/// Taxonomy of boundaries that halt static call-graph tracing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum BoundaryKind {
+    /// Function pointer call: `void (*ptr)(int)` — target resolved at runtime.
+    FunctionPointer {
+        pointer_name: String,
+    },
+    /// Callback registration: `set_callback(ctx, on_event)` — invoked dynamically.
+    CallbackRegistration {
+        registrant: String,
+        callback: String,
+    },
+    /// Virtual dispatch: `obj->vtable[idx]()` — resolved by runtime type.
+    VirtualDispatch {
+        class_name: String,
+        method_name: String,
+    },
+    /// Dynamic method call: `$obj->$method()` (PHP) or `send(method, ...)` (Ruby).
+    DynamicMethodCall {
+        receiver_type: String,
+    },
+    /// Depth limit reached — more callers exist beyond max_depth.
+    MaxDepthTruncated {
+        depth_reached: usize,
+        max_depth: usize,
+        has_unexplored: bool,
+    },
+    /// Root function — no further callers; top of the call chain.
+    RootFunction,
 }
 
 // ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use super::enums::EdgeKind;
 use super::ids::{FileId, SymbolId};
 use super::structs::{Callsite, SymbolDef, TextRange};
-use super::trace::Evidence;
+use super::trace::{BoundaryMarker, Evidence};
 
 // ---------------------------------------------------------------------------
 // CallerChain — reverse call-graph path
@@ -81,6 +81,10 @@ pub struct CallerChainStep {
     /// Human-readable evidence (file path, symbol name) for agent consumption.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<Evidence>,
+    /// Dynamic dispatch boundary marker for this step (if it hits a
+    /// callback registration, function pointer, or similar boundary).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<BoundaryMarker>,
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +120,7 @@ impl CallerChainStep {
             range,
             description: description.to_string(),
             evidence: None,
+            boundary: None,
         }
     }
 }
@@ -149,5 +154,93 @@ mod tests {
         assert_eq!(step.callee, callee);
         assert_eq!(step.edge_kind, EdgeKind::Calls);
         assert_eq!(step.description, "main → helper");
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// ForwardChain — forward call-graph path (from source to target)
+// ───────────────────────────────────────────────────────────────────────────
+
+/// A forward call-graph trace from a source function to a target function.
+///
+/// This is the forward-direction counterpart of [`CallerChain`](super::CallerChain).
+/// It answers "how does A reach B?" by walking forward through `Calls`,
+/// `Instantiates`, `Implements`, and `RegistersCallback` edges.
+///
+/// The chain is ordered from **source** (the starting function) to **target**
+/// (the destination function the user asked about).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForwardChain {
+    /// The source function (starting point).
+    pub source: SymbolDef,
+    /// Steps from source to target, in order.
+    pub steps: Vec<ForwardChainStep>,
+    /// The target function (destination).
+    pub target: SymbolDef,
+    /// Total number of nodes visited during the search.
+    pub nodes_visited: usize,
+    /// Depth of the target from the source (number of call edges traversed).
+    pub max_depth_reached: usize,
+    /// Whether the traversal was truncated by the max_depth budget.
+    pub truncated: bool,
+}
+
+/// A single step in a forward chain: `caller` calls `callee`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForwardChainStep {
+    /// Step index (0-based, from source to target).
+    pub index: u32,
+    /// The calling function.
+    pub caller: SymbolId,
+    /// The called function.
+    pub callee: SymbolId,
+    /// The edge kind: `Calls`, `Instantiates`, `Implements`, or `RegistersCallback`.
+    pub edge_kind: EdgeKind,
+    /// The callsite where the call occurs (if known).
+    pub callsite: Option<Callsite>,
+    /// File where the call happens.
+    pub file_id: FileId,
+    /// Source range of the call.
+    pub range: Option<TextRange>,
+    /// Human-readable description.
+    pub description: String,
+    /// Human-readable evidence (file path, symbol name) for agent consumption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<Evidence>,
+    /// Dynamic dispatch boundary marker (callback registration, function pointer, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<BoundaryMarker>,
+    /// Source code snippet at the call site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_snippet: Option<String>,
+    /// Source code snippet of the callee definition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callee_snippet: Option<String>,
+}
+
+impl ForwardChainStep {
+    pub fn new(
+        index: u32,
+        caller: SymbolId,
+        callee: SymbolId,
+        edge_kind: EdgeKind,
+        file_id: FileId,
+        range: Option<TextRange>,
+        description: &str,
+    ) -> Self {
+        Self {
+            index,
+            caller,
+            callee,
+            edge_kind,
+            callsite: None,
+            file_id,
+            range,
+            description: description.to_string(),
+            evidence: None,
+            boundary: None,
+            caller_snippet: None,
+            callee_snippet: None,
+        }
     }
 }

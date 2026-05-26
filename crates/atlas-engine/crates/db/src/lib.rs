@@ -1,6 +1,7 @@
 //! Persistence layer: SQLite (primary) and DuckDB (exploratory bulk-write backend).
 
 pub mod duck;
+pub(crate) mod duck_rows;
 pub mod readers;
 mod schema;
 mod store;

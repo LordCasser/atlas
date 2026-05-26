@@ -21,13 +21,14 @@ use std::{
 };
 
 use serde::Serialize;
+use serde_json;
 
-use crate::trace::{CallerPathExplorer, Locator, Slicer};
+use crate::trace::{CallerPathExplorer, ForwardPathExplorer, Locator, Slicer};
 use db::Store;
-use types::caller_path::CallerChain;
+use types::caller_path::{CallerChain, ForwardChain};
 use types::capability::{CapabilityLevel, FeatureSupport, LanguageCapabilityProfile};
 use types::ids::{FileId, SymbolId};
-use types::trace::{Evidence, TraceDiagnostic, TracePath, TracePoint};
+use types::trace::{BoundaryKind, Evidence, TraceDiagnostic, TracePath, TracePoint};
 
 use super::virtual_edges::SummaryEdgeProvider;
 
@@ -297,18 +298,44 @@ impl TraceEngine {
         match CallerPathExplorer::explore(self.store.as_ref(), target_id, max_depth) {
             Ok(Some(mut chain)) => {
                 self.enrich_caller_chain_steps(&mut chain);
-                let partial = chain.truncated;
-                let diagnostics = if partial {
-                    vec![
+
+                // Build diagnostics: check for boundary markers first, then truncation.
+                let mut diagnostics: Vec<TraceDiagnostic> = Vec::new();
+
+                // Collect boundary markers from steps (callback registrations, etc.)
+                for step in &chain.steps {
+                    if let Some(ref marker) = step.boundary {
+                        let code = match &marker.kind {
+                            BoundaryKind::CallbackRegistration { .. } => {
+                                "callback_registration_boundary"
+                            }
+                            BoundaryKind::FunctionPointer { .. } => "dynamic_dispatch_boundary",
+                            BoundaryKind::VirtualDispatch { .. } => "virtual_dispatch_boundary",
+                            BoundaryKind::DynamicMethodCall { .. } => "dynamic_method_boundary",
+                            _ => "boundary",
+                        };
+                        let detail_json =
+                            serde_json::to_string(marker).unwrap_or_else(|_| "{}".into());
+                        diagnostics.push(
+                            TraceDiagnostic::warning(&marker.message)
+                                .with_code(code)
+                                .with_detail(detail_json),
+                        );
+                    }
+                }
+
+                // If truncated by depth (not by boundary), add a classified diagnostic
+                if chain.truncated && diagnostics.is_empty() {
+                    diagnostics.push(
                         TraceDiagnostic::warning(&format!(
-                            "Caller path truncated at max_depth={} (reached depth {})",
-                            max_depth, chain.max_depth_reached
+                            "Caller path truncated: reached depth {} of max_depth={}. More callers may exist beyond this limit.",
+                            chain.max_depth_reached, max_depth
                         ))
                         .with_code("max_depth_truncated"),
-                    ]
-                } else {
-                    vec![]
-                };
+                    );
+                }
+
+                let partial = chain.truncated || !diagnostics.is_empty();
                 TraceQueryResponse {
                     ok: true,
                     kind: "trace_callers".to_string(),
@@ -367,6 +394,53 @@ impl TraceEngine {
         }
     }
 
+    // ── Forward trace ──────────────────────────────────────────────────
+
+    /// Trace the forward call chain from `source_id` to `target_id`.
+    ///
+    /// Answers "how does A reach B?" by walking forward through call edges.
+    pub fn trace_forward(
+        &self,
+        source_id: &SymbolId,
+        target_id: &SymbolId,
+        max_depth: usize,
+    ) -> TraceQueryResponse<ForwardChain> {
+        let cap = self
+            .store
+            .find_symbol_by_id(source_id)
+            .ok()
+            .flatten()
+            .map(|s| LanguageCapabilityProfile::for_language(s.language));
+
+        match ForwardPathExplorer::explore(
+            self.store.as_ref(),
+            source_id,
+            target_id,
+            max_depth,
+        ) {
+            Ok(Some(mut chain)) => {
+                self.enrich_forward_chain_steps(&mut chain);
+                let partial = chain.truncated;
+                let diagnostics: Vec<TraceDiagnostic> = Vec::new();
+                TraceQueryResponse {
+                    ok: true,
+                    kind: "trace_forward".to_string(),
+                    capability: cap,
+                    partial_result: partial,
+                    diagnostics,
+                    result: Some(chain),
+                }
+            }
+            Ok(None) => TraceQueryResponse::partial(
+                "trace_forward",
+                TraceDiagnostic::warning("No path found from source to target")
+                    .with_code("no_path_found"),
+                cap,
+            ),
+            Err(e) => TraceQueryResponse::err("trace_forward", &format!("{}", e)),
+        }
+    }
+
     // ── File resolution ────────────────────────────────────────────────
 
     /// Resolve a user-facing file path to a [`FileId`], or `Ok(None)` if not
@@ -400,6 +474,26 @@ impl TraceEngine {
     fn enrich_caller_chain_steps(&self, chain: &mut CallerChain) {
         for step in &mut chain.steps {
             step.evidence = self.build_step_evidence_symbol(&step.file_id, &step.caller);
+        }
+    }
+
+    /// Populate [`Evidence`] on every step of a [`ForwardChain`].
+    fn enrich_forward_chain_steps(&self, chain: &mut ForwardChain) {
+        for step in &mut chain.steps {
+            step.evidence = self.build_step_evidence_symbol(&step.file_id, &step.caller);
+            // Also populate caller/callee snippets for forward trace
+            if let Ok(Some(sym)) = self.store.find_symbol_by_id(&step.caller) {
+                let file_path = self.resolve_file_path(&sym.file_id);
+                if let Some(ref fp) = file_path {
+                    step.caller_snippet = self.extract_snippet(fp, sym.range.start_line);
+                }
+            }
+            if let Ok(Some(sym)) = self.store.find_symbol_by_id(&step.callee) {
+                let file_path = self.resolve_file_path(&sym.file_id);
+                if let Some(ref fp) = file_path {
+                    step.callee_snippet = self.extract_snippet(fp, sym.range.start_line);
+                }
+            }
         }
     }
 

@@ -26,11 +26,13 @@
 
 mod caller_path;
 mod engine;
+mod forward_path;
 mod locator;
 mod slicer;
 pub mod virtual_edges;
 
 pub use caller_path::CallerPathExplorer;
 pub use engine::{TraceEngine, TraceQueryResponse};
+pub use forward_path::ForwardPathExplorer;
 pub use locator::Locator;
 pub use slicer::Slicer;

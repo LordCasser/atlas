@@ -53,6 +53,11 @@ macro_rules! define_id {
             pub fn short_hex(&self) -> String {
                 hex::encode(&self.0[..4])
             }
+
+            /// Reconstruct an ID from raw 32-byte blob (e.g. after DB read).
+            pub fn from_bytes(bytes: [u8; 32]) -> Self {
+                Self(bytes)
+            }
         }
 
         impl fmt::Display for $name {

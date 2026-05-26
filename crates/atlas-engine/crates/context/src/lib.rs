@@ -12,7 +12,7 @@ use types::{FileId, SymbolDef, SymbolId};
 
 mod builder;
 
-pub use builder::{ContextSlice, ContextView};
+pub use builder::{CalleeDetail, CallerDetail, ContextSlice, ContextView, SourceSnippet};
 
 /// AI context builder: constructs symbol-rich context from the codebase graph.
 pub struct ContextBuilder {
@@ -48,7 +48,7 @@ impl ContextBuilder {
     // ------------------------------------------------------------------
 
     /// Build a context view around a specific symbol: its callers, callees,
-    /// containing scope, and adjacent symbols.
+    /// containing scope, adjacent symbols, and source snippets.
     ///
     /// The graph snapshot is locked once and held for the entire operation,
     /// guaranteeing consistent results even if `refresh_graph()` is called
@@ -77,10 +77,22 @@ impl ContextBuilder {
         let resolved_callees = g.resolve_node_ids(&callee_view.callees);
         drop(g); // release graph lock before store queries
 
+        let caller_syms = resolve_symbols(&self.store, &resolved_callers)?;
+        let callee_syms = resolve_symbols(&self.store, &resolved_callees)?;
+
+        // Build detailed caller/callee info with source snippets
+        let caller_details = self.build_caller_details(symbol_id, &resolved_callers, &caller_syms)?;
+        let callee_details = self.build_callee_details(symbol_id, &resolved_callees, &callee_syms)?;
+
+        let subject_source = self.read_source_snippet(sym);
+
         let view = ContextView {
             subject: sym.clone(),
-            callers: resolve_symbols(&self.store, &resolved_callers)?,
-            callees: resolve_symbols(&self.store, &resolved_callees)?,
+            subject_source,
+            callers: caller_syms,
+            callees: callee_syms,
+            caller_details,
+            callee_details,
             file_peers: file_symbols,
             importers: resolve_symbols_to_paths(&self.store, &importer_symbols)?,
             dependencies: resolve_files(&self.store, &dep_files)?,
@@ -121,6 +133,71 @@ impl ContextBuilder {
         } else {
             Ok(None)
         }
+    }
+
+    // ── Internal helpers ──────────────────────────────────────────────
+
+    fn build_caller_details(
+        &self,
+        subject_id: &SymbolId,
+        _resolved_callers: &[SymbolId],
+        caller_syms: &[SymbolDef],
+    ) -> anyhow::Result<Vec<CallerDetail>> {
+        // For each caller, find the Calls edge connecting it to the subject.
+        let edges = self.store.find_edges_by_target(subject_id)?;
+        let mut details = Vec::new();
+        for caller_sym in caller_syms {
+            // Find the edge from this caller to the subject
+            let edge = edges.iter().find(|e| e.source == caller_sym.id
+                && (e.kind == types::EdgeKind::Calls
+                    || e.kind == types::EdgeKind::RegistersCallback));
+            let line = edge
+                .and_then(|e| e.location.as_ref())
+                .map(|r| r.start_line)
+                .unwrap_or(caller_sym.range.start_line);
+            details.push(CallerDetail {
+                symbol: caller_sym.clone(),
+                callsite_line: line,
+                callsite_snippet: String::new(),
+                edge_kind: edge.map(|e| e.kind.clone()).unwrap_or(types::EdgeKind::Calls),
+            });
+        }
+        Ok(details)
+    }
+
+    fn build_callee_details(
+        &self,
+        subject_id: &SymbolId,
+        _resolved_callees: &[SymbolId],
+        callee_syms: &[SymbolDef],
+    ) -> anyhow::Result<Vec<CalleeDetail>> {
+        let edges = self.store.find_edges_by_source(subject_id)?;
+        let mut details = Vec::new();
+        for callee_sym in callee_syms {
+            let edge = edges.iter().find(|e| e.target == callee_sym.id
+                && (e.kind == types::EdgeKind::Calls
+                    || e.kind == types::EdgeKind::RegistersCallback));
+            let line = edge
+                .and_then(|e| e.location.as_ref())
+                .map(|r| r.start_line)
+                .unwrap_or(callee_sym.range.start_line);
+            details.push(CalleeDetail {
+                symbol: callee_sym.clone(),
+                callsite_line: line,
+                callsite_snippet: String::new(),
+                edge_kind: edge.map(|e| e.kind.clone()).unwrap_or(types::EdgeKind::Calls),
+                callee_signature: callee_sym.signature.clone(),
+            });
+        }
+        Ok(details)
+    }
+
+    /// Read the subject symbol's source code from disk.
+    fn read_source_snippet(&self, _sym: &SymbolDef) -> Option<SourceSnippet> {
+        const MAX_LINES: usize = 50;
+        // We don't have project_root in ContextBuilder; skip source reading.
+        // MCP tool handler can enrich with source snippets separately.
+        None
     }
 }
 

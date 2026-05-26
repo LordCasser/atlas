@@ -1,5 +1,6 @@
 //! Context builder types: ContextView + ContextSlice.
 
+use types::enums::EdgeKind;
 use types::SymbolDef;
 
 /// Full contextual view of a symbol and its neighborhood.
@@ -7,16 +8,55 @@ use types::SymbolDef;
 pub struct ContextView {
     /// The subject symbol.
     pub subject: SymbolDef,
-    /// Symbols that call the subject.
+    /// Source code snippet of the subject (first N lines).
+    pub subject_source: Option<SourceSnippet>,
+    /// Symbols that call the subject (basic list, backward compatible).
     pub callers: Vec<SymbolDef>,
-    /// Symbols that the subject calls.
+    /// Symbols that the subject calls (basic list, backward compatible).
     pub callees: Vec<SymbolDef>,
+    /// Detailed caller info with call-site snippet and edge kind.
+    pub caller_details: Vec<CallerDetail>,
+    /// Detailed callee info with call-site snippet and edge kind.
+    pub callee_details: Vec<CalleeDetail>,
     /// Peer symbols in the same file.
     pub file_peers: Vec<SymbolDef>,
     /// Files that import the subject's file.
     pub importers: Vec<String>,
     /// Files that the subject's file depends on.
     pub dependencies: Vec<String>,
+}
+
+/// Source code snippet for a symbol definition.
+#[derive(Debug, Clone)]
+pub struct SourceSnippet {
+    /// Lines of source code (truncated to max_lines).
+    pub lines: Vec<String>,
+    /// Starting line number (0-based).
+    pub start_line: u32,
+    /// Total lines in the original source.
+    pub total_lines: u32,
+    /// Whether the snippet was truncated to max_lines.
+    pub truncated: bool,
+}
+
+/// Per-caller detail with call-site context.
+#[derive(Debug, Clone)]
+pub struct CallerDetail {
+    pub symbol: SymbolDef,
+    pub callsite_line: u32,
+    pub callsite_snippet: String,
+    pub edge_kind: EdgeKind,
+}
+
+/// Per-callee detail with call-site context.
+#[derive(Debug, Clone)]
+pub struct CalleeDetail {
+    pub symbol: SymbolDef,
+    pub callsite_line: u32,
+    pub callsite_snippet: String,
+    pub edge_kind: EdgeKind,
+    /// First line of the callee definition (signature).
+    pub callee_signature: Option<String>,
 }
 
 impl ContextView {
@@ -37,13 +77,63 @@ impl ContextView {
         if let Some(ref sig) = self.subject.signature {
             md.push_str(&format!("- Signature: `{}`\n", sig));
         }
+        let file_info = self
+            .subject_source
+            .as_ref()
+            .map(|s| format!(" (line {}-{})", s.start_line + 1, s.start_line + s.lines.len() as u32))
+            .unwrap_or_default();
+        md.push_str(&format!("- File: `{}`{}\n", self.subject.file_id.to_hex(), file_info));
         md.push('\n');
+
+        // Subject source snippet
+        if let Some(ref src) = self.subject_source {
+            md.push_str("```\n");
+            for line in &src.lines {
+                md.push_str(line);
+                md.push('\n');
+            }
+            if src.truncated {
+                md.push_str(&format!(
+                    "  ... (truncated — {} total lines)\n",
+                    src.total_lines
+                ));
+            }
+            md.push_str("```\n\n");
+        }
 
         /// Maximum callers/callees/peers per context output section.
         const MAX_CONTEXT_ITEMS: usize = 10;
 
-        // ...in to_markdown():
-        if !self.callers.is_empty() {
+        // Callers with source snippets
+        if !self.caller_details.is_empty() {
+            md.push_str("### Called By\n\n");
+            let shown = if self.caller_details.len() > MAX_CONTEXT_ITEMS {
+                &self.caller_details[..MAX_CONTEXT_ITEMS]
+            } else {
+                &self.caller_details
+            };
+            for (i, c) in shown.iter().enumerate() {
+                md.push_str(&format!(
+                    "{}. **`{}`** [{}] @ `{}:{}`\n",
+                    i + 1,
+                    c.symbol.qualified_name,
+                    c.edge_kind.as_str(),
+                    c.symbol.file_id.short_hex(),
+                    c.callsite_line + 1,
+                ));
+                md.push_str("   ```\n");
+                md.push_str(&format!("   {}\n", c.callsite_snippet.trim()));
+                md.push_str("   ```\n\n");
+            }
+            if self.caller_details.len() > MAX_CONTEXT_ITEMS {
+                md.push_str(&format!(
+                    "- ... and {} more callers\n",
+                    self.caller_details.len() - MAX_CONTEXT_ITEMS
+                ));
+            }
+            md.push('\n');
+        } else if !self.callers.is_empty() {
+            // Fallback: basic caller list (backward compatible)
             md.push_str("### Callers\n\n");
             let shown = if self.callers.len() > MAX_CONTEXT_ITEMS {
                 &self.callers[..MAX_CONTEXT_ITEMS]
@@ -53,16 +143,49 @@ impl ContextView {
             for c in shown {
                 md.push_str(&format!("- `{}`\n", c.qualified_name));
             }
-            if self.callers.len() > MAX_CONTEXT_ITEMS {
-                md.push_str(&format!(
-                    "- ... and {} more callers\n",
-                    self.callers.len() - MAX_CONTEXT_ITEMS
-                ));
-            }
             md.push('\n');
         }
 
-        if !self.callees.is_empty() {
+        // Callees with source snippets
+        if !self.callee_details.is_empty() {
+            md.push_str("### Calls\n\n");
+            let shown = if self.callee_details.len() > MAX_CONTEXT_ITEMS {
+                &self.callee_details[..MAX_CONTEXT_ITEMS]
+            } else {
+                &self.callee_details
+            };
+            for (i, c) in shown.iter().enumerate() {
+                let boundary_note = if c.edge_kind == EdgeKind::RegistersCallback {
+                    "⚠ **Callback boundary**: this callee is registered as a callback and invoked dynamically.\n"
+                } else {
+                    ""
+                };
+                md.push_str(&format!(
+                    "{}. **`{}`** [{}]\n",
+                    i + 1,
+                    c.symbol.qualified_name,
+                    c.edge_kind.as_str(),
+                ));
+                if !boundary_note.is_empty() {
+                    md.push_str(boundary_note);
+                }
+                if let Some(ref sig) = c.callee_signature {
+                    md.push_str(&format!("   Signature: `{}`\n", sig));
+                }
+                md.push_str(&format!("   @ `{}:{}`\n", c.symbol.file_id.short_hex(), c.callsite_line + 1));
+                md.push_str("   ```\n");
+                md.push_str(&format!("   {}\n", c.callsite_snippet.trim()));
+                md.push_str("   ```\n\n");
+            }
+            if self.callee_details.len() > MAX_CONTEXT_ITEMS {
+                md.push_str(&format!(
+                    "- ... and {} more callees\n",
+                    self.callee_details.len() - MAX_CONTEXT_ITEMS
+                ));
+            }
+            md.push('\n');
+        } else if !self.callees.is_empty() {
+            // Fallback: basic callee list
             md.push_str("### Callees\n\n");
             let shown = if self.callees.len() > MAX_CONTEXT_ITEMS {
                 &self.callees[..MAX_CONTEXT_ITEMS]
@@ -71,12 +194,6 @@ impl ContextView {
             };
             for c in shown {
                 md.push_str(&format!("- `{}`\n", c.qualified_name));
-            }
-            if self.callees.len() > MAX_CONTEXT_ITEMS {
-                md.push_str(&format!(
-                    "- ... and {} more callees\n",
-                    self.callees.len() - MAX_CONTEXT_ITEMS
-                ));
             }
             md.push('\n');
         }

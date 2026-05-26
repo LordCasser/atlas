@@ -1,8 +1,11 @@
-//! DuckDB backend — high-throughput bulk-write replacement for SQLite.
+//! DuckDB backend — primary persistence layer (replaces SQLite).
 //!
 //! DuckDB's columnar storage and Appender API (bypasses SQL parsing) make
 //! bulk inserts 10-100× faster than SQLite for the dense row-per-file
 //! patterns of `--analysis full` extraction.
+//!
+//! All reader traits are implemented on DuckStore so that TraceEngine,
+//! GraphSnapshot, and ContextBuilder can operate directly on DuckDB.
 //!
 //! ## Usage
 //!
@@ -10,16 +13,26 @@
 //! let duck = DuckStore::open_in_memory()?;
 //! duck.init_schema()?;
 //! duck.write_file_facts(&facts_batch)?;  // 1 × Appender per table
+//! let symbols = duck.find_symbols_by_name("helper")?;
 //! ```
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use types::*;
 
 use duckdb::{params, Connection};
 
-/// Minimal DuckDB-backed store for bulk writes.
+use crate::duck_rows;
+use crate::readers::{CallGraphReader, DataflowReader, FileReader, SymbolReader};
+
+/// DuckDB-backed store — primary persistence layer.
+///
+/// Uses a `Mutex<Connection>` for thread-safe shared access (e.g. across
+/// MCP tool threads). DuckDB's internal locking allows concurrent reads.
 pub struct DuckStore {
-    conn: Connection,
+    conn: Mutex<Connection>,
+    project_root: Option<PathBuf>,
 }
 
 impl DuckStore {
@@ -32,7 +45,7 @@ impl DuckStore {
              SET memory_limit = '4GB';
              SET preserve_insertion_order = false;",
         )?;
-        Ok(Self { conn })
+        Ok(Self { conn: Mutex::new(conn), project_root: None })
     }
 
     pub fn open(path: &Path) -> anyhow::Result<Self> {
@@ -42,18 +55,39 @@ impl DuckStore {
              SET memory_limit = '4GB';
              SET preserve_insertion_order = false;",
         )?;
-        Ok(Self { conn })
+        Ok(Self { conn: Mutex::new(conn), project_root: None })
     }
 
-    pub fn conn(&self) -> &Connection {
-        &self.conn
+    /// Set the project root for file-path resolution in reader queries.
+    pub fn set_project_root(&mut self, root: PathBuf) {
+        self.project_root = Some(root);
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     // ── Schema ──────────────────────────────────────────────────────────
 
+    /// Initialize the full schema including tables, indexes, and FTS index.
+    /// Idempotent: safe to call multiple times; FTS setup is skipped if
+    /// already configured.
     pub fn init_schema(&self) -> anyhow::Result<()> {
-        self.conn.execute_batch(SCHEMA_DDL)?;
+        let conn = self.lock();
+        conn.execute_batch(SCHEMA_DDL)?;
+        conn.execute_batch(INDEX_DDL)?;
+        // DuckDB FTS: install + load extension, create index on symbols.
+        // Best-effort: ignore errors from already-configured state.
+        conn.execute_batch("INSTALL fts;").ok();
+        conn.execute_batch("LOAD fts;").ok();
+        conn.execute_batch(
+            "PRAGMA create_fts_index('symbols', 'symbol_id', 'name', 'qualified_name');",
+        ).ok();
         Ok(())
+    }
+
+    pub fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.lock()
     }
 
     // ── High-level batch write ──────────────────────────────────────────
@@ -102,20 +136,20 @@ impl DuckStore {
             for e in &facts.cfg_edges { all_cfg_edges.push(e); }
         }
 
-        let conn = &self.conn;
-        write_files_appender(conn, &all_files)?;
-        write_symbols_appender(conn, &all_symbols)?;
-        write_scopes_appender(conn, &all_scopes)?;
-        write_references_appender(conn, &all_refs)?;
-        write_imports_appender(conn, &all_imports)?;
-        write_edges_appender(conn, &all_edges)?;
-        write_callsites_appender(conn, &all_callsites)?;
-        write_bindings_appender(conn, &all_bindings)?;
-        write_binding_uses_appender(conn, &all_binding_uses)?;
-        write_data_nodes_appender(conn, &all_data_nodes)?;
-        write_dataflow_edges_appender(conn, &all_dataflow_edges)?;
-        write_cfg_nodes_appender(conn, &all_cfg_nodes)?;
-        write_cfg_edges_appender(conn, &all_cfg_edges)?;
+        let conn = self.lock();
+        write_files_appender(&*conn, &all_files)?;
+        write_symbols_appender(&*conn, &all_symbols)?;
+        write_scopes_appender(&*conn, &all_scopes)?;
+        write_references_appender(&*conn, &all_refs)?;
+        write_imports_appender(&*conn, &all_imports)?;
+        write_edges_appender(&*conn, &all_edges)?;
+        write_callsites_appender(&*conn, &all_callsites)?;
+        write_bindings_appender(&*conn, &all_bindings)?;
+        write_binding_uses_appender(&*conn, &all_binding_uses)?;
+        write_data_nodes_appender(&*conn, &all_data_nodes)?;
+        write_dataflow_edges_appender(&*conn, &all_dataflow_edges)?;
+        write_cfg_nodes_appender(&*conn, &all_cfg_nodes)?;
+        write_cfg_edges_appender(&*conn, &all_cfg_edges)?;
 
         Ok(())
     }
@@ -360,6 +394,47 @@ CREATE TABLE IF NOT EXISTS schema_versions (
     applied_at  TIMESTAMP DEFAULT now(),
     description TEXT
 );
+
+-- Lazy dataflow artifact tracking (replaces SQLite analysis_artifacts)
+CREATE TABLE IF NOT EXISTS analysis_artifacts (
+    file_id         BLOB NOT NULL,
+    unit_id         BLOB NOT NULL,
+    layer           TEXT NOT NULL,
+    content_hash    TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'complete',
+    node_count      BIGINT,
+    edge_count      BIGINT,
+    budget_exceeded INTEGER NOT NULL DEFAULT 0,
+    built_at        TIMESTAMP DEFAULT now(),
+    PRIMARY KEY (file_id, unit_id, layer)
+);
+
+-- Per-file per-layer index status (replaces SQLite file_index_layers)
+CREATE TABLE IF NOT EXISTS file_index_layers (
+    file_id         BLOB NOT NULL,
+    layer           TEXT NOT NULL,
+    content_hash    TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'complete',
+    updated_at      TIMESTAMP DEFAULT now(),
+    PRIMARY KEY (file_id, layer)
+);
+"#;
+
+// ── Index DDL (separate from table DDL for clarity) ──────────────────────
+
+const INDEX_DDL: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_symbol_edges_source ON symbol_edges(source);
+CREATE INDEX IF NOT EXISTS idx_symbol_edges_target ON symbol_edges(target);
+CREATE INDEX IF NOT EXISTS idx_callsites_callee    ON callsites(callee);
+CREATE INDEX IF NOT EXISTS idx_symbols_qname       ON symbols(qualified_name);
+CREATE INDEX IF NOT EXISTS idx_symbols_name        ON symbols(name);
+CREATE INDEX IF NOT EXISTS idx_artifacts_file      ON analysis_artifacts(file_id);
+CREATE INDEX IF NOT EXISTS idx_file_layers_file    ON file_index_layers(file_id);
+CREATE INDEX IF NOT EXISTS idx_dataflow_edges_src  ON dataflow_edges(source);
+CREATE INDEX IF NOT EXISTS idx_dataflow_edges_tgt  ON dataflow_edges(target);
+CREATE INDEX IF NOT EXISTS idx_data_nodes_file     ON data_nodes(file_id);
+CREATE INDEX IF NOT EXISTS idx_data_nodes_func     ON data_nodes(function_id);
+CREATE INDEX IF NOT EXISTS idx_callsites_caller    ON callsites(caller);
 "#;
 
 // ── Bulk insert helpers (Appender-based) ───────────────────────────────────
@@ -611,4 +686,648 @@ fn write_cfg_edges_appender(conn: &Connection, edges: &[&CfgEdge]) -> anyhow::Re
         ])?;
     }
     Ok(())
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// FileReader implementation
+// ───────────────────────────────────────────────────────────────────────────
+
+impl FileReader for DuckStore {
+    fn get_file(&self, file_id: &FileId) -> anyhow::Result<Option<FileInfo>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT file_id, path, language, content_hash, status FROM files WHERE file_id = ?",
+        )?;
+        let mut rows = stmt.query(params![blob(file_id)])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(duck_rows::row_to_file_info(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn list_files(&self) -> anyhow::Result<Vec<FileInfo>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT file_id, path, language, content_hash, status FROM files ORDER BY path",
+        )?;
+        let rows = stmt.query([])?;
+        collect_rows(rows, duck_rows::row_to_file_info)
+    }
+
+    fn resolve_file_id(&self, _root: &Path, rel_path: &str) -> anyhow::Result<Option<FileId>> {
+        let conn = self.lock();
+        // Exact match first
+        let mut stmt = conn.prepare("SELECT file_id FROM files WHERE path = ?")?;
+        let mut rows = stmt.query(params![rel_path])?;
+        if let Some(row) = rows.next()? {
+            let blob: Vec<u8> = row.get(0)?;
+            return Ok(Some(duck_rows::blob_to_id_raw(blob)));
+        }
+        // Suffix match: path ends with /rel_path or path == rel_path
+        let suffix_pattern = format!("%/{}", rel_path);
+        let mut stmt = conn.prepare(
+            "SELECT file_id FROM files WHERE path = ?2 OR path LIKE ?1 LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![suffix_pattern.as_str(), rel_path])?;
+        if let Some(row) = rows.next()? {
+            let blob: Vec<u8> = row.get(0)?;
+            return Ok(Some(duck_rows::blob_to_id_raw(blob)));
+        }
+        Ok(None)
+    }
+
+    fn get_metadata(&self, key: &str) -> anyhow::Result<Option<String>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT value FROM project_metadata WHERE key = ?")?;
+        let mut rows = stmt.query(params![key])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row.get(0)?)),
+            None => Ok(None),
+        }
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// SymbolReader implementation
+// ───────────────────────────────────────────────────────────────────────────
+
+impl SymbolReader for DuckStore {
+    fn find_symbol_by_id(&self, id: &SymbolId) -> anyhow::Result<Option<SymbolDef>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&SYMBOL_SELECT_WHERE_ID)?;
+        let mut rows = stmt.query(params![blob(id)])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(duck_rows::row_to_symbol(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn find_symbols_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<SymbolDef>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!("{SYMBOL_SELECT} WHERE file_id = ? ORDER BY name"))?;
+        let rows = stmt.query(params![blob(file_id)])?;
+        collect_rows(rows, duck_rows::row_to_symbol)
+    }
+
+    fn search_symbols(&self, query: &str) -> anyhow::Result<Vec<SymbolDef>> {
+        // DuckDB FTS via match_bm25
+        let conn = self.lock();
+        let pattern = format!("{}*", query);
+        let sql = format!(
+            "SELECT s.* FROM symbols s \
+             WHERE fts_main_symbols.match_bm25(s.symbol_id, ?) IS NOT NULL \
+             ORDER BY fts_main_symbols.match_bm25(s.symbol_id, ?) \
+             LIMIT 50"
+        );
+        match conn.prepare(&sql) {
+            Ok(mut stmt) => {
+                let rows = stmt.query(params![pattern.as_str(), pattern.as_str()])?;
+                let results = collect_rows(rows, duck_rows::row_to_symbol)?;
+                if !results.is_empty() {
+                    return Ok(results);
+                }
+            }
+            Err(_) => { /* FTS may not be installed; fall through to ILIKE */ }
+        }
+        // Fallback: ILIKE
+        self.search_symbols_by_name_like(query, None, 50, None)
+    }
+
+    fn search_symbols_with_limit(
+        &self,
+        query: &str,
+        limit: usize,
+        kind_filter: Option<&SymbolKind>,
+    ) -> anyhow::Result<Vec<SymbolDef>> {
+        let conn = self.lock();
+        let pattern = format!("{}*", query);
+        // Push kind_filter into SQL to avoid post-filter overhead on large results.
+        let (sql, params_ct) = if let Some(kind) = kind_filter {
+            (format!(
+                "SELECT s.* FROM symbols s \
+                 WHERE fts_main_symbols.match_bm25(s.symbol_id, ?) IS NOT NULL \
+                   AND s.kind = ? \
+                 ORDER BY fts_main_symbols.match_bm25(s.symbol_id, ?) \
+                 LIMIT {limit}"
+            ), 3)
+        } else {
+            (format!(
+                "SELECT s.* FROM symbols s \
+                 WHERE fts_main_symbols.match_bm25(s.symbol_id, ?) IS NOT NULL \
+                 ORDER BY fts_main_symbols.match_bm25(s.symbol_id, ?) \
+                 LIMIT {limit}"
+            ), 2)
+        };
+        match conn.prepare(&sql) {
+            Ok(mut stmt) => {
+                let rows = if params_ct == 3 {
+                    let kind = kind_filter.unwrap();
+                    stmt.query(params![pattern.as_str(), kind.as_str(), pattern.as_str()])?
+                } else {
+                    stmt.query(params![pattern.as_str(), pattern.as_str()])?
+                };
+                collect_rows(rows, duck_rows::row_to_symbol)
+            }
+            Err(_) => {
+                self.search_symbols_by_name_like(query, None, limit, kind_filter)
+            }
+        }
+    }
+
+    fn search_symbols_by_name_like(
+        &self,
+        pattern: &str,
+        language: Option<&Language>,
+        limit: usize,
+        kind_filter: Option<&SymbolKind>,
+    ) -> anyhow::Result<Vec<SymbolDef>> {
+        let conn = self.lock();
+        // Escape LIKE wildcards: % and _ are treated as literals.
+        // Replace \ → \\, % → \%, _ → \_ and use ESCAPE '\'.
+        let esc_pattern = pattern
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let like_pattern = format!("%{}%", esc_pattern);
+        let sql = match (language, kind_filter) {
+            (Some(_lang), Some(_kind)) => format!(
+                "SELECT * FROM symbols WHERE (name ILIKE ? ESCAPE '\\' OR qualified_name ILIKE ? ESCAPE '\\') AND language = ? AND kind = ? LIMIT {limit}"
+            ),
+            (Some(_lang), None) => format!(
+                "SELECT * FROM symbols WHERE (name ILIKE ? ESCAPE '\\' OR qualified_name ILIKE ? ESCAPE '\\') AND language = ? LIMIT {limit}"
+            ),
+            (None, Some(_kind)) => format!(
+                "SELECT * FROM symbols WHERE (name ILIKE ? ESCAPE '\\' OR qualified_name ILIKE ? ESCAPE '\\') AND kind = ? LIMIT {limit}"
+            ),
+            (None, None) => format!(
+                "SELECT * FROM symbols WHERE (name ILIKE ? ESCAPE '\\' OR qualified_name ILIKE ? ESCAPE '\\') LIMIT {limit}"
+            ),
+        };
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = match (language, kind_filter) {
+            (Some(lang), Some(kind)) => stmt.query(params![
+                like_pattern.as_str(), like_pattern.as_str(),
+                lang.as_str(), kind.as_str()
+            ])?,
+            (Some(lang), None) => stmt.query(params![
+                like_pattern.as_str(), like_pattern.as_str(),
+                lang.as_str()
+            ])?,
+            (None, Some(kind)) => stmt.query(params![
+                like_pattern.as_str(), like_pattern.as_str(),
+                kind.as_str()
+            ])?,
+            (None, None) => stmt.query(params![
+                like_pattern.as_str(), like_pattern.as_str()
+            ])?,
+        };
+        collect_rows(rows, duck_rows::row_to_symbol)
+    }
+
+    fn count_symbols(&self) -> anyhow::Result<usize> {
+        let conn = self.lock();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))?;
+        Ok(count as usize)
+    }
+
+    fn find_symbols_by_qname(&self, qname: &str) -> anyhow::Result<Vec<SymbolDef>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!("{SYMBOL_SELECT} WHERE qualified_name = ?"))?;
+        let rows = stmt.query(params![qname])?;
+        collect_rows(rows, duck_rows::row_to_symbol)
+    }
+
+    fn get_all_symbols(&self) -> anyhow::Result<Vec<SymbolDef>> {
+        let conn = self.lock();
+        // Use the shorter column list for bulk load (no symbol_path JSON for speed)
+        let mut stmt = conn.prepare(SYMBOL_BULK_SELECT)?;
+        let rows = stmt.query([])?;
+        collect_rows(rows, duck_rows::row_to_symbol_no_path)
+    }
+
+    fn find_symbols_by_name(&self, name: &str) -> anyhow::Result<Vec<SymbolDef>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!("{SYMBOL_SELECT} WHERE name = ?"))?;
+        let rows = stmt.query(params![name])?;
+        collect_rows(rows, duck_rows::row_to_symbol)
+    }
+
+    fn find_references_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<ReferenceUse>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(REFERENCE_SELECT_WHERE)?;
+        let rows = stmt.query(params![blob(file_id)])?;
+        collect_rows(rows, duck_rows::row_to_reference)
+    }
+
+    fn find_scopes_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<ScopeDef>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT scope_id, file_id, kind, name, scope_path, \
+             range_start_byte, range_end_byte, range_start_line, range_start_column, \
+             range_end_line, range_end_column, parent_id \
+             FROM scopes WHERE file_id = ? ORDER BY scope_path",
+        )?;
+        let rows = stmt.query(params![blob(file_id)])?;
+        collect_rows(rows, duck_rows::row_to_scope)
+    }
+
+    fn find_imports_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<ImportDef>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT import_id, file_id, kind, module, imported_name, local_name, \
+             is_wildcard, is_relative, \
+             range_start_byte, range_end_byte, range_start_line, range_start_column, \
+             range_end_line, range_end_column, alias \
+             FROM imports WHERE file_id = ?",
+        )?;
+        let rows = stmt.query(params![blob(file_id)])?;
+        collect_rows(rows, duck_rows::row_to_import)
+    }
+
+    fn find_edges_by_source(&self, source: &SymbolId) -> anyhow::Result<Vec<RawEdge>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!("{EDGE_SELECT} WHERE source = ?"))?;
+        let rows = stmt.query(params![blob(source)])?;
+        collect_rows(rows, duck_rows::row_to_edge)
+    }
+
+    fn find_edges_by_target(&self, target: &SymbolId) -> anyhow::Result<Vec<RawEdge>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!("{EDGE_SELECT} WHERE target = ?"))?;
+        let rows = stmt.query(params![blob(target)])?;
+        collect_rows(rows, duck_rows::row_to_edge)
+    }
+
+    fn get_all_edges(&self) -> anyhow::Result<Vec<RawEdge>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(EDGE_SELECT)?;
+        let rows = stmt.query([])?;
+        collect_rows(rows, duck_rows::row_to_edge)
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// CallGraphReader implementation
+// ───────────────────────────────────────────────────────────────────────────
+
+impl CallGraphReader for DuckStore {
+    fn find_callsites_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<Callsite>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!("{CALLSITE_SELECT} WHERE caller IN (SELECT symbol_id FROM symbols WHERE file_id = ?)"))?;
+        let rows = stmt.query(params![blob(file_id)])?;
+        collect_rows(rows, duck_rows::row_to_callsite)
+    }
+
+    fn find_callsites_by_callee(&self, callee: &SymbolId) -> anyhow::Result<Vec<Callsite>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!("{CALLSITE_SELECT} WHERE callee = ?"))?;
+        let rows = stmt.query(params![blob(callee)])?;
+        collect_rows(rows, duck_rows::row_to_callsite)
+    }
+
+    fn find_callsites_by_id(&self, id: &CallsiteId) -> anyhow::Result<Vec<Callsite>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!("{CALLSITE_SELECT} WHERE callsite_id = ?"))?;
+        let rows = stmt.query(params![blob(id)])?;
+        collect_rows(rows, duck_rows::row_to_callsite)
+    }
+
+    fn find_callsite_by_reference_id(
+        &self,
+        reference_id: &ReferenceId,
+    ) -> anyhow::Result<Option<Callsite>> {
+        let conn = self.lock();
+        let mut stmt =
+            conn.prepare(&format!("{CALLSITE_SELECT} WHERE reference_id = ? LIMIT 1"))?;
+        let mut rows = stmt.query(params![blob(reference_id)])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(duck_rows::row_to_callsite(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn find_bindings_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<BindingDef>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT binding_id, file_id, function_id, scope_id, kind, name, symbol_id, \
+             range_start_byte, range_end_byte, range_start_line, range_start_column, \
+             range_end_line, range_end_column \
+             FROM bindings WHERE file_id = ?",
+        )?;
+        let rows = stmt.query(params![blob(file_id)])?;
+        collect_rows(rows, duck_rows::row_to_binding)
+    }
+
+    fn find_bindings_by_function(
+        &self,
+        function_id: &SymbolId,
+    ) -> anyhow::Result<Vec<BindingDef>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT binding_id, file_id, function_id, scope_id, kind, name, symbol_id, \
+             range_start_byte, range_end_byte, range_start_line, range_start_column, \
+             range_end_line, range_end_column \
+             FROM bindings WHERE function_id = ?",
+        )?;
+        let rows = stmt.query(params![blob(function_id)])?;
+        collect_rows(rows, duck_rows::row_to_binding)
+    }
+
+    fn find_binding_uses_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<BindingUse>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT binding_use_id, file_id, scope_id, binding_id, reference_id, name, \
+             range_start_byte, range_end_byte, range_start_line, range_start_column, \
+             range_end_line, range_end_column \
+             FROM binding_uses WHERE file_id = ?",
+        )?;
+        let rows = stmt.query(params![blob(file_id)])?;
+        collect_rows(rows, duck_rows::row_to_binding_use)
+    }
+
+    fn find_binding_uses_by_binding(
+        &self,
+        binding_id: &BindingId,
+    ) -> anyhow::Result<Vec<BindingUse>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT binding_use_id, file_id, scope_id, binding_id, reference_id, name, \
+             range_start_byte, range_end_byte, range_start_line, range_start_column, \
+             range_end_line, range_end_column \
+             FROM binding_uses WHERE binding_id = ?",
+        )?;
+        let rows = stmt.query(params![blob(binding_id)])?;
+        collect_rows(rows, duck_rows::row_to_binding_use)
+    }
+
+    fn find_cfg_nodes_by_function(&self, function_id: &SymbolId) -> anyhow::Result<Vec<CfgNode>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT cfg_node_id, function_id, kind, \
+             range_start_byte, range_end_byte, range_start_line, range_start_column, \
+             range_end_line, range_end_column \
+             FROM cfg_nodes WHERE function_id = ?",
+        )?;
+        let rows = stmt.query(params![blob(function_id)])?;
+        collect_rows(rows, duck_rows::row_to_cfg_node)
+    }
+
+    fn find_cfg_edges_by_source(&self, source: &CfgNodeId) -> anyhow::Result<Vec<CfgEdge>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT cfg_edge_id, source, target, kind FROM cfg_edges WHERE source = ?",
+        )?;
+        let rows = stmt.query(params![blob(source)])?;
+        collect_rows(rows, duck_rows::row_to_cfg_edge)
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// DataflowReader implementation
+// ───────────────────────────────────────────────────────────────────────────
+
+impl DataflowReader for DuckStore {
+    fn get_data_node(&self, id: &DataNodeId) -> anyhow::Result<Option<DataNode>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!("{DATA_NODE_SELECT} WHERE data_node_id = ?"))?;
+        let mut rows = stmt.query(params![blob(id)])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(duck_rows::row_to_data_node(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn get_data_nodes(&self, ids: &[DataNodeId]) -> anyhow::Result<HashMap<DataNodeId, DataNode>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let conn = self.lock();
+        // Build IN clause with placeholders
+        let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "{DATA_NODE_SELECT} WHERE data_node_id IN ({})",
+            placeholders.join(",")
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&[u8]> = ids.iter().map(|id| blob(id)).collect();
+        let param_refs: Vec<&dyn duckdb::ToSql> = params
+            .iter()
+            .map(|b| b as &dyn duckdb::ToSql)
+            .collect();
+        let mut rows = stmt.query(&param_refs[..])?;
+        let mut map = HashMap::with_capacity(ids.len());
+        while let Some(row) = rows.next()? {
+            let node = duck_rows::row_to_data_node(&row)?;
+            map.insert(node.id, node);
+        }
+        Ok(map)
+    }
+
+    fn find_data_nodes_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<DataNode>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!("{DATA_NODE_SELECT} WHERE file_id = ?"))?;
+        let rows = stmt.query(params![blob(file_id)])?;
+        collect_rows(rows, duck_rows::row_to_data_node)
+    }
+
+    fn find_data_nodes_by_function(
+        &self,
+        function_id: &SymbolId,
+    ) -> anyhow::Result<Vec<DataNode>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!("{DATA_NODE_SELECT} WHERE function_id = ?"))?;
+        let rows = stmt.query(params![blob(function_id)])?;
+        collect_rows(rows, duck_rows::row_to_data_node)
+    }
+
+    fn find_data_nodes_by_callsite(
+        &self,
+        callsite_id: &CallsiteId,
+    ) -> anyhow::Result<Vec<DataNode>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!("{DATA_NODE_SELECT} WHERE callsite_id = ?"))?;
+        let rows = stmt.query(params![blob(callsite_id)])?;
+        collect_rows(rows, duck_rows::row_to_data_node)
+    }
+
+    fn find_dataflow_edges_by_source(
+        &self,
+        source: &DataNodeId,
+    ) -> anyhow::Result<Vec<DataFlowEdge>> {
+        let conn = self.lock();
+        let mut stmt =
+            conn.prepare(&format!("{DF_EDGE_SELECT} WHERE source = ?"))?;
+        let rows = stmt.query(params![blob(source)])?;
+        collect_rows(rows, duck_rows::row_to_dataflow_edge)
+    }
+
+    fn find_dataflow_edges_by_target(
+        &self,
+        target: &DataNodeId,
+    ) -> anyhow::Result<Vec<DataFlowEdge>> {
+        let conn = self.lock();
+        let mut stmt =
+            conn.prepare(&format!("{DF_EDGE_SELECT} WHERE target = ?"))?;
+        let rows = stmt.query(params![blob(target)])?;
+        collect_rows(rows, duck_rows::row_to_dataflow_edge)
+    }
+
+    fn find_dataflow_edges_by_sources(
+        &self,
+        sources: &[DataNodeId],
+    ) -> anyhow::Result<Vec<DataFlowEdge>> {
+        if sources.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.lock();
+        let placeholders: Vec<String> = sources.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "{DF_EDGE_SELECT} WHERE source IN ({})",
+            placeholders.join(",")
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&[u8]> = sources.iter().map(|id| blob(id)).collect();
+        let param_refs: Vec<&dyn duckdb::ToSql> = params
+            .iter()
+            .map(|b| b as &dyn duckdb::ToSql)
+            .collect();
+        let rows = stmt.query(&param_refs[..])?;
+        collect_rows(rows, duck_rows::row_to_dataflow_edge)
+    }
+
+    fn find_dataflow_edges_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<DataFlowEdge>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!(
+            "{DF_EDGE_SELECT} WHERE source IN (SELECT data_node_id FROM data_nodes WHERE file_id = ?)"
+        ))?;
+        let rows = stmt.query(params![blob(file_id)])?;
+        collect_rows(rows, duck_rows::row_to_dataflow_edge)
+    }
+}
+
+// ── TraceStore blanket impl is in readers.rs (line 106) ── DONE automatically
+
+// ───────────────────────────────────────────────────────────────────────────
+// Shared SQL fragments for reader queries
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Full symbol column list (with symbol_path_json + namespace_path_json).
+const SYMBOL_SELECT: &str = "\
+SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json, \
+       language, \
+       range_start_byte, range_end_byte, range_start_line, range_start_column, \
+       range_end_line, range_end_column, \
+       name_start_byte, name_end_byte, name_start_line, name_start_column, \
+       name_end_line, name_end_column, \
+       signature, visibility, exported, static_, async_, \
+       container_id, scope_id, package_name, namespace_path_json, layer \
+FROM symbols";
+
+const SYMBOL_SELECT_WHERE_ID: &str = "\
+SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json, \
+       language, \
+       range_start_byte, range_end_byte, range_start_line, range_start_column, \
+       range_end_line, range_end_column, \
+       name_start_byte, name_end_byte, name_start_line, name_start_column, \
+       name_end_line, name_end_column, \
+       signature, visibility, exported, static_, async_, \
+       container_id, scope_id, package_name, namespace_path_json, layer \
+FROM symbols WHERE symbol_id = ?";
+
+/// Bulk symbol column list (skips symbol_path_json, namespace_path_json).
+const SYMBOL_BULK_SELECT: &str = "\
+SELECT symbol_id, file_id, kind, name, qualified_name, '[]' as symbol_path_json, \
+       language, \
+       range_start_byte, range_end_byte, range_start_line, range_start_column, \
+       range_end_line, range_end_column, \
+       name_start_byte, name_end_byte, name_start_line, name_start_column, \
+       name_end_line, name_end_column, \
+       signature, visibility, exported, static_, async_, \
+       container_id, scope_id, package_name, '[]' as namespace_path_json, layer \
+FROM symbols";
+
+const EDGE_SELECT: &str = "\
+SELECT edge_id, source, target, kind, confidence, provenance, ref_id, \
+       location_0, location_1, location_2, location_3, location_4, location_5, \
+       metadata, resolved_by \
+FROM symbol_edges";
+
+const CALLSITE_SELECT: &str = "\
+SELECT callsite_id, reference_id, caller, callee, receiver, args_json, \
+       range_start_byte, range_end_byte, range_start_line, range_start_column, \
+       range_end_line, range_end_column, \
+       callee_start_line, callee_start_column, callee_end_line, callee_end_column, \
+       callee_start_byte, callee_end_byte \
+FROM callsites";
+
+const DATA_NODE_SELECT: &str = "\
+SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id, \
+       name, access_path, arg_index, \
+       range_start_byte, range_end_byte, range_start_line, range_start_column, \
+       range_end_line, range_end_column \
+FROM data_nodes";
+
+const DF_EDGE_SELECT: &str = "\
+SELECT dataflow_edge_id, source, target, kind, \
+       location_0, location_1, location_2, location_3, location_4, location_5, \
+       confidence \
+FROM dataflow_edges";
+
+const REFERENCE_SELECT_WHERE: &str = "\
+SELECT reference_id, file_id, source_symbol, scope_id, kind, \
+       text, name, receiver, arity, \
+       range_start_byte, range_end_byte, range_start_line, range_start_column, \
+       range_end_line, range_end_column, \
+       resolved_symbol_id, resolved_confidence, resolved_strategy, \
+       resolved_provenance, binding_id \
+FROM \"references\" WHERE file_id = ?";
+
+// ───────────────────────────────────────────────────────────────────────────
+// Helper: collect DuckDB rows into a Vec<T>
+// ───────────────────────────────────────────────────────────────────────────
+
+fn collect_rows<T, F>(mut rows: duckdb::Rows<'_>, f: F) -> anyhow::Result<Vec<T>>
+where
+    F: Fn(&duckdb::Row) -> anyhow::Result<T>,
+{
+    let mut items = Vec::new();
+    while let Some(row) = rows.next()? {
+        items.push(f(&row)?);
+    }
+    Ok(items)
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Additional DuckStore inherent methods (used by GraphSnapshot, Context, etc.)
+// ───────────────────────────────────────────────────────────────────────────
+
+impl DuckStore {
+    /// Batch lookup symbols by their IDs.
+    pub fn find_symbols_by_ids(&self, ids: &[SymbolId]) -> anyhow::Result<Vec<SymbolDef>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.lock();
+        let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json, \
+             language, \
+             range_start_byte, range_end_byte, range_start_line, range_start_column, \
+             range_end_line, range_end_column, \
+             name_start_byte, name_end_byte, name_start_line, name_start_column, \
+             name_end_line, name_end_column, \
+             signature, visibility, exported, static_, async_, \
+             container_id, scope_id, package_name, namespace_path_json, layer \
+             FROM symbols WHERE symbol_id IN ({})",
+            placeholders.join(","),
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&[u8]> = ids.iter().map(|id| blob(id)).collect();
+        let param_refs: Vec<&dyn duckdb::ToSql> = params
+            .iter()
+            .map(|b| b as &dyn duckdb::ToSql)
+            .collect();
+        let rows = stmt.query(&param_refs[..])?;
+        collect_rows(rows, duck_rows::row_to_symbol)
+    }
 }

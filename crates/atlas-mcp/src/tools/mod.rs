@@ -319,6 +319,7 @@ impl ToolRouter {
             "trace_point" => self.handle_trace_point(arguments),
             "trace_variable" => self.handle_trace_variable(arguments),
             "trace_caller_path" => self.handle_trace_caller_path(arguments),
+            "trace_forward" => self.handle_trace_forward(arguments),
             "language_capabilities" => self.handle_language_capabilities(),
             "usages" => self.handle_usages(arguments),
             "dependencies" => self.handle_dependencies(arguments),
@@ -636,6 +637,19 @@ pub fn make_all_tools() -> Vec<Tool> {
                     "max_depth": { "type": "integer", "description": "Maximum backward call depth (default 20)" },
                 })),
                 required: None,
+            },
+        },
+        Tool {
+            name: "trace_forward".into(),
+            description: "Trace the forward call chain from source to target. Answers 'how does A reach B?' by walking forward through call edges. Returns per-hop source snippets and edge types.".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "from": { "type": "string", "description": "Source symbol ID in hex" },
+                    "to": { "type": "string", "description": "Target symbol ID in hex" },
+                    "max_depth": { "type": "integer", "description": "Maximum forward call depth (default 10)" },
+                })),
+                required: Some(vec!["from".into(), "to".into()]),
             },
         },
         Tool {
