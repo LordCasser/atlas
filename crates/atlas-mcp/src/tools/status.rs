@@ -34,7 +34,9 @@ impl ToolRouter {
 
         // Build an index hint when no files are indexed
         let index_hint = if stats.total_files == 0 {
-            Some("The project has not been indexed yet. Run the 'index' tool to populate the code index before querying symbols, searching, or tracing.")
+            Some(
+                "The project has not been indexed yet. Run the 'index' tool to populate the code index before querying symbols, searching, or tracing.",
+            )
         } else {
             None
         };
@@ -53,19 +55,28 @@ impl ToolRouter {
         }
 
         // Build lazy_dataflow block
-        let lazy_dataflow = lazy_stats.as_ref().map(|l| json!({
-            "enabled": true,
-            "artifacts": l.total_artifacts,
-            "partial_artifacts": l.partial_artifacts,
-        })).unwrap_or(json!({
-            "enabled": true,
-            "artifacts": 0,
-            "partial_artifacts": 0,
-        }));
+        let lazy_dataflow = lazy_stats
+            .as_ref()
+            .map(|l| {
+                json!({
+                    "enabled": true,
+                    "artifacts": l.total_artifacts,
+                    "partial_artifacts": l.partial_artifacts,
+                })
+            })
+            .unwrap_or(json!({
+                "enabled": true,
+                "artifacts": 0,
+                "partial_artifacts": 0,
+            }));
 
         // Determine storage mode from db_path
         let db_path = self.store.db_path().to_string_lossy().to_string();
-        let storage = if db_path == ":memory:" { "memory" } else { "persistent" };
+        let storage = if db_path == ":memory:" {
+            "memory"
+        } else {
+            "persistent"
+        };
 
         (
             serde_json::to_string_pretty(&json!({

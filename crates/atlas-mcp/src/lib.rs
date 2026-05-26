@@ -170,46 +170,53 @@ impl ServerHandler for AtlasMcpService {
         let start = std::time::Instant::now();
         let tool_name = request.name.to_string();
         let progress_token = request.progress_token();
+        let has_progress_token = progress_token.is_some();
 
         async move {
             // ── For long-running tools with progress token, set up progress channel ─
-            let _progress_task = if matches!(tool_name.as_str(), "index" | "open_project")
-                && progress_token.is_some()
-            {
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<tools::ProgressReport>();
-                let token = progress_token.unwrap();
-                let peer = context.peer.clone();
-
-                // Store the sender on the router so handle_index can use it.
+            let _progress_task =
+                if matches!(tool_name.as_str(), "index" | "open_project" | "search")
+                    && has_progress_token
                 {
-                    let mut router = self.router.lock().map_err(|_| {
-                        rmcp::ErrorData::internal_error("Atlas MCP router lock poisoned", None)
-                    })?;
-                    router.progress_sender = Some(tx);
-                }
+                    let (tx, mut rx) =
+                        tokio::sync::mpsc::unbounded_channel::<tools::ProgressReport>();
+                    let token = progress_token.unwrap();
+                    let peer = context.peer.clone();
 
-                // Spawn a task that forwards progress reports to MCP notifications.
-                Some(tokio::spawn(async move {
-                    while let Some((progress, total, message)) = rx.recv().await {
-                        let mut params =
-                            rmcp_model::ProgressNotificationParam::new(token.clone(), progress);
-                        if let Some(t) = total {
-                            params = params.with_total(t);
-                        }
-                        if let Some(m) = message {
-                            params = params.with_message(m);
-                        }
-                        let _ = peer.notify_progress(params).await;
+                    // Store the sender on the router so handle_index can use it.
+                    {
+                        let mut router = self.router.lock().map_err(|_| {
+                            rmcp::ErrorData::internal_error("Atlas MCP router lock poisoned", None)
+                        })?;
+                        router.progress_sender = Some(tx);
                     }
-                }))
-            } else {
-                None
-            };
 
-            let args = request
+                    // Spawn a task that forwards progress reports to MCP notifications.
+                    Some(tokio::spawn(async move {
+                        while let Some((progress, total, message)) = rx.recv().await {
+                            let mut params =
+                                rmcp_model::ProgressNotificationParam::new(token.clone(), progress);
+                            if let Some(t) = total {
+                                params = params.with_total(t);
+                            }
+                            if let Some(m) = message {
+                                params = params.with_message(m);
+                            }
+                            let _ = peer.notify_progress(params).await;
+                        }
+                    }))
+                } else {
+                    None
+                };
+
+            let mut args = request
                 .arguments
                 .map(serde_json::Value::Object)
                 .unwrap_or(serde_json::Value::Null);
+            if should_auto_background_without_progress(&tool_name, &args, has_progress_token) {
+                ensure_object_bool(&mut args, "background", true);
+                ensure_object_bool(&mut args, "_auto_background", true);
+            }
 
             // ── Standard tool dispatch ────────────────────────────────────
             let result = self.lock_router().and_then(|mut router| {
@@ -258,5 +265,66 @@ impl ServerHandler for AtlasMcpService {
 
             result
         }
+    }
+}
+
+fn should_auto_background_without_progress(
+    tool_name: &str,
+    args: &serde_json::Value,
+    has_progress_token: bool,
+) -> bool {
+    if has_progress_token {
+        return false;
+    }
+    match tool_name {
+        "index" => true,
+        "open_project" => args
+            .get("scan_files")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn ensure_object_bool(args: &mut serde_json::Value, key: &str, value: bool) {
+    if !args.is_object() {
+        *args = serde_json::Value::Object(Default::default());
+    }
+    if let Some(obj) = args.as_object_mut() {
+        obj.insert(key.to_string(), serde_json::Value::Bool(value));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    #[test]
+    fn auto_background_policy_protects_no_progress_clients() {
+        assert!(super::should_auto_background_without_progress(
+            "index",
+            &json!({}),
+            false
+        ));
+        assert!(!super::should_auto_background_without_progress(
+            "index",
+            &json!({}),
+            true
+        ));
+        assert!(super::should_auto_background_without_progress(
+            "open_project",
+            &json!({ "scan_files": true }),
+            false
+        ));
+        assert!(!super::should_auto_background_without_progress(
+            "open_project",
+            &json!({}),
+            false
+        ));
+        assert!(!super::should_auto_background_without_progress(
+            "search",
+            &json!({}),
+            false
+        ));
     }
 }

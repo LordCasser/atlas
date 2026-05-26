@@ -70,7 +70,10 @@ pub struct DefaultCandidateProvider {
 
 impl DefaultCandidateProvider {
     pub fn new(store: Arc<Store>, project_root: Option<PathBuf>) -> Self {
-        Self { store, project_root }
+        Self {
+            store,
+            project_root,
+        }
     }
 }
 
@@ -109,7 +112,14 @@ impl DefaultCandidateProvider {
             None => return Ok(Vec::new()),
         };
         let output = std::process::Command::new("rg")
-            .args(["--files-with-matches", "--no-heading", "--word-regexp", "--fixed-strings", "--max-count=1", name])
+            .args([
+                "--files-with-matches",
+                "--no-heading",
+                "--word-regexp",
+                "--fixed-strings",
+                "--max-count=1",
+                name,
+            ])
             .current_dir(&project_root)
             .output();
         let output = match output {
@@ -117,9 +127,14 @@ impl DefaultCandidateProvider {
             _ => return Ok(Vec::new()),
         };
         let mut file_ids = Vec::new();
-        for line in String::from_utf8_lossy(&output.stdout).lines().take(MAX_CANDIDATE_FILES) {
+        for line in String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .take(MAX_CANDIDATE_FILES)
+        {
             let line = line.trim();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
             file_ids.push(FileId::generate(line));
         }
         Ok(file_ids)
@@ -152,7 +167,11 @@ impl LazyStructuralService {
     /// Create a service with the default candidate provider.
     pub fn new(store: Arc<Store>, project_root: Option<PathBuf>) -> Self {
         let provider = DefaultCandidateProvider::new(store.clone(), project_root.clone());
-        Self { store, project_root, candidate_provider: Box::new(provider) }
+        Self {
+            store,
+            project_root,
+            candidate_provider: Box::new(provider),
+        }
     }
 
     /// Create a service with a custom candidate provider.
@@ -162,14 +181,22 @@ impl LazyStructuralService {
         project_root: Option<PathBuf>,
         provider: Box<dyn CandidateProvider>,
     ) -> Self {
-        Self { store, project_root, candidate_provider: provider }
+        Self {
+            store,
+            project_root,
+            candidate_provider: provider,
+        }
     }
 
     /// Ensure the file containing `symbol_name` has full structural facts.
     pub fn ensure_structural_for_symbol(&self, name: &str) -> Result<EnsureStructuralResult> {
         let candidates = self.candidate_provider.candidates_for_symbol(name)?;
         if candidates.is_empty() {
-            return Ok(EnsureStructuralResult { files_built: 0, files_cached: 0, budget_exceeded: false });
+            return Ok(EnsureStructuralResult {
+                files_built: 0,
+                files_cached: 0,
+                budget_exceeded: false,
+            });
         }
         self.ensure_structural_for_files(&candidates)
     }
@@ -179,6 +206,19 @@ impl LazyStructuralService {
         self.ensure_structural_for_files(&[*file_id])
     }
 
+    /// Ensure a bounded set of files has structural facts.
+    ///
+    /// Query frontends use this when the user has narrowed work to a specific
+    /// directory. The service still applies its wall-clock budget and cache
+    /// checks, so callers can safely pass the files in scope up to their own
+    /// policy limit.
+    pub fn ensure_structural_for_file_ids(
+        &self,
+        file_ids: &[FileId],
+    ) -> Result<EnsureStructuralResult> {
+        self.ensure_structural_for_files(file_ids)
+    }
+
     /// Check whether a file already has a complete structural layer.
     pub fn has_structural_layer(&self, file_id: &FileId) -> Result<bool> {
         let file = self.store.get_file(file_id)?;
@@ -186,7 +226,9 @@ impl LazyStructuralService {
         let Some(current_hash) = current_hash else {
             return Ok(false);
         };
-        let layer = self.store.get_file_index_layer(file_id, layer::STRUCTURAL)?;
+        let layer = self
+            .store
+            .get_file_index_layer(file_id, layer::STRUCTURAL)?;
         Ok(layer.map_or(false, |(s, hash)| {
             s == status::COMPLETE && hash == *current_hash
         }))
@@ -196,7 +238,11 @@ impl LazyStructuralService {
 
     fn ensure_structural_for_files(&self, file_ids: &[FileId]) -> Result<EnsureStructuralResult> {
         let start = std::time::Instant::now();
-        let mut result = EnsureStructuralResult { files_built: 0, files_cached: 0, budget_exceeded: false };
+        let mut result = EnsureStructuralResult {
+            files_built: 0,
+            files_cached: 0,
+            budget_exceeded: false,
+        };
         let mut built_file_ids: Vec<FileId> = Vec::new();
 
         for file_id in file_ids {
@@ -236,29 +282,39 @@ impl LazyStructuralService {
     /// read-only mode; the actual write happens through the store's internal
     /// write path which does not acquire the project-level FileLock.
     fn reindex_file_structural(&self, file_id: &FileId) -> Result<()> {
-        let file_info = self.store.get_file(file_id)?
+        let file_info = self
+            .store
+            .get_file(file_id)?
             .ok_or_else(|| anyhow::anyhow!("file not found: {:?}", file_id))?;
-        let frontend = create_frontend(file_info.language)
-            .ok_or_else(|| anyhow::anyhow!("frontend not available for {:?}", file_info.language))?;
+        let frontend = create_frontend(file_info.language).ok_or_else(|| {
+            anyhow::anyhow!("frontend not available for {:?}", file_info.language)
+        })?;
         let resolved_path = self.resolve_file_path(&file_info.path);
         let source = std::fs::read_to_string(&resolved_path)
             .with_context(|| format!("failed to read {}", resolved_path.display()))?;
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
 
         // Clean stale facts
-        self.store.invalidate_references_to_symbols_in_file(file_id)?;
+        self.store
+            .invalidate_references_to_symbols_in_file(file_id)?;
         self.store.delete_edges_for_file_references(file_id)?;
         self.store.delete_file_data(file_id)?;
 
         let facts = extract_file_with_mode(
-            &frontend, *file_id, &resolved_path, &source, &content_hash,
+            &frontend,
+            *file_id,
+            std::path::Path::new(&file_info.path),
+            &source,
+            &content_hash,
             ExtractionMode::Structural,
         )?;
         self.store.insert_file_facts(&facts)?;
 
         tracing::info!(
             "Lazy structural: {} ({} symbols, {} refs)",
-            file_info.path, facts.symbol_count(), facts.reference_count()
+            file_info.path,
+            facts.symbol_count(),
+            facts.reference_count()
         );
         Ok(())
     }

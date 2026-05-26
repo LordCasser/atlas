@@ -223,7 +223,10 @@ impl LexicalBindingSpec for PhpAdapter {
         include_str!("../../queries/php/lexical.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::supported_with_limitations(0.50, vec!["name-based binding (no proper shadowing)"])
+        FeatureSupport::supported_with_limitations(
+            0.50,
+            vec!["name-based binding (no proper shadowing)"],
+        )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
         normalize_php_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
@@ -387,7 +390,6 @@ fn php_extract_signature(
     }
 }
 
-
 // ── Lexical binding normalize ──────────────────────────────────────────
 
 fn php_binding_kind(capture_name: &str) -> Option<BindingKind> {
@@ -399,13 +401,27 @@ fn php_binding_kind(capture_name: &str) -> Option<BindingKind> {
     }
 }
 
-fn normalize_php_lexical(capture_name: &str, node: tree_sitter::Node, source: &str, file_id: FileId) -> Option<BindingDef> {
+fn normalize_php_lexical(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> Option<BindingDef> {
     let kind = php_binding_kind(capture_name)?;
     let name = node_text(node, source)?;
     let range = node_range(node);
     let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
     let id = BindingId::generate(&file_id, &scope_id, kind.as_str(), &name, range.start_byte);
-    Some(BindingDef { id, file_id, function_id: None, scope_id, kind, name, symbol_id: None, range })
+    Some(BindingDef {
+        id,
+        file_id,
+        function_id: None,
+        scope_id,
+        kind,
+        name,
+        symbol_id: None,
+        range,
+    })
 }
 
 // ── Dataflow normalize ─────────────────────────────────────────────────
@@ -413,85 +429,310 @@ fn normalize_php_lexical(capture_name: &str, node: tree_sitter::Node, source: &s
 fn find_call_expression_php(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
     let mut current = node;
     while let Some(parent) = current.parent() {
-        let kinds: &[&str] = &["function_call_expression", "member_call_expression", "object_creation_expression"];
-        if kinds.contains(&parent.kind()) { return Some(parent); }
+        let kinds: &[&str] = &[
+            "function_call_expression",
+            "member_call_expression",
+            "object_creation_expression",
+        ];
+        if kinds.contains(&parent.kind()) {
+            return Some(parent);
+        }
         current = parent;
     }
     None
 }
 
-fn normalize_php_dataflow_builder(capture_name: &str, node: tree_sitter::Node, source: &str, file_id: FileId) -> (Option<DataNode>, Option<DataFlowEdge>) {
+fn normalize_php_dataflow_builder(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> (Option<DataNode>, Option<DataFlowEdge>) {
     use types::ids::DataNodeId;
     let range = node_range(node);
     match capture_name {
-        "df.parameter" => node_text(node, source).map(|name| {
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "parameter", Some(&name), Some(&name), range.start_byte);
-            (Some(DataNode::parameter(node_id, file_id, None, None, &name, range)), None)
-        }).unwrap_or((None, None)),
-        "df.assign_target" => node_text(node, source).map(|name| {
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "local", Some(&name), Some(&name), range.start_byte);
-            (Some(DataNode::local(node_id, file_id, None, None, &name, range)), None)
-        }).unwrap_or((None, None)),
+        "df.parameter" => node_text(node, source)
+            .map(|name| {
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "parameter",
+                    Some(&name),
+                    Some(&name),
+                    range.start_byte,
+                );
+                (
+                    Some(DataNode::parameter(
+                        node_id, file_id, None, None, &name, range,
+                    )),
+                    None,
+                )
+            })
+            .unwrap_or((None, None)),
+        "df.assign_target" => node_text(node, source)
+            .map(|name| {
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "local",
+                    Some(&name),
+                    Some(&name),
+                    range.start_byte,
+                );
+                (
+                    Some(DataNode::local(node_id, file_id, None, None, &name, range)),
+                    None,
+                )
+            })
+            .unwrap_or((None, None)),
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_php(node).map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "expr", Some(&text), None, range.start_byte);
-            (Some(DataNode { id: node_id, file_id, function_id: None, kind: DataNodeKind::Expr, binding_id: None, callsite_id, name: Some(text), access_path: None, arg_index: None, range }), None)
-        },
+            let callsite_id = find_call_expression_php(node)
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "expr",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            (
+                Some(DataNode {
+                    id: node_id,
+                    file_id,
+                    function_id: None,
+                    kind: DataNodeKind::Expr,
+                    binding_id: None,
+                    callsite_id,
+                    name: Some(text),
+                    access_path: None,
+                    arg_index: None,
+                    range,
+                }),
+                None,
+            )
+        }
         "df.return_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "return", Some(&text), None, range.start_byte);
-            (Some(DataNode { id: node_id, file_id, function_id: None, kind: DataNodeKind::Return, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range }), None)
-        },
-        "df.call_target" => node_text(node, source).map(|name| {
-            let access_path = name.clone();
-            let callsite_id = find_call_expression_php(node).map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "call_target", Some(&name), Some(&access_path), range.start_byte);
-            (Some(DataNode::call_target(node_id, file_id, None, callsite_id, &name, &access_path, range)), None)
-        }).unwrap_or((None, None)),
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "return",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            (
+                Some(DataNode {
+                    id: node_id,
+                    file_id,
+                    function_id: None,
+                    kind: DataNodeKind::Return,
+                    binding_id: None,
+                    callsite_id: None,
+                    name: Some(text),
+                    access_path: None,
+                    arg_index: None,
+                    range,
+                }),
+                None,
+            )
+        }
+        "df.call_target" => node_text(node, source)
+            .map(|name| {
+                let access_path = name.clone();
+                let callsite_id = find_call_expression_php(node).map(|ce| {
+                    types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+                });
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "call_target",
+                    Some(&name),
+                    Some(&access_path),
+                    range.start_byte,
+                );
+                (
+                    Some(DataNode::call_target(
+                        node_id,
+                        file_id,
+                        None,
+                        callsite_id,
+                        &name,
+                        &access_path,
+                        range,
+                    )),
+                    None,
+                )
+            })
+            .unwrap_or((None, None)),
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_php(node).map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "call_arg", Some(&text), None, range.start_byte);
-            (Some(DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range)), None)
-        },
-        "df.field_name" => node_text(node, source).map(|name| {
-            let access_path = node.parent()
-                .filter(|p| p.kind() == "member_access_expression" || p.kind() == "subscript_expression")
-                .and_then(|p| node_text(p, source))
-                .unwrap_or_else(|| name.clone());
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "field", Some(&name), Some(&access_path), range.start_byte);
-            (Some(DataNode::field(node_id, file_id, None, &name, &access_path, range)), None)
-        }).unwrap_or((None, None)),
+            let callsite_id = find_call_expression_php(node)
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "call_arg",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            (
+                Some(DataNode::call_arg(
+                    node_id,
+                    file_id,
+                    None,
+                    callsite_id,
+                    Some(&text),
+                    range,
+                )),
+                None,
+            )
+        }
+        "df.field_name" => node_text(node, source)
+            .map(|name| {
+                let access_path = node
+                    .parent()
+                    .filter(|p| {
+                        p.kind() == "member_access_expression" || p.kind() == "subscript_expression"
+                    })
+                    .and_then(|p| node_text(p, source))
+                    .unwrap_or_else(|| name.clone());
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "field",
+                    Some(&name),
+                    Some(&access_path),
+                    range.start_byte,
+                );
+                (
+                    Some(DataNode::field(
+                        node_id,
+                        file_id,
+                        None,
+                        &name,
+                        &access_path,
+                        range,
+                    )),
+                    None,
+                )
+            })
+            .unwrap_or((None, None)),
         "df.receiver" | "df.literal" => {
             let text = node_text(node, source).unwrap_or_default();
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, if capture_name == "df.literal" { "literal" } else { "receiver" }, Some(&text), None, range.start_byte);
-            (Some(DataNode { id: node_id, file_id, function_id: None, kind: if capture_name == "df.literal" { DataNodeKind::Literal } else { DataNodeKind::Receiver }, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range }), None)
-        },
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                if capture_name == "df.literal" {
+                    "literal"
+                } else {
+                    "receiver"
+                },
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            (
+                Some(DataNode {
+                    id: node_id,
+                    file_id,
+                    function_id: None,
+                    kind: if capture_name == "df.literal" {
+                        DataNodeKind::Literal
+                    } else {
+                        DataNodeKind::Receiver
+                    },
+                    binding_id: None,
+                    callsite_id: None,
+                    name: Some(text),
+                    access_path: None,
+                    arg_index: None,
+                    range,
+                }),
+                None,
+            )
+        }
         // ── PHP dataflow additions (§2.11) ────────────────────────
         "df.index" => {
             // Index expression in $arr[$key] → Expr DataNode
             let text = node_text(node, source).unwrap_or_default();
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "expr", Some(&text), None, range.start_byte);
-            (Some(DataNode { id: node_id, file_id, function_id: None, kind: DataNodeKind::Expr, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range }), None)
-        },
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "expr",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            (
+                Some(DataNode {
+                    id: node_id,
+                    file_id,
+                    function_id: None,
+                    kind: DataNodeKind::Expr,
+                    binding_id: None,
+                    callsite_id: None,
+                    name: Some(text),
+                    access_path: None,
+                    arg_index: None,
+                    range,
+                }),
+                None,
+            )
+        }
         "df.assign_field_target" => {
             // Array assignment LHS: $arr[$key] = value → Field DataNode
             let text = node_text(node, source).unwrap_or_default();
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "field", Some(&text), Some(&text), range.start_byte);
-            (Some(DataNode::field(node_id, file_id, None, &text, &text, range)), None)
-        },
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "field",
+                Some(&text),
+                Some(&text),
+                range.start_byte,
+            );
+            (
+                Some(DataNode::field(node_id, file_id, None, &text, &text, range)),
+                None,
+            )
+        }
         "df.superglobal" => {
             // $_GET, $_POST, etc. → Global DataNode
-            node_text(node, source).map(|name| {
-                if name.starts_with("$_") {
-                    let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "global", Some(&name), Some(&name), range.start_byte);
-                    (Some(DataNode { id: node_id, file_id, function_id: None, kind: DataNodeKind::Global, binding_id: None, callsite_id: None, name: Some(name), access_path: None, arg_index: None, range }), None)
-                } else {
-                    (None, None)
-                }
-            }).unwrap_or((None, None))
-        },
+            node_text(node, source)
+                .map(|name| {
+                    if name.starts_with("$_") {
+                        let node_id = DataNodeId::generate(
+                            &file_id,
+                            None::<&SymbolId>,
+                            "global",
+                            Some(&name),
+                            Some(&name),
+                            range.start_byte,
+                        );
+                        (
+                            Some(DataNode {
+                                id: node_id,
+                                file_id,
+                                function_id: None,
+                                kind: DataNodeKind::Global,
+                                binding_id: None,
+                                callsite_id: None,
+                                name: Some(name),
+                                access_path: None,
+                                arg_index: None,
+                                range,
+                            }),
+                            None,
+                        )
+                    } else {
+                        (None, None)
+                    }
+                })
+                .unwrap_or((None, None))
+        }
         "df.identifier_use" => {
             // Filter out declaration contexts and superglobals
             if crate::languages::shared::is_identifier_decl_or_property(
@@ -503,7 +744,10 @@ fn normalize_php_dataflow_builder(capture_name: &str, node: tree_sitter::Node, s
             // Skip left-hand side of assignment (already captured as df.assign_target)
             if let Some(parent) = node.parent() {
                 if parent.kind() == "assignment_expression" {
-                    if parent.child_by_field_name("left").map_or(false, |n| n.id() == node.id()) {
+                    if parent
+                        .child_by_field_name("left")
+                        .map_or(false, |n| n.id() == node.id())
+                    {
                         return (None, None);
                     }
                 }
@@ -514,15 +758,24 @@ fn normalize_php_dataflow_builder(capture_name: &str, node: tree_sitter::Node, s
                 return (None, None);
             }
             let node_id = DataNodeId::generate(
-                &file_id, None::<&SymbolId>, "identifier_use",
-                Some(&text), Some(&text), range.start_byte,
+                &file_id,
+                None::<&SymbolId>,
+                "identifier_use",
+                Some(&text),
+                Some(&text),
+                range.start_byte,
             );
             let dn = DataNode {
-                id: node_id, file_id, function_id: None,
+                id: node_id,
+                file_id,
+                function_id: None,
                 kind: DataNodeKind::VariableUse,
-                binding_id: None, callsite_id: None,
-                name: Some(text.clone()), access_path: Some(text),
-                arg_index: None, range,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text.clone()),
+                access_path: Some(text),
+                arg_index: None,
+                range,
             };
             (Some(dn), None)
         }
@@ -614,7 +867,8 @@ function f($req) {
         let tree = parser.parse(source, None).unwrap();
         let root = tree.root_node();
 
-        let query = tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
+        let query =
+            tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
         let mut cursor = tree_sitter::QueryCursor::new();
         let file_id = FileId::generate("test.php");
         let ctx = NormalizeCtx {
@@ -636,7 +890,13 @@ function f($req) {
         while let Some((m, idx)) = captures.next() {
             let cap = m.captures[*idx];
             let name = query.capture_names()[cap.index as usize].to_string();
-            let (dn, _de) = frontend.dataflow.normalize(ctx, Capture { name, node: cap.node });
+            let (dn, _de) = frontend.dataflow.normalize(
+                ctx,
+                Capture {
+                    name,
+                    node: cap.node,
+                },
+            );
             if let Some(dn) = dn {
                 match dn.kind {
                     DataNodeKind::Global => has_global = true,
@@ -651,11 +911,17 @@ function f($req) {
             }
         }
         assert!(has_global, "should have Global DataNode for $_GET");
-        assert!(has_receiver, "should have Receiver DataNode for $_GET in $_GET['name']");
+        assert!(
+            has_receiver,
+            "should have Receiver DataNode for $_GET in $_GET['name']"
+        );
         assert!(has_expr, "should have Expr DataNode for array index");
         assert!(has_parameter, "should have Parameter DataNode for $req");
         assert!(has_return, "should have Return DataNode");
         assert!(has_local, "should have Local DataNode for $name/$clean");
-        assert!(has_call_target, "should have CallTarget DataNode for sanitize");
+        assert!(
+            has_call_target,
+            "should have CallTarget DataNode for sanitize"
+        );
     }
 }

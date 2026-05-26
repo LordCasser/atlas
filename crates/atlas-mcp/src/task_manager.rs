@@ -96,8 +96,8 @@ impl TaskManager {
     /// Update task progress.
     ///
     /// Progress is clamped to 0..=100 and throttled to at least 5 percentage
-    /// points between stored updates, except the initial and final (100%)
-    /// updates which are always recorded.
+    /// points between stored updates, except the initial queued state and final
+    /// (100%) updates which are always recorded.
     pub fn update_progress(&self, task_id: &str, percent: f64, message: &str) {
         if !percent.is_finite() {
             return;
@@ -107,6 +107,7 @@ impl TaskManager {
         if let Some(info) = self.inner.lock().unwrap().tasks.get_mut(task_id) {
             let should_update = match info.progress {
                 None => true,
+                Some(prev) if prev == 0.0 => true,
                 Some(_) if percent >= 100.0 => true,
                 Some(prev) => (percent - prev).abs() >= PROGRESS_UPDATE_THRESHOLD,
             };
@@ -166,8 +167,8 @@ fn new_task_info(task_id: &str, tool_name: &str, method: &str) -> TaskInfo {
         tool_name: tool_name.to_string(),
         method: method.to_string(),
         status: TaskStatus::Running,
-        progress: None,
-        progress_message: None,
+        progress: Some(0.0),
+        progress_message: Some("queued".to_string()),
         result: None,
         error: None,
         created_at: Instant::now(),
@@ -236,6 +237,8 @@ mod tests {
     fn progress_updates_are_clamped_and_throttled() {
         let tm = TaskManager::new();
         let task_id = tm.create_task("search", "search");
+
+        assert_eq!(tm.get_task(&task_id).unwrap().progress, Some(0.0));
 
         tm.update_progress(&task_id, 1.0, "first");
         tm.update_progress(&task_id, 3.0, "below threshold");

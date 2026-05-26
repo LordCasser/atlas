@@ -12,15 +12,15 @@
 //! Run with default features:  `cargo test --test trace_e2e`
 //! Run with all languages:    `cargo test --test trace_e2e --features all-languages`
 
-use atlas_engine::trace::virtual_edges::TraceEdgeProvider;
-use atlas_engine::trace::{CallerPathExplorer, Locator, Slicer, TraceEngine};
-use atlas_engine::Store;
-use atlas_engine::extract_file;
 use atlas_engine::GraphBuilder;
-use atlas_engine::{ReferenceResolver, ResolutionStats};
+use atlas_engine::Store;
 use atlas_engine::create_frontend;
 use atlas_engine::enums::{DataFlowKind, DataNodeKind, Language};
+use atlas_engine::extract_file;
 use atlas_engine::ids::FileId;
+use atlas_engine::trace::virtual_edges::TraceEdgeProvider;
+use atlas_engine::trace::{CallerPathExplorer, Locator, Slicer, TraceEngine};
+use atlas_engine::{ReferenceResolver, ResolutionStats};
 use serde_json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1211,22 +1211,45 @@ fun process(name: String): String {
 }
 "#;
     let frontend = create_frontend(Language::Kotlin).unwrap();
-    let facts = extract_file(&frontend, file_id, Path::new("provenance.kt"), source, "h").expect("extract");
+    let facts =
+        extract_file(&frontend, file_id, Path::new("provenance.kt"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
 
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "Kotlin should have Parameter");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "Kotlin should have Local");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "Kotlin should have CallTarget");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallArg), "Kotlin should have CallArg");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "Kotlin should have Return");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "Kotlin should have Parameter"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "Kotlin should have Local"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget),
+        "Kotlin should have CallTarget"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::CallArg),
+        "Kotlin should have CallArg"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Return),
+        "Kotlin should have Return"
+    );
 
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     let kinds: Vec<_> = edges.iter().map(|e| e.kind).collect();
     assert!(!edges.is_empty(), "Kotlin should produce dataflow edges");
-    assert!(kinds.iter().any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ArgToCall)),
-        "Kotlin should produce Assign or ArgToCall, got: {:?}", kinds);
+    assert!(
+        kinds
+            .iter()
+            .any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ArgToCall)),
+        "Kotlin should produce Assign or ArgToCall, got: {:?}",
+        kinds
+    );
 }
 
 /// PHP: provenance path — superglobal → field → local → call → return.
@@ -1250,23 +1273,50 @@ function process($req) {
 }
 "#;
     let frontend = create_frontend(Language::Php).unwrap();
-    let facts = extract_file(&frontend, file_id, Path::new("provenance.php"), source, "h").expect("extract");
+    let facts = extract_file(&frontend, file_id, Path::new("provenance.php"), source, "h")
+        .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
 
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "PHP should have Parameter");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Global), "PHP should have Global _GET");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Field), "PHP should have Field for _GET['name']");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "PHP should have Local");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "PHP should have CallTarget");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "PHP should have Return");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "PHP should have Parameter"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Global),
+        "PHP should have Global _GET"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Field),
+        "PHP should have Field for _GET['name']"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "PHP should have Local"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget),
+        "PHP should have CallTarget"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Return),
+        "PHP should have Return"
+    );
 
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     let kinds: Vec<_> = edges.iter().map(|e| e.kind).collect();
     assert!(!edges.is_empty(), "PHP should produce dataflow edges");
-    assert!(kinds.iter().any(|k| matches!(k, DataFlowKind::FieldLoad | DataFlowKind::Assign | DataFlowKind::ArgToCall)),
-        "PHP should produce FieldLoad/Assign/ArgToCall, got: {:?}", kinds);
+    assert!(
+        kinds.iter().any(|k| matches!(
+            k,
+            DataFlowKind::FieldLoad | DataFlowKind::Assign | DataFlowKind::ArgToCall
+        )),
+        "PHP should produce FieldLoad/Assign/ArgToCall, got: {:?}",
+        kinds
+    );
 }
 
 /// Ruby: provenance path — param → hash access → local → call → implicit return.
@@ -1290,24 +1340,58 @@ end
     let file_id = FileId::generate("provenance.rb");
 
     let nodes = store.find_data_nodes_by_file(&file_id).unwrap();
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "Ruby should have Parameter");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "Ruby should have Local");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "Ruby should have implicit Return");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "Ruby should have Parameter"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "Ruby should have Local"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Return),
+        "Ruby should have implicit Return"
+    );
 
-    let clean_node = nodes.iter()
+    let clean_node = nodes
+        .iter()
         .find(|n| n.name.as_deref() == Some("clean") && n.kind == DataNodeKind::Local)
         .expect("data node 'clean' not found");
-    let (line, col) = mid_point(clean_node.range.start_line, clean_node.range.start_column, clean_node.range.end_line, clean_node.range.end_column);
+    let (line, col) = mid_point(
+        clean_node.range.start_line,
+        clean_node.range.start_column,
+        clean_node.range.end_line,
+        clean_node.range.end_column,
+    );
 
     let engine = TraceEngine::new(store);
     let resp = engine.trace_variable(&file_id, line, col, 20);
     assert!(resp.ok);
-    let path = resp.result.as_ref().expect("Ruby trace should produce a result");
+    let path = resp
+        .result
+        .as_ref()
+        .expect("Ruby trace should produce a result");
     let kinds: Vec<DataFlowKind> = path.steps.iter().map(|s| s.edge_kind).collect();
-    assert!(path.steps.len() >= 1, "Ruby path should have steps, got {}: {:?}", path.steps.len(), kinds);
-    assert!(kinds.iter().any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ArgToCall | DataFlowKind::ArgToParam | DataFlowKind::ReturnValue)),
-        "Ruby path should have Assign/ArgToCall/ReturnValue, got: {:?}", kinds);
-    for step in &path.steps { assert!(step.evidence.is_some()); }
+    assert!(
+        path.steps.len() >= 1,
+        "Ruby path should have steps, got {}: {:?}",
+        path.steps.len(),
+        kinds
+    );
+    assert!(
+        kinds.iter().any(|k| matches!(
+            k,
+            DataFlowKind::Assign
+                | DataFlowKind::ArgToCall
+                | DataFlowKind::ArgToParam
+                | DataFlowKind::ReturnValue
+        )),
+        "Ruby path should have Assign/ArgToCall/ReturnValue, got: {:?}",
+        kinds
+    );
+    for step in &path.steps {
+        assert!(step.evidence.is_some());
+    }
     assert!(path.confidence > 0.0);
 }
 
@@ -1489,13 +1573,19 @@ fn p5_ts_param_slice_caller_evidence_combined() {
         .expect("capability profile must exist");
     assert_eq!(cap.language, "typescript");
     assert!(
-        cap.capability_level
-            >= atlas_engine::capability::CapabilityLevel::DataflowBasic,
+        cap.capability_level >= atlas_engine::capability::CapabilityLevel::DataflowBasic,
         "TS must have at least DataflowBasic capability"
     );
     // ── Envelope fields validation (via JSON) ──
     let ts_json = serde_json::to_value(&resp).expect("serialize trace response");
-    let required = ["ok", "kind", "capability", "partial_result", "diagnostics", "result"];
+    let required = [
+        "ok",
+        "kind",
+        "capability",
+        "partial_result",
+        "diagnostics",
+        "result",
+    ];
     for field in &required {
         assert!(
             ts_json.get(field).is_some(),
@@ -1508,7 +1598,10 @@ fn p5_ts_param_slice_caller_evidence_combined() {
     let path = resp.result.as_ref().expect("trace path should exist");
     assert!(path.confidence > 0.0, "confidence should be positive");
     assert!(path.nodes_visited > 0, "nodes_visited should be > 0");
-    assert!(!path.steps.is_empty(), "trace must have at least one dataflow step");
+    assert!(
+        !path.steps.is_empty(),
+        "trace must have at least one dataflow step"
+    );
 
     // ── Step-level semantic assertions ──
     for (i, step) in path.steps.iter().enumerate() {
@@ -1569,8 +1662,7 @@ fn p5_ts_param_slice_caller_evidence_combined() {
         result_node.id
     );
     assert!(
-        path.sink.data_node.as_ref().and_then(|n| n.name.as_deref())
-            == Some("result"),
+        path.sink.data_node.as_ref().and_then(|n| n.name.as_deref()) == Some("result"),
         "sink name must be 'result'"
     );
     // Source name should be None, a parameter (base/factor), or an expression
@@ -1602,7 +1694,10 @@ fn p5_ts_param_slice_caller_evidence_combined() {
 
     let caller_resp = engine.trace_callers(&compute_sym.id, 10);
     assert!(caller_resp.ok, "trace_callers should succeed");
-    assert!(caller_resp.capability.is_some(), "caller capability must be present");
+    assert!(
+        caller_resp.capability.is_some(),
+        "caller capability must be present"
+    );
 
     let chain = caller_resp
         .result
@@ -1694,7 +1789,10 @@ fn p5_js_param_slice_caller_evidence_combined() {
     let path = resp.result.as_ref().expect("JS trace path should exist");
     assert!(path.confidence > 0.0, "JS confidence should be positive");
     assert!(path.nodes_visited > 0, "JS nodes_visited should be > 0");
-    assert!(!path.steps.is_empty(), "JS trace must have at least one step");
+    assert!(
+        !path.steps.is_empty(),
+        "JS trace must have at least one step"
+    );
 
     for (i, step) in path.steps.iter().enumerate() {
         assert!(
@@ -1733,8 +1831,7 @@ fn p5_js_param_slice_caller_evidence_combined() {
         result_node.id
     );
     assert!(
-        path.sink.data_node.as_ref().and_then(|n| n.name.as_deref())
-            == Some("result"),
+        path.sink.data_node.as_ref().and_then(|n| n.name.as_deref()) == Some("result"),
         "JS sink name must be 'result'"
     );
 
@@ -1865,8 +1962,7 @@ fn p5_py_param_slice_caller_evidence_combined() {
             result_node.id
         );
         assert!(
-            path.sink.data_node.as_ref().and_then(|n| n.name.as_deref())
-                == Some("result"),
+            path.sink.data_node.as_ref().and_then(|n| n.name.as_deref()) == Some("result"),
             "Python sink name must be 'result'"
         );
     } else {
@@ -2313,20 +2409,43 @@ fn sem_f_expression_decomposition_trace_to_parameters() {
 }
 "#;
     let frontend = create_frontend(Language::TypeScript).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("expr_decomp.ts"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("expr_decomp.ts"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
 
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
     assert!(nodes.len() >= 4, "expected >=4 nodes, got {}", nodes.len());
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter && n.name.as_deref() == Some("base")), "param base");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse && n.name.as_deref() == Some("base")), "varuse base");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local scaled");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return");
+    assert!(
+        nodes
+            .iter()
+            .any(|n| n.kind == DataNodeKind::Parameter && n.name.as_deref() == Some("base")),
+        "param base"
+    );
+    assert!(
+        nodes
+            .iter()
+            .any(|n| n.kind == DataNodeKind::VariableUse && n.name.as_deref() == Some("base")),
+        "varuse base"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "local scaled"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Return),
+        "return"
+    );
 
     // Verify at least one VariableUse is connected via binding_id
-    let has_bound_variable_use = nodes.iter().any(|n| {
-        n.kind == DataNodeKind::VariableUse && n.binding_id.is_some()
-    });
+    let has_bound_variable_use = nodes
+        .iter()
+        .any(|n| n.kind == DataNodeKind::VariableUse && n.binding_id.is_some());
     // binding_id may not be set until lexical binder runs; skip strict check
     let _ = has_bound_variable_use;
 }
@@ -2344,15 +2463,31 @@ fn vfy_ts_field_assignment_produces_field_store() {
     let file_id = FileId::generate("field.ts");
     let source = "class C { f: number = 0; set(v: number) { this.f = v; } }";
     let frontend = create_frontend(Language::TypeScript).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("field.ts"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("field.ts"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Field), "should have Field node for this.f");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Field),
+        "should have Field node for this.f"
+    );
     // Verify FieldStore edge: field assignment should produce FieldStore, not just Assign
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     let has_fieldstore = edges.iter().any(|e| e.kind == DataFlowKind::FieldStore);
-    assert!(has_fieldstore, "TS field assignment should produce FieldStore, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(
+        has_fieldstore,
+        "TS field assignment should produce FieldStore, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
 }
 
 /// TS: return value trace reaches parameter through variable.
@@ -2364,13 +2499,32 @@ fn vfy_ts_return_trace_reaches_parameter() {
     let file_id = FileId::generate("ret.ts");
     let source = "function f(x: number): number { const y = x + 1; return y; }";
     let frontend = create_frontend(Language::TypeScript).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("ret.ts"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("ret.ts"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local y");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse x or y");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "param x"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "local y"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Return),
+        "return"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse),
+        "varuse x or y"
+    );
 }
 
 /// Java: method call produces CallTarget and CallArg DataNodes.
@@ -2382,18 +2536,43 @@ fn vfy_java_method_call_produces_call_nodes() {
     let file_id = FileId::generate("Call.java");
     let source = "class C { void bar(int x) { helper(x, 42); } }";
     let frontend = create_frontend(Language::Java).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("Call.java"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("Call.java"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "call target helper");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallArg), "call arg x or 42");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget),
+        "call target helper"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::CallArg),
+        "call arg x or 42"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "param x"
+    );
     // Verify dataflow edges
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
-    assert!(!edges.is_empty(), "Java method call should produce dataflow edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
+    assert!(
+        !edges.is_empty(),
+        "Java method call should produce dataflow edges"
+    );
     let has_argtocall = edges.iter().any(|e| e.kind == DataFlowKind::ArgToCall);
-    assert!(has_argtocall, "Java should produce ArgToCall edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(
+        has_argtocall,
+        "Java should produce ArgToCall edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
 }
 
 /// Java: field access produces Field DataNode.
@@ -2405,16 +2584,35 @@ fn vfy_java_field_access_produces_field_node() {
     let file_id = FileId::generate("Field.java");
     let source = "class C { void bar() { Object o = null; o.field = 1; } }";
     let frontend = create_frontend(Language::Java).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("Field.java"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("Field.java"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Field), "field node");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local o");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Field),
+        "field node"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "local o"
+    );
     // Verify dataflow edges (FieldStore expected for o.field = 1)
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     let has_fieldstore = edges.iter().any(|e| e.kind == DataFlowKind::FieldStore);
-    assert!(has_fieldstore, "Java field assign should produce FieldStore edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(
+        has_fieldstore,
+        "Java field assign should produce FieldStore edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
 }
 
 /// Go: short variable declaration produces Local + edges.
@@ -2426,20 +2624,46 @@ fn vfy_go_short_var_produces_local_and_edges() {
     let file_id = FileId::generate("short.go");
     let source = "package p\nfunc f(x int) int {\n\ty := x + 1\n\treturn y\n}\n";
     let frontend = create_frontend(Language::Go).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("short.go"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("short.go"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local y");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "param x"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "local y"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Return),
+        "return"
+    );
     // Verify dataflow edges (not just DataNodes)
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     assert!(!edges.is_empty(), "Go should produce dataflow edges");
     let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
     let has_return = edges.iter().any(|e| e.kind == DataFlowKind::ReturnValue);
-    assert!(has_assign, "Go short var decl should produce Assign edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
-    assert!(has_return, "Go return should produce ReturnValue edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(
+        has_assign,
+        "Go short var decl should produce Assign edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
+    assert!(
+        has_return,
+        "Go return should produce ReturnValue edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
 }
 
 /// Go: field access produces Field data node with FieldLoad/FieldStore edges.
@@ -2456,19 +2680,36 @@ fn vfy_go_field_access_produces_field_edges() {
     let file_id = FileId::generate("field.go");
     let source = "package p\ntype S struct { F int }\nfunc f(s *S, x int) {\n\ts.F = x\n}\n";
     let frontend = create_frontend(Language::Go).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("field.go"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("field.go"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param s or x");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Field), "field node for s.F");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "param s or x"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Field),
+        "field node for s.F"
+    );
     // Verify FieldStore edge — the query fix now captures selector_expression
     // at the correct range for AST-driven FieldStore edge creation.
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     let has_fieldstore = edges.iter().any(|e| e.kind == DataFlowKind::FieldStore);
-    assert!(has_fieldstore,
+    assert!(
+        has_fieldstore,
         "Go field assignment should produce FieldStore, got: {:?}",
-        edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
 }
 
 /// Python: call args and return produce correct DataNodes.
@@ -2480,20 +2721,49 @@ fn vfy_python_call_and_return_data_nodes() {
     let file_id = FileId::generate("callret.py");
     let source = "def f(x):\n    y = sanitize(x, 42)\n    return y\n";
     let frontend = create_frontend(Language::Python).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("callret.py"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("callret.py"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "calltarget sanitize");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallArg), "callarg x or 42");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return y");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "param x"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget),
+        "calltarget sanitize"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::CallArg),
+        "callarg x or 42"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Return),
+        "return y"
+    );
     // Verify dataflow edges
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     let has_argtocall = edges.iter().any(|e| e.kind == DataFlowKind::ArgToCall);
     let has_return = edges.iter().any(|e| e.kind == DataFlowKind::ReturnValue);
-    assert!(has_argtocall, "Python should produce ArgToCall edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
-    assert!(has_return, "Python should produce ReturnValue edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(
+        has_argtocall,
+        "Python should produce ArgToCall edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
+    assert!(
+        has_return,
+        "Python should produce ReturnValue edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
 }
 
 /// C: pointer field access dataflow.
@@ -2503,24 +2773,54 @@ fn vfy_c_pointer_field_access_dataflow() {
     let store = Arc::new(Store::open_in_memory().unwrap());
     store.init_schema().unwrap();
     let file_id = FileId::generate("ptr.c");
-    let source = "struct S { int field; };\nint f(struct S *p) {\n\tint y = p->field;\n\treturn y;\n}\n";
+    let source =
+        "struct S { int field; };\nint f(struct S *p) {\n\tint y = p->field;\n\treturn y;\n}\n";
     let frontend = create_frontend(Language::C).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("ptr.c"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("ptr.c"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param p");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local y");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "param p"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "local y"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Return),
+        "return"
+    );
     // Verify dataflow edges: C pointer access should produce at least Assign edges.
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
-    assert!(!edges.is_empty(), "C pointer access should produce dataflow edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
+    assert!(
+        !edges.is_empty(),
+        "C pointer access should produce dataflow edges"
+    );
     let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
-    assert!(has_assign, "C should produce Assign edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(
+        has_assign,
+        "C should produce Assign edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
     // When Field nodes exist, also assert FieldLoad
     if nodes.iter().any(|n| n.kind == DataNodeKind::Field) {
         let has_fieldload = edges.iter().any(|e| e.kind == DataFlowKind::FieldLoad);
-        assert!(has_fieldload, "C with Field node should produce FieldLoad edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+        assert!(
+            has_fieldload,
+            "C with Field node should produce FieldLoad edges, got: {:?}",
+            edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+        );
     }
 }
 
@@ -2533,17 +2833,39 @@ fn vfy_rust_let_declaration_dataflow() {
     let file_id = FileId::generate("let.rs");
     let source = "fn f(x: i32) -> i32 {\n    let y = x + 1;\n    y\n}\n";
     let frontend = create_frontend(Language::Rust).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("let.rs"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("let.rs"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local y");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse x");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "param x"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "local y"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse),
+        "varuse x"
+    );
     // Verify dataflow edges (Assign from x+1 to y)
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
-    assert!(has_assign, "Rust let declaration should produce Assign edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(
+        has_assign,
+        "Rust let declaration should produce Assign edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
 }
 
 /// C++: reference binding + constructor call dataflow.
@@ -2555,17 +2877,36 @@ fn vfy_cpp_reference_and_constructor_dataflow() {
     let file_id = FileId::generate("ref.cpp");
     let source = "#include <string>\nvoid f() {\n    int x = 1;\n    int& ref = x;\n    auto p = new std::string(\"hi\");\n}\n";
     let frontend = create_frontend(Language::Cpp).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("ref.cpp"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("ref.cpp"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local x or ref or p");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "local x or ref or p"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse),
+        "varuse"
+    );
     // Verify dataflow edges (Assign from 1 to x etc.)
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     assert!(!edges.is_empty(), "C++ should produce dataflow edges");
     let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
-    assert!(has_assign, "C++ should produce Assign edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(
+        has_assign,
+        "C++ should produce Assign edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
 }
 
 /// C#: local declaration + method invocation dataflow.
@@ -2577,18 +2918,40 @@ fn vfy_csharp_local_decl_and_method_invocation() {
     let file_id = FileId::generate("local.cs");
     let source = "class C { void M() { int x = 1; Helper(x, 42); } }";
     let frontend = create_frontend(Language::CSharp).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("local.cs"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("local.cs"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local x");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "calltarget Helper");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "local x"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget),
+        "calltarget Helper"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse),
+        "varuse"
+    );
     // Verify dataflow edges
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     assert!(!edges.is_empty(), "C# should produce dataflow edges");
     let has_argtocall = edges.iter().any(|e| e.kind == DataFlowKind::ArgToCall);
-    assert!(has_argtocall, "C# should produce ArgToCall edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(
+        has_argtocall,
+        "C# should produce ArgToCall edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
 }
 
 /// C#: field assignment produces FieldStore.
@@ -2600,15 +2963,31 @@ fn vfy_csharp_field_assignment_produces_field_store() {
     let file_id = FileId::generate("field.cs");
     let source = "class C {\n    int F;\n    void M() {\n        int x = 1;\n        this.F = x;\n        Helper(x, 42);\n    }\n}";
     let frontend = create_frontend(Language::CSharp).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("field.cs"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("field.cs"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Field), "field node for this.F");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Field),
+        "field node for this.F"
+    );
     // Verify FieldStore edge: this.F = x should produce FieldStore
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     let has_fieldstore = edges.iter().any(|e| e.kind == DataFlowKind::FieldStore);
-    assert!(has_fieldstore, "C# field assign should produce FieldStore, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(
+        has_fieldstore,
+        "C# field assign should produce FieldStore, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
 }
 
 /// Kotlin: dataflow extraction with real source.
@@ -2620,20 +2999,49 @@ fn vfy_kotlin_var_decl_and_function_call() {
     let file_id = FileId::generate("Data.kt");
     let source = "fun foo(x: Int): Int {\n    val y = bar(x, 42)\n    return y\n}\n";
     let frontend = create_frontend(Language::Kotlin).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("Data.kt"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("Data.kt"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "calltarget bar");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallArg), "callarg x or 42");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "param x"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget),
+        "calltarget bar"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::CallArg),
+        "callarg x or 42"
+    );
     // Verify dataflow edges
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
-    assert!(!edges.is_empty(), "Kotlin should produce dataflow edges (Assign from val y = bar(...) and ArgToCall from bar(x, 42))");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
+    assert!(
+        !edges.is_empty(),
+        "Kotlin should produce dataflow edges (Assign from val y = bar(...) and ArgToCall from bar(x, 42))"
+    );
     let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
     let has_argtocall = edges.iter().any(|e| e.kind == DataFlowKind::ArgToCall);
-    assert!(has_assign, "Kotlin should produce Assign edges (val y = bar(...)), got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
-    assert!(has_argtocall, "Kotlin should produce ArgToCall edges (bar(x, 42)), got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(
+        has_assign,
+        "Kotlin should produce Assign edges (val y = bar(...)), got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
+    assert!(
+        has_argtocall,
+        "Kotlin should produce ArgToCall edges (bar(x, 42)), got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
     for e in &edges {
         assert!(e.confidence > 0.0f64, "edge confidence should be positive");
         assert!(!e.id.as_bytes().is_empty(), "edge id should be non-empty");
@@ -2649,25 +3057,61 @@ fn vfy_php_superglobal_and_function_call() {
     let file_id = FileId::generate("sg.php");
     let source = "<?php\nfunction f($req) {\n    $name = $_GET['name'];\n    $clean = sanitize($name);\n    return $clean;\n}\n";
     let frontend = create_frontend(Language::Php).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("sg.php"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("sg.php"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param req");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "calltarget sanitize");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Global), "global _GET");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "param req"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget),
+        "calltarget sanitize"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse),
+        "varuse"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Global),
+        "global _GET"
+    );
     // Superglobal array access should produce Field node for $_GET['name']
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Field), "field node for $_GET['name']");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Field),
+        "field node for $_GET['name']"
+    );
     // Verify dataflow edges
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     assert!(!edges.is_empty(), "PHP should produce dataflow edges");
     let has_fieldload = edges.iter().any(|e| e.kind == DataFlowKind::FieldLoad);
-    assert!(has_fieldload, "PHP should produce FieldLoad edge (Global → Field), got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(
+        has_fieldload,
+        "PHP should produce FieldLoad edge (Global → Field), got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
     let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
     let has_argtocall = edges.iter().any(|e| e.kind == DataFlowKind::ArgToCall);
-    assert!(has_assign, "PHP should produce Assign edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
-    assert!(has_argtocall, "PHP should produce ArgToCall edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(
+        has_assign,
+        "PHP should produce Assign edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
+    assert!(
+        has_argtocall,
+        "PHP should produce ArgToCall edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
 }
 
 /// Ruby: hash access + implicit return dataflow.
@@ -2679,21 +3123,50 @@ fn vfy_ruby_hash_access_and_return() {
     let file_id = FileId::generate("hash.rb");
     let source = "def f(params)\n  name = params[:name]\n  clean = sanitize(name)\n  clean\nend\n";
     let frontend = create_frontend(Language::Ruby).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("hash.rb"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("hash.rb"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param params");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local name or clean");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "implicit return clean");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "param params"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "local name or clean"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse),
+        "varuse"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Return),
+        "implicit return clean"
+    );
     // Verify dataflow edges
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
     let has_argtocall = edges.iter().any(|e| e.kind == DataFlowKind::ArgToCall);
     let has_return = edges.iter().any(|e| e.kind == DataFlowKind::ReturnValue);
-    assert!(has_assign, "Ruby should produce Assign edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
-    assert!(has_return || has_argtocall, "Ruby should produce ReturnValue or ArgToCall edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(
+        has_assign,
+        "Ruby should produce Assign edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
+    assert!(
+        has_return || has_argtocall,
+        "Ruby should produce ReturnValue or ArgToCall edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
 }
 
 /// ArkTS: basic TS delegate extraction.
@@ -2705,18 +3178,40 @@ fn vfy_arkts_basic_extraction() {
     let file_id = FileId::generate("basic.ets");
     let source = "function hello(name: string): string {\n  return name;\n}\n";
     let frontend = create_frontend(Language::ArkTS).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("basic.ets"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("basic.ets"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param name");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse name");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "param name"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Return),
+        "return"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse),
+        "varuse name"
+    );
     // Verify dataflow edges
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     assert!(!edges.is_empty(), "ArkTS should produce dataflow edges");
     let has_return = edges.iter().any(|e| e.kind == DataFlowKind::ReturnValue);
-    assert!(has_return, "ArkTS return should produce ReturnValue edges, got: {:?}", edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+    assert!(
+        has_return,
+        "ArkTS return should produce ReturnValue edges, got: {:?}",
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -2786,31 +3281,38 @@ function process(req: { body: { name: string } }): string {
     // Must have FieldLoad for req.body.name access
     assert!(
         kinds.contains(&DataFlowKind::FieldLoad),
-        "canonical path should contain FieldLoad for field access, got: {:?}", kinds
+        "canonical path should contain FieldLoad for field access, got: {:?}",
+        kinds
     );
 
     // Must have call edge (ArgToCall intra-proc or ArgToParam inter-proc)
     // for helper(name) call bridging
     assert!(
         kinds.contains(&DataFlowKind::ArgToCall) || kinds.contains(&DataFlowKind::ArgToParam),
-        "canonical path should contain ArgToCall or ArgToParam for function call, got: {:?}", kinds
+        "canonical path should contain ArgToCall or ArgToParam for function call, got: {:?}",
+        kinds
     );
 
     // Must have Assign for local variable assignments
     assert!(
         kinds.contains(&DataFlowKind::Assign),
-        "canonical path should contain Assign for local assignments, got: {:?}", kinds
+        "canonical path should contain Assign for local assignments, got: {:?}",
+        kinds
     );
 
     // Every step should have evidence
     for step in &path.steps {
         assert!(
             step.evidence.is_some(),
-            "step {:?} should have evidence", step.edge_kind
+            "step {:?} should have evidence",
+            step.edge_kind
         );
     }
 
-    assert!(path.confidence > 0.0, "path should have positive confidence");
+    assert!(
+        path.confidence > 0.0,
+        "path should have positive confidence"
+    );
 }
 
 /// Python: canonical provenance path — param → field → local → call → return.
@@ -2870,13 +3372,15 @@ def process(req):
     assert!(
         path.steps.len() >= 2,
         "Python canonical path should have at least 2 steps, got {}: {:?}",
-        path.steps.len(), kinds
+        path.steps.len(),
+        kinds
     );
 
     // Must have Assign for local variable assignments
     assert!(
         kinds.contains(&DataFlowKind::Assign),
-        "Python canonical path should contain Assign, got: {:?}", kinds
+        "Python canonical path should contain Assign, got: {:?}",
+        kinds
     );
 
     // FieldLoad may not appear in the backward trace if the trace traverses
@@ -2886,14 +3390,22 @@ def process(req):
     let has_read = kinds.contains(&DataFlowKind::Read);
     assert!(
         has_fieldload || has_read,
-        "Python canonical path should contain FieldLoad or Read, got: {:?}", kinds
+        "Python canonical path should contain FieldLoad or Read, got: {:?}",
+        kinds
     );
 
     for step in &path.steps {
-        assert!(step.evidence.is_some(), "step {:?} should have evidence", step.edge_kind);
+        assert!(
+            step.evidence.is_some(),
+            "step {:?} should have evidence",
+            step.edge_kind
+        );
     }
 
-    assert!(path.confidence > 0.0, "path should have positive confidence");
+    assert!(
+        path.confidence > 0.0,
+        "path should have positive confidence"
+    );
 }
 
 /// Java: canonical provenance path — param → field → local → call → return.
@@ -2955,26 +3467,36 @@ class Body {
     assert!(
         path.steps.len() >= 2,
         "Java canonical path should have at least 2 steps, got {}: {:?}",
-        path.steps.len(), kinds
+        path.steps.len(),
+        kinds
     );
 
     // Must have FieldLoad for req.body.name chain
     assert!(
         kinds.contains(&DataFlowKind::FieldLoad),
-        "Java canonical path should contain FieldLoad, got: {:?}", kinds
+        "Java canonical path should contain FieldLoad, got: {:?}",
+        kinds
     );
 
     // Must have Assign for local variable assignments
     assert!(
         kinds.contains(&DataFlowKind::Assign),
-        "Java canonical path should contain Assign, got: {:?}", kinds
+        "Java canonical path should contain Assign, got: {:?}",
+        kinds
     );
 
     for step in &path.steps {
-        assert!(step.evidence.is_some(), "step {:?} should have evidence", step.edge_kind);
+        assert!(
+            step.evidence.is_some(),
+            "step {:?} should have evidence",
+            step.edge_kind
+        );
     }
 
-    assert!(path.confidence > 0.0, "path should have positive confidence");
+    assert!(
+        path.confidence > 0.0,
+        "path should have positive confidence"
+    );
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -2998,24 +3520,50 @@ fn vfy_csharp_canonical_provenance_path_call_to_return() {
 }
 "#;
     let frontend = create_frontend(Language::CSharp).unwrap();
-    let facts = extract_file(&frontend, file_id, std::path::Path::new("Provenance.cs"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        std::path::Path::new("Provenance.cs"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
 
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "C# should have Parameter (name)");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "C# should have Local (clean)");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "C# should have CallTarget (Helper)");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallArg), "C# should have CallArg");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "C# should have Return");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "C# should have Parameter (name)"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "C# should have Local (clean)"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget),
+        "C# should have CallTarget (Helper)"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::CallArg),
+        "C# should have CallArg"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Return),
+        "C# should have Return"
+    );
 
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     assert!(!edges.is_empty(), "C# should produce dataflow edges");
     let has_assign = edges.iter().any(|e| e.kind == DataFlowKind::Assign);
     let has_argtocall = edges.iter().any(|e| e.kind == DataFlowKind::ArgToCall);
-    assert!(has_assign || has_argtocall,
+    assert!(
+        has_assign || has_argtocall,
         "C# should produce Assign or ArgToCall edges, got: {:?}",
-        edges.iter().map(|e| e.kind).collect::<Vec<_>>());
+        edges.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
 }
 
 /// Go: canonical provenance path — param → local → call → return.
@@ -3046,8 +3594,10 @@ func process(name string) string {
         .find(|n| n.name.as_deref() == Some("clean") && n.kind == DataNodeKind::Local)
         .expect("data node 'clean' not found");
     let (line, col) = mid_point(
-        clean_node.range.start_line, clean_node.range.start_column,
-        clean_node.range.end_line, clean_node.range.end_column,
+        clean_node.range.start_line,
+        clean_node.range.start_column,
+        clean_node.range.end_line,
+        clean_node.range.end_column,
     );
 
     let engine = TraceEngine::new(store);
@@ -3055,11 +3605,25 @@ func process(name string) string {
     assert!(resp.ok, "trace_variable should succeed");
     let path = resp.result.as_ref().expect("Go should produce a result");
     let kinds: Vec<DataFlowKind> = path.steps.iter().map(|s| s.edge_kind).collect();
-    assert!(path.steps.len() >= 1, "Go path should have steps, got: {:?}", kinds);
-    assert!(kinds.iter().any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ArgToCall | DataFlowKind::ArgToParam)),
-        "Go path should have Assign/ArgToCall/ArgToParam, got: {:?}", kinds);
+    assert!(
+        path.steps.len() >= 1,
+        "Go path should have steps, got: {:?}",
+        kinds
+    );
+    assert!(
+        kinds.iter().any(|k| matches!(
+            k,
+            DataFlowKind::Assign | DataFlowKind::ArgToCall | DataFlowKind::ArgToParam
+        )),
+        "Go path should have Assign/ArgToCall/ArgToParam, got: {:?}",
+        kinds
+    );
     for step in &path.steps {
-        assert!(step.evidence.is_some(), "step {:?} should have evidence", step.edge_kind);
+        assert!(
+            step.evidence.is_some(),
+            "step {:?} should have evidence",
+            step.edge_kind
+        );
     }
     assert!(path.confidence > 0.0);
 }
@@ -3085,17 +3649,28 @@ fn process(name: &str) -> String {
     let file_id = FileId::generate("provenance.rs");
 
     let nodes = store.find_data_nodes_by_file(&file_id).unwrap();
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "Rust should have Parameter");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "Rust should have Local");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "Rust should have Return");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "Rust should have Parameter"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "Rust should have Local"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Return),
+        "Rust should have Return"
+    );
 
     let clean_node = nodes
         .iter()
         .find(|n| n.name.as_deref() == Some("clean") && n.kind == DataNodeKind::Local)
         .expect("data node 'clean' not found");
     let (line, col) = mid_point(
-        clean_node.range.start_line, clean_node.range.start_column,
-        clean_node.range.end_line, clean_node.range.end_column,
+        clean_node.range.start_line,
+        clean_node.range.start_column,
+        clean_node.range.end_line,
+        clean_node.range.end_column,
     );
 
     let engine = TraceEngine::new(store);
@@ -3103,11 +3678,25 @@ fn process(name: &str) -> String {
     assert!(resp.ok, "trace_variable should succeed");
     let path = resp.result.as_ref().expect("Rust should produce a result");
     let kinds: Vec<DataFlowKind> = path.steps.iter().map(|s| s.edge_kind).collect();
-    assert!(path.steps.len() >= 1, "Rust path should have steps, got: {:?}", kinds);
-    assert!(kinds.iter().any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ArgToCall | DataFlowKind::ArgToParam)),
-        "Rust path should have Assign/ArgToCall/ArgToParam, got: {:?}", kinds);
+    assert!(
+        path.steps.len() >= 1,
+        "Rust path should have steps, got: {:?}",
+        kinds
+    );
+    assert!(
+        kinds.iter().any(|k| matches!(
+            k,
+            DataFlowKind::Assign | DataFlowKind::ArgToCall | DataFlowKind::ArgToParam
+        )),
+        "Rust path should have Assign/ArgToCall/ArgToParam, got: {:?}",
+        kinds
+    );
     for step in &path.steps {
-        assert!(step.evidence.is_some(), "step {:?} should have evidence", step.edge_kind);
+        assert!(
+            step.evidence.is_some(),
+            "step {:?} should have evidence",
+            step.edge_kind
+        );
     }
     assert!(path.confidence > 0.0);
 }
@@ -3127,15 +3716,28 @@ fn vfy_rust_match_arm_binding_creates_local_data_node() {
 }
 "#;
     let frontend = create_frontend(Language::Rust).unwrap();
-    let facts = extract_file(&frontend, file_id, Path::new("match.rs"), source, "h").expect("extract");
+    let facts =
+        extract_file(&frontend, file_id, Path::new("match.rs"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
-    assert!(nodes.iter().any(|n| n.name.as_deref() == Some("v") && n.kind == DataNodeKind::Local),
-        "Rust match-arm should create Local DataNode for bound variable v");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "param x"
+    );
+    assert!(
+        nodes
+            .iter()
+            .any(|n| n.name.as_deref() == Some("v") && n.kind == DataNodeKind::Local),
+        "Rust match-arm should create Local DataNode for bound variable v"
+    );
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
-    assert!(!edges.is_empty(), "Rust match should produce dataflow edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
+    assert!(
+        !edges.is_empty(),
+        "Rust match should produce dataflow edges"
+    );
 }
 
 /// Python: destructuring assignment produces Assign to each local.
@@ -3150,19 +3752,36 @@ fn vfy_python_destructuring_produces_assign_to_locals() {
     return a + b
 "#;
     let frontend = create_frontend(Language::Python).unwrap();
-    let facts = extract_file(&frontend, file_id, Path::new("destruct.py"), source, "h").expect("extract");
+    let facts =
+        extract_file(&frontend, file_id, Path::new("destruct.py"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.name.as_deref() == Some("a") && n.kind == DataNodeKind::Local),
-        "Python destructuring should create Local DataNode for a");
-    assert!(nodes.iter().any(|n| n.name.as_deref() == Some("b") && n.kind == DataNodeKind::Local),
-        "Python destructuring should create Local DataNode for b");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "should have CallTarget");
+    assert!(
+        nodes
+            .iter()
+            .any(|n| n.name.as_deref() == Some("a") && n.kind == DataNodeKind::Local),
+        "Python destructuring should create Local DataNode for a"
+    );
+    assert!(
+        nodes
+            .iter()
+            .any(|n| n.name.as_deref() == Some("b") && n.kind == DataNodeKind::Local),
+        "Python destructuring should create Local DataNode for b"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget),
+        "should have CallTarget"
+    );
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     let kinds: Vec<_> = edges.iter().map(|e| e.kind).collect();
-    assert!(kinds.iter().any(|k| *k == DataFlowKind::Assign),
-        "Python destructuring should produce Assign edges, got: {:?}", kinds);
+    assert!(
+        kinds.iter().any(|k| *k == DataFlowKind::Assign),
+        "Python destructuring should produce Assign edges, got: {:?}",
+        kinds
+    );
 }
 
 /// C#: same-class method call — DataNode + Edge verification.
@@ -3181,20 +3800,40 @@ fn vfy_csharp_same_class_method_call_dataflow() {
 }
 "#;
     let frontend = create_frontend(Language::CSharp).unwrap();
-    let facts = extract_file(&frontend, file_id, Path::new("samecls.cs"), source, "h").expect("extract");
+    let facts =
+        extract_file(&frontend, file_id, Path::new("samecls.cs"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local clean");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "calltarget H");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "param"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "local clean"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget),
+        "calltarget H"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Return),
+        "return"
+    );
 
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     let kinds: Vec<_> = edges.iter().map(|e| e.kind).collect();
     assert!(!edges.is_empty(), "C# should produce dataflow edges");
-    assert!(kinds.iter().any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ArgToCall)),
-        "C# should produce Assign/ArgToCall, got: {:?}", kinds);
+    assert!(
+        kinds
+            .iter()
+            .any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ArgToCall)),
+        "C# should produce Assign/ArgToCall, got: {:?}",
+        kinds
+    );
 }
 
 /// C++: basic variable + return dataflow.
@@ -3210,19 +3849,36 @@ fn vfy_cpp_variable_and_return_dataflow() {
 }
 "#;
     let frontend = create_frontend(Language::Cpp).unwrap();
-    let facts = extract_file(&frontend, file_id, Path::new("var.cpp"), source, "h").expect("extract");
+    let facts =
+        extract_file(&frontend, file_id, Path::new("var.cpp"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param n");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local x");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "param n"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "local x"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Return),
+        "return"
+    );
 
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     let kinds: Vec<_> = edges.iter().map(|e| e.kind).collect();
     assert!(!edges.is_empty(), "C++ should produce dataflow edges");
-    assert!(kinds.iter().any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ReturnValue)),
-        "C++ should produce Assign/ReturnValue, got: {:?}", kinds);
+    assert!(
+        kinds
+            .iter()
+            .any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ReturnValue)),
+        "C++ should produce Assign/ReturnValue, got: {:?}",
+        kinds
+    );
 }
 
 /// ArkTS: parameter → return dataflow (not just TS delegate).
@@ -3234,19 +3890,36 @@ fn vfy_arkts_parameter_to_return_dataflow() {
     let file_id = FileId::generate("flow.ets");
     let source = "function process(input: string): string {\n  let x = input;\n  return x;\n}\n";
     let frontend = create_frontend(Language::ArkTS).unwrap();
-    let facts = extract_file(&frontend, file_id, Path::new("flow.ets"), source, "h").expect("extract");
+    let facts =
+        extract_file(&frontend, file_id, Path::new("flow.ets"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param input");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local x");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Return), "return");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "param input"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "local x"
+    );
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Return),
+        "return"
+    );
 
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     let kinds: Vec<_> = edges.iter().map(|e| e.kind).collect();
     assert!(!edges.is_empty(), "ArkTS should produce dataflow edges");
-    assert!(kinds.iter().any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ReturnValue)),
-        "ArkTS should produce Assign or ReturnValue, got: {:?}", kinds);
+    assert!(
+        kinds
+            .iter()
+            .any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ReturnValue)),
+        "ArkTS should produce Assign or ReturnValue, got: {:?}",
+        kinds
+    );
 }
 
 /// Python: for-loop variable captured as Local DataNode.
@@ -3258,15 +3931,24 @@ fn vfy_python_for_loop_variable_creates_local_data_node() {
     let file_id = FileId::generate("forloop.py");
     let source = "def f(items):\n    for x in items:\n        print(x)\n";
     let frontend = create_frontend(Language::Python).unwrap();
-    let facts = extract_file(&frontend, file_id, Path::new("forloop.py"), source, "h").expect("extract");
+    let facts =
+        extract_file(&frontend, file_id, Path::new("forloop.py"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param items");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "param items"
+    );
     // for-loop variable `x` is captured by lexical binding, not by dataflow query;
     // verifying edges exist demonstrates the pipeline works for loop bodies
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
-    assert!(!edges.is_empty(), "Python for-loop should produce dataflow edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
+    assert!(
+        !edges.is_empty(),
+        "Python for-loop should produce dataflow edges"
+    );
 }
 
 /// Java: array access produces Field and index nodes.
@@ -3278,16 +3960,33 @@ fn vfy_java_array_access_produces_data_nodes() {
     let file_id = FileId::generate("ArrayAccess.java");
     let source = "class C { void f(int[] arr, int i, int v) { arr[i] = v; } }";
     let frontend = create_frontend(Language::Java).unwrap();
-    let facts = extract_file(&frontend, file_id, Path::new("ArrayAccess.java"), source, "h").expect("extract");
+    let facts = extract_file(
+        &frontend,
+        file_id,
+        Path::new("ArrayAccess.java"),
+        source,
+        "h",
+    )
+    .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "params");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "params"
+    );
     // Array access and assignment should produce dataflow nodes
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     let kinds: Vec<_> = edges.iter().map(|e| e.kind).collect();
-    assert!(!edges.is_empty(), "Java array access should produce edges, got {} nodes, {} edges: {:?}",
-        nodes.len(), edges.len(), kinds);
+    assert!(
+        !edges.is_empty(),
+        "Java array access should produce edges, got {} nodes, {} edges: {:?}",
+        nodes.len(),
+        edges.len(),
+        kinds
+    );
 }
 
 /// Go: multi-return short variable declaration.
@@ -3299,16 +3998,30 @@ fn vfy_go_multi_return_short_var_declaration() {
     let file_id = FileId::generate("multiret.go");
     let source = "package p\nfunc f() (int, error) { return 0, nil }\nfunc g() { a, err := f(); _ = a; _ = err }\n";
     let frontend = create_frontend(Language::Go).unwrap();
-    let facts = extract_file(&frontend, file_id, Path::new("multiret.go"), source, "h").expect("extract");
+    let facts =
+        extract_file(&frontend, file_id, Path::new("multiret.go"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.name.as_deref() == Some("a") && n.kind == DataNodeKind::Local),
-        "Go multi-return should create Local for a");
-    assert!(nodes.iter().any(|n| n.name.as_deref() == Some("err") && n.kind == DataNodeKind::Local),
-        "Go multi-return should create Local for err");
+    assert!(
+        nodes
+            .iter()
+            .any(|n| n.name.as_deref() == Some("a") && n.kind == DataNodeKind::Local),
+        "Go multi-return should create Local for a"
+    );
+    assert!(
+        nodes
+            .iter()
+            .any(|n| n.name.as_deref() == Some("err") && n.kind == DataNodeKind::Local),
+        "Go multi-return should create Local for err"
+    );
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
-    assert!(!edges.is_empty(), "Go multi-return should produce dataflow edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
+    assert!(
+        !edges.is_empty(),
+        "Go multi-return should produce dataflow edges"
+    );
 }
 
 /// Python: shadowing — inner scope variable independent of outer.
@@ -3318,17 +4031,31 @@ fn vfy_python_shadowing_inner_scope_independent() {
     let store = Arc::new(Store::open_in_memory().unwrap());
     store.init_schema().unwrap();
     let file_id = FileId::generate("shadow.py");
-    let source = "def f():\n    x = 1\n    def g():\n        x = 2\n        return x\n    return x\n";
+    let source =
+        "def f():\n    x = 1\n    def g():\n        x = 2\n        return x\n    return x\n";
     let frontend = create_frontend(Language::Python).unwrap();
-    let facts = extract_file(&frontend, file_id, Path::new("shadow.py"), source, "h").expect("extract");
+    let facts =
+        extract_file(&frontend, file_id, Path::new("shadow.py"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
     // Both outer and inner `x` should create Local DataNodes
-    let locals_named_x: Vec<_> = nodes.iter().filter(|n| n.name.as_deref() == Some("x") && n.kind == DataNodeKind::Local).collect();
-    assert!(locals_named_x.len() >= 2, "Python shadowing should create at least 2 Local nodes for x, got {}", locals_named_x.len());
+    let locals_named_x: Vec<_> = nodes
+        .iter()
+        .filter(|n| n.name.as_deref() == Some("x") && n.kind == DataNodeKind::Local)
+        .collect();
+    assert!(
+        locals_named_x.len() >= 2,
+        "Python shadowing should create at least 2 Local nodes for x, got {}",
+        locals_named_x.len()
+    );
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
-    assert!(!edges.is_empty(), "Python shadowing should produce dataflow edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
+    assert!(
+        !edges.is_empty(),
+        "Python shadowing should produce dataflow edges"
+    );
 }
 
 /// PHP: variable variable and dynamic call produce diagnostic (not crash).
@@ -3344,13 +4071,19 @@ function callHelper($fn, $arg) {
 }
 "#;
     let frontend = create_frontend(Language::Php).unwrap();
-    let facts = extract_file(&frontend, file_id, Path::new("dynamic.php"), source, "h").expect("extract");
+    let facts =
+        extract_file(&frontend, file_id, Path::new("dynamic.php"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "params fn, arg");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "params fn, arg"
+    );
     // Dynamic call $fn($arg) should at minimum not crash extraction
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let _edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let _edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
 }
 
 /// Kotlin: expression-body function produces Return DataNode.
@@ -3362,13 +4095,19 @@ fn vfy_kotlin_expression_body_function() {
     let file_id = FileId::generate("expr.kt");
     let source = "fun double(x: Int): Int = x * 2\n";
     let frontend = create_frontend(Language::Kotlin).unwrap();
-    let facts = extract_file(&frontend, file_id, Path::new("expr.kt"), source, "h").expect("extract");
+    let facts =
+        extract_file(&frontend, file_id, Path::new("expr.kt"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param x");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+        "param x"
+    );
     // Expression body should produce at least some data node
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     // Expression body may not have explicit return capture; edges may be sparse
     let _ = edges;
 }
@@ -3387,13 +4126,24 @@ fn vfy_cpp_reference_binding_dataflow() {
 }
 "#;
     let frontend = create_frontend(Language::Cpp).unwrap();
-    let facts = extract_file(&frontend, file_id, Path::new("refbind.cpp"), source, "h").expect("extract");
+    let facts =
+        extract_file(&frontend, file_id, Path::new("refbind.cpp"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
-    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local x, ref, or y");
+    assert!(
+        nodes.iter().any(|n| n.kind == DataNodeKind::Local),
+        "local x, ref, or y"
+    );
     // Reference binding should produce dataflow edges
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
-    let edges = store.find_dataflow_edges_by_sources(&all_ids).expect("edges");
+    let edges = store
+        .find_dataflow_edges_by_sources(&all_ids)
+        .expect("edges");
     let kinds: Vec<_> = edges.iter().map(|e| e.kind).collect();
-    assert!(!edges.is_empty(), "C++ ref binding should produce edges, got {} nodes: {:?}", nodes.len(), kinds);
+    assert!(
+        !edges.is_empty(),
+        "C++ ref binding should produce edges, got {} nodes: {:?}",
+        nodes.len(),
+        kinds
+    );
 }

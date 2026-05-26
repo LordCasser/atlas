@@ -149,8 +149,7 @@ impl ToolRouter {
     pub fn tool_requires_graph(name: &str) -> bool {
         matches!(
             name,
-            "search"
-                | "symbol"
+            "symbol"
                 | "neighbors"
                 | "callers"
                 | "callees"
@@ -166,14 +165,7 @@ impl ToolRouter {
     ///
     /// Background-capable tools must not perform expensive graph construction in
     /// the foreground before returning their `task_id`.
-    pub fn tool_call_requires_graph(name: &str, arguments: &Value) -> bool {
-        let background = arguments
-            .get("background")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if background && matches!(name, "search") {
-            return false;
-        }
+    pub fn tool_call_requires_graph(name: &str, _arguments: &Value) -> bool {
         Self::tool_requires_graph(name)
     }
 
@@ -215,7 +207,7 @@ impl ToolRouter {
     /// Return a guidance string when the project has not been indexed yet.
     pub(crate) fn index_not_run_guidance(&self) -> &'static str {
         if !self.has_indexed_files() {
-            "\nHint: The project has not been indexed yet. Please run the 'index' tool first (defaults to analysis=\"manifest\", very fast) to build the code index, then retry this query."
+            "\nHint: The project has not been indexed yet. Please run the 'index' tool first (fast manifest indexing) to build the code index, then retry this query."
         } else {
             ""
         }
@@ -437,11 +429,10 @@ pub fn make_all_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "index".into(),
-            description: "Index/re-index the project. Default analysis=\"manifest\" (fast, top-level only). Use background=true + wait_for_task for large projects to avoid blocking. analysis=\"structural\" for callgraph, \"full\" for dataflow. Lazy structural upgrades manifest data on-demand. Parameters: analysis (\"manifest\" default), include/exclude glob patterns, background (default false).".into(),
+            description: "Index/re-index the active project for MCP use. This tool always performs fast manifest indexing (files plus basic symbols/functions); deeper structural parsing happens through scoped search/trace on demand. Use background=true + wait_for_task for very large projects. Parameters: include/exclude glob patterns, background (default false).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
-                    "analysis": { "type": "string", "enum": ["manifest", "structural", "full"], "description": "Analysis depth: \"manifest\" (default, fastest, top-level symbols only), \"structural\" (symbols+callgraph), or \"full\" (slow, complete dataflow/CFG)" },
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns to restrict indexing to specific directories/files (e.g. [\"src/**\"])" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns for directories/files to skip (e.g. [\"**/test/**\", \"**/*.spec.ts\"])" },
                     "background": { "type": "boolean", "description": "Run indexing as a background task (returns task_id for task_status/wait_for_task)" },
@@ -451,17 +442,13 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "open_project".into(),
-            description: "Open and activate a project. For large projects, use background=true + wait_for_task to avoid blocking the MCP connection. Defaults to storage=\"memory\", index=false for fast switching. Parameters: project_path (required), storage (\"memory\" default), index (default false), analysis (\"manifest\" default), include/exclude, scan_files, background.".into(),
+            description: "Open and activate a project only. This tool never indexes. After activation, call index to index the active project, then search with a required scope. Defaults to storage=\"memory\". Parameters: project_path (required), storage, scan_files, background.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "project_path": { "type": "string", "description": "Absolute path to the project directory to open" },
                     "storage": { "type": "string", "enum": ["memory", "persistent"], "description": "Storage mode: \"memory\" (in-memory, zero footprint, default) or \"persistent\" (project/.atlas/atlas.db)" },
-                    "index": { "type": "boolean", "description": "Whether to run the index pipeline after opening (default false)" },
-                    "analysis": { "type": "string", "enum": ["manifest", "structural", "full"], "description": "Analysis depth: prefer \"manifest\" (default, fastest, top-level only). Use \"structural\" only for deep callgraph/symbol queries, \"full\" only for dataflow" },
-                    "include": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns to restrict indexing to specific directories/files" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns for directories/files to skip" },
-                    "scan_files": { "type": "boolean", "description": "Run pre-index file discovery to estimate file_count (default false; can be slow on very large trees)" },
+                    "scan_files": { "type": "boolean", "description": "Run file discovery to estimate file_count without indexing (default false; can be slow on very large trees)" },
                     "background": { "type": "boolean", "description": "Prepare/open in a background task; task_status/wait_for_task activates the completed project" },
                 })),
                 required: Some(vec!["project_path".into()]),
@@ -487,17 +474,17 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "search".into(),
-            description: "Search symbols by name (FTS5 + fuzzy). IMPORTANT: always provide a scope parameter to restrict results to a specific directory (e.g. 'drivers/net', 'src/'). Without scope, results may be overwhelming on large projects. Supports kind filter and background=true for long queries.".into(),
+            description: "Search symbols by name within a required project-relative scope. Small scopes are structurally parsed for precise function search; large scopes stay manifest-level and return a warning to narrow scope. Without scope, the tool returns an error and does not extract or run follow-up parsing. Supports kind filter and background=true.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "query": { "type": "string", "description": "Search query text" },
-                    "scope": { "type": "string", "description": "Directory to restrict search to (strongly recommended, e.g. 'drivers/net', 'src/', 'kernel/'). Use 'files' tool to discover available directories." },
+                    "scope": { "type": "string", "description": "Required project-relative directory or file scope (e.g. 'drivers/net', 'src', 'kernel/sched'). Use 'files' to discover indexed paths." },
                     "kind": { "type": "string", "description": "Optional SymbolKind filter (function, class, ...)" },
                     "limit": { "type": "integer", "description": "Max results (default 20)" },
                     "background": { "type": "boolean", "description": "Run search as background task (returns task_id for task_status polling)" },
                 })),
-                required: Some(vec!["query".into()]),
+                required: Some(vec!["query".into(), "scope".into()]),
             },
         },
         Tool {
@@ -698,7 +685,7 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "task_status".into(),
-            description: "Check the status of a background task started with background=true. Returns task status (running/completed/failed), progress percentage, and result when complete.".into(),
+            description: "Poll the status of a background task. This is the preferred progress path for clients that do not support MCP progress notifications. Returns running/completed/failed, progress percentage, progress_message, and result when complete.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
@@ -709,7 +696,7 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "wait_for_task".into(),
-            description: "Block until a background task completes. Use after any tool that returns background=true and a task_id. For long operations: call index/open_project with background=true, then immediately call wait_for_task with the returned task_id to block until done. Parameters: task_id (required), timeout_secs (default 30, max 300), poll_interval_secs (default 2).".into(),
+            description: "Block until a background task completes or timeout_secs elapses. Prefer task_status polling for clients with short tool-call timeouts. Parameters: task_id (required), timeout_secs (default 30, max 300; 0 means single status check), poll_interval_secs (default 2).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({

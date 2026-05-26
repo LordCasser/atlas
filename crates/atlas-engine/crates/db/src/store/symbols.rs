@@ -1,9 +1,10 @@
 //! Symbol CRUD: insert, search (FTS5, LIKE, exact name), bulk queries.
 
-use types::*;
 use rusqlite::params;
+use types::*;
 
 use super::Store;
+use super::files::{escape_like, normalize_scope};
 use crate::store_fts::sanitize_fts5_query;
 use crate::store_rows::row_to_symbol;
 use crate::store_writers::write_symbols;
@@ -104,6 +105,145 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// FTS5 search restricted to a project-relative directory or file scope.
+    pub fn search_symbols_in_scope_with_limit(
+        &self,
+        query: &str,
+        scope: &str,
+        limit: usize,
+        kind_filter: Option<&SymbolKind>,
+    ) -> anyhow::Result<Vec<SymbolDef>> {
+        let scope = normalize_scope(scope);
+        if scope.is_empty() {
+            return Ok(Vec::new());
+        }
+        let safe_query = sanitize_fts5_query(query);
+        if safe_query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let match_query = format!("{}*", safe_query);
+        let scope_prefix = format!("{}/%", escape_like(&scope));
+        let conn = self.lock_read();
+        let sql = if kind_filter.is_some() {
+            format!(
+                r#"SELECT s.symbol_id, s.file_id, s.kind, s.name, s.qualified_name,
+                          s.symbol_path_json, s.language,
+                          s.range_start_byte, s.range_end_byte, s.range_start_line,
+                          s.range_start_column, s.range_end_line, s.range_end_column,
+                          s.name_start_byte, s.name_end_byte, s.name_start_line,
+                          s.name_start_column, s.name_end_line, s.name_end_column,
+                          s.signature, s.visibility, s.exported, s.static_, s.async_,
+                          s.container_id, s.scope_id, s.package_name, s.namespace_path_json, s.layer
+                   FROM symbols s
+                   JOIN symbols_fts fts ON s.rowid = fts.rowid
+                   JOIN files f ON f.file_id = s.file_id
+                   WHERE symbols_fts MATCH ?1
+                     AND (f.path = ?2 OR f.path LIKE ?3 ESCAPE '\')
+                     AND s.kind = ?4
+                   ORDER BY rank
+                   LIMIT {}"#,
+                limit
+            )
+        } else {
+            format!(
+                r#"SELECT s.symbol_id, s.file_id, s.kind, s.name, s.qualified_name,
+                          s.symbol_path_json, s.language,
+                          s.range_start_byte, s.range_end_byte, s.range_start_line,
+                          s.range_start_column, s.range_end_line, s.range_end_column,
+                          s.name_start_byte, s.name_end_byte, s.name_start_line,
+                          s.name_start_column, s.name_end_line, s.name_end_column,
+                          s.signature, s.visibility, s.exported, s.static_, s.async_,
+                          s.container_id, s.scope_id, s.package_name, s.namespace_path_json, s.layer
+                   FROM symbols s
+                   JOIN symbols_fts fts ON s.rowid = fts.rowid
+                   JOIN files f ON f.file_id = s.file_id
+                   WHERE symbols_fts MATCH ?1
+                     AND (f.path = ?2 OR f.path LIKE ?3 ESCAPE '\')
+                   ORDER BY rank
+                   LIMIT {}"#,
+                limit
+            )
+        };
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = if let Some(kind) = kind_filter {
+            stmt.query_map(
+                params![match_query, scope, scope_prefix, kind.as_str()],
+                row_to_symbol,
+            )?
+        } else {
+            stmt.query_map(params![match_query, scope, scope_prefix], row_to_symbol)?
+        };
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Exact-name symbol lookup restricted to a project-relative directory or file scope.
+    ///
+    /// This is the fastest scoped search path for navigation-style queries such
+    /// as Linux function names. It uses `idx_symbols_name` before falling back
+    /// to broader FTS/LIKE search layers.
+    pub fn find_symbols_by_name_in_scope(
+        &self,
+        name: &str,
+        scope: &str,
+        limit: usize,
+        kind_filter: Option<&SymbolKind>,
+    ) -> anyhow::Result<Vec<SymbolDef>> {
+        let scope = normalize_scope(scope);
+        if scope.is_empty() || name.trim().is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let scope_prefix = format!("{}/%", escape_like(&scope));
+        let conn = self.lock_read();
+        let sql = if kind_filter.is_some() {
+            format!(
+                r#"SELECT s.symbol_id, s.file_id, s.kind, s.name, s.qualified_name,
+                          s.symbol_path_json, s.language,
+                          s.range_start_byte, s.range_end_byte, s.range_start_line,
+                          s.range_start_column, s.range_end_line, s.range_end_column,
+                          s.name_start_byte, s.name_end_byte, s.name_start_line,
+                          s.name_start_column, s.name_end_line, s.name_end_column,
+                          s.signature, s.visibility, s.exported, s.static_, s.async_,
+                          s.container_id, s.scope_id, s.package_name, s.namespace_path_json, s.layer
+                   FROM symbols s
+                   JOIN files f ON f.file_id = s.file_id
+                   WHERE s.name = ?1
+                     AND (f.path = ?2 OR f.path LIKE ?3 ESCAPE '\')
+                     AND s.kind = ?4
+                   ORDER BY s.qualified_name
+                   LIMIT {}"#,
+                limit
+            )
+        } else {
+            format!(
+                r#"SELECT s.symbol_id, s.file_id, s.kind, s.name, s.qualified_name,
+                          s.symbol_path_json, s.language,
+                          s.range_start_byte, s.range_end_byte, s.range_start_line,
+                          s.range_start_column, s.range_end_line, s.range_end_column,
+                          s.name_start_byte, s.name_end_byte, s.name_start_line,
+                          s.name_start_column, s.name_end_line, s.name_end_column,
+                          s.signature, s.visibility, s.exported, s.static_, s.async_,
+                          s.container_id, s.scope_id, s.package_name, s.namespace_path_json, s.layer
+                   FROM symbols s
+                   JOIN files f ON f.file_id = s.file_id
+                   WHERE s.name = ?1
+                     AND (f.path = ?2 OR f.path LIKE ?3 ESCAPE '\')
+                   ORDER BY s.qualified_name
+                   LIMIT {}"#,
+                limit
+            )
+        };
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = if let Some(kind) = kind_filter {
+            stmt.query_map(
+                params![name, scope, scope_prefix, kind.as_str()],
+                row_to_symbol,
+            )?
+        } else {
+            stmt.query_map(params![name, scope, scope_prefix], row_to_symbol)?
+        };
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// LIKE-based name search (fallback when FTS5 returns nothing).
     ///
     /// Optional `kind_filter` is applied at the SQL level so that the
@@ -171,6 +311,91 @@ impl Store {
                 stmt.query_map(params![like_pattern, like_pattern, kind_str], row_to_symbol)?
             }
             (false, false) => stmt.query_map(params![like_pattern, like_pattern], row_to_symbol)?,
+        };
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// LIKE-based symbol search restricted to a project-relative scope.
+    pub fn search_symbols_by_name_like_in_scope(
+        &self,
+        pattern: &str,
+        scope: &str,
+        language: Option<&Language>,
+        limit: usize,
+        kind_filter: Option<&SymbolKind>,
+    ) -> anyhow::Result<Vec<SymbolDef>> {
+        let scope = normalize_scope(scope);
+        if scope.is_empty() {
+            return Ok(Vec::new());
+        }
+        let like_pattern = format!("%{}%", pattern.replace('%', "").replace('_', ""));
+        if like_pattern.len() <= 2 {
+            return Ok(Vec::new());
+        }
+        let scope_prefix = format!("{}/%", escape_like(&scope));
+
+        let mut where_clauses = vec![
+            "(s.name LIKE ?1 OR s.qualified_name LIKE ?2)".to_string(),
+            "(f.path = ?3 OR f.path LIKE ?4 ESCAPE '\\')".to_string(),
+        ];
+        let mut param_idx = 5;
+
+        if language.is_some() {
+            where_clauses.push(format!("s.language = ?{}", param_idx));
+            param_idx += 1;
+        }
+        if kind_filter.is_some() {
+            where_clauses.push(format!("s.kind = ?{}", param_idx));
+        }
+
+        let sql = format!(
+            r#"SELECT s.symbol_id, s.file_id, s.kind, s.name, s.qualified_name,
+                      s.symbol_path_json, s.language,
+                      s.range_start_byte, s.range_end_byte, s.range_start_line,
+                      s.range_start_column, s.range_end_line, s.range_end_column,
+                      s.name_start_byte, s.name_end_byte, s.name_start_line,
+                      s.name_start_column, s.name_end_line, s.name_end_column,
+                      s.signature, s.visibility, s.exported, s.static_, s.async_,
+                      s.container_id, s.scope_id, s.package_name, s.namespace_path_json, s.layer
+               FROM symbols s
+               JOIN files f ON f.file_id = s.file_id
+               WHERE {}
+               LIMIT {}"#,
+            where_clauses.join(" AND "),
+            limit
+        );
+
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(&sql)?;
+        let lang_str = language.map(|l| l.as_str().to_string()).unwrap_or_default();
+        let kind_str = kind_filter
+            .map(|k| k.as_str().to_string())
+            .unwrap_or_default();
+
+        let rows = match (language.is_some(), kind_filter.is_some()) {
+            (true, true) => stmt.query_map(
+                params![
+                    like_pattern,
+                    like_pattern,
+                    scope,
+                    scope_prefix,
+                    lang_str,
+                    kind_str
+                ],
+                row_to_symbol,
+            )?,
+            (true, false) => stmt.query_map(
+                params![like_pattern, like_pattern, scope, scope_prefix, lang_str],
+                row_to_symbol,
+            )?,
+            (false, true) => stmt.query_map(
+                params![like_pattern, like_pattern, scope, scope_prefix, kind_str],
+                row_to_symbol,
+            )?,
+            (false, false) => stmt.query_map(
+                params![like_pattern, like_pattern, scope, scope_prefix],
+                row_to_symbol,
+            )?,
         };
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }

@@ -1,11 +1,11 @@
 //! Lazy dataflow artifact tracking: CRUD for analysis_artifacts table,
 //! plus `replace_dataflow_for_unit` and `update_callsite_arg_data_nodes`.
 
-use types::*;
 use rusqlite::params;
+use types::*;
 
 use super::Store;
-use crate::store_rows::{row_to_artifact, ArtifactRecord};
+use crate::store_rows::{ArtifactRecord, row_to_artifact};
 use crate::store_writers::{
     write_binding_uses, write_bindings, write_cfg_edges, write_cfg_nodes, write_data_nodes,
     write_dataflow_edges,
@@ -267,9 +267,8 @@ impl Store {
         };
 
         let conn = self.lock();
-        let mut cs_stmt = conn.prepare(
-            "SELECT callsite_id, args_json FROM callsites WHERE caller = ?1",
-        )?;
+        let mut cs_stmt =
+            conn.prepare("SELECT callsite_id, args_json FROM callsites WHERE caller = ?1")?;
         let cs_rows: Vec<(CallsiteId, String)> = cs_stmt
             .query_map(params![caller], |row| {
                 Ok((row.get::<_, CallsiteId>(0)?, row.get::<_, String>(1)?))
@@ -278,15 +277,13 @@ impl Store {
             .collect();
 
         for (cs_id, args_json) in cs_rows {
-            let mut args: Vec<ArgumentFact> =
-                serde_json::from_str(&args_json).unwrap_or_default();
+            let mut args: Vec<ArgumentFact> = serde_json::from_str(&args_json).unwrap_or_default();
 
             // Find CallArg data nodes for this callsite
             let arg_nodes: Vec<&DataNode> = data_nodes
                 .iter()
                 .filter(|dn| {
-                    dn.kind == DataNodeKind::CallArg
-                        && dn.callsite_id.as_ref() == Some(&cs_id)
+                    dn.kind == DataNodeKind::CallArg && dn.callsite_id.as_ref() == Some(&cs_id)
                 })
                 .collect();
 
@@ -319,8 +316,8 @@ impl Store {
     /// Get lazy dataflow statistics for status display.
     pub fn get_lazy_stats(&self) -> anyhow::Result<LazyStats> {
         let conn = self.lock_read();
-        let total_artifacts: i64 = conn
-            .query_row("SELECT COUNT(*) FROM analysis_artifacts", [], |r| r.get(0))?;
+        let total_artifacts: i64 =
+            conn.query_row("SELECT COUNT(*) FROM analysis_artifacts", [], |r| r.get(0))?;
         let partial_artifacts: i64 = conn.query_row(
             "SELECT COUNT(*) FROM analysis_artifacts WHERE budget_exceeded = 1",
             [],

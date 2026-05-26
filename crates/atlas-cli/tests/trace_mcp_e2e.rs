@@ -18,13 +18,13 @@
 #![cfg(feature = "mcp")]
 
 use atlas_cli::commands::{index, init};
-use atlas_engine::ids::{FileId, SymbolId};
 use atlas_engine::ContextBuilder;
 use atlas_engine::GraphEngine;
 use atlas_engine::SearchEngine;
 use atlas_engine::Store;
+use atlas_engine::ids::{FileId, SymbolId};
 use atlas_mcp::tools::ToolRouter;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -284,10 +284,12 @@ fn p0_mcp_trace_point_with_file_path_resolves() {
 
     assert!(!is_error, "file_path-based trace_point must succeed");
     assert_envelope_fields(&content_json);
-    assert!(content_json
-        .get("ok")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false));
+    assert!(
+        content_json
+            .get("ok")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    );
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -576,11 +578,7 @@ fn p2_mcp_output_truncation_safety() {
 
     let args = json!({ "file_id": file_id.to_hex(), "line": 1, "column": 10 });
 
-    for tool_name in &[
-        "trace_point",
-        "trace_variable",
-        "trace_caller_path",
-    ] {
+    for tool_name in &["trace_point", "trace_variable", "trace_caller_path"] {
         let tool_args = if *tool_name == "trace_caller_path" {
             let syms = store.find_symbols_by_file(&file_id).expect("find symbols");
             if let Some(sym) = syms.first() {
@@ -1163,7 +1161,11 @@ greet("World");
     let file_id = find_file_id(&store, _tmp.path(), "app.ts");
     let greet_id = find_symbol(&store, &file_id, "greet");
 
-    let (json, is_error) = call_tool(&mut router, "usages", json!({ "symbol": greet_id.to_hex() }));
+    let (json, is_error) = call_tool(
+        &mut router,
+        "usages",
+        json!({ "symbol": greet_id.to_hex() }),
+    );
     assert!(!is_error, "usages should succeed");
     assert!(json.get("usages").is_some(), "should have usages array");
 }
@@ -1206,10 +1208,7 @@ fn mcp_usages_empty_for_unreferenced() {
     let sym_id = find_symbol(&store, &file_id, "unused");
 
     let (json, is_error) = call_tool(&mut router, "usages", json!({ "symbol": sym_id.to_hex() }));
-    assert!(
-        !is_error,
-        "usages should succeed even for unused symbols"
-    );
+    assert!(!is_error, "usages should succeed even for unused symbols");
     let total = json
         .get("total_usages")
         .and_then(|v| v.as_u64())
@@ -1240,7 +1239,10 @@ fn open_project_in_tools_list() {
         .iter()
         .find(|t| t.name == "open_project")
         .expect("open_project tool");
-    let required = tool.input_schema.required.as_ref()
+    let required = tool
+        .input_schema
+        .required
+        .as_ref()
         .expect("open_project must have required params");
     assert!(
         required.iter().any(|r| r == "project_path"),
@@ -1252,10 +1254,6 @@ fn open_project_in_tools_list() {
         .as_ref()
         .expect("open_project must have properties");
     assert!(
-        props.get("include").is_some(),
-        "open_project schema must expose include"
-    );
-    assert!(
         props.get("scan_files").is_some(),
         "open_project schema must expose scan_files"
     );
@@ -1263,14 +1261,21 @@ fn open_project_in_tools_list() {
         props.get("background").is_some(),
         "open_project schema must expose background"
     );
-    let index_prop = props.get("index").expect("index property");
     assert!(
-        index_prop
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .contains("default false"),
-        "open_project.index schema must document default false"
+        props.get("index").is_none(),
+        "open_project must not expose indexing parameters"
+    );
+    assert!(
+        props.get("analysis").is_none(),
+        "open_project must not expose indexing parameters"
+    );
+    assert!(
+        props.get("include").is_none(),
+        "open_project must not expose indexing parameters"
+    );
+    assert!(
+        props.get("exclude").is_none(),
+        "open_project must not expose indexing parameters"
     );
 }
 
@@ -1299,10 +1304,28 @@ fn index_schema_supports_background_and_include() {
         props.get("background").is_some(),
         "index schema must expose background"
     );
-    let analysis = props.get("analysis").expect("analysis property");
     assert!(
-        analysis.get("enum").is_some(),
-        "index analysis schema should constrain valid modes"
+        props.get("analysis").is_none(),
+        "index schema must not expose analysis; MCP index is always manifest"
+    );
+}
+
+#[test]
+fn index_rejects_analysis_parameter() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[("app.ts", "export const x = 1;\n")];
+    let (_tmp, mut router) = build_router(files);
+
+    let (json, is_error) = call_tool(&mut router, "index", json!({ "analysis": "structural" }));
+
+    assert!(is_error, "index must reject analysis parameter");
+    let errors = json["errors"].as_array().expect("errors array");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.as_str().unwrap_or("").contains("analysis")),
+        "error should mention unsupported analysis: {:?}",
+        json
     );
 }
 
@@ -1327,7 +1350,6 @@ fn open_project_background_activates_on_wait_for_task() {
         &json!({
             "project_path": target.path().to_string_lossy(),
             "storage": "memory",
-            "index": false,
             "background": true
         }),
     );
@@ -1373,7 +1395,6 @@ fn index_background_completes_via_wait_for_task() {
     let started = router.call_tool(
         "index",
         &json!({
-            "analysis": "manifest",
             "background": true
         }),
     );
@@ -1382,7 +1403,10 @@ fn index_background_completes_via_wait_for_task() {
         atlas_mcp::protocol::ContentBlock::Text { text } => text,
     };
     let started_json: Value = serde_json::from_str(started_text).expect("index task json");
-    let task_id = started_json["task_id"].as_str().expect("task_id").to_string();
+    let task_id = started_json["task_id"]
+        .as_str()
+        .expect("task_id")
+        .to_string();
 
     let wait = router.call_tool(
         "wait_for_task",
@@ -1411,18 +1435,17 @@ fn open_project_missing_project_path_returns_error() {
     let files = &[("app.ts", "export const x = 1;\n")];
     let (_tmp, mut router) = build_router(files);
 
-    let (json, is_error) = call_tool(
-        &mut router,
-        "open_project",
-        json!({}),
+    let (json, is_error) = call_tool(&mut router, "open_project", json!({}));
+    assert!(
+        is_error,
+        "open_project without project_path must return is_error=true"
     );
-    assert!(is_error, "open_project without project_path must return is_error=true");
 
-    let err_msg = json
-        .get("error")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    assert!(err_msg.contains("project_path"), "error should mention missing project_path");
+    let err_msg = json.get("error").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        err_msg.contains("project_path"),
+        "error should mention missing project_path"
+    );
 }
 
 #[test]
@@ -1436,7 +1459,10 @@ fn open_project_nonexistent_path_returns_error() {
         "open_project",
         json!({ "project_path": "/nonexistent/path/12345" }),
     );
-    assert!(is_error, "open_project with nonexistent path must return is_error=true");
+    assert!(
+        is_error,
+        "open_project with nonexistent path must return is_error=true"
+    );
     assert!(!json["ok"].as_bool().unwrap_or(true), "ok must be false");
 }
 
@@ -1448,7 +1474,11 @@ fn open_project_memory_no_index_switches_project() {
     let tmp = TempDir::new().expect("temp dir");
     let src = tmp.path().join("src");
     std::fs::create_dir_all(&src).unwrap();
-    std::fs::write(src.join("lib.ts"), "export function greet() { return 'hello'; }\n").unwrap();
+    std::fs::write(
+        src.join("lib.ts"),
+        "export function greet() { return 'hello'; }\n",
+    )
+    .unwrap();
 
     // Start router with initial project (dummy)
     let files = &[("dummy.ts", "export const x = 1;\n")];
@@ -1461,10 +1491,13 @@ fn open_project_memory_no_index_switches_project() {
         json!({
             "project_path": tmp.path().to_string_lossy(),
             "storage": "memory",
-            "index": false,
         }),
     );
-    assert!(!is_error, "open_project (memory, index=false) should succeed: {:?}", json);
+    assert!(
+        !is_error,
+        "open_project (memory) should succeed: {:?}",
+        json
+    );
     assert!(json["ok"].as_bool().unwrap_or(false), "ok must be true");
 
     // Status should reflect the new project
@@ -1475,7 +1508,9 @@ fn open_project_memory_no_index_switches_project() {
         "memory",
         "storage should be memory"
     );
-    let active = status_json["project"]["active_project"].as_str().unwrap_or("");
+    let active = status_json["project"]["active_project"]
+        .as_str()
+        .unwrap_or("");
     assert!(
         active.contains(&tmp.path().display().to_string()),
         "active_project should point to new project"
@@ -1483,7 +1518,7 @@ fn open_project_memory_no_index_switches_project() {
 }
 
 #[test]
-fn open_project_memory_with_index_enables_search() {
+fn open_project_then_index_enables_search() {
     let _ = tracing_subscriber::fmt::try_init();
 
     // Create a fresh project with source files
@@ -1493,53 +1528,70 @@ fn open_project_memory_with_index_enables_search() {
     std::fs::write(
         src.join("lib.ts"),
         "export function greet(name: string): string {\n  return `Hello, ${name}`;\n}\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     // Start router with initial dummy project
     let files = &[("dummy.ts", "export const x = 1;\n")];
     let (_tmp_initial, mut router) = build_router(files);
 
-    // Open and index the fresh project
+    // Open the fresh project, then index the active project.
     let (json, is_error) = call_tool(
         &mut router,
         "open_project",
         json!({
             "project_path": tmp.path().to_string_lossy(),
             "storage": "memory",
-            "index": true,
-            "analysis": "structural",
         }),
     );
-    assert!(!is_error, "open_project (memory, index=true) should succeed: {:?}", json);
+    assert!(
+        !is_error,
+        "open_project (memory) should succeed: {:?}",
+        json
+    );
     assert!(json["ok"].as_bool().unwrap_or(false), "ok must be true");
 
+    let (index, index_error) = call_tool(&mut router, "index", json!({}));
+    assert!(!index_error, "index should succeed: {:?}", index);
+
     // Index result should show discovered files
-    let index = &json["index"];
-    assert!(index["files_discovered"].as_u64().unwrap_or(0) >= 1,
-        "should discover at least 1 file, got: {:?}", index);
+    assert!(
+        index["files_discovered"].as_u64().unwrap_or(0) >= 1,
+        "should discover at least 1 file, got: {:?}",
+        index
+    );
 
     // Status should show indexed files
     let (status_json, status_error) = call_tool(&mut router, "status", json!({}));
     assert!(!status_error, "status should succeed");
-    assert!(status_json["summary"]["files"].as_i64().unwrap_or(0) >= 1,
-        "status should show indexed files");
+    assert!(
+        status_json["summary"]["files"].as_i64().unwrap_or(0) >= 1,
+        "status should show indexed files"
+    );
 
     // Search should find the greet function
     let (search_json, search_error) = call_tool(
         &mut router,
         "search",
-        json!({ "query": "greet" }),
+        json!({ "query": "greet", "scope": "src" }),
     );
     assert!(!search_error, "search should succeed");
-    let results = search_json["results"].as_array()
+    let results = search_json["results"]
+        .as_array()
         .expect("search should have results array");
-    assert!(!results.is_empty(), "search for 'greet' should find results");
+    assert!(
+        !results.is_empty(),
+        "search for 'greet' should find results"
+    );
 
     // trace_variable should work with lazy dataflow
     // First get the file_id from files tool
     let (files_json, _) = call_tool(&mut router, "files", json!({}));
-    let file_list = files_json["files"].as_array().expect("files should be array");
-    let _greet_file = file_list.iter()
+    let file_list = files_json["files"]
+        .as_array()
+        .expect("files should be array");
+    let _greet_file = file_list
+        .iter()
         .find(|f| f["path"].as_str().map_or(false, |p| p.contains("lib.ts")))
         .expect("should find lib.ts");
 
@@ -1557,6 +1609,99 @@ fn open_project_memory_with_index_enables_search() {
 }
 
 #[test]
+fn mcp_search_requires_scope() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[("src/lib.ts", "export function greet() { return 'hi'; }\n")];
+    let (_tmp, mut router) = build_router(files);
+
+    let (search_json, search_error) = call_tool(&mut router, "search", json!({ "query": "greet" }));
+
+    assert!(search_error, "search without scope should be rejected");
+    assert_eq!(search_json["ok"].as_bool(), Some(false));
+    assert!(
+        search_json["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("scope"),
+        "error should explain that scope is required: {:?}",
+        search_json
+    );
+}
+
+#[test]
+fn mcp_search_large_scope_stays_manifest_level() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let tmp = TempDir::new().expect("temp dir");
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    for i in 0..12 {
+        let name = if i == 7 { "target_fn" } else { "helper_fn" };
+        std::fs::write(
+            src.join(format!("file{i}.ts")),
+            format!("export function {name}_{i}() {{ return {i}; }}\n"),
+        )
+        .unwrap();
+    }
+
+    let files = &[("dummy.ts", "export const x = 1;\n")];
+    let (_tmp_initial, mut router) = build_router(files);
+    let (_, open_error) = call_tool(
+        &mut router,
+        "open_project",
+        json!({
+            "project_path": tmp.path().to_string_lossy(),
+            "storage": "memory",
+        }),
+    );
+    assert!(!open_error, "open_project should succeed");
+    let (_, index_error) = call_tool(&mut router, "index", json!({}));
+    assert!(!index_error, "index should succeed");
+
+    let (search_json, search_error) = call_tool(
+        &mut router,
+        "search",
+        json!({ "query": "target_fn_7", "scope": "src", "kind": "function" }),
+    );
+
+    assert!(!search_error, "search should succeed: {:?}", search_json);
+    assert_eq!(search_json["parse_level"].as_str(), Some("manifest"));
+    assert_eq!(search_json["precise"].as_bool(), Some(false));
+    let results = search_json["results"].as_array().unwrap();
+    assert!(
+        results
+            .iter()
+            .any(|r| r["name"].as_str() == Some("target_fn_7")),
+        "manifest search should find exact function without synchronous structural parsing: {:?}",
+        search_json
+    );
+}
+
+#[test]
+fn open_project_rejects_indexing_parameters() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let tmp = TempDir::new().expect("temp dir");
+    std::fs::write(tmp.path().join("lib.ts"), "export const x = 1;\n").unwrap();
+    let files = &[("dummy.ts", "export const x = 1;\n")];
+    let (_tmp_initial, mut router) = build_router(files);
+
+    let (json, is_error) = call_tool(
+        &mut router,
+        "open_project",
+        json!({
+            "project_path": tmp.path().to_string_lossy(),
+            "index": true,
+        }),
+    );
+
+    assert!(is_error, "open_project must reject index=true");
+    assert!(
+        json["error"].as_str().unwrap_or("").contains("index tool"),
+        "error should point users to index: {:?}",
+        json
+    );
+}
+
+#[test]
 fn open_project_persistent_creates_db_and_survives_reopen() {
     let _ = tracing_subscriber::fmt::try_init();
 
@@ -1566,28 +1711,34 @@ fn open_project_persistent_creates_db_and_survives_reopen() {
     std::fs::write(
         src.join("util.ts"),
         "export function add(a: number, b: number): number { return a + b; }\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     // Start router with initial dummy project
     let files = &[("dummy.ts", "export const x = 1;\n")];
     let (_tmp_initial, mut router) = build_router(files);
 
-    // First: open + index with persistent storage
+    // First: open persistent storage, then index the active project.
     let (json1, is_error1) = call_tool(
         &mut router,
         "open_project",
         json!({
             "project_path": tmp.path().to_string_lossy(),
             "storage": "persistent",
-            "index": true,
         }),
     );
     assert!(!is_error1, "first open_project should succeed: {:?}", json1);
     assert!(json1["ok"].as_bool().unwrap_or(false), "ok must be true");
 
+    let (index_json, index_error) = call_tool(&mut router, "index", json!({}));
+    assert!(!index_error, "index should succeed: {:?}", index_json);
+
     // Verify .atlas/atlas.db exists
     let db_path = tmp.path().join(".atlas/atlas.db");
-    assert!(db_path.exists(), ".atlas/atlas.db should exist after persistent open_project");
+    assert!(
+        db_path.exists(),
+        ".atlas/atlas.db should exist after persistent open_project"
+    );
 
     // Status should show persistent
     let (status_json, _) = call_tool(&mut router, "status", json!({}));
@@ -1596,26 +1747,27 @@ fn open_project_persistent_creates_db_and_survives_reopen() {
         "persistent",
         "storage should be persistent"
     );
-    assert!(status_json["summary"]["files"].as_i64().unwrap_or(0) >= 1,
-        "status should show indexed files");
+    assert!(
+        status_json["summary"]["files"].as_i64().unwrap_or(0) >= 1,
+        "status should show indexed files"
+    );
 
     // Search should find the add function
     let (search_json, _) = call_tool(
         &mut router,
         "search",
-        json!({ "query": "add" }),
+        json!({ "query": "add", "scope": "src" }),
     );
     let results = search_json["results"].as_array().unwrap();
     assert!(!results.is_empty(), "search for 'add' should find results");
 
-    // Re-open the same project (no index) — should work from existing DB
+    // Re-open the same project — should work from existing DB without re-indexing.
     let (json2, is_error2) = call_tool(
         &mut router,
         "open_project",
         json!({
             "project_path": tmp.path().to_string_lossy(),
             "storage": "persistent",
-            "index": false,
         }),
     );
     assert!(!is_error2, "re-open should succeed: {:?}", json2);
@@ -1624,8 +1776,11 @@ fn open_project_persistent_creates_db_and_survives_reopen() {
     let (search_json2, _) = call_tool(
         &mut router,
         "search",
-        json!({ "query": "add" }),
+        json!({ "query": "add", "scope": "src" }),
     );
     let results2 = search_json2["results"].as_array().unwrap();
-    assert!(!results2.is_empty(), "search after reopen should still find 'add'");
+    assert!(
+        !results2.is_empty(),
+        "search after reopen should still find 'add'"
+    );
 }

@@ -3,7 +3,9 @@
 //! notifications to prevent MCP timeout during on-demand extraction.
 
 use atlas_engine::SymbolId;
-use atlas_engine::{LazyStructuralService, LazySummary, RawTraceEngine, TraceDiagnostic, TraceQueryResponse};
+use atlas_engine::{
+    LazyStructuralService, LazySummary, RawTraceEngine, TraceDiagnostic, TraceQueryResponse,
+};
 
 use super::{ToolRouter, get_str_opt, get_u64, resolve_file_id};
 
@@ -26,8 +28,7 @@ impl ToolRouter {
                 } else {
                     "Missing file_id or file_path"
                 };
-                let resp: TraceQueryResponse<()> =
-                    TraceQueryResponse::err("trace_point", msg);
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_point", msg);
                 return (
                     serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
                     true,
@@ -36,8 +37,7 @@ impl ToolRouter {
             Err(e) => {
                 let mut err_msg = format!("Error resolving file: {}", e);
                 err_msg.push_str(self.index_not_run_guidance());
-                let resp: TraceQueryResponse<()> =
-                    TraceQueryResponse::err("trace_point", &err_msg);
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_point", &err_msg);
                 return (
                     serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
                     true,
@@ -60,7 +60,8 @@ impl ToolRouter {
         // Transparent lazy structural: ensure file has structural data before tracing
         self.send_progress(0.3, "Ensuring structural index...");
         {
-            let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
+            let lazy =
+                LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
             let _ = lazy.ensure_structural_for_file(&file_id);
         }
 
@@ -95,8 +96,7 @@ impl ToolRouter {
                 } else {
                     "Missing file_id or file_path"
                 };
-                let resp: TraceQueryResponse<()> =
-                    TraceQueryResponse::err("trace_variable", msg);
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_variable", msg);
                 return (
                     serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
                     true,
@@ -105,10 +105,8 @@ impl ToolRouter {
             Err(e) => {
                 let mut err_msg = format!("Error resolving file: {}", e);
                 err_msg.push_str(self.index_not_run_guidance());
-                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                    "trace_variable",
-                    &err_msg,
-                );
+                let resp: TraceQueryResponse<()> =
+                    TraceQueryResponse::err("trace_variable", &err_msg);
                 return (
                     serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
                     true,
@@ -131,7 +129,8 @@ impl ToolRouter {
         // Transparent lazy structural: ensure file has structural data before dataflow
         self.send_progress(0.2, "Ensuring structural index...");
         {
-            let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
+            let lazy =
+                LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
             let _ = lazy.ensure_structural_for_file(&file_id);
         }
 
@@ -140,7 +139,10 @@ impl ToolRouter {
         let mut partial = false;
         let mut lazy_diags: Vec<TraceDiagnostic> = Vec::new();
         let lazy_summary: Option<LazySummary>;
-        match self.lazy_service.ensure_for_position(&file_id, line, column) {
+        match self
+            .lazy_service
+            .ensure_for_position(&file_id, line, column)
+        {
             Ok(window) => {
                 lazy_summary = Some(LazySummary {
                     triggered: true,
@@ -168,9 +170,8 @@ impl ToolRouter {
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
                 });
                 lazy_diags.push(
-                    TraceDiagnostic::warning(&format!(
-                        "Lazy dataflow build failed: {e}"
-                    )).with_code("lazy_dataflow_build_failed")
+                    TraceDiagnostic::warning(&format!("Lazy dataflow build failed: {e}"))
+                        .with_code("lazy_dataflow_build_failed"),
                 );
             }
         }

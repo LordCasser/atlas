@@ -24,7 +24,7 @@ AtlasMcpService (ServerHandler)
 | `index` | `index.rs` | No — writes to store |
 | `status` | `status.rs` | No — store queries |
 | `files` | `status.rs` | No — store queries |
-| `search` | `search.rs` | Yes |
+| `search` | `search.rs` | No — scoped store query, optional bounded structural parsing |
 | `symbol` | `search.rs` | Yes |
 | `neighbors` | `graph.rs` | Yes |
 | `callers` | `graph.rs` | Yes |
@@ -52,11 +52,11 @@ names without the old `atlas_` prefix.
 
 | Tool | Required arguments | Optional arguments |
 |------|--------------------|--------------------|
-| `index` | — | `analysis`: `"manifest"` \| `"structural"` \| `"full"` (default `"manifest"`), `include`: string[], `exclude`: string[], `background`: boolean |
-| `open_project` | `project_path`: absolute path | `storage`: `"memory"` \| `"persistent"` (default `"memory"`), `index`: boolean (default `false`), `analysis`: `"manifest"` \| `"structural"` \| `"full"` (default `"manifest"`), `include`: string[], `exclude`: string[], `scan_files`: boolean (default `false`), `background`: boolean |
+| `index` | — | `include`: string[], `exclude`: string[], `background`: boolean |
+| `open_project` | `project_path`: absolute path | `storage`: `"memory"` \| `"persistent"` (default `"memory"`), `scan_files`: boolean (default `false`), `background`: boolean |
 | `status` | — | — |
 | `files` | — | — |
-| `search` | `query`: string | `scope`: string, `kind`: string, `limit`: integer (default 20), `background`: boolean |
+| `search` | `query`: string, `scope`: string | `kind`: string, `limit`: integer (default 20), `background`: boolean |
 | `symbol` | `qualified_name`: string | — |
 | `neighbors` | `symbol`: qualified name | `direction`: `"outgoing"` \| `"incoming"` \| `"both"` (default `"both"`), `depth`: integer (default 1, max 3), `limit`: integer (default 50) |
 | `callers` | `symbol`: qualified name | `limit`: integer (default 20) |
@@ -86,16 +86,38 @@ Notes:
 - `background: true` is currently supported by `search`, `index`, and
   `open_project`; use `task_status` or `wait_for_task` with the returned
   `task_id`.
-- `open_project(index=false)` does not walk the project tree by default. Use
-  `scan_files=true` only when you need an approximate `file_count` before
-  indexing.
+- Clients that do not send MCP progress tokens are protected from long blocking
+  calls: `index` is auto-started as a background task, and
+  `open_project(scan_files=true)` is also auto-backgrounded. The initial tool
+  result includes `task_id`, `progress: 0.0`, and `auto_background: true`; poll
+  `task_status` to receive progress percentages.
+- Clients that do send MCP progress tokens can run foreground `index` and
+  receive `notifications/progress`; `search` also forwards progress
+  notifications when a progress token is present.
+- `open_project` only activates a project. It never indexes and does not accept
+  `index`, `analysis`, `include`, or `exclude`. After activation, call `index`
+  to index the active project.
+- MCP `index` intentionally performs manifest indexing only: file records plus
+  basic symbols/functions. It skips reference resolution and graph building so
+  first index stays responsive on large repositories.
+- `search` requires a project-relative `scope`. Without scope it returns an
+  error and does not perform extraction or follow-up parsing. If the scope has
+  at most 120 indexed files, search ensures structural data before querying; if
+  the scope is larger, it returns manifest-level results and tells the client to
+  narrow the scope for precise parsing.
+- Large scoped searches schedule a small background structural preparse around
+  returned files to improve follow-up latency without blocking the MCP request.
+- `open_project` does not walk the project tree by default. Use `scan_files=true`
+  only when you need an approximate `file_count` before indexing.
 - `open_project(background=true)` prepares the project off the request path;
   the completed project is activated when `task_status` or `wait_for_task`
   observes completion.
 
 ## Key design decisions
 
-- **Graph is lazily initialized**: `ToolRouter::ensure_graph_initialized()` is called by the MCP server layer before dispatching to graph-backed tools. Store-backed tools (trace, status, files, usages) skip graph construction entirely.
+- **Graph is lazily initialized**: `ToolRouter::ensure_graph_initialized()` is called by the MCP server layer before dispatching to graph-backed tools. Store-backed tools (search, trace, status, files, usages) skip graph construction entirely.
+- **Background tasks are the compatibility progress channel**: progress-aware MCP clients use protocol progress notifications; clients without that support use the background task API and poll `task_status`.
+- **Scope is mandatory for search**: `search` never performs global extraction. Scope size controls parsing depth: small scopes get bounded structural parsing; large scopes stay manifest-level with a narrowing warning.
 - **Active project switching**: `open_project` can switch the active project at runtime. `activate_project()` atomically replaces the store, lazy service, and clears graph caches.
 - **Memory storage mode**: `open_project(storage="memory")` opens an in-memory SQLite store for zero-footprint temporary sessions.
-- **FileLock for persistent stores**: Both `open_project(storage="persistent")` and `index` acquire a cross-process exclusive lock before writing.
+- **FileLock for persistent stores**: `index` acquires a cross-process exclusive lock before writing. `open_project(storage="persistent")` only opens and initializes the project database.

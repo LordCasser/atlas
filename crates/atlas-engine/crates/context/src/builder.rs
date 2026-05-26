@@ -39,10 +39,10 @@ impl ContextView {
         }
         md.push('\n');
 
-/// Maximum callers/callees/peers per context output section.
-const MAX_CONTEXT_ITEMS: usize = 10;
+        /// Maximum callers/callees/peers per context output section.
+        const MAX_CONTEXT_ITEMS: usize = 10;
 
-// ...in to_markdown():
+        // ...in to_markdown():
         if !self.callers.is_empty() {
             md.push_str("### Callers\n\n");
             let shown = if self.callers.len() > MAX_CONTEXT_ITEMS {
@@ -54,7 +54,10 @@ const MAX_CONTEXT_ITEMS: usize = 10;
                 md.push_str(&format!("- `{}`\n", c.qualified_name));
             }
             if self.callers.len() > MAX_CONTEXT_ITEMS {
-                md.push_str(&format!("- ... and {} more callers\n", self.callers.len() - MAX_CONTEXT_ITEMS));
+                md.push_str(&format!(
+                    "- ... and {} more callers\n",
+                    self.callers.len() - MAX_CONTEXT_ITEMS
+                ));
             }
             md.push('\n');
         }
@@ -70,7 +73,10 @@ const MAX_CONTEXT_ITEMS: usize = 10;
                 md.push_str(&format!("- `{}`\n", c.qualified_name));
             }
             if self.callees.len() > MAX_CONTEXT_ITEMS {
-                md.push_str(&format!("- ... and {} more callees\n", self.callees.len() - MAX_CONTEXT_ITEMS));
+                md.push_str(&format!(
+                    "- ... and {} more callees\n",
+                    self.callees.len() - MAX_CONTEXT_ITEMS
+                ));
             }
             md.push('\n');
         }

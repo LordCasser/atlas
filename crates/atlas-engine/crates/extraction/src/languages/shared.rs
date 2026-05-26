@@ -221,8 +221,12 @@ pub(crate) fn is_identifier_decl_or_property(
     if is_common_decl {
         // Check if this node is the "name" or "declarator" field of its parent.
         // C/C++ uses "declarator" for identifiers in init_declarator nodes.
-        if parent.child_by_field_name("name").map_or(false, |n| n.id() == node.id())
-            || parent.child_by_field_name("declarator").map_or(false, |n| n.id() == node.id())
+        if parent
+            .child_by_field_name("name")
+            .map_or(false, |n| n.id() == node.id())
+            || parent
+                .child_by_field_name("declarator")
+                .map_or(false, |n| n.id() == node.id())
         {
             return true;
         }
@@ -231,23 +235,32 @@ pub(crate) fn is_identifier_decl_or_property(
     // Property names in member/field access expressions
     let is_property = matches!(
         parent_kind,
-        "member_expression" | "field_expression" | "field_access"
-        | "selector_expression" | "navigation_expression"
-        | "member_access_expression" | "attribute"
+        "member_expression"
+            | "field_expression"
+            | "field_access"
+            | "selector_expression"
+            | "navigation_expression"
+            | "member_access_expression"
+            | "attribute"
     );
     if is_property {
         for field in &["property", "field", "attribute"] {
-            if parent.child_by_field_name(field).map_or(false, |n| n.id() == node.id()) {
+            if parent
+                .child_by_field_name(field)
+                .map_or(false, |n| n.id() == node.id())
+            {
                 return true;
             }
         }
     }
 
     // Type annotations / type arguments
-    if matches!(parent_kind, "type_annotation" | "type_arguments" | "type_parameters" | "generic_type") {
+    if matches!(
+        parent_kind,
+        "type_annotation" | "type_arguments" | "type_parameters" | "generic_type"
+    ) {
         return true;
     }
 
     false
 }
-

@@ -263,7 +263,9 @@ pub fn extract_file_with_mode(
     let capture_ranges: Option<Vec<(u32, u32)>> =
         if let ExtractionMode::LazyDataflow { ref window } = mode {
             Some(
-                window.units.iter()
+                window
+                    .units
+                    .iter()
                     .filter(|u| u.file_id == file_id)
                     .map(|u| (u.range.start_byte, u.range.end_byte))
                     .collect(),
@@ -273,48 +275,45 @@ pub fn extract_file_with_mode(
         };
     let capture_ranges_ref: Option<&[(u32, u32)]> = capture_ranges.as_deref();
 
-    let (mut data_nodes, dataflow_edges) = if mode.produces_dataflow()
-        && frontend.dataflow.capability().is_supported()
-    {
-        let dataflow_result = super::dataflow_builder::DataFlowBuilder::extract(
-            frontend.dataflow.as_ref(),
-            &ectx,
-            &bindings,
-            &scopes,
-            &symbols,
-            capture_ranges_ref,
-        )
-        .unwrap_or_else(|e| {
-            diagnostics.push(ExtractDiagnostic {
-                level: DiagnosticLevel::Warning,
-                message: format!("DataFlow builder failed: {e}"),
-                range: None,
+    let (mut data_nodes, dataflow_edges) =
+        if mode.produces_dataflow() && frontend.dataflow.capability().is_supported() {
+            let dataflow_result = super::dataflow_builder::DataFlowBuilder::extract(
+                frontend.dataflow.as_ref(),
+                &ectx,
+                &bindings,
+                &scopes,
+                &symbols,
+                capture_ranges_ref,
+            )
+            .unwrap_or_else(|e| {
+                diagnostics.push(ExtractDiagnostic {
+                    level: DiagnosticLevel::Warning,
+                    message: format!("DataFlow builder failed: {e}"),
+                    range: None,
+                });
+                DataFlowResult::default()
             });
-            DataFlowResult::default()
-        });
-        let nodes = dataflow_result.nodes;
-        let edges = dataflow_result.edges;
+            let nodes = dataflow_result.nodes;
+            let edges = dataflow_result.edges;
 
-        // 7c. Build use-def edges (only if dataflow succeeded)
-        // function_ids already resolved inside DataFlowBuilder::extract
-        let use_def_edges = DataFlowBuilder::resolve_use_def(&nodes);
-        let mut all_edges = edges;
-        all_edges.extend(use_def_edges);
+            // 7c. Build use-def edges (only if dataflow succeeded)
+            // function_ids already resolved inside DataFlowBuilder::extract
+            let use_def_edges = DataFlowBuilder::resolve_use_def(&nodes);
+            let mut all_edges = edges;
+            all_edges.extend(use_def_edges);
 
-        // In LazyDataflow mode: filter nodes and edges to only those
-        // whose ranges fall within the window units.
-        if let ExtractionMode::LazyDataflow { ref window } = mode {
-            let filtered_data = filter_dataflow_to_window(
-                &nodes, &all_edges, window, file_id,
-            );
-            budget_exceeded = filtered_data.truncated;
-            (filtered_data.nodes, filtered_data.edges)
+            // In LazyDataflow mode: filter nodes and edges to only those
+            // whose ranges fall within the window units.
+            if let ExtractionMode::LazyDataflow { ref window } = mode {
+                let filtered_data = filter_dataflow_to_window(&nodes, &all_edges, window, file_id);
+                budget_exceeded = filtered_data.truncated;
+                (filtered_data.nodes, filtered_data.edges)
+            } else {
+                (nodes, all_edges)
+            }
         } else {
-            (nodes, all_edges)
-        }
-    } else {
-        (vec![], vec![])
-    };
+            (vec![], vec![])
+        };
 
     // 7e. Build per-function control-flow graphs (P7: skip in Structural mode)
     let (cfg_nodes, cfg_edges) = if mode.produces_cfg()
@@ -355,19 +354,18 @@ pub fn extract_file_with_mode(
     // In Structural mode this step is skipped entirely — there is no
     // dataflow context to justify a full AST identifier scan.  Callers
     // receive binding_uses from declaration sites only (from step 7a).
-    let reference_binding_uses: Vec<BindingUse> =
-        if mode.produces_reference_binding_uses() {
-            build_reference_binding_uses(&ectx, &bindings, &scopes).unwrap_or_else(|e| {
-                diagnostics.push(ExtractDiagnostic {
-                    level: DiagnosticLevel::Warning,
-                    message: format!("Identifier-use binding scan failed: {e}"),
-                    range: None,
-                });
-                vec![]
-            })
-        } else {
+    let reference_binding_uses: Vec<BindingUse> = if mode.produces_reference_binding_uses() {
+        build_reference_binding_uses(&ectx, &bindings, &scopes).unwrap_or_else(|e| {
+            diagnostics.push(ExtractDiagnostic {
+                level: DiagnosticLevel::Warning,
+                message: format!("Identifier-use binding scan failed: {e}"),
+                range: None,
+            });
             vec![]
-        };
+        })
+    } else {
+        vec![]
+    };
 
     // Merge declaration-site uses with identifier-use uses.
     let binding_uses: Vec<BindingUse> = {
@@ -492,18 +490,16 @@ pub fn extract_file_with_mode(
     // query-time joins (e.g., return-value bridge) work.
     //
     // Build a map: provisional from_file_byte ID → real Callsite.id
-    let cs_id_map: std::collections::HashMap<
-        types::ids::CallsiteId,
-        types::ids::CallsiteId,
-    > = callsites
-        .iter()
-        .map(|cs| {
-            (
-                types::ids::CallsiteId::from_file_byte(&file_id, cs.range.start_byte),
-                cs.id,
-            )
-        })
-        .collect();
+    let cs_id_map: std::collections::HashMap<types::ids::CallsiteId, types::ids::CallsiteId> =
+        callsites
+            .iter()
+            .map(|cs| {
+                (
+                    types::ids::CallsiteId::from_file_byte(&file_id, cs.range.start_byte),
+                    cs.id,
+                )
+            })
+            .collect();
 
     for dn in data_nodes.iter_mut() {
         if let Some(ref provisional) = dn.callsite_id {
@@ -543,19 +539,22 @@ pub fn extract_file_with_mode(
                 .iter()
                 .filter(|u| u.file_id == file_id)
                 .collect();
-            let is_inside = |r: &TextRange| -> bool {
-                file_units.iter().any(|u| range_inside(r, &u.range))
-            };
+            let is_inside =
+                |r: &TextRange| -> bool { file_units.iter().any(|u| range_inside(r, &u.range)) };
 
             // Filter bindings to window
-            let bindings: Vec<_> = bindings.into_iter().filter(|b| is_inside(&b.range)).collect();
-            let binding_ids: std::collections::HashSet<_> =
-                bindings.iter().map(|b| b.id).collect();
+            let bindings: Vec<_> = bindings
+                .into_iter()
+                .filter(|b| is_inside(&b.range))
+                .collect();
+            let binding_ids: std::collections::HashSet<_> = bindings.iter().map(|b| b.id).collect();
             let binding_uses: Vec<_> = binding_uses
                 .into_iter()
                 .filter(|u| {
                     is_inside(&u.range)
-                        && u.binding_id.map(|bid| binding_ids.contains(&bid)).unwrap_or(true)
+                        && u.binding_id
+                            .map(|bid| binding_ids.contains(&bid))
+                            .unwrap_or(true)
                 })
                 .collect();
 
@@ -563,18 +562,16 @@ pub fn extract_file_with_mode(
             let cfg_nodes: Vec<_> = cfg_nodes
                 .into_iter()
                 .filter(|n| {
-                    file_units.iter().any(|u| {
-                        u.symbol_id.map(|sid| n.function_id == sid).unwrap_or(false)
-                    })
+                    file_units
+                        .iter()
+                        .any(|u| u.symbol_id.map(|sid| n.function_id == sid).unwrap_or(false))
                 })
                 .collect();
             let cfg_node_ids: std::collections::HashSet<_> =
                 cfg_nodes.iter().map(|n| n.id).collect();
             let cfg_edges: Vec<_> = cfg_edges
                 .into_iter()
-                .filter(|e| {
-                    cfg_node_ids.contains(&e.source) && cfg_node_ids.contains(&e.target)
-                })
+                .filter(|e| cfg_node_ids.contains(&e.source) && cfg_node_ids.contains(&e.target))
                 .collect();
 
             (bindings, binding_uses, cfg_nodes, cfg_edges)
@@ -585,13 +582,21 @@ pub fn extract_file_with_mode(
     // In LazyDataflow mode, the caller already has structural facts in DB.
     // We only build dataflow for the window — clear structural fields so
     // the caller does not accidentally overwrite existing DB rows.
-    let (symbols_out, scopes_out, references_out, imports_out, exports_out,
-         raw_edges_out, callsites_out) =
-        if matches!(mode, ExtractionMode::LazyDataflow { .. }) {
-            (vec![], vec![], vec![], vec![], vec![], vec![], vec![])
-        } else {
-            (symbols, scopes, references, imports, exports, raw_edges, callsites)
-        };
+    let (
+        symbols_out,
+        scopes_out,
+        references_out,
+        imports_out,
+        exports_out,
+        raw_edges_out,
+        callsites_out,
+    ) = if matches!(mode, ExtractionMode::LazyDataflow { .. }) {
+        (vec![], vec![], vec![], vec![], vec![], vec![], vec![])
+    } else {
+        (
+            symbols, scopes, references, imports, exports, raw_edges, callsites,
+        )
+    };
 
     Ok(FileFacts {
         file: FileInfo {
@@ -620,7 +625,8 @@ pub fn extract_file_with_mode(
             "dataflow"
         } else {
             "structural"
-        }.to_string(),
+        }
+        .to_string(),
     })
 }
 
@@ -637,7 +643,14 @@ pub fn extract_file(
     source: &str,
     content_hash: &str,
 ) -> Result<FileFacts> {
-    extract_file_with_mode(frontend, file_id, file_path, source, content_hash, ExtractionMode::Full)
+    extract_file_with_mode(
+        frontend,
+        file_id,
+        file_path,
+        source,
+        content_hash,
+        ExtractionMode::Full,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -874,11 +887,7 @@ fn filter_dataflow_to_window(
 
     let mut filtered_nodes: Vec<DataNode> = nodes
         .iter()
-        .filter(|n| {
-            file_units
-                .iter()
-                .any(|u| range_inside(&n.range, &u.range))
-        })
+        .filter(|n| file_units.iter().any(|u| range_inside(&n.range, &u.range)))
         .cloned()
         .collect();
 
@@ -893,9 +902,7 @@ fn filter_dataflow_to_window(
 
     let mut filtered_edges: Vec<DataFlowEdge> = edges
         .iter()
-        .filter(|e| {
-            kept_ids.contains(&e.source) && kept_ids.contains(&e.target)
-        })
+        .filter(|e| kept_ids.contains(&e.source) && kept_ids.contains(&e.target))
         .cloned()
         .collect();
 
@@ -922,8 +929,8 @@ mod tests {
     use super::*;
     use crate::frontend::LanguageFrontend;
     use crate::languages::create_frontend;
-    use types::Language;
     use std::path::PathBuf;
+    use types::Language;
 
     /// Helper: create a TypeScript LanguageFrontend for tests.
     #[cfg(feature = "typescript")]
@@ -959,8 +966,7 @@ mod tests {
             }
         }
     }
-#[cfg(feature = "typescript")]
-
+    #[cfg(feature = "typescript")]
     #[test]
     fn test_extract_and_insert_ts_arrow_function_registry_guard() {
         use db::Store;
@@ -1060,8 +1066,7 @@ void C::m() {
         let result = store.insert_file_facts(&facts);
         assert!(result.is_ok(), "Insert failed: {:?}", result.err());
     }
-#[cfg(feature = "typescript")]
-
+    #[cfg(feature = "typescript")]
     #[test]
     fn test_extract_ts_simple() {
         let source = "const foo = 1;\nconsole.log(foo);\n";
@@ -1079,8 +1084,7 @@ void C::m() {
         );
         assert!(!facts.references.is_empty(), "Should have references");
     }
-#[cfg(feature = "python")]
-
+    #[cfg(feature = "python")]
     #[test]
     fn test_extract_python_simple() {
         let source = "def foo():\n    return True\n\nfoo()\n";
@@ -1092,8 +1096,7 @@ void C::m() {
         assert_eq!(facts.file.language, Language::Python);
         assert!(!facts.symbols.is_empty(), "Should have symbols");
     }
-#[cfg(feature = "typescript")]
-
+    #[cfg(feature = "typescript")]
     #[test]
     fn test_extract_ts_dataflow() {
         // New P3 path: DataFlowBuilder produces DataNodes + DataFlowEdges
@@ -1110,8 +1113,7 @@ void C::m() {
             "Should have dataflow edges"
         );
     }
-#[cfg(feature = "python")]
-
+    #[cfg(feature = "python")]
     #[test]
     fn test_extract_python_dataflow() {
         // Python adapter does not yet implement DataFlowBuilder.
@@ -1126,8 +1128,7 @@ void C::m() {
         assert!(!facts.symbols.is_empty(), "Should have symbols");
         assert!(facts.raw_edges.is_empty(), "Old dataflow path removed");
     }
-#[cfg(feature = "typescript")]
-
+    #[cfg(feature = "typescript")]
     #[test]
     fn test_extract_and_insert_ts() {
         use db::Store;
@@ -1166,8 +1167,7 @@ void C::m() {
         let result = store.insert_file_facts(&facts);
         assert!(result.is_ok(), "Insert failed: {:?}", result.err());
     }
-#[cfg(feature = "typescript")]
-
+    #[cfg(feature = "typescript")]
     #[test]
     fn test_extract_and_insert_ts_class() {
         use db::Store;
@@ -1467,23 +1467,44 @@ int main() {
     #[cfg(feature = "typescript")]
     fn structural_mode_produces_no_dataflow() {
         let frontend = ts_frontend();
-        let source = "function add(a: number, b: number): number {\n  let sum = a + b;\n  return sum;\n}\n";
+        let source =
+            "function add(a: number, b: number): number {\n  let sum = a + b;\n  return sum;\n}\n";
         let file_id = FileId::generate("test_7a.ts");
         let path = std::path::Path::new("test_7a.ts");
 
         let facts = extract_file_with_mode(
-            &frontend, file_id, path, source, "abc",
+            &frontend,
+            file_id,
+            path,
+            source,
+            "abc",
             ExtractionMode::Structural,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(!facts.symbols.is_empty(), "Structural: should have symbols");
         assert!(!facts.scopes.is_empty(), "Structural: should have scopes");
-        assert!(facts.data_nodes.is_empty(), "Structural: data_nodes must be empty");
-        assert!(facts.dataflow_edges.is_empty(), "Structural: dataflow_edges must be empty");
-        assert!(facts.cfg_nodes.is_empty(), "Structural: cfg_nodes must be empty");
-        assert!(facts.cfg_edges.is_empty(), "Structural: cfg_edges must be empty");
+        assert!(
+            facts.data_nodes.is_empty(),
+            "Structural: data_nodes must be empty"
+        );
+        assert!(
+            facts.dataflow_edges.is_empty(),
+            "Structural: dataflow_edges must be empty"
+        );
+        assert!(
+            facts.cfg_nodes.is_empty(),
+            "Structural: cfg_nodes must be empty"
+        );
+        assert!(
+            facts.cfg_edges.is_empty(),
+            "Structural: cfg_edges must be empty"
+        );
         // LexicalBinder should still produce bindings (declaration sites)
-        assert!(!facts.bindings.is_empty(), "Structural: bindings should exist (LexicalBinder runs)");
+        assert!(
+            !facts.bindings.is_empty(),
+            "Structural: bindings should exist (LexicalBinder runs)"
+        );
         // Step 8a (identifier-use binding scan) is skipped in Structural
         // so binding_uses only has declaration-site uses
     }
@@ -1499,13 +1520,21 @@ int main() {
 
         let facts_compat = extract_file(&frontend, file_id, path, source, "abc").unwrap();
         let facts_full = extract_file_with_mode(
-            &frontend, file_id, path, source, "abc",
+            &frontend,
+            file_id,
+            path,
+            source,
+            "abc",
             ExtractionMode::Full,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(facts_compat.symbols.len(), facts_full.symbols.len());
         assert_eq!(facts_compat.data_nodes.len(), facts_full.data_nodes.len());
-        assert_eq!(facts_compat.dataflow_edges.len(), facts_full.dataflow_edges.len());
+        assert_eq!(
+            facts_compat.dataflow_edges.len(),
+            facts_full.dataflow_edges.len()
+        );
         assert_eq!(facts_compat.bindings.len(), facts_full.bindings.len());
     }
 
@@ -1527,16 +1556,28 @@ int main() {
         // Build a minimal window that covers this file's function
         let symbols = {
             let facts = extract_file_with_mode(
-                &frontend, file_id, path, &source, "abc",
+                &frontend,
+                file_id,
+                path,
+                &source,
+                "abc",
                 ExtractionMode::Full, // need symbols for unit construction
-            ).unwrap();
+            )
+            .unwrap();
             facts.symbols
         };
-        let func_sym = symbols.iter().find(|s| s.name == "big").expect("function 'big' not found");
+        let func_sym = symbols
+            .iter()
+            .find(|s| s.name == "big")
+            .expect("function 'big' not found");
 
         let window = LazyWindow {
             seed_unit: AnalysisUnit::from_function(file_id, func_sym.id, func_sym.range),
-            units: vec![AnalysisUnit::from_function(file_id, func_sym.id, func_sym.range)],
+            units: vec![AnalysisUnit::from_function(
+                file_id,
+                func_sym.id,
+                func_sym.range,
+            )],
             variable_focus: None,
             truncated: false,
             units_built: 0,
@@ -1544,13 +1585,21 @@ int main() {
         };
 
         let facts = extract_file_with_mode(
-            &frontend, file_id, path, &source, "abc",
+            &frontend,
+            file_id,
+            path,
+            &source,
+            "abc",
             ExtractionMode::LazyDataflow { window },
-        ).unwrap();
+        )
+        .unwrap();
 
         // With 3000 variable declarations, we should exceed LAZY_MAX_NODES_PER_UNIT (2000)
         // and the filter should have set budget_exceeded
-        assert!(facts.budget_exceeded, "7e: budget_exceeded should be true for 3000-variable function");
+        assert!(
+            facts.budget_exceeded,
+            "7e: budget_exceeded should be true for 3000-variable function"
+        );
         assert!(
             facts.data_nodes.len() <= crate::mode::LAZY_MAX_NODES_PER_UNIT,
             "7e: data_nodes should be capped at LAZY_MAX_NODES_PER_UNIT"
@@ -1565,25 +1614,36 @@ int main() {
         use types::lazy::{AnalysisUnit, LazyWindow};
 
         let frontend = ts_frontend();
-        let source = "const GLOBAL = 42;\nlet count = GLOBAL + 1;\nfunction f() { return count; }\n";
+        let source =
+            "const GLOBAL = 42;\nlet count = GLOBAL + 1;\nfunction f() { return count; }\n";
         let file_id = FileId::generate("test_toplevel.ts");
         let path = std::path::Path::new("test_toplevel.ts");
 
         // First extract structurally to get symbol info
         let facts_full = extract_file_with_mode(
-            &frontend, file_id, path, source, "abc",
+            &frontend,
+            file_id,
+            path,
+            source,
+            "abc",
             ExtractionMode::Full,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Build a window covering the top-level scope
         // Top-level range is the whole file (approximate via largest scope)
-        let file_range = facts_full.scopes.iter()
+        let file_range = facts_full
+            .scopes
+            .iter()
             .find(|s| s.parent_id.is_none())
             .map(|s| s.range)
             .unwrap_or(TextRange {
-                start_byte: 0, end_byte: source.len() as u32,
-                start_line: 0, start_column: 0,
-                end_line: 10, end_column: 0,
+                start_byte: 0,
+                end_byte: source.len() as u32,
+                start_line: 0,
+                start_column: 0,
+                end_line: 10,
+                end_column: 0,
             });
 
         let window = LazyWindow {
@@ -1596,15 +1656,24 @@ int main() {
         };
 
         let facts_lazy = extract_file_with_mode(
-            &frontend, file_id, path, source, "abc",
+            &frontend,
+            file_id,
+            path,
+            source,
+            "abc",
             ExtractionMode::LazyDataflow { window },
-        ).unwrap();
+        )
+        .unwrap();
 
         // Top-level dataflow should produce data nodes (e.g., for GLOBAL, count)
-        assert!(!facts_lazy.data_nodes.is_empty(),
-            "top-level scope should produce dataflow nodes");
+        assert!(
+            !facts_lazy.data_nodes.is_empty(),
+            "top-level scope should produce dataflow nodes"
+        );
         // Structural fields should be empty in LazyDataflow mode
-        assert!(facts_lazy.symbols.is_empty(),
-            "LazyDataflow mode should clear structural fields");
+        assert!(
+            facts_lazy.symbols.is_empty(),
+            "LazyDataflow mode should clear structural fields"
+        );
     }
 }

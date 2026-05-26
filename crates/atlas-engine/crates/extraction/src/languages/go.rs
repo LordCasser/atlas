@@ -17,11 +17,11 @@ use crate::frontend::{
 use crate::languages::shared::SymbolDefBuilder;
 use std::collections::HashMap;
 use types::bindings::BindingDef;
+use types::capability::FeatureSupport;
 use types::dataflow::{DataFlowEdge, DataNode};
 use types::enums::{DataFlowKind, DataNodeKind};
 use types::ids::{DataFlowEdgeId, DataNodeId};
 use types::structs::ScopeDef;
-use types::capability::FeatureSupport;
 use types::*;
 
 // ---------------------------------------------------------------------------
@@ -316,12 +316,17 @@ fn walk_go_assign_edges(
                                 (pos_map.get(&name_key), pos_map.get(&value_key))
                             {
                                 let edge_id = DataFlowEdgeId::generate(
-                                    &source_id, &target_id, DataFlowKind::Assign.as_str(),
+                                    &source_id,
+                                    &target_id,
+                                    DataFlowKind::Assign.as_str(),
                                 );
                                 edges.push(DataFlowEdge::new(
-                                    edge_id, source_id, target_id,
+                                    edge_id,
+                                    source_id,
+                                    target_id,
                                     DataFlowKind::Assign,
-                                    node_range_go(&name_node), 0.90,
+                                    node_range_go(&name_node),
+                                    0.90,
                                 ));
                             }
                         }
@@ -421,9 +426,7 @@ fn find_ancestor_type_spec<'a>(
     for child in type_decl.children(&mut cursor) {
         if child.kind() == "type_spec" {
             // Check if target is within this type_spec's range
-            if child.start_byte() <= target.start_byte()
-                && target.end_byte() <= child.end_byte()
-            {
+            if child.start_byte() <= target.start_byte() && target.end_byte() <= child.end_byte() {
                 return Some(child);
             }
         }
@@ -498,7 +501,6 @@ fn go_extract_signature(
     }
 }
 
-
 // ── Lexical binding normalize ──────────────────────────────────────────
 
 fn go_binding_kind(capture_name: &str) -> Option<BindingKind> {
@@ -520,7 +522,16 @@ fn normalize_go_lexical(
     let range = node_range(node);
     let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
     let id = BindingId::generate(&file_id, &scope_id, kind.as_str(), &name, range.start_byte);
-    Some(BindingDef { id, file_id, function_id: None, scope_id, kind, name, symbol_id: None, range })
+    Some(BindingDef {
+        id,
+        file_id,
+        function_id: None,
+        scope_id,
+        kind,
+        name,
+        symbol_id: None,
+        range,
+    })
 }
 
 // ── Dataflow normalize ─────────────────────────────────────────────────
@@ -528,7 +539,9 @@ fn normalize_go_lexical(
 fn find_call_expression_go(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
     let mut current = node;
     while let Some(parent) = current.parent() {
-        if parent.kind() == "call_expression" { return Some(parent); }
+        if parent.kind() == "call_expression" {
+            return Some(parent);
+        }
         current = parent;
     }
     None
@@ -543,57 +556,181 @@ fn normalize_go_dataflow_builder(
     use types::ids::DataNodeId;
     let range = node_range(node);
     match capture_name {
-        "df.parameter" => node_text(node, source).map(|name| {
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "parameter", Some(&name), Some(&name), range.start_byte);
-            let dn = DataNode::parameter(node_id, file_id, None, None, &name, range);
-            (Some(dn), None)
-        }).unwrap_or((None, None)),
-        "df.assign_target" => node_text(node, source).map(|name| {
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "local", Some(&name), Some(&name), range.start_byte);
-            let dn = DataNode::local(node_id, file_id, None, None, &name, range);
-            (Some(dn), None)
-        }).unwrap_or((None, None)),
+        "df.parameter" => node_text(node, source)
+            .map(|name| {
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "parameter",
+                    Some(&name),
+                    Some(&name),
+                    range.start_byte,
+                );
+                let dn = DataNode::parameter(node_id, file_id, None, None, &name, range);
+                (Some(dn), None)
+            })
+            .unwrap_or((None, None)),
+        "df.assign_target" => node_text(node, source)
+            .map(|name| {
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "local",
+                    Some(&name),
+                    Some(&name),
+                    range.start_byte,
+                );
+                let dn = DataNode::local(node_id, file_id, None, None, &name, range);
+                (Some(dn), None)
+            })
+            .unwrap_or((None, None)),
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_go(node).map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "expr", Some(&text), None, range.start_byte);
-            let dn = DataNode { id: node_id, file_id, function_id: None, kind: DataNodeKind::Expr, binding_id: None, callsite_id, name: Some(text), access_path: None, arg_index: None, range };
+            let callsite_id = find_call_expression_go(node)
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "expr",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: DataNodeKind::Expr,
+                binding_id: None,
+                callsite_id,
+                name: Some(text),
+                access_path: None,
+                arg_index: None,
+                range,
+            };
             (Some(dn), None)
         }
         "df.return_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "return", Some(&text), None, range.start_byte);
-            let dn = DataNode { id: node_id, file_id, function_id: None, kind: DataNodeKind::Return, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range };
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "return",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: DataNodeKind::Return,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text),
+                access_path: None,
+                arg_index: None,
+                range,
+            };
             (Some(dn), None)
         }
-        "df.call_target" => node_text(node, source).map(|name| {
-            let access_path = name.clone();
-            let callsite_id = find_call_expression_go(node).map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "call_target", Some(&name), Some(&access_path), range.start_byte);
-            let dn = DataNode::call_target(node_id, file_id, None, callsite_id, &name, &access_path, range);
-            (Some(dn), None)
-        }).unwrap_or((None, None)),
+        "df.call_target" => node_text(node, source)
+            .map(|name| {
+                let access_path = name.clone();
+                let callsite_id = find_call_expression_go(node).map(|ce| {
+                    types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+                });
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "call_target",
+                    Some(&name),
+                    Some(&access_path),
+                    range.start_byte,
+                );
+                let dn = DataNode::call_target(
+                    node_id,
+                    file_id,
+                    None,
+                    callsite_id,
+                    &name,
+                    &access_path,
+                    range,
+                );
+                (Some(dn), None)
+            })
+            .unwrap_or((None, None)),
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_go(node).map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "call_arg", Some(&text), None, range.start_byte);
+            let callsite_id = find_call_expression_go(node)
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "call_arg",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
             let dn = DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range);
             (Some(dn), None)
         }
-        "df.field_name" => node_text(node, source).map(|name| {
-            let access_path = node.parent().filter(|p| p.kind() == "selector_expression").and_then(|p| node_text(p, source)).unwrap_or_else(|| name.clone());
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "field", Some(&name), Some(&access_path), range.start_byte);
-            let dn = DataNode::field(node_id, file_id, None, &name, &access_path, range);
-            (Some(dn), None)
-        }).unwrap_or((None, None)),
+        "df.field_name" => node_text(node, source)
+            .map(|name| {
+                let access_path = node
+                    .parent()
+                    .filter(|p| p.kind() == "selector_expression")
+                    .and_then(|p| node_text(p, source))
+                    .unwrap_or_else(|| name.clone());
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "field",
+                    Some(&name),
+                    Some(&access_path),
+                    range.start_byte,
+                );
+                let dn = DataNode::field(node_id, file_id, None, &name, &access_path, range);
+                (Some(dn), None)
+            })
+            .unwrap_or((None, None)),
         "df.receiver" | "df.literal" => {
             let text = node_text(node, source).unwrap_or_default();
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, if capture_name == "df.literal" { "literal" } else { "receiver" }, Some(&text), None, range.start_byte);
-            let dn = DataNode { id: node_id, file_id, function_id: None, kind: if capture_name == "df.literal" { DataNodeKind::Literal } else { DataNodeKind::Receiver }, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range };
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                if capture_name == "df.literal" {
+                    "literal"
+                } else {
+                    "receiver"
+                },
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: if capture_name == "df.literal" {
+                    DataNodeKind::Literal
+                } else {
+                    DataNodeKind::Receiver
+                },
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text),
+                access_path: None,
+                arg_index: None,
+                range,
+            };
             (Some(dn), None)
         }
         "df.identifier_use" => {
-            if crate::languages::shared::is_identifier_decl_or_property(node, &["type_declaration", "type_spec"]) {
+            if crate::languages::shared::is_identifier_decl_or_property(
+                node,
+                &["type_declaration", "type_spec"],
+            ) {
                 return (None, None);
             }
             let text = node_text(node, source).unwrap_or_default();
@@ -601,23 +738,36 @@ fn normalize_go_dataflow_builder(
                 return (None, None);
             }
             let node_id = DataNodeId::generate(
-                &file_id, None::<&SymbolId>, "identifier_use",
-                Some(&text), Some(&text), range.start_byte,
+                &file_id,
+                None::<&SymbolId>,
+                "identifier_use",
+                Some(&text),
+                Some(&text),
+                range.start_byte,
             );
             let dn = DataNode {
-                id: node_id, file_id, function_id: None,
+                id: node_id,
+                file_id,
+                function_id: None,
                 kind: DataNodeKind::VariableUse,
-                binding_id: None, callsite_id: None,
-                name: Some(text.clone()), access_path: Some(text),
-                arg_index: None, range,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text.clone()),
+                access_path: Some(text),
+                arg_index: None,
+                range,
             };
             (Some(dn), None)
         }
         "df.assign_field_target" => {
             let text = node_text(node, source).unwrap_or_default();
             let node_id = DataNodeId::generate(
-                &file_id, None::<&SymbolId>, "field",
-                Some(&text), Some(&text), range.start_byte,
+                &file_id,
+                None::<&SymbolId>,
+                "field",
+                Some(&text),
+                Some(&text),
+                range.start_byte,
             );
             let dn = DataNode::field(node_id, file_id, None, &text, &text, range);
             (Some(dn), None)
@@ -688,7 +838,11 @@ mod tests {
         let spec = super::go_frontend();
         let lang = spec.parser.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, spec.dataflow.dataflow_builder_query());
-        assert!(query.is_ok(), "dataflow query must compile: {:?}", query.err());
+        assert!(
+            query.is_ok(),
+            "dataflow query must compile: {:?}",
+            query.err()
+        );
     }
 
     #[test]
@@ -707,7 +861,8 @@ func foo(x int) int {
         let tree = parser.parse(source, None).unwrap();
         let root = tree.root_node();
 
-        let query = tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
+        let query =
+            tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
         let mut cursor = tree_sitter::QueryCursor::new();
         let file_id = FileId::generate("test.ext");
         let ctx = NormalizeCtx {
@@ -723,15 +878,26 @@ func foo(x int) int {
         while let Some((m, idx)) = captures.next() {
             let cap = m.captures[*idx];
             let name = query.capture_names()[cap.index as usize].to_string();
-            let (dn, _de) = frontend.dataflow.normalize(ctx, Capture { name, node: cap.node });
+            let (dn, _de) = frontend.dataflow.normalize(
+                ctx,
+                Capture {
+                    name,
+                    node: cap.node,
+                },
+            );
             if let Some(dn) = dn {
                 nodes.push(dn);
             }
         }
 
-        assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param");
+        assert!(
+            nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+            "param"
+        );
         assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local");
-        assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse");
+        assert!(
+            nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse),
+            "varuse"
+        );
     }
-
 }

@@ -1,12 +1,49 @@
-//! Search tools: full-text symbol search and single-symbol lookup.
-//! Supports `background: true` for async execution via task_status polling.
+//! Search tools: scoped symbol search and single-symbol lookup.
+//!
+//! Search is intentionally store-backed and scope-required so ordinary MCP
+//! search calls do not build the whole graph snapshot or trigger unbounded
+//! extraction on large repositories.
 
 use atlas_engine::LazyStructuralService;
+use atlas_engine::Store;
+use atlas_engine::SymbolDef;
 use atlas_engine::SymbolKind;
 
 use super::{ToolRouter, get_str, get_str_opt, get_u64};
 
 use serde_json::json;
+use std::sync::Arc;
+
+const SYNC_STRUCTURAL_SCOPE_FILE_LIMIT: usize = 8;
+const LIKE_FALLBACK_SCOPE_FILE_LIMIT: usize = 32;
+const PREHEAT_SCOPE_FILE_LIMIT: usize = 64;
+const PREHEAT_FILE_LIMIT: usize = 8;
+const SEARCH_CANDIDATE_MULTIPLIER: usize = 4;
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct SearchHit {
+    name: String,
+    qualified_name: String,
+    kind: String,
+    language: String,
+    score: f64,
+    file: String,
+    file_id: String,
+    layer: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ScopedSearchResponse {
+    query: String,
+    scope: String,
+    scope_file_count: usize,
+    parse_level: &'static str,
+    precise: bool,
+    count: usize,
+    results: Vec<SearchHit>,
+    warnings: Vec<String>,
+    background_preparse: Option<String>,
+}
 
 impl ToolRouter {
     pub(crate) fn send_progress(&self, percent: f64, message: &str) {
@@ -19,11 +56,26 @@ impl ToolRouter {
         let query = get_str(args, "query");
         let limit = (get_u64(args, "limit").unwrap_or(20) as usize).min(200);
         let kind = get_str_opt(args, "kind");
-        let scope = get_str_opt(args, "scope");
+        let scope = get_str_opt(args, "scope")
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         let background = args
             .get("background")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+
+        let Some(scope) = scope else {
+            return (
+                serde_json::to_string_pretty(&json!({
+                    "ok": false,
+                    "error": "search requires a non-empty scope",
+                    "query": query,
+                    "hint": "Pass a project-relative directory or file path such as \"src\", \"kernel/sched\", or \"drivers/net\". Without scope, search does not perform extraction or follow-up parsing."
+                }))
+                .unwrap_or_else(|e| e.to_string()),
+                true,
+            );
+        };
 
         if background {
             return self.handle_search_background(query, limit, kind, scope);
@@ -36,62 +88,41 @@ impl ToolRouter {
         query: &str,
         limit: usize,
         kind: Option<&str>,
-        scope: Option<&str>,
+        scope: &str,
     ) -> (String, bool) {
-        let scope_display = scope.unwrap_or("(all)");
-        self.send_progress(
-            0.1,
-            &format!("Searching for '{}' in {}...", query, scope_display),
-        );
-        let entries = match self.do_search(query, limit, kind) {
-            Ok(e) => self.filter_by_scope(e, scope),
+        self.send_progress(0.1, &format!("Searching for '{}' in {}...", query, scope));
+        if !self.has_indexed_files() {
+            return (
+                "No indexed files found — please run 'index' tool first.".into(),
+                true,
+            );
+        }
+
+        let response = match execute_scoped_search(
+            self.store.clone(),
+            self.project_root.clone(),
+            query,
+            limit,
+            kind,
+            scope,
+            Some(|percent, message: String| self.send_progress(percent, &message)),
+        ) {
+            Ok(r) => r,
             Err(err) => {
                 let mut s = format!("Search error: {}", err);
                 s.push_str(self.index_not_run_guidance());
                 return (s, true);
             }
         };
-        if entries.is_empty() && !self.has_indexed_files() {
-            return (
-                "No indexed files found — please run 'index' tool first.".into(),
-                true,
-            );
-        }
-        let needs_lazy = entries.is_empty() || entries.iter().any(|e| e.symbol.layer == "manifest");
-        let final_entries = if needs_lazy {
-            self.send_progress(0.5, "Extracting structural data...");
-            self.try_lazy_structural(query);
-            match self.do_search(query, limit, kind) {
-                Ok(e) => self.filter_by_scope(e, scope),
-                Err(err) => {
-                    let mut s = format!("Search error after extraction: {}", err);
-                    s.push_str(self.index_not_run_guidance());
-                    return (s, true);
-                }
-            }
-        } else {
-            entries
-        };
+
         self.send_progress(
             1.0,
-            &format!("Search complete ({} results)", final_entries.len()),
+            &format!("Search complete ({} results)", response.count),
         );
-        (self.format_search_results(query, &final_entries), false)
-    }
-
-    fn filter_by_scope(
-        &self,
-        entries: Vec<atlas_engine::SearchResult>,
-        scope: Option<&str>,
-    ) -> Vec<atlas_engine::SearchResult> {
-        let Some(scope) = scope else {
-            return entries;
-        };
-        let scope = scope.trim_end_matches('/');
-        entries
-            .into_iter()
-            .filter(|e| e.file_path.as_ref().map_or(true, |p| p.starts_with(scope)))
-            .collect()
+        (
+            serde_json::to_string_pretty(&response).unwrap_or_else(|e| e.to_string()),
+            false,
+        )
     }
 
     fn handle_search_background(
@@ -99,7 +130,7 @@ impl ToolRouter {
         query: &str,
         limit: usize,
         kind: Option<&str>,
-        scope: Option<&str>,
+        scope: &str,
     ) -> (String, bool) {
         let task_id = self.task_manager.create_task("search", "search");
         let tid = task_id.clone();
@@ -108,73 +139,31 @@ impl ToolRouter {
         let task_manager = self.task_manager.clone();
         let q = query.to_string();
         let k = kind.map(|s| s.to_string());
-        let sc = scope.map(|s| s.to_string());
+        let sc = scope.to_string();
 
         std::thread::spawn(move || {
-            let graph = atlas_engine::GraphEngine::from_store(&store, 0.3).unwrap();
-            let search_engine =
-                atlas_engine::SearchEngine::new(store.clone(), std::sync::Arc::new(graph));
-            let do_search =
-                |q: &str, k: Option<&str>| -> anyhow::Result<Vec<atlas_engine::SearchResult>> {
-                    if let Some(k_str) = k {
-                        SymbolKind::from_str(k_str)
-                            .map(|sk| search_engine.search_by_kind(q, sk, limit))
-                            .unwrap_or_else(|| search_engine.search_simple(q, limit))
-                    } else {
-                        search_engine.search_simple(q, limit)
-                    }
-                };
-            let entries = match do_search(&q, k.as_deref()) {
-                Ok(e) => e,
+            task_manager.update_progress(&tid, 5.0, "Starting scoped search...");
+            let response = match execute_scoped_search(
+                store,
+                project_root,
+                &q,
+                limit,
+                k.as_deref(),
+                &sc,
+                Some(|percent, message: String| {
+                    task_manager.update_progress(&tid, percent * 100.0, &message)
+                }),
+            ) {
+                Ok(r) => r,
                 Err(err) => {
                     task_manager.fail_task(&tid, &format!("Search error: {}", err));
                     return;
                 }
             };
-            let needs_lazy =
-                entries.is_empty() || entries.iter().any(|e| e.symbol.layer == "manifest");
-            let final_entries = if needs_lazy {
-                task_manager.update_progress(&tid, 50.0, "Extracting structural data...");
-                let lazy = LazyStructuralService::new(store.clone(), Some(project_root));
-                if let Ok(result) = lazy.ensure_structural_for_symbol(&q) {
-                    if result.files_built > 0 {
-                        task_manager.update_progress(
-                            &tid,
-                            80.0,
-                            &format!("Extracted {} files", result.files_built),
-                        );
-                    }
-                }
-                match do_search(&q, k.as_deref()) {
-                    Ok(e) => e,
-                    Err(err) => {
-                        task_manager.fail_task(&tid, &format!("Re-search failed: {}", err));
-                        return;
-                    }
-                }
-            } else {
-                entries
-            };
-            let final_entries = if let Some(ref s) = sc {
-                let s = s.trim_end_matches('/');
-                final_entries
-                    .into_iter()
-                    .filter(|e| e.file_path.as_ref().map_or(true, |p| p.starts_with(s)))
-                    .collect()
-            } else {
-                final_entries
-            };
             task_manager.complete_task(
                 &tid,
-                json!({
-                    "query": q, "count": final_entries.len(),
-                    "results": final_entries.iter().map(|e| json!({
-                        "name": e.symbol.name, "qualified_name": e.symbol.qualified_name,
-                        "kind": e.symbol.kind.as_str(), "language": e.symbol.language.as_str(),
-                        "score": e.score.total, "file": e.file_path.as_deref().unwrap_or(""),
-                        "file_id": e.symbol.file_id.short_hex(),
-                    })).collect::<Vec<_>>(),
-                }),
+                serde_json::to_value(&response)
+                    .unwrap_or_else(|e| json!({ "ok": false, "error": e.to_string() })),
             );
         });
 
@@ -185,45 +174,18 @@ impl ToolRouter {
                 "tool_name": "search",
                 "method": "search",
                 "status": "running",
-                "progress": null,
-                "note": "Search is running in background. Use task_status to check completion."
+                "progress": 0.0,
+                "progress_message": "queued",
+                "note": "Search is running in background. Poll task_status for progress percentages and completion."
             }))
             .unwrap_or_else(|e| e.to_string()),
             false,
         )
     }
 
-    fn do_search(
-        &self,
-        query: &str,
-        limit: usize,
-        kind: Option<&str>,
-    ) -> anyhow::Result<Vec<atlas_engine::SearchResult>> {
-        if let Some(k_str) = kind {
-            SymbolKind::from_str(k_str)
-                .map(|k| self.search_engine().search_by_kind(query, k, limit))
-                .unwrap_or_else(|| self.search_engine().search_simple(query, limit))
-        } else {
-            self.search_engine().search_simple(query, limit)
-        }
-    }
-
     fn try_lazy_structural(&self, query: &str) {
         let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
         let _ = lazy.ensure_structural_for_symbol(query);
-    }
-
-    fn format_search_results(&self, query: &str, entries: &[atlas_engine::SearchResult]) -> String {
-        serde_json::to_string_pretty(&json!({
-            "query": query, "count": entries.len(),
-            "results": entries.iter().map(|e| json!({
-                "name": e.symbol.name, "qualified_name": e.symbol.qualified_name,
-                "kind": e.symbol.kind.as_str(), "language": e.symbol.language.as_str(),
-                "score": e.score.total, "file": e.file_path.as_deref().unwrap_or(""),
-                "file_id": e.symbol.file_id.short_hex(),
-            })).collect::<Vec<_>>(),
-        }))
-        .unwrap_or_else(|e| e.to_string())
     }
 
     pub(crate) fn handle_symbol(&self, args: &serde_json::Value) -> (String, bool) {
@@ -261,4 +223,224 @@ impl ToolRouter {
             "callers": graph.callers(&sym.id).callers.len(), "callees": graph.callees(&sym.id).callees.len(),
         })).unwrap_or_else(|e| e.to_string()), false)
     }
+}
+
+fn execute_scoped_search<F>(
+    store: Arc<Store>,
+    project_root: std::path::PathBuf,
+    query: &str,
+    limit: usize,
+    kind: Option<&str>,
+    scope: &str,
+    progress: Option<F>,
+) -> anyhow::Result<ScopedSearchResponse>
+where
+    F: Fn(f64, String),
+{
+    let normalized_scope = normalize_scope(scope);
+    let scope_file_count = store.count_files_in_scope(&normalized_scope)?;
+    let mut warnings = Vec::new();
+    let mut background_preparse = None;
+    let kind_filter = kind.and_then(SymbolKind::from_str);
+
+    if scope_file_count == 0 {
+        warnings.push(format!(
+            "Scope '{}' has no indexed files. Run index first or choose a different project-relative scope.",
+            normalized_scope
+        ));
+        return Ok(ScopedSearchResponse {
+            query: query.to_string(),
+            scope: normalized_scope,
+            scope_file_count,
+            parse_level: "none",
+            precise: false,
+            count: 0,
+            results: Vec::new(),
+            warnings,
+            background_preparse,
+        });
+    }
+
+    let precise = scope_file_count <= SYNC_STRUCTURAL_SCOPE_FILE_LIMIT;
+    let parse_level = if precise { "structural" } else { "manifest" };
+
+    if precise {
+        if let Some(ref progress) = progress {
+            progress(
+                0.35,
+                "Scope is small enough; ensuring structural index...".to_string(),
+            );
+        }
+        let file_ids =
+            store.list_file_ids_in_scope(&normalized_scope, SYNC_STRUCTURAL_SCOPE_FILE_LIMIT)?;
+        let lazy = LazyStructuralService::new(store.clone(), Some(project_root.clone()));
+        match lazy.ensure_structural_for_file_ids(&file_ids) {
+            Ok(result) => {
+                if result.budget_exceeded {
+                    warnings.push(
+                        "Structural parsing hit the per-query budget; results may still be partial. Narrow the scope for exact parsing."
+                            .into(),
+                    );
+                }
+            }
+            Err(err) => warnings.push(format!(
+                "Structural parsing failed for scoped search; returning indexed symbols only: {err:#}"
+            )),
+        }
+    } else {
+        warnings.push(format!(
+            "Scope contains {} indexed files, above the precise parsing limit of {}. Returning manifest-level results only; narrow scope for exact structural parsing.",
+            scope_file_count, SYNC_STRUCTURAL_SCOPE_FILE_LIMIT
+        ));
+    }
+
+    if let Some(ref progress) = progress {
+        progress(0.70, "Running scoped symbol query...".to_string());
+    }
+    let mut symbols = search_symbols_scoped(
+        &store,
+        query,
+        &normalized_scope,
+        limit,
+        kind_filter,
+        scope_file_count,
+    )?;
+    symbols.truncate(limit);
+
+    let result_file_ids: Vec<_> = symbols
+        .iter()
+        .map(|sym| sym.file_id)
+        .take(PREHEAT_FILE_LIMIT)
+        .collect();
+    if !precise && scope_file_count <= PREHEAT_SCOPE_FILE_LIMIT && !result_file_ids.is_empty() {
+        spawn_preparse(store.clone(), project_root, result_file_ids);
+        background_preparse = Some(format!(
+            "Scheduled structural preparse for up to {} result-adjacent files.",
+            PREHEAT_FILE_LIMIT
+        ));
+    } else if !precise && scope_file_count > PREHEAT_SCOPE_FILE_LIMIT {
+        warnings.push(format!(
+            "Background structural preparse skipped because scope has more than {} files; narrow scope to enable preparse.",
+            PREHEAT_SCOPE_FILE_LIMIT
+        ));
+    }
+
+    let results = symbols
+        .into_iter()
+        .map(|sym| symbol_hit(&store, query, sym))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    Ok(ScopedSearchResponse {
+        query: query.to_string(),
+        scope: normalized_scope,
+        scope_file_count,
+        parse_level,
+        precise,
+        count: results.len(),
+        results,
+        warnings,
+        background_preparse,
+    })
+}
+
+fn search_symbols_scoped(
+    store: &Store,
+    query: &str,
+    scope: &str,
+    limit: usize,
+    kind_filter: Option<SymbolKind>,
+    scope_file_count: usize,
+) -> anyhow::Result<Vec<SymbolDef>> {
+    let candidate_limit = limit
+        .saturating_mul(SEARCH_CANDIDATE_MULTIPLIER)
+        .max(50)
+        .min(1000);
+
+    let mut symbols =
+        store.find_symbols_by_name_in_scope(query, scope, candidate_limit, kind_filter.as_ref())?;
+    if symbols.is_empty() {
+        symbols = store.search_symbols_in_scope_with_limit(
+            query,
+            scope,
+            candidate_limit,
+            kind_filter.as_ref(),
+        )?;
+    }
+    if symbols.is_empty() && query.len() >= 2 && scope_file_count <= LIKE_FALLBACK_SCOPE_FILE_LIMIT
+    {
+        symbols = store.search_symbols_by_name_like_in_scope(
+            query,
+            scope,
+            None,
+            candidate_limit,
+            kind_filter.as_ref(),
+        )?;
+    }
+    symbols.sort_by(|a, b| {
+        score_symbol(query, b)
+            .partial_cmp(&score_symbol(query, a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Ok(symbols)
+}
+
+fn symbol_hit(store: &Store, query: &str, sym: SymbolDef) -> anyhow::Result<SearchHit> {
+    let file = store
+        .get_file(&sym.file_id)?
+        .map(|f| f.path)
+        .unwrap_or_default();
+    let score = score_symbol(query, &sym);
+    Ok(SearchHit {
+        name: sym.name,
+        qualified_name: sym.qualified_name,
+        kind: sym.kind.as_str().to_string(),
+        language: sym.language.as_str().to_string(),
+        score,
+        file,
+        file_id: sym.file_id.short_hex(),
+        layer: sym.layer,
+    })
+}
+
+fn score_symbol(query: &str, sym: &SymbolDef) -> f64 {
+    let q = query.to_lowercase();
+    let name = sym.name.to_lowercase();
+    let qname = sym.qualified_name.to_lowercase();
+    let name_score = if name == q {
+        1.0
+    } else if name.starts_with(&q) {
+        0.9
+    } else if name.contains(&q) {
+        0.75
+    } else if qname.contains(&q) {
+        0.6
+    } else {
+        0.35
+    };
+    let kind_bonus = match sym.kind {
+        SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor => 0.08,
+        SymbolKind::Class | SymbolKind::Struct | SymbolKind::Interface | SymbolKind::Trait => 0.06,
+        _ => 0.0,
+    };
+    name_score + kind_bonus
+}
+
+fn normalize_scope(scope: &str) -> String {
+    scope
+        .trim()
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .trim_end_matches('/')
+        .replace('\\', "/")
+}
+
+fn spawn_preparse(
+    store: Arc<Store>,
+    project_root: std::path::PathBuf,
+    file_ids: Vec<atlas_engine::FileId>,
+) {
+    std::thread::spawn(move || {
+        let lazy = LazyStructuralService::new(store, Some(project_root));
+        let _ = lazy.ensure_structural_for_file_ids(&file_ids);
+    });
 }

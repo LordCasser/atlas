@@ -218,7 +218,10 @@ impl LexicalBindingSpec for RubyAdapter {
         include_str!("../../queries/ruby/lexical.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::supported_with_limitations(0.45, vec!["name-based binding (no proper shadowing)"])
+        FeatureSupport::supported_with_limitations(
+            0.45,
+            vec!["name-based binding (no proper shadowing)"],
+        )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
         normalize_ruby_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
@@ -358,7 +361,10 @@ fn find_ancestor_method_name(node: tree_sitter::Node, source: &str) -> Option<St
     while let Some(parent) = current {
         if parent.kind() == "call" {
             if let Some(method) = parent.child_by_field_name("method") {
-                return method.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+                return method
+                    .utf8_text(source.as_bytes())
+                    .ok()
+                    .map(|s| s.to_string());
             }
         }
         current = parent.parent();
@@ -382,7 +388,6 @@ fn ruby_extract_signature(
     }
 }
 
-
 // ── Lexical binding normalize ──────────────────────────────────────────
 
 fn ruby_binding_kind(capture_name: &str) -> Option<BindingKind> {
@@ -394,13 +399,27 @@ fn ruby_binding_kind(capture_name: &str) -> Option<BindingKind> {
     }
 }
 
-fn normalize_ruby_lexical(capture_name: &str, node: tree_sitter::Node, source: &str, file_id: FileId) -> Option<BindingDef> {
+fn normalize_ruby_lexical(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> Option<BindingDef> {
     let kind = ruby_binding_kind(capture_name)?;
     let name = node_text(node, source)?;
     let range = node_range(node);
     let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
     let id = BindingId::generate(&file_id, &scope_id, kind.as_str(), &name, range.start_byte);
-    Some(BindingDef { id, file_id, function_id: None, scope_id, kind, name, symbol_id: None, range })
+    Some(BindingDef {
+        id,
+        file_id,
+        function_id: None,
+        scope_id,
+        kind,
+        name,
+        symbol_id: None,
+        range,
+    })
 }
 
 // ── Dataflow normalize ─────────────────────────────────────────────────
@@ -408,20 +427,41 @@ fn normalize_ruby_lexical(capture_name: &str, node: tree_sitter::Node, source: &
 fn find_call_expression_ruby(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
     let mut current = node;
     while let Some(parent) = current.parent() {
-        if parent.kind() == "call" { return Some(parent); }
+        if parent.kind() == "call" {
+            return Some(parent);
+        }
         current = parent;
     }
     None
 }
 
-fn normalize_ruby_dataflow_builder(capture_name: &str, node: tree_sitter::Node, source: &str, file_id: FileId) -> (Option<DataNode>, Option<DataFlowEdge>) {
+fn normalize_ruby_dataflow_builder(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> (Option<DataNode>, Option<DataFlowEdge>) {
     use types::ids::DataNodeId;
     let range = node_range(node);
     match capture_name {
-        "df.parameter" => node_text(node, source).map(|name| {
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "parameter", Some(&name), Some(&name), range.start_byte);
-            (Some(DataNode::parameter(node_id, file_id, None, None, &name, range)), None)
-        }).unwrap_or((None, None)),
+        "df.parameter" => node_text(node, source)
+            .map(|name| {
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "parameter",
+                    Some(&name),
+                    Some(&name),
+                    range.start_byte,
+                );
+                (
+                    Some(DataNode::parameter(
+                        node_id, file_id, None, None, &name, range,
+                    )),
+                    None,
+                )
+            })
+            .unwrap_or((None, None)),
         "df.assign_target" => {
             // Differentiate by AST node kind: identifier → Local,
             // instance_variable (@x) → Field, class_variable (@@x) → Field,
@@ -429,64 +469,264 @@ fn normalize_ruby_dataflow_builder(capture_name: &str, node: tree_sitter::Node, 
             let text = node_text(node, source).unwrap_or_default();
             let (kind_str, dn) = match node.kind() {
                 "instance_variable" | "class_variable" => {
-                    let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "field", Some(&text), Some(&text), range.start_byte);
-                    ("field", DataNode::field(node_id, file_id, None, &text, &text, range))
-                },
+                    let node_id = DataNodeId::generate(
+                        &file_id,
+                        None::<&SymbolId>,
+                        "field",
+                        Some(&text),
+                        Some(&text),
+                        range.start_byte,
+                    );
+                    (
+                        "field",
+                        DataNode::field(node_id, file_id, None, &text, &text, range),
+                    )
+                }
                 "global_variable" => {
-                    let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "global", Some(&text), Some(&text), range.start_byte);
-                    ("global", DataNode { id: node_id, file_id, function_id: None, kind: DataNodeKind::Global, binding_id: None, callsite_id: None, name: Some(text.clone()), access_path: Some(text), arg_index: None, range })
-                },
+                    let node_id = DataNodeId::generate(
+                        &file_id,
+                        None::<&SymbolId>,
+                        "global",
+                        Some(&text),
+                        Some(&text),
+                        range.start_byte,
+                    );
+                    (
+                        "global",
+                        DataNode {
+                            id: node_id,
+                            file_id,
+                            function_id: None,
+                            kind: DataNodeKind::Global,
+                            binding_id: None,
+                            callsite_id: None,
+                            name: Some(text.clone()),
+                            access_path: Some(text),
+                            arg_index: None,
+                            range,
+                        },
+                    )
+                }
                 _ => {
-                    let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "local", Some(&text), Some(&text), range.start_byte);
-                    ("local", DataNode::local(node_id, file_id, None, None, &text, range))
-                },
+                    let node_id = DataNodeId::generate(
+                        &file_id,
+                        None::<&SymbolId>,
+                        "local",
+                        Some(&text),
+                        Some(&text),
+                        range.start_byte,
+                    );
+                    (
+                        "local",
+                        DataNode::local(node_id, file_id, None, None, &text, range),
+                    )
+                }
             };
             let _ = kind_str;
             (Some(dn), None)
-        },
+        }
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_ruby(node).map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "expr", Some(&text), None, range.start_byte);
-            (Some(DataNode { id: node_id, file_id, function_id: None, kind: DataNodeKind::Expr, binding_id: None, callsite_id, name: Some(text), access_path: None, arg_index: None, range }), None)
-        },
+            let callsite_id = find_call_expression_ruby(node)
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "expr",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            (
+                Some(DataNode {
+                    id: node_id,
+                    file_id,
+                    function_id: None,
+                    kind: DataNodeKind::Expr,
+                    binding_id: None,
+                    callsite_id,
+                    name: Some(text),
+                    access_path: None,
+                    arg_index: None,
+                    range,
+                }),
+                None,
+            )
+        }
         "df.return_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "return", Some(&text), None, range.start_byte);
-            (Some(DataNode { id: node_id, file_id, function_id: None, kind: DataNodeKind::Return, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range }), None)
-        },
-        "df.call_target" => node_text(node, source).map(|name| {
-            let access_path = name.clone();
-            let callsite_id = find_call_expression_ruby(node).map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "call_target", Some(&name), Some(&access_path), range.start_byte);
-            (Some(DataNode::call_target(node_id, file_id, None, callsite_id, &name, &access_path, range)), None)
-        }).unwrap_or((None, None)),
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "return",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            (
+                Some(DataNode {
+                    id: node_id,
+                    file_id,
+                    function_id: None,
+                    kind: DataNodeKind::Return,
+                    binding_id: None,
+                    callsite_id: None,
+                    name: Some(text),
+                    access_path: None,
+                    arg_index: None,
+                    range,
+                }),
+                None,
+            )
+        }
+        "df.call_target" => node_text(node, source)
+            .map(|name| {
+                let access_path = name.clone();
+                let callsite_id = find_call_expression_ruby(node).map(|ce| {
+                    types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+                });
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "call_target",
+                    Some(&name),
+                    Some(&access_path),
+                    range.start_byte,
+                );
+                (
+                    Some(DataNode::call_target(
+                        node_id,
+                        file_id,
+                        None,
+                        callsite_id,
+                        &name,
+                        &access_path,
+                        range,
+                    )),
+                    None,
+                )
+            })
+            .unwrap_or((None, None)),
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_ruby(node).map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "call_arg", Some(&text), None, range.start_byte);
-            (Some(DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range)), None)
-        },
-        "df.field_name" => node_text(node, source).map(|name| {
-            let access_path = node.parent().filter(|p| p.kind() == "call").and_then(|p| node_text(p, source)).unwrap_or_else(|| name.clone());
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "field", Some(&name), Some(&access_path), range.start_byte);
-            (Some(DataNode::field(node_id, file_id, None, &name, &access_path, range)), None)
-        }).unwrap_or((None, None)),
+            let callsite_id = find_call_expression_ruby(node)
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "call_arg",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            (
+                Some(DataNode::call_arg(
+                    node_id,
+                    file_id,
+                    None,
+                    callsite_id,
+                    Some(&text),
+                    range,
+                )),
+                None,
+            )
+        }
+        "df.field_name" => node_text(node, source)
+            .map(|name| {
+                let access_path = node
+                    .parent()
+                    .filter(|p| p.kind() == "call")
+                    .and_then(|p| node_text(p, source))
+                    .unwrap_or_else(|| name.clone());
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "field",
+                    Some(&name),
+                    Some(&access_path),
+                    range.start_byte,
+                );
+                (
+                    Some(DataNode::field(
+                        node_id,
+                        file_id,
+                        None,
+                        &name,
+                        &access_path,
+                        range,
+                    )),
+                    None,
+                )
+            })
+            .unwrap_or((None, None)),
         "df.receiver" | "df.literal" => {
             let text = node_text(node, source).unwrap_or_default();
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, if capture_name == "df.literal" { "literal" } else { "receiver" }, Some(&text), None, range.start_byte);
-            (Some(DataNode { id: node_id, file_id, function_id: None, kind: if capture_name == "df.literal" { DataNodeKind::Literal } else { DataNodeKind::Receiver }, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range }), None)
-        },
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                if capture_name == "df.literal" {
+                    "literal"
+                } else {
+                    "receiver"
+                },
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            (
+                Some(DataNode {
+                    id: node_id,
+                    file_id,
+                    function_id: None,
+                    kind: if capture_name == "df.literal" {
+                        DataNodeKind::Literal
+                    } else {
+                        DataNodeKind::Receiver
+                    },
+                    binding_id: None,
+                    callsite_id: None,
+                    name: Some(text),
+                    access_path: None,
+                    arg_index: None,
+                    range,
+                }),
+                None,
+            )
+        }
         // ── Ruby dataflow additions (§2.12) ──────────────────────
         "df.implicit_return" => {
             // Query uses trailing `.` anchor: only the last child of
             // body_statement is captured, representing the implicit return.
             let text = node_text(node, source).unwrap_or_default();
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "return", Some(&text), None, range.start_byte);
-            (Some(DataNode { id: node_id, file_id, function_id: None, kind: DataNodeKind::Return, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range }), None)
-        },
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "return",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            (
+                Some(DataNode {
+                    id: node_id,
+                    file_id,
+                    function_id: None,
+                    kind: DataNodeKind::Return,
+                    binding_id: None,
+                    callsite_id: None,
+                    name: Some(text),
+                    access_path: None,
+                    arg_index: None,
+                    range,
+                }),
+                None,
+            )
+        }
         "df.identifier_use" => {
-            if crate::languages::shared::is_identifier_decl_or_property(node, &["class", "module", "method"]) {
+            if crate::languages::shared::is_identifier_decl_or_property(
+                node,
+                &["class", "module", "method"],
+            ) {
                 return (None, None);
             }
             let text = node_text(node, source).unwrap_or_default();
@@ -494,23 +734,36 @@ fn normalize_ruby_dataflow_builder(capture_name: &str, node: tree_sitter::Node, 
                 return (None, None);
             }
             let node_id = DataNodeId::generate(
-                &file_id, None::<&SymbolId>, "identifier_use",
-                Some(&text), Some(&text), range.start_byte,
+                &file_id,
+                None::<&SymbolId>,
+                "identifier_use",
+                Some(&text),
+                Some(&text),
+                range.start_byte,
             );
             let dn = DataNode {
-                id: node_id, file_id, function_id: None,
+                id: node_id,
+                file_id,
+                function_id: None,
                 kind: DataNodeKind::VariableUse,
-                binding_id: None, callsite_id: None,
-                name: Some(text.clone()), access_path: Some(text),
-                arg_index: None, range,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text.clone()),
+                access_path: Some(text),
+                arg_index: None,
+                range,
             };
             (Some(dn), None)
         }
         "df.assign_field_target" => {
             let text = node_text(node, source).unwrap_or_default();
             let node_id = DataNodeId::generate(
-                &file_id, None::<&SymbolId>, "field",
-                Some(&text), Some(&text), range.start_byte,
+                &file_id,
+                None::<&SymbolId>,
+                "field",
+                Some(&text),
+                Some(&text),
+                range.start_byte,
             );
             let dn = DataNode::field(node_id, file_id, None, &text, &text, range);
             (Some(dn), None)
@@ -591,13 +844,15 @@ mod tests {
     fn test_dataflow_normalize_ruby() {
         let frontend = ruby_frontend();
         let ts_lang = frontend.parser.tree_sitter_language();
-        let source = "def f(params)\n  name = params[:name]\n  clean = sanitize(name)\n  clean\nend\n";
+        let source =
+            "def f(params)\n  name = params[:name]\n  clean = sanitize(name)\n  clean\nend\n";
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&ts_lang).unwrap();
         let tree = parser.parse(source, None).unwrap();
         let root = tree.root_node();
 
-        let query = tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
+        let query =
+            tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
         let mut cursor = tree_sitter::QueryCursor::new();
         let file_id = FileId::generate("test.rb");
         let ctx = NormalizeCtx {
@@ -618,7 +873,13 @@ mod tests {
         while let Some((m, idx)) = captures.next() {
             let cap = m.captures[*idx];
             let name = query.capture_names()[cap.index as usize].to_string();
-            let (dn, _de) = frontend.dataflow.normalize(ctx, Capture { name, node: cap.node });
+            let (dn, _de) = frontend.dataflow.normalize(
+                ctx,
+                Capture {
+                    name,
+                    node: cap.node,
+                },
+            );
             if let Some(dn) = dn {
                 match dn.kind {
                     DataNodeKind::Parameter => has_parameter = true,
@@ -634,8 +895,14 @@ mod tests {
         assert!(has_parameter, "should have Parameter DataNode for params");
         assert!(has_local, "should have Local DataNode for name/clean");
         assert!(has_field, "should have Field DataNode for params[:name]");
-        assert!(has_call_target, "should have CallTarget DataNode for sanitize");
-        assert!(has_implicit_return, "should have Return DataNode for implicit return (clean)");
+        assert!(
+            has_call_target,
+            "should have CallTarget DataNode for sanitize"
+        );
+        assert!(
+            has_implicit_return,
+            "should have Return DataNode for implicit return (clean)"
+        );
         assert!(has_expr, "should have Expr DataNode for assignment values");
     }
 }

@@ -11,13 +11,13 @@
 //!
 //! Run: `cargo test --test trace_fixtures`
 
-use atlas_engine::trace::{Locator, Slicer, TraceEngine};
-use atlas_engine::Store;
-use atlas_engine::extract_file;
 use atlas_engine::GraphBuilder;
 use atlas_engine::ReferenceResolver;
+use atlas_engine::Store;
 use atlas_engine::enums::{DataFlowKind, DataNodeKind, Language};
+use atlas_engine::extract_file;
 use atlas_engine::ids::FileId;
+use atlas_engine::trace::{Locator, Slicer, TraceEngine};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -55,7 +55,10 @@ fn index_files(files: &[(&str, &str)]) -> Arc<Store> {
 
 /// Locate a data node by name in a file.  Uses **last** occurrence in byte order
 /// (post‑body uses in a function usually sort after body‑local definitions).
-fn find_node<'a>(nodes: &'a [atlas_engine::dataflow::DataNode], name: &str) -> &'a atlas_engine::dataflow::DataNode {
+fn find_node<'a>(
+    nodes: &'a [atlas_engine::dataflow::DataNode],
+    name: &str,
+) -> &'a atlas_engine::dataflow::DataNode {
     nodes
         .iter()
         .filter(|n| n.name.as_deref() == Some(name))
@@ -149,21 +152,22 @@ fn fx1_shadowing_inner_scope_not_traced_as_outer() {
     // Local (a separate binding in a nested scope).
     //
     // ── CRITICAL: inner total must NOT appear in the path ──
-    let violation = path.steps.iter().any(|step| {
-        step.from_node_id == inner_total.id || step.to_node_id == inner_total.id
-    });
+    let violation = path
+        .steps
+        .iter()
+        .any(|step| step.from_node_id == inner_total.id || step.to_node_id == inner_total.id);
     assert!(
         !violation,
         "shadowing violation: inner 'total' (id={:?}, line={}) must NOT be in outer trace",
-        inner_total.id,
-        inner_total.range.start_line
+        inner_total.id, inner_total.range.start_line
     );
 
     // Conversely, the outer total Local MUST appear (as the definition
     // feeding the return statement).
-    let outer_in_path = path.steps.iter().any(|step| {
-        step.from_node_id == outer_total.id || step.to_node_id == outer_total.id
-    });
+    let outer_in_path = path
+        .steps
+        .iter()
+        .any(|step| step.from_node_id == outer_total.id || step.to_node_id == outer_total.id);
     assert!(
         outer_in_path,
         "outer 'total' Local must appear in trace (it feeds the return statement)"
@@ -253,14 +257,19 @@ fn fx3_cross_file_arg_to_param_bridge() {
     ];
     let store = index_files(files);
     let helper_id = FileId::generate("helper.ts");
-    let data_nodes = store.find_data_nodes_by_file(&helper_id).expect("data nodes");
+    let data_nodes = store
+        .find_data_nodes_by_file(&helper_id)
+        .expect("data nodes");
 
     // Find the parameter data node for 'base'.
     let base_nodes: Vec<_> = data_nodes
         .iter()
         .filter(|n| n.kind == DataNodeKind::Parameter && n.name.as_deref() == Some("base"))
         .collect();
-    assert!(!base_nodes.is_empty(), "expected parameter 'base' data node");
+    assert!(
+        !base_nodes.is_empty(),
+        "expected parameter 'base' data node"
+    );
     let base_node = base_nodes[0];
 
     // Use interprocedural bridging via SummaryEdgeProvider.
@@ -288,7 +297,11 @@ fn fx3_cross_file_arg_to_param_bridge() {
         .find(|s| s.edge_kind == DataFlowKind::ArgToParam)
         .expect("ArgToParam step not found");
     assert!(
-        arg_step.evidence.as_ref().map(|e| e.file_path.contains("main.ts")).unwrap_or(false),
+        arg_step
+            .evidence
+            .as_ref()
+            .map(|e| e.file_path.contains("main.ts"))
+            .unwrap_or(false),
         "ArgToParam evidence must reference caller file main.ts, got {:?}",
         arg_step.evidence.as_ref().map(|e| &e.file_path)
     );
@@ -336,7 +349,10 @@ fn fx4_cross_file_return_to_call_bridge() {
         .expect("slice error")
         .expect("cross-file return trace must produce path");
 
-    assert!(!path.steps.is_empty(), "cross-file return trace must have steps");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-file return trace must have steps"
+    );
 
     // ── CRITICAL: Must have ReturnToCall edge ──
     assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
@@ -348,7 +364,11 @@ fn fx4_cross_file_return_to_call_bridge() {
         .find(|s| s.edge_kind == DataFlowKind::ReturnToCall)
         .expect("ReturnToCall step not found");
     assert!(
-        ret_step.evidence.as_ref().map(|e| e.file_path.contains("helper.ts")).unwrap_or(false),
+        ret_step
+            .evidence
+            .as_ref()
+            .map(|e| e.file_path.contains("helper.ts"))
+            .unwrap_or(false),
         "ReturnToCall evidence must reference helper.ts, got {:?}",
         ret_step.evidence.as_ref().map(|e| &e.file_path)
     );
@@ -389,7 +409,10 @@ fn fx5_java_capability_declares_dataflow_basic() {
     assert!(resp.ok, "Java trace_point must return ok=true");
 
     // Capability must be present and indicate DataflowBasic level.
-    let cap = resp.capability.as_ref().expect("Java capability must be present");
+    let cap = resp
+        .capability
+        .as_ref()
+        .expect("Java capability must be present");
     assert_eq!(cap.language, "java");
     assert!(
         cap.capability_level == atlas_engine::capability::CapabilityLevel::DataflowBasic,
@@ -398,8 +421,13 @@ fn fx5_java_capability_declares_dataflow_basic() {
     );
 
     // Java now supports local_dataflow and use_def at DataflowBasic level.
-    assert!(cap.supported_features.iter().any(|f| f.contains("local_dataflow") || f.contains("intra_statement_dataflow")),
-        "Java should support local_dataflow, got supported: {:?}", cap.supported_features);
+    assert!(
+        cap.supported_features
+            .iter()
+            .any(|f| f.contains("local_dataflow") || f.contains("intra_statement_dataflow")),
+        "Java should support local_dataflow, got supported: {:?}",
+        cap.supported_features
+    );
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -430,7 +458,10 @@ fn fx6_python_cfg_unsupported_in_capability() {
     );
 
     // Capability profile must exist and declare CFG as unsupported.
-    let cap = resp.capability.as_ref().expect("Python capability must exist");
+    let cap = resp
+        .capability
+        .as_ref()
+        .expect("Python capability must exist");
     assert_eq!(cap.language, "python");
 
     // Check feature matrix for CFG support.
@@ -503,9 +534,15 @@ function scale(p: Point, factor: number): Point {
         .steps
         .iter()
         .any(|s| s.edge_kind == DataFlowKind::FieldLoad);
-    let has_assign = path.steps.iter().any(|s| s.edge_kind == DataFlowKind::Assign);
-    assert!(has_field_load || has_assign, "should have at least FieldLoad or Assign edges, kinds: {:?}",
-        path.steps.iter().map(|s| s.edge_kind).collect::<Vec<_>>());
+    let has_assign = path
+        .steps
+        .iter()
+        .any(|s| s.edge_kind == DataFlowKind::Assign);
+    assert!(
+        has_field_load || has_assign,
+        "should have at least FieldLoad or Assign edges, kinds: {:?}",
+        path.steps.iter().map(|s| s.edge_kind).collect::<Vec<_>>()
+    );
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -519,16 +556,25 @@ function scale(p: Point, factor: number): Point {
 fn fx5_indirect_caller_bridge() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[
-        ("a.ts", r#"import { b } from './b';
+        (
+            "a.ts",
+            r#"import { b } from './b';
 export function a(): void { b(42); }
-"#),
-        ("b.ts", r#"import { c } from './c';
+"#,
+        ),
+        (
+            "b.ts",
+            r#"import { c } from './c';
 export function b(x: number): void { c(x); }
-"#),
-        ("c.ts", r#"export function c(val: number): void {
+"#,
+        ),
+        (
+            "c.ts",
+            r#"export function c(val: number): void {
     console.log(val);
 }
-"#),
+"#,
+        ),
     ];
     let store = index_files(files);
     let file_id = FileId::generate("c.ts");
@@ -553,7 +599,9 @@ export function b(x: number): void { c(x); }
     let path = resp.result.expect("trace path must exist");
 
     // Should have at least one indirect ArgToParam edge
-    let arg_to_param_count = path.steps.iter()
+    let arg_to_param_count = path
+        .steps
+        .iter()
         .filter(|s| s.edge_kind == DataFlowKind::ArgToParam)
         .count();
     assert!(
@@ -564,9 +612,14 @@ export function b(x: number): void { c(x); }
 
     // Should have evidence from file a.ts (the indirect caller)
     let has_a_evidence = path.steps.iter().any(|s| {
-        s.evidence.as_ref().map_or(false, |e| e.file_path.contains("a.ts"))
+        s.evidence
+            .as_ref()
+            .map_or(false, |e| e.file_path.contains("a.ts"))
     });
-    assert!(has_a_evidence, "should have evidence from indirect caller a.ts");
+    assert!(
+        has_a_evidence,
+        "should have evidence from indirect caller a.ts"
+    );
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -625,5 +678,3 @@ const result = outer(inner(5));
     // When data_node_id becomes reliable, this can be upgraded to assert
     // ReturnToCall edges.
 }
-
-

@@ -8,9 +8,9 @@ use crate::frontend::{
     LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
     SymbolExtractorSpec,
 };
+use std::path::Path;
 use types::capability::FeatureSupport;
 use types::*;
-use std::path::Path;
 
 /// ArkTS adapter — delegates to TypeScript internally.
 pub(crate) struct ArkTsAdapter;
@@ -147,10 +147,20 @@ impl LexicalBindingSpec for ArkTsAdapter {
         include_str!("../../queries/typescript/lexical.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::supported_with_limitations(0.45, vec!["ArkTS via TS grammar fallback — lexical bindings may miss ArkTS-specific constructs"])
+        FeatureSupport::supported_with_limitations(
+            0.45,
+            vec![
+                "ArkTS via TS grammar fallback — lexical bindings may miss ArkTS-specific constructs",
+            ],
+        )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
-        crate::languages::typescript::normalize_ts_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
+        crate::languages::typescript::normalize_ts_lexical(
+            &capture.name,
+            capture.node,
+            ctx.source,
+            ctx.file_id,
+        )
     }
 }
 
@@ -159,10 +169,22 @@ impl DataflowSpec for ArkTsAdapter {
         include_str!("../../queries/typescript/dataflow_builder.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::supported_with_limitations(0.45, vec!["ArkTS via TS grammar fallback — dataflow may miss ArkTS-specific constructs"])
+        FeatureSupport::supported_with_limitations(
+            0.45,
+            vec!["ArkTS via TS grammar fallback — dataflow may miss ArkTS-specific constructs"],
+        )
     }
-    fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> (Option<DataNode>, Option<DataFlowEdge>) {
-        crate::languages::typescript::normalize_ts_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
+    fn normalize(
+        &self,
+        ctx: NormalizeCtx<'_>,
+        capture: Capture<'_>,
+    ) -> (Option<DataNode>, Option<DataFlowEdge>) {
+        crate::languages::typescript::normalize_ts_dataflow_builder(
+            &capture.name,
+            capture.node,
+            ctx.source,
+            ctx.file_id,
+        )
     }
 }
 

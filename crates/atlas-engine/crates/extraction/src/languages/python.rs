@@ -155,18 +155,23 @@ fn is_py_identifier_declaration(node: tree_sitter::Node) -> bool {
         None => return false,
     };
     match parent.kind() {
-        "function_definition" | "class_definition" | "parameters"
-        | "aliased_import" | "import_statement" | "except_clause"
-        | "with_item" | "for_statement" => {
+        "function_definition"
+        | "class_definition"
+        | "parameters"
+        | "aliased_import"
+        | "import_statement"
+        | "except_clause"
+        | "with_item"
+        | "for_statement" => {
             // Check if this node is the "name" field of the parent
-            parent.child_by_field_name("name")
+            parent
+                .child_by_field_name("name")
                 .map_or(false, |n| n.id() == node.id())
         }
         // Attribute access: obj.attr — don't capture property name as use
-        "attribute" => {
-            parent.child_by_field_name("attribute")
-                .map_or(false, |n| n.id() == node.id())
-        }
+        "attribute" => parent
+            .child_by_field_name("attribute")
+            .map_or(false, |n| n.id() == node.id()),
         _ => false,
     }
 }
@@ -260,9 +265,8 @@ fn normalize_py_dataflow_builder(
         }
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_python(node).map(|ce| {
-                types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
-            });
+            let callsite_id = find_call_expression_python(node)
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&types::ids::SymbolId>,
@@ -274,38 +278,36 @@ fn normalize_py_dataflow_builder(
             let dn = DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range);
             (Some(dn), None)
         }
-        "df.call_target" => {
-            node_text(node, source)
-                .map(|name| {
-                    let access_path = node
-                        .parent()
-                        .filter(|p| p.kind() == "attribute")
-                        .and_then(|p| node_text(p, source))
-                        .unwrap_or_else(|| name.clone());
-                    let callsite_id = find_call_expression_python(node).map(|ce| {
-                        types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
-                    });
-                    let node_id = DataNodeId::generate(
-                        &file_id,
-                        None::<&types::ids::SymbolId>,
-                        "call_target",
-                        Some(&name),
-                        Some(&access_path),
-                        range.start_byte,
-                    );
-                    let dn = DataNode::call_target(
-                        node_id,
-                        file_id,
-                        None,
-                        callsite_id,
-                        &name,
-                        &access_path,
-                        range,
-                    );
-                    (Some(dn), None)
-                })
-                .unwrap_or((None, None))
-        }
+        "df.call_target" => node_text(node, source)
+            .map(|name| {
+                let access_path = node
+                    .parent()
+                    .filter(|p| p.kind() == "attribute")
+                    .and_then(|p| node_text(p, source))
+                    .unwrap_or_else(|| name.clone());
+                let callsite_id = find_call_expression_python(node).map(|ce| {
+                    types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+                });
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&types::ids::SymbolId>,
+                    "call_target",
+                    Some(&name),
+                    Some(&access_path),
+                    range.start_byte,
+                );
+                let dn = DataNode::call_target(
+                    node_id,
+                    file_id,
+                    None,
+                    callsite_id,
+                    &name,
+                    &access_path,
+                    range,
+                );
+                (Some(dn), None)
+            })
+            .unwrap_or((None, None)),
         "df.field_name" => {
             node_text(node, source)
                 .map(|name| {
@@ -408,8 +410,12 @@ fn normalize_py_dataflow_builder(
         "df.assign_field_target" => {
             let text = node_text(node, source).unwrap_or_default();
             let node_id = DataNodeId::generate(
-                &file_id, None::<&SymbolId>, "field",
-                Some(&text), Some(&text), range.start_byte,
+                &file_id,
+                None::<&SymbolId>,
+                "field",
+                Some(&text),
+                Some(&text),
+                range.start_byte,
             );
             let dn = DataNode::field(node_id, file_id, None, &text, &text, range);
             (Some(dn), None)
@@ -492,7 +498,10 @@ impl LexicalBindingSpec for PythonAdapter {
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
             0.45,
-            vec!["name-based binding (no proper shadowing)", "assignment LHS treated as definition"],
+            vec![
+                "name-based binding (no proper shadowing)",
+                "assignment LHS treated as definition",
+            ],
         )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
@@ -767,7 +776,16 @@ fn normalize_py_lexical(
     let range = node_range(node);
     let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
     let id = BindingId::generate(&file_id, &scope_id, kind.as_str(), &name, range.start_byte);
-    Some(BindingDef { id, file_id, function_id: None, scope_id, kind, name, symbol_id: None, range })
+    Some(BindingDef {
+        id,
+        file_id,
+        function_id: None,
+        scope_id,
+        kind,
+        name,
+        symbol_id: None,
+        range,
+    })
 }
 
 #[cfg(test)]
@@ -852,7 +870,11 @@ mod tests {
         let spec = super::python_frontend();
         let lang = spec.parser.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, spec.dataflow.dataflow_builder_query());
-        assert!(query.is_ok(), "dataflow query must compile: {:?}", query.err());
+        assert!(
+            query.is_ok(),
+            "dataflow query must compile: {:?}",
+            query.err()
+        );
     }
 
     #[test]
@@ -869,7 +891,8 @@ mod tests {
         let tree = parser.parse(source, None).unwrap();
         let root = tree.root_node();
 
-        let query = tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
+        let query =
+            tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
         let mut cursor = tree_sitter::QueryCursor::new();
         let file_id = FileId::generate("test.ext");
         let ctx = NormalizeCtx {
@@ -885,15 +908,33 @@ mod tests {
         while let Some((m, idx)) = captures.next() {
             let cap = m.captures[*idx];
             let name = query.capture_names()[cap.index as usize].to_string();
-            let (dn, _de) = frontend.dataflow.normalize(ctx, Capture { name, node: cap.node });
+            let (dn, _de) = frontend.dataflow.normalize(
+                ctx,
+                Capture {
+                    name,
+                    node: cap.node,
+                },
+            );
             if let Some(dn) = dn {
                 nodes.push(dn);
             }
         }
 
-        assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param");
-        assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget), "calltarget");
-        assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallArg), "callarg");
-        assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse");
+        assert!(
+            nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+            "param"
+        );
+        assert!(
+            nodes.iter().any(|n| n.kind == DataNodeKind::CallTarget),
+            "calltarget"
+        );
+        assert!(
+            nodes.iter().any(|n| n.kind == DataNodeKind::CallArg),
+            "callarg"
+        );
+        assert!(
+            nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse),
+            "varuse"
+        );
     }
 }

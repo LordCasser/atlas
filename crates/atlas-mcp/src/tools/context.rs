@@ -25,10 +25,8 @@ impl ToolRouter {
             None => {
                 // Try lazy structural extraction
                 self.send_progress(0.5, "Extracting structural data...");
-                let lazy = LazyStructuralService::new(
-                    self.store.clone(),
-                    Some(self.project_root.clone()),
-                );
+                let lazy =
+                    LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
                 let _ = lazy.ensure_structural_for_symbol(qname);
                 // Re-query
                 let retry = self.store.find_symbols_by_qname(qname).unwrap_or_default();

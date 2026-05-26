@@ -39,17 +39,7 @@ fn normalize_bash_definition(
     let name = node_text(node, source)?;
     let range = node_range(node);
 
-    Some(
-        SymbolDefBuilder::new(
-            file_id,
-            Language::Bash,
-            kind,
-            name.clone(),
-            name,
-            range,
-        )
-        .build(),
-    )
+    Some(SymbolDefBuilder::new(file_id, Language::Bash, kind, name.clone(), name, range).build())
 }
 
 fn normalize_bash_reference(

@@ -1,9 +1,8 @@
 //! `atlas_index` MCP tool — trigger project indexing from MCP clients.
 //!
-//! Accepts `analysis` mode ("manifest" default | "structural" | "full") and
-//! runs the extraction → resolution → graph pipeline against the project root.
-//! Manifest mode is fastest (top-level symbols only); structural/full
-//! extraction can be triggered on-demand via LazyStructuralService.
+//! MCP indexing always performs fast manifest extraction against the project
+//! root. Structural/full parsing is intentionally handled by scoped query tools
+//! on demand so MCP clients do not block on large repositories.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,8 +36,6 @@ impl ToolRouter {
     /// Handle `atlas_index` tool call.
     ///
     /// Parameters:
-    ///   analysis: "manifest" (default, top-level symbols only) | "structural"
-    ///             (symbols+callgraph) | "full" (complete dataflow+CFG)
     ///   include: list of glob patterns to restrict indexing to
     ///   exclude: list of glob patterns to skip (e.g. ["**/test/**", "**/*.test.ts"])
     ///
@@ -47,6 +44,10 @@ impl ToolRouter {
     ///
     /// Returns a JSON IndexResult with indexing statistics.
     pub(crate) fn handle_index(&self, args: &serde_json::Value) -> (String, bool) {
+        if args.get("analysis").is_some() {
+            return (reject_analysis_result(), true);
+        }
+
         let background = args
             .get("background")
             .and_then(|v| v.as_bool())
@@ -56,12 +57,7 @@ impl ToolRouter {
         }
 
         let start = std::time::Instant::now();
-        let analysis = args["analysis"].as_str().unwrap_or("manifest");
-        let mode = match analysis {
-            "structural" => ExtractionMode::Structural,
-            "full" => ExtractionMode::Full,
-            _ => ExtractionMode::Manifest,
-        };
+        let mode = ExtractionMode::Manifest;
 
         let exclude_patterns: Vec<String> = args["exclude"]
             .as_array()
@@ -114,7 +110,6 @@ impl ToolRouter {
 
         // Run the index pipeline
         let progress_sender = self.progress_sender.clone();
-        let is_manifest = matches!(mode, ExtractionMode::Manifest);
         match run_index(
             &self.store,
             &self.project_root,
@@ -141,23 +136,14 @@ impl ToolRouter {
         // ── Large project / background guidance ────────────────────────────
         if result.duration_ms > 30_000 {
             let mut msg = "Indexing took over 30 seconds. ".to_string();
-            if !is_manifest {
-                msg.push_str(
-                    "For a faster first index, use the default analysis=\"manifest\" mode (top-level symbols only). Full structural analysis is triggered on-demand via lazy structural. ",
-                );
-            }
             msg.push_str(
                 "For large projects, use background=true to run indexing asynchronously, then call wait_for_task with the returned task_id to block until completion.",
             );
-            result.warning = Some(msg);
-        } else if result.files_discovered > 5_000 && !is_manifest {
-            result.warning = Some(
-                "Large project detected. Use background=true to run indexing asynchronously, then call wait_for_task with the returned task_id to block until completion. Also consider the default analysis=\"manifest\" for a faster initial index."
-                    .into(),
-            );
+            append_warning(&mut result.warning, msg);
         } else if result.files_discovered > 5_000 {
-            result.warning = Some(
-                "Large project detected. For subsequent deep indexing (analysis=\"structural\"/\"full\"), use background=true and wait_for_task to avoid blocking the MCP connection."
+            append_warning(
+                &mut result.warning,
+                "Large project detected. Use background=true and wait_for_task if the client timeout budget is short."
                     .into(),
             );
         }
@@ -168,17 +154,16 @@ impl ToolRouter {
 
     fn handle_index_background(&self, args: &serde_json::Value) -> (String, bool) {
         let task_id = self.task_manager.create_task("index", "index");
+        let auto_background = args
+            .get("_auto_background")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let tid = task_id.clone();
         let task_manager = self.task_manager.clone();
         let store = self.store.clone();
         let project_root = self.project_root.clone();
 
-        let analysis = args["analysis"].as_str().unwrap_or("manifest").to_string();
-        let mode = match analysis.as_str() {
-            "structural" => ExtractionMode::Structural,
-            "full" => ExtractionMode::Full,
-            _ => ExtractionMode::Manifest,
-        };
+        let mode = ExtractionMode::Manifest;
         let exclude_patterns: Vec<String> = args["exclude"]
             .as_array()
             .map(|arr| {
@@ -220,7 +205,6 @@ impl ToolRouter {
             };
 
             task_manager.update_progress(&tid, 5.0, "Discovering and indexing files...");
-            let is_manifest = matches!(mode, ExtractionMode::Manifest);
             match run_index(
                 &store,
                 &project_root,
@@ -242,19 +226,9 @@ impl ToolRouter {
                         warning: None,
                     };
                     if result.duration_ms > 30_000 {
-                        let mut msg = "Indexing took over 30 seconds. ".to_string();
-                        if !is_manifest {
-                            msg.push_str(
-                                "For a faster first index, use the default analysis=\"manifest\" mode (top-level symbols only). Full structural analysis is triggered on-demand via lazy structural. ",
-                            );
-                        }
-                        msg.push_str(
-                            "For very large projects, consider running 'atlas index' locally before connecting via MCP to avoid timeout issues.",
-                        );
-                        result.warning = Some(msg);
-                    } else if result.files_discovered > 5_000 && !is_manifest {
-                        result.warning = Some(
-                            "Large project detected. Consider using the default analysis=\"manifest\" mode for a fast initial index. Structural/full analysis is triggered on-demand via lazy structural."
+                        append_warning(
+                            &mut result.warning,
+                            "For very large projects, consider running 'atlas index' locally before connecting via MCP to avoid timeout issues."
                                 .into(),
                         );
                     }
@@ -277,8 +251,10 @@ impl ToolRouter {
                 "tool_name": "index",
                 "method": "index",
                 "status": "running",
-                "progress": null,
-                "note": "Index is running in background. Use task_status to poll or wait_for_task to block for completion."
+                "progress": 0.0,
+                "progress_message": "queued",
+                "auto_background": auto_background,
+                "note": "Index is running in background. Poll task_status for progress percentages; use wait_for_task only when the client can safely block."
             }))
             .unwrap_or_else(|e| e.to_string()),
             false,
@@ -406,7 +382,7 @@ pub(crate) fn run_index(
         match pool.extract_one(
             frontend,
             file_id,
-            &abs_path,
+            rel_path,
             &source,
             &content_hash,
             mode.clone(),
@@ -460,6 +436,26 @@ pub(crate) fn run_index(
         ));
     }
 
+    if matches!(mode, ExtractionMode::Manifest) {
+        if let Some(ref sender) = progress_sender {
+            let _ = sender.send((
+                1.0,
+                Some(1.0),
+                Some(format!(
+                    "Manifest indexing complete: {} files indexed ({} failed), {} symbols",
+                    indexed, failed, total_symbols
+                )),
+            ));
+        }
+        return Ok(IndexStats {
+            discovered: discovered.len(),
+            indexed,
+            failed,
+            symbols: total_symbols,
+            resolved: 0,
+        });
+    }
+
     // ── Reference resolution ──────────────────────────────────────────────
     if let Some(ref sender) = progress_sender {
         let _ = sender.send((
@@ -502,4 +498,32 @@ pub(crate) fn run_index(
         symbols: total_symbols,
         resolved: _stats.resolved,
     })
+}
+
+fn append_warning(slot: &mut Option<String>, message: String) {
+    match slot {
+        Some(existing) if !existing.is_empty() => {
+            existing.push(' ');
+            existing.push_str(&message);
+        }
+        _ => *slot = Some(message),
+    }
+}
+
+fn reject_analysis_result() -> String {
+    serde_json::to_string(&IndexResult {
+        ok: false,
+        files_discovered: 0,
+        files_indexed: 0,
+        files_failed: 0,
+        symbols_found: 0,
+        references_resolved: 0,
+        errors: vec![
+            "Unsupported index parameter 'analysis'. The MCP index tool always builds the manifest layer for the active project. Use scoped search/trace for deeper on-demand parsing."
+                .into(),
+        ],
+        duration_ms: 0,
+        warning: None,
+    })
+    .unwrap_or_else(|e| e.to_string())
 }

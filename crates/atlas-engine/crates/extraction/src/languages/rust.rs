@@ -17,11 +17,11 @@ use crate::frontend::{
 use crate::languages::shared::SymbolDefBuilder;
 use std::collections::HashMap;
 use types::bindings::BindingDef;
+use types::capability::FeatureSupport;
 use types::dataflow::{DataFlowEdge, DataNode};
 use types::enums::{DataFlowKind, DataNodeKind};
 use types::ids::{DataFlowEdgeId, DataNodeId};
 use types::structs::{ScopeDef, TextRange};
-use types::capability::FeatureSupport;
 use types::*;
 
 // ---------------------------------------------------------------------------
@@ -226,7 +226,10 @@ impl LexicalBindingSpec for RustAdapter {
         include_str!("../../queries/rust/lexical.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::supported_with_limitations(0.55, vec!["name-based binding (no proper shadowing)"])
+        FeatureSupport::supported_with_limitations(
+            0.55,
+            vec!["name-based binding (no proper shadowing)"],
+        )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
         normalize_rust_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
@@ -276,22 +279,59 @@ fn walk_rust_assign_edges(
             node.child_by_field_name("pattern"),
             node.child_by_field_name("value"),
         ) {
-            let value_key = NodePosKey { start_byte: value_node.start_byte() as u32, end_byte: value_node.end_byte() as u32, kind: DataNodeKind::Expr };
+            let value_key = NodePosKey {
+                start_byte: value_node.start_byte() as u32,
+                end_byte: value_node.end_byte() as u32,
+                kind: DataNodeKind::Expr,
+            };
             if let Some(&source_id) = pos_map.get(&value_key) {
                 if pattern_node.kind() == "identifier" {
-                    let name_key = NodePosKey { start_byte: pattern_node.start_byte() as u32, end_byte: pattern_node.end_byte() as u32, kind: DataNodeKind::Local };
+                    let name_key = NodePosKey {
+                        start_byte: pattern_node.start_byte() as u32,
+                        end_byte: pattern_node.end_byte() as u32,
+                        kind: DataNodeKind::Local,
+                    };
                     if let Some(&target_id) = pos_map.get(&name_key) {
-                        let eid = DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
-                        edges.push(DataFlowEdge::new(eid, source_id, target_id, DataFlowKind::Assign, rust_range(&pattern_node), 0.90));
+                        let eid = DataFlowEdgeId::generate(
+                            &source_id,
+                            &target_id,
+                            DataFlowKind::Assign.as_str(),
+                        );
+                        edges.push(DataFlowEdge::new(
+                            eid,
+                            source_id,
+                            target_id,
+                            DataFlowKind::Assign,
+                            rust_range(&pattern_node),
+                            0.90,
+                        ));
                     }
-                } else if matches!(pattern_node.kind(), "tuple_pattern" | "tuple_struct_pattern") {
+                } else if matches!(
+                    pattern_node.kind(),
+                    "tuple_pattern" | "tuple_struct_pattern"
+                ) {
                     for i in 0..pattern_node.child_count() {
                         if let Some(child) = pattern_node.child(i as u32) {
                             if child.is_named() && child.kind() == "identifier" {
-                                let child_key = NodePosKey { start_byte: child.start_byte() as u32, end_byte: child.end_byte() as u32, kind: DataNodeKind::Local };
+                                let child_key = NodePosKey {
+                                    start_byte: child.start_byte() as u32,
+                                    end_byte: child.end_byte() as u32,
+                                    kind: DataNodeKind::Local,
+                                };
                                 if let Some(&target_id) = pos_map.get(&child_key) {
-                                    let eid = DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
-                                    edges.push(DataFlowEdge::new(eid, source_id, target_id, DataFlowKind::Assign, rust_range(&child), 0.90));
+                                    let eid = DataFlowEdgeId::generate(
+                                        &source_id,
+                                        &target_id,
+                                        DataFlowKind::Assign.as_str(),
+                                    );
+                                    edges.push(DataFlowEdge::new(
+                                        eid,
+                                        source_id,
+                                        target_id,
+                                        DataFlowKind::Assign,
+                                        rust_range(&child),
+                                        0.90,
+                                    ));
                                 }
                             }
                         }
@@ -460,11 +500,7 @@ fn rust_import_info(
                 ImportKind::Use
             };
             // Last segment is the imported name
-            let name = text
-                .rsplit("::")
-                .next()
-                .unwrap_or(&text)
-                .to_string();
+            let name = text.rsplit("::").next().unwrap_or(&text).to_string();
             Some((kind, text, name))
         }
         _ => None,
@@ -494,7 +530,6 @@ fn rust_extract_signature(
     }
 }
 
-
 // ── Lexical binding normalize ──────────────────────────────────────────
 
 fn rust_binding_kind(capture_name: &str) -> Option<BindingKind> {
@@ -506,13 +541,27 @@ fn rust_binding_kind(capture_name: &str) -> Option<BindingKind> {
     }
 }
 
-fn normalize_rust_lexical(capture_name: &str, node: tree_sitter::Node, source: &str, file_id: FileId) -> Option<BindingDef> {
+fn normalize_rust_lexical(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> Option<BindingDef> {
     let kind = rust_binding_kind(capture_name)?;
     let name = node_text(node, source)?;
     let range = node_range(node);
     let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
     let id = BindingId::generate(&file_id, &scope_id, kind.as_str(), &name, range.start_byte);
-    Some(BindingDef { id, file_id, function_id: None, scope_id, kind, name, symbol_id: None, range })
+    Some(BindingDef {
+        id,
+        file_id,
+        function_id: None,
+        scope_id,
+        kind,
+        name,
+        symbol_id: None,
+        range,
+    })
 }
 
 // ── Dataflow normalize ─────────────────────────────────────────────────
@@ -520,35 +569,111 @@ fn normalize_rust_lexical(capture_name: &str, node: tree_sitter::Node, source: &
 fn find_call_expression_rust(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
     let mut current = node;
     while let Some(parent) = current.parent() {
-        if parent.kind() == "call_expression" { return Some(parent); }
+        if parent.kind() == "call_expression" {
+            return Some(parent);
+        }
         current = parent;
     }
     None
 }
 
-fn normalize_rust_dataflow_builder(capture_name: &str, node: tree_sitter::Node, source: &str, file_id: FileId) -> (Option<DataNode>, Option<DataFlowEdge>) {
+fn normalize_rust_dataflow_builder(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    file_id: FileId,
+) -> (Option<DataNode>, Option<DataFlowEdge>) {
     use types::ids::DataNodeId;
     let range = node_range(node);
     match capture_name {
-        "df.parameter" => node_text(node, source).map(|name| {
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "parameter", Some(&name), Some(&name), range.start_byte);
-            (Some(DataNode::parameter(node_id, file_id, None, None, &name, range)), None)
-        }).unwrap_or((None, None)),
-        "df.assign_target" => node_text(node, source).map(|name| {
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "local", Some(&name), Some(&name), range.start_byte);
-            (Some(DataNode::local(node_id, file_id, None, None, &name, range)), None)
-        }).unwrap_or((None, None)),
+        "df.parameter" => node_text(node, source)
+            .map(|name| {
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "parameter",
+                    Some(&name),
+                    Some(&name),
+                    range.start_byte,
+                );
+                (
+                    Some(DataNode::parameter(
+                        node_id, file_id, None, None, &name, range,
+                    )),
+                    None,
+                )
+            })
+            .unwrap_or((None, None)),
+        "df.assign_target" => node_text(node, source)
+            .map(|name| {
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "local",
+                    Some(&name),
+                    Some(&name),
+                    range.start_byte,
+                );
+                (
+                    Some(DataNode::local(node_id, file_id, None, None, &name, range)),
+                    None,
+                )
+            })
+            .unwrap_or((None, None)),
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_rust(node).map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "expr", Some(&text), None, range.start_byte);
-            (Some(DataNode { id: node_id, file_id, function_id: None, kind: DataNodeKind::Expr, binding_id: None, callsite_id, name: Some(text), access_path: None, arg_index: None, range }), None)
-        },
+            let callsite_id = find_call_expression_rust(node)
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "expr",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            (
+                Some(DataNode {
+                    id: node_id,
+                    file_id,
+                    function_id: None,
+                    kind: DataNodeKind::Expr,
+                    binding_id: None,
+                    callsite_id,
+                    name: Some(text),
+                    access_path: None,
+                    arg_index: None,
+                    range,
+                }),
+                None,
+            )
+        }
         "df.return_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "return", Some(&text), None, range.start_byte);
-            (Some(DataNode { id: node_id, file_id, function_id: None, kind: DataNodeKind::Return, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range }), None)
-        },
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "return",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            (
+                Some(DataNode {
+                    id: node_id,
+                    file_id,
+                    function_id: None,
+                    kind: DataNodeKind::Return,
+                    binding_id: None,
+                    callsite_id: None,
+                    name: Some(text),
+                    access_path: None,
+                    arg_index: None,
+                    range,
+                }),
+                None,
+            )
+        }
         "df.tail_return" => {
             // Block tail expression (implicit return). Filter out non-expression
             // nodes like let_declaration that may also match as the last child.
@@ -574,39 +699,155 @@ fn normalize_rust_dataflow_builder(capture_name: &str, node: tree_sitter::Node, 
             };
             let kind_tag = if is_fn_tail { "return" } else { "expr" };
             let node_id = DataNodeId::generate(
-                &file_id, None::<&SymbolId>, kind_tag,
-                Some(&text), None, range.start_byte,
+                &file_id,
+                None::<&SymbolId>,
+                kind_tag,
+                Some(&text),
+                None,
+                range.start_byte,
             );
-            (Some(DataNode {
-                id: node_id, file_id, function_id: None,
-                kind: data_kind, binding_id: None, callsite_id: None,
-                name: Some(text), access_path: None, arg_index: None, range,
-            }), None)
-        },
-        "df.call_target" => node_text(node, source).map(|name| {
-            let access_path = name.clone();
-            let callsite_id = find_call_expression_rust(node).map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "call_target", Some(&name), Some(&access_path), range.start_byte);
-            (Some(DataNode::call_target(node_id, file_id, None, callsite_id, &name, &access_path, range)), None)
-        }).unwrap_or((None, None)),
+            (
+                Some(DataNode {
+                    id: node_id,
+                    file_id,
+                    function_id: None,
+                    kind: data_kind,
+                    binding_id: None,
+                    callsite_id: None,
+                    name: Some(text),
+                    access_path: None,
+                    arg_index: None,
+                    range,
+                }),
+                None,
+            )
+        }
+        "df.call_target" => node_text(node, source)
+            .map(|name| {
+                let access_path = name.clone();
+                let callsite_id = find_call_expression_rust(node).map(|ce| {
+                    types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+                });
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "call_target",
+                    Some(&name),
+                    Some(&access_path),
+                    range.start_byte,
+                );
+                (
+                    Some(DataNode::call_target(
+                        node_id,
+                        file_id,
+                        None,
+                        callsite_id,
+                        &name,
+                        &access_path,
+                        range,
+                    )),
+                    None,
+                )
+            })
+            .unwrap_or((None, None)),
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_rust(node).map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "call_arg", Some(&text), None, range.start_byte);
-            (Some(DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range)), None)
-        },
-        "df.field_name" => node_text(node, source).map(|name| {
-            let access_path = node.parent().filter(|p| p.kind() == "field_expression").and_then(|p| node_text(p, source)).unwrap_or_else(|| name.clone());
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, "field", Some(&name), Some(&access_path), range.start_byte);
-            (Some(DataNode::field(node_id, file_id, None, &name, &access_path, range)), None)
-        }).unwrap_or((None, None)),
+            let callsite_id = find_call_expression_rust(node)
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "call_arg",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            (
+                Some(DataNode::call_arg(
+                    node_id,
+                    file_id,
+                    None,
+                    callsite_id,
+                    Some(&text),
+                    range,
+                )),
+                None,
+            )
+        }
+        "df.field_name" => node_text(node, source)
+            .map(|name| {
+                let access_path = node
+                    .parent()
+                    .filter(|p| p.kind() == "field_expression")
+                    .and_then(|p| node_text(p, source))
+                    .unwrap_or_else(|| name.clone());
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "field",
+                    Some(&name),
+                    Some(&access_path),
+                    range.start_byte,
+                );
+                (
+                    Some(DataNode::field(
+                        node_id,
+                        file_id,
+                        None,
+                        &name,
+                        &access_path,
+                        range,
+                    )),
+                    None,
+                )
+            })
+            .unwrap_or((None, None)),
         "df.receiver" | "df.literal" => {
             let text = node_text(node, source).unwrap_or_default();
-            let node_id = DataNodeId::generate(&file_id, None::<&SymbolId>, if capture_name == "df.literal" { "literal" } else { "receiver" }, Some(&text), None, range.start_byte);
-            (Some(DataNode { id: node_id, file_id, function_id: None, kind: if capture_name == "df.literal" { DataNodeKind::Literal } else { DataNodeKind::Receiver }, binding_id: None, callsite_id: None, name: Some(text), access_path: None, arg_index: None, range }), None)
-        },
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                if capture_name == "df.literal" {
+                    "literal"
+                } else {
+                    "receiver"
+                },
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            (
+                Some(DataNode {
+                    id: node_id,
+                    file_id,
+                    function_id: None,
+                    kind: if capture_name == "df.literal" {
+                        DataNodeKind::Literal
+                    } else {
+                        DataNodeKind::Receiver
+                    },
+                    binding_id: None,
+                    callsite_id: None,
+                    name: Some(text),
+                    access_path: None,
+                    arg_index: None,
+                    range,
+                }),
+                None,
+            )
+        }
         "df.identifier_use" => {
-            if crate::languages::shared::is_identifier_decl_or_property(node, &["use_declaration", "mod_item", "struct_item", "enum_item", "trait_item", "impl_item"]) {
+            if crate::languages::shared::is_identifier_decl_or_property(
+                node,
+                &[
+                    "use_declaration",
+                    "mod_item",
+                    "struct_item",
+                    "enum_item",
+                    "trait_item",
+                    "impl_item",
+                ],
+            ) {
                 return (None, None);
             }
             let text = node_text(node, source).unwrap_or_default();
@@ -614,15 +855,24 @@ fn normalize_rust_dataflow_builder(capture_name: &str, node: tree_sitter::Node, 
                 return (None, None);
             }
             let node_id = DataNodeId::generate(
-                &file_id, None::<&SymbolId>, "identifier_use",
-                Some(&text), Some(&text), range.start_byte,
+                &file_id,
+                None::<&SymbolId>,
+                "identifier_use",
+                Some(&text),
+                Some(&text),
+                range.start_byte,
             );
             let dn = DataNode {
-                id: node_id, file_id, function_id: None,
+                id: node_id,
+                file_id,
+                function_id: None,
                 kind: DataNodeKind::VariableUse,
-                binding_id: None, callsite_id: None,
-                name: Some(text.clone()), access_path: Some(text),
-                arg_index: None, range,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(text.clone()),
+                access_path: Some(text),
+                arg_index: None,
+                range,
             };
             (Some(dn), None)
         }
@@ -691,7 +941,11 @@ mod tests {
         let spec = super::rust_frontend();
         let lang = spec.parser.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, spec.dataflow.dataflow_builder_query());
-        assert!(query.is_ok(), "dataflow query must compile: {:?}", query.err());
+        assert!(
+            query.is_ok(),
+            "dataflow query must compile: {:?}",
+            query.err()
+        );
     }
 
     #[test]
@@ -709,7 +963,8 @@ mod tests {
         let tree = parser.parse(source, None).unwrap();
         let root = tree.root_node();
 
-        let query = tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
+        let query =
+            tree_sitter::Query::new(&ts_lang, frontend.dataflow.dataflow_builder_query()).unwrap();
         let mut cursor = tree_sitter::QueryCursor::new();
         let file_id = FileId::generate("test.ext");
         let ctx = NormalizeCtx {
@@ -725,15 +980,26 @@ mod tests {
         while let Some((m, idx)) = captures.next() {
             let cap = m.captures[*idx];
             let name = query.capture_names()[cap.index as usize].to_string();
-            let (dn, _de) = frontend.dataflow.normalize(ctx, Capture { name, node: cap.node });
+            let (dn, _de) = frontend.dataflow.normalize(
+                ctx,
+                Capture {
+                    name,
+                    node: cap.node,
+                },
+            );
             if let Some(dn) = dn {
                 nodes.push(dn);
             }
         }
 
-        assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Parameter), "param");
+        assert!(
+            nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
+            "param"
+        );
         assert!(nodes.iter().any(|n| n.kind == DataNodeKind::Local), "local");
-        assert!(nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse), "varuse");
+        assert!(
+            nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse),
+            "varuse"
+        );
     }
-
 }

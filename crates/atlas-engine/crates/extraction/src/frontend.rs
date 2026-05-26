@@ -489,8 +489,14 @@ mod tests {
         assert_eq!(frontend.language(), Language::Java);
         assert!(frontend.symbols.capability().is_supported());
         assert!(frontend.references.capability().is_supported());
-        assert!(frontend.dataflow.capability().is_supported(), "Java dataflow should be supported (DataflowBasic)");
-        assert!(frontend.lexical.capability().is_supported(), "Java lexical should be supported (DataflowBasic)");
+        assert!(
+            frontend.dataflow.capability().is_supported(),
+            "Java dataflow should be supported (DataflowBasic)"
+        );
+        assert!(
+            frontend.lexical.capability().is_supported(),
+            "Java lexical should be supported (DataflowBasic)"
+        );
     }
 
     #[cfg(feature = "typescript")]
@@ -546,9 +552,9 @@ mod tests {
     #[cfg(feature = "typescript")]
     #[test]
     fn test_create_frontend_slot_normalize() {
-        use types::ids::FileId;
         use std::path::Path;
         use tree_sitter::StreamingIterator;
+        use types::ids::FileId;
 
         let frontend = crate::languages::create_frontend(Language::TypeScript)
             .expect("create_frontend should return TS frontend");
@@ -600,9 +606,9 @@ mod tests {
     #[cfg(feature = "typescript")]
     #[test]
     fn test_create_frontend_slot_normalize_lexical_dataflow() {
-        use types::ids::FileId;
         use std::path::Path;
         use tree_sitter::StreamingIterator;
+        use types::ids::FileId;
 
         let frontend = crate::languages::create_frontend(Language::TypeScript)
             .expect("create_frontend should return TS frontend");
@@ -782,7 +788,10 @@ mod tests {
         #[cfg(feature = "rust")]
         languages.push(Language::Rust);
 
-        assert!(!languages.is_empty(), "expected at least one language enabled");
+        assert!(
+            !languages.is_empty(),
+            "expected at least one language enabled"
+        );
 
         for lang in languages {
             let frontend = crate::languages::create_frontend(lang)
@@ -799,108 +808,234 @@ mod tests {
             );
 
             // Both must have FeatureMatrix
-            let df = derived.features.as_ref().expect("derived must have FeatureMatrix");
-            let sf = static_profile.features.as_ref().expect("static must have FeatureMatrix");
+            let df = derived
+                .features
+                .as_ref()
+                .expect("derived must have FeatureMatrix");
+            let sf = static_profile
+                .features
+                .as_ref()
+                .expect("static must have FeatureMatrix");
 
             // Derived profile should NOT under-report capability vs static.
             // Static may be outdated (claim unsupported when adapter actually implements it);
             // but if static claims supported, derived must also support it.
             if sf.symbols.is_supported() {
-                assert!(df.symbols.is_supported(), "{:?}: derived under-reports symbols", lang);
+                assert!(
+                    df.symbols.is_supported(),
+                    "{:?}: derived under-reports symbols",
+                    lang
+                );
             }
             if sf.local_dataflow.is_supported() {
-                assert!(df.local_dataflow.is_supported(), "{:?}: derived under-reports dataflow", lang);
+                assert!(
+                    df.local_dataflow.is_supported(),
+                    "{:?}: derived under-reports dataflow",
+                    lang
+                );
             }
             if sf.lexical_bindings.is_supported() {
-                assert!(df.lexical_bindings.is_supported(), "{:?}: derived under-reports lexical", lang);
+                assert!(
+                    df.lexical_bindings.is_supported(),
+                    "{:?}: derived under-reports lexical",
+                    lang
+                );
             }
             if sf.scopes.is_supported() {
-                assert!(df.scopes.is_supported(), "{:?}: derived under-reports scopes", lang);
+                assert!(
+                    df.scopes.is_supported(),
+                    "{:?}: derived under-reports scopes",
+                    lang
+                );
             }
 
             // Derived profile must produce valid string lists
-            assert!(!derived.supported_features.is_empty(), "{:?}: no supported features", lang);
-            assert!(!derived.unsupported_features.is_empty(), "{:?}: no unsupported features", lang);
+            assert!(
+                !derived.supported_features.is_empty(),
+                "{:?}: no supported features",
+                lang
+            );
+            assert!(
+                !derived.unsupported_features.is_empty(),
+                "{:?}: no unsupported features",
+                lang
+            );
         }
     }
 }
 
-    /// Verify that every language with lexical support has a compilable lexical query.
-    #[test]
-    fn test_all_lexical_queries_compile() {
-        use crate::languages::create_frontend;
-        use types::enums::Language;
+/// Verify that every language with lexical support has a compilable lexical query.
+#[test]
+fn test_all_lexical_queries_compile() {
+    use crate::languages::create_frontend;
+    use types::enums::Language;
 
-        let languages_with_lexical = [
-            #[cfg(feature = "typescript")] Language::TypeScript,
-            #[cfg(feature = "javascript")] Language::JavaScript,
-            #[cfg(feature = "python")] Language::Python,
-            #[cfg(feature = "java")] Language::Java,
-            #[cfg(feature = "c")] Language::C,
-            #[cfg(feature = "cpp")] Language::Cpp,
-            #[cfg(feature = "arkts")] Language::ArkTS,
-            #[cfg(feature = "go")] Language::Go,
-            #[cfg(feature = "csharp")] Language::CSharp,
-            #[cfg(feature = "rust")] Language::Rust,
-            #[cfg(feature = "php")] Language::Php,
-            #[cfg(feature = "ruby")] Language::Ruby,
-            #[cfg(feature = "kotlin")] Language::Kotlin,
-        ];
+    let languages_with_lexical = [
+        #[cfg(feature = "typescript")]
+        Language::TypeScript,
+        #[cfg(feature = "javascript")]
+        Language::JavaScript,
+        #[cfg(feature = "python")]
+        Language::Python,
+        #[cfg(feature = "java")]
+        Language::Java,
+        #[cfg(feature = "c")]
+        Language::C,
+        #[cfg(feature = "cpp")]
+        Language::Cpp,
+        #[cfg(feature = "arkts")]
+        Language::ArkTS,
+        #[cfg(feature = "go")]
+        Language::Go,
+        #[cfg(feature = "csharp")]
+        Language::CSharp,
+        #[cfg(feature = "rust")]
+        Language::Rust,
+        #[cfg(feature = "php")]
+        Language::Php,
+        #[cfg(feature = "ruby")]
+        Language::Ruby,
+        #[cfg(feature = "kotlin")]
+        Language::Kotlin,
+    ];
 
-        for &lang in &languages_with_lexical {
-            let Some(frontend) = create_frontend(lang) else { continue };
-            if !frontend.lexical.capability().is_supported() { continue; }
-            let ts_lang = frontend.parser.tree_sitter_language();
-            let query_src = frontend.lexical.lexical_query();
-            let q = tree_sitter::Query::new(&ts_lang, query_src);
+    for &lang in &languages_with_lexical {
+        let Some(frontend) = create_frontend(lang) else {
+            continue;
+        };
+        if !frontend.lexical.capability().is_supported() {
+            continue;
+        }
+        let ts_lang = frontend.parser.tree_sitter_language();
+        let query_src = frontend.lexical.lexical_query();
+        let q = tree_sitter::Query::new(&ts_lang, query_src);
+        assert!(
+            q.is_ok(),
+            "{:?} lexical query must compile: {:?}",
+            lang,
+            q.err()
+        );
+    }
+}
+
+/// Verify that each dataflow language produces at least some DataNodes and edges.
+#[test]
+fn test_all_dataflow_languages_produce_facts() {
+    use crate::extract::extract_file;
+    use crate::languages::create_frontend;
+    use types::enums::Language;
+    use types::ids::FileId;
+
+    let fixtures: &[(&str, Language, &str)] = &[
+        #[cfg(feature = "typescript")]
+        (
+            "const x = 1;\nfunction f(a: number) { return a + x; }\n",
+            Language::TypeScript,
+            "ts",
+        ),
+        #[cfg(feature = "javascript")]
+        (
+            "const x = 1;\nfunction f(a) { return a + x; }\n",
+            Language::JavaScript,
+            "js",
+        ),
+        #[cfg(feature = "python")]
+        (
+            "def f(a):\n    x = 1\n    return a + x\n",
+            Language::Python,
+            "py",
+        ),
+        #[cfg(feature = "java")]
+        (
+            "class C { int f(int a) { int x = 1; return a + x; } }\n",
+            Language::Java,
+            "java",
+        ),
+        #[cfg(feature = "c")]
+        (
+            "int f(int a) { int x = 1; return a + x; }\n",
+            Language::C,
+            "c",
+        ),
+        #[cfg(feature = "cpp")]
+        (
+            "int f(int a) { int x = 1; return a + x; }\n",
+            Language::Cpp,
+            "cpp",
+        ),
+        #[cfg(feature = "go")]
+        (
+            "package p\nfunc f(a int) int { x := 1; return a + x }\n",
+            Language::Go,
+            "go",
+        ),
+        #[cfg(feature = "csharp")]
+        (
+            "class C { int F(int a) { int x = 1; return a + x; } }\n",
+            Language::CSharp,
+            "cs",
+        ),
+        #[cfg(feature = "rust")]
+        (
+            "fn f(a: i32) -> i32 { let x = 1; a + x }\n",
+            Language::Rust,
+            "rs",
+        ),
+        #[cfg(feature = "php")]
+        (
+            "<?php\nfunction f($a) { $x = 1; return $a + $x; }\n",
+            Language::Php,
+            "php",
+        ),
+        #[cfg(feature = "ruby")]
+        ("def f(a)\n  x = 1\n  a + x\nend\n", Language::Ruby, "rb"),
+        #[cfg(feature = "kotlin")]
+        (
+            "fun f(a: Int): Int { val x = 1; return a + x }\n",
+            Language::Kotlin,
+            "kt",
+        ),
+    ];
+
+    for &(source, lang, ext) in fixtures {
+        let Some(frontend) = create_frontend(lang) else {
+            continue;
+        };
+        if !frontend.dataflow.capability().is_supported() {
+            continue;
+        }
+        let file_id = FileId::generate(&format!("smoke.{}", ext));
+        let facts = extract_file(
+            &frontend,
+            file_id,
+            std::path::Path::new(&format!("smoke.{}", ext)),
+            source,
+            "t",
+        )
+        .unwrap_or_else(|e| panic!("{:?} extraction failed: {}", lang, e));
+
+        let node_count = facts.data_nodes.len();
+        let edge_count = facts.dataflow_edges.len();
+        assert!(
+            node_count > 0,
+            "{:?} must produce at least 1 DataNode, got 0",
+            lang
+        );
+        assert!(
+            edge_count > 0,
+            "{:?} must produce at least 1 DataFlowEdge, got 0 (nodes={})",
+            lang,
+            node_count
+        );
+
+        // If lexical is supported, must produce at least some bindings
+        if frontend.lexical.capability().is_supported() {
+            let binding_count = facts.bindings.len();
             assert!(
-                q.is_ok(),
-                "{:?} lexical query must compile: {:?}",
-                lang,
-                q.err()
+                binding_count > 0,
+                "{:?} lexical must produce at least 1 BindingDef, got 0",
+                lang
             );
         }
     }
-
-    /// Verify that each dataflow language produces at least some DataNodes and edges.
-    #[test]
-    fn test_all_dataflow_languages_produce_facts() {
-        use crate::languages::create_frontend;
-        use crate::extract::extract_file;
-        use types::enums::Language;
-        use types::ids::FileId;
-
-        let fixtures: &[(&str, Language, &str)] = &[
-            #[cfg(feature = "typescript")] ("const x = 1;\nfunction f(a: number) { return a + x; }\n", Language::TypeScript, "ts"),
-            #[cfg(feature = "javascript")] ("const x = 1;\nfunction f(a) { return a + x; }\n", Language::JavaScript, "js"),
-            #[cfg(feature = "python")] ("def f(a):\n    x = 1\n    return a + x\n", Language::Python, "py"),
-            #[cfg(feature = "java")] ("class C { int f(int a) { int x = 1; return a + x; } }\n", Language::Java, "java"),
-            #[cfg(feature = "c")] ("int f(int a) { int x = 1; return a + x; }\n", Language::C, "c"),
-            #[cfg(feature = "cpp")] ("int f(int a) { int x = 1; return a + x; }\n", Language::Cpp, "cpp"),
-            #[cfg(feature = "go")] ("package p\nfunc f(a int) int { x := 1; return a + x }\n", Language::Go, "go"),
-            #[cfg(feature = "csharp")] ("class C { int F(int a) { int x = 1; return a + x; } }\n", Language::CSharp, "cs"),
-            #[cfg(feature = "rust")] ("fn f(a: i32) -> i32 { let x = 1; a + x }\n", Language::Rust, "rs"),
-            #[cfg(feature = "php")] ("<?php\nfunction f($a) { $x = 1; return $a + $x; }\n", Language::Php, "php"),
-            #[cfg(feature = "ruby")] ("def f(a)\n  x = 1\n  a + x\nend\n", Language::Ruby, "rb"),
-            #[cfg(feature = "kotlin")] ("fun f(a: Int): Int { val x = 1; return a + x }\n", Language::Kotlin, "kt"),
-        ];
-
-        for &(source, lang, ext) in fixtures {
-            let Some(frontend) = create_frontend(lang) else { continue };
-            if !frontend.dataflow.capability().is_supported() { continue; }
-            let file_id = FileId::generate(&format!("smoke.{}", ext));
-            let facts = extract_file(&frontend, file_id, std::path::Path::new(&format!("smoke.{}", ext)), source, "t")
-                .unwrap_or_else(|e| panic!("{:?} extraction failed: {}", lang, e));
-
-            let node_count = facts.data_nodes.len();
-            let edge_count = facts.dataflow_edges.len();
-            assert!(node_count > 0, "{:?} must produce at least 1 DataNode, got 0", lang);
-            assert!(edge_count > 0, "{:?} must produce at least 1 DataFlowEdge, got 0 (nodes={})", lang, node_count);
-
-            // If lexical is supported, must produce at least some bindings
-            if frontend.lexical.capability().is_supported() {
-                let binding_count = facts.bindings.len();
-                assert!(binding_count > 0, "{:?} lexical must produce at least 1 BindingDef, got 0", lang);
-            }
-        }
-    }
+}

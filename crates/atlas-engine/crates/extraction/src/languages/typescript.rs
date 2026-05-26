@@ -304,20 +304,30 @@ fn is_ts_identifier_declaration_or_property(node: tree_sitter::Node) -> bool {
     };
     match parent.kind() {
         // Declaration names
-        "variable_declarator" | "function_declaration" | "class_declaration"
-        | "method_definition" | "interface_declaration" | "enum_declaration"
-        | "type_alias_declaration" | "module" | "import_specifier"
-        | "import_clause" | "namespace_import" | "catch_clause"
-        | "public_field_definition" | "required_parameter" | "optional_parameter" => {
+        "variable_declarator"
+        | "function_declaration"
+        | "class_declaration"
+        | "method_definition"
+        | "interface_declaration"
+        | "enum_declaration"
+        | "type_alias_declaration"
+        | "module"
+        | "import_specifier"
+        | "import_clause"
+        | "namespace_import"
+        | "catch_clause"
+        | "public_field_definition"
+        | "required_parameter"
+        | "optional_parameter" => {
             // Check if this node is the "name" field of the parent
-            parent.child_by_field_name("name")
+            parent
+                .child_by_field_name("name")
                 .map_or(false, |n| n.id() == node.id())
         }
         // Property names in member expressions (obj.property)
-        "member_expression" => {
-            parent.child_by_field_name("property")
-                .map_or(false, |n| n.id() == node.id())
-        }
+        "member_expression" => parent
+            .child_by_field_name("property")
+            .map_or(false, |n| n.id() == node.id()),
         // Type references (like `string`, `number` in type annotations)
         "type_annotation" | "type_arguments" | "type_parameters" => true,
         _ => false,
@@ -365,9 +375,8 @@ pub(crate) fn normalize_ts_dataflow_builder(
             .unwrap_or((None, None)),
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression(node).map(|ce| {
-                types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
-            });
+            let callsite_id = find_call_expression(node)
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&types::ids::SymbolId>,
@@ -416,9 +425,8 @@ pub(crate) fn normalize_ts_dataflow_builder(
         }
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression(node).map(|ce| {
-                types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
-            });
+            let callsite_id = find_call_expression(node)
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&types::ids::SymbolId>,
@@ -529,9 +537,8 @@ pub(crate) fn normalize_ts_dataflow_builder(
         }
         "df.await_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression(node).map(|ce| {
-                types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
-            });
+            let callsite_id = find_call_expression(node)
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&types::ids::SymbolId>,
@@ -996,7 +1003,11 @@ export { add as plus } from './math';
 
         let query = tree_sitter::Query::new(&ts_lang, spec.import_query())
             .expect("import query (with export patterns) must compile");
-        let capture_names: Vec<String> = query.capture_names().iter().map(|s| s.to_string()).collect();
+        let capture_names: Vec<String> = query
+            .capture_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut captures = cursor.captures(&query, root, bytes);
@@ -1009,7 +1020,11 @@ export { add as plus } from './math';
                 match name.as_str() {
                     "export.module" => {
                         let text = cap.node.utf8_text(bytes).unwrap();
-                        assert!(text.contains("helpers") || text.contains("utils") || text.contains("math"));
+                        assert!(
+                            text.contains("helpers")
+                                || text.contains("utils")
+                                || text.contains("math")
+                        );
                         found_export_module = true;
                     }
                     "export.name" => {
@@ -1022,7 +1037,6 @@ export { add as plus } from './math';
             }
         }
         assert!(found_export_module, "should capture `export * from` module");
-        assert!(found_export_name,
-            "should capture named re-export");
+        assert!(found_export_name, "should capture named re-export");
     }
 }

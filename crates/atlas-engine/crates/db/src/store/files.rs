@@ -1,7 +1,7 @@
 //! File CRUD: insert, query, delete files and their associated data.
 
-use types::*;
 use rusqlite::params;
+use types::*;
 
 use super::Store;
 use crate::store_rows::row_to_file_info;
@@ -73,6 +73,45 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Count indexed files under a user-facing scope.
+    ///
+    /// Scope is a project-relative directory or file path. Directory scopes
+    /// match descendants with `scope/%`; exact file scopes match `scope`.
+    pub fn count_files_in_scope(&self, scope: &str) -> anyhow::Result<usize> {
+        let normalized = normalize_scope(scope);
+        if normalized.is_empty() {
+            return self.count_files();
+        }
+        let prefix = format!("{}/%", escape_like(&normalized));
+        let conn = self.lock_read();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM files
+             WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'",
+            params![normalized, prefix],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    /// Return file IDs under a scope, ordered by path and capped by `limit`.
+    pub fn list_file_ids_in_scope(&self, scope: &str, limit: usize) -> anyhow::Result<Vec<FileId>> {
+        let normalized = normalize_scope(scope);
+        if normalized.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let prefix = format!("{}/%", escape_like(&normalized));
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT file_id FROM files
+             WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'
+             ORDER BY path
+             LIMIT {}",
+            limit
+        ))?;
+        let rows = stmt.query_map(params![normalized, prefix], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Resolve a relative module path against a source file to find matching indexed files.
     ///
     /// For barrel re-export chain walking: given `src/barrel/index.ts` and `./lib`,
@@ -84,13 +123,11 @@ impl Store {
         relative_module: &str,
     ) -> anyhow::Result<Vec<FileInfo>> {
         // Get source file path
-        let source_path: String = self
-            .lock_read()
-            .query_row(
-                "SELECT path FROM files WHERE file_id = ?1",
-                rusqlite::params![source_file_id],
-                |row| row.get(0),
-            )?;
+        let source_path: String = self.lock_read().query_row(
+            "SELECT path FROM files WHERE file_id = ?1",
+            rusqlite::params![source_file_id],
+            |row| row.get(0),
+        )?;
 
         // Extract directory from source path
         let source_dir = std::path::Path::new(&source_path)
@@ -117,4 +154,20 @@ impl Store {
         let rows = stmt.query_map(rusqlite::params![pattern], row_to_file_info)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
+}
+
+pub(crate) fn normalize_scope(scope: &str) -> String {
+    scope
+        .trim()
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .trim_end_matches('/')
+        .replace('\\', "/")
+}
+
+pub(crate) fn escape_like(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
