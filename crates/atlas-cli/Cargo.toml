@@ -13,7 +13,11 @@ path = "src/main.rs"
 atlas-engine = { path = "../atlas-engine" }
 atlas-mcp = { path = "../atlas-mcp", optional = true }
 anyhow = "1"
+atty = "0.2"
 clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+ctrlc = "3"
+ratatui = "0.29"
 rayon = "1"
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

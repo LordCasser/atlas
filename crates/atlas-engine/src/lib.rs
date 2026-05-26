@@ -72,13 +72,15 @@ pub use graph::{
 };
 /// Resolution layer: reference resolver, path aliases, config hashing.
 pub use resolution::{
-    PathAliasResolver, ReferenceResolver, ResolutionStats, commit_config_hashes,
-    detect_config_change,
+    PathAliasResolver, ReferenceResolver, ResolutionSession, ResolutionStats,
+    commit_config_hashes, detect_config_change,
 };
 /// Search layer: FTS5 + fuzzy search engine.
 pub use search::{SearchEngine, SearchOptions, SearchResult};
 /// All core IR types (SymbolDef, ReferenceUse, FileFacts, etc.).
 pub use types::*;
+/// Progress protocol (for CLI TUI integration).
+pub use types::progress;
 /// Workspace abstractions.
 pub use workspace::{ProjectRoot, SourcePath, Workspace};
 

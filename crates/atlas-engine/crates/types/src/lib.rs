@@ -28,6 +28,7 @@ pub mod dataflow;
 pub mod enums;
 pub mod ids;
 pub mod lazy;
+pub mod progress;
 pub mod structs;
 pub mod summary;
 pub mod timing;

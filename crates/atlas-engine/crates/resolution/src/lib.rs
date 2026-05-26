@@ -13,9 +13,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use db::Store;
+use rayon::prelude::*;
 use types::*;
+use types::progress::ProgressPhase;
 
 use self::builtins::BuiltinFilter;
 use self::context::{GlobalSymbolIndex, ResolutionContext};
@@ -35,6 +38,196 @@ pub use config::{commit_config_hashes, detect_config_change};
 pub use include_graph::IncludeGraph;
 pub use path_alias::PathAliasResolver;
 
+// ── ResolutionSession ──────────────────────────────────────────────────────
+//
+// A thread-safe, rad-only resolution context that can be shared across
+// rayon threads during parallel resolution.  All fields are Arc'd so the
+// session implements Send + Sync.
+
+/// Thread-safe resolution session for parallel reference resolution.
+///
+/// Built once from the `Store`, then shared across rayon threads.
+/// Each thread builds a per-file `ResolutionContext` (brief read-lock)
+/// and resolves all of that file's references in pure memory (no locks).
+pub struct ResolutionSession {
+    pub global_index: Arc<GlobalSymbolIndex>,
+    pub import_resolver: Arc<ImportResolver>,
+    pub name_matcher: Arc<NameMatcher>,
+}
+
+impl ResolutionSession {
+    /// Build the session from the store.  Loads the global symbol index
+    /// once — this is the most expensive single operation in resolution
+    /// and only needs to happen once regardless of thread count.
+    pub fn build(store: Arc<Store>) -> anyhow::Result<Self> {
+        Ok(Self {
+            global_index: Arc::new(GlobalSymbolIndex::build(&store)?),
+            import_resolver: Arc::new(ImportResolver::new(store.clone())),
+            name_matcher: Arc::new(NameMatcher::new()),
+        })
+    }
+
+    /// Build with path alias support.
+    pub fn build_with_alias(
+        store: Arc<Store>,
+        path_alias: PathAliasResolver,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            global_index: Arc::new(GlobalSymbolIndex::build(&store)?),
+            import_resolver: Arc::new(ImportResolver::with_path_alias(
+                store.clone(),
+                path_alias,
+            )),
+            name_matcher: Arc::new(NameMatcher::new()),
+        })
+    }
+
+    // ── Thread-safe resolution ───────────────────────────────────────────
+
+    /// Resolve all references in a single file.
+    ///
+    /// Callable from multiple rayon threads simultaneously:
+    /// 1. Briefly locks `store.read_conn` to build `ResolutionContext` (< 1 ms).
+    /// 2. Resolves each reference in pure memory (no locks, no DB access).
+    ///
+    /// Returns `(reference, target)` pairs for resolved references.
+    /// Unresolved references are silently dropped.
+    pub fn resolve_file(
+        &self,
+        store: &Store,
+        refs: &[(FileId, Vec<ReferenceUse>)],  // Single-element batch for this file
+    ) -> anyhow::Result<Vec<(ReferenceUse, ResolvedTarget)>> {
+        let mut results = Vec::new();
+        for (file_id, references) in refs {
+            let ctx = ResolutionContext::build(store, *file_id)?;
+            for reference in references {
+                if let Some(target) = self.resolve_one(reference, &ctx) {
+                    results.push((reference.clone(), target));
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    /// The 6-strategy resolution core — pure function, no I/O.
+    fn resolve_one(
+        &self,
+        reference: &ReferenceUse,
+        ctx: &ResolutionContext,
+    ) -> Option<ResolvedTarget> {
+        // Strategy 1: Built-in / external filter
+        if BuiltinFilter::is_builtin(&reference.name, ctx.file.language) {
+            return None;
+        }
+
+        // Strategy 2: Scope-local exact match
+        if let Some(scope_id) = reference.scope_id {
+            if let Some(sym) = ctx.lookup_scoped(scope_id, &reference.name) {
+                return Some(ResolvedTarget {
+                    symbol_id: sym.id,
+                    confidence: Confidence::certain(),
+                    strategy: ResolutionStrategy::ExactMatch,
+                    provenance: Provenance::TreeSitter,
+                });
+            }
+        }
+
+        // Strategy 3: Container/class-local
+        if let Some(source_sym) = reference.source_symbol {
+            if let Some(source) = ctx.symbols_by_id.get(&source_sym) {
+                if let Some(container) = source.container {
+                    if let Some(container_sym) = ctx.symbols_by_id.get(&container) {
+                        if let Some(scope) = container_sym.scope_id {
+                            if let Some(sym) = ctx.lookup_scoped(scope, &reference.name) {
+                                return Some(ResolvedTarget {
+                                    symbol_id: sym.id,
+                                    confidence: Confidence::certain(),
+                                    strategy: ResolutionStrategy::ExactMatch,
+                                    provenance: Provenance::TreeSitter,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Strategy 4: Same-file exact match
+        let same_file = ctx.find_in_file_by_name(&reference.name);
+        if let Some(matched) = self.name_matcher.best_match(
+            &same_file,
+            &reference.name,
+            Confidence::certain(),
+        ) {
+            return Some(ResolvedTarget {
+                symbol_id: matched.symbol_id,
+                confidence: matched.confidence,
+                strategy: matched.strategy,
+                provenance: matched.provenance,
+            });
+        }
+
+        // Strategy 5: Import/include resolution
+        for import in &ctx.imports {
+            if let Ok(candidates) = self.import_resolver.resolve_import(import) {
+                if let Ok(chain_candidates) = self
+                    .import_resolver
+                    .resolve_through_reexports(import, candidates)
+                {
+                    if let Some(matched) = self.name_matcher.best_match(
+                        &chain_candidates,
+                        &reference.name,
+                        Confidence::certain(),
+                    ) {
+                        return Some(ResolvedTarget {
+                            symbol_id: matched.symbol_id,
+                            confidence: Confidence::new(0.8),
+                            strategy: ResolutionStrategy::ImportResolved,
+                            provenance: Provenance::Heuristic,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Strategy 6: Project-wide name search + fuzzy fallback
+        let candidates = self.global_index.find_by_name(&reference.name);
+        if !candidates.is_empty() {
+            if let Some(matched) = self.name_matcher.best_match(
+                &candidates,
+                &reference.name,
+                Confidence::new(0.6),
+            ) {
+                return Some(ResolvedTarget {
+                    symbol_id: matched.symbol_id,
+                    confidence: matched.confidence,
+                    strategy: ResolutionStrategy::FuzzyMatch,
+                    provenance: Provenance::Heuristic,
+                });
+            }
+        }
+        let fuzzy = self.global_index.fuzzy_search(&reference.name, 2);
+        if !fuzzy.is_empty() {
+            if let Some(matched) = self.name_matcher.best_match(
+                &fuzzy,
+                &reference.name,
+                Confidence::new(0.4),
+            ) {
+                return Some(ResolvedTarget {
+                    symbol_id: matched.symbol_id,
+                    confidence: matched.confidence,
+                    strategy: ResolutionStrategy::FuzzyMatch,
+                    provenance: Provenance::Heuristic,
+                });
+            }
+        }
+
+        None
+    }
+}
+
+// ── ReferenceResolver ──────────────────────────────────────────────────────
+
 /// Three-stage reference resolution orchestrator.
 ///
 /// P2: `resolve_all()` only resolves references and updates the `"references"`
@@ -43,6 +236,9 @@ pub use path_alias::PathAliasResolver;
 /// P4: Uses `GlobalSymbolIndex` for project-wide name search instead of
 /// per-reference FTS5 queries. The global index is built once at the start
 /// of resolution.
+///
+/// P6: `resolve_all_parallel()` uses rayon to parallelize per-file resolution,
+/// with a Phase-1 (parallel matching) → Phase-2 (serial write) model.
 pub struct ReferenceResolver {
     store: Arc<Store>,
     import_resolver: ImportResolver,
@@ -62,10 +258,6 @@ impl ReferenceResolver {
     }
 
     /// Create a ReferenceResolver with tsconfig.json path alias support.
-    ///
-    /// When `PathAliasResolver` is configured (e.g. `@/utils` → `src/utils`),
-    /// import path resolution will apply aliases before generating candidate
-    /// qualified names.
     pub fn with_path_alias(store: Arc<Store>, path_alias: PathAliasResolver) -> Self {
         Self {
             import_resolver: ImportResolver::with_path_alias(store.clone(), path_alias),
@@ -75,15 +267,8 @@ impl ReferenceResolver {
         }
     }
 
-    /// Resolve all unresolved references in the project.
-    ///
-    /// Returns `(resolved, stats)` where:
-    /// - `resolved` contains `(ReferenceUse, ResolvedTarget)` pairs for use
-    ///   by `GraphBuilder` to create structural edges.
-    /// - `stats` contains resolution statistics.
-    ///
-    /// P4: Loads `GlobalSymbolIndex` once, then processes file groups with
-    /// O(1) in-memory lookups instead of per-reference FTS5 queries.
+    /// Resolve all unresolved references in the project (serial — kept for
+    /// backwards compatibility and small projects).
     pub fn resolve_all(
         &mut self,
     ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
@@ -108,7 +293,6 @@ impl ReferenceResolver {
         let batch_size = 500; // Flush every N resolutions
 
         for (file_id, refs) in &by_file {
-            // Build resolution context (loads all symbols/scopes/imports once)
             let ctx = match ResolutionContext::build(&self.store, *file_id) {
                 Ok(c) => c,
                 Err(e) => {
@@ -134,16 +318,143 @@ impl ReferenceResolver {
                 }
             }
 
-            // Flush accumulated resolutions when batch is full
             if pending_resolutions.len() >= batch_size {
                 self.flush_resolutions(&mut pending_resolutions, &mut stats);
             }
         }
 
-        // Final flush
         self.flush_resolutions(&mut pending_resolutions, &mut stats);
 
         Ok((all_resolved, stats))
+    }
+
+    // ── Parallel resolution (P6) ───────────────────────────────────────────
+
+    /// Resolve all unresolved references in parallel.
+    ///
+    /// **Phase 1** (rayon parallel): per-file resolution using
+    /// `ResolutionSession` — shared read-only context, each thread
+    /// briefly locks the read connection to build a `ResolutionContext`,
+    /// then resolves references in pure memory.
+    ///
+    /// **Phase 2** (serial write): batch-update resolved references
+    /// to the database, reporting progress after each batch.
+    ///
+    /// `on_progress` is called during Phase 2 with `(current, total)`
+    /// after each batch write.  `progress_state` (if provided) is updated
+    /// during Phase 1 using lock-free AtomicU64 increments.
+    pub fn resolve_all_parallel(
+        &mut self,
+        store: Arc<Store>,
+        progress_mutex: Option<&std::sync::Mutex<types::progress::ProgressState>>,
+        on_progress: Option<&dyn Fn(u64, u64)>,
+    ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
+        if let Some(mutex) = progress_mutex {
+            mutex.lock().unwrap().start_phase(ProgressPhase::Resolution, None);
+        }
+
+        // Build shared session
+        let session = ResolutionSession::build(store.clone())?;
+
+        // Load all unresolved references, grouped by file
+        let unresolved = store.find_unresolved_references()?;
+        let total_refs = unresolved.len() as u64;
+        let by_file: Vec<(FileId, Vec<ReferenceUse>)> = {
+            let mut map: HashMap<FileId, Vec<ReferenceUse>> = HashMap::new();
+            for r in &unresolved {
+                map.entry(r.file_id).or_default().push(r.clone());
+            }
+            map.into_iter().collect()
+        };
+
+        // ── Phase 1: Parallel resolution (reads only) ──
+        // The counter tracks matched references (not total), giving the user
+        // a sense of throughput ("8,234 matched · 1,240/s").  For the TUI,
+        // Phase 1 shows a spinner + rate; Phase 2 shows a percentage bar.
+        let matched_counter = Arc::new(AtomicU64::new(0));
+        let mc = &matched_counter;
+        let session = &session;
+
+        let per_file_results: Vec<(ReferenceUse, ResolvedTarget)> = by_file
+            .par_iter()
+            .map(|(file_id, refs)| {
+                let store_ref: &Store = &store;
+                let single: &[(FileId, Vec<ReferenceUse>)] = &[(*file_id, refs.clone())];
+                let result = session.resolve_file(store_ref, single);
+                let count = result.as_ref().map_or(0, |v| v.len() as u64);
+                mc.fetch_add(count, Ordering::Relaxed);
+                result.unwrap_or_default()
+            })
+            .flatten()
+            .collect();
+
+        // Update progress state with Phase 1 result (for TUI to display the
+        // matched count + rate before Phase 2 begins).
+        if let Some(mutex) = progress_mutex {
+            let matched = matched_counter.load(Ordering::Relaxed);
+            mutex.lock().unwrap().set_current(matched);
+        }
+
+        // ── Phase 2: Serial write + progress ──
+        if let Some(mutex) = progress_mutex {
+            mutex.lock().unwrap().enter_phase2(total_refs);
+        }
+
+        let mut stats = ResolutionStats::default();
+        stats.total_refs = total_refs as usize;
+
+        let mut pending: Vec<(ReferenceId, ResolvedTarget)> = Vec::new();
+        let all_resolved = per_file_results; // moved in
+        let mut processed = 0u64;
+        let batch_size = 500;
+
+        for (reference, target) in &all_resolved {
+            pending.push((reference.id, target.clone()));
+            processed += 1;
+            stats.resolved += 1;
+            *stats
+                .by_strategy
+                .entry(target.strategy.as_str().to_string())
+                .or_default() += 1;
+
+            if pending.len() >= batch_size {
+                store.batch_update_resolutions(&pending)?;
+                pending.clear();
+
+                if let Some(cb) = on_progress {
+                    cb(processed, total_refs);
+                }
+                if let Some(mutex) = progress_mutex {
+                    mutex.lock().unwrap().set_current(processed);
+                }
+            }
+        }
+
+        // Final flush
+        if !pending.is_empty() {
+            store.batch_update_resolutions(&pending)?;
+            if let Some(cb) = on_progress {
+                cb(processed, total_refs);
+            }
+            if let Some(mutex) = progress_mutex {
+                mutex.lock().unwrap().set_current(processed);
+            }
+        }
+
+        stats.unresolved = total_refs as usize - stats.resolved;
+
+        Ok((all_resolved, stats))
+    }
+
+    /// Wrapper that builds the session internally (convenience when you
+    /// already have a `ReferenceResolver` and just want parallelism).
+    pub fn resolve_all_parallel_simple(
+        &mut self,
+        progress_mutex: Option<&std::sync::Mutex<types::progress::ProgressState>>,
+        on_progress: Option<&dyn Fn(u64, u64)>,
+    ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
+        let store = self.store.clone();
+        self.resolve_all_parallel(store, progress_mutex, on_progress)
     }
 
     /// Resolve references scoped to a specific set of files (lazy structural).

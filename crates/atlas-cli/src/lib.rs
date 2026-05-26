@@ -3,6 +3,7 @@
 pub mod commands;
 pub mod logging;
 pub mod runtime;
+pub mod tui;
 
 use clap::Parser;
 
