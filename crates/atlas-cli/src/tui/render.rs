@@ -29,8 +29,6 @@ use ratatui::{
 // Colour palette
 const DONE_COLOR: Color = Color::Rgb(100, 200, 100);
 const ACTIVE_COLOR: Color = Color::Rgb(251, 191, 36);
-const BAR_FILLED: Color = Color::Rgb(100, 200, 100);
-const BAR_EMPTY: Color = Color::Rgb(60, 60, 60);
 const PENDING_COLOR: Color = Color::Rgb(120, 120, 120);
 const DIM: Color = Color::Rgb(120, 120, 120);
 

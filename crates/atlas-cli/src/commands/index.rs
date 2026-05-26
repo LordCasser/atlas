@@ -25,7 +25,7 @@ use atlas_engine::SourcePath;
 use atlas_engine::discovery::{DiscoveryConfig, discover_files};
 use atlas_engine::progress::{ProgressPhase, ProgressState};
 use atlas_engine::{self, LanguageRegistry, ParseWorkerPool, WorkerConfig};
-use atlas_engine::{PerLanguageStats, PhaseTimer, PhaseTiming, PhaseTimings};
+use atlas_engine::PerLanguageStats;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -36,7 +36,7 @@ use std::time::Instant;
 
 /// Result of extracting a single file.
 struct ExtractedFile {
-    rel_path: PathBuf,
+    _rel_path: PathBuf,
     lang: Language,
     facts: atlas_engine::FileFacts,
 }
@@ -95,7 +95,6 @@ pub fn run(
 
     // ── Start TUI (or text fallback if non-TTY) ──
     let mut tui = TuiProgress::try_init(progress_state.clone());
-    let mut text_fallback: Option<TextFallback> = None;
     let has_tty = tui.is_some();
 
     // ── Clone state for worker ──
@@ -236,7 +235,7 @@ pub fn run(
                 );
                 let extract_ms = file_start.elapsed().as_millis() as u64;
 
-                let count = count_atomic.fetch_add(1, Ordering::Relaxed);
+                let _count = count_atomic.fetch_add(1, Ordering::Relaxed);
                 extract_counter.fetch_add(1, Ordering::Relaxed);
 
                 let (facts_opt, failed, fail_cat) = match result {
@@ -247,7 +246,7 @@ pub fn run(
                     per_lang_mutex.lock().unwrap_or_else(|e| e.into_inner())
                         .record_file(lang, extract_ms, failed, fail_cat);
                 }
-                facts_opt.map(|facts| ExtractedFile { rel_path: rel_path.clone(), lang, facts })
+                facts_opt.map(|facts| ExtractedFile { _rel_path: rel_path.clone(), lang, facts })
             })
             .collect();
 
@@ -255,11 +254,7 @@ pub fn run(
 
         let extracted = results;
         let extracted_count = extracted.len();
-        let failed_count = dirty_total.saturating_sub(extracted_count);
-        let avg_ms = if extracted_count > 0 {
-            Instant::now().duration_since(Instant::now()).as_millis() as u64 / extracted_count as u64
-        } else { 0 };
-        let _ = avg_ms; // for later summary
+        let _failed_count = dirty_total.saturating_sub(extracted_count);
 
         let mut per_lang = per_lang_mutex.into_inner().unwrap();
 
@@ -284,7 +279,7 @@ pub fn run(
         );
         ps.lock().unwrap().set_total(extracted_count as u64);
 
-        let mut insert_failures = 0usize;
+        let mut _insert_failures = 0usize;
         const BATCH_SIZE: usize = 200;
         let mut written = 0u64;
         for chunk in extracted.chunks(BATCH_SIZE) {
@@ -294,7 +289,7 @@ pub fn run(
                     match store.insert_file_facts(&ef.facts) {
                         Ok(_) => {}
                         Err(_) => {
-                            insert_failures += 1;
+                            _insert_failures += 1;
                             per_lang.record_file(ef.lang, 0, true, Some("db_insert_error"));
                         }
                     }
@@ -366,11 +361,8 @@ pub fn run(
     } else {
         // Text fallback loop
         let mut fb = TextFallback::new(progress_state.clone());
-        text_fallback = Some(fb);
         loop {
-            if let Some(ref mut f) = text_fallback {
-                f.tick();
-            }
+            fb.tick();
             if done_flag.load(Ordering::SeqCst) || stop_flag.load(Ordering::SeqCst) {
                 break;
             }
