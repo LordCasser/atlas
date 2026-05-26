@@ -363,12 +363,15 @@ pub fn run(
         let mut fb = TextFallback::new(progress_state.clone());
         loop {
             fb.tick();
-            if done_flag.load(Ordering::SeqCst) || stop_flag.load(Ordering::SeqCst) {
+            if stop_flag.load(Ordering::SeqCst) {
+                break;
+            }
+            if done_flag.load(Ordering::SeqCst) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
-        false
+        stop_flag.load(Ordering::SeqCst) // was_interrupted = stop_flag is set
     };
 
     // ── Restore terminal ──
@@ -376,26 +379,30 @@ pub fn run(
         t.finish();
     }
 
-    // ── Get worker result ──
-    let worker_result = worker.join().unwrap_or_else(|e| {
-        Err(anyhow::anyhow!("Worker thread panicked: {:?}", e))
-    });
-
+    // ── Handle interrupt BEFORE joining worker ──
+    // If we join the worker on interrupt, the main thread blocks until
+    // the current rayon batch finishes (par_iter().collect() is not
+    // preemptible).  Instead, return immediately — the worker thread
+    // will wind down on its own when it checks the stop flag at the
+    // next phase boundary.
     if was_interrupted {
         crate::tui::progress::print_interrupted(&progress_state.lock().unwrap());
         return Ok(());
     }
 
+    // ── Normal completion: join worker and print summary ──
+    let worker_result = worker.join().unwrap_or_else(|e| {
+        Err(anyhow::anyhow!("Worker thread panicked: {:?}", e))
+    });
+
     worker_result?;
 
-    // ── Print summary ──
     let db_stats = store_for_main.get_stats()?;
     println!("\nDatabase status:");
     println!("  Files:    {}", db_stats.total_files);
     println!("  Symbols:  {}", db_stats.total_symbols);
     println!("  Edges:    {}", db_stats.total_edges);
 
-    // Print phase timings if available (simplified)
     println!("\nIndex complete.");
 
     Ok(())
