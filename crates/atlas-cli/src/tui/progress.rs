@@ -1,9 +1,15 @@
 //! TUI progress lifecycle — terminal init (inline), draw loop, graceful shutdown.
 //!
-//! Inline mode: renders below the shell prompt without a full-screen takeover,
-//! similar to `cargo build`.  Uses ratatui's `Viewport::Inline` which reserves
-//! a fixed number of rows below the current cursor and overwrites them on each
-//! draw, leaving prior shell output intact above.
+//! Inline mode: renders below the shell prompt without a full-screen takeover.
+//!
+//! ## Ctrl+C detection
+//!
+//! Raw terminal mode (crossterm `enable_raw_mode()`) disables the `ISIG`
+//! terminal flag, so Ctrl+C is delivered as a keyboard event (0x03) rather
+//! than the OS-level SIGINT signal.  The `ctrlc` crate's signal handler
+//! therefore never fires.  We detect Ctrl+C by polling crossterm keyboard
+//! events with `event::poll()` in the draw loop.  The SIGINT handler is
+//! retained as a fallback for non-raw-mode environments (pipes, CI).
 
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use atlas_engine::progress::ProgressState;
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::{TerminalOptions, Viewport};
 
 use super::render;
@@ -98,11 +105,25 @@ impl TuiProgress {
             }
 
             // ── Render one frame ──
-            // If the terminal is in a bad state (Ctrl+C during draw),
-            // don't error out — just skip this frame and check exit flags.
             if let Err(_) = self.draw() {
-                // Terminal error — likely Ctrl+C mid-render.
-                // Don't block; check flags on next iteration.
+                // Terminal error — skip this frame.
+            }
+
+            // ── Poll for Ctrl+C key event ──
+            // In raw mode, ISIG is off — Ctrl+C arrives as a keyboard
+            // event, not as SIGINT.  We poll with a zero timeout: if
+            // there are events, read them; otherwise continue.
+            //
+            // Drain ALL pending events (not just Ctrl+C) to avoid
+            // event queue back-pressure.
+            while event::poll(Duration::from_millis(0)).unwrap_or(false) {
+                if let Ok(Event::Key(key)) = event::read() {
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        return true;
+                    }
+                }
             }
 
             std::thread::sleep(Duration::from_millis(200));
