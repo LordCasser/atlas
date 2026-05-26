@@ -284,22 +284,22 @@ atlas-engine/crates/workspace: 项目根目录与路径抽象
 - 架构约束与不变式：见 [`02-architecture-constraints.md`](./02-architecture-constraints.md)
 - 语言能力权威表（从代码 capability profile 导出）：
 
-| Language | Level | CFG | Confidence | In all-languages? |
-|----------|-------|:---:|:---:|:---:|
-| TypeScript | DataflowBasic | ✓ | 0.55 | ✓ (default) |
-| JavaScript | DataflowBasic | ✓ | 0.55 | ✓ (default) |
-| Python | DataflowBasic | ✗ | 0.50 | ✓ (default) |
-| Java | DataflowBasic | ✗ | 0.65 | ✓ |
-| C | DataflowBasic | ✗ | 0.65 | ✓ |
-| C++ | DataflowBasic | ✗ | 0.60 | ✓ |
-| ArkTS | DataflowBasic | ✗ | 0.45 | ✓ |
-| Go | DataflowBasic | ✗ | 0.70 | ✓ |
-| C# | DataflowBasic | ✗ | 0.70 | ✓ |
-| Rust | DataflowBasic | ✗ | 0.60 | ✓ |
-| PHP | DataflowBasic | ✗ | 0.55 | ✓ |
-| Ruby | DataflowBasic | ✗ | 0.50 | ✓ |
-| Kotlin | DataflowBasic | ✗ | 0.65 | ✓ |
-| Cangjie | Symbolic | ✗ | 0.60 | ✓ |
-| Bash | Symbolic | ✗ | 0.40 | ✗ (opt-in) |
+| Language | Level | CFG | Confidence | Interprocedural | In all-languages? |
+|----------|-------|:---:|:---:|:---:|:---:|
+| TypeScript | DataflowFull | ✓ | 0.60 | ✓ (ArgToParam + ReturnToCall) | ✓ (default) |
+| JavaScript | DataflowFull | ✓ | 0.60 | ✓ (ArgToParam + ReturnToCall) | ✓ (default) |
+| Python | DataflowFull | ✗ | 0.55 | ArgToParam ✓, ReturnToCall ✗ | ✓ (default) |
+| Java | DataflowFull | ✗ | 0.68 | ✓ (ArgToParam + ReturnToCall) | ✓ |
+| C | DataflowFull | ✗ | 0.67 | ArgToParam ✓, ReturnToCall ✗ | ✓ |
+| C++ | DataflowFull | ✗ | 0.62 | ArgToParam ✓, ReturnToCall ✗ | ✓ |
+| ArkTS | DataflowFull | ✗ | 0.50 | ✓ (ArgToParam + ReturnToCall) | ✓ |
+| Go | DataflowFull | ✗ | 0.72 | ✓ (ArgToParam + ReturnToCall) | ✓ |
+| C# | DataflowFull | ✗ | 0.72 | ✓ (ArgToParam + ReturnToCall) | ✓ |
+| Rust | DataflowFull | ✗ | 0.62 | ArgToParam ✓, ReturnToCall ✗ | ✓ |
+| PHP | DataflowFull | ✗ | 0.58 | 两者均为 documented gap | ✓ |
+| Ruby | DataflowFull | ✗ | 0.55 | ArgToParam ✓, ReturnToCall ✗ | ✓ |
+| Kotlin | DataflowFull | ✗ | 0.67 | 两者均为 documented gap | ✓ |
+| Cangjie | Symbolic | ✗ | 0.60 | — | ✓ |
+| Bash | Symbolic | ✗ | 0.40 | — | ✗ (opt-in) |
 
 - Lazy dataflow 设计：analysis 层按需加载 dataflow facts（而非全量预加载），通过 `LazyWindow` 控制分析范围，`ExtractionMode::LazyDataflow` 支持增量按需抽取。详见 `dataflow_builder.rs` 和 `extraction_ctx.rs`。
