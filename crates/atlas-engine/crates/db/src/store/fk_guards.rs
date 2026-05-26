@@ -206,6 +206,7 @@ pub(crate) fn filter_cfg_edges(
 /// Public fields allow the caller to inspect what was filtered (for
 /// diagnostics/logging) and write only the safe subset.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct ValidatedDataflowPayload {
     pub bindings: Vec<BindingDef>,
     pub binding_uses: Vec<BindingUse>,
@@ -218,6 +219,7 @@ pub(crate) struct ValidatedDataflowPayload {
 }
 
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub(crate) struct FilteredCounts {
     pub bindings_removed: usize,
     pub binding_uses_removed: usize,

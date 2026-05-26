@@ -20,6 +20,7 @@ use types::structs::TextRange;
 use types::trace::{BoundaryKind, BoundaryMarker};
 
 /// Default maximum depth for forward-chain traversal.
+#[allow(dead_code)]
 pub const DEFAULT_MAX_DEPTH: usize = 20;
 
 /// Explores forward call chains from a source symbol to a target.

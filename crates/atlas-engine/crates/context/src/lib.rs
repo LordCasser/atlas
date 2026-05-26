@@ -193,10 +193,10 @@ impl ContextBuilder {
     }
 
     /// Read the subject symbol's source code from disk.
+    ///
+    /// ContextBuilder does not hold a project_root; source snippet reading
+    /// is delegated to the MCP tool layer which can resolve file paths.
     fn read_source_snippet(&self, _sym: &SymbolDef) -> Option<SourceSnippet> {
-        const MAX_LINES: usize = 50;
-        // We don't have project_root in ContextBuilder; skip source reading.
-        // MCP tool handler can enrich with source snippets separately.
         None
     }
 }
