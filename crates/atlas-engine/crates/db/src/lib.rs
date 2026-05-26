@@ -1,8 +1,6 @@
-//! SQLite persistence layer: schema, Store (CRUD + FTS5 search).
-//!
-//! `Store` wraps a `Mutex<Connection>` and provides the primary API for
-//! reading and writing all Atlas types to SQLite.
+//! Persistence layer: SQLite (primary) and DuckDB (exploratory bulk-write backend).
 
+pub mod duck;
 pub mod readers;
 mod schema;
 mod store;
