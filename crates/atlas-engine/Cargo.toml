@@ -38,16 +38,16 @@ java = ["types/java", "extraction/java"]
 c = ["types/c", "extraction/c"]
 cpp = ["types/cpp", "extraction/cpp"]
 arkts = ["typescript", "types/arkts", "extraction/arkts"]
-cangjie = ["types/cangjie", "extraction/cangjie"]
+# cangjie = ["types/cangjie", "extraction/cangjie"]
 go = ["types/go", "extraction/go"]
 csharp = ["types/csharp", "extraction/csharp"]
 rust = ["types/rust", "extraction/rust"]
 php = ["types/php", "extraction/php"]
 ruby = ["types/ruby", "extraction/ruby"]
 bash = ["types/bash", "extraction/bash"]
-kotlin = ["types/kotlin", "extraction/kotlin"]
+# kotlin = ["types/kotlin", "extraction/kotlin"]
 
 all-languages = [
     "typescript", "javascript", "python", "java",
-    "c", "cpp", "arkts", "cangjie", "go", "csharp", "rust", "php", "ruby", "kotlin",
+    "c", "cpp", "arkts", "go", "csharp", "rust", "php", "ruby",
 ]

@@ -43,18 +43,18 @@ java = ["atlas-engine/java"]
 c = ["atlas-engine/c"]
 cpp = ["atlas-engine/cpp"]
 arkts = ["atlas-engine/arkts"]
-cangjie = ["atlas-engine/cangjie"]
+# cangjie = ["atlas-engine/cangjie"]
 go = ["atlas-engine/go"]
 csharp = ["atlas-engine/csharp"]
 rust = ["atlas-engine/rust"]
 php = ["atlas-engine/php"]
 ruby = ["atlas-engine/ruby"]
 bash = ["atlas-engine/bash"]
-kotlin = ["atlas-engine/kotlin"]
+# kotlin = ["atlas-engine/kotlin"]
 all-languages = [
     # All DataflowBasic + Symbolic languages with verified lexical/dataflow compilation.
     # Cangjie (ABI 15) is now compatible with tree-sitter 0.26 (MAX_ABI ≥ 15).
     # Bash is explicitly Symbolic-only with no dataflow support, opt-in only.
     "typescript", "javascript", "python", "java",
-    "c", "cpp", "arkts", "cangjie", "go", "csharp", "rust", "php", "ruby", "kotlin",
+    "c", "cpp", "arkts", "go", "csharp", "rust", "php", "ruby",
 ]

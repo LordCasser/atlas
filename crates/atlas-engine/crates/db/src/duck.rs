@@ -72,9 +72,9 @@ impl DuckStore {
         let mut all_refs: Vec<&ReferenceUse> = Vec::new();
         let mut all_imports: Vec<&ImportDef> = Vec::new();
         let mut all_edges: Vec<&RawEdge> = Vec::new();
-        let mut all_callsites: Vec<&CallsiteDef> = Vec::new();
+        let mut all_callsites: Vec<&Callsite> = Vec::new();
         let mut all_bindings: Vec<&BindingDef> = Vec::new();
-        let mut all_binding_uses: Vec<&BindingUseDef> = Vec::new();
+        let mut all_binding_uses: Vec<&BindingUse> = Vec::new();
         let mut all_data_nodes: Vec<&DataNode> = Vec::new();
         let mut all_dataflow_edges: Vec<&DataFlowEdge> = Vec::new();
         let mut all_cfg_nodes: Vec<&CfgNode> = Vec::new();
@@ -473,16 +473,14 @@ fn write_edges_appender(conn: &Connection, edges: &[&RawEdge]) -> anyhow::Result
     if edges.is_empty() { return Ok(()); }
     let mut app = conn.appender("symbol_edges")?;
     for e in edges {
+        let loc = e.location.as_ref();
         app.append_row(params![
-            blob(&e.id), blob(&e.source), opt_blob(&e.target),
+            blob(&e.id), blob(&e.source), blob(&e.target),
             e.kind.as_str(), e.confidence.as_f32(),
-            e.provenance.as_str(), Option::<&[u8]>::None,
-            e.locations.get(0).copied().map(|v| v as i64),
-            e.locations.get(1).copied().map(|v| v as i64),
-            e.locations.get(2).copied().map(|v| v as i64),
-            e.locations.get(3).copied().map(|v| v as i64),
-            e.locations.get(4).copied().map(|v| v as i64),
-            e.locations.get(5).copied().map(|v| v as i64),
+            e.provenance.as_str(), opt_blob(&e.ref_id),
+            loc.map(|r| r.start_byte as i64), loc.map(|r| r.end_byte as i64),
+            loc.map(|r| r.start_line as i64), loc.map(|r| r.start_column as i64),
+            loc.map(|r| r.end_line as i64), loc.map(|r| r.end_column as i64),
             e.metadata.as_deref().unwrap_or(""),
             Option::<&str>::None,
         ])?;
@@ -490,11 +488,12 @@ fn write_edges_appender(conn: &Connection, edges: &[&RawEdge]) -> anyhow::Result
     Ok(())
 }
 
-fn write_callsites_appender(conn: &Connection, callsites: &[&CallsiteDef]) -> anyhow::Result<()> {
+fn write_callsites_appender(conn: &Connection, callsites: &[&Callsite]) -> anyhow::Result<()> {
     if callsites.is_empty() { return Ok(()); }
     let mut app = conn.appender("callsites")?;
     for c in callsites {
         let args_json = serde_json::to_string(&c.args).unwrap_or_else(|_| "[]".into());
+        let cr = c.callee_range.as_ref();
         app.append_row(params![
             blob(&c.id), opt_blob(&c.reference_id),
             blob(&c.caller), opt_blob(&c.callee),
@@ -503,12 +502,12 @@ fn write_callsites_appender(conn: &Connection, callsites: &[&CallsiteDef]) -> an
             c.range.start_byte as i64, c.range.end_byte as i64,
             c.range.start_line as i64, c.range.start_column as i64,
             c.range.end_line as i64, c.range.end_column as i64,
-            c.callee_start_line.map(|v| v as i64),
-            c.callee_start_column.map(|v| v as i64),
-            c.callee_end_line.map(|v| v as i64),
-            c.callee_end_column.map(|v| v as i64),
-            c.callee_start_byte.map(|v| v as i64),
-            c.callee_end_byte.map(|v| v as i64),
+            cr.map(|r| r.start_line as i64),
+            cr.map(|r| r.start_column as i64),
+            cr.map(|r| r.end_line as i64),
+            cr.map(|r| r.end_column as i64),
+            cr.map(|r| r.start_byte as i64),
+            cr.map(|r| r.end_byte as i64),
         ])?;
     }
     Ok(())
@@ -530,12 +529,12 @@ fn write_bindings_appender(conn: &Connection, bindings: &[&BindingDef]) -> anyho
     Ok(())
 }
 
-fn write_binding_uses_appender(conn: &Connection, uses: &[&BindingUseDef]) -> anyhow::Result<()> {
+fn write_binding_uses_appender(conn: &Connection, uses: &[&BindingUse]) -> anyhow::Result<()> {
     if uses.is_empty() { return Ok(()); }
     let mut app = conn.appender("binding_uses")?;
     for u in uses {
         app.append_row(params![
-            blob(&u.id), blob(&u.file_id), opt_blob(&u.scope_id),
+            blob(&u.id), blob(&u.file_id), blob(&u.scope_id),
             opt_blob(&u.binding_id), opt_blob(&u.reference_id),
             u.name.as_str(),
             u.range.start_byte as i64, u.range.end_byte as i64,
@@ -570,13 +569,10 @@ fn write_dataflow_edges_appender(conn: &Connection, edges: &[&DataFlowEdge]) -> 
     for e in edges {
         app.append_row(params![
             blob(&e.id), blob(&e.source), blob(&e.target), e.kind.as_str(),
-            e.locations.get(0).copied().map(|v| v as i64),
-            e.locations.get(1).copied().map(|v| v as i64),
-            e.locations.get(2).copied().map(|v| v as i64),
-            e.locations.get(3).copied().map(|v| v as i64),
-            e.locations.get(4).copied().map(|v| v as i64),
-            e.locations.get(5).copied().map(|v| v as i64),
-            e.confidence.as_f32(),
+            e.location.start_byte as i64, e.location.end_byte as i64,
+            e.location.start_line as i64, e.location.start_column as i64,
+            e.location.end_line as i64, e.location.end_column as i64,
+            e.confidence,
         ])?;
     }
     Ok(())
@@ -588,9 +584,9 @@ fn write_cfg_nodes_appender(conn: &Connection, nodes: &[&CfgNode]) -> anyhow::Re
     for n in nodes {
         app.append_row(params![
             blob(&n.id), blob(&n.function_id), n.kind.as_str(),
-            n.range.start_byte as i64, n.range.end_byte as i64,
-            n.range.start_line as i64, n.range.start_column as i64,
-            n.range.end_line as i64, n.range.end_column as i64,
+            n.stmt_range.start_byte as i64, n.stmt_range.end_byte as i64,
+            n.stmt_range.start_line as i64, n.stmt_range.start_column as i64,
+            n.stmt_range.end_line as i64, n.stmt_range.end_column as i64,
         ])?;
     }
     Ok(())
@@ -601,7 +597,7 @@ fn write_cfg_edges_appender(conn: &Connection, edges: &[&CfgEdge]) -> anyhow::Re
     let mut app = conn.appender("cfg_edges")?;
     for e in edges {
         app.append_row(params![
-            blob(&e.id), blob(&e.source_node), blob(&e.target_node), e.kind.as_str(),
+            blob(&e.id), blob(&e.source), blob(&e.target), e.kind.as_str(),
         ])?;
     }
     Ok(())
