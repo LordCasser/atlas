@@ -61,6 +61,16 @@ pub fn run(
         _ => ExtractionMode::Structural,
     };
 
+    // ── Configure rayon thread pool ────────────────────────────────────────
+    // macOS spawns threads with a 512 KB stack by default, which overflows
+    // during tree-sitter's recursive-descent parsing of deeply-nested files
+    // (e.g. Linux kernel headers).  4 MB matches the tree-sitter playground
+    // convention and is safe on all platforms.
+    rayon::ThreadPoolBuilder::new()
+        .stack_size(4 * 1024 * 1024)
+        .build_global()
+        .expect("failed to initialise rayon thread pool");
+
     // ── Merge include/scope patterns ──
     let mut include_patterns: Vec<String> = includes.to_vec();
     for scope in scopes {
