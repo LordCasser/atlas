@@ -1,7 +1,5 @@
-//! Persistence layer: SQLite (primary) and DuckDB (exploratory bulk-write backend).
+//! Persistence layer: SQLite — Store, schema, FTS5 search.
 
-pub mod duck;
-pub(crate) mod duck_rows;
 pub mod readers;
 mod schema;
 mod store;
