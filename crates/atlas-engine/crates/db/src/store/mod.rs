@@ -150,6 +150,30 @@ impl Store {
     pub fn db_path(&self) -> &Path {
         &self.db_path
     }
+
+    /// Trigger a PASSIVE WAL checkpoint.
+    ///
+    /// Under heavy writes (e.g. bulk indexing), the WAL can grow without
+    /// bound and each subsequent transaction incurs O(WAL-size) overhead.
+    /// Calling this periodically keeps the WAL small and write throughput
+    /// steady.
+    ///
+    /// PASSIVE mode does not block concurrent writers — it checkpoints as
+    /// much as it can without interfering.  Callers that want a hard flush
+    /// after the write phase should use `checkpoint_wal_truncate`.
+    pub fn checkpoint_wal(&self) -> anyhow::Result<()> {
+        let conn = self.lock();
+        conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE)")?;
+        Ok(())
+    }
+
+    /// Force a full WAL checkpoint and truncate the WAL file to zero bytes.
+    /// Blocks writers.  Use at the end of a bulk write phase.
+    pub fn checkpoint_wal_truncate(&self) -> anyhow::Result<()> {
+        let conn = self.lock();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
+        Ok(())
+    }
 }
 
 impl Deref for Store {
