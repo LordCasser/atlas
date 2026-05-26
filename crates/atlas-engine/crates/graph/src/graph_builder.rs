@@ -759,46 +759,10 @@ impl GraphBuilder {
             };
 
             // Attempt to find a function symbol matching the callback name.
+            // Prefer symbols in the same file as the registrant.
             let candidates = match store.find_symbols_by_name(&callback_name) {
                 Ok(syms) if !syms.is_empty() => syms,
                 _ => continue,
-            };
-
-            let callsite = match store
-                .find_callsite_by_reference_id(ref_id)
-                .ok()
-                .flatten()
-            {
-                Some(cs) => cs,
-                None => continue,
-            };
-
-            // The callback is at args[arg_index]; look up its data_node_id
-            let callback_dn = match callsite.args.get(*arg_index) {
-                Some(arg) => arg,
-                None => continue,
-            };
-
-            let callback_dn_id = match &callback_dn.data_node_id {
-                Some(dn_id) => dn_id,
-                None => continue,
-            };
-
-            let callback_node = match store.get_data_node(callback_dn_id).ok().flatten() {
-                Some(dn) => dn,
-                None => continue,
-            };
-
-            let callback_name = match &callback_node.name {
-                Some(name) => name.clone(),
-                None => continue,
-            };
-
-            // Attempt to find a function symbol matching the callback name.
-            // Prefer symbols in the same file as the registrant.
-            let candidates = match store.find_symbols_by_name(&callback_name) {
-                Ok(syms) => syms,
-                Err(_) => continue,
             };
 
             // Get the file_id of the edge source (registrant function)
