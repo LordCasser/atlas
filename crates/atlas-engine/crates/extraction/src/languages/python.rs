@@ -178,6 +178,11 @@ fn is_py_identifier_declaration(node: tree_sitter::Node) -> bool {
 
 /// Find the enclosing `call` node in Python AST.
 fn find_call_expression_python(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    // Check current node first — the captured node may itself be the call expression
+    // (e.g. when `df.assign_value` captures a call node directly).
+    if node.kind() == "call" {
+        return Some(node);
+    }
     let mut current = node;
     while let Some(parent) = current.parent() {
         if parent.kind() == "call" {
@@ -229,6 +234,8 @@ fn normalize_py_dataflow_builder(
             .unwrap_or((None, None)),
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
+            let callsite_id = find_call_expression_python(node)
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&types::ids::SymbolId>,
@@ -243,7 +250,7 @@ fn normalize_py_dataflow_builder(
                 function_id: None,
                 kind: types::enums::DataNodeKind::Expr,
                 binding_id: None,
-                callsite_id: None,
+                callsite_id,
                 name: Some(text),
                 access_path: None,
                 arg_index: None,

@@ -537,6 +537,11 @@ fn normalize_kotlin_lexical(
 // ── Dataflow normalize ─────────────────────────────────────────────────
 
 fn find_call_expression_kotlin(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    // Check current node first — the captured node may itself be the call expression
+    // (e.g. when `df.assign_value` captures a call_expression directly).
+    if node.kind() == "call_expression" {
+        return Some(node);
+    }
     let mut current = node;
     while let Some(parent) = current.parent() {
         if parent.kind() == "call_expression" {

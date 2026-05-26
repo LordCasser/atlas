@@ -427,19 +427,30 @@ fn normalize_php_lexical(
 // ── Dataflow normalize ─────────────────────────────────────────────────
 
 fn find_call_expression_php(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    let kinds: &[&str] = &[
+        "function_call_expression",
+        "member_call_expression",
+        "object_creation_expression",
+    ];
+    // Check current node first — the captured node may itself be the call expression
+    // (e.g. when `df.assign_value` captures a function_call_expression directly).
+    if kinds.contains(&node.kind()) {
+        return Some(node);
+    }
     let mut current = node;
     while let Some(parent) = current.parent() {
-        let kinds: &[&str] = &[
-            "function_call_expression",
-            "member_call_expression",
-            "object_creation_expression",
-        ];
         if kinds.contains(&parent.kind()) {
             return Some(parent);
         }
         current = parent;
     }
     None
+}
+
+/// Strip the `$` sigil from a PHP variable name so DataNode names are
+/// consistent with definition/reference names (which already strip `$`).
+fn strip_php_sigil(raw: &str) -> &str {
+    raw.trim_start_matches('$')
 }
 
 fn normalize_php_dataflow_builder(
@@ -452,7 +463,8 @@ fn normalize_php_dataflow_builder(
     let range = node_range(node);
     match capture_name {
         "df.parameter" => node_text(node, source)
-            .map(|name| {
+            .map(|raw| {
+                let name = strip_php_sigil(&raw).to_string();
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&SymbolId>,
@@ -470,7 +482,8 @@ fn normalize_php_dataflow_builder(
             })
             .unwrap_or((None, None)),
         "df.assign_target" => node_text(node, source)
-            .map(|name| {
+            .map(|raw| {
+                let name = strip_php_sigil(&raw).to_string();
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&SymbolId>,
@@ -569,13 +582,14 @@ fn normalize_php_dataflow_builder(
             .unwrap_or((None, None)),
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
+            let name = strip_php_sigil(&text).to_string();
             let callsite_id = find_call_expression_php(node)
                 .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&SymbolId>,
                 "call_arg",
-                Some(&text),
+                Some(&name),
                 None,
                 range.start_byte,
             );
@@ -585,7 +599,7 @@ fn normalize_php_dataflow_builder(
                     file_id,
                     None,
                     callsite_id,
-                    Some(&text),
+                    Some(&name),
                     range,
                 )),
                 None,
@@ -757,12 +771,13 @@ fn normalize_php_dataflow_builder(
             if text.is_empty() || text.starts_with("$_") {
                 return (None, None);
             }
+            let name = strip_php_sigil(&text).to_string();
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&SymbolId>,
                 "identifier_use",
-                Some(&text),
-                Some(&text),
+                Some(&name),
+                Some(&name),
                 range.start_byte,
             );
             let dn = DataNode {
@@ -772,8 +787,8 @@ fn normalize_php_dataflow_builder(
                 kind: DataNodeKind::VariableUse,
                 binding_id: None,
                 callsite_id: None,
-                name: Some(text.clone()),
-                access_path: Some(text),
+                name: Some(name.clone()),
+                access_path: Some(name),
                 arg_index: None,
                 range,
             };

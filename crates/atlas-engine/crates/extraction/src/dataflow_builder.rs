@@ -485,6 +485,70 @@ fn walk_for_assign_edges(
         }
     }
 
+    // ── Kotlin: property_declaration (val/var x = expr) ──────────────
+    // In tree-sitter-kotlin v0.3.5+, `property_declaration` wraps
+    // `variable_declaration` (name+type) and optional `= expr`.
+    // The simple_identifier is nested inside variable_declaration;
+    // the expression is a direct unnamed child of property_declaration.
+    if kind == "property_declaration" {
+        let name_node = node
+            .child_by_field_name("declarator")
+            .or_else(|| {
+                // Look for simple_identifier inside variable_declaration
+                (0..node.child_count())
+                    .filter_map(|i| node.child(i as u32))
+                    .find(|c| c.kind() == "variable_declaration")
+                    .and_then(|vd| {
+                        (0..vd.child_count())
+                            .filter_map(|i| vd.child(i as u32))
+                            .find(|c| c.kind() == "simple_identifier")
+                    })
+            });
+        let expr_node = node
+            .child_by_field_name("expr")
+            .or_else(|| {
+                // Fallback: find expression after '='
+                let mut seen_eq = false;
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i as u32) {
+                        if seen_eq && child.is_named() {
+                            return Some(child);
+                        }
+                        if child.kind() == "=" {
+                            seen_eq = true;
+                        }
+                    }
+                }
+                None
+            });
+        if let (Some(name_node), Some(expr_node)) = (name_node, expr_node) {
+            let name_key = NodePosKey {
+                start_byte: name_node.start_byte() as u32,
+                end_byte: name_node.end_byte() as u32,
+                kind: DataNodeKind::Local,
+            };
+            let value_key = NodePosKey {
+                start_byte: expr_node.start_byte() as u32,
+                end_byte: expr_node.end_byte() as u32,
+                kind: DataNodeKind::Expr,
+            };
+            if let (Some(&target_id), Some(&source_id)) =
+                (pos_map.get(&name_key), pos_map.get(&value_key))
+            {
+                let edge_id =
+                    DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+                edges.push(DataFlowEdge::new(
+                    edge_id,
+                    source_id,
+                    target_id,
+                    DataFlowKind::Assign,
+                    ts_node_range(&name_node),
+                    0.95,
+                ));
+            }
+        }
+    }
+
     // ── assignment_expression / assignment: left ← right ──────────────
     if kind == "assignment_expression" || kind == "assignment" {
         if let (Some(left_node), Some(right_node)) = (
