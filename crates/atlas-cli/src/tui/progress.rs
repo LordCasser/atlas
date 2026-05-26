@@ -131,35 +131,25 @@ impl TuiProgress {
         }
     }
 
-    /// Finish the TUI on normal completion — clears the inline progress
-    /// display (the "process") and positions the cursor at the top of the
-    /// cleared area so the caller can print a result summary in its place.
-    ///
-    /// Uses per-line `\x1b[2K` instead of `\x1b[J` so content *below* the
-    /// inline area is preserved — only the TUI frame itself is removed.
+    /// Finish the TUI on normal completion — leaves the progress display
+    /// visible on screen (like `wget`) and positions the cursor below the
+    /// rendered area so subsequent output starts on a fresh line.
     pub fn finish(mut self) {
-        // Render one final frame to show completion state before clearing.
+        // Render one final frame so the display shows completion state
+        // (100% gauge, all phases completed) before shutting down.
         let _ = self.draw();
 
-        // Move cursor to the start of the inline area (INLINE_ROWS up)
-        // then clear each row with \x1b[2K (clear entire line) followed
-        // by \r\n (carriage return + line feed) to advance to the next row.
-        let up = format!("\x1b[{}A", INLINE_ROWS);
-        let _ = std::io::Write::write_all(&mut std::io::stdout(), up.as_bytes());
-        for _ in 0..INLINE_ROWS {
-            let _ = std::io::Write::write_all(
-                &mut std::io::stdout(),
-                b"\x1b[2K\r\n",
-            );
-        }
-        // Move cursor back up to the top of the cleared area so the
-        // caller's summary (println!) fills the now-empty space.
-        let up = format!("\x1b[{}A", INLINE_ROWS);
-        let _ = std::io::Write::write_all(&mut std::io::stdout(), up.as_bytes());
-        let _ = std::io::Write::flush(&mut std::io::stdout());
-
-        // Drop terminal (disables raw mode via Drop → try_restore).
+        // Drop the terminal.  The Drop impl calls ratatui::try_restore(),
+        // which disables raw mode and restores the cursor to its
+        // pre-init position (above the rendered inline content).
         drop(self);
+
+        // Move cursor forward by INLINE_ROWS to land below the rendered
+        // content.  ANSI escapes work in both raw and cooked mode — the
+        // terminal emulator interprets them regardless of line discipline.
+        let down = format!("\x1b[{}B", INLINE_ROWS);
+        let _ = std::io::Write::write_all(&mut std::io::stdout(), down.as_bytes());
+        let _ = std::io::Write::flush(&mut std::io::stdout());
     }
 }
 
