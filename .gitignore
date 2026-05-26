@@ -7,3 +7,4 @@
 *.db-shm
 .gitmodules
 examples/
+codegraph/
