@@ -21,7 +21,7 @@
 //! accept `impl SymbolReader + ...` instead of `&Store` to reduce coupling.
 //! Writer traits are deferred to a future cleanup pass (Item 10).
 
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use std::collections::HashSet;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -36,6 +36,7 @@ mod cfg;
 mod dataflow;
 mod edges;
 mod files;
+mod fk_guards;
 mod index_layers;
 mod lifecycle;
 mod scopes;
@@ -183,8 +184,8 @@ impl Store {
     where
         F: FnOnce(&Transaction) -> anyhow::Result<T>,
     {
-        let conn = self.lock();
-        let tx = conn.unchecked_transaction()?;
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let result = f(&tx)?;
         tx.commit()?;
         Ok(result)
@@ -214,8 +215,8 @@ impl Store {
 
     /// Shared implementation: one transaction, one lock, N files.
     fn insert_file_facts_impl(&self, batch: &[FileFacts]) -> anyhow::Result<()> {
-        let conn = self.lock();
-        let tx = conn.unchecked_transaction()?;
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         for facts in batch {
             // File info
@@ -926,5 +927,424 @@ mod tests {
         let stats = store.get_stats().unwrap();
         assert_eq!(stats.total_files, 0);
         assert_eq!(stats.sqlite_version.len() > 0, true);
+    }
+
+    // ── FK guard tests for replace_dataflow_for_unit ────────────────────
+
+    /// Regression: `replace_dataflow_for_unit` should not crash with FK
+    /// constraint failure when data nodes reference a non-existent function
+    /// symbol.  The invalid rows are silently dropped.
+    #[test]
+    fn replace_dataflow_survives_missing_function_id() {
+        let store = test_store();
+        let file_id = FileId::generate("src/example.c");
+        let range = TextRange {
+            start_byte: 0,
+            end_byte: 100,
+            start_line: 1,
+            start_column: 1,
+            end_line: 10,
+            end_column: 1,
+        };
+
+        // Insert the file row (required FK for data_nodes.file_id)
+        let file_info = FileInfo {
+            file_id,
+            path: "src/example.c".into(),
+            language: Language::C,
+            content_hash: "abc".into(),
+            status: ParseStatus::Success,
+        };
+        store.upsert_file(&file_info).unwrap();
+
+        // Create a valid function symbol and scope
+        let valid_func = test_symbol(file_id, "existing_func", SymbolKind::Function);
+        let valid_scope_id = ScopeId::generate(&file_id, None, "function", 0);
+        let valid_scope = ScopeDef {
+            id: valid_scope_id,
+            file_id,
+            kind: ScopeKind::Function,
+            name: "existing_func_scope".into(),
+            scope_path: "existing_func_scope".into(),
+            range,
+            parent_id: None,
+        };
+
+        // Insert the symbol + scope so they exist in DB
+        store.insert_file_facts(&FileFacts {
+            file: file_info.clone(),
+            symbols: vec![valid_func.clone()],
+            scopes: vec![valid_scope],
+            ..Default::default()
+        })
+        .unwrap();
+
+        // A non-existent symbol ID (never inserted)
+        let missing_func_id = SymbolId::generate(
+            &file_id,
+            "c",
+            "nonexistent_func",
+            SymbolKind::Function.as_str(),
+            None,
+        );
+
+        // Build test data: one valid binding + one with missing function_id
+        let valid_binding_id = BindingId::generate(
+            &file_id, &valid_scope_id, "parameter", "arg", 0,
+        );
+        let stray_binding_id = BindingId::generate(
+            &file_id, &valid_scope_id, "parameter", "stray", 1,
+        );
+
+        let bindings = vec![
+            // Valid: references existing function and scope
+            BindingDef {
+                id: valid_binding_id,
+                file_id,
+                function_id: Some(valid_func.id),
+                scope_id: valid_scope_id,
+                kind: types::enums::BindingKind::Parameter,
+                name: "arg".into(),
+                symbol_id: None,
+                range,
+            },
+            // Invalid: references non-existent function
+            BindingDef {
+                id: stray_binding_id,
+                file_id,
+                function_id: Some(missing_func_id),
+                scope_id: valid_scope_id,
+                kind: types::enums::BindingKind::Local,
+                name: "stray".into(),
+                symbol_id: None,
+                range,
+            },
+        ];
+
+        let data_nodes = vec![
+            // Valid: references existing function + valid binding
+            DataNode::parameter(
+                DataNodeId::generate(
+                    &file_id,
+                    Some(&valid_func.id),
+                    "parameter",
+                    Some("arg"),
+                    Some("arg"),
+                    15,
+                ),
+                file_id,
+                Some(valid_func.id),
+                Some(valid_binding_id),
+                "arg",
+                range,
+            ),
+            // Invalid: references non-existent function
+            DataNode::parameter(
+                DataNodeId::generate(
+                    &file_id,
+                    Some(&missing_func_id),
+                    "parameter",
+                    Some("ghost"),
+                    Some("ghost"),
+                    20,
+                ),
+                file_id,
+                Some(missing_func_id),
+                None,
+                "ghost",
+                range,
+            ),
+        ];
+
+        // Dataflow edge referencing both nodes — should be filtered because
+        // one target (ghost) will be removed
+        let edge = DataFlowEdge {
+            id: DataFlowEdgeId::generate(
+                &data_nodes[0].id,
+                &data_nodes[1].id,
+                "assign",
+            ),
+            source: data_nodes[0].id,
+            target: data_nodes[1].id,
+            kind: DataFlowKind::Assign,
+            location: range,
+            confidence: 1.0,
+        };
+
+        let unit = types::lazy::AnalysisUnit::from_function(
+            file_id,
+            valid_func.id,
+            range,
+        );
+
+        // This must NOT panic or fail with FK constraint
+        store
+            .replace_dataflow_for_unit(
+                &unit,
+                &data_nodes,
+                &[edge],
+                &bindings,
+                &[],   // no binding_uses
+                &[],   // no cfg_nodes
+                &[],   // no cfg_edges
+            )
+            .unwrap();
+
+        // After FK-guarded write, only the valid rows should exist
+        let stored_nodes = store.find_data_nodes_by_file(&file_id).unwrap();
+        assert_eq!(stored_nodes.len(), 1, "only the valid data node should be stored");
+        assert_eq!(stored_nodes[0].name.as_deref(), Some("arg"));
+
+        let stored_bindings = store.find_bindings_by_file(&file_id).unwrap();
+        // Note: insert_file_facts may also write bindings, so we count the ones
+        // with our test binding IDs.
+        let our_bindings: Vec<_> = stored_bindings
+            .iter()
+            .filter(|b| b.id == valid_binding_id)
+            .collect();
+        assert_eq!(our_bindings.len(), 1, "valid binding should be stored");
+
+        let our_stray: Vec<_> = stored_bindings
+            .iter()
+            .filter(|b| b.id == stray_binding_id)
+            .collect();
+        assert!(our_stray.is_empty(), "stray binding should be filtered out");
+
+        // Dataflow edges referencing removed nodes should also be dropped
+        let all_edges = store.find_dataflow_edges_by_file(&file_id).unwrap();
+        assert!(all_edges.is_empty(), "edge with missing target should be filtered out");
+    }
+
+    /// `replace_dataflow_for_unit` with fully valid FK references writes
+    /// all rows correctly.
+    #[test]
+    fn replace_dataflow_with_valid_fks_writes_correctly() {
+        let store = test_store();
+        let file_id = FileId::generate("src/valid.c");
+        let range = TextRange {
+            start_byte: 0,
+            end_byte: 50,
+            start_line: 1,
+            start_column: 1,
+            end_line: 5,
+            end_column: 1,
+        };
+
+        let file_info = FileInfo {
+            file_id,
+            path: "src/valid.c".into(),
+            language: Language::C,
+            content_hash: "abc".into(),
+            status: ParseStatus::Success,
+        };
+        store.upsert_file(&file_info).unwrap();
+
+        let func = test_symbol(file_id, "my_func", SymbolKind::Function);
+        let scope_id = ScopeId::generate(&file_id, None, "function", 0);
+        let scope = ScopeDef {
+            id: scope_id,
+            file_id,
+            kind: ScopeKind::Function,
+            name: "my_func_scope".into(),
+            scope_path: "my_func_scope".into(),
+            range,
+            parent_id: None,
+        };
+
+        store
+            .insert_file_facts(&FileFacts {
+                file: file_info.clone(),
+                symbols: vec![func.clone()],
+                scopes: vec![scope],
+                ..Default::default()
+            })
+            .unwrap();
+
+        let binding_id = BindingId::generate(&file_id, &scope_id, "parameter", "x", 0);
+        let bindings = vec![BindingDef {
+            id: binding_id,
+            file_id,
+            function_id: Some(func.id),
+            scope_id,
+            kind: types::enums::BindingKind::Parameter,
+            name: "x".into(),
+            symbol_id: None,
+            range,
+        }];
+
+        let dn_id = DataNodeId::generate(
+            &file_id,
+            Some(&func.id),
+            "parameter",
+            Some("x"),
+            Some("x"),
+            10,
+        );
+        let data_nodes = vec![DataNode::parameter(
+            dn_id,
+            file_id,
+            Some(func.id),
+            Some(binding_id),
+            "x",
+            range,
+        )];
+
+        let unit = types::lazy::AnalysisUnit::from_function(file_id, func.id, range);
+        store
+            .replace_dataflow_for_unit(
+                &unit,
+                &data_nodes,
+                &[],
+                &bindings,
+                &[],
+                &[],
+                &[],
+            )
+            .unwrap();
+
+        let got = store.find_data_nodes_by_file(&file_id).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name.as_deref(), Some("x"));
+
+        let bindings = store.find_bindings_by_file(&file_id).unwrap();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].name, "x");
+    }
+
+    // ── C #include dependents tests ─────────────────────────────────────
+
+    /// `find_dependents_by_file` resolves C `#include "helper.h"` directives
+    /// via basename matching when the LIKE query returns empty.
+    #[test]
+    fn dependents_resolves_c_bare_include() {
+        let store = test_store();
+
+        let main_id = FileId::generate("src/main.c");
+        let helper_id = FileId::generate("src/helper.h");
+
+        // Register both files
+        store
+            .upsert_file(&FileInfo {
+                file_id: main_id,
+                path: "src/main.c".into(),
+                language: Language::C,
+                content_hash: "abc".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        store
+            .upsert_file(&FileInfo {
+                file_id: helper_id,
+                path: "src/helper.h".into(),
+                language: Language::C,
+                content_hash: "abc".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+
+        // Create an import: `#include "helper.h"` in main.c
+        let import = ImportDef {
+            id: ImportId::generate(&main_id, "include", "helper.h", None, 0),
+            file_id: main_id,
+            kind: ImportKind::Include,
+            module: "helper.h".into(),
+            imported_name: String::new(),
+            local_name: None,
+            alias: None,
+            is_wildcard: false,
+            is_relative: true, // local include
+            range: Default::default(),
+        };
+
+        // Use insert_file_facts to get FK-guarded import insertion
+        store
+            .insert_file_facts(&FileFacts {
+                file: FileInfo {
+                    file_id: main_id,
+                    path: "src/main.c".into(),
+                    language: Language::C,
+                    content_hash: "abc".into(),
+                    status: ParseStatus::Success,
+                },
+                imports: vec![import],
+                ..Default::default()
+            })
+            .unwrap();
+
+        let dependents = store.find_dependents_by_file(&helper_id).unwrap();
+        assert!(
+            !dependents.is_empty(),
+            "main.c should be found as a dependent of helper.h"
+        );
+        assert!(
+            dependents.iter().any(|(path, _mod)| path == "src/main.c"),
+            "expected src/main.c in dependents, got: {:?}",
+            dependents
+        );
+    }
+
+    /// `find_dependents_by_file` handles C relative-path includes like
+    /// `#include "dir/helper.h"` where the importing file is in a different
+    /// directory.
+    #[test]
+    fn dependents_resolves_c_relative_include() {
+        let store = test_store();
+
+        let app_id = FileId::generate("src/app.c");
+        let helper_id = FileId::generate("src/dir/helper.h");
+
+        store
+            .upsert_file(&FileInfo {
+                file_id: app_id,
+                path: "src/app.c".into(),
+                language: Language::C,
+                content_hash: "abc".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        store
+            .upsert_file(&FileInfo {
+                file_id: helper_id,
+                path: "src/dir/helper.h".into(),
+                language: Language::C,
+                content_hash: "abc".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+
+        // `#include "dir/helper.h"` from src/app.c resolves to src/dir/helper.h
+        let import = ImportDef {
+            id: ImportId::generate(&app_id, "include", "dir/helper.h", None, 0),
+            file_id: app_id,
+            kind: ImportKind::Include,
+            module: "dir/helper.h".into(),
+            imported_name: String::new(),
+            local_name: None,
+            alias: None,
+            is_wildcard: false,
+            is_relative: true,
+            range: Default::default(),
+        };
+
+        store
+            .insert_file_facts(&FileFacts {
+                file: FileInfo {
+                    file_id: app_id,
+                    path: "src/app.c".into(),
+                    language: Language::C,
+                    content_hash: "abc".into(),
+                    status: ParseStatus::Success,
+                },
+                imports: vec![import],
+                ..Default::default()
+            })
+            .unwrap();
+
+        let dependents = store.find_dependents_by_file(&helper_id).unwrap();
+        assert!(
+            dependents.iter().any(|(path, _mod)| path == "src/app.c"),
+            "expected src/app.c in dependents of src/dir/helper.h, got: {:?}",
+            dependents
+        );
     }
 }

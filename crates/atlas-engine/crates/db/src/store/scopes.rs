@@ -96,30 +96,104 @@ impl Store {
     /// Returns tuples of (importing_file_path, import_module_string).
     /// This is a best-effort O(N) scan over all imports; for large projects
     /// consider building an in-memory dependency index.
+    ///
+    /// # C/C++ `#include` resolution
+    ///
+    /// For languages where imports use bare filenames (e.g., `#include "helper.h"`),
+    /// the standard path-substring LIKE query fails because the `module` column
+    /// stores just `helper.h` rather than the full path `src/helper.h`.  This
+    /// method includes a C/C++ include resolution pass that:
+    ///
+    /// 1. Extracts the target file's basename and matches it against import modules.
+    /// 2. Resolves relative includes by combining the importing file's directory
+    ///    with the include path.
+    ///
+    /// Both results are merged and returned.
     pub fn find_dependents_by_file(
         &self,
         file_id: &FileId,
     ) -> anyhow::Result<Vec<(String, String)>> {
         let conn = self.lock_read();
-        // Get the target file's path for display
+
+        // Get the target file's path for matching
         let target_path: String = conn.query_row(
             "SELECT path FROM files WHERE file_id = ?1",
             params![file_id],
             |row| row.get(0),
         )?;
 
-        // Find all imports whose module references this file
-        let mut stmt = conn.prepare(
-            "SELECT f.path, i.module, i.kind
-             FROM imports i
-             JOIN files f ON f.file_id = i.file_id
-             WHERE i.module LIKE ?1 OR i.module LIKE ?2
-             ORDER BY f.path",
-        )?;
-        let pattern_rel = format!("%{}%", target_path);
-        let rows = stmt.query_map(params![pattern_rel, pattern_rel], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        // ── Path A: Standard path-substring LIKE query ──────────────────
+        // Works for TypeScript, Python, Java etc. where module stores
+        // relative paths like "./foo/bar" or "react".
+        let mut results: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT f.path, i.module
+                 FROM imports i
+                 JOIN files f ON f.file_id = i.file_id
+                 WHERE i.module LIKE ?1
+                 ORDER BY f.path",
+            )?;
+            let pattern = format!("%{}%", target_path);
+            stmt.query_map(params![pattern], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect()
+        };
+
+        if !results.is_empty() {
+            return Ok(results);
+        }
+
+        // ── Path B: C/C++ include resolution ────────────────────────────
+        // Extract the target file's basename for bare-filename matching.
+        let target_basename = if let Some(pos) = target_path.rfind('/') {
+            &target_path[pos + 1..]
+        } else {
+            &target_path
+        };
+
+        // Collect include imports that might reference this file.
+        // We need both bare-filename matches and relative-path matches.
+        {
+            let mut stmt = conn.prepare(
+                "SELECT f.file_id, f.path, i.module
+                 FROM imports i
+                 JOIN files f ON f.file_id = i.file_id
+                 WHERE i.kind = 'include'
+                   AND i.is_relative = 1
+                 ORDER BY f.path",
+            )?;
+            let candidate_rows: Vec<(FileId, String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, FileId>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            for (_importing_fid, importing_path, module) in candidate_rows {
+                // Strategy 1: Bare basename match — `helper.h` == `helper.h`
+                if module == target_basename {
+                    results.push((importing_path, module));
+                    continue;
+                }
+
+                // Strategy 2: Relative include path resolved against importing
+                // file's directory.  e.g., importing `src/main.c` with
+                // `#include "helper.h"` → check `src/helper.h`.
+                if let Some(parent_dir) = std::path::Path::new(&importing_path).parent() {
+                    let resolved = parent_dir.join(&module);
+                    if resolved.to_string_lossy() == target_path {
+                        results.push((importing_path, module));
+                    }
+                }
+            }
+        }
+
+        Ok(results)
     }
 }

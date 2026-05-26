@@ -227,24 +227,41 @@ impl Store {
                 }
             }
 
+            // ── FK-guarded validation ───────────────────────────────
+            // Before inserting, verify that every FK reference points to
+            // an entity that exists in the DB (symbols, scopes) or in the
+            // same batch (bindings, data_nodes, cfg_nodes).  Rows whose
+            // FK references cannot be satisfied are silently dropped.
+            // This mirrors the defensive FK guards in insert_file_facts_impl
+            // but queries against DB state instead of in-memory batches.
+            let validated = super::fk_guards::validate_dataflow_payload_db(
+                tx,
+                data_nodes,
+                dataflow_edges,
+                bindings,
+                binding_uses,
+                cfg_nodes,
+                cfg_edges,
+            )?;
+
             // ── INSERT new rows ─────────────────────────────────────────
-            if !bindings.is_empty() {
-                write_bindings(tx, bindings)?;
+            if !validated.bindings.is_empty() {
+                write_bindings(tx, &validated.bindings)?;
             }
-            if !binding_uses.is_empty() {
-                write_binding_uses(tx, binding_uses)?;
+            if !validated.binding_uses.is_empty() {
+                write_binding_uses(tx, &validated.binding_uses)?;
             }
-            if !data_nodes.is_empty() {
-                write_data_nodes(tx, data_nodes)?;
+            if !validated.data_nodes.is_empty() {
+                write_data_nodes(tx, &validated.data_nodes)?;
             }
-            if !dataflow_edges.is_empty() {
-                write_dataflow_edges(tx, dataflow_edges)?;
+            if !validated.dataflow_edges.is_empty() {
+                write_dataflow_edges(tx, &validated.dataflow_edges)?;
             }
-            if !cfg_nodes.is_empty() {
-                write_cfg_nodes(tx, cfg_nodes)?;
+            if !validated.cfg_nodes.is_empty() {
+                write_cfg_nodes(tx, &validated.cfg_nodes)?;
             }
-            if !cfg_edges.is_empty() {
-                write_cfg_edges(tx, cfg_edges)?;
+            if !validated.cfg_edges.is_empty() {
+                write_cfg_edges(tx, &validated.cfg_edges)?;
             }
 
             Ok(())
