@@ -9,9 +9,9 @@
 //!   function to its farthest caller.
 
 use crate::runtime::{CommandContext, DbMode};
-use atlas_engine::{RawTraceEngine, TraceQueryResponse};
 use atlas_engine::LazyStructuralService;
 use atlas_engine::SymbolId;
+use atlas_engine::{RawTraceEngine, TraceQueryResponse};
 
 /// Helper: in JSON mode, always output a TraceQueryResponse envelope, even for
 /// pre-engine errors like missing file or invalid symbol.  In human-readable
@@ -245,11 +245,10 @@ pub fn run_caller_path(
         let target_id: SymbolId = match hex.parse() {
             Ok(id) => id,
             Err(_) => {
-                let resp: TraceQueryResponse<atlas_engine::CallerChain> =
-                    TraceQueryResponse::err(
-                        "trace_callers",
-                        &format!("Invalid symbol hex ID: {}", hex),
-                    );
+                let resp: TraceQueryResponse<atlas_engine::CallerChain> = TraceQueryResponse::err(
+                    "trace_callers",
+                    &format!("Invalid symbol hex ID: {}", hex),
+                );
                 return json_or_err(json, &resp, &format!("Invalid symbol hex ID: {}", hex));
             }
         };
@@ -257,11 +256,10 @@ pub fn run_caller_path(
     } else if let Some(name) = symbol_name {
         engine.trace_callers_by_name(name, max_depth)
     } else {
-        let resp: TraceQueryResponse<atlas_engine::CallerChain> =
-            TraceQueryResponse::err(
-                "trace_callers",
-                "Must provide either --symbol <hex> or --name <symbol-name>",
-            );
+        let resp: TraceQueryResponse<atlas_engine::CallerChain> = TraceQueryResponse::err(
+            "trace_callers",
+            "Must provide either --symbol <hex> or --name <symbol-name>",
+        );
         return json_or_err(
             json,
             &resp,

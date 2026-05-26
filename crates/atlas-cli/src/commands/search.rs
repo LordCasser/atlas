@@ -4,7 +4,7 @@ use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
 use atlas_engine::SearchEngine;
 use atlas_engine::SearchOptions;
-use atlas_engine::{LazyStructuralService, Language, SymbolKind};
+use atlas_engine::{Language, LazyStructuralService, SymbolKind};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -42,7 +42,9 @@ pub fn run(
     }
     if let Some(lang_str) = language {
         match Language::from_str(lang_str) {
-            Some(lang) => { options.language = Some(lang); }
+            Some(lang) => {
+                options.language = Some(lang);
+            }
             None => anyhow::bail!("Unknown language '{}'", lang_str),
         }
     }
@@ -51,8 +53,7 @@ pub fn run(
 
     // Transparent lazy structural: if no results or only manifest-layer,
     // trigger extraction silently and re-search.
-    let needs_lazy = results.is_empty()
-        || results.iter().any(|r| r.symbol.layer == "manifest");
+    let needs_lazy = results.is_empty() || results.iter().any(|r| r.symbol.layer == "manifest");
 
     let final_results = if needs_lazy {
         let _ = lazy_structural_for_query(&store_arc, root, query);
@@ -102,11 +103,19 @@ fn display_results(
         for (i, r) in results.iter().enumerate() {
             println!(
                 "{:>3}. {:<30} [{:<12}] score={:.3}",
-                i + 1, &r.symbol.name, r.symbol.kind.as_str(), r.score.total,
+                i + 1,
+                &r.symbol.name,
+                r.symbol.kind.as_str(),
+                r.score.total,
             );
             let path_display = r.file_path.as_deref().unwrap_or("<unknown>");
             let line = r.symbol.range.start_line + 1;
-            println!("      file:  {}:{}  [{}]", path_display, line, r.symbol.file_id.short_hex());
+            println!(
+                "      file:  {}:{}  [{}]",
+                path_display,
+                line,
+                r.symbol.file_id.short_hex()
+            );
             println!("      qname: {}", r.symbol.qualified_name);
             if r.symbol.layer != "structural" {
                 println!("      layer: {}", r.symbol.layer);
@@ -137,7 +146,11 @@ fn lazy_structural_for_query(
     let lazy = LazyStructuralService::new(Arc::clone(store), Some(root.clone()));
     let result = lazy.ensure_structural_for_symbol(query)?;
     if result.files_built > 0 {
-        tracing::info!("Lazy structural: extracted {} files for '{}'", result.files_built, query);
+        tracing::info!(
+            "Lazy structural: extracted {} files for '{}'",
+            result.files_built,
+            query
+        );
     }
     Ok(())
 }
@@ -159,7 +172,9 @@ fn read_source_snippet(
     let content = std::fs::read_to_string(&canonical).ok()?;
     let lines: Vec<&str> = content.lines().collect();
     let idx = (line_num as usize).saturating_sub(1);
-    if idx >= lines.len() { return None; }
+    if idx >= lines.len() {
+        return None;
+    }
     let end = (idx + 2).min(lines.len());
     Some(lines[idx..end].join("\n       "))
 }
@@ -179,9 +194,26 @@ struct JsonSearchResult {
 
 fn valid_kinds() -> Vec<&'static str> {
     vec![
-        "file", "module", "class", "struct", "interface", "trait", "enum",
-        "enum_member", "function", "method", "property", "field", "variable",
-        "constant", "type_alias", "namespace", "parameter", "constructor",
-        "macro", "decorator", "package",
+        "file",
+        "module",
+        "class",
+        "struct",
+        "interface",
+        "trait",
+        "enum",
+        "enum_member",
+        "function",
+        "method",
+        "property",
+        "field",
+        "variable",
+        "constant",
+        "type_alias",
+        "namespace",
+        "parameter",
+        "constructor",
+        "macro",
+        "decorator",
+        "package",
     ]
 }

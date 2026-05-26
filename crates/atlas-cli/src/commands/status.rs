@@ -171,7 +171,9 @@ fn print_indexed_scope(ctx: &crate::runtime::CommandContext) {
 /// Show file index layer counts (manifest/structural/dataflow).
 fn print_layer_summary(ctx: &crate::runtime::CommandContext) {
     if let Ok(layers) = ctx.store.count_file_index_layers() {
-        if layers.is_empty() { return; }
+        if layers.is_empty() {
+            return;
+        }
         println!();
         println!("  Index layers:");
         for (layer, status, count) in &layers {

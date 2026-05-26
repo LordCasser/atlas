@@ -14,8 +14,8 @@
 use std::sync::Arc;
 
 use db::Store;
-use types::*;
 use rayon::prelude::*;
+use types::*;
 
 /// Builds symbol-level edges from resolved references.
 ///
@@ -136,7 +136,10 @@ impl GraphBuilder {
             match self.store.batch_insert_edges(&edges) {
                 Ok(()) => edge_count,
                 Err(e) => {
-                    warnings.push(format!("batch edge insert failed ({} edges): {}", edge_count, e));
+                    warnings.push(format!(
+                        "batch edge insert failed ({} edges): {}",
+                        edge_count, e
+                    ));
                     0
                 }
             }
@@ -283,8 +286,8 @@ mod tests {
     use extraction::create_frontend;
     use extraction::extract_file;
     use resolution::ReferenceResolver;
-    use types::Language;
     use std::path::PathBuf;
+    use types::Language;
 
     fn ts_frontend() -> LanguageFrontend {
         create_frontend(Language::TypeScript).unwrap()

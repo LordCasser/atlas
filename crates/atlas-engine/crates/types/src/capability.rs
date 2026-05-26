@@ -1508,10 +1508,7 @@ mod tests {
             !matrix.local_dataflow.is_supported(),
             "Bash dataflow should be unsupported"
         );
-        assert!(
-            !matrix.cfg.is_supported(),
-            "Bash CFG should be unsupported"
-        );
+        assert!(!matrix.cfg.is_supported(), "Bash CFG should be unsupported");
         assert!(
             !matrix.lexical_bindings.is_supported(),
             "Bash lexical_bindings should be unsupported"

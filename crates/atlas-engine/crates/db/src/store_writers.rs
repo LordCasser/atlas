@@ -19,7 +19,11 @@ const EMPTY_JSON_ARRAY: &str = "[]";
 /// Max rows per multi-row INSERT (limited by SQLite variable binding limit).
 const BATCH_CHUNK_SIZE: usize = 50;
 
-pub(crate) fn write_symbols(conn: &Connection, symbols: &[SymbolDef], layer: &str) -> anyhow::Result<()> {
+pub(crate) fn write_symbols(
+    conn: &Connection,
+    symbols: &[SymbolDef],
+    layer: &str,
+) -> anyhow::Result<()> {
     if symbols.is_empty() {
         return Ok(());
     }

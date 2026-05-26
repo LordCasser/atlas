@@ -3,9 +3,9 @@
 use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
 use atlas_engine::ContextBuilder;
-use atlas_engine::Store;
 use atlas_engine::GraphEngine;
 use atlas_engine::LazyStructuralService;
+use atlas_engine::Store;
 use atlas_engine::SymbolDef;
 use std::sync::Arc;
 

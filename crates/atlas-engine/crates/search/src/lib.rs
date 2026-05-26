@@ -14,8 +14,8 @@ pub mod scoring;
 
 use db::Store;
 use graph::GraphEngine;
-use types::{FileId, Language, SymbolDef, SymbolKind};
 use std::sync::{Arc, RwLock};
+use types::{FileId, Language, SymbolDef, SymbolKind};
 
 use self::scoring::SearchScore;
 
@@ -438,8 +438,8 @@ mod tests {
     use super::*;
     use db::Store;
     use graph::GraphEngine;
-    use types::{FileInfo, Language, ParseStatus, SymbolDef};
     use std::sync::Arc;
+    use types::{FileInfo, Language, ParseStatus, SymbolDef};
 
     fn test_store() -> Arc<Store> {
         let store = Store::open_in_memory().unwrap();

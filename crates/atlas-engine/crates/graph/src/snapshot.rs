@@ -4,11 +4,11 @@
 //! HashMaps and adjacency lists. Snapshot is immutable after construction.
 
 use db::Store;
+use std::collections::{HashMap, VecDeque};
 use types::ids::{FileId, SymbolId};
 use types::{
     Confidence, EdgeKind, Language, Provenance, RawEdge, SymbolDef, SymbolKind, Visibility,
 };
-use std::collections::{HashMap, VecDeque};
 
 // ── type aliases ────────────────────────────────────────────────────────────
 
@@ -482,13 +482,7 @@ mod tests {
     }
 
     fn make_symbol(file_id: FileId, name: &str, qname: &str, kind: SymbolKind) -> SymbolDef {
-        let id = types::ids::SymbolId::generate(
-            &file_id,
-            "typescript",
-            qname,
-            kind.as_str(),
-            None,
-        );
+        let id = types::ids::SymbolId::generate(&file_id, "typescript", qname, kind.as_str(), None);
         SymbolDef {
             id,
             kind,

@@ -9,8 +9,8 @@
 //! they propagate as `rusqlite::Error` so callers can detect DB corruption
 //! or schema drift instead of silently returning wrong results.
 
-use types::*;
 use rusqlite::Row;
+use types::*;
 
 /// Build a `rusqlite::Error` from a parsing failure at a column index.
 fn parse_err(idx: usize, value: &str, target: &str) -> rusqlite::Error {
@@ -112,7 +112,9 @@ pub(crate) fn row_to_symbol(row: &Row) -> rusqlite::Result<SymbolDef> {
         package_name: row.get(26)?,
         namespace_path: serde_json::from_str(&ns_json)
             .map_err(|e| parse_err(27, &ns_json, &format!("namespace_path JSON: {e}")))?,
-        layer: row.get::<_, Option<String>>(28)?.unwrap_or_else(|| "structural".to_string()),
+        layer: row
+            .get::<_, Option<String>>(28)?
+            .unwrap_or_else(|| "structural".to_string()),
     })
 }
 

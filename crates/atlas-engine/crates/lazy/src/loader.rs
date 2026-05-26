@@ -146,7 +146,11 @@ fn get_or_build(
     store.update_callsite_arg_data_nodes(unit, &payload.data_nodes)?;
 
     // 4. Record artifact
-    let status = if payload.budget_exceeded { "partial" } else { "complete" };
+    let status = if payload.budget_exceeded {
+        "partial"
+    } else {
+        "complete"
+    };
     store.upsert_artifact(&db::store_rows::ArtifactRecord {
         file_id: unit.file_id,
         unit_id: unit.unit_id,

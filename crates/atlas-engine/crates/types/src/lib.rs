@@ -68,8 +68,8 @@ pub use capability::{CapabilityLevel, FeatureMatrix, FeatureSupport, LanguageCap
 
 // --- Trace types ---
 pub use trace::{
-    Evidence, LazySummary, TraceDataNodeRef, TraceDiagnostic, TracePath, TracePathStep,
-    TracePoint, VariableTracePath,
+    Evidence, LazySummary, TraceDataNodeRef, TraceDiagnostic, TracePath, TracePathStep, TracePoint,
+    VariableTracePath,
 };
 
 // --- Caller path types ---

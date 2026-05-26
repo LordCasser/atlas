@@ -15,16 +15,16 @@ pub mod watcher;
 
 use anyhow::{Context, Result};
 use db::Store;
+use extraction::ExtractionMode;
 use extraction::LanguageRegistry;
 use extraction::create_frontend;
 use extraction::extract_file_with_mode;
-use extraction::ExtractionMode;
 use graph::{GraphBuilder, GraphEngine, GraphSnapshot};
-use types::{PhaseTimer, PhaseTimings};
-use workspace::SourcePath;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
+use types::{PhaseTimer, PhaseTimings};
+use workspace::SourcePath;
 
 /// Incremental sync engine.
 pub struct SyncEngine {
@@ -36,12 +36,20 @@ pub struct SyncEngine {
 impl SyncEngine {
     /// Create a SyncEngine with the default extraction mode (Structural).
     pub fn new(store: Arc<Store>, project_root: PathBuf) -> Self {
-        Self { store, project_root, mode: ExtractionMode::Structural }
+        Self {
+            store,
+            project_root,
+            mode: ExtractionMode::Structural,
+        }
     }
 
     /// Create a SyncEngine with a specific extraction mode.
     pub fn with_mode(store: Arc<Store>, project_root: PathBuf, mode: ExtractionMode) -> Self {
-        Self { store, project_root, mode }
+        Self {
+            store,
+            project_root,
+            mode,
+        }
     }
 
     /// Perform a full incremental sync:
@@ -90,7 +98,9 @@ impl SyncEngine {
             let file_id = types::ids::FileId::generate(sp.as_str());
             // P2: Invalidate OTHER files' references pointing to this file's
             // symbols before deleting (prevents dangling resolved targets).
-            let _ = self.store.invalidate_references_to_symbols_in_file(&file_id);
+            let _ = self
+                .store
+                .invalidate_references_to_symbols_in_file(&file_id);
             // Invalidate edges derived from this file's references before
             // deleting the file (CASCADE handles the rest).
             self.store
@@ -108,7 +118,9 @@ impl SyncEngine {
                 .with_context(|| format!("invalid modified path: {}", relative.display()))?;
             let file_id = types::ids::FileId::generate(sp.as_str());
             // Invalidate cross-file references before clearing own data
-            let _ = self.store.invalidate_references_to_symbols_in_file(&file_id);
+            let _ = self
+                .store
+                .invalidate_references_to_symbols_in_file(&file_id);
             // Invalidate resolved facts and derived edges for modified files.
             // This ensures stale resolution targets don't persist after re-extraction.
             self.store
@@ -158,10 +170,7 @@ impl SyncEngine {
             .chain(changed.modified.iter())
             .collect();
 
-        println!(
-            "Re-extracting {} files...",
-            to_reindex.len()
-        );
+        println!("Re-extracting {} files...", to_reindex.len());
 
         let before_symbols = self
             .store
@@ -188,15 +197,14 @@ impl SyncEngine {
         println!("\nResolving symbol references...");
         let res_timer = PhaseTimer::start("Resolution");
         // P2: Load tsconfig.json or jsconfig.json path aliases if present
-        let path_alias = resolution::PathAliasResolver::from_tsconfig(
-            &self.project_root.join("tsconfig.json"),
-        )
-        .or_else(|| {
-            resolution::PathAliasResolver::from_jsconfig(
-                &self.project_root.join("jsconfig.json"),
-            )
-        })
-        .unwrap_or_else(resolution::PathAliasResolver::empty);
+        let path_alias =
+            resolution::PathAliasResolver::from_tsconfig(&self.project_root.join("tsconfig.json"))
+                .or_else(|| {
+                    resolution::PathAliasResolver::from_jsconfig(
+                        &self.project_root.join("jsconfig.json"),
+                    )
+                })
+                .unwrap_or_else(resolution::PathAliasResolver::empty);
         let mut resolver =
             resolution::ReferenceResolver::with_path_alias(self.store.clone(), path_alias);
         let (resolved, res_stats) = resolver.resolve_all()?;
@@ -219,11 +227,7 @@ impl SyncEngine {
         // Committing earlier means a partial failure would leave the hash
         // updated, preventing retry on the next sync.
         if tsconfig_was_changed {
-            resolution::commit_config_hashes(
-                &self.store,
-                &self.project_root,
-                &["tsconfig.json"],
-            )?;
+            resolution::commit_config_hashes(&self.store, &self.project_root, &["tsconfig.json"])?;
         }
 
         stats.duration = start.elapsed();
@@ -279,7 +283,14 @@ impl SyncEngine {
         let file_id = types::ids::FileId::generate(sp.as_str());
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
 
-        let facts = extract_file_with_mode(&frontend, file_id, relative, &source, &content_hash, self.mode.clone())?;
+        let facts = extract_file_with_mode(
+            &frontend,
+            file_id,
+            relative,
+            &source,
+            &content_hash,
+            self.mode.clone(),
+        )?;
 
         self.store.insert_file_facts(&facts)?;
         Ok(())

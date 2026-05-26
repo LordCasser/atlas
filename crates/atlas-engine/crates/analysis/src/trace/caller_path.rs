@@ -199,10 +199,8 @@ fn reconstruct_call_path(
     raw_steps.reverse();
 
     // Prefetch all unique caller/callee symbols once to avoid N+1 queries.
-    let mut symbol_cache: std::collections::HashMap<
-        types::ids::SymbolId,
-        types::SymbolDef,
-    > = std::collections::HashMap::new();
+    let mut symbol_cache: std::collections::HashMap<types::ids::SymbolId, types::SymbolDef> =
+        std::collections::HashMap::new();
     {
         let mut unique_ids: std::collections::HashSet<types::ids::SymbolId> =
             std::collections::HashSet::new();

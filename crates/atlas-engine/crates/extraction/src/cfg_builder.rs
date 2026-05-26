@@ -26,11 +26,11 @@
 //! - All nodes belong to the same `function_id`.
 //! - CfgNodeId and CfgEdgeId are deterministic (blake3).
 
+use tree_sitter::Node;
 use types::cfg::{CfgEdge, CfgNode};
 use types::enums::{CfgEdgeKind, CfgNodeKind, SymbolKind};
 use types::ids::SymbolId;
 use types::structs::{SymbolDef, TextRange};
-use tree_sitter::Node;
 
 // ── CfgBuilder ──────────────────────────────────────────────────────────────
 

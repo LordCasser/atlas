@@ -108,24 +108,30 @@ impl Slicer {
             // jumping straight to the earliest definition.
             candidates.sort_by(|a, b| {
                 use std::cmp::Ordering;
-                let a_dn = store
-                    .get_data_node(&a.source)
-                    .ok()
-                    .flatten();
-                let b_dn = store
-                    .get_data_node(&b.source)
-                    .ok()
-                    .flatten();
+                let a_dn = store.get_data_node(&a.source).ok().flatten();
+                let b_dn = store.get_data_node(&b.source).ok().flatten();
                 let a_local = a_dn
                     .as_ref()
-                    .map(|dn| matches!(dn.kind, types::enums::DataNodeKind::Local | types::enums::DataNodeKind::Parameter))
+                    .map(|dn| {
+                        matches!(
+                            dn.kind,
+                            types::enums::DataNodeKind::Local
+                                | types::enums::DataNodeKind::Parameter
+                        )
+                    })
                     .unwrap_or(false);
                 let b_local = b_dn
                     .as_ref()
-                    .map(|dn| matches!(dn.kind, types::enums::DataNodeKind::Local | types::enums::DataNodeKind::Parameter))
+                    .map(|dn| {
+                        matches!(
+                            dn.kind,
+                            types::enums::DataNodeKind::Local
+                                | types::enums::DataNodeKind::Parameter
+                        )
+                    })
                     .unwrap_or(false);
                 match (a_local, b_local) {
-                    (true, false) => Ordering::Greater,  // Local/Param come last
+                    (true, false) => Ordering::Greater, // Local/Param come last
                     (false, true) => Ordering::Less,
                     (true, true) => {
                         // Both are Local/Param: sort by source start_byte ASC.
@@ -173,8 +179,7 @@ impl Slicer {
                     if new_depth >= max_depth {
                         // Budget exhausted — check if this source has unexplored
                         // predecessors (not just the edge we already followed).
-                        let source_edges =
-                            store.find_dataflow_edges_by_target(source_id)?;
+                        let source_edges = store.find_dataflow_edges_by_target(source_id)?;
                         if source_edges.iter().any(|e| should_trace_backward(&e.kind)) {
                             truncated = true;
                             if new_depth > farthest_depth {

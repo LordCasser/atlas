@@ -87,11 +87,7 @@ impl Store {
         // Record current version if schema_versions is empty (fresh DB)
         if matches!(status, SchemaStatus::Current) {
             let existing: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM schema_versions",
-                    [],
-                    |r| r.get(0),
-                )
+                .query_row("SELECT COUNT(*) FROM schema_versions", [], |r| r.get(0))
                 .unwrap_or(0);
             if existing == 0 {
                 conn.execute(

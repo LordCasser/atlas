@@ -45,27 +45,6 @@ pub use lazy_structural::{
 
 // ─── Re-exports ────────────────────────────────────────────────────────────
 
-/// All core IR types (SymbolDef, ReferenceUse, FileFacts, etc.).
-pub use types::*;
-/// Database store and schema version.
-pub use db::{CURRENT_SCHEMA_VERSION, Store, MIGRATIONS};
-/// Workspace abstractions.
-pub use workspace::{ProjectRoot, SourcePath, Workspace};
-/// Extraction layer: language frontends, parser pool, grammar registry.
-pub use extraction::{
-    LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig, create_frontend,
-    extract_file, extract_file_with_mode, ExtractionMode,
-};
-/// Resolution layer: reference resolver, path aliases, config hashing.
-pub use resolution::{
-    PathAliasResolver, ReferenceResolver, ResolutionStats, commit_config_hashes,
-    detect_config_change,
-};
-/// Graph layer: graph builder, query engine, snapshots.
-pub use graph::{
-    GraphBuilder, GraphBuilderStats, GraphEngine, GraphSnapshot, NodeIx, TraversalConfig,
-    TraversalDirection,
-};
 /// Analysis layer: trace engine and query responses.
 ///
 /// [`RawTraceEngine`] is the low-level analysis engine — it does NOT
@@ -75,12 +54,33 @@ pub use graph::{
 pub use analysis::trace;
 pub use analysis::trace::TraceEngine as RawTraceEngine;
 pub use analysis::trace::TraceQueryResponse;
-/// Search layer: FTS5 + fuzzy search engine.
-pub use search::{SearchEngine, SearchOptions, SearchResult};
 /// Context layer: AI context builder (callers, callees, peers).
 pub use context::ContextBuilder;
+/// Database store and schema version.
+pub use db::{CURRENT_SCHEMA_VERSION, MIGRATIONS, Store};
+/// Extraction layer: language frontends, parser pool, grammar registry.
+pub use extraction::{
+    ExtractionMode, LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig,
+    create_frontend, extract_file, extract_file_with_mode,
+};
 /// Sync layer: incremental sync engine, file lock, file discovery.
-pub use filesync::{SyncEngine, SyncStats, FileLock, discovery};
+pub use filesync::{FileLock, SyncEngine, SyncStats, discovery};
+/// Graph layer: graph builder, query engine, snapshots.
+pub use graph::{
+    GraphBuilder, GraphBuilderStats, GraphEngine, GraphSnapshot, NodeIx, TraversalConfig,
+    TraversalDirection,
+};
+/// Resolution layer: reference resolver, path aliases, config hashing.
+pub use resolution::{
+    PathAliasResolver, ReferenceResolver, ResolutionStats, commit_config_hashes,
+    detect_config_change,
+};
+/// Search layer: FTS5 + fuzzy search engine.
+pub use search::{SearchEngine, SearchOptions, SearchResult};
+/// All core IR types (SymbolDef, ReferenceUse, FileFacts, etc.).
+pub use types::*;
+/// Workspace abstractions.
+pub use workspace::{ProjectRoot, SourcePath, Workspace};
 
 // ─── Engine ────────────────────────────────────────────────────────────────
 
@@ -116,7 +116,12 @@ impl Engine {
         let lazy_service = lazy_crate::LazyDataflowService::new(store.clone(), None);
         let lazy_structural = LazyStructuralService::new(store.clone(), None);
         let trace = analysis::trace::TraceEngine::new(store.clone());
-        Ok(Self { store, lazy_service, lazy_structural, trace })
+        Ok(Self {
+            store,
+            lazy_service,
+            lazy_structural,
+            trace,
+        })
     }
 
     /// Open a database file with a project root for snippet extraction.
@@ -126,10 +131,18 @@ impl Engine {
     pub fn open_with_root(db_path: &Path, project_root: &Path) -> anyhow::Result<Self> {
         let store = Store::open_db(db_path)?;
         let store = Arc::new(store);
-        let lazy_service = lazy_crate::LazyDataflowService::new(store.clone(), Some(project_root.to_path_buf()));
-        let lazy_structural = LazyStructuralService::new(store.clone(), Some(project_root.to_path_buf()));
-        let trace = analysis::trace::TraceEngine::new_with_root(store.clone(), project_root.to_path_buf());
-        Ok(Self { store, lazy_service, lazy_structural, trace })
+        let lazy_service =
+            lazy_crate::LazyDataflowService::new(store.clone(), Some(project_root.to_path_buf()));
+        let lazy_structural =
+            LazyStructuralService::new(store.clone(), Some(project_root.to_path_buf()));
+        let trace =
+            analysis::trace::TraceEngine::new_with_root(store.clone(), project_root.to_path_buf());
+        Ok(Self {
+            store,
+            lazy_service,
+            lazy_structural,
+            trace,
+        })
     }
 
     /// Open an in-memory database (for testing).
@@ -140,7 +153,12 @@ impl Engine {
         let lazy_service = lazy_crate::LazyDataflowService::new(store.clone(), None);
         let lazy_structural = LazyStructuralService::new(store.clone(), None);
         let trace = analysis::trace::TraceEngine::new(store.clone());
-        Ok(Self { store, lazy_service, lazy_structural, trace })
+        Ok(Self {
+            store,
+            lazy_service,
+            lazy_structural,
+            trace,
+        })
     }
 
     /// Access the underlying database store.
@@ -164,7 +182,12 @@ impl Engine {
     ///
     /// Uses [`ExtractionMode::Full`] by default for backward compatibility.
     /// For index-time usage, prefer the mode-aware variant.
-    pub fn extract_file(&self, path: &Path, source: &str, language: Language) -> anyhow::Result<FileFacts> {
+    pub fn extract_file(
+        &self,
+        path: &Path,
+        source: &str,
+        language: Language,
+    ) -> anyhow::Result<FileFacts> {
         self.extract_file_with_mode(path, source, language, extraction::ExtractionMode::Full)
     }
 
@@ -180,7 +203,14 @@ impl Engine {
             .ok_or_else(|| anyhow::anyhow!("Language frontend not available for {:?}", language))?;
         let file_id = FileId::generate(path.to_string_lossy().as_ref());
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
-        let facts = extraction::extract_file_with_mode(&frontend, file_id, path, source, &content_hash, mode)?;
+        let facts = extraction::extract_file_with_mode(
+            &frontend,
+            file_id,
+            path,
+            source,
+            &content_hash,
+            mode,
+        )?;
         Ok(facts)
     }
 
@@ -288,14 +318,14 @@ impl Engine {
                 partial = true;
                 lazy_summary = Some(LazySummary {
                     triggered: true,
-                    units_built: 0, units_cached: 0,
+                    units_built: 0,
+                    units_cached: 0,
                     truncated: true,
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
                 });
                 lazy_diagnostics.push(
-                    TraceDiagnostic::warning(&format!(
-                        "Lazy dataflow build failed: {e}"
-                    )).with_code("lazy_dataflow_build_failed")
+                    TraceDiagnostic::warning(&format!("Lazy dataflow build failed: {e}"))
+                        .with_code("lazy_dataflow_build_failed"),
                 );
             }
         }
@@ -429,9 +459,14 @@ mod tests {
         // Index with Structural mode directly via extract_file_with_mode
         let frontend = extraction::create_frontend(Language::TypeScript).unwrap();
         let facts = extraction::extract_file_with_mode(
-            &frontend, file_id, &abs_path, source, &content_hash,
+            &frontend,
+            file_id,
+            &abs_path,
+            source,
+            &content_hash,
             extraction::ExtractionMode::Structural,
-        ).expect("extract structural");
+        )
+        .expect("extract structural");
         engine.insert_facts(&facts).expect("insert structural");
 
         // Verify no dataflow exists before trace
@@ -444,7 +479,10 @@ mod tests {
 
         // After trace_variable, data_nodes should exist in DB
         let dn_after = engine.store().find_data_nodes_by_file(&file_id).unwrap();
-        assert!(!dn_after.is_empty(), "data nodes should exist after trace_variable triggers lazy load");
+        assert!(
+            !dn_after.is_empty(),
+            "data nodes should exist after trace_variable triggers lazy load"
+        );
     }
 
     /// 7c: Cache hit — second trace_variable call should reuse lazy dataflow
@@ -470,9 +508,14 @@ mod tests {
         // Index structurally
         let frontend = extraction::create_frontend(Language::TypeScript).unwrap();
         let facts = extraction::extract_file_with_mode(
-            &frontend, file_id, &abs_path, source, &content_hash,
+            &frontend,
+            file_id,
+            &abs_path,
+            source,
+            &content_hash,
             extraction::ExtractionMode::Structural,
-        ).expect("extract structural");
+        )
+        .expect("extract structural");
         engine.insert_facts(&facts).expect("insert");
 
         // First call — triggers lazy build

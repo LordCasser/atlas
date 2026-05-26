@@ -117,7 +117,14 @@ impl ParseWorkerPool {
 
         // 2. Extract with panic isolation
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            extract_file_with_mode(frontend, file_id, file_path, source, content_hash, mode.clone())
+            extract_file_with_mode(
+                frontend,
+                file_id,
+                file_path,
+                source,
+                content_hash,
+                mode.clone(),
+            )
         }));
 
         match result {
@@ -311,7 +318,14 @@ mod tests {
         let frontend = crate::create_frontend(types::Language::TypeScript)
             .expect("TypeScript frontend available");
 
-        let result = pool.extract_one(&frontend, fid, Path::new("test.ts"), &source, "abc", ExtractionMode::Full);
+        let result = pool.extract_one(
+            &frontend,
+            fid,
+            Path::new("test.ts"),
+            &source,
+            "abc",
+            ExtractionMode::Full,
+        );
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.category, FailureCategory::MaxFileSizeExceeded);

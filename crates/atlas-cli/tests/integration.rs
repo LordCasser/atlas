@@ -6,12 +6,12 @@
 //! Run with default features:  `cargo test --test integration`
 //! Run with all languages:    `cargo test --test integration --features all-languages,mcp,sync`
 
-use atlas_engine::Store;
-use atlas_engine::extract_file;
 use atlas_engine::GraphBuilder;
-use atlas_engine::{ReferenceResolver, ResolutionStats};
+use atlas_engine::Store;
 use atlas_engine::enums::{EdgeKind, Language};
+use atlas_engine::extract_file;
 use atlas_engine::ids::FileId;
+use atlas_engine::{ReferenceResolver, ResolutionStats};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -691,8 +691,8 @@ fn ts_dataflow_edges_complete_textrange() {
             edges_with_column,
             "expected at least one dataflow edge with non-zero column info (start_column/end_column). \
              This indicates the dataflow_edges TextRange column fields (location_3/5) are not being persisted."
-    );
-}
+        );
+    }
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -1213,10 +1213,7 @@ fn mcp_tools_are_registered() {
         tool_names.contains(&"callgraph"),
         "callgraph tool missing from MCP"
     );
-    assert!(
-        tool_names.contains(&"path"),
-        "path tool missing from MCP"
-    );
+    assert!(tool_names.contains(&"path"), "path tool missing from MCP");
     assert!(
         tool_names.contains(&"explore"),
         "explore tool missing from MCP"
@@ -1258,9 +1255,15 @@ let result = add(1, 2);
 
     // Verify cascade
     let nodes_after = store.find_data_nodes_by_file(&file_id).unwrap();
-    assert!(nodes_after.is_empty(), "DataNodes must be cascade-deleted after file delete");
+    assert!(
+        nodes_after.is_empty(),
+        "DataNodes must be cascade-deleted after file delete"
+    );
     let edges_after = store.find_dataflow_edges_by_file(&file_id).unwrap();
-    assert!(edges_after.is_empty(), "DataFlowEdges must be cascade-deleted after file delete");
+    assert!(
+        edges_after.is_empty(),
+        "DataFlowEdges must be cascade-deleted after file delete"
+    );
 }
 
 /// Barrel re-export chain: main.ts imports `{ greet }` from barrel/index.ts,

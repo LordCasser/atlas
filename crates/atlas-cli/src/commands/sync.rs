@@ -2,8 +2,8 @@
 
 use crate::runtime::{CommandContext, DbMode};
 use anyhow::{Context, Result};
-use atlas_engine::FileLock;
 use atlas_engine::ExtractionMode;
+use atlas_engine::FileLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn run(project: &str, analysis: &str) -> Result<()> {

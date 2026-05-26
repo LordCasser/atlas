@@ -330,7 +330,11 @@ pub fn csharp_callsite_extractor() -> GenericCallsiteExtractor {
 /// PHP callsite extractor.
 pub fn php_callsite_extractor() -> GenericCallsiteExtractor {
     GenericCallsiteExtractor::new(
-        &["function_call_expression", "member_call_expression", "scoped_call_expression"],
+        &[
+            "function_call_expression",
+            "member_call_expression",
+            "scoped_call_expression",
+        ],
         &["object_creation_expression"],
         &[],
         &[
@@ -399,11 +403,7 @@ pub fn rust_callsite_extractor() -> GenericCallsiteExtractor {
         &["call_expression", "macro_invocation"],
         &[], // Rust has no grammar-level constructor
         &[],
-        &[
-            "block",
-            "function_item",
-            "source_file",
-        ],
+        &["block", "function_item", "source_file"],
     )
 }
 pub fn cangjie_callsite_extractor() -> GenericCallsiteExtractor {

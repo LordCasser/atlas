@@ -6,9 +6,9 @@
 //!
 //! Both paths filter by language support and optional `.atlasignore` patterns.
 
-use types::Language;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use types::Language;
 
 /// Configuration for file discovery.
 #[derive(Debug, Clone, Default)]

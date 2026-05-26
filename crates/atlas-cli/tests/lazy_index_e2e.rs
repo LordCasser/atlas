@@ -116,12 +116,25 @@ fn p1_manifest_produces_top_level_symbols() {
     let symbols = store.find_symbols_by_file(&fid).unwrap();
 
     let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
-    assert!(names.contains(&"topLevel"), "topLevel fn should be in manifest, got {:?}", names);
-    assert!(names.contains(&"MyClass"), "MyClass should be in manifest, got {:?}", names);
+    assert!(
+        names.contains(&"topLevel"),
+        "topLevel fn should be in manifest, got {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"MyClass"),
+        "MyClass should be in manifest, got {:?}",
+        names
+    );
 
     // All manifest symbols should have layer=manifest
     for sym in &symbols {
-        assert_eq!(sym.layer, layer::MANIFEST, "symbol {} has wrong layer", sym.name);
+        assert_eq!(
+            sym.layer,
+            layer::MANIFEST,
+            "symbol {} has wrong layer",
+            sym.name
+        );
     }
 }
 
@@ -175,20 +188,26 @@ fn p2_lazy_detects_missing_structural_layer() {
     let files = store.list_files().unwrap();
     let fid = files[0].file_id;
 
-    let svc = atlas_engine::LazyStructuralService::new(store.clone(), Some(tmp.path().to_path_buf()));
-    assert!(!svc.has_structural_layer(&fid).unwrap(), "no structural layer after manifest-only");
+    let svc =
+        atlas_engine::LazyStructuralService::new(store.clone(), Some(tmp.path().to_path_buf()));
+    assert!(
+        !svc.has_structural_layer(&fid).unwrap(),
+        "no structural layer after manifest-only"
+    );
 }
 
 #[test]
 fn p2_lazy_builds_structural_on_demand() {
     // Class with methods: manifest captures only the class, structural captures
     // class + methods → structural should have more symbols.
-    let tmp = setup_project(&[("lib.ts",
+    let tmp = setup_project(&[(
+        "lib.ts",
         "export class Calculator {\n\
              add(a: number, b: number): number { return a + b; }\n\
              sub(a: number, b: number): number { return a - b; }\n\
          }\n\
-         export function standalone(): void {}\n")]);
+         export function standalone(): void {}\n",
+    )]);
     let project = tmp.path().to_string_lossy().to_string();
 
     init::run(&project).expect("atlas init");
@@ -204,14 +223,18 @@ fn p2_lazy_builds_structural_on_demand() {
         assert_eq!(s.layer, layer::MANIFEST);
     }
 
-    let svc = atlas_engine::LazyStructuralService::new(store.clone(), Some(tmp.path().to_path_buf()));
+    let svc =
+        atlas_engine::LazyStructuralService::new(store.clone(), Some(tmp.path().to_path_buf()));
     let result = svc.ensure_structural_for_file(&fid).unwrap();
     assert!(result.files_built >= 1);
 
     let after = store.find_symbols_by_file(&fid).unwrap();
-    assert!(after.len() > count_before,
+    assert!(
+        after.len() > count_before,
         "structural should have more symbols than manifest ({} > {})",
-        after.len(), count_before);
+        after.len(),
+        count_before
+    );
     assert!(svc.has_structural_layer(&fid).unwrap());
 }
 
@@ -227,7 +250,8 @@ fn p2_lazy_cache_hit_skips_rebuild() {
     let files = store.list_files().unwrap();
     let fid = files[0].file_id;
 
-    let svc = atlas_engine::LazyStructuralService::new(store.clone(), Some(tmp.path().to_path_buf()));
+    let svc =
+        atlas_engine::LazyStructuralService::new(store.clone(), Some(tmp.path().to_path_buf()));
     let r1 = svc.ensure_structural_for_file(&fid).unwrap();
     assert!(r1.files_built >= 1);
     assert_eq!(r1.files_cached, 0);
@@ -249,7 +273,8 @@ fn p2_lazy_preserves_existing_structural() {
     let files = store.list_files().unwrap();
     let fid = files[0].file_id;
 
-    let svc = atlas_engine::LazyStructuralService::new(store.clone(), Some(tmp.path().to_path_buf()));
+    let svc =
+        atlas_engine::LazyStructuralService::new(store.clone(), Some(tmp.path().to_path_buf()));
     let result = svc.ensure_structural_for_file(&fid).unwrap();
     assert_eq!(result.files_built, 0);
     assert!(result.files_cached >= 1);
@@ -258,17 +283,20 @@ fn p2_lazy_preserves_existing_structural() {
 #[test]
 fn p2_lazy_ensure_for_symbol_by_name() {
     // Class with methods: manifest captures Calculator, structural adds methods
-    let tmp = setup_project(&[("lib.ts",
+    let tmp = setup_project(&[(
+        "lib.ts",
         "export class Calculator {\n\
              compute(x: number): number { return x * 2; }\n\
-         }\n")]);
+         }\n",
+    )]);
     let project = tmp.path().to_string_lossy().to_string();
 
     init::run(&project).expect("atlas init");
     index::run(&project, &[], &[], &[], "manifest").expect("atlas index");
 
     let store = open_store(&tmp);
-    let svc = atlas_engine::LazyStructuralService::new(store.clone(), Some(tmp.path().to_path_buf()));
+    let svc =
+        atlas_engine::LazyStructuralService::new(store.clone(), Some(tmp.path().to_path_buf()));
 
     let result = svc.ensure_structural_for_symbol("Calculator").unwrap();
     assert!(result.files_built >= 1);
@@ -278,9 +306,17 @@ fn p2_lazy_ensure_for_symbol_by_name() {
     assert!(svc.has_structural_layer(&fid).unwrap());
 
     let symbols = store.find_symbols_by_file(&fid).unwrap();
-    assert!(symbols.iter().any(|s| s.name == "Calculator" && s.layer == layer::STRUCTURAL));
+    assert!(
+        symbols
+            .iter()
+            .any(|s| s.name == "Calculator" && s.layer == layer::STRUCTURAL)
+    );
     // compute is a method — only appears in structural
-    assert!(symbols.iter().any(|s| s.name == "compute" && s.layer == layer::STRUCTURAL));
+    assert!(
+        symbols
+            .iter()
+            .any(|s| s.name == "compute" && s.layer == layer::STRUCTURAL)
+    );
 }
 
 // ───────────────────────────────────────────────────────────────────────────

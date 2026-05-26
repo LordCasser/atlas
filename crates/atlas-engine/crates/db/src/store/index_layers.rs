@@ -1,8 +1,8 @@
 //! Per-file per-layer index status — separate from `analysis_artifacts` which is unit-level.
 
-use types::ids::FileId;
-use rusqlite::params;
 use super::Store;
+use rusqlite::params;
+use types::ids::FileId;
 
 impl Store {
     /// Query the status and content_hash for a file at a given layer.
@@ -66,9 +66,7 @@ impl Store {
             "SELECT layer, status, COUNT(*) FROM file_index_layers
              GROUP BY layer, status ORDER BY layer, status",
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 }

@@ -5,9 +5,9 @@
 //! at the capability level, but no longer require ABI-version workarounds.
 
 use anyhow::{Result, bail};
-use types::Language;
 use std::collections::HashMap;
 use std::path::Path;
+use types::Language;
 
 /// Registry of loaded tree-sitter grammars, keyed by Language.
 pub struct LanguageRegistry {

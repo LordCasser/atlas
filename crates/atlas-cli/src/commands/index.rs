@@ -19,16 +19,16 @@
 
 use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
-use atlas_engine::LanguageFrontend;
-use atlas_engine::{self, LanguageRegistry, ParseWorkerPool, WorkerConfig};
-use atlas_engine::FileLock;
-use atlas_engine::discovery::{DiscoveryConfig, discover_files};
 use atlas_engine::ExtractionError;
 use atlas_engine::ExtractionMode;
 use atlas_engine::FailureCategory;
+use atlas_engine::FileLock;
 use atlas_engine::Language;
-use atlas_engine::{PerLanguageStats, PhaseTimer, PhaseTiming, PhaseTimings};
+use atlas_engine::LanguageFrontend;
 use atlas_engine::SourcePath;
+use atlas_engine::discovery::{DiscoveryConfig, discover_files};
+use atlas_engine::{self, LanguageRegistry, ParseWorkerPool, WorkerConfig};
+use atlas_engine::{PerLanguageStats, PhaseTimer, PhaseTiming, PhaseTimings};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -54,7 +54,13 @@ struct HashCheckResult {
     deleted: Vec<PathBuf>,
 }
 
-pub fn run(project: &str, includes: &[String], scopes: &[String], exclude: &[String], analysis: &str) -> anyhow::Result<()> {
+pub fn run(
+    project: &str,
+    includes: &[String],
+    scopes: &[String],
+    exclude: &[String],
+    analysis: &str,
+) -> anyhow::Result<()> {
     // Determine extraction mode from --analysis flag
     let mode = match analysis {
         "manifest" => ExtractionMode::Manifest,
@@ -125,10 +131,7 @@ pub fn run(project: &str, includes: &[String], scopes: &[String], exclude: &[Str
 
     // ── Phase: Delete stale data for deleted files ─────────────────────────
     if !hash_result.deleted.is_empty() {
-        println!(
-            "Cleaning up {} deleted files...",
-            hash_result.deleted.len()
-        );
+        println!("Cleaning up {} deleted files...", hash_result.deleted.len());
         let del_timer = PhaseTimer::start("Delete stale");
         for rel_path in &hash_result.deleted {
             let sp = SourcePath::try_from_relative(&rel_path.to_string_lossy())
@@ -167,10 +170,7 @@ pub fn run(project: &str, includes: &[String], scopes: &[String], exclude: &[Str
     let _registry = match LanguageRegistry::new(&languages) {
         Ok(r) => r,
         Err(e) => {
-            tracing::warn!(
-                "Some language grammars are not compiled in: {:#}",
-                e
-            );
+            tracing::warn!("Some language grammars are not compiled in: {:#}", e);
             tracing::warn!("Files in those languages will be skipped.");
             let available: Vec<Language> = languages
                 .iter()
@@ -229,7 +229,10 @@ pub fn run(project: &str, includes: &[String], scopes: &[String], exclude: &[Str
     // Large project guidance: suggest manifest mode for first-time indexing
     if dirty_total > 5_000 && !mode.produces_manifest() && reused == 0 {
         println!();
-        println!("  ⚠ {} files to index. For a faster first pass, try:", dirty_total);
+        println!(
+            "  ⚠ {} files to index. For a faster first pass, try:",
+            dirty_total
+        );
         println!("    atlas index --analysis manifest");
         println!("  This extracts only top-level symbols (seconds instead of minutes).");
         println!("  Full structural data will be built on-demand when you query.");
@@ -249,7 +252,8 @@ pub fn run(project: &str, includes: &[String], scopes: &[String], exclude: &[Str
 
             // Time per-file extraction
             let file_start = Instant::now();
-            let result = extract_one_with_frontend(&pool, &abs_path, root, lang, frontend, mode.clone());
+            let result =
+                extract_one_with_frontend(&pool, &abs_path, root, lang, frontend, mode.clone());
             let extract_ms = file_start.elapsed().as_millis() as u64;
 
             let count = extracted_count.fetch_add(1, Ordering::Relaxed);
@@ -299,7 +303,10 @@ pub fn run(project: &str, includes: &[String], scopes: &[String], exclude: &[Str
         extract_elapsed.as_secs_f64()
     );
     if failed_count > 0 {
-        println!("  {} extraction(s) failed (see logs for details)", failed_count);
+        println!(
+            "  {} extraction(s) failed (see logs for details)",
+            failed_count
+        );
     }
     let avg_ms = if extracted_count > 0 {
         extract_elapsed.as_millis() as u64 / extracted_count as u64
@@ -336,7 +343,10 @@ pub fn run(project: &str, includes: &[String], scopes: &[String], exclude: &[Str
     // "ghost" facts.  `delete_files_batch` uses FOREIGN KEY CASCADE
     // to wipe all related rows.
     {
-        println!("\nCleaning stale facts for {} re-indexed files...", extracted_count);
+        println!(
+            "\nCleaning stale facts for {} re-indexed files...",
+            extracted_count
+        );
         let clean_timer = PhaseTimer::start("Clean stale");
         let file_ids: Vec<_> = extracted.iter().map(|ef| ef.facts.file.file_id).collect();
         // Invalidate cross-file references pointing into these files
@@ -386,13 +396,17 @@ pub fn run(project: &str, includes: &[String], scopes: &[String], exclude: &[Str
             // FK constraint failures typically come from dataflow_edges
             // referencing data_nodes not in the batch, or symbol_edges
             // referencing unresolved symbols.
-            let failed_paths: Vec<_> = chunk.iter()
+            let failed_paths: Vec<_> = chunk
+                .iter()
                 .map(|ef| ef.rel_path.to_string_lossy().to_string())
                 .collect();
             let is_fk = format!("{:#}", e).contains("FOREIGN KEY");
             tracing::warn!(
                 "Batch insert failed ({} files, FK={}): {:#}. Failed paths: {:?}",
-                chunk.len(), is_fk, e, failed_paths
+                chunk.len(),
+                is_fk,
+                e,
+                failed_paths
             );
         }
     }
@@ -412,18 +426,18 @@ pub fn run(project: &str, includes: &[String], scopes: &[String], exclude: &[Str
     let mut index_report = pool.into_report(dirty_total, 0);
     index_report.files_indexed = extracted_count.saturating_sub(insert_failures);
 
-    println!("  {} files written, {} insert failures", index_report.files_indexed, insert_failures);
+    println!(
+        "  {} files written, {} insert failures",
+        index_report.files_indexed, insert_failures
+    );
 
     // ── Phase 3: Resolve all references ───────────────────────────────────
     println!("\nResolving references...");
     let res_timer = PhaseTimer::start("Resolution");
     // P2: Load tsconfig.json or jsconfig.json path aliases if present
-    let path_alias =
-        atlas_engine::PathAliasResolver::from_tsconfig(&root.join("tsconfig.json"))
-            .or_else(|| {
-                atlas_engine::PathAliasResolver::from_jsconfig(&root.join("jsconfig.json"))
-            })
-            .unwrap_or_else(atlas_engine::PathAliasResolver::empty);
+    let path_alias = atlas_engine::PathAliasResolver::from_tsconfig(&root.join("tsconfig.json"))
+        .or_else(|| atlas_engine::PathAliasResolver::from_jsconfig(&root.join("jsconfig.json")))
+        .unwrap_or_else(atlas_engine::PathAliasResolver::empty);
 
     let tsconfig_changed =
         atlas_engine::detect_config_change(&ctx.store, &root, &["tsconfig.json", "jsconfig.json"])?;
@@ -515,9 +529,15 @@ pub fn run(project: &str, includes: &[String], scopes: &[String], exclude: &[Str
         duration_ms = edge_elapsed,
     );
     if build_stats.edges_built != build_stats.edges_written {
-        println!("  Edges built:         {} ({} written)", build_stats.edges_built, build_stats.edges_written);
+        println!(
+            "  Edges built:         {} ({} written)",
+            build_stats.edges_built, build_stats.edges_written
+        );
         if !build_stats.warnings.is_empty() {
-            println!("  Edge warnings:       {}", build_stats.warnings.first().unwrap_or(&String::new()));
+            println!(
+                "  Edge warnings:       {}",
+                build_stats.warnings.first().unwrap_or(&String::new())
+            );
         }
     } else {
         println!("  Edges built:         {}", build_stats.edges_built);

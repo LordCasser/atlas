@@ -36,7 +36,10 @@ impl LazyDataflowService {
     /// When `project_root` is provided, the loader resolves relative file
     /// paths against it when reading source files for lazy extraction.
     pub fn new(store: Arc<Store>, project_root: Option<PathBuf>) -> Self {
-        Self { store, project_root }
+        Self {
+            store,
+            project_root,
+        }
     }
 
     /// Plan a window and ensure all units have dataflow built.
@@ -52,7 +55,8 @@ impl LazyDataflowService {
     ) -> Result<LazyWindow> {
         let mut window =
             planner::LazyDataflowPlanner::plan_for_position(&self.store, file_id, line, column)?;
-        let result = loader::LazyDataflowLoader::ensure(&self.store, &window, self.project_root.as_deref())?;
+        let result =
+            loader::LazyDataflowLoader::ensure(&self.store, &window, self.project_root.as_deref())?;
         window.truncated = window.truncated || result.budget_exceeded;
         window.units_built = result.units_built;
         window.units_cached = result.units_cached;
@@ -61,9 +65,9 @@ impl LazyDataflowService {
 
     /// Plan a window for a known symbol and ensure all units have dataflow.
     pub fn ensure_for_function(&self, symbol_id: &SymbolId) -> Result<LazyWindow> {
-        let mut window =
-            planner::LazyDataflowPlanner::plan_for_function(&self.store, symbol_id)?;
-        let result = loader::LazyDataflowLoader::ensure(&self.store, &window, self.project_root.as_deref())?;
+        let mut window = planner::LazyDataflowPlanner::plan_for_function(&self.store, symbol_id)?;
+        let result =
+            loader::LazyDataflowLoader::ensure(&self.store, &window, self.project_root.as_deref())?;
         window.truncated = window.truncated || result.budget_exceeded;
         window.units_built = result.units_built;
         window.units_cached = result.units_cached;

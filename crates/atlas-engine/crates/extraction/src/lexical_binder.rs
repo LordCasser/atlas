@@ -163,11 +163,11 @@ fn innermost_scope(scopes: &[ScopeDef], range: TextRange) -> Option<ScopeId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use types::Language;
     use types::enums::BindingKind;
     use types::ids::FileId;
     use types::{ScopeKind, TextRange};
-    use std::path::PathBuf;
 
     #[test]
     fn test_innermost_scope_finds_correct_scope() {

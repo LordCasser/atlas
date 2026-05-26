@@ -61,8 +61,7 @@ impl Locator {
         // 4. Find the data node at this position using semantic priority
         //    (prefer CallArg over VariableUse, etc.) then smallest byte range.
         let data_nodes = store.find_data_nodes_by_file(file_id)?;
-        let data_node =
-            find_best_data_node_at_position(&data_nodes, line0, col0).cloned();
+        let data_node = find_best_data_node_at_position(&data_nodes, line0, col0).cloned();
 
         // 5. Collect incoming and outgoing dataflow edges
         let (incoming, outgoing) = if let Some(ref dn) = data_node {
@@ -167,9 +166,7 @@ fn find_best_data_node_at_position<'a>(
         if range_contains(range, line, column) {
             let priority = data_node_priority(item.kind);
             let span = range.end_byte.saturating_sub(range.start_byte);
-            if priority < best_priority
-                || (priority == best_priority && span < best_span)
-            {
+            if priority < best_priority || (priority == best_priority && span < best_span) {
                 best_priority = priority;
                 best_span = span;
                 best = Some(item);

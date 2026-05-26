@@ -231,8 +231,8 @@ mod tests {
         use db::Store;
         use extraction::create_frontend;
         use extraction::extract_file;
-        use types::ids::FileId;
         use types::Language;
+        use types::ids::FileId;
 
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open_in_memory().unwrap();

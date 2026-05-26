@@ -197,10 +197,7 @@ impl GraphEngine {
     }
 
     /// Find all exports (outgoing Exports edges).
-    pub fn dependencies(
-        &self,
-        file_id: &types::ids::FileId,
-    ) -> Vec<types::ids::FileId> {
+    pub fn dependencies(&self, file_id: &types::ids::FileId) -> Vec<types::ids::FileId> {
         let node_ixs = self.snapshot.nodes_by_file(file_id);
         let mut deps = std::collections::HashSet::new();
         for &nix in node_ixs {
@@ -329,12 +326,7 @@ mod tests {
         FileId::generate(name)
     }
 
-    fn make_symbol(
-        file_id: FileId,
-        name: &str,
-        qname: &str,
-        kind: SymbolKind,
-    ) -> types::SymbolDef {
+    fn make_symbol(file_id: FileId, name: &str, qname: &str, kind: SymbolKind) -> types::SymbolDef {
         let id = SymbolId::generate(&file_id, "typescript", qname, kind.as_str(), None);
         types::SymbolDef {
             id,

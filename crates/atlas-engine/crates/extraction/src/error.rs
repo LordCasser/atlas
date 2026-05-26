@@ -15,8 +15,8 @@
 //! - `QueryCompile`  → carries the failing `slot` name so callers can add
 //!   `tracing::warn!` with precise attribution
 
-use types::Language;
 use std::error::Error;
+use types::Language;
 
 // ---------------------------------------------------------------------------
 // ExtractionFailureKind

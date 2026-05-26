@@ -1,7 +1,7 @@
 //! Scopes and imports: insert + query by file.
 
-use types::*;
 use rusqlite::params;
+use types::*;
 
 use super::Store;
 use crate::store_writers::{write_imports, write_scopes};
@@ -117,10 +117,9 @@ impl Store {
              ORDER BY f.path",
         )?;
         let pattern_rel = format!("%{}%", target_path);
-        let rows = stmt.query_map(
-            params![pattern_rel, pattern_rel],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )?;
+        let rows = stmt.query_map(params![pattern_rel, pattern_rel], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 }

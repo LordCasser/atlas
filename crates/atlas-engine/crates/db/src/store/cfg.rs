@@ -1,7 +1,7 @@
 //! CFG domain: control-flow graph nodes and edges.
 
-use types::*;
 use rusqlite::params;
+use types::*;
 
 use super::Store;
 use crate::store_rows::{row_to_cfg_edge, row_to_cfg_node};

@@ -8,9 +8,9 @@ use crate::frontend::{
     LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
     SymbolExtractorSpec,
 };
+use std::path::Path;
 use types::capability::FeatureSupport;
 use types::*;
-use std::path::Path;
 
 /// JavaScript adapter — delegates to TypeScript internally.
 pub(crate) struct JavaScriptAdapter;

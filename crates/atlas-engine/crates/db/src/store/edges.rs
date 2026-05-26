@@ -1,7 +1,7 @@
 //! References, edges, callsites, and invalidation.
 
-use types::*;
 use rusqlite::params;
+use types::*;
 
 use super::Store;
 use crate::store_rows::{

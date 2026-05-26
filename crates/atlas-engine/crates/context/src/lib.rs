@@ -7,8 +7,8 @@
 
 use db::Store;
 use graph::GraphEngine;
-use types::{FileId, SymbolDef, SymbolId};
 use std::sync::{Arc, RwLock};
+use types::{FileId, SymbolDef, SymbolId};
 
 mod builder;
 

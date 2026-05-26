@@ -49,9 +49,7 @@ impl IncludeGraph {
 
         // Strategy 0: relative to the including file's directory
         if let Ok(Some(file_info)) = self.store.get_file(&import.file_id) {
-            let file_dir = Path::new(&file_info.path)
-                .parent()
-                .unwrap_or(Path::new(""));
+            let file_dir = Path::new(&file_info.path).parent().unwrap_or(Path::new(""));
             let candidate = self.project_root.join(file_dir).join(module_path);
             let relative = candidate
                 .strip_prefix(&self.project_root)

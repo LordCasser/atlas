@@ -9,10 +9,10 @@
 //! Run with default features:  `cargo test --test trace_cli_e2e`
 //! Run with all languages:    `cargo test --test trace_cli_e2e --features all-languages`
 
-use atlas_engine::trace::TraceEngine;
 use atlas_cli::commands::{index, init};
 use atlas_engine::Store;
 use atlas_engine::ids::{FileId, SymbolId};
+use atlas_engine::trace::TraceEngine;
 use serde_json::Value;
 use std::path::Path;
 use std::sync::Arc;
@@ -330,7 +330,9 @@ fn p1_capability_java_variable_is_partial() {
     // Partial result is acceptable — Java dataflow is supported_with_limitations.
     if resp.partial_result {
         assert!(
-            resp.diagnostics.iter().any(|d| d.code.as_deref() != Some("unsupported_language")),
+            resp.diagnostics
+                .iter()
+                .any(|d| d.code.as_deref() != Some("unsupported_language")),
             "partial result should not be due to unsupported language (Java IS DataflowBasic)"
         );
     }
@@ -345,7 +347,8 @@ fn p1_capability_java_variable_is_partial() {
         "Java should support call_graph"
     );
     assert!(
-        cap.supported_features.contains(&"intra_statement_dataflow".to_string()),
+        cap.supported_features
+            .contains(&"intra_statement_dataflow".to_string()),
         "Java should support dataflow (DataflowBasic)"
     );
 }
@@ -378,7 +381,8 @@ int main() {
     assert!(resp.capability.is_some(), "capability should be provided");
     let cap = resp.capability.as_ref().unwrap();
     assert!(
-        cap.supported_features.contains(&"intra_statement_dataflow".to_string()),
+        cap.supported_features
+            .contains(&"intra_statement_dataflow".to_string()),
         "C should support dataflow (DataflowBasic)"
     );
 }
@@ -410,7 +414,10 @@ func main() {
 
     // Go is now DataflowBasic — capability must reflect dataflow support
     assert!(resp.ok, "Go variable trace should not be an error");
-    assert!(resp.capability.is_some(), "capability should still be provided");
+    assert!(
+        resp.capability.is_some(),
+        "capability should still be provided"
+    );
 
     let cap = resp.capability.as_ref().unwrap();
     assert_eq!(cap.language, "go");
@@ -419,7 +426,8 @@ func main() {
         "Go should support call_graph"
     );
     assert!(
-        cap.supported_features.contains(&"intra_statement_dataflow".to_string()),
+        cap.supported_features
+            .contains(&"intra_statement_dataflow".to_string()),
         "Go should support dataflow (DataflowBasic)"
     );
     // Note: result may be partial if no data node at exact position,

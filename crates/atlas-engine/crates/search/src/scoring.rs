@@ -77,9 +77,7 @@ impl SearchScore {
         };
         let qualified_bonus = if qualified_match { 1.0 } else { 0.0 };
         let kind_bonus = kind_weight(kind);
-        let path_bonus = file_path.map_or(0.5, |p| {
-            if is_test_file(p) { 0.2 } else { 0.5 }
-        });
+        let path_bonus = file_path.map_or(0.5, |p| if is_test_file(p) { 0.2 } else { 0.5 });
 
         let total = fts_score * weights.fts
             + graph_score * weights.graph
@@ -117,8 +115,11 @@ fn kind_weight(kind: SymbolKind) -> f64 {
 /// Check if a file path looks like a test file.
 fn is_test_file(path: &str) -> bool {
     let p = path.to_lowercase();
-    p.contains("_test.") || p.contains(".test.") || p.contains("__test__")
-        || p.contains("/test/") || p.contains("\\test\\")
+    p.contains("_test.")
+        || p.contains(".test.")
+        || p.contains("__test__")
+        || p.contains("/test/")
+        || p.contains("\\test\\")
 }
 
 /// BM25-inspired inverse document frequency.
@@ -169,28 +170,85 @@ mod tests {
 
     #[test]
     fn test_kind_weight_class() {
-        let score = SearchScore::new(0.5, 10, 50, 0.8, true, SymbolKind::Class, None, &ScoreWeights::default());
+        let score = SearchScore::new(
+            0.5,
+            10,
+            50,
+            0.8,
+            true,
+            SymbolKind::Class,
+            None,
+            &ScoreWeights::default(),
+        );
         assert!(score.total > 0.0);
         assert!(score.kind_bonus > 0.5);
     }
 
     #[test]
     fn test_kind_weight_parameter() {
-        let score = SearchScore::new(0.5, 10, 50, 0.8, false, SymbolKind::Parameter, None, &ScoreWeights::default());
+        let score = SearchScore::new(
+            0.5,
+            10,
+            50,
+            0.8,
+            false,
+            SymbolKind::Parameter,
+            None,
+            &ScoreWeights::default(),
+        );
         assert!(score.kind_bonus < 0.2);
     }
 
     #[test]
     fn test_qualified_bonus_boosts_match() {
-        let a = SearchScore::new(0.5, 10, 50, 0.8, true, SymbolKind::Function, None, &ScoreWeights::default());
-        let b = SearchScore::new(0.5, 10, 50, 0.8, false, SymbolKind::Function, None, &ScoreWeights::default());
+        let a = SearchScore::new(
+            0.5,
+            10,
+            50,
+            0.8,
+            true,
+            SymbolKind::Function,
+            None,
+            &ScoreWeights::default(),
+        );
+        let b = SearchScore::new(
+            0.5,
+            10,
+            50,
+            0.8,
+            false,
+            SymbolKind::Function,
+            None,
+            &ScoreWeights::default(),
+        );
         assert!(a.total > b.total, "qualified match should increase score");
     }
 
     #[test]
     fn test_test_file_downranked() {
-        let prod = SearchScore::new(0.5, 10, 50, 0.8, false, SymbolKind::Function, Some("src/main.rs"), &ScoreWeights::default());
-        let test_file = SearchScore::new(0.5, 10, 50, 0.8, false, SymbolKind::Function, Some("src/main_test.rs"), &ScoreWeights::default());
-        assert!(prod.path_bonus > test_file.path_bonus, "test files should have lower path bonus");
+        let prod = SearchScore::new(
+            0.5,
+            10,
+            50,
+            0.8,
+            false,
+            SymbolKind::Function,
+            Some("src/main.rs"),
+            &ScoreWeights::default(),
+        );
+        let test_file = SearchScore::new(
+            0.5,
+            10,
+            50,
+            0.8,
+            false,
+            SymbolKind::Function,
+            Some("src/main_test.rs"),
+            &ScoreWeights::default(),
+        );
+        assert!(
+            prod.path_bonus > test_file.path_bonus,
+            "test files should have lower path bonus"
+        );
     }
 }

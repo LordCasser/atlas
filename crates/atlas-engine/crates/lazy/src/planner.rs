@@ -9,14 +9,12 @@ use std::collections::HashSet;
 
 use anyhow::Result;
 use db::Store;
+use types::enums::{EdgeKind, ScopeKind, SymbolKind};
 use types::ids::{FileId, SymbolId};
 use types::lazy::{AnalysisUnit, LazyWindow, VariableFocus};
 use types::structs::{ReferenceUse, ScopeDef, SymbolDef, TextRange};
-use types::enums::{EdgeKind, ScopeKind, SymbolKind};
 
-use crate::constants::{
-    LAZY_DATAFLOW_MAX_DEPTH, LAZY_DATAFLOW_MAX_UNITS,
-};
+use crate::constants::{LAZY_DATAFLOW_MAX_DEPTH, LAZY_DATAFLOW_MAX_UNITS};
 
 /// Entry point for all lazy-window planning.
 pub(crate) struct LazyDataflowPlanner;
@@ -107,9 +105,14 @@ impl LazyDataflowPlanner {
                             for cs in callsites {
                                 if cs.caller == sid {
                                     if let Some(callee) = cs.callee {
-                                        if let Ok(Some(callee_sym)) = store.find_symbol_by_id(&callee) {
+                                        if let Ok(Some(callee_sym)) =
+                                            store.find_symbol_by_id(&callee)
+                                        {
                                             add_if_new(
-                                                &callee_sym, &mut units, &mut seen, &mut next_frontier,
+                                                &callee_sym,
+                                                &mut units,
+                                                &mut seen,
+                                                &mut next_frontier,
                                             );
                                         }
                                     }
@@ -124,7 +127,11 @@ impl LazyDataflowPlanner {
                                     || edge.kind == EdgeKind::Instantiates
                                 {
                                     add_if_new_by_id(
-                                        store, edge.source, &mut units, &mut seen, &mut next_frontier,
+                                        store,
+                                        edge.source,
+                                        &mut units,
+                                        &mut seen,
+                                        &mut next_frontier,
                                     );
                                 }
                             }
@@ -156,10 +163,7 @@ impl LazyDataflowPlanner {
     }
 
     /// Plan a window for a `trace_function` query starting at a known symbol.
-    pub fn plan_for_function(
-        store: &Store,
-        symbol_id: &SymbolId,
-    ) -> Result<LazyWindow> {
+    pub fn plan_for_function(store: &Store, symbol_id: &SymbolId) -> Result<LazyWindow> {
         let sym = match store.find_symbol_by_id(symbol_id)? {
             Some(s) => s,
             None => anyhow::bail!("symbol not found: {:?}", symbol_id),
@@ -182,7 +186,12 @@ impl LazyDataflowPlanner {
                                 if cs.caller == sid {
                                     if let Some(callee) = cs.callee {
                                         if let Ok(Some(sym)) = store.find_symbol_by_id(&callee) {
-                                            add_if_new(&sym, &mut units, &mut seen, &mut next_frontier);
+                                            add_if_new(
+                                                &sym,
+                                                &mut units,
+                                                &mut seen,
+                                                &mut next_frontier,
+                                            );
                                         }
                                     }
                                 }
@@ -193,7 +202,13 @@ impl LazyDataflowPlanner {
                                 if edge.kind == EdgeKind::Calls
                                     || edge.kind == EdgeKind::Instantiates
                                 {
-                                    add_if_new_by_id(store, edge.source, &mut units, &mut seen, &mut next_frontier);
+                                    add_if_new_by_id(
+                                        store,
+                                        edge.source,
+                                        &mut units,
+                                        &mut seen,
+                                        &mut next_frontier,
+                                    );
                                 }
                             }
                         }

@@ -157,13 +157,19 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                                     || arg_dn.kind == DataNodeKind::Expr
                                 {
                                     if let Some(inner_csid) = arg_dn.callsite_id {
-                                        if let Ok(inner_cs) = store.find_callsites_by_id(&inner_csid) {
-                                            if let Some(inner_callee) = inner_cs.first()
-                                                .and_then(|cs| cs.callee.as_ref())
+                                        if let Ok(inner_cs) =
+                                            store.find_callsites_by_id(&inner_csid)
+                                        {
+                                            if let Some(inner_callee) =
+                                                inner_cs.first().and_then(|cs| cs.callee.as_ref())
                                             {
-                                                if let Ok(inner_summary) = crate::summary::SummaryBuilder::build(
-                                                    store, inner_callee, None,
-                                                ) {
+                                                if let Ok(inner_summary) =
+                                                    crate::summary::SummaryBuilder::build(
+                                                        store,
+                                                        inner_callee,
+                                                        None,
+                                                    )
+                                                {
                                                     for rf in &inner_summary.return_flows {
                                                         for src_id in &rf.sources {
                                                             edges.push(TraceEdge {
@@ -191,9 +197,7 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
 
                 // Layer 2: indirect callers (recursive, up to depth 3)
                 const MAX_INDIRECT_DEPTH: usize = 3;
-                let indirect = find_indirect_callers(
-                    store, &function_id, MAX_INDIRECT_DEPTH,
-                );
+                let indirect = find_indirect_callers(store, &function_id, MAX_INDIRECT_DEPTH);
                 for (depth, _caller_sym_id, cs) in &indirect {
                     // Match args by position using the ORIGINAL callee's
                     // parameter index, not the indirect caller's param set.
@@ -346,7 +350,8 @@ fn find_indirect_callers(
     visited.insert(function_id.clone());
 
     // BFS queue: (depth, function_id)
-    let mut queue: std::collections::VecDeque<(usize, SymbolId)> = std::collections::VecDeque::new();
+    let mut queue: std::collections::VecDeque<(usize, SymbolId)> =
+        std::collections::VecDeque::new();
     queue.push_back((0, function_id.clone()));
 
     while let Some((depth, current_fid)) = queue.pop_front() {

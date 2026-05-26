@@ -389,12 +389,21 @@ impl Store {
             // Record per-file per-layer index status.
             // INSERT OR REPLACE semantics: overwrites existing row on
             // (file_id, layer) conflict — no audit trail needed here.
-            let status = if facts.budget_exceeded { "partial" } else { "complete" };
+            let status = if facts.budget_exceeded {
+                "partial"
+            } else {
+                "complete"
+            };
             tx.execute(
                 "INSERT OR REPLACE INTO file_index_layers
                     (file_id, layer, content_hash, status, updated_at)
                  VALUES (?1, ?2, ?3, ?4, datetime('now'))",
-                params![facts.file.file_id, facts.layer, facts.file.content_hash, status],
+                params![
+                    facts.file.file_id,
+                    facts.layer,
+                    facts.file.content_hash,
+                    status
+                ],
             )?;
         }
 
@@ -532,10 +541,7 @@ impl DataflowReader for Store {
     ) -> anyhow::Result<Vec<DataFlowEdge>> {
         Store::find_dataflow_edges_by_sources(self, sources)
     }
-    fn find_dataflow_edges_by_file(
-        &self,
-        file_id: &FileId,
-    ) -> anyhow::Result<Vec<DataFlowEdge>> {
+    fn find_dataflow_edges_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<DataFlowEdge>> {
         Store::find_dataflow_edges_by_file(self, file_id)
     }
 }

@@ -101,10 +101,7 @@ impl SemanticBinder {
     }
 
     /// Delegate: resolve source for an arbitrary range.
-    pub fn source_for_range(
-        &self,
-        range: types::TextRange,
-    ) -> Option<types::ids::SymbolId> {
+    pub fn source_for_range(&self, range: types::TextRange) -> Option<types::ids::SymbolId> {
         self.registry.source_for_range(range)
     }
 }

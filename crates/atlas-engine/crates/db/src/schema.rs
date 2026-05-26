@@ -465,10 +465,9 @@ pub struct Migration {
 ///     Migration { from_version: 2, sql: "CREATE INDEX ...", description: "v3: ..." },
 /// ];
 /// ```
-pub const MIGRATIONS: &[Migration] = &[
-    Migration {
-        from_version: 1,
-        sql: "ALTER TABLE symbols ADD COLUMN layer TEXT NOT NULL DEFAULT 'structural';
+pub const MIGRATIONS: &[Migration] = &[Migration {
+    from_version: 1,
+    sql: "ALTER TABLE symbols ADD COLUMN layer TEXT NOT NULL DEFAULT 'structural';
               CREATE TABLE IF NOT EXISTS file_index_layers (
                   file_id         BLOB NOT NULL,
                   layer           TEXT NOT NULL,
@@ -480,9 +479,8 @@ pub const MIGRATIONS: &[Migration] = &[
               );
               CREATE INDEX IF NOT EXISTS idx_file_index_layers_file
                   ON file_index_layers(file_id);",
-        description: "v2: add symbols.layer + file_index_layers table",
-    },
-];
+    description: "v2: add symbols.layer + file_index_layers table",
+}];
 
 /// Run pending migrations on a database connection.
 ///

@@ -45,7 +45,7 @@ impl GlobalSymbolIndex {
         })
     }
 
-/// Find symbols by exact name (case-insensitive).
+    /// Find symbols by exact name (case-insensitive).
     pub fn find_by_name(&self, name: &str) -> Vec<SymbolDef> {
         self.by_name
             .get(&name.to_lowercase())

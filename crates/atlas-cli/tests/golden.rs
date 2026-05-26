@@ -22,8 +22,8 @@
 //! }
 //! ```
 
-use atlas_engine::extract_file;
 use atlas_engine::enums::Language;
+use atlas_engine::extract_file;
 use atlas_engine::ids::FileId;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -115,8 +115,8 @@ fn run_golden(lang_dir: &str, stem: &str, ext: &str, lang: Language) {
         .unwrap_or_else(|e| panic!("Cannot read {}: {}", src_path.display(), e));
 
     let rel_path = format!("{}/{}.{}", lang_dir, stem, ext);
-    let frontend = atlas_engine::create_frontend(lang)
-        .unwrap_or_else(|| panic!("No frontend for {:?}", lang));
+    let frontend =
+        atlas_engine::create_frontend(lang).unwrap_or_else(|| panic!("No frontend for {:?}", lang));
 
     let file_id = FileId::generate(&rel_path);
     let facts = extract_file(
