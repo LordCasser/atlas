@@ -400,16 +400,11 @@ pub fn run(
     };
 
     // ── Restore terminal ──
-    if let Some(t) = tui {
-        t.finish();
+    if has_tty {
+        crate::tui::progress::clear_and_restore();
     }
 
     // ── Handle interrupt BEFORE joining worker ──
-    // If we join the worker on interrupt, the main thread blocks until
-    // the current rayon batch finishes (par_iter().collect() is not
-    // preemptible).  Instead, return immediately — the worker thread
-    // will wind down on its own when it checks the stop flag at the
-    // next phase boundary.
     if was_interrupted {
         crate::tui::progress::print_interrupted(&progress_state.lock().unwrap());
         return Ok(());

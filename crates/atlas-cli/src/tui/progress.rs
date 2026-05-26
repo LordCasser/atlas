@@ -130,10 +130,14 @@ impl TuiProgress {
         }
     }
 
-    /// Restore terminal state.  In inline mode this just exits raw mode —
-    /// the last-rendered content stays visible on screen and the cursor
-    /// advances below it.
+    /// Restore terminal state.  Clears the inline progress area before
+    /// exiting raw mode so no residual TUI junk is left on screen.
     pub fn finish(self) {
+        // Write ANSI: move cursor up INLINE_ROWS rows, clear to end of screen.
+        let clear = format!("\x1b[{}A\x1b[J", INLINE_ROWS);
+        let _ = std::io::Write::write_all(&mut std::io::stdout(), clear.as_bytes());
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        // Now exit raw mode.  The terminal is clean.
         drop(self);
         let _ = ratatui::try_restore();
     }
@@ -141,10 +145,18 @@ impl TuiProgress {
 
 impl Drop for TuiProgress {
     fn drop(&mut self) {
-        // In inline mode, restore() exits raw mode but leaves the rendered
-        // content visible — unlike fullscreen which restores prior state.
+        // Best-effort restore.  If finish() was called, this is a no-op.
         let _ = ratatui::try_restore();
     }
+}
+
+/// Clear the inline area and exit raw mode.  Used from Ctrl+C paths
+/// where we don't have ownership of TuiProgress.
+pub fn clear_and_restore() {
+    let clear = format!("\x1b[{}A\x1b[J", INLINE_ROWS);
+    let _ = std::io::Write::write_all(&mut std::io::stdout(), clear.as_bytes());
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let _ = ratatui::try_restore();
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
