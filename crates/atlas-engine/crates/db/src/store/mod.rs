@@ -174,6 +174,36 @@ impl Store {
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
         Ok(())
     }
+
+    /// Disable safety checks for maximum bulk-write throughput.
+    ///
+    /// Sets `synchronous = OFF` (skip fsync per transaction) and
+    /// `foreign_keys = OFF` (skip FK enforcement — caller must pre-validate).
+    /// Call `end_bulk_write()` after the write phase to restore defaults.
+    ///
+    /// **The database may be corrupted on power loss or crash while
+    /// bulk-write mode is active.**  Only use during index rebuilds where
+    /// the data can be regenerated.
+    pub fn begin_bulk_write(&self) -> anyhow::Result<()> {
+        let conn = self.lock();
+        conn.execute_batch(
+            "PRAGMA synchronous = OFF;
+             PRAGMA foreign_keys = OFF;
+             PRAGMA wal_autocheckpoint = 0;",
+        )?;
+        Ok(())
+    }
+
+    /// Restore safety defaults after a bulk-write phase.
+    pub fn end_bulk_write(&self) -> anyhow::Result<()> {
+        let conn = self.lock();
+        conn.execute_batch(
+            "PRAGMA synchronous = NORMAL;
+             PRAGMA foreign_keys = ON;
+             PRAGMA wal_autocheckpoint = 1000;",
+        )?;
+        Ok(())
+    }
 }
 
 impl Deref for Store {

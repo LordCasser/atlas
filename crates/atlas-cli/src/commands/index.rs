@@ -293,14 +293,18 @@ pub fn run(
         );
         ps.lock().unwrap().set_total(extracted_count as u64);
 
+        // Bulk-write mode: disable synchronous & FK checks for maximum
+        // throughput.  The FK guards in insert_file_facts_impl already
+        // pre-validate, so disabling the pragma-level check just skips
+        // redundant work.  WAL auto-checkpoint is also disabled — we
+        // truncate at the end.
+        store.begin_bulk_write()?;
+
         let mut _insert_failures = 0usize;
-        const BATCH_SIZE: usize = 200;
+        // Larger batch = fewer transactions = less overhead.
+        // 1000 files/txn is a good balance between throughput and memory.
+        const BATCH_SIZE: usize = 1000;
         let mut written = 0u64;
-        // Checkpoint the WAL every 2 000 files to prevent unbounded growth.
-        // Without this, the WAL balloons to GBs under heavy full-analysis
-        // writes, making each subsequent transaction O(WAL-size) slower.
-        const CHECKPOINT_INTERVAL: u64 = 2000;
-        let mut next_checkpoint = CHECKPOINT_INTERVAL;
         for chunk in extracted.chunks(BATCH_SIZE) {
             let facts: Vec<_> = chunk.iter().map(|ef| ef.facts.clone()).collect();
             if let Err(_e) = store.insert_file_facts_batch(&facts) {
@@ -315,13 +319,11 @@ pub fn run(
                 }
             }
             written += chunk.len() as u64;
-            if written >= next_checkpoint {
-                let _ = store.checkpoint_wal();
-                next_checkpoint = written + CHECKPOINT_INTERVAL;
-            }
             ps.lock().unwrap().set_current(written);
         }
-        // Final hard checkpoint — truncate WAL to zero.
+
+        // Restore safety defaults and flush WAL.
+        store.end_bulk_write()?;
         let _ = store.checkpoint_wal_truncate();
 
         if interrupted() { return Ok(()); }
