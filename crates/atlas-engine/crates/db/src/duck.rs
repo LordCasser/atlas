@@ -66,23 +66,29 @@ impl DuckStore {
             return Ok(());
         }
 
-        // Accumulate per-table data across all files
-        let mut all_symbols: Vec<&SymbolDef> = Vec::new();
-        let mut all_scopes: Vec<&ScopeDef> = Vec::new();
-        let mut all_refs: Vec<&ReferenceUse> = Vec::new();
-        let mut all_imports: Vec<&ImportDef> = Vec::new();
-        let mut all_edges: Vec<&RawEdge> = Vec::new();
-        let mut all_callsites: Vec<&Callsite> = Vec::new();
-        let mut all_bindings: Vec<&BindingDef> = Vec::new();
-        let mut all_binding_uses: Vec<&BindingUse> = Vec::new();
-        let mut all_data_nodes: Vec<&DataNode> = Vec::new();
-        let mut all_dataflow_edges: Vec<&DataFlowEdge> = Vec::new();
-        let mut all_cfg_nodes: Vec<&CfgNode> = Vec::new();
-        let mut all_cfg_edges: Vec<&CfgEdge> = Vec::new();
+        let est = batch.len();
+
+        // Accumulate per-table references across all files.
+        // with_capacity avoids repeated realloc — 62K files × 50 symbols
+        // needs ~22 reallocs without pre-allocation.
+        let mut all_files: Vec<&FileInfo> = Vec::with_capacity(est);
+        let mut all_symbols: Vec<(&SymbolDef, &str)> = Vec::with_capacity(est * 50);
+        let mut all_scopes: Vec<&ScopeDef> = Vec::with_capacity(est * 5);
+        let mut all_refs: Vec<&ReferenceUse> = Vec::with_capacity(est * 40);
+        let mut all_imports: Vec<&ImportDef> = Vec::with_capacity(est * 5);
+        let mut all_edges: Vec<&RawEdge> = Vec::with_capacity(est * 10);
+        let mut all_callsites: Vec<&Callsite> = Vec::with_capacity(est * 5);
+        let mut all_bindings: Vec<&BindingDef> = Vec::with_capacity(est * 20);
+        let mut all_binding_uses: Vec<&BindingUse> = Vec::with_capacity(est * 30);
+        let mut all_data_nodes: Vec<&DataNode> = Vec::with_capacity(est * 30);
+        let mut all_dataflow_edges: Vec<&DataFlowEdge> = Vec::with_capacity(est * 20);
+        let mut all_cfg_nodes: Vec<&CfgNode> = Vec::with_capacity(est * 5);
+        let mut all_cfg_edges: Vec<&CfgEdge> = Vec::with_capacity(est * 5);
 
         for facts in batch {
-            write_file_row(&self.conn, facts)?;
-            for s in &facts.symbols { all_symbols.push(s); }
+            all_files.push(&facts.file);
+            let layer = facts.layer.as_str();
+            for s in &facts.symbols { all_symbols.push((s, layer)); }
             for s in &facts.scopes { all_scopes.push(s); }
             for r in &facts.references { all_refs.push(r); }
             for i in &facts.imports { all_imports.push(i); }
@@ -97,6 +103,7 @@ impl DuckStore {
         }
 
         let conn = &self.conn;
+        write_files_appender(conn, &all_files)?;
         write_symbols_appender(conn, &all_symbols)?;
         write_scopes_appender(conn, &all_scopes)?;
         write_references_appender(conn, &all_refs)?;
@@ -337,8 +344,8 @@ CREATE TABLE IF NOT EXISTS cfg_nodes (
 
 CREATE TABLE IF NOT EXISTS cfg_edges (
     cfg_edge_id          BLOB PRIMARY KEY NOT NULL,
-    source_node          BLOB NOT NULL,
-    target_node          BLOB NOT NULL,
+    source               BLOB NOT NULL,
+    target               BLOB NOT NULL,
     kind                 TEXT NOT NULL
 );
 
@@ -377,22 +384,25 @@ impl BlobId for DataFlowEdgeId { fn as_bytes(&self) -> &[u8; 32] { self.as_bytes
 impl BlobId for CfgNodeId { fn as_bytes(&self) -> &[u8; 32] { self.as_bytes() } }
 impl BlobId for CfgEdgeId { fn as_bytes(&self) -> &[u8; 32] { self.as_bytes() } }
 
-fn write_file_row(conn: &Connection, facts: &FileFacts) -> anyhow::Result<()> {
+fn write_files_appender(conn: &Connection, files: &[&FileInfo]) -> anyhow::Result<()> {
+    if files.is_empty() { return Ok(()); }
     let mut app = conn.appender("files")?;
-    app.append_row(params![
-        blob(&facts.file.file_id),
-        facts.file.path.as_str(),
-        facts.file.language.as_str(),
-        facts.file.content_hash.as_str(),
-        facts.file.status.as_str(),
-    ])?;
+    for fi in files {
+        app.append_row(params![
+            blob(&fi.file_id),
+            fi.path.as_str(),
+            fi.language.as_str(),
+            fi.content_hash.as_str(),
+            fi.status.as_str(),
+        ])?;
+    }
     Ok(())
 }
 
-fn write_symbols_appender(conn: &Connection, symbols: &[&SymbolDef]) -> anyhow::Result<()> {
+fn write_symbols_appender(conn: &Connection, symbols: &[(&SymbolDef, &str)]) -> anyhow::Result<()> {
     if symbols.is_empty() { return Ok(()); }
     let mut app = conn.appender("symbols")?;
-    for s in symbols {
+    for (s, layer) in symbols {
         let path_json = serde_json::to_string(&s.symbol_path).unwrap_or_else(|_| "[]".into());
         let ns_json = serde_json::to_string(&s.namespace_path).unwrap_or_else(|_| "[]".into());
         app.append_row(params![
@@ -409,7 +419,7 @@ fn write_symbols_appender(conn: &Connection, symbols: &[&SymbolDef]) -> anyhow::
             s.exported as i32, s.static_ as i32, s.async_ as i32,
             opt_blob(&s.container), opt_blob(&s.scope_id),
             s.package_name.as_deref().unwrap_or(""), ns_json.as_str(),
-            "structural",
+            layer,
         ])?;
     }
     Ok(())
