@@ -40,7 +40,13 @@ pub fn render(
     state: Arc<Mutex<atlas_engine::progress::ProgressState>>,
     _tick: u64,
 ) {
-    let guard = state.lock().unwrap();
+    // Use try_lock to never block if the worker holds the mutex.
+    // On contention, the frame is simply skipped — the next frame
+    // (200ms later) will pick up the latest state.
+    let guard = match state.try_lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
     let snap = guard.read_snapshot();
 
     let area = frame.area();

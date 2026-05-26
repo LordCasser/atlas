@@ -1,4 +1,9 @@
-//! TUI progress lifecycle — terminal init, draw loop, graceful shutdown.
+//! TUI progress lifecycle — terminal init (inline), draw loop, graceful shutdown.
+//!
+//! Inline mode: renders below the shell prompt without a full-screen takeover,
+//! similar to `cargo build`.  Uses ratatui's `Viewport::Inline` which reserves
+//! a fixed number of rows below the current cursor and overwrites them on each
+//! draw, leaving prior shell output intact above.
 
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -6,8 +11,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use atlas_engine::progress::ProgressState;
+use ratatui::{TerminalOptions, Viewport};
 
 use super::render;
+
+/// Number of terminal rows reserved for the inline progress display.
+/// 1 header + 9 phases + 1 footer = 11 rows.  Padding to 12.
+const INLINE_ROWS: u16 = 12;
 
 /// Owns the ratatui terminal and drives the render loop.
 pub struct TuiProgress {
@@ -17,12 +27,16 @@ pub struct TuiProgress {
 }
 
 impl TuiProgress {
-    /// Initialise the TUI. Returns `None` on non-TTY stdout (pipe, CI).
+    /// Initialise inline TUI just below the cursor.
+    /// Returns `None` on non-TTY stdout (pipe, CI).
     pub fn try_init(state: Arc<Mutex<ProgressState>>) -> Option<Self> {
         if !atty::is(atty::Stream::Stdout) {
             return None;
         }
-        let terminal = match ratatui::try_init() {
+        let options = TerminalOptions {
+            viewport: Viewport::Inline(INLINE_ROWS),
+        };
+        let terminal = match ratatui::try_init_with_options(options) {
             Ok(t) => t,
             Err(_) => return None,
         };
@@ -50,31 +64,55 @@ impl TuiProgress {
         stop_flag: &AtomicBool,
     ) -> bool {
         loop {
-            {
-                let mut s = self.state.lock().unwrap();
-                s.flush_and_snapshot();
+            // ── Check exit flags FIRST — before any blocking call ──
+            // This is load-bearing for Ctrl+C: if the signal arrives
+            // during sleep or the previous draw, we must exit
+            // *before* the next Mutex-lock or terminal-write, not after.
+            if stop_flag.load(Ordering::SeqCst) {
+                return true;
             }
-
-            if let Err(e) = self.draw() {
-                eprintln!("TUI draw error: {}", e);
-                return false;
-            }
-
             if done_flag.load(Ordering::SeqCst) {
                 return false;
             }
+
+            // ── Flush atomic counters into ProgressState ──
+            // Use try_lock to avoid blocking if the worker holds the
+            // mutex (rare, but possible during phase transitions).
+            match self.state.try_lock() {
+                Ok(mut s) => {
+                    s.flush_and_snapshot();
+                }
+                Err(_) => {
+                    // Mutex is held by the worker — skip this frame
+                    // and try again after sleep.  The atomic counters
+                    // will be picked up on the next iteration.
+                }
+            }
+
+            // Double-check flags after flush (may have changed during lock wait)
             if stop_flag.load(Ordering::SeqCst) {
                 return true;
+            }
+            if done_flag.load(Ordering::SeqCst) {
+                return false;
+            }
+
+            // ── Render one frame ──
+            // If the terminal is in a bad state (Ctrl+C during draw),
+            // don't error out — just skip this frame and check exit flags.
+            if let Err(_) = self.draw() {
+                // Terminal error — likely Ctrl+C mid-render.
+                // Don't block; check flags on next iteration.
             }
 
             std::thread::sleep(Duration::from_millis(200));
         }
     }
 
-    /// Restore terminal state.
+    /// Restore terminal state.  In inline mode this just exits raw mode —
+    /// the last-rendered content stays visible on screen and the cursor
+    /// advances below it.
     pub fn finish(self) {
-        // ratatui::try_restore() is called on drop.
-        // We take ownership to enforce terminal cleanup.
         drop(self);
         let _ = ratatui::try_restore();
     }
@@ -82,6 +120,8 @@ impl TuiProgress {
 
 impl Drop for TuiProgress {
     fn drop(&mut self) {
+        // In inline mode, restore() exits raw mode but leaves the rendered
+        // content visible — unlike fullscreen which restores prior state.
         let _ = ratatui::try_restore();
     }
 }
