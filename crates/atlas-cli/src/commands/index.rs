@@ -31,7 +31,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 /// Result of extracting a single file.
@@ -88,10 +88,24 @@ pub fn run(
     let stop_flag = Arc::new(AtomicBool::new(false));
 
     // ── Ctrl+C handler ──
+    // First press: graceful shutdown (stop_flag → main thread exits draw loop).
+    // Second press: immediate exit (terminal may be stuck; OS-level kill).
     let stop = stop_flag.clone();
-    let _ = ctrlc::set_handler(move || {
+    let press_count = Arc::new(AtomicU64::new(0));
+    let pc = press_count.clone();
+    if let Err(e) = ctrlc::set_handler(move || {
+        let n = pc.fetch_add(1, Ordering::SeqCst);
         stop.store(true, Ordering::SeqCst);
-    });
+        if n >= 1 {
+            // Second press — restore terminal and exit immediately.
+            // Don't call ratatui::try_restore() from a signal handler
+            // (not signal-safe); just let the process die and the OS
+            // will reset the terminal on exit.
+            std::process::exit(1);
+        }
+    }) {
+        eprintln!("warning: could not install Ctrl+C handler: {}", e);
+    }
 
     // ── Start TUI (or text fallback if non-TTY) ──
     let mut tui = TuiProgress::try_init(progress_state.clone());
