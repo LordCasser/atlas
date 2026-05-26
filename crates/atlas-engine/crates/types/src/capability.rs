@@ -886,7 +886,7 @@ mod profiles {
     fn cangjie_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "cangjie".into(),
-            capability_level: CapabilityLevel::DataflowBasic,
+            capability_level: CapabilityLevel::DataflowFull,
             supported_features: vec![
                 "symbol_extraction".into(),
                 "reference_extraction".into(),
@@ -895,37 +895,36 @@ mod profiles {
                 "lexical_bindings".into(),
                 "local_dataflow".into(),
                 "use_def".into(),
+                "interprocedural_dataflow".into(),
             ],
             unsupported_features: vec![
                 "cfg".into(),
-                "backward_trace".into(),
-                "interprocedural_dataflow".into(),
             ],
             limitations: vec![
                 "AST-driven local dataflow with basic parameter/local/return/call capture".into(),
                 "method call targets not captured (simple calls only)".into(),
                 "scope-chain-aware binding not implemented".into(),
             ],
-            confidence_floor: 0.60,
+            confidence_floor: 0.62,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.60),
-                references: FeatureSupport::supported_with_confidence(0.60),
-                imports: FeatureSupport::supported_with_confidence(0.60),
-                scopes: FeatureSupport::supported_with_confidence(0.60),
+                symbols: FeatureSupport::supported_with_confidence(0.62),
+                references: FeatureSupport::supported_with_confidence(0.62),
+                imports: FeatureSupport::supported_with_confidence(0.62),
+                scopes: FeatureSupport::supported_with_confidence(0.62),
                 call_graph: FeatureSupport::supported_with_limitations(
-                    0.60,
+                    0.62,
                     vec!["simple function calls; method calls not captured"],
                 ),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.60,
+                    0.62,
                     vec!["basic parameter/local binding extraction"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.60,
+                    0.62,
                     vec!["AST-driven local dataflow"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.60,
+                    0.62,
                     vec!["basic use-def via lexical bindings + dataflow"],
                 ),
                 field_access: FeatureSupport::supported_with_limitations(
@@ -933,15 +932,20 @@ mod profiles {
                     vec!["basic field access capture"],
                 ),
                 call_arguments: FeatureSupport::supported_with_limitations(
-                    0.60,
+                    0.62,
                     vec!["basic call argument capture"],
                 ),
                 returns_flow: FeatureSupport::supported_with_limitations(
-                    0.60,
+                    0.62,
                     vec!["basic return value capture"],
                 ),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for Cangjie"),
-                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+                interprocedural_summaries: FeatureSupport::supported_with_limitations(
+                    0.55,
+                    vec![
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall basic)",
+                    ],
+                ),
             }),
         }
     }
@@ -1638,13 +1642,13 @@ mod tests {
     }
 
     #[test]
-    fn test_cangjie_feature_matrix_dataflow_basic() {
+    fn test_cangjie_feature_matrix_dataflow_full() {
         let cj = LanguageCapabilityProfile::for_language(Language::Cangjie);
         let matrix = cj.features.as_ref().unwrap();
         assert_eq!(
             cj.capability_level,
-            CapabilityLevel::DataflowBasic,
-            "Cangjie should be DataflowBasic"
+            CapabilityLevel::DataflowFull,
+            "Cangjie should be DataflowFull"
         );
         assert!(
             matrix.symbols.is_supported(),
@@ -1661,6 +1665,10 @@ mod tests {
         assert!(
             matrix.call_graph.is_supported(),
             "Cangjie call_graph should be supported (callsite extraction works)"
+        );
+        assert!(
+            matrix.interprocedural_summaries.is_supported(),
+            "Cangjie interprocedural_summaries should be supported"
         );
     }
 
@@ -1708,8 +1716,8 @@ mod tests {
             if let Some(cj) = cangjie {
                 assert_eq!(
                     cj.capability_level,
-                    CapabilityLevel::DataflowBasic,
-                    "Cangjie capability level should be DataflowBasic"
+                    CapabilityLevel::DataflowFull,
+                    "Cangjie capability level should be DataflowFull"
                 );
             }
         }

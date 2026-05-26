@@ -1018,13 +1018,7 @@ fn inner(p: i32) -> i32 {
 
 /// FX14: When `outer()` calls `inner()` and assigns result to `y`, tracing
 /// backward from `y` must include a ReturnToCall edge.
-///
-/// GAP: ReturnToCall bridge does not fire for Rust — the trace produces 3 steps
-/// but none is ReturnToCall.  The SummaryEdgeProvider does not bridge the
-/// callee return to the caller assignment.  Fix this before upgrading Rust to
-/// DataflowFull.
 #[test]
-#[should_panic(expected = "expected at least one ReturnToCall edge")]
 #[cfg(feature = "rust")]
 fn fx14_rust_cross_function_return_to_call() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -1067,14 +1061,7 @@ fn inner() -> i32 {
 
 /// FX15: When `outer()` calls `inner($x)`, tracing backward from callee param
 /// `$p` must include an ArgToParam edge.
-///
-/// GAP: PHP extraction does not produce DataNode entries for function
-/// parameters — `find_store_data_nodes` returns no Parameter nodes.  The
-/// DataFlowBuilder/lexical binder for PHP needs to emit Parameter DataNodes
-/// before interprocedural bridging can work.  Fix this before upgrading PHP
-/// to DataflowFull.
 #[test]
-#[should_panic(expected = "expected parameter")]
 #[cfg(feature = "php")]
 fn fx15_php_cross_function_arg_to_param() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -1122,11 +1109,7 @@ function inner($p) {
 
 /// FX16: When `outer()` calls `inner()` and assigns result to `$y`, tracing
 /// backward from `$y` must include a ReturnToCall edge.
-///
-/// GAP: PHP extraction does not produce DataNodes for local variables — the
-/// sink `y` is not found.  Fix extraction before this fixture can pass.
 #[test]
-#[should_panic(expected = "data node 'y' not found")]
 #[cfg(feature = "php")]
 fn fx16_php_cross_function_return_to_call() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -1218,18 +1201,16 @@ end
 /// FX18: When `outer()` calls `inner()` and assigns result to `y`, tracing
 /// backward from `y` must include a ReturnToCall edge.
 ///
-/// GAP: ReturnToCall bridge does not fire for Ruby — the trace path has 3
-/// steps but none is ReturnToCall.  Fix the SummaryEdgeProvider / cross-function
-/// bridge for Ruby before removing this should_panic.
+/// NOTE: Uses `inner()` with explicit parentheses.  Bare calls (without `()`)
+/// require tree-sitter-ruby parsing improvements to be recognized as call nodes.
 #[test]
-#[should_panic(expected = "expected at least one ReturnToCall edge")]
 #[cfg(feature = "ruby")]
 fn fx18_ruby_cross_function_return_to_call() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[(
         "retbridge.rb",
         r#"def outer
-  y = inner
+  y = inner()
   y
 end
 
@@ -1265,12 +1246,7 @@ end
 
 /// FX19: When `outer()` calls `inner(x)`, tracing backward from callee param
 /// `p` must include an ArgToParam edge.
-///
-/// GAP: Kotlin ArgToParam bridge does not fire — trace_variable returns an
-/// empty path.  Fix the SummaryEdgeProvider / cross-function bridge for
-/// Kotlin before removing this should_panic.
 #[test]
-#[should_panic(expected = "cross-function trace must have steps")]
 #[cfg(feature = "kotlin")]
 fn fx19_kotlin_cross_function_arg_to_param() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -1318,12 +1294,7 @@ fun inner(p: Int): Int {
 
 /// FX20: When `outer()` calls `inner()` and assigns result to `y`, tracing
 /// backward from `y` must include a ReturnToCall edge.
-///
-/// GAP: Kotlin ReturnToCall bridge does not fire — the trace path has 1 step
-/// but none is ReturnToCall.  Fix the SummaryEdgeProvider / cross-function
-/// bridge for Kotlin before removing this should_panic.
 #[test]
-#[should_panic(expected = "expected at least one ReturnToCall edge")]
 #[cfg(feature = "kotlin")]
 fn fx20_kotlin_cross_function_return_to_call() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -1415,12 +1386,7 @@ def fx_py_arg_to_param_inner(p):
 /// FX22: Python ReturnToCall — When `fx_py_return_to_call_process()` calls
 /// `fx_py_return_to_call_get_value()` and assigns result to `y`, tracing
 /// backward from `y` must include a ReturnToCall edge.
-///
-/// GAP: ReturnToCall bridge does not fire for Python — the trace produces 3
-/// steps but none is ReturnToCall.  The SummaryEdgeProvider does not bridge the
-/// callee return to the caller assignment.  Fix this before removing should_panic.
 #[test]
-#[should_panic(expected = "expected at least one ReturnToCall edge")]
 #[cfg(feature = "python")]
 fn fx22_py_cross_function_return_to_call() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -1510,12 +1476,7 @@ int outer() {
 
 /// FX24: When `outer()` calls `inner()` and assigns result to `y`, tracing
 /// backward from `y` must include a ReturnToCall edge.
-///
-/// GAP: ReturnToCall bridge does not fire for C — the trace produces 3 steps
-/// but none is ReturnToCall.  Fix the SummaryEdgeProvider / cross-function
-/// bridge for C before removing this should_panic.
 #[test]
-#[should_panic(expected = "expected at least one ReturnToCall edge")]
 #[cfg(feature = "c")]
 fn fx24_c_cross_function_return_to_call() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -1606,12 +1567,7 @@ int outer() {
 
 /// FX26: When `outer()` calls `inner()` and assigns result to `y`, tracing
 /// backward from `y` must include a ReturnToCall edge.
-///
-/// GAP: ReturnToCall bridge does not fire for C++ — the trace produces 3 steps
-/// but none is ReturnToCall.  Fix the SummaryEdgeProvider / cross-function
-/// bridge for C++ before removing this should_panic.
 #[test]
-#[should_panic(expected = "expected at least one ReturnToCall edge")]
 #[cfg(feature = "cpp")]
 fn fx26_cpp_cross_function_return_to_call() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -1737,4 +1693,53 @@ function outer(): number {
     let path = resp.result.expect("cross-function return trace must produce path");
     assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
     assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+}
+
+// ────────────────────────────────────────────────────────────────
+// Cangjie: Cross‑function ArgToParam
+// ────────────────────────────────────────────────────────────────
+
+/// FX29: When `outer()` calls `inner(x)`, tracing backward from callee param
+/// `p` must include an ArgToParam edge.
+#[test]
+#[cfg(feature = "cangjie")]
+fn fx29_cangjie_cross_function_arg_to_param() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "bridge.cj",
+        r#"func outer() {
+    let x = 42
+    inner(x)
+}
+
+func inner(p: Int64): Int64 {
+    let result = p
+    return result
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("bridge.cj");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let param_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Parameter && n.name.as_deref() == Some("p"))
+        .collect();
+    assert!(!param_nodes.is_empty(), "expected parameter 'p' data node");
+    let param_node = param_nodes[0];
+
+    let resp = engine.trace_variable(
+        &file_id,
+        param_node.range.start_line + 1,
+        param_node.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "cangjie");
+
+    let path = resp.result.expect("cross-function trace must produce path");
+    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
 }
