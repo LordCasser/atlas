@@ -28,7 +28,7 @@ use db::Store;
 use types::caller_path::{CallerChain, ForwardChain};
 use types::capability::{CapabilityLevel, FeatureSupport, LanguageCapabilityProfile};
 use types::ids::{FileId, SymbolId};
-use types::trace::{BoundaryKind, Evidence, TraceDiagnostic, TracePath, TracePoint};
+use types::trace::{BoundaryKind, BoundaryMarker, Evidence, TraceDiagnostic, TracePath, TracePoint};
 
 use super::virtual_edges::SummaryEdgeProvider;
 
@@ -276,17 +276,7 @@ impl TraceEngine {
             .flatten()
             .map(|s| LanguageCapabilityProfile::for_language(s.language));
 
-        // Capability gate: need call_graph — prefer FeatureMatrix, fallback to string list
-        let has_call_graph = cap
-            .as_ref()
-            .and_then(|c| c.features.as_ref())
-            .map(|f| f.call_graph.is_supported())
-            .unwrap_or_else(|| {
-                cap.as_ref()
-                    .map(|c| c.supported_features.contains(&"call_graph".to_string()))
-                    .unwrap_or(false)
-            });
-        if !has_call_graph {
+        if !self.has_call_graph_cap(&cap) {
             return TraceQueryResponse::partial(
                 "trace_callers",
                 TraceDiagnostic::warning("Call graph not supported for this language")
@@ -299,30 +289,7 @@ impl TraceEngine {
             Ok(Some(mut chain)) => {
                 self.enrich_caller_chain_steps(&mut chain);
 
-                // Build diagnostics: check for boundary markers first, then truncation.
-                let mut diagnostics: Vec<TraceDiagnostic> = Vec::new();
-
-                // Collect boundary markers from steps (callback registrations, etc.)
-                for step in &chain.steps {
-                    if let Some(ref marker) = step.boundary {
-                        let code = match &marker.kind {
-                            BoundaryKind::CallbackRegistration { .. } => {
-                                "callback_registration_boundary"
-                            }
-                            BoundaryKind::FunctionPointer { .. } => "dynamic_dispatch_boundary",
-                            BoundaryKind::VirtualDispatch { .. } => "virtual_dispatch_boundary",
-                            BoundaryKind::DynamicMethodCall { .. } => "dynamic_method_boundary",
-                            _ => "boundary",
-                        };
-                        let detail_json =
-                            serde_json::to_string(marker).unwrap_or_else(|_| "{}".into());
-                        diagnostics.push(
-                            TraceDiagnostic::warning(&marker.message)
-                                .with_code(code)
-                                .with_detail(detail_json),
-                        );
-                    }
-                }
+                let mut diagnostics = build_boundary_diagnostics(step_boundaries(&chain.steps));
 
                 // If truncated by depth (not by boundary), add a classified diagnostic
                 if chain.truncated && diagnostics.is_empty() {
@@ -412,6 +379,16 @@ impl TraceEngine {
             .flatten()
             .map(|s| LanguageCapabilityProfile::for_language(s.language));
 
+        // Capability gate — same as trace_callers
+        if !self.has_call_graph_cap(&cap) {
+            return TraceQueryResponse::partial(
+                "trace_forward",
+                TraceDiagnostic::warning("Call graph not supported for this language")
+                    .with_code("unsupported_language"),
+                cap,
+            );
+        }
+
         match ForwardPathExplorer::explore(
             self.store.as_ref(),
             source_id,
@@ -420,8 +397,21 @@ impl TraceEngine {
         ) {
             Ok(Some(mut chain)) => {
                 self.enrich_forward_chain_steps(&mut chain);
-                let partial = chain.truncated;
-                let diagnostics: Vec<TraceDiagnostic> = Vec::new();
+
+                let mut diagnostics = build_boundary_diagnostics(step_boundaries(&chain.steps));
+
+                // If truncated by depth (not by boundary), add a classified diagnostic
+                if chain.truncated && diagnostics.is_empty() {
+                    diagnostics.push(
+                        TraceDiagnostic::warning(&format!(
+                            "Forward path truncated: reached depth {} of max_depth={}. More callees may exist beyond this limit.",
+                            chain.max_depth_reached, max_depth
+                        ))
+                        .with_code("max_depth_truncated"),
+                    );
+                }
+
+                let partial = chain.truncated || !diagnostics.is_empty();
                 TraceQueryResponse {
                     ok: true,
                     kind: "trace_forward".to_string(),
@@ -568,6 +558,71 @@ impl TraceEngine {
             .ok()
             .flatten()
             .map(|fi| LanguageCapabilityProfile::for_language(fi.language))
+    }
+
+    /// Check whether the given capability profile supports call-graph traversal.
+    fn has_call_graph_cap(&self, cap: &Option<LanguageCapabilityProfile>) -> bool {
+        cap.as_ref()
+            .and_then(|c| c.features.as_ref())
+            .map(|f| f.call_graph.is_supported())
+            .unwrap_or_else(|| {
+                cap.as_ref()
+                    .map(|c| c.supported_features.contains(&"call_graph".to_string()))
+                    .unwrap_or(false)
+            })
+    }
+}
+
+// ── Free helpers ────────────────────────────────────────────────────────────
+
+/// Build [`TraceDiagnostic`] entries from [`BoundaryMarker`]s found in trace steps.
+///
+/// Each boundary marker produces a warning diagnostic with a machine-readable
+/// code and a JSON-serialised detail payload so MCP consumers can render
+/// structured boundary information.
+fn build_boundary_diagnostics<'a>(
+    boundaries: impl IntoIterator<Item = &'a BoundaryMarker>,
+) -> Vec<TraceDiagnostic> {
+    boundaries
+        .into_iter()
+        .map(|marker| {
+            let code = match &marker.kind {
+                BoundaryKind::CallbackRegistration { .. } => "callback_registration_boundary",
+                BoundaryKind::FunctionPointer { .. } => "dynamic_dispatch_boundary",
+                BoundaryKind::VirtualDispatch { .. } => "virtual_dispatch_boundary",
+                BoundaryKind::DynamicMethodCall { .. } => "dynamic_method_boundary",
+                _ => "boundary",
+            };
+            let detail_json = serde_json::to_string(marker).unwrap_or_else(|_| "{}".into());
+            TraceDiagnostic::warning(&marker.message)
+                .with_code(code)
+                .with_detail(detail_json)
+        })
+        .collect()
+}
+
+/// Collect [`BoundaryMarker`] references from steps that have one.
+fn step_boundaries<T>(steps: &[T]) -> impl Iterator<Item = &BoundaryMarker>
+where
+    T: HasBoundary,
+{
+    steps.iter().filter_map(|s| s.boundary())
+}
+
+/// Trait abstracting over step types that carry an optional [`BoundaryMarker`].
+trait HasBoundary {
+    fn boundary(&self) -> Option<&BoundaryMarker>;
+}
+
+impl HasBoundary for types::caller_path::CallerChainStep {
+    fn boundary(&self) -> Option<&BoundaryMarker> {
+        self.boundary.as_ref()
+    }
+}
+
+impl HasBoundary for types::caller_path::ForwardChainStep {
+    fn boundary(&self) -> Option<&BoundaryMarker> {
+        self.boundary.as_ref()
     }
 }
 

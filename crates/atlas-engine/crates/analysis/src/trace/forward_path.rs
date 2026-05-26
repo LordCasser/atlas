@@ -33,6 +33,13 @@ impl ForwardPathExplorer {
         target_id: &SymbolId,
         max_depth: usize,
     ) -> anyhow::Result<Option<ForwardChain>> {
+        // source == target: the trivial path has zero steps; return
+        // Ok(None) so callers treat it the same as "no path found"
+        // rather than getting a confusing empty chain.
+        if source_id == target_id {
+            return Ok(None);
+        }
+
         let source = match store.find_symbol_by_id(source_id)? {
             Some(s) => s,
             None => return Ok(None),
@@ -90,7 +97,6 @@ impl ForwardPathExplorer {
 
                 let new_depth = depth + 1;
                 visited.insert(callee_key.clone(), new_depth);
-                let current_key = hex::encode(current_id.as_bytes());
                 predecessors.insert(
                     callee_key,
                     (
