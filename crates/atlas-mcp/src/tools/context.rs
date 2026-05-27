@@ -8,7 +8,7 @@ use super::{ToolRouter, get_str};
 use serde_json::json;
 
 impl ToolRouter {
-    pub(crate) fn handle_context(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_context(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "symbol");
         self.send_progress(0.2, &format!("Building context for '{}'...", qname));
 
@@ -41,7 +41,7 @@ impl ToolRouter {
     ///         then picks the highest-scored unambiguous match
     /// Tier 3: lazy structural extraction + re-query
     /// Tier 4: name match with multiple candidates → return suggestions
-    fn resolve_context_symbol(&self, qname: &str) -> Result<atlas_engine::SymbolId, String> {
+    fn resolve_context_symbol(&mut self, qname: &str) -> Result<atlas_engine::SymbolId, String> {
         // ── Tier 1: exact qualified-name match ──
         let symbols = self.store.find_symbols_by_qname(qname).unwrap_or_default();
         if let Some(id) = symbols.first().map(|s| s.id) {
@@ -84,9 +84,14 @@ impl ToolRouter {
         }
 
         // ── Tier 3: try lazy structural, then re-query ──
-        self.send_progress(0.5, "Extracting structural data...");
-        let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-        let _ = lazy.ensure_structural_for_symbol(qname);
+        // Skip when a manual full index already exists — all files already have
+        // complete structural facts.
+        let is_manual_full = self.has_manual_full_index();
+        if !is_manual_full {
+            self.send_progress(0.5, "Extracting structural data...");
+            let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
+            let _ = lazy.ensure_structural_for_symbol(qname);
+        }
 
         // Re-query after lazy extraction (tier 1 again on freshly-parsed data)
         let retry = self.store.find_symbols_by_qname(qname).unwrap_or_default();

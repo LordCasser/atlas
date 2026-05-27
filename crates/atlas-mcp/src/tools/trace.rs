@@ -10,7 +10,7 @@ use atlas_engine::{
 use super::{ToolRouter, get_str_opt, get_u64, resolve_file_id};
 
 impl ToolRouter {
-    pub(crate) fn handle_trace_point(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_trace_point(&mut self, args: &serde_json::Value) -> (String, bool) {
         let file_hex = get_str_opt(args, "file_id");
         let file_path = get_str_opt(args, "file_path");
         let line = get_u64(args, "line");
@@ -57,9 +57,12 @@ impl ToolRouter {
             }
         };
 
-        // Transparent lazy structural: ensure file has structural data before tracing
-        self.send_progress(0.3, "Ensuring structural index...");
-        {
+        // Transparent lazy structural: ensure file has structural data before tracing.
+        // Skip when a manual full index already exists — all files already have
+        // complete structural facts.
+        let is_manual_full = self.has_manual_full_index();
+        if !is_manual_full {
+            self.send_progress(0.3, "Ensuring structural index...");
             let lazy =
                 LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
             let _ = lazy.ensure_structural_for_file(&file_id);
@@ -77,7 +80,7 @@ impl ToolRouter {
         )
     }
 
-    pub(crate) fn handle_trace_variable(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_trace_variable(&mut self, args: &serde_json::Value) -> (String, bool) {
         let file_hex = get_str_opt(args, "file_id");
         let file_path = get_str_opt(args, "file_path");
         let line = get_u64(args, "line");
@@ -126,9 +129,12 @@ impl ToolRouter {
             }
         };
 
-        // Transparent lazy structural: ensure file has structural data before dataflow
-        self.send_progress(0.2, "Ensuring structural index...");
-        {
+        // Transparent lazy structural: ensure file has structural data before dataflow.
+        // Skip when a manual full index already exists — all files already have
+        // complete structural facts.
+        let is_manual_full = self.has_manual_full_index();
+        if !is_manual_full {
+            self.send_progress(0.2, "Ensuring structural index...");
             let lazy =
                 LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
             let _ = lazy.ensure_structural_for_file(&file_id);

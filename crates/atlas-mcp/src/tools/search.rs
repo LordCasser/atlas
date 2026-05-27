@@ -32,7 +32,6 @@ struct SearchHit {
     language: String,
     score: f64,
     file: String,
-    file_id: String,
     layer: String,
 }
 
@@ -43,7 +42,6 @@ struct ScopedSearchResponse {
     scope_file_count: usize,
     parse_level: &'static str,
     precise: bool,
-    count: usize,
     results: Vec<SearchHit>,
     warnings: Vec<String>,
     background_preparse: Option<String>,
@@ -56,7 +54,7 @@ impl ToolRouter {
         }
     }
 
-    pub(crate) fn handle_search(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_search(&mut self, args: &serde_json::Value) -> (String, bool) {
         let query = get_str(args, "query");
         let limit = (get_u64(args, "limit").unwrap_or(20) as usize).min(200);
         let kind = get_str_opt(args, "kind");
@@ -68,23 +66,35 @@ impl ToolRouter {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let Some(scope) = scope else {
-            return (
-                serde_json::to_string_pretty(&json!({
-                    "ok": false,
-                    "error": "search requires a non-empty scope",
-                    "query": query,
-                    "hint": "Pass a project-relative directory or file path such as \"src\", \"kernel/sched\", or \"drivers/net\". Without scope, search does not perform extraction or follow-up parsing."
-                }))
-                .unwrap_or_else(|e| e.to_string()),
-                true,
-            );
+        // When a manual full structural index exists (built via CLI `atlas index`),
+        // scope restrictions are lifted and lazy structural is disabled — all
+        // files already have complete structural facts.
+        let is_manual_full = self.has_manual_full_index();
+
+        let scope = match scope {
+            Some(s) => s.to_string(),
+            None if is_manual_full => {
+                // Manual full index: allow unscoped search on entire project.
+                ".".to_string()
+            }
+            None => {
+                return (
+                    serde_json::to_string_pretty(&json!({
+                        "ok": false,
+                        "error": "search requires a non-empty scope",
+                        "query": query,
+                        "hint": "Pass a project-relative directory or file path such as \"src\", \"kernel/sched\", or \"drivers/net\". Without scope, search does not perform extraction or follow-up parsing."
+                    }))
+                    .unwrap_or_else(|e| e.to_string()),
+                    true,
+                );
+            }
         };
 
         if background {
-            return self.handle_search_background(query, limit, kind, scope);
+            return self.handle_search_background(query, limit, kind, &scope, is_manual_full);
         }
-        self.handle_search_sync(query, limit, kind, scope)
+        self.handle_search_sync(query, limit, kind, &scope, is_manual_full)
     }
 
     fn handle_search_sync(
@@ -93,6 +103,7 @@ impl ToolRouter {
         limit: usize,
         kind: Option<&str>,
         scope: &str,
+        is_manual_full: bool,
     ) -> (String, bool) {
         self.send_progress(0.1, &format!("Searching for '{}' in {}...", query, scope));
         if !self.has_indexed_files() {
@@ -109,6 +120,7 @@ impl ToolRouter {
             limit,
             kind,
             scope,
+            is_manual_full,
             Some(|percent, message: String| self.send_progress(percent, &message)),
         ) {
             Ok(r) => r,
@@ -121,7 +133,7 @@ impl ToolRouter {
 
         self.send_progress(
             1.0,
-            &format!("Search complete ({} results)", response.count),
+            &format!("Search complete ({} results)", response.results.len()),
         );
         (
             serde_json::to_string_pretty(&response).unwrap_or_else(|e| e.to_string()),
@@ -135,6 +147,7 @@ impl ToolRouter {
         limit: usize,
         kind: Option<&str>,
         scope: &str,
+        is_manual_full: bool,
     ) -> (String, bool) {
         let task_id = self.task_manager.create_task("search", "search");
         let tid = task_id.clone();
@@ -154,6 +167,7 @@ impl ToolRouter {
                 limit,
                 k.as_deref(),
                 &sc,
+                is_manual_full,
                 Some(|percent, message: String| {
                     task_manager.update_progress(&tid, percent * 100.0, &message)
                 }),
@@ -187,12 +201,19 @@ impl ToolRouter {
         )
     }
 
-    fn try_lazy_structural(&self, query: &str) {
+    /// Trigger lazy structural extraction for the given query.  When a manual
+    /// full index already exists, this is a no-op — all files already have
+    /// complete structural data.
+    fn try_lazy_structural(&mut self, query: &str) {
+        // Manual full index: structural data already complete — skip lazy extraction.
+        if self.has_manual_full_index() {
+            return;
+        }
         let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
         let _ = lazy.ensure_structural_for_symbol(query);
     }
 
-    pub(crate) fn handle_symbol(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_symbol(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "qualified_name");
         let symbols = match self.store.find_symbols_by_qname(qname) {
             Ok(s) => s,
@@ -222,7 +243,7 @@ impl ToolRouter {
             "name": sym.name, "qualified_name": sym.qualified_name,
             "kind": sym.kind.as_str(), "language": sym.language.as_str(),
             "visibility": sym.visibility.as_ref().map(|v| v.as_str()), "signature": sym.signature,
-            "file": self.resolve_file_path(&sym.file_id), "file_id": sym.file_id.short_hex(),
+            "file": self.resolve_file_path(&sym.file_id),
             "range": { "line": sym.range.start_line, "column": sym.range.start_column },
             "callers": graph.callers(&sym.id).callers.len(), "callees": graph.callees(&sym.id).callees.len(),
         })).unwrap_or_else(|e| e.to_string()), false)
@@ -236,6 +257,7 @@ fn execute_scoped_search<F>(
     limit: usize,
     kind: Option<&str>,
     scope: &str,
+    is_manual_full: bool,
     progress: Option<F>,
 ) -> anyhow::Result<ScopedSearchResponse>
 where
@@ -258,7 +280,6 @@ where
             scope_file_count,
             parse_level: "none",
             precise: false,
-            count: 0,
             results: Vec::new(),
             warnings,
             background_preparse,
@@ -272,11 +293,18 @@ where
     let total_indexed = store.count_files().unwrap_or(0);
     let is_small_project = total_indexed > 0 && total_indexed <= SMALL_PROJECT_FULL_SCOPE_LIMIT;
 
-    let precise = scope_file_count <= SYNC_STRUCTURAL_SCOPE_FILE_LIMIT
-        || (is_small_project && scope_file_count == total_indexed);
+    // When a manual full index exists, all files already have structural data.
+    // Skip the file-count-based heuristic entirely — every scope is "precise"
+    // because lazy structural has nothing to do.
+    let precise = if is_manual_full {
+        true
+    } else {
+        scope_file_count <= SYNC_STRUCTURAL_SCOPE_FILE_LIMIT
+            || (is_small_project && scope_file_count == total_indexed)
+    };
     let parse_level = if precise { "structural" } else { "manifest" };
 
-    if precise {
+    if precise && !is_manual_full {
         if let Some(ref progress) = progress {
             progress(
                 0.35,
@@ -300,7 +328,7 @@ where
                 "Structural parsing failed for scoped search; returning indexed symbols only: {err:#}"
             )),
         }
-    } else {
+    } else if !is_manual_full {
         // Single actionable warning — no contradictory "returning manifest results"
         // when results may actually be empty.
         let level_desc = if scope_file_count <= LIKE_FALLBACK_SCOPE_FILE_LIMIT {
@@ -343,22 +371,25 @@ where
         ));
     }
 
-    let result_file_ids: Vec<_> = symbols
-        .iter()
-        .map(|sym| sym.file_id)
-        .take(PREHEAT_FILE_LIMIT)
-        .collect();
-    if !precise && scope_file_count <= PREHEAT_SCOPE_FILE_LIMIT && !result_file_ids.is_empty() {
-        spawn_preparse(store.clone(), project_root, result_file_ids);
-        background_preparse = Some(format!(
-            "Scheduled structural preparse for up to {} result-adjacent files.",
-            PREHEAT_FILE_LIMIT
-        ));
-    } else if !precise && scope_file_count > PREHEAT_SCOPE_FILE_LIMIT {
-        warnings.push(format!(
-            "Background structural preparse skipped because scope has more than {} files; narrow scope to enable preparse.",
-            PREHEAT_SCOPE_FILE_LIMIT
-        ));
+    // Background preparse: skipped when manual full index exists (nothing to preparse).
+    if !is_manual_full {
+        let result_file_ids: Vec<_> = symbols
+            .iter()
+            .map(|sym| sym.file_id)
+            .take(PREHEAT_FILE_LIMIT)
+            .collect();
+        if !precise && scope_file_count <= PREHEAT_SCOPE_FILE_LIMIT && !result_file_ids.is_empty() {
+            spawn_preparse(store.clone(), project_root, result_file_ids);
+            background_preparse = Some(format!(
+                "Scheduled structural preparse for up to {} result-adjacent files.",
+                PREHEAT_FILE_LIMIT
+            ));
+        } else if !precise && scope_file_count > PREHEAT_SCOPE_FILE_LIMIT {
+            warnings.push(format!(
+                "Background structural preparse skipped because scope has more than {} files; narrow scope to enable preparse.",
+                PREHEAT_SCOPE_FILE_LIMIT
+            ));
+        }
     }
 
     let results = symbols
@@ -372,7 +403,6 @@ where
         scope_file_count,
         parse_level,
         precise,
-        count: results.len(),
         results,
         warnings,
         background_preparse,
@@ -426,14 +456,13 @@ fn symbol_hit(store: &Store, query: &str, sym: SymbolDef) -> anyhow::Result<Sear
         .map(|f| f.path)
         .unwrap_or_default();
     let score = score_symbol(query, &sym);
-    Ok(SearchHit {
+        Ok(SearchHit {
         name: sym.name,
         qualified_name: sym.qualified_name,
         kind: sym.kind.as_str().to_string(),
         language: sym.language.as_str().to_string(),
         score,
         file,
-        file_id: sym.file_id.short_hex(),
         layer: sym.layer,
     })
 }

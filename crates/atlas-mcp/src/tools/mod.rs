@@ -75,6 +75,10 @@ pub struct ToolRouter {
     cached_signature: String,
     /// When the cached signature was last checked (avoids re-query within cooldown).
     last_signature_check: std::time::Instant,
+    /// Cached result of `has_manual_full_index()` — detects a manually built
+    /// (CLI) structural/full index vs MCP's automatic manifest-only index.
+    /// `None` means not yet checked; checked lazily on first use.
+    cached_manual_full_index: Option<bool>,
     /// Optional progress sender for long-running operations (set per-call in lib.rs).
     pub(crate) progress_sender: Option<ProgressSender>,
     /// Background task manager for `background: true` mode.
@@ -111,6 +115,7 @@ impl ToolRouter {
             progress_sender: None,
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
             pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
+            cached_manual_full_index: None,
         }
     }
 
@@ -133,6 +138,7 @@ impl ToolRouter {
             progress_sender: None,
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
             pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
+            cached_manual_full_index: None,
         }
     }
 
@@ -216,6 +222,48 @@ impl ToolRouter {
         }
     }
 
+    /// Detect whether the current database was built from a manual (CLI) full
+    /// structural index rather than MCP's automatic manifest-only index.
+    ///
+    /// MCP `index` always uses [`ExtractionMode::Manifest`]; the CLI
+    /// `atlas index` (without `--analysis manifest`) builds a full structural
+    /// index.  We detect this by checking whether a majority of indexed files
+    /// have a `"structural"` layer with status `"complete"`.
+    ///
+    /// The result is cached for the lifetime of the session; callers that
+    /// trigger a re-index (MCP `index` tool) should invalidate this cache
+    /// after completion.
+    pub(crate) fn has_manual_full_index(&mut self) -> bool {
+        if let Some(cached) = self.cached_manual_full_index {
+            return cached;
+        }
+        let total = self.store.count_files().unwrap_or(0);
+        if total == 0 {
+            self.cached_manual_full_index = Some(false);
+            return false;
+        }
+        let layer_counts = self.store.count_file_index_layers().unwrap_or_default();
+        let structural_complete: usize = layer_counts
+            .iter()
+            .filter(|(l, s, _)| l == "structural" && s == "complete")
+            .map(|(_, _, c)| *c as usize)
+            .sum();
+        // More than half of indexed files have structural layer — this is a
+        // manual full index, not MCP's manifest-only index.
+        let result = structural_complete > total / 2;
+        self.cached_manual_full_index = Some(result);
+        result
+    }
+
+    /// Invalidate the cached manual-full-index flag.
+    ///
+    /// Called after MCP `index` completes (which always produces a manifest
+    /// index), so the next search/trace query re-checks the actual layer
+    /// distribution.
+    pub(crate) fn invalidate_manual_full_index_cache(&mut self) {
+        self.cached_manual_full_index = None;
+    }
+
     /// Resolve a [`FileId`] to its human-readable file path.
     /// Falls back to the hex representation if the file is not found.
     pub(crate) fn resolve_file_path(&self, file_id: &FileId) -> String {
@@ -283,6 +331,9 @@ impl ToolRouter {
                 c.refresh_graph(graph);
             }
             self.last_graph_signature = current.clone();
+            // External index/sync may have changed layer distribution — re-check
+            // whether a manual full index now exists.
+            self.cached_manual_full_index = None;
         }
         self.cached_signature = current;
         Ok(())
@@ -478,17 +529,17 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "search".into(),
-            description: "Search symbols by name within a required project-relative scope. Small scopes are structurally parsed for precise function search; large scopes stay manifest-level and return a warning to narrow scope. Without scope, the tool returns an error and does not extract or run follow-up parsing. Supports kind filter and background=true.".into(),
+            description: "Search symbols by name within a project-relative scope. When a manual full structural index exists (built via CLI `atlas index`), scope is optional and defaults to the whole project. Small scopes are structurally parsed for precise function search; large scopes stay manifest-level and return a warning to narrow scope. Supports kind filter and background=true.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "query": { "type": "string", "description": "Search query text" },
-                    "scope": { "type": "string", "description": "Required project-relative directory or file scope (e.g. 'drivers/net', 'src', 'kernel/sched'). Use 'files' to discover indexed paths." },
+                    "scope": { "type": "string", "description": "Project-relative directory or file scope (e.g. 'drivers/net', 'src', 'kernel/sched'). Required for manifest-only indexes; optional when a full structural index exists. Use 'files' to discover indexed paths." },
                     "kind": { "type": "string", "description": "Optional SymbolKind filter (function, class, ...)" },
                     "limit": { "type": "integer", "description": "Max results (default 20)" },
                     "background": { "type": "boolean", "description": "Run search as background task (returns task_id for task_status polling)" },
                 })),
-                required: Some(vec!["query".into(), "scope".into()]),
+                required: Some(vec!["query".into()]),
             },
         },
         Tool {
