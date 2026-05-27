@@ -130,31 +130,29 @@ impl TuiProgress {
         }
     }
 
-    /// Finish on normal completion — clears the progress display and
-    /// prepares space for the result summary.
-    ///
-    /// Uses `\x1b[J` (clear from cursor to end of screen) instead of
-    /// row-by-row clearing, because the progress lines can wrap (narrow
-    /// terminals) and the summary output spans more rows than the
-    /// viewport height.  Clearing everything below the progress's
-    /// starting row guarantees no stale terminal content bleeds through.
-    pub fn finish(mut self) {
-        // Render one final frame so the display shows completion state
-        // (100% gauge, all phases completed) before shutting down.
-        let _ = self.draw();
+    /// Finish on normal completion — renders a compact summary frame
+    /// via ratatui (replacing the progress bars), then drops the
+    /// terminal and positions the cursor below the summary.  No manual
+    /// escape-sequence clearing is needed — ratatui handles all screen
+    /// management within the viewport.
+    pub fn finish(mut self, files: u64, symbols: u64, edges: u64) {
+        // Render the completion summary — this overwrites the progress
+        // bars with the final statistics inside the same 4-row viewport.
+        let _ = self
+            .terminal
+            .draw(|frame| render::render_summary(frame, files, symbols, edges));
 
         // Drop the terminal.  The Drop impl calls ratatui::try_restore(),
         // which disables raw mode and restores the cursor to its
-        // pre-init position (the start of the first progress row).
+        // pre-init position (the start of the first summary row).
         drop(self);
 
-        // `\x1b[J` = CSI J (Erase Display, param 0):
-        // clear from cursor position to end of screen.  The cursor is
-        // already at the progress-area start after try_restore, so this
-        // wipes the TUI rows *and* any old terminal content below them
-        // — enough headroom for the summary output.
-        let _ =
-            std::io::Write::write_all(&mut std::io::stdout(), b"\x1b[J");
+        // Move the cursor down by INLINE_ROWS to land just below the
+        // rendered summary.  This is the same pattern as `leave()`
+        // above; it uses a standard cursor-move escape (not content
+        // clearing), and the summary stays intact on screen.
+        let down = format!("\x1b[{}B", INLINE_ROWS);
+        let _ = std::io::Write::write_all(&mut std::io::stdout(), down.as_bytes());
         let _ = std::io::Write::flush(&mut std::io::stdout());
     }
 
@@ -184,22 +182,7 @@ impl Drop for TuiProgress {
     }
 }
 
-/// Clear the inline area and exit raw mode.  Used from Ctrl+C paths
-/// where we don't have ownership of TuiProgress.
-pub fn clear_and_restore() {
-    let clear = format!("\x1b[{}A\x1b[J", INLINE_ROWS);
-    let _ = std::io::Write::write_all(&mut std::io::stdout(), clear.as_bytes());
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-    let _ = ratatui::try_restore();
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────
-
-/// Print a post-mortem summary after the TUI is closed.
-pub fn print_summary(_state: &ProgressState) {
-    // Simple summary for now — full timing is printed by index.rs afterward.
-    println!();
-}
 
 /// Print a brief interrupt message after Ctrl+C.
 pub fn print_interrupted(state: &ProgressState) {

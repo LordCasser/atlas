@@ -166,6 +166,58 @@ fn render_pending_row(
     frame.render_widget(Paragraph::new(line), area);
 }
 
+// ── Summary frame (normal completion) ──────────────────────────────────
+///
+/// Renders a compact completion summary within the same 4-row viewport,
+/// replacing the progress bars.  All screen management is handled by
+/// ratatui — no manual escape-sequence clearing.
+///
+/// Layout:
+/// ```text
+/// ◆ Index complete
+///   Files: 732
+///   Symbols: 10095
+///   Edges: 42338
+/// ```
+pub fn render_summary(frame: &mut Frame, files: u64, symbols: u64, edges: u64) {
+    let area = frame.area();
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(area);
+
+    // Row 0 — header
+    let header = Line::from(Span::styled(
+        " ◆ Index complete",
+        Style::new().fg(DONE_COLOR),
+    ));
+    frame.render_widget(Paragraph::new(header), rows[0]);
+
+    // Row 1 — files
+    let files_line = Line::from(vec![
+        Span::styled("   Files:   ", Style::new().fg(DIM)),
+        Span::styled(files.to_string(), Style::new()),
+    ]);
+    frame.render_widget(Paragraph::new(files_line), rows[1]);
+
+    // Row 2 — symbols
+    let symbols_line = Line::from(vec![
+        Span::styled("   Symbols: ", Style::new().fg(DIM)),
+        Span::styled(symbols.to_string(), Style::new()),
+    ]);
+    frame.render_widget(Paragraph::new(symbols_line), rows[2]);
+
+    // Row 3 — edges
+    let edges_line = Line::from(vec![
+        Span::styled("   Edges:   ", Style::new().fg(DIM)),
+        Span::styled(edges.to_string(), Style::new()),
+    ]);
+    frame.render_widget(Paragraph::new(edges_line), rows[3]);
+}
+
 // ── Footer ─────────────────────────────────────────────────────────────
 
 fn render_footer(frame: &mut Frame, snap: &ProgressSnapshot, area: Rect) {

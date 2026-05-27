@@ -9,4 +9,4 @@ pub mod progress;
 pub mod render;
 
 pub use fallback::TextFallback;
-pub use progress::{TuiProgress, clear_and_restore};
+pub use progress::TuiProgress;

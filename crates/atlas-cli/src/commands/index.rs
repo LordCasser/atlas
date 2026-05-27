@@ -374,6 +374,11 @@ pub fn run(
         let _build_stats = builder.build_all(&resolved);
         ps.lock().unwrap().set_current(resolved.len() as u64);
 
+        // ── Materialize user annotations as edges ──
+        if let Err(e) = atlas_engine::materialize_annotations(&store) {
+            eprintln!("Warning: failed to materialize annotations: {}", e);
+        }
+
         // ── Summary build (Schema v3: persist function summaries) ──
         ps.lock().unwrap().start_phase(
             ProgressPhase::Finalizing,
@@ -427,38 +432,42 @@ pub fn run(
         stop_flag.load(Ordering::SeqCst) // was_interrupted = stop_flag is set
     };
 
-    // ── Restore terminal ──
-    if has_tty {
-        if was_interrupted {
-            // Ctrl+C: leave progress display visible on screen (like wget).
-            tui.take().unwrap().leave();
-        } else {
-            // Normal completion: clear the progress rows in-place, then
-            // print a brief result summary in the reclaimed space.
-            tui.take().unwrap().finish();
-        }
-    }
-
     // ── Handle interrupt BEFORE joining worker ──
     if was_interrupted {
+        if has_tty {
+            // Ctrl+C: leave progress display visible on screen (like wget).
+            tui.take().unwrap().leave();
+        }
         crate::tui::progress::print_interrupted(&progress_state.lock().unwrap());
         return Ok(());
     }
 
-    // ── Normal completion: join worker and print summary ──
+    // ── Normal completion: join worker, render summary frame, restore ──
     let worker_result = worker.join().unwrap_or_else(|e| {
         Err(anyhow::anyhow!("Worker thread panicked: {:?}", e))
     });
-
     worker_result?;
 
     let db_stats = store_for_main.get_stats()?;
-    println!("Database status:");
-    println!("  Files:    {}", db_stats.total_files);
-    println!("  Symbols:  {}", db_stats.total_symbols);
-    println!("  Edges:    {}", db_stats.total_edges);
 
-    println!("\nIndex complete.");
+    if has_tty {
+        // Render the summary via ratatui (replaces the progress bars
+        // with DB stats in the same 4-row viewport), then drop terminal
+        // and position cursor below the rendered content.  No manual
+        // escape-sequence clearing — ratatui handles all screen I/O.
+        tui.take().unwrap().finish(
+            db_stats.total_files as u64,
+            db_stats.total_symbols as u64,
+            db_stats.total_edges as u64,
+        );
+    } else {
+        // Text fallback (non-TTY): print summary to stdout.
+        println!("Database status:");
+        println!("  Files:    {}", db_stats.total_files);
+        println!("  Symbols:  {}", db_stats.total_symbols);
+        println!("  Edges:    {}", db_stats.total_edges);
+        println!("\nIndex complete.");
+    }
 
     Ok(())
 }
