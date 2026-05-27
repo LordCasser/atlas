@@ -235,6 +235,7 @@ MCP 使用 JSON-RPC over stdio。当前公开工具名使用无 `atlas_` 前缀�
 - trace: `trace_point`, `trace_variable`, `trace_caller_path`, `trace_forward`
 - file dependencies: `dependencies`, `dependents`
 - background tasks: `task_status`, `wait_for_task`
+- FP dispatch annotations: `annotate_fp_dispatch`, `list_fp_annotations`, `delete_fp_annotation`
 
 耗时工具必须能避免 MCP 客户端普通 tool-call 超时：`search`、`index`、`open_project` 支持 `background=true` 时应立即返回 `task_id`；客户端随后用 `task_status` 轮询或 `wait_for_task` 阻塞等待。`open_project(background=true)` 完成后由 `task_status`/`wait_for_task` 激活准备好的项目。
 

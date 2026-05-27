@@ -49,27 +49,30 @@ All tools use short names (no `atlas_` prefix):
 | Project overview | `status` | none |
 | Indexed files | `files` | none |
 | Capability metadata | `language_capabilities` | none |
-| Symbol search | `search` | `query`, `scope`, optional `kind`, `limit` |
-| Symbol details | `symbol` | `qualified_name` |
+| Symbol search | `search` | `query` (required), optional `scope`, `kind`, `limit`, `background` |
+| Symbol details | `symbol` | `qualified_name` (returns caller/callee summaries with file+line) |
 | Neighbor graph | `neighbors` | `symbol`, optional `direction`, `depth`, `limit` |
 | Callers | `callers` | `symbol`, optional `limit` |
 | Callees | `callees` | `symbol`, optional `limit` |
 | Call graph | `callgraph` | `symbol`, optional `depth`, `limit` |
-| Shortest path | `path` | `from`, `to`, optional `max_depth` |
-| Symbol exploration | `explore` | `symbol` |
-| Impact analysis | `impact` | `symbol`, optional `depth` |
-| Agent context | `context` | `symbol` |
+| Shortest path | `path` | `from`, `to`, optional `max_depth`, `direction`, `prefer_production`, `edge_kinds`, `includeCode` |
+| Symbol exploration | `explore` | `symbol`, optional `includeCode` |
+| Impact analysis | `impact` | `symbol`, optional `depth` (bidirectional: upstream + downstream) |
+| Agent context | `context` | `symbol`, optional `includeCode` |
 | Point inspection | `trace_point` | `file_path` or `file_id`, `line`, `column` |
 | Variable origin | `trace_variable` | `file_path` or `file_id`, `line`, `column`, optional `max_depth` |
-| Caller chain | `trace_caller_path` | `symbol` or `symbol_name`, optional `max_depth` |
-| Forward call trace | `trace_forward` | `from`, `to`, optional `max_depth` |
+| Caller chain | `trace_caller_path` | `symbol` (hex ID) or `symbol_name`, optional `max_depth` |
+| Forward call trace | `trace_forward` | `from`, `to`, optional `from_name`, `to_name`, `max_depth` |
 | Symbol usages | `usages` | `symbol`, optional `limit` |
 | File dependencies | `dependencies` | `file_id`, optional `limit` |
 | File dependents | `dependents` | `file_id`, optional `limit` |
 | Index project | `index` | optional `include`, `exclude`, `background` |
 | Open project | `open_project` | `project_path`, optional `storage`, `scan_files`, `background` |
 | Task status | `task_status` | `task_id` |
-| Wait for task | `wait_for_task` | `task_id`, optional `timeout_secs` |
+| Wait for task | `wait_for_task` | `task_id`, optional `timeout_secs`, `poll_interval_secs` |
+| FP dispatch | `annotate_fp_dispatch` | `field_qname`, `target_qname`, optional `confidence` |
+| FP annotations | `list_fp_annotations` | none |
+| Delete annotation | `delete_fp_annotation` | `annotation_id` or `field_qname` |
 
 ## Query tactics
 

@@ -242,10 +242,30 @@ The 27 MCP tools use short names (no `atlas_` prefix):
     "properties": {
       "file_id": { "type": "string", "description": "File ID hex from files" },
       "file_path": { "type": "string", "description": "Relative file path" },
-      "line": { "type": "integer", "minimum": 1 },
-      "column": { "type": "integer", "minimum": 1 }
+      "line": { "type": "integer", "description": "1-based line number" },
+      "column": { "type": "integer", "description": "1-based column number" }
     },
     "required": ["line", "column"]
+  }
+}
+```
+
+### `trace_forward` schema:
+
+```json
+{
+  "name": "trace_forward",
+  "description": "Trace the forward call chain from source to target...",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "from": { "type": "string", "description": "Source symbol ID in hex" },
+      "to": { "type": "string", "description": "Target symbol ID in hex" },
+      "from_name": { "type": "string", "description": "Source symbol name (alternative to 'from' hex ID, e.g. 'main')" },
+      "to_name": { "type": "string", "description": "Target symbol name (alternative to 'to' hex ID, e.g. 'processRequest')" },
+      "max_depth": { "type": "integer", "description": "Maximum forward call depth (default 10)" }
+    },
+    "required": ["from", "to"]
   }
 }
 ```

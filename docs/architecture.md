@@ -14,7 +14,7 @@
 
 ### 2.1 Crate 结构
 
-项目是 13 个 Cargo package 的 workspace：
+项目是 14 个 Cargo package 的 workspace：
 
 ```text
 crates/
@@ -30,7 +30,7 @@ crates/
     crates/context/    Agent context builder (Markdown)
     crates/filesync/   file discovery、change detection、file lock、watcher
     crates/lazy/       Lazy dataflow engine — on-demand analysis with budget caps
-  atlas-mcp/           MCP server (rmcp stdio JSON-RPC)、24 tools
+  atlas-mcp/           MCP server (rmcp stdio JSON-RPC)、27 tools
   atlas-cli/           CLI binary + commands + integration tests
 ```
 
@@ -318,6 +318,7 @@ LanguageCapabilityProfile
 | Trace | `trace_point`, `trace_variable`, `trace_caller_path`, `trace_forward` |
 | 文件依赖 | `dependencies`, `dependents` |
 | 后台任务 | `task_status`, `wait_for_task` |
+| FP 分派注解 | `annotate_fp_dispatch`, `list_fp_annotations`, `delete_fp_annotation` |
 
 - Graph 惰性初始化：首次 graph-backed tool 调用时构建 snapshot。
 - 后续请求通过 `maybe_refresh_graph()`（5 秒缓存签名检查）检测外部索引变化。

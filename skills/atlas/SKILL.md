@@ -74,27 +74,30 @@ atlas trace variable --project <repo> --file src/app.ts --line 12 --column 18 --
 | `status` | Project statistics | none |
 | `files` | Indexed file list | none |
 | `language_capabilities` | Per-language capability profiles | none |
-| `search` | Symbol search by name | `query`, `scope` (required for manifest-only indexes), optional `kind`, `limit` |
-| `symbol` | Symbol details | `qualified_name` |
+| `search` | Symbol search by name | `query` (required), optional `scope`, `kind`, `limit`, `background` |
+| `symbol` | Symbol details with caller/callee summaries | `qualified_name` |
 | `neighbors` | Symbol graph neighborhood | `symbol`, optional `direction`, `depth`, `limit` |
 | `callers` | Incoming call edges | `symbol`, optional `limit` |
 | `callees` | Outgoing call edges | `symbol`, optional `limit` |
 | `callgraph` | Call graph sub-graph | `symbol`, optional `depth`, `limit` |
-| `path` | Shortest path between symbols | `from`, `to`, optional `max_depth` |
-| `explore` | Symbol structure exploration | `symbol` |
-| `impact` | Impact analysis (what depends on) | `symbol`, optional `depth` |
-| `context` | Agent context snippet | `symbol` |
+| `path` | Shortest path between symbols | `from`, `to`, optional `max_depth`, `direction`, `prefer_production`, `edge_kinds`, `includeCode` |
+| `explore` | Symbol structure exploration | `symbol`, optional `includeCode` |
+| `impact` | Bidirectional impact analysis (upstream + downstream) | `symbol`, optional `depth` |
+| `context` | Agent context snippet | `symbol`, optional `includeCode` |
 | `trace_point` | Source-position inspection | `file_path` or `file_id`, `line`, `column` |
 | `trace_variable` | Variable provenance trace | `file_path` or `file_id`, `line`, `column`, optional `max_depth` |
-| `trace_caller_path` | Caller chain exploration | `symbol` or `symbol_name`, optional `max_depth` |
-| `trace_forward` | Forward call chain (how does A reach B?) | `from`, `to`, optional `max_depth` |
+| `trace_caller_path` | Caller chain exploration | `symbol` (hex ID) or `symbol_name`, optional `max_depth` |
+| `trace_forward` | Forward call chain (how does A reach B?) | `from`, `to`, optional `from_name`, `to_name`, `max_depth` |
 | `usages` | Symbol usage sites | `symbol`, optional `limit` |
 | `dependencies` | File dependencies (outgoing) | `file_id`, optional `limit` |
 | `dependents` | File reverse dependencies (incoming) | `file_id`, optional `limit` |
 | `index` | Index active project (manifest mode) | optional `include`, `exclude`, `background` |
 | `open_project` | Open/switch active project | `project_path`, optional `storage`, `scan_files`, `background` |
 | `task_status` | Poll background task | `task_id` |
-| `wait_for_task` | Block until task completes | `task_id`, optional `timeout_secs` |
+| `wait_for_task` | Block until task completes | `task_id`, optional `timeout_secs`, `poll_interval_secs` |
+| `annotate_fp_dispatch` | Declare C/C++ function-pointer dispatch | `field_qname`, `target_qname`, optional `confidence` |
+| `list_fp_annotations` | List FP dispatch annotations | none |
+| `delete_fp_annotation` | Delete FP dispatch annotation | `annotation_id` or `field_qname` |
 
 ## Query tactics
 

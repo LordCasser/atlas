@@ -11,7 +11,7 @@
   <img src="https://img.shields.io/badge/MCP-ready-green" alt="MCP ready">
 </p>
 
-Atlas parses source code with tree-sitter, stores deterministic code facts in a local SQLite database, and exposes those facts through a CLI and an MCP server. It is built for agents that need reliable codebase context: symbol search, callers/callees, dependency edges, impact analysis, point inspection, and bounded variable/caller tracing.
+Atlas parses source code with tree-sitter, stores deterministic code facts in a local SQLite database, and exposes those facts through a CLI and an MCP server. It is built for agents that need reliable codebase context: symbol search, callers/callees, dependency edges, impact analysis, point inspection, bounded variable and caller tracing, forward call-chain queries, and C/C++ function-pointer dispatch annotations.
 
 ```text
 source code ──parse/extract──▶ .atlas/atlas.db ──query──▶ CLI / MCP tools
@@ -230,6 +230,7 @@ enabled = true
 | Trace | `trace_point`, `trace_variable`, `trace_caller_path`, `trace_forward` |
 | File dependencies | `dependencies`, `dependents` |
 | Background tasks | `task_status`, `wait_for_task` |
+| FP dispatch (C/C++) | `annotate_fp_dispatch`, `list_fp_annotations`, `delete_fp_annotation` |
 
 > `open_project` supports switching the active project at runtime. It defaults to `storage: "memory"` and `scan_files: false` for zero-footprint, fast project switching. Use `background: true` for large trees; then call `task_status` or `wait_for_task` with the returned `task_id`.
 
@@ -237,7 +238,7 @@ Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/tra
 
 ## Architecture
 
-Atlas is a Rust workspace with 13 Cargo packages. The public entry points are `atlas-cli`, `atlas-mcp`, and the `atlas-engine` facade. Engine internals are split by responsibility so extraction, persistence, graph construction, search, context, and trace can evolve independently.
+Atlas is a Rust workspace with 14 Cargo packages. The public entry points are `atlas-cli`, `atlas-mcp`, and the `atlas-engine` facade. Engine internals are split by responsibility so extraction, persistence, graph construction, search, context, and trace can evolve independently.
 
 ```text
 atlas/
@@ -455,7 +456,7 @@ The `DataFlowBuilder` does NOT use tree-sitter queries — it walks the CST dire
 
 `DataNode` records the source location (byte range), kind (Local, Param, Field, CallArg, Return, Expr), and function scope. `DataFlowEdge` connects a source node to a target node with a directed kind and confidence score.
 
-### 6. CFG → control flow (TypeScript/JavaScript only)
+### 6. CFG → control flow (8 languages)
 
 ```text
 CST root (per function)
@@ -463,7 +464,7 @@ CST root (per function)
   → CfgNode + CfgEdge (Entry → blocks → Exit)
 ```
 
-CFG construction walks the function AST, identifying control-flow splits (`if_statement`, `switch_case`, `try_statement`, `for_statement`, `while_statement`) and building a graph of basic blocks. Each `CfgNode` records the byte range it covers, and `CfgEdge` connects predecessor → successor.
+CFG construction walks the function AST, identifying control-flow splits (`if_statement`, `switch_case`, `try_statement`, `for_statement`, `while_statement`) and building a graph of basic blocks. Each `CfgNode` records the byte range it covers, and `CfgEdge` connects predecessor → successor. CFG is available for TypeScript, JavaScript, Python, Java, C, C++, Go, and Rust.
 
 ### 7. Trace → cross-procedural variable provenance
 
