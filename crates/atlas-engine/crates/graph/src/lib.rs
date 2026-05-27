@@ -16,8 +16,9 @@ use types::ids::SymbolId;
 pub use annotation_graph::materialize_annotations;
 pub use graph_builder::{GraphBuilder, GraphBuilderStats};
 pub use snapshot::{
-    CallGraphView, GraphPath, GraphSnapshot, NodeIx, NodeSummary, PathBreakpoint,
-    PathBreakpointKind, PathEdge, PathEdgeDirection, Subgraph, TraversalConfig, TraversalDirection,
+    CallGraphView, ForwardFrontier, FrontierNode, GraphPath, GraphSnapshot, NodeIx, NodeSummary,
+    PathBreakpoint, PathBreakpointKind, PathEdge, PathEdgeDirection, Subgraph, TraversalConfig,
+    TraversalDirection,
 };
 
 use db::Store;
@@ -312,6 +313,23 @@ impl GraphEngine {
         let to_ix = self.snapshot.id_to_idx.get(to)?;
         self.snapshot
             .shortest_path(*from_ix, *to_ix, max_depth, edge_kind_filter, direction, prefer_production)
+    }
+
+    /// Walk forward from `start_symbols` to find the deepest reachable
+    /// nodes via outgoing call edges.  When the forward walk exhausts, the
+    /// returned [`ForwardFrontier`] describes **where** static-analysis
+    /// could not proceed further — typically dynamic dispatch boundaries
+    /// (function pointers, virtual calls).
+    ///
+    /// Call this after `shortest_path` returns `None` with `Outgoing`
+    /// direction to produce a diagnostic for the user.
+    pub fn forward_frontier(
+        &self,
+        start_symbols: &[SymbolId],
+        max_depth: usize,
+        edge_kind_filter: Option<&[EdgeKind]>,
+    ) -> ForwardFrontier {
+        self.snapshot.forward_frontier(start_symbols, max_depth, edge_kind_filter)
     }
 
     // ── usages ───────────────────────────────────────────────────────────

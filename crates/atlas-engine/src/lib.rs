@@ -71,9 +71,9 @@ pub use extraction::{
 pub use filesync::{FileLock, SyncEngine, SyncStats, discovery};
 /// Graph layer: graph builder, query engine, snapshots, annotation materialization.
 pub use graph::{
-    CallGraphView, GraphBuilder, GraphBuilderStats, GraphEngine, GraphPath, GraphSnapshot, NodeIx,
-    PathBreakpoint, PathBreakpointKind, PathEdge, PathEdgeDirection, Subgraph, TraversalConfig,
-    TraversalDirection, materialize_annotations,
+    CallGraphView, ForwardFrontier, FrontierNode, GraphBuilder, GraphBuilderStats, GraphEngine,
+    GraphPath, GraphSnapshot, NodeIx, PathBreakpoint, PathBreakpointKind, PathEdge,
+    PathEdgeDirection, Subgraph, TraversalConfig, TraversalDirection, materialize_annotations,
 };
 /// Resolution layer: reference resolver, path aliases, config hashing.
 pub use resolution::{

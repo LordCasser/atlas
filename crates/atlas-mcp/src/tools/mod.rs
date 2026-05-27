@@ -492,6 +492,30 @@ impl ToolRouter {
         }
     }
 
+    /// Resolve a qualified name to ALL matching SymbolIds (not just the first).
+    ///
+    /// In languages like C/C++, a symbol declared in a header (`.h`) and
+    /// defined in a source file (`.c`) produces two SymbolIds that share the
+    /// same qualified name but differ in `file_id`.  Call-graph edges
+    /// connect the definition's SymbolId, so a `resolve_qname` that picks
+    /// the header symbol will miss edges.  Callers that work with the graph
+    /// snapshot should use this method and try each candidate.
+    pub(crate) fn resolve_all_qname_symbols(
+        &self,
+        qname: &str,
+    ) -> Result<Vec<SymbolId>, String> {
+        let symbols = self
+            .store
+            .find_symbols_by_qname(qname)
+            .map_err(|e| format!("Lookup error: {}", e))?;
+        if symbols.is_empty() {
+            let mut err = format!("Symbol not found: {}", qname);
+            err.push_str(self.index_not_run_guidance());
+            return Err(err);
+        }
+        Ok(symbols.into_iter().map(|s| s.id).collect())
+    }
+
     /// Render a node from the graph snapshot to JSON.
     pub(crate) fn node_json(&self, snap: &atlas_engine::GraphSnapshot, ix: atlas_engine::NodeIx) -> Value {
         let n = snap.node(ix);
@@ -667,8 +691,8 @@ pub fn make_all_tools() -> Vec<Tool> {
                     "max_depth": { "type": "integer", "description": "Max search depth (default 5, max 10)" },
                     "direction": {
                         "type": "string",
-                        "enum": ["both", "outgoing", "incoming"],
-                        "description": "Edge direction constraint during BFS: 'both' (default) follows outgoing+incoming, 'outgoing' follows only forward/call edges, 'incoming' follows only reverse/caller edges."
+                        "enum": ["outgoing", "incoming", "both"],
+                        "description": "Edge direction constraint during BFS: 'outgoing' (default) follows only forward/call edges, 'incoming' follows only reverse/caller edges, 'both' follows outgoing+incoming (use 'both' for reverse provenance / who-calls-X-to-reach-Y scenarios)."
                     },
                     "prefer_production": {
                         "type": "boolean",

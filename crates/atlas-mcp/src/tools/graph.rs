@@ -1,7 +1,7 @@
 //! Graph traversal tools: neighbors, callers, callees, callgraph, path,
 //! explore, and impact analysis.
 
-use atlas_engine::{EdgeKind, SymbolId, TraversalConfig, TraversalDirection};
+use atlas_engine::{EdgeKind, LazyStructuralService, SymbolId, TraversalConfig, TraversalDirection};
 
 use super::{ToolRouter, get_str, get_str_opt, get_u64};
 
@@ -274,7 +274,7 @@ impl ToolRouter {
         )
     }
 
-    pub(crate) fn handle_path(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_path(&mut self, args: &serde_json::Value) -> (String, bool) {
         let from_qname = get_str(args, "from");
         let to_qname = get_str(args, "to");
         let max_depth = get_u64(args, "max_depth").unwrap_or(5) as usize;
@@ -293,24 +293,78 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        let from_id = match self.resolve_qname(from_qname) {
-            Ok(id) => id,
+        let from_ids = match self.resolve_all_qname_symbols(from_qname) {
+            Ok(ids) => ids,
             Err(e) => return (e, true),
         };
-        let to_id = match self.resolve_qname(to_qname) {
-            Ok(id) => id,
+        let to_ids = match self.resolve_all_qname_symbols(to_qname) {
+            Ok(ids) => ids,
             Err(e) => return (e, true),
         };
 
+        // Transparent lazy structural: ensure both endpoint files have full
+        // structural data before path finding.  A manifest-only index (MCP
+        // default) may lack the intra-file call edges that BFS needs to
+        // discover a path.  Skip when a manual full index already exists.
+        let is_manual_full = self.has_manual_full_index();
+        if !is_manual_full {
+            // Collect unique file IDs from all resolved SymbolIds.
+            use std::collections::HashSet;
+            let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
+            for id in from_ids.iter().chain(to_ids.iter()) {
+                if let Some(sym) = self.store.find_symbol_by_id(id).ok().flatten() {
+                    file_ids_set.insert(sym.file_id);
+                }
+            }
+            let file_ids: Vec<_> = file_ids_set.into_iter().collect();
+            if !file_ids.is_empty() {
+                let lazy = LazyStructuralService::new(
+                    self.store.clone(),
+                    Some(self.project_root.clone()),
+                );
+                let _ = lazy.ensure_structural_for_file_ids(&file_ids);
+
+                // Force-refresh graph snapshot so newly extracted edges are
+                // visible to the BFS below.
+                if let Err(e) = self.force_refresh_graph() {
+                    tracing::warn!(
+                        "Graph refresh after lazy structural extraction failed: {}",
+                        e
+                    );
+                }
+            }
+        }
+
         let graph = self.context_builder().graph_snapshot();
-        match graph.shortest_path(
-            &from_id,
-            &to_id,
-            max_depth.min(10),
-            edge_kind_filter.as_deref(),
-            direction,
-            prefer_production,
-        ) {
+
+        // Try all SymbolId pairs for the same qname.  In C/C++, a symbol
+        // declared in a header (.h) and defined in a source file (.c)
+        // produces two SymbolIds sharing the same qualified name — only the
+        // definition's ID has outgoing call edges.  The first pair (from_ids[0]
+        // → to_ids[0]) matches the pre-fix behaviour; fallback pairs are
+        // tried only when the first attempt fails.
+        let mut path_result = None;
+        'id_search: for fid in &from_ids {
+            for tid in &to_ids {
+                // Skip same-SymbolId pairs for reflexive queries.
+                if from_qname == to_qname && fid == tid {
+                    continue;
+                }
+                if let Some(p) = graph.shortest_path(
+                    fid,
+                    tid,
+                    max_depth.min(10),
+                    edge_kind_filter.as_deref(),
+                    direction,
+                    prefer_production,
+                ) {
+                    path_result = Some(p);
+                    break 'id_search;
+                }
+            }
+        }
+
+        match path_result {
             Some(path) => {
                 let snap = graph.snapshot();
                 let mut hops: Vec<serde_json::Value> = Vec::with_capacity(
@@ -359,30 +413,94 @@ impl ToolRouter {
                     false,
                 )
             }
-            None => (
-                serde_json::to_string_pretty(&json!({
-                    "from": from_qname,
-                    "to": to_qname,
-                    "path_length": 0,
-                    "path": [],
-                    "breakpoints": [],
-                    "message": "No path found within depth limit",
-                }))
-                .unwrap_or_else(|e| e.to_string()),
-                false,
-            ),
+            None => {
+                let total_pairs = from_ids.len() * to_ids.len();
+                let mut message = format!(
+                    "No path found within max_depth={} (tried {} SymbolId pair{})",
+                    max_depth.min(10),
+                    total_pairs,
+                    if total_pairs == 1 { "" } else { "s" },
+                );
+                if total_pairs > 1 {
+                    message.push_str(
+                        ". Note: the same qualified name maps to multiple SymbolIds (e.g., declaration vs definition). All pairs were tried.",
+                    );
+                }
+                if !is_manual_full && max_depth < 10 {
+                    message.push_str(
+                        ". Tip: try a higher max_depth (up to 10), or run a full structural index (CLI: 'atlas index' without --analysis manifest) for deeper call-graph edges.",
+                    );
+                } else if !is_manual_full {
+                    message.push_str(
+                        ". Tip: the path may involve function pointers or dynamic dispatch not yet resolved. Try running a full structural index (CLI: 'atlas index').",
+                    );
+                } else {
+                    message.push_str(
+                        ". The symbols may not be connected by call edges, or the path exceeds the depth limit. Try a higher max_depth.",
+                    );
+                }
+
+                // Diagnostic frontier: when searching forward-only, compute
+                // how far we could reach from the source(s) before static edges
+                // were exhausted.  Frontier nodes with outgoing_call_count == 0
+                // are likely dynamic-dispatch (function pointer / virtual call)
+                // boundaries.
+                let frontier_nodes: Vec<serde_json::Value> =
+                    if direction == TraversalDirection::Outgoing {
+                        let frontier = graph.forward_frontier(
+                            &from_ids,
+                            max_depth.min(10),
+                            edge_kind_filter.as_deref(),
+                        );
+                        if !frontier.frontier_nodes.is_empty() {
+                            message.push_str(&format!(
+                                "\nForward frontier reached depth {} — {} node(s) with no further static callees (possible dynamic-dispatch boundaries):",
+                                frontier.depth_reached,
+                                frontier.frontier_nodes.len()
+                            ));
+                        }
+                        frontier
+                            .frontier_nodes
+                            .iter()
+                            .map(|n| {
+                                json!({
+                                    "qname": n.qname,
+                                    "depth": n.depth,
+                                    "outgoing_call_count": n.outgoing_call_count,
+                                })
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                (
+                    serde_json::to_string_pretty(&json!({
+                        "from": from_qname,
+                        "to": to_qname,
+                        "path_length": 0,
+                        "path": [],
+                        "breakpoints": [],
+                        "message": &message,
+                        "frontier": frontier_nodes,
+                    }))
+                    .unwrap_or_else(|e| e.to_string()),
+                    false,
+                )
+            },
         }
     }
 
     /// Resolve the `direction` parameter for path finding.
-    /// - Not provided or "both" → TraversalDirection::Both
-    /// - "outgoing" → TraversalDirection::Outgoing (only forward edges)
+    /// - Not provided or "outgoing" → TraversalDirection::Outgoing (only forward edges)
     /// - "incoming" → TraversalDirection::Incoming (only reverse/caller edges)
+    /// - "both" → TraversalDirection::Both (forward + reverse; use when tracing
+    ///   who-calls-X-to-reach-Y scenarios or backward provenance)
     fn resolve_path_direction(args: &serde_json::Value) -> TraversalDirection {
         match get_str_opt(args, "direction") {
             Some("outgoing") => TraversalDirection::Outgoing,
             Some("incoming") => TraversalDirection::Incoming,
-            _ => TraversalDirection::Both,
+            Some("both") => TraversalDirection::Both,
+            _ => TraversalDirection::Outgoing,
         }
     }
 

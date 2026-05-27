@@ -4,7 +4,7 @@
 //! HashMaps and adjacency lists. Snapshot is immutable after construction.
 
 use db::Store;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use types::ids::{FileId, SymbolId};
 use types::{
     Confidence, EdgeKind, Language, Provenance, RawEdge, SymbolDef, SymbolKind, Visibility,
@@ -69,6 +69,53 @@ pub struct EdgeSummary {
     /// Index into snapshot.nodes for the source/target.
     pub source_ix: NodeIx,
     pub target_ix: NodeIx,
+}
+
+// ── forward frontier diagnostic ──────────────────────────────────────────────
+
+/// A single node in the forward frontier — the deepest nodes reached when
+/// walking forward from a source symbol before the chain exhausts.
+#[derive(Debug, Clone)]
+pub struct FrontierNode {
+    pub symbol_id: SymbolId,
+    pub qname: String,
+    pub depth: usize,
+    /// Number of outgoing call edges (Calls/Instantiates/Implements/RegistersCallback)
+    /// from this node.  0 means this function has no statically-resolved callees
+    /// and is a likely dynamic-dispatch (function pointer / virtual call) boundary.
+    pub outgoing_call_count: usize,
+}
+
+/// Result of a forward-trace from source symbols to the deepest reachable
+/// nodes via outgoing edges only (forward call chain direction).
+#[derive(Debug, Clone)]
+pub struct ForwardFrontier {
+    /// Max depth reached before all forward edges were exhausted.
+    pub depth_reached: usize,
+    /// Nodes at the frontier — functions with zero forward call edges or
+    /// the deepest functions reached within max_depth.
+    pub frontier_nodes: Vec<FrontierNode>,
+}
+
+impl ForwardFrontier {
+    /// Remove duplicate frontier entries (same symbol_id), keeping the
+    /// one with the shallowest depth.
+    fn deduplicate(&mut self) {
+        let mut seen: HashMap<SymbolId, usize> = HashMap::new();
+        let mut keep = Vec::new();
+        for node in self.frontier_nodes.drain(..) {
+            match seen.get(&node.symbol_id) {
+                Some(&prev_depth) if prev_depth <= node.depth => {
+                    // Already have a shallower entry — skip this one.
+                }
+                _ => {
+                    seen.insert(node.symbol_id, node.depth);
+                    keep.push(node);
+                }
+            }
+        }
+        self.frontier_nodes = keep;
+    }
 }
 
 // ── snapshot ────────────────────────────────────────────────────────────────
@@ -766,6 +813,104 @@ impl GraphSnapshot {
         }
     }
 
+    // ── forward frontier ─────────────────────────────────────────────────
+
+    /// Walk forward (outgoing direction only) from `start_symbols`, collecting
+    /// the deepest reachable nodes.  When the forward walk exhausts (no more
+    /// outgoing call edges), those terminal nodes become the **forward frontier**
+    /// — they are the point where static analysis could not proceed further,
+    /// typically because of dynamic dispatch (function pointers, virtual calls).
+    ///
+    /// This is intended as a **diagnostic** helper: call it after a
+    /// `shortest_path` with `Outgoing` direction returns `None`, to understand
+    /// *where* the forward chain broke and *why*.
+    pub fn forward_frontier(
+        &self,
+        start_symbols: &[SymbolId],
+        max_depth: usize,
+        edge_kind_filter: Option<&[EdgeKind]>,
+    ) -> ForwardFrontier {
+        let mut frontier = Vec::new();
+        let mut visited: HashSet<SymbolId> = HashSet::new();
+        let mut current: Vec<SymbolId> = start_symbols
+            .iter()
+            .filter(|id| self.id_to_idx.contains_key(id))
+            .copied()
+            .collect();
+        let mut depth = 0usize;
+
+        while depth <= max_depth && !current.is_empty() {
+            let mut next = Vec::new();
+
+            for id in current.drain(..) {
+                if !visited.insert(id) {
+                    continue;
+                }
+                let ix = match self.id_to_idx.get(&id) {
+                    Some(i) => *i,
+                    None => continue,
+                };
+                let outgoing: Vec<(NodeIx, EdgeIx)> = self.neighbors(
+                    ix,
+                    TraversalDirection::Outgoing,
+                    edge_kind_filter,
+                );
+                let call_count = outgoing.len();
+                if call_count == 0 {
+                    // This node has zero forward call edges — it may be a
+                    // dynamic-dispatch boundary or a true leaf function.
+                    frontier.push(FrontierNode {
+                        symbol_id: id,
+                        qname: self.nodes[ix].qualified_name.clone(),
+                        depth,
+                        outgoing_call_count: 0,
+                    });
+                } else {
+                    for (neighbor_ix, _) in outgoing {
+                        next.push(self.nodes[neighbor_ix].symbol_id);
+                    }
+                }
+            }
+
+            if next.is_empty() {
+                // All nodes at this depth were leaves — forward chain exhausted.
+                break;
+            }
+            current = next;
+            depth += 1;
+        }
+
+        // If we reached max_depth without exhausting, include the last-level
+        // nodes as frontier (they may have outgoing edges we didn't explore
+        // further).
+        if depth >= max_depth && !current.is_empty() {
+            for id in current {
+                if visited.insert(id) {
+                    if let Some(ix) = self.id_to_idx.get(&id) {
+                        let outgoing = self.neighbors(
+                            *ix,
+                            TraversalDirection::Outgoing,
+                            edge_kind_filter,
+                        );
+                        frontier.push(FrontierNode {
+                            symbol_id: id,
+                            qname: self.nodes[*ix].qualified_name.clone(),
+                            depth,
+                            outgoing_call_count: outgoing.len(),
+                        });
+                    }
+                }
+            }
+        }
+
+        let mut result = ForwardFrontier {
+            depth_reached: depth,
+            frontier_nodes: frontier,
+        };
+        result.deduplicate();
+        result
+    }
+
     // ── stats ────────────────────────────────────────────────────────────
 
     pub fn node_count(&self) -> usize {
@@ -775,7 +920,7 @@ impl GraphSnapshot {
 
 // ── traversal config ────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TraversalDirection {
     Outgoing,
     Incoming,
