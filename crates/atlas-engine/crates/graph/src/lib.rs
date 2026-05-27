@@ -4,6 +4,7 @@
 //! P2: GraphBuilder is separated from ReferenceResolver — the resolver
 //! only produces resolved facts, GraphBuilder converts them to edges.
 
+pub mod annotation_graph;
 pub mod graph_builder;
 pub mod snapshot;
 
@@ -12,6 +13,7 @@ use std::sync::Arc;
 use types::EdgeKind;
 use types::ids::SymbolId;
 
+pub use annotation_graph::materialize_annotations;
 pub use graph_builder::{GraphBuilder, GraphBuilderStats};
 pub use snapshot::{
     CallGraphView, GraphPath, GraphSnapshot, NodeIx, NodeSummary, PathBreakpoint,

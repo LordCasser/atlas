@@ -69,11 +69,11 @@ pub use extraction::{
 };
 /// Sync layer: incremental sync engine, file lock, file discovery.
 pub use filesync::{FileLock, SyncEngine, SyncStats, discovery};
-/// Graph layer: graph builder, query engine, snapshots.
+/// Graph layer: graph builder, query engine, snapshots, annotation materialization.
 pub use graph::{
     CallGraphView, GraphBuilder, GraphBuilderStats, GraphEngine, GraphPath, GraphSnapshot, NodeIx,
     PathBreakpoint, PathBreakpointKind, PathEdge, PathEdgeDirection, Subgraph, TraversalConfig,
-    TraversalDirection,
+    TraversalDirection, materialize_annotations,
 };
 /// Resolution layer: reference resolver, path aliases, config hashing.
 pub use resolution::{
@@ -482,7 +482,7 @@ mod tests {
 
         // trace_variable triggers lazy load
         // Line 2, column 5 is inside `let y = x * 2;` — the variable `y`
-        let resp = engine.trace_variable(&file_id, 2, 5, 10);
+        let _resp = engine.trace_variable(&file_id, 2, 5, 10);
 
         // After trace_variable, data_nodes should exist in DB
         let dn_after = engine.store().find_data_nodes_by_file(&file_id).unwrap();

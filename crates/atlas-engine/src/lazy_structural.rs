@@ -274,13 +274,12 @@ impl LazyStructuralService {
 
     /// Re-extract a single file with Structural mode.
     ///
-    /// **Safety**: Callers must ensure no concurrent writer is active on the
-    /// same store (e.g. via [`FileLock`]).  This method performs
-    /// delete-then-insert which is not atomic across calls — a concurrent
-    /// index or sync process could observe the file in a partially-deleted
-    /// state.  CLI commands that invoke this service open the store in
-    /// read-only mode; the actual write happens through the store's internal
-    /// write path which does not acquire the project-level FileLock.
+    /// Uses `Store::replace_file_facts` to atomically delete old data and
+    /// insert new facts in a single transaction, preventing concurrent
+    /// readers from seeing the file in a partially-deleted state.
+    /// Callers do not need a separate [`FileLock`] for MCP single-threaded
+    /// operation; concurrent CLI `atlas index` runs should coordinate
+    /// via the store's exclusive lock.
     fn reindex_file_structural(&self, file_id: &FileId) -> Result<()> {
         let file_info = self
             .store
@@ -294,11 +293,11 @@ impl LazyStructuralService {
             .with_context(|| format!("failed to read {}", resolved_path.display()))?;
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
 
-        // Clean stale facts
+        // Invalidate cross-file references BEFORE the atomic replace
+        // (preserves reference rows so they can be re-resolved).
         self.store
             .invalidate_references_to_symbols_in_file(file_id)?;
         self.store.delete_edges_for_file_references(file_id)?;
-        self.store.delete_file_data(file_id)?;
 
         let facts = extract_file_with_mode(
             &frontend,
@@ -308,7 +307,9 @@ impl LazyStructuralService {
             &content_hash,
             ExtractionMode::Structural,
         )?;
-        self.store.insert_file_facts(&facts)?;
+
+        // Atomically delete old data and insert new facts.
+        self.store.replace_file_facts(file_id, &facts)?;
 
         tracing::info!(
             "Lazy structural: {} ({} symbols, {} refs)",
