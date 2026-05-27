@@ -132,45 +132,51 @@ impl TuiProgress {
 
     /// Finish on normal completion — renders a compact summary frame
     /// via ratatui (replacing the progress bars), then drops the
-    /// terminal and positions the cursor below the summary.  No manual
-    /// escape-sequence clearing is needed — ratatui handles all screen
-    /// management within the viewport.
+    /// terminal and positions the cursor at the bottom of the screen.
+    ///
+    /// `\x1b[J` clears the blank rows below the summary that may have
+    /// been created by terminal scrolling during `Viewport::Inline`
+    /// rendering.  `\x1b[999B` (capped by the terminal to the last
+    /// row of the scroll region) + `\n` sends the cursor to the
+    /// bottom so the shell prompt lands where the user expects it.
     pub fn finish(mut self, files: u64, symbols: u64, edges: u64) {
-        // Render the completion summary — this overwrites the progress
-        // bars with the final statistics inside the same 4-row viewport.
         let _ = self
             .terminal
             .draw(|frame| render::render_summary(frame, files, symbols, edges));
 
-        // Drop the terminal.  The Drop impl calls ratatui::try_restore(),
-        // which disables raw mode and restores the cursor to its
-        // pre-init position (the start of the first summary row).
+        // Drop the terminal — try_restore() disables raw mode and
+        // restores the cursor to its pre-init position.
         drop(self);
 
-        // Move the cursor down by INLINE_ROWS to land just below the
-        // rendered summary.  This is the same pattern as `leave()`
-        // above; it uses a standard cursor-move escape (not content
-        // clearing), and the summary stays intact on screen.
-        let down = format!("\x1b[{}B", INLINE_ROWS);
-        let _ = std::io::Write::write_all(&mut std::io::stdout(), down.as_bytes());
+        // Move below the 4-row summary …
+        let _ = std::io::Write::write_all(
+            &mut std::io::stdout(),
+            format!("\x1b[{}B", INLINE_ROWS).as_bytes(),
+        );
+        // … then clear everything below the summary (blank rows from
+        // terminal scrolling), and send the cursor to the bottom so
+        // the shell prompt appears at its natural position.
+        let _ = std::io::Write::write_all(
+            &mut std::io::stdout(),
+            b"\x1b[J\x1b[999B\n",
+        );
         let _ = std::io::Write::flush(&mut std::io::stdout());
     }
 
     /// Leave on Ctrl+C — exits raw mode while preserving the progress
     /// display on screen (like `wget` on interrupt).  The cursor lands
-    /// below the rendered content so the interrupt message prints
-    /// cleanly without overwriting the progress lines.
+    /// at the bottom of the terminal so the interrupt message and the
+    /// subsequent shell prompt appear at their natural position.
     pub fn leave(self) {
-        // Drop the terminal.  The Drop impl calls ratatui::try_restore(),
-        // which disables raw mode and restores the cursor to its
-        // pre-init position (above the rendered inline content).
-        drop(self);
+        drop(self); // try_restore()
 
-        // Move cursor forward by INLINE_ROWS to land below the rendered
-        // content.  This allows the interrupt message to print on the
-        // next line without overwriting the progress display.
-        let down = format!("\x1b[{}B", INLINE_ROWS);
-        let _ = std::io::Write::write_all(&mut std::io::stdout(), down.as_bytes());
+        // \x1b[999B caps to the last row of the scroll region;
+        // \n causes a single scroll if we're already at the bottom,
+        // landing the cursor at column 0 of the new last row.
+        let _ = std::io::Write::write_all(
+            &mut std::io::stdout(),
+            b"\x1b[999B\n",
+        );
         let _ = std::io::Write::flush(&mut std::io::stdout());
     }
 }
