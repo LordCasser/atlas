@@ -57,12 +57,12 @@ so consumers parse one shape regardless of which query was made.
 | `capability` | `LanguageCapabilityProfile\|null` | ✅ | The resolved language's capability profile. `null` when `ok=false`. |
 | `partial_result` | `bool` | ✅ | `true` when result is incomplete. Inspect `diagnostics`. |
 | `diagnostics` | `TraceDiagnostic[]` | ✅ | May be empty. Each entry has `level`, `message`, optional `code`. |
-| `result` | `T\|null` | ✅ | The query result. `null` when `partial_result=true` or `ok=false`. |
+| `result` | `T\|null` | ✅ | The query result. `null` only when `ok=false`. May be `Some(T)` even when `partial_result=true` (result is present but was truncated). |
 
 ### Contract invariants
 
 1. **All 6 fields are always present** in JSON — never omitted via `skip_serializing_if`.
-2. `ok=true` + `partial_result=true` → **not an error**; query was processed but no result.
+2. `ok=true` + `partial_result=true` → **not an error**; query was processed but result may be incomplete due to truncation or capability limits.
    Inspect `diagnostics` for structured reason codes.
 3. `ok=false` → **system error**; only possible result is `diagnostics[0].level = "error"`.
 4. `capability` is present even in partial/error cases (may be `null` for errors).
@@ -222,7 +222,7 @@ Each language has a `LanguageCapabilityProfile` with `FeatureMatrix` for fine-gr
 
 ## 8. MCP Tool Contracts
 
-The 24 MCP tools use short names (no `atlas_` prefix):
+The 27 MCP tools use short names (no `atlas_` prefix):
 
 | Tool | Purpose |
 |------|---------|

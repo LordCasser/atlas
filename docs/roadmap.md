@@ -48,7 +48,7 @@ cargo test -p atlas-cli --features "all-languages,mcp"
 
 ### 2.1 DataflowFull + persistent summary layer ✅
 
-All 14 languages are now at `DataflowFull` level. Schema V3 added 4 persistent summary tables (`function_summaries`, `summary_param_reaches`, `summary_return_sources`, `summary_call_arg_sources`) with `CrossFunctionBridge` for ArgToParam/ReturnToCall interprocedural bridges.
+All 14 languages are now at `DataflowFull` level. The current schema added 4 persistent summary tables (`function_summaries`, `summary_param_reaches`, `summary_return_sources`, `summary_call_arg_sources`) with `CrossFunctionBridge` for ArgToParam/ReturnToCall interprocedural bridges.
 
 ### 2.2 Lazy Index (three phases) ✅
 
@@ -66,7 +66,7 @@ P0-P7 optimizations completed: PhaseTimings, hash-based dirty-set, thread-local 
 
 ### 2.5 MCP tool consolidation ✅
 
-All tools use short names (no `atlas_` prefix). 24 tools registered.
+All tools use short names (no `atlas_` prefix). 27 tools registered.
 
 ## 3. Trace and language capability work
 

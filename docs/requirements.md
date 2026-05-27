@@ -177,7 +177,7 @@ Atlas 不做 taint rule / finding 产品能力。Atlas 不包含 taint 代码、
 - `DataNode`：覆盖参数、局部变量、字面量、字段访问、调用结果、返回值、表达式和 import alias。
 - `DataFlowEdge`：覆盖简单赋值、字段读取/写入、实参到形参、返回值到调用结果、变量到返回值等关系。
 - `CallsiteArg`：已移除。`callsites.args_json` + call-arg `DataNode` 为当前唯一调用实参事实源；如未来需结构化实参表，应在 schema 中新增替代设计并同步测试。
-- `FunctionSummary`：已实现持久化摘要层（Schema V3）：`function_summaries`、`summary_param_reaches`、`summary_return_sources`、`summary_call_arg_sources` 四张表，通过 `CrossFunctionBridge` 实现 ArgToParam 和 ReturnToCall 跨函数桥接。向后兼容：旧 DB 降级为 runtime BFS。
+- `FunctionSummary`：已实现持久化摘要层（Schema V1）：`function_summaries`、`summary_param_reaches`、`summary_return_sources`、`summary_call_arg_sources` 四张表，通过 `CrossFunctionBridge` 实现 ArgToParam 和 ReturnToCall 跨函数桥接。向后兼容：旧 DB 降级为 runtime BFS。
 
 语言能力按等级验收，不要求所有语言一次性达到同等精度：
 
@@ -268,7 +268,7 @@ MCP 使用 JSON-RPC over stdio。当前公开工具名使用无 `atlas_` 前缀�
 MVP 完成标准：
 
 1. 全部 14 种语言能进入解析路径，均达到 DataflowFull 级别；Cangjie 已提升至 DataflowFull。
-2. `atlas index` 能生成 `.atlas/atlas.db`（Schema V3）。
+2. `atlas index` 能生成 `.atlas/atlas.db`（Schema V1）。
 3. `atlas search` 能检索符号。
 4. CLI 或 MCP 能查询基本 callers/callees。
 5. 所有语言 import/include resolution 可用。
@@ -277,7 +277,7 @@ MVP 完成标准：
 8. MCP 输出可被 Agent 消费，并控制预算。
 9. 关系结果暴露 confidence/provenance。
 10. 语言 fixtures 和集成测试覆盖主链路。
-11. 持久化跨函数摘要层（Schema V3）已实现。
+11. 持久化跨函数摘要层（Schema V1）已实现。
 
 ## 7. 当前阶段验收焦点
 

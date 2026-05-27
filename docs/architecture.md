@@ -21,7 +21,7 @@ crates/
   atlas-engine/        facade crate，re-export types/db/extraction/resolution/graph/analysis/search/context/filesync/lazy
     crates/types/      ID、enum、IR、binding、dataflow、CFG、trace 查询类型、capability profiles
     crates/workspace/  ProjectRoot、WorkspacePaths、SourcePath
-    crates/db/         SQLite schema v3、Store API、readers、schema 迁移基础设施
+    crates/db/         SQLite schema v1、Store API、readers、schema 迁移基础设施
     crates/extraction/ tree-sitter 解析、query、scope、semantic binder、lexical binder、dataflow、CFG、worker pool
     crates/resolution/ builtin filter、scope/container/import/include/name matching、PathAliasResolver
     crates/graph/      GraphBuilder、GraphSnapshot、GraphEngine
@@ -183,11 +183,11 @@ analysis 层按需加载 dataflow facts（而非全量预加载），通过 `Laz
 
 ### 7.2 跨函数桥接（DataflowFull）
 
-Schema V3 实现了持久化摘要层：
+Schema V1 实现了持久化摘要层：
 
 ```
 dataflow_edges    = intra-procedural, fine-grained, direct edges (不变)
-function_summary  = intra-procedural, transitive-closure, per-function (V3 新增)
+function_summary  = intra-procedural, transitive-closure, per-function (持久化摘要层新增)
 trace             = inter-procedural, by composing summaries along call graph
 ```
 
@@ -302,10 +302,12 @@ LanguageCapabilityProfile
 
 ### 11.2 Context
 - 基于 symbol、callers/callees、file peers、importers/dependencies 构建 Agent context (Markdown)。
+- 当符号未被索引时，`context` 工具内置 lazy structural extraction（查询时按需触发完整 structural 解析）。
+- **图刷新决策**：lazy structural 写新 facts 到 DB 后，`context` handler 会在调用 context builder 前执行 `force_refresh_graph()`，确保内存图快照包含刚解析的边。这关闭了 graph init 早于 handler 自身 structural extraction 的调用流缺口。
 
 ### 11.3 MCP
 - 基于 `rmcp` 的 stdio JSON-RPC transport。
-- **24 个短名工具**（无 `atlas_` 前缀）：
+- **27 个短名工具**（无 `atlas_` 前缀）：
 
 | 组 | 工具 |
 |----|------|
@@ -318,6 +320,8 @@ LanguageCapabilityProfile
 | 后台任务 | `task_status`, `wait_for_task` |
 
 - Graph 惰性初始化：首次 graph-backed tool 调用时构建 snapshot。
+- 后续请求通过 `maybe_refresh_graph()`（5 秒缓存签名检查）检测外部索引变化。
+- 当 handler 内部触发 lazy structural 并写入新 facts（如 `context` 的 Tier 3 解析），handler 显式调用 `force_refresh_graph()`（跳过缓存冷却），确保 graph 包含刚解析的边。
 - `open_project` 不索引，只激活项目；调用后需单独 `index`。
 - `search` 的 `scope` 对 manifest-only 索引为强制参数；存在 manual full index 时为可选。
 - `background: true` 支持：`search`, `index`, `open_project`。

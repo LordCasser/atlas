@@ -37,7 +37,7 @@ source code ──parse/extract──▶ .atlas/atlas.db ──query──▶ CL
 - **Local-first**: writes all index data to `<project>/.atlas/atlas.db`; no cloud service required.
 - **Deterministic extraction**: tree-sitter AST queries and stable blake3-based IDs instead of model guesses.
 - **Incremental sync**: content-hash based dirty-file detection with Git-aware file discovery.
-- **Agent-native MCP**: stdio MCP server exposing 24 bounded tools for search, graph, context, dependencies, trace, background tasks, and project management.
+- **Agent-native MCP**: stdio MCP server exposing 27 bounded tools for search, graph, context, dependencies, trace, background tasks, and project management.
 - **Graph + trace queries**: callers, callees, shortest path, impact, source-position lookup, variable origin tracing, and caller-path tracing.
 - **Explicit capability boundaries**: language capability metadata and trace diagnostics report partial results instead of silently overclaiming precision.
 
@@ -227,13 +227,13 @@ enabled = true
 | Symbol search/detail | `search`, `symbol`, `usages` |
 | Graph navigation | `neighbors`, `callers`, `callees`, `callgraph`, `path`, `explore`, `impact` |
 | Context | `context` |
-| Trace | `trace_point`, `trace_variable`, `trace_caller_path` |
+| Trace | `trace_point`, `trace_variable`, `trace_caller_path`, `trace_forward` |
 | File dependencies | `dependencies`, `dependents` |
 | Background tasks | `task_status`, `wait_for_task` |
 
-> `open_project` supports switching the active project at runtime. It defaults to `storage: "memory"`, `index: false`, and `scan_files: false` for zero-footprint, fast project switching. Use `background: true` for large trees or `index: true`; then call `task_status` or `wait_for_task` with the returned `task_id`.
+> `open_project` supports switching the active project at runtime. It defaults to `storage: "memory"` and `scan_files: false` for zero-footprint, fast project switching. Use `background: true` for large trees; then call `task_status` or `wait_for_task` with the returned `task_id`.
 
-Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/07-trace-contract.md`](docs/07-trace-contract.md): `ok`, `kind`, `capability`, `partial_result`, `diagnostics`, and `result`.
+Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/trace-contract.md`](docs/trace-contract.md): `ok`, `kind`, `capability`, `partial_result`, `diagnostics`, and `result`.
 
 ## Architecture
 
@@ -473,7 +473,7 @@ Symbol graph + DataFlow graph + CFG
   → TracePath (step-by-step provenance: kind, range, file, confidence, evidence)
 ```
 
-The `TraceEngine` combines symbol-level call graphs with intra-procedural dataflow. At call boundaries, `SummaryEdgeProvider` materializes virtual edges (`ArgToParam`, `ReturnToCall`) on-demand, bridging the gap between caller and callee without pre-computing all inter-procedural summaries.
+The `TraceEngine` combines symbol-level call graphs with intra-procedural dataflow. At call boundaries, it uses persistent summary tables (`function_summaries`, `summary_param_reaches`, `summary_return_sources`, `summary_call_arg_sources`) with `CrossFunctionBridge` to bridge ArgToParam and ReturnToCall edges across function boundaries without re-extracting dataflow.
 
 ### Where to find the code
 

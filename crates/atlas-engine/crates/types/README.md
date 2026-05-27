@@ -25,7 +25,7 @@ ID generation uses the `define_id!` macro to eliminate boilerplate.
 
 | Enum | Variants | Description |
 |------|----------|-------------|
-| `Language` | 7 MVP + opt-in experimental | TypeScript, JavaScript, Python, Java, C, Cpp, ArkTS; Cangjie only with `cangjie` feature |
+| `Language` | 14 languages | TypeScript, JavaScript, Python, Java, C, Cpp, ArkTS, Go, CSharp, Rust, PHP, Ruby, Kotlin, Cangjie; Cangjie only with `cangjie` feature |
 | `SymbolKind` | 20 | File, Module, Class, Struct, Interface, Trait, Enum, EnumMember, Function, Method, Property, Field, Variable, Constant, TypeAlias, Namespace, Parameter, Constructor, Macro, Decorator, Package |
 | `EdgeKind` | 21 | Contains, Calls, Imports, Includes, Exports, Extends, Implements, References, TypeOf, Returns, Instantiates, Overrides, Decorates, Defines, Argument, Parameter, Assigns, Reads, Writes, FieldRead, FieldWrite |
 | `ReferenceKind` | 10 | Usage, TypeReference, Call, Import, FieldAccess, Inheritance, Implementation, Override, Decoration, Read, Write, Instantiation |
