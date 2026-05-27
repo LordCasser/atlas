@@ -125,6 +125,10 @@ impl ToolRouter {
                 result.files_failed = stats.failed;
                 result.symbols_found = stats.symbols;
                 result.references_resolved = stats.resolved;
+                // MCP index always produces manifest-only; invalidate any
+                // cached "manual full index" flag so the next search/trace
+                // re-detects the actual layer distribution.
+                self.invalidate_manual_full_index_cache();
             }
             Err(e) => {
                 result.errors.push(format!("Index failed: {:#}", e));

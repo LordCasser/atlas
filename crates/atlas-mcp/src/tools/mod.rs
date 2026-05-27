@@ -6,6 +6,7 @@
 //! Handler methods are organized by capability category in sub-modules:
 //!   status, search, graph, context, trace, capability.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -78,7 +79,8 @@ pub struct ToolRouter {
     /// Cached result of `has_manual_full_index()` — detects a manually built
     /// (CLI) structural/full index vs MCP's automatic manifest-only index.
     /// `None` means not yet checked; checked lazily on first use.
-    cached_manual_full_index: Option<bool>,
+    /// Uses Cell for interior mutability so &self methods (handle_index) can invalidate.
+    cached_manual_full_index: Cell<Option<bool>>,
     /// Optional progress sender for long-running operations (set per-call in lib.rs).
     pub(crate) progress_sender: Option<ProgressSender>,
     /// Background task manager for `background: true` mode.
@@ -115,7 +117,7 @@ impl ToolRouter {
             progress_sender: None,
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
             pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
-            cached_manual_full_index: None,
+            cached_manual_full_index: Cell::new(None),
         }
     }
 
@@ -138,7 +140,7 @@ impl ToolRouter {
             progress_sender: None,
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
             pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
-            cached_manual_full_index: None,
+            cached_manual_full_index: Cell::new(None),
         }
     }
 
@@ -233,13 +235,13 @@ impl ToolRouter {
     /// The result is cached for the lifetime of the session; callers that
     /// trigger a re-index (MCP `index` tool) should invalidate this cache
     /// after completion.
-    pub(crate) fn has_manual_full_index(&mut self) -> bool {
-        if let Some(cached) = self.cached_manual_full_index {
+    pub(crate) fn has_manual_full_index(&self) -> bool {
+        if let Some(cached) = self.cached_manual_full_index.get() {
             return cached;
         }
         let total = self.store.count_files().unwrap_or(0);
         if total == 0 {
-            self.cached_manual_full_index = Some(false);
+            self.cached_manual_full_index.set(Some(false));
             return false;
         }
         let layer_counts = self.store.count_file_index_layers().unwrap_or_default();
@@ -251,7 +253,7 @@ impl ToolRouter {
         // More than half of indexed files have structural layer — this is a
         // manual full index, not MCP's manifest-only index.
         let result = structural_complete > total / 2;
-        self.cached_manual_full_index = Some(result);
+        self.cached_manual_full_index.set(Some(result));
         result
     }
 
@@ -260,8 +262,8 @@ impl ToolRouter {
     /// Called after MCP `index` completes (which always produces a manifest
     /// index), so the next search/trace query re-checks the actual layer
     /// distribution.
-    pub(crate) fn invalidate_manual_full_index_cache(&mut self) {
-        self.cached_manual_full_index = None;
+    pub(crate) fn invalidate_manual_full_index_cache(&self) {
+        self.cached_manual_full_index.set(None);
     }
 
     /// Resolve a [`FileId`] to its human-readable file path.
@@ -333,7 +335,7 @@ impl ToolRouter {
             self.last_graph_signature = current.clone();
             // External index/sync may have changed layer distribution — re-check
             // whether a manual full index now exists.
-            self.cached_manual_full_index = None;
+            self.cached_manual_full_index.set(None);
         }
         self.cached_signature = current;
         Ok(())
