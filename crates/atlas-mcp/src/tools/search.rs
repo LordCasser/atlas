@@ -490,10 +490,16 @@ fn score_symbol(query: &str, sym: &SymbolDef) -> f64 {
     name_score + kind_bonus
 }
 
+/// Normalize a scope path for database lookups: strip `./`, `/` prefixes and
+/// `/` suffixes.  `"."` (project root) normalizes to `""` so the db counts all
+/// files.
 fn normalize_scope(scope: &str) -> String {
-    scope
-        .trim()
-        .trim_start_matches("./")
+    let s = scope.trim();
+    // "." alone means the project root — normalize to "".
+    if s == "." {
+        return String::new();
+    }
+    s.trim_start_matches("./")
         .trim_start_matches('/')
         .trim_end_matches('/')
         .replace('\\', "/")

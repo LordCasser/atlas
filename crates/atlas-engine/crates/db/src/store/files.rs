@@ -156,10 +156,14 @@ impl Store {
     }
 }
 
+/// Normalize a scope path for database lookups.  `"."` (project root)
+/// normalizes to `""` so we count all files.
 pub(crate) fn normalize_scope(scope: &str) -> String {
-    scope
-        .trim()
-        .trim_start_matches("./")
+    let s = scope.trim();
+    if s == "." {
+        return String::new();
+    }
+    s.trim_start_matches("./")
         .trim_start_matches('/')
         .trim_end_matches('/')
         .replace('\\', "/")
