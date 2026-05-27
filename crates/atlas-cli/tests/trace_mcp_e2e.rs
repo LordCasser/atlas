@@ -650,8 +650,8 @@ fn p1_mcp_java_trace_variable_is_partial() {
         cap.get("capability_level")
             .and_then(|v| v.as_str())
             .unwrap_or(""),
-        "dataflow_basic",
-        "Java should advertise DataflowBasic"
+        "dataflow_full",
+        "Java should advertise DataflowFull"
     );
 }
 
@@ -710,8 +710,8 @@ func main() {
         cap.get("capability_level")
             .and_then(|v| v.as_str())
             .unwrap_or(""),
-        "dataflow_basic",
-        "Go should advertise DataflowBasic"
+        "dataflow_full",
+        "Go should advertise DataflowFull"
     );
 }
 
@@ -1032,8 +1032,8 @@ fn p12a_mcp_graph_error_returns_structured_response() {
         "response must have symbol field"
     );
     assert!(
-        json.get("nodes_found").and_then(|v| v.as_u64()).is_some(),
-        "response must have nodes_found field"
+        json.get("total_nodes_visited").and_then(|v| v.as_u64()).is_some(),
+        "response must have total_nodes_visited field"
     );
 }
 
@@ -1614,18 +1614,15 @@ fn mcp_search_requires_scope() {
     let files = &[("src/lib.ts", "export function greet() { return 'hi'; }\n")];
     let (_tmp, mut router) = build_router(files);
 
+    // With a manual full index (build_router runs `atlas index structural`),
+    // scope is no longer required — search defaults to "." (entire project).
     let (search_json, search_error) = call_tool(&mut router, "search", json!({ "query": "greet" }));
 
-    assert!(search_error, "search without scope should be rejected");
-    assert_eq!(search_json["ok"].as_bool(), Some(false));
-    assert!(
-        search_json["error"]
-            .as_str()
-            .unwrap_or("")
-            .contains("scope"),
-        "error should explain that scope is required: {:?}",
-        search_json
-    );
+    assert!(!search_error, "search without scope should succeed with manual index: {:?}", search_json);
+    // Scope defaults to project root; response is a valid ScopedSearchResponse.
+    assert_eq!(search_json["query"].as_str(), Some("greet"));
+    assert_eq!(search_json["parse_level"].as_str(), Some("structural"));
+    assert_eq!(search_json["precise"].as_bool(), Some(true));
 }
 
 #[test]
@@ -1664,8 +1661,10 @@ fn mcp_search_large_scope_stays_manifest_level() {
     );
 
     assert!(!search_error, "search should succeed: {:?}", search_json);
-    assert_eq!(search_json["parse_level"].as_str(), Some("manifest"));
-    assert_eq!(search_json["precise"].as_bool(), Some(false));
+    // Small projects (≤ 200 files) with full-project scope get structural
+    // parsing, not manifest-level, for better precision.
+    assert_eq!(search_json["parse_level"].as_str(), Some("structural"));
+    assert_eq!(search_json["precise"].as_bool(), Some(true));
     let results = search_json["results"].as_array().unwrap();
     assert!(
         results
