@@ -94,6 +94,93 @@ fn assert_envelope_ok(
     assert_eq!(cap.language, lang);
 }
 
+// ── Semantic precision helpers ──────────────────────────────────────────
+
+/// Look up the name of a DataNode from the store by ID.
+fn node_name_or(store: &Store, node_id: &atlas_engine::DataNodeId, default: &str) -> String {
+    store
+        .get_data_node(node_id)
+        .ok()
+        .flatten()
+        .and_then(|n| n.name)
+        .unwrap_or_else(|| default.to_string())
+}
+
+/// Assert that at least one step has the given edge kind AND references a
+/// node whose name contains `name`.
+fn assert_step_with_name(
+    store: &Store,
+    path: &atlas_engine::TracePath,
+    kind: DataFlowKind,
+    name: &str,
+) {
+    let found = path.steps.iter().any(|s| {
+        if s.edge_kind != kind {
+            return false;
+        }
+        let from = node_name_or(store, &s.from_node_id, "");
+        let to = node_name_or(store, &s.to_node_id, "");
+        from.contains(name) || to.contains(name)
+    });
+    assert!(
+        found,
+        "no {:?} step referencing name '{}' in {} steps (names: {:?})",
+        kind,
+        name,
+        path.steps.len(),
+        path.steps
+            .iter()
+            .filter(|s| s.edge_kind == kind)
+            .map(|s| (
+                node_name_or(store, &s.from_node_id, "?"),
+                node_name_or(store, &s.to_node_id, "?"),
+            ))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Assert that the source data node has a name that contains `expected`.
+fn assert_source_name(path: &atlas_engine::TracePath, expected: &str) {
+    let name = path
+        .source
+        .data_node
+        .as_ref()
+        .and_then(|dn| dn.name.as_deref())
+        .unwrap_or("<none>");
+    assert!(
+        name.contains(expected),
+        "source data node name '{}' should contain '{}'",
+        name,
+        expected
+    );
+}
+
+/// Assert that the trace path has at least `min_steps` steps and that
+/// the source data node is NOT the same as the sink trace point.
+fn assert_path_completeness(
+    path: &atlas_engine::TracePath,
+    min_steps: usize,
+    sink_name: &str,
+) {
+    assert!(
+        path.steps.len() >= min_steps,
+        "expected >= {} steps, got {}",
+        min_steps,
+        path.steps.len()
+    );
+    let source_name = path
+        .source
+        .data_node
+        .as_ref()
+        .and_then(|dn| dn.name.as_deref())
+        .unwrap_or("<none>");
+    assert_ne!(
+        source_name, sink_name,
+        "source data node '{}' should differ from sink '{}'",
+        source_name, sink_name
+    );
+}
+
 // ────────────────────────────────────────────────────────────────
 // Fixture 1: Shadowing — inner scope 'total' must NOT be conflated
 //              with outer scope 'total'.
@@ -2178,4 +2265,580 @@ func inner(p: Int64): Int64 {
     let path = resp.result.expect("cross-function trace must produce path");
     assert!(!path.steps.is_empty(), "cross-function trace must have steps");
     assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
+}
+
+// ────────────────────────────────────────────────────────────────
+// Semantic precision fixtures — verify trace correctness beyond
+// edge-kind checks.  Each fixture validates:
+//  1. Source correctness: source DataNode name matches expected origin
+//  2. Step semantics: key variable names appear in trace steps
+//  3. Path completeness: trace covers expected cross-function chain
+// ────────────────────────────────────────────────────────────────
+
+// ── TypeScript ──────────────────────────────────────────────────────
+
+/// fx_semantic_ts: Trace `y` in `process()` backward — must cross into
+/// `source()` via ReturnToCall, include Assign edges for `x`→`y`, and the
+/// source DataNode must name the origin variable in `source()`.
+#[test]
+#[cfg(feature = "typescript")]
+fn fx_semantic_ts() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "semantic.ts",
+        r#"function source(): string {
+    let data = "secret";
+    return data;
+}
+function process(): string {
+    let x = source();
+    let y = x;
+    return y;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("semantic.ts");
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "typescript");
+    let path = resp.result.expect("trace path must exist");
+    assert_path_completeness(&path, 3, "y");
+    assert_source_name(&path, "secret");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+    assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+}
+
+// ── JavaScript ──────────────────────────────────────────────────────
+
+#[test]
+#[cfg(feature = "javascript")]
+fn fx_semantic_js() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "semantic.js",
+        r#"function source() {
+    let data = "secret";
+    return data;
+}
+function process() {
+    let x = source();
+    let y = x;
+    return y;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("semantic.js");
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "javascript");
+    let path = resp.result.expect("trace path must exist");
+    assert_path_completeness(&path, 3, "y");
+    assert_source_name(&path, "secret");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+    assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+}
+
+// ── Python ──────────────────────────────────────────────────────────
+
+#[test]
+#[cfg(feature = "python")]
+fn fx_semantic_py() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "semantic.py",
+        r#"def source():
+    data = "secret"
+    return data
+
+def process():
+    x = source()
+    y = x
+    return y
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("semantic.py");
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "python");
+    let path = resp.result.expect("trace path must exist");
+    assert_path_completeness(&path, 3, "y");
+    assert_source_name(&path, "secret");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+    assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+}
+
+// ── Java ────────────────────────────────────────────────────────────
+
+#[test]
+#[cfg(feature = "java")]
+fn fx_semantic_java() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "Semantic.java",
+        r#"class Semantic {
+    String source() {
+        String data = "secret";
+        return data;
+    }
+    String process() {
+        String x = source();
+        String y = x;
+        return y;
+    }
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("Semantic.java");
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "java");
+    let path = resp.result.expect("trace path must exist");
+    assert_path_completeness(&path, 3, "y");
+    assert_source_name(&path, "secret");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+    assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+}
+
+// ── C ───────────────────────────────────────────────────────────────
+
+#[test]
+#[cfg(feature = "c")]
+fn fx_semantic_c() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "semantic.c",
+        r#"int source() {
+    int data = 42;
+    return data;
+}
+int process() {
+    int x = source();
+    int y = x;
+    return y;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("semantic.c");
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "c");
+    let path = resp.result.expect("trace path must exist");
+    assert_path_completeness(&path, 3, "y");
+    assert_source_name(&path, "42");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+    assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+}
+
+// ── C++ ─────────────────────────────────────────────────────────────
+
+#[test]
+#[cfg(feature = "cpp")]
+fn fx_semantic_cpp() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "semantic.cpp",
+        r#"int source() {
+    int data = 42;
+    return data;
+}
+int process() {
+    int x = source();
+    int y = x;
+    return y;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("semantic.cpp");
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "cpp");
+    let path = resp.result.expect("trace path must exist");
+    assert_path_completeness(&path, 3, "y");
+    assert_source_name(&path, "42");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+    assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+}
+
+// ── Go ──────────────────────────────────────────────────────────────
+
+#[test]
+#[cfg(feature = "go")]
+fn fx_semantic_go() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "semantic.go",
+        r#"package p
+
+func source() int {
+    data := 42
+    return data
+}
+
+func process() int {
+    x := source()
+    y := x
+    return y
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("semantic.go");
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "go");
+    let path = resp.result.expect("trace path must exist");
+    assert_path_completeness(&path, 3, "y");
+    assert_source_name(&path, "42");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+    assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+}
+
+// ── C# ──────────────────────────────────────────────────────────────
+
+#[test]
+#[cfg(feature = "csharp")]
+fn fx_semantic_cs() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "Semantic.cs",
+        r#"class Semantic {
+    int Source() {
+        int data = 42;
+        return data;
+    }
+    int Process() {
+        int x = Source();
+        int y = x;
+        return y;
+    }
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("Semantic.cs");
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "csharp");
+    let path = resp.result.expect("trace path must exist");
+    assert_path_completeness(&path, 3, "y");
+    assert_source_name(&path, "42");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+    assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+}
+
+// ── Rust ────────────────────────────────────────────────────────────
+
+#[test]
+#[cfg(feature = "rust")]
+fn fx_semantic_rs() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "semantic.rs",
+        r#"fn source() -> i32 {
+    let data = 42;
+    data
+}
+fn process() -> i32 {
+    let x = source();
+    let y = x;
+    y
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("semantic.rs");
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "rust");
+    let path = resp.result.expect("trace path must exist");
+    assert_path_completeness(&path, 3, "y");
+    assert_source_name(&path, "42");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+    assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+}
+
+// ── PHP ─────────────────────────────────────────────────────────────
+
+#[test]
+#[cfg(feature = "php")]
+fn fx_semantic_php() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "semantic.php",
+        r#"<?php
+function source() {
+    $data = "secret";
+    return $data;
+}
+function process() {
+    $x = source();
+    $y = $x;
+    return $y;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("semantic.php");
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "php");
+    let path = resp.result.expect("trace path must exist");
+    assert_path_completeness(&path, 3, "y");
+    assert_source_name(&path, "secret");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+    assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+}
+
+// ── Ruby ────────────────────────────────────────────────────────────
+
+#[test]
+#[cfg(feature = "ruby")]
+fn fx_semantic_rb() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "semantic.rb",
+        r#"def source
+  data = "secret"
+  data
+end
+def process
+  x = source()
+  y = x
+  y
+end
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("semantic.rb");
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "ruby");
+    let path = resp.result.expect("trace path must exist");
+    assert_path_completeness(&path, 3, "y");
+    assert_source_name(&path, "secret");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+    assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+}
+
+// ── Kotlin ──────────────────────────────────────────────────────────
+
+#[test]
+#[cfg(feature = "kotlin")]
+fn fx_semantic_kt() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "semantic.kt",
+        r#"fun source(): String {
+    val data = "secret"
+    return data
+}
+fun process(): String {
+    val x = source()
+    val y = x
+    return y
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("semantic.kt");
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "kotlin");
+    let path = resp.result.expect("trace path must exist");
+    assert_path_completeness(&path, 3, "y");
+    assert_source_name(&path, "secret");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+    assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+}
+
+// ── ArkTS ───────────────────────────────────────────────────────────
+
+#[test]
+#[cfg(feature = "arkts")]
+fn fx_semantic_ets() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "semantic.ets",
+        r#"function source(): string {
+    let data: string = "secret";
+    return data;
+}
+function process(): string {
+    let x: string = source();
+    let y: string = x;
+    return y;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("semantic.ets");
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "arkts");
+    let path = resp.result.expect("trace path must exist");
+    assert_path_completeness(&path, 3, "y");
+    assert_source_name(&path, "secret");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+    assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+}
+
+// ── Cangjie ─────────────────────────────────────────────────────────
+// Cangjie DataflowBasic provides intra-procedural dataflow but
+// ReturnToCall bridging is not yet fully implemented.  The trace may
+// produce minimal steps (source == sink).  We verify the trace succeeds
+// without crashing and that the envelope is well-formed.
+
+#[test]
+#[cfg(feature = "cangjie")]
+fn fx_semantic_cj() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "semantic.cj",
+        r#"func source(): String {
+    let data = "secret"
+    return data
+}
+func process(): String {
+    let x = source()
+    let y = x
+    return y
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("semantic.cj");
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    let sink = find_node(&data_nodes, "y");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "cangjie");
+    let path = resp.result.expect("trace path must exist");
+    // Cangjie lacks ReturnToCall — the trace may be minimal.  Verify
+    // it succeeds without crashing and has at least some steps.
+    assert!(
+        !path.steps.is_empty(),
+        "trace must have at least 1 step"
+    );
+    // If interprocedural bridging works (≥3 steps), validate semantics.
+    if path.steps.len() >= 3 {
+        assert_source_name(&path, "secret");
+        assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+        assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+    }
 }
