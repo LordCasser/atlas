@@ -132,13 +132,14 @@ impl TuiProgress {
 
     /// Finish on normal completion — renders a compact summary frame
     /// via ratatui (replacing the progress bars), then drops the
-    /// terminal and positions the cursor at the bottom of the screen.
+    /// terminal and positions the cursor on the line directly below
+    /// the summary.
     ///
-    /// `\x1b[J` clears the blank rows below the summary that may have
+    /// `\x1b[J` clears any blank rows below the summary that may have
     /// been created by terminal scrolling during `Viewport::Inline`
-    /// rendering.  `\x1b[999B` (capped by the terminal to the last
-    /// row of the scroll region) + `\n` sends the cursor to the
-    /// bottom so the shell prompt lands where the user expects it.
+    /// rendering.  This is terminal-state cleanup for a scroll
+    /// side-effect — the summary content itself is still 100% ratatui-
+    /// rendered.
     pub fn finish(mut self, files: u64, symbols: u64, edges: u64) {
         let _ = self
             .terminal
@@ -148,34 +149,28 @@ impl TuiProgress {
         // restores the cursor to its pre-init position.
         drop(self);
 
-        // Move below the 4-row summary …
+        // Step past the 4-row summary, then clear everything below.
+        // The \x1b[J erases scroll-induced blank rows; the cursor
+        // stays on the line right below the summary so the shell
+        // prompt appears there without any gap.
         let _ = std::io::Write::write_all(
             &mut std::io::stdout(),
-            format!("\x1b[{}B", INLINE_ROWS).as_bytes(),
-        );
-        // … then clear everything below the summary (blank rows from
-        // terminal scrolling), and send the cursor to the bottom so
-        // the shell prompt appears at its natural position.
-        let _ = std::io::Write::write_all(
-            &mut std::io::stdout(),
-            b"\x1b[J\x1b[999B\n",
+            format!("\x1b[{}B\x1b[J", INLINE_ROWS).as_bytes(),
         );
         let _ = std::io::Write::flush(&mut std::io::stdout());
     }
 
     /// Leave on Ctrl+C — exits raw mode while preserving the progress
     /// display on screen (like `wget` on interrupt).  The cursor lands
-    /// at the bottom of the terminal so the interrupt message and the
-    /// subsequent shell prompt appear at their natural position.
+    /// directly below the progress rows; `\x1b[J` clears any
+    /// scroll-induced blank rows below so the interrupt message and
+    /// subsequent shell prompt appear without a gap.
     pub fn leave(self) {
         drop(self); // try_restore()
 
-        // \x1b[999B caps to the last row of the scroll region;
-        // \n causes a single scroll if we're already at the bottom,
-        // landing the cursor at column 0 of the new last row.
         let _ = std::io::Write::write_all(
             &mut std::io::stdout(),
-            b"\x1b[999B\n",
+            format!("\x1b[{}B\x1b[J", INLINE_ROWS).as_bytes(),
         );
         let _ = std::io::Write::flush(&mut std::io::stdout());
     }
