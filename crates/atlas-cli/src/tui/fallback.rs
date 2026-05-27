@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use atlas_engine::progress::{ProgressPhase, ProgressState, PhaseState};
+use atlas_engine::progress::{PhaseState, ProgressPhase, ProgressState};
 
 /// Plain-text progress renderer for non-TTY stdout.
 pub struct TextFallback {
@@ -54,18 +54,14 @@ impl TextFallback {
                 let pct = ((snap.current as f64 / total as f64) * 100.0) as u32;
                 let should_print = self.last_percent.map_or(true, |last| pct > last);
                 if should_print {
-                    let rate_str = snap
-                        .rate
-                        .map_or(String::new(), |r| format!("  {:.0}/s", r));
+                    let rate_str = snap.rate.map_or(String::new(), |r| format!("  {:.0}/s", r));
                     eprint!("\r  {}/{} ({}%){}", snap.current, total, pct, rate_str);
                     self.last_percent = Some(pct);
                     self.last_print = now;
                 }
             }
         } else if snap.current > 0 {
-            let rate_str = snap
-                .rate
-                .map_or(String::new(), |r| format!("  {:.0}/s", r));
+            let rate_str = snap.rate.map_or(String::new(), |r| format!("  {:.0}/s", r));
             eprint!("\r  {} matched{}", snap.current, rate_str);
             self.last_print = now;
         }

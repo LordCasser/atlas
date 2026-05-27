@@ -25,5 +25,24 @@
 ;; Preprocessor macro definitions
 (preproc_def (identifier) @definition.macro)
 
+;; Struct field declarations (function pointer or data member)
+;; Function pointer field: CURLcode (*do_it)(struct connectdata *, int *);
+(field_declaration
+  (function_declarator
+    (pointer_declarator
+      (function_declarator
+        (field_identifier) @definition.field))))
+
+;; Function pointer field (simpler case): void (*handler)(int);
+(field_declaration
+  (pointer_declarator
+    (function_declarator
+      (field_identifier) @definition.field)))
+
+;; Regular data field: int port;
+(field_declaration
+  (type_identifier)
+  (field_identifier) @definition.field)
+
 ;; Variable declarations at file scope
 (declaration (identifier) @definition.variable)

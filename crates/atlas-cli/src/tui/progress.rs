@@ -1,66 +1,46 @@
-//! TUI progress lifecycle — terminal init (inline), draw loop, graceful shutdown.
+//! Terminal progress lifecycle backed by indicatif.
 //!
-//! Inline mode: renders below the shell prompt without a full-screen takeover.
-//!
-//! ## Ctrl+C detection
-//!
-//! Raw terminal mode (crossterm `enable_raw_mode()`) disables the `ISIG`
-//! terminal flag, so Ctrl+C is delivered as a keyboard event (0x03) rather
-//! than the OS-level SIGINT signal.  The `ctrlc` crate's signal handler
-//! therefore never fires.  We detect Ctrl+C by polling crossterm keyboard
-//! events with `event::poll()` in the draw loop.  The SIGINT handler is
-//! retained as a fallback for non-raw-mode environments (pipes, CI).
+//! The index command is a command-line workflow, not a full-screen UI.  The
+//! progress display therefore behaves like wget/curl: it updates one terminal
+//! line while work is running, preserves that line on Ctrl+C, and prints normal
+//! command output below it on completion or interruption.
 
-use std::io;
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use atlas_engine::progress::ProgressState;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-use ratatui::{TerminalOptions, Viewport};
+use atlas_engine::progress::{PhaseState, ProgressPhase, ProgressSnapshot, ProgressState};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
-use super::render;
+const TICK_MS: u64 = 200;
 
-/// Number of terminal rows reserved for the inline progress display.
-/// 4 plain rows: completed, gauge, pending, footer.
-const INLINE_ROWS: u16 = 4;
-
-/// Owns the ratatui terminal and drives the render loop.
+/// Owns the terminal progress bar and drives periodic updates.
 pub struct TuiProgress {
-    terminal: ratatui::DefaultTerminal,
+    bar: ProgressBar,
     state: Arc<Mutex<ProgressState>>,
-    tick: u64,
+    last_phase: Option<ProgressPhase>,
+    last_had_total: Option<bool>,
 }
 
 impl TuiProgress {
-    /// Initialise inline TUI just below the cursor.
-    /// Returns `None` on non-TTY stdout (pipe, CI).
+    /// Initialise terminal progress. Returns `None` on non-TTY stdout.
     pub fn try_init(state: Arc<Mutex<ProgressState>>) -> Option<Self> {
         if !atty::is(atty::Stream::Stdout) {
             return None;
         }
-        let options = TerminalOptions {
-            viewport: Viewport::Inline(INLINE_ROWS),
-        };
-        let terminal = match ratatui::try_init_with_options(options) {
-            Ok(t) => t,
-            Err(_) => return None,
-        };
-        Some(Self {
-            terminal,
-            state,
-            tick: 0,
-        })
-    }
 
-    /// Render one frame.
-    fn draw(&mut self) -> io::Result<()> {
-        self.tick = self.tick.wrapping_add(1);
-        let state = self.state.clone();
-        self.terminal
-            .draw(|frame| render::render(frame, state, self.tick))?;
-        Ok(())
+        let bar = ProgressBar::new_spinner();
+        bar.set_draw_target(ProgressDrawTarget::stdout_with_hz(10));
+        bar.set_style(spinner_style());
+        bar.enable_steady_tick(Duration::from_millis(120));
+
+        Some(Self {
+            bar,
+            state,
+            last_phase: None,
+            last_had_total: None,
+        })
     }
 
     /// Blocking draw loop — renders every 200 ms until done or stopped.
@@ -71,10 +51,6 @@ impl TuiProgress {
         stop_flag: &AtomicBool,
     ) -> bool {
         loop {
-            // ── Check exit flags FIRST — before any blocking call ──
-            // This is load-bearing for Ctrl+C: if the signal arrives
-            // during sleep or the previous draw, we must exit
-            // *before* the next Mutex-lock or terminal-write, not after.
             if stop_flag.load(Ordering::SeqCst) {
                 return true;
             }
@@ -82,21 +58,15 @@ impl TuiProgress {
                 return false;
             }
 
-            // ── Flush atomic counters into ProgressState ──
-            // Use try_lock to avoid blocking if the worker holds the
-            // mutex (rare, but possible during phase transitions).
-            match self.state.try_lock() {
-                Ok(mut s) => {
-                    s.flush_and_snapshot();
-                }
-                Err(_) => {
-                    // Mutex is held by the worker — skip this frame
-                    // and try again after sleep.  The atomic counters
-                    // will be picked up on the next iteration.
-                }
+            let snap = self
+                .state
+                .try_lock()
+                .ok()
+                .map(|mut state| state.flush_and_snapshot());
+            if let Some(snap) = snap {
+                self.render_snapshot(&snap);
             }
 
-            // Double-check flags after flush (may have changed during lock wait)
             if stop_flag.load(Ordering::SeqCst) {
                 return true;
             }
@@ -104,107 +74,131 @@ impl TuiProgress {
                 return false;
             }
 
-            // ── Render one frame ──
-            if let Err(_) = self.draw() {
-                // Terminal error — skip this frame.
-            }
-
-            // ── Poll for Ctrl+C key event ──
-            // In raw mode, ISIG is off — Ctrl+C arrives as a keyboard
-            // event, not as SIGINT.  We poll with a zero timeout: if
-            // there are events, read them; otherwise continue.
-            //
-            // Drain ALL pending events (not just Ctrl+C) to avoid
-            // event queue back-pressure.
-            while event::poll(Duration::from_millis(0)).unwrap_or(false) {
-                if let Ok(Event::Key(key)) = event::read() {
-                    if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            std::thread::sleep(Duration::from_millis(200));
+            std::thread::sleep(Duration::from_millis(TICK_MS));
         }
     }
 
-    /// Finish on normal completion — renders a compact summary frame
-    /// via ratatui (replacing the progress bars), then drops the
-    /// terminal and positions the cursor on the line directly below
-    /// the summary.
-    ///
-    /// `\x1b[J` clears any blank rows below the summary that may have
-    /// been created by terminal scrolling during `Viewport::Inline`
-    /// rendering.  This is terminal-state cleanup for a scroll
-    /// side-effect — the summary content itself is still 100% ratatui-
-    /// rendered.
-    pub fn finish(mut self, files: u64, symbols: u64, edges: u64) {
-        let _ = self
-            .terminal
-            .draw(|frame| render::render_summary(frame, files, symbols, edges));
-
-        // Drop the terminal — try_restore() disables raw mode and
-        // restores the cursor to its pre-init position.
-        drop(self);
-
-        // Step past the 4-row summary, then clear everything below.
-        // The \x1b[J erases scroll-induced blank rows; the cursor
-        // stays on the line right below the summary so the shell
-        // prompt appears there without any gap.
-        let _ = std::io::Write::write_all(
-            &mut std::io::stdout(),
-            format!("\x1b[{}B\x1b[J", INLINE_ROWS).as_bytes(),
-        );
-        let _ = std::io::Write::flush(&mut std::io::stdout());
+    /// Finish on normal completion.
+    pub fn finish(self, files: u64, symbols: u64, edges: u64) {
+        self.bar.finish_and_clear();
+        print_summary(files, symbols, edges);
     }
 
-    /// Leave on Ctrl+C — exits raw mode while preserving the progress
-    /// display on screen (like `wget` on interrupt).  The cursor lands
-    /// directly below the progress rows; `\x1b[J` clears any
-    /// scroll-induced blank rows below so the interrupt message and
-    /// subsequent shell prompt appear without a gap.
-    pub fn leave(self) {
-        drop(self); // try_restore()
+    /// Finish after Ctrl+C and print the interrupt summary below.
+    pub fn interrupt(self, state: &ProgressState) {
+        self.bar.finish_and_clear();
+        print_interrupted_stdout(state);
+    }
 
-        let _ = std::io::Write::write_all(
-            &mut std::io::stdout(),
-            format!("\x1b[{}B\x1b[J", INLINE_ROWS).as_bytes(),
-        );
-        let _ = std::io::Write::flush(&mut std::io::stdout());
+    fn render_snapshot(&mut self, snap: &ProgressSnapshot) {
+        let phase = snap.current_phase;
+        let has_total = snap.total.is_some();
+        if self.last_phase != phase || self.last_had_total != Some(has_total) {
+            self.last_phase = phase;
+            self.last_had_total = Some(has_total);
+            self.bar.reset_elapsed();
+            if has_total {
+                self.bar.set_style(bar_style());
+            } else {
+                self.bar.set_style(spinner_style());
+            }
+        }
+
+        let prefix = phase
+            .map(|p| p.display_name().to_string())
+            .unwrap_or_else(|| "Starting".to_string());
+        self.bar.set_prefix(prefix);
+
+        if let Some(total) = snap.total {
+            self.bar.set_length(total);
+            self.bar.set_position(snap.current.min(total));
+        } else {
+            self.bar.unset_length();
+            self.bar.set_position(snap.current);
+            self.bar.tick();
+        }
+
+        self.bar.set_message(progress_message(snap));
     }
 }
-
-impl Drop for TuiProgress {
-    fn drop(&mut self) {
-        // Best-effort restore.  If finish() was called, this is a no-op.
-        let _ = ratatui::try_restore();
-    }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────
 
 /// Print a brief interrupt message after Ctrl+C.
 pub fn print_interrupted(state: &ProgressState) {
-    use atlas_engine::progress::PhaseState;
+    let mut stderr = std::io::stderr();
+    let _ = write_interrupted(&mut stderr, state);
+}
+
+fn spinner_style() -> ProgressStyle {
+    ProgressStyle::with_template("{spinner} {prefix} {pos} {msg}")
+        .unwrap_or_else(|_| ProgressStyle::default_spinner())
+}
+
+fn bar_style() -> ProgressStyle {
+    ProgressStyle::with_template("{prefix} {bar:32} {pos}/{len} ({percent}%) {msg}")
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+        .progress_chars("=>-")
+}
+
+fn progress_message(snap: &ProgressSnapshot) -> String {
+    let mut parts = Vec::new();
+    if let Some(rate) = snap.rate {
+        parts.push(format!("{:.0}/s", rate));
+    }
+    parts.push(format!("elapsed {:.1}s", snap.elapsed.as_secs_f64()));
+    if let Some(msg) = &snap.message {
+        parts.push(msg.clone());
+    }
+    parts.join(" | ")
+}
+
+fn print_summary(files: u64, symbols: u64, edges: u64) {
+    println!(" ◆ Index complete");
+    println!("   Files:   {}", files);
+    println!("   Symbols: {}", symbols);
+    println!("   Edges:   {}", edges);
+}
+
+fn print_interrupted_stdout(state: &ProgressState) {
+    let mut stdout = std::io::stdout();
+    let _ = write_interrupted(&mut stdout, state);
+}
+
+fn write_interrupted<W: Write>(
+    writer: &mut W,
+    state: &ProgressState,
+) -> std::io::Result<()> {
     let snap = state.read_snapshot();
-    eprintln!("\nInterrupted.");
+    writeln!(writer, "Interrupted.")?;
 
     if let Some(phase) = snap.current_phase {
-        eprintln!("  Current phase: {}", phase.display_name());
+        writeln!(writer, "  Current phase: {}", phase.display_name())?;
         if snap.current > 0 {
-            eprintln!("  Progress: {}", snap.current);
+            writeln!(writer, "  Progress: {}", snap.current)?;
         }
     }
 
     for entry in &snap.phases {
         if let PhaseState::Completed { note, .. } = &entry.state {
             if let Some(n) = note {
-                eprintln!("  {} — {}", entry.phase.display_name(), n);
+                writeln!(writer, "  {} — {}", entry.phase.display_name(), n)?;
             }
         }
     }
 
-    eprintln!("  Partial results are saved. Run `atlas index` again to resume.");
+    writeln!(
+        writer,
+        "  Partial results are saved. Run `atlas index` again to resume."
+    )?;
+    writer.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bar_style, spinner_style};
+
+    #[test]
+    fn progress_styles_compile() {
+        let _ = spinner_style();
+        let _ = bar_style();
+    }
 }

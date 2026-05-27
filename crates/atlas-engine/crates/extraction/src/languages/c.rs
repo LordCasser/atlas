@@ -290,6 +290,7 @@ fn c_definition_kind(capture: &str) -> Option<SymbolKind> {
         "definition.enum" => Some(SymbolKind::Enum),
         "definition.type_alias" => Some(SymbolKind::TypeAlias), // typedef
         "definition.macro" => Some(SymbolKind::Macro),
+        "definition.field" => Some(SymbolKind::Field),
         "definition.variable" => Some(SymbolKind::Variable),
         _ => None,
     }

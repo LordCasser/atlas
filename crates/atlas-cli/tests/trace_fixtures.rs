@@ -157,11 +157,7 @@ fn assert_source_name(path: &atlas_engine::TracePath, expected: &str) {
 
 /// Assert that the trace path has at least `min_steps` steps and that
 /// the source data node is NOT the same as the sink trace point.
-fn assert_path_completeness(
-    path: &atlas_engine::TracePath,
-    min_steps: usize,
-    sink_name: &str,
-) {
+fn assert_path_completeness(path: &atlas_engine::TracePath, min_steps: usize, sink_name: &str) {
     assert!(
         path.steps.len() >= min_steps,
         "expected >= {} steps, got {}",
@@ -808,7 +804,10 @@ fn fx7_java_cross_function_arg_to_param() {
     assert_envelope_ok(&resp, "java");
 
     let path = resp.result.expect("cross-function trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
 }
 
@@ -851,8 +850,13 @@ fn fx8_java_cross_function_return_to_call() {
     );
     assert_envelope_ok(&resp, "java");
 
-    let path = resp.result.expect("cross-function return trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    let path = resp
+        .result
+        .expect("cross-function return trace must produce path");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function return trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
 }
 
@@ -902,7 +906,10 @@ func inner(p int) int {
     assert_envelope_ok(&resp, "go");
 
     let path = resp.result.expect("cross-function trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
 }
 
@@ -946,8 +953,13 @@ func inner() int {
     );
     assert_envelope_ok(&resp, "go");
 
-    let path = resp.result.expect("cross-function return trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    let path = resp
+        .result
+        .expect("cross-function return trace must produce path");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function return trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
 }
 
@@ -996,7 +1008,10 @@ fn fx11_csharp_cross_function_arg_to_param() {
     assert_envelope_ok(&resp, "csharp");
 
     let path = resp.result.expect("cross-function trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
 }
 
@@ -1032,7 +1047,8 @@ fn fx12_csharp_cross_function_return_to_call() {
 
     // Use LOCAL y (variable definition) for the sink — find_node returns the
     // last match, which may be VariableUse/Return y from `return y`.
-    let sink = data_nodes.iter()
+    let sink = data_nodes
+        .iter()
         .find(|n| n.kind == DataNodeKind::Local && n.name.as_deref() == Some("y"))
         .expect("must find Local y");
     let resp = engine.trace_variable(
@@ -1043,8 +1059,13 @@ fn fx12_csharp_cross_function_return_to_call() {
     );
     assert_envelope_ok(&resp, "csharp");
 
-    let path = resp.result.expect("cross-function return trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    let path = resp
+        .result
+        .expect("cross-function return trace must produce path");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function return trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
 }
 
@@ -1092,7 +1113,10 @@ fn inner(p: i32) -> i32 {
     assert_envelope_ok(&resp, "rust");
 
     let path = resp.result.expect("cross-function trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
 }
 
@@ -1134,8 +1158,13 @@ fn inner() -> i32 {
     );
     assert_envelope_ok(&resp, "rust");
 
-    let path = resp.result.expect("cross-function return trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    let path = resp
+        .result
+        .expect("cross-function return trace must produce path");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function return trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
 }
 
@@ -1183,7 +1212,10 @@ function inner($p) {
     assert_envelope_ok(&resp, "php");
 
     let path = resp.result.expect("cross-function trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
 }
 
@@ -1225,8 +1257,13 @@ function inner() {
     );
     assert_envelope_ok(&resp, "php");
 
-    let path = resp.result.expect("cross-function return trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    let path = resp
+        .result
+        .expect("cross-function return trace must produce path");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function return trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
 }
 
@@ -1274,7 +1311,10 @@ end
     assert_envelope_ok(&resp, "ruby");
 
     let path = resp.result.expect("cross-function trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
 }
 
@@ -1319,8 +1359,13 @@ end
     );
     assert_envelope_ok(&resp, "ruby");
 
-    let path = resp.result.expect("cross-function return trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    let path = resp
+        .result
+        .expect("cross-function return trace must produce path");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function return trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
 }
 
@@ -1437,7 +1482,10 @@ fun inner(p: Int): Int {
     assert_envelope_ok(&resp, "kotlin");
 
     let path = resp.result.expect("cross-function trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
 }
 
@@ -1479,8 +1527,13 @@ fun inner(): Int {
     );
     assert_envelope_ok(&resp, "kotlin");
 
-    let path = resp.result.expect("cross-function return trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    let path = resp
+        .result
+        .expect("cross-function return trace must produce path");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function return trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
 }
 
@@ -1528,7 +1581,10 @@ def fx_py_arg_to_param_inner(p):
     assert_envelope_ok(&resp, "python");
 
     let path = resp.result.expect("cross-function trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
 }
 
@@ -1570,8 +1626,13 @@ def fx_py_return_to_call_process():
     );
     assert_envelope_ok(&resp, "python");
 
-    let path = resp.result.expect("cross-function return trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    let path = resp
+        .result
+        .expect("cross-function return trace must produce path");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function return trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
 }
 
@@ -1724,7 +1785,10 @@ fn fx_py_destructure() {
     assert_envelope_ok(&resp, "python");
 
     let path = resp.result.expect("trace path must exist");
-    assert!(!path.steps.is_empty(), "destructuring trace must have steps");
+    assert!(
+        !path.steps.is_empty(),
+        "destructuring trace must have steps"
+    );
 
     // Verify the trace path has Assign edges (from a, b → result)
     let assign_count = path
@@ -1783,7 +1847,10 @@ int outer() {
     assert_envelope_ok(&resp, "c");
 
     let path = resp.result.expect("cross-function trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
 }
 
@@ -1825,8 +1892,13 @@ int outer() {
     );
     assert_envelope_ok(&resp, "c");
 
-    let path = resp.result.expect("cross-function return trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    let path = resp
+        .result
+        .expect("cross-function return trace must produce path");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function return trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
 }
 
@@ -1874,7 +1946,10 @@ int outer() {
     assert_envelope_ok(&resp, "cpp");
 
     let path = resp.result.expect("cross-function trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
 }
 
@@ -1916,8 +1991,13 @@ int outer() {
     );
     assert_envelope_ok(&resp, "cpp");
 
-    let path = resp.result.expect("cross-function return trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    let path = resp
+        .result
+        .expect("cross-function return trace must produce path");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function return trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
 }
 
@@ -1965,7 +2045,10 @@ function outer(): number {
     assert_envelope_ok(&resp, "arkts");
 
     let path = resp.result.expect("cross-function trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
 }
 
@@ -2007,8 +2090,13 @@ function outer(): number {
     );
     assert_envelope_ok(&resp, "arkts");
 
-    let path = resp.result.expect("cross-function return trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
+    let path = resp
+        .result
+        .expect("cross-function return trace must produce path");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function return trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
 }
 
@@ -2040,10 +2128,11 @@ class MyComponent {
     let file_id = FileId::generate("component.ets");
 
     // ── Symbols ──────────────────────────────────────────────────
-    let symbols = store
-        .find_symbols_by_file(&file_id)
-        .expect("symbols");
-    assert!(!symbols.is_empty(), "expected symbols for ArkTS @Component class");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    assert!(
+        !symbols.is_empty(),
+        "expected symbols for ArkTS @Component class"
+    );
 
     let component_sym = symbols
         .iter()
@@ -2076,10 +2165,11 @@ class MyComponent {
     //       capture exists. This is a known TS grammar fallback gap.
 
     // ── References ───────────────────────────────────────────────
-    let refs = store
-        .find_references_by_file(&file_id)
-        .expect("references");
-    assert!(!refs.is_empty(), "expected references for ArkTS @Component class");
+    let refs = store.find_references_by_file(&file_id).expect("references");
+    assert!(
+        !refs.is_empty(),
+        "expected references for ArkTS @Component class"
+    );
 
     // this.count → should be captured as a @reference.field
     let field_ref = refs
@@ -2093,36 +2183,39 @@ class MyComponent {
     );
 
     // console.log → should be captured as a @reference.call (method call)
-    let has_log_call = refs
-        .iter()
-        .any(|r| r.name == "log");
-    assert!(has_log_call, "expected reference to 'log' (console.log call)");
+    let has_log_call = refs.iter().any(|r| r.name == "log");
+    assert!(
+        has_log_call,
+        "expected reference to 'log' (console.log call)"
+    );
 
     // ── Scopes ───────────────────────────────────────────────────
-    let scopes = store
-        .find_scopes_by_file(&file_id)
-        .expect("scopes");
-    assert!(!scopes.is_empty(), "expected scopes for ArkTS @Component class");
+    let scopes = store.find_scopes_by_file(&file_id).expect("scopes");
+    assert!(
+        !scopes.is_empty(),
+        "expected scopes for ArkTS @Component class"
+    );
 
     // NOTE: TS scope names are generated as Kind#byte_offset (e.g. Class#123),
     //       not human-readable.  Verify by kind, not name.
-    let has_class_scope = scopes
-        .iter()
-        .any(|s| matches!(s.kind, atlas_engine::enums::ScopeKind::Class | atlas_engine::enums::ScopeKind::Struct));
+    let has_class_scope = scopes.iter().any(|s| {
+        matches!(
+            s.kind,
+            atlas_engine::enums::ScopeKind::Class | atlas_engine::enums::ScopeKind::Struct
+        )
+    });
     assert!(
         has_class_scope,
         "expected a class/struct scope for MyComponent, got: {:?}",
         scopes.iter().map(|s| s.kind).collect::<Vec<_>>()
     );
 
-    let has_method_scope = scopes
-        .iter()
-        .any(|s| {
-            matches!(
-                s.kind,
-                atlas_engine::enums::ScopeKind::Method | atlas_engine::enums::ScopeKind::Function
-            )
-        });
+    let has_method_scope = scopes.iter().any(|s| {
+        matches!(
+            s.kind,
+            atlas_engine::enums::ScopeKind::Method | atlas_engine::enums::ScopeKind::Function
+        )
+    });
     assert!(
         has_method_scope,
         "expected a method/function scope for build(), got: {:?}",
@@ -2158,10 +2251,11 @@ function createPoint(): Point {
     let file_id = FileId::generate("point.ets");
 
     // ── Symbols ──────────────────────────────────────────────────
-    let symbols = store
-        .find_symbols_by_file(&file_id)
-        .expect("symbols");
-    assert!(!symbols.is_empty(), "expected symbols for ArkTS class-as-struct");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    assert!(
+        !symbols.is_empty(),
+        "expected symbols for ArkTS class-as-struct"
+    );
 
     let point_sym = symbols
         .iter()
@@ -2208,7 +2302,10 @@ function createPoint(): Point {
     assert!(!path.steps.is_empty(), "trace must have steps");
     assert!(
         path.steps.iter().any(|s| {
-            matches!(s.edge_kind, DataFlowKind::ReturnValue | DataFlowKind::Assign)
+            matches!(
+                s.edge_kind,
+                DataFlowKind::ReturnValue | DataFlowKind::Assign
+            )
         }),
         "expected ReturnValue or Assign edge in function return trace, got steps: {:?}",
         path.steps.iter().map(|s| s.edge_kind).collect::<Vec<_>>()
@@ -2260,7 +2357,10 @@ func inner(p: Int64): Int64 {
     assert_envelope_ok(&resp, "cangjie");
 
     let path = resp.result.expect("cross-function trace must produce path");
-    assert!(!path.steps.is_empty(), "cross-function trace must have steps");
+    assert!(
+        !path.steps.is_empty(),
+        "cross-function trace must have steps"
+    );
     assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
 }
 
@@ -2828,10 +2928,7 @@ func process(): String {
     let path = resp.result.expect("trace path must exist");
     // Cangjie lacks ReturnToCall — the trace may be minimal.  Verify
     // it succeeds without crashing and has at least some steps.
-    assert!(
-        !path.steps.is_empty(),
-        "trace must have at least 1 step"
-    );
+    assert!(!path.steps.is_empty(), "trace must have at least 1 step");
     // If interprocedural bridging works (≥3 steps), validate semantics.
     if path.steps.len() >= 3 {
         assert_source_name(&path, "secret");
@@ -2865,7 +2962,12 @@ fn fx_cfg_java() {
     let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
     let func_syms: Vec<_> = symbols
         .iter()
-        .filter(|s| matches!(s.kind, SymbolKind::Method | SymbolKind::Function | SymbolKind::Constructor))
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Method | SymbolKind::Function | SymbolKind::Constructor
+            )
+        })
         .collect();
     assert!(
         !func_syms.is_empty(),
@@ -2873,7 +2975,9 @@ fn fx_cfg_java() {
     );
 
     for sym in &func_syms {
-        let cfg_nodes = store.find_cfg_nodes_by_function(&sym.id).expect("cfg_nodes");
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
         assert!(
             cfg_nodes.len() >= 3,
             "Java CFG for '{}': expected >= 3 nodes, got {}",
@@ -2887,9 +2991,7 @@ fn fx_cfg_java() {
 
         let mut edge_count = 0usize;
         for node in &cfg_nodes {
-            let edges = store
-                .find_cfg_edges_by_source(&node.id)
-                .expect("cfg_edges");
+            let edges = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
             edge_count += edges.len();
         }
         assert!(
@@ -2923,7 +3025,12 @@ func compute(x int) int {
     let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
     let func_syms: Vec<_> = symbols
         .iter()
-        .filter(|s| matches!(s.kind, SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor))
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
         .collect();
     assert!(
         !func_syms.is_empty(),
@@ -2931,7 +3038,9 @@ func compute(x int) int {
     );
 
     for sym in &func_syms {
-        let cfg_nodes = store.find_cfg_nodes_by_function(&sym.id).expect("cfg_nodes");
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
         assert!(
             cfg_nodes.len() >= 3,
             "Go CFG for '{}': expected >= 3 nodes, got {}",
@@ -2945,9 +3054,7 @@ func compute(x int) int {
 
         let mut edge_count = 0usize;
         for node in &cfg_nodes {
-            let edges = store
-                .find_cfg_edges_by_source(&node.id)
-                .expect("cfg_edges");
+            let edges = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
             edge_count += edges.len();
         }
         assert!(
@@ -2977,7 +3084,12 @@ fn fx_cfg_python() {
     let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
     let func_syms: Vec<_> = symbols
         .iter()
-        .filter(|s| matches!(s.kind, SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor))
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
         .collect();
     assert!(
         !func_syms.is_empty(),
@@ -2985,7 +3097,9 @@ fn fx_cfg_python() {
     );
 
     for sym in &func_syms {
-        let cfg_nodes = store.find_cfg_nodes_by_function(&sym.id).expect("cfg_nodes");
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
         assert!(
             cfg_nodes.len() >= 3,
             "Python CFG for '{}': expected >= 3 nodes, got {}",
@@ -2999,9 +3113,7 @@ fn fx_cfg_python() {
 
         let mut edge_count = 0usize;
         for node in &cfg_nodes {
-            let edges = store
-                .find_cfg_edges_by_source(&node.id)
-                .expect("cfg_edges");
+            let edges = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
             edge_count += edges.len();
         }
         assert!(
@@ -3034,7 +3146,12 @@ fn fx_cfg_c() {
     let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
     let func_syms: Vec<_> = symbols
         .iter()
-        .filter(|s| matches!(s.kind, SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor))
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
         .collect();
     assert!(
         !func_syms.is_empty(),
@@ -3042,7 +3159,9 @@ fn fx_cfg_c() {
     );
 
     for sym in &func_syms {
-        let cfg_nodes = store.find_cfg_nodes_by_function(&sym.id).expect("cfg_nodes");
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
         assert!(
             cfg_nodes.len() >= 3,
             "C CFG for '{}': expected >= 3 nodes, got {}",
@@ -3056,9 +3175,7 @@ fn fx_cfg_c() {
 
         let mut edge_count = 0usize;
         for node in &cfg_nodes {
-            let edges = store
-                .find_cfg_edges_by_source(&node.id)
-                .expect("cfg_edges");
+            let edges = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
             edge_count += edges.len();
         }
         assert!(
@@ -3090,7 +3207,12 @@ fn fx_cfg_cpp() {
     let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
     let func_syms: Vec<_> = symbols
         .iter()
-        .filter(|s| matches!(s.kind, SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor))
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
         .collect();
     assert!(
         !func_syms.is_empty(),
@@ -3098,7 +3220,9 @@ fn fx_cfg_cpp() {
     );
 
     for sym in &func_syms {
-        let cfg_nodes = store.find_cfg_nodes_by_function(&sym.id).expect("cfg_nodes");
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
         assert!(
             cfg_nodes.len() >= 3,
             "C++ CFG for '{}': expected >= 3 nodes, got {}",
@@ -3112,9 +3236,7 @@ fn fx_cfg_cpp() {
 
         let mut edge_count = 0usize;
         for node in &cfg_nodes {
-            let edges = store
-                .find_cfg_edges_by_source(&node.id)
-                .expect("cfg_edges");
+            let edges = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
             edge_count += edges.len();
         }
         assert!(
@@ -3146,7 +3268,12 @@ fn fx_cfg_rust() {
     let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
     let func_syms: Vec<_> = symbols
         .iter()
-        .filter(|s| matches!(s.kind, SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor))
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
         .collect();
     assert!(
         !func_syms.is_empty(),
@@ -3154,7 +3281,9 @@ fn fx_cfg_rust() {
     );
 
     for sym in &func_syms {
-        let cfg_nodes = store.find_cfg_nodes_by_function(&sym.id).expect("cfg_nodes");
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
         assert!(
             cfg_nodes.len() >= 3,
             "Rust CFG for '{}': expected >= 3 nodes, got {}",
@@ -3168,9 +3297,7 @@ fn fx_cfg_rust() {
 
         let mut edge_count = 0usize;
         for node in &cfg_nodes {
-            let edges = store
-                .find_cfg_edges_by_source(&node.id)
-                .expect("cfg_edges");
+            let edges = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
             edge_count += edges.len();
         }
         assert!(

@@ -75,3 +75,25 @@
 
 (template_declaration
   (class_specifier (type_identifier) @definition.class))
+
+;; ===== Field declarations (data members, excluding methods) =====
+;; Function pointer field: void (*handler)(int);
+(field_declaration
+  (pointer_declarator
+    (function_declarator
+      (field_identifier) @definition.field)))
+
+;; Regular data field: int value_;
+(field_declaration
+  (type_identifier)
+  (field_identifier) @definition.field)
+
+;; Data field with template type: std::vector<int> items_;
+(field_declaration
+  (template_type)
+  (field_identifier) @definition.field)
+
+;; Data field with qualified_identifier type: std::string name_;
+(field_declaration
+  (qualified_identifier)
+  (field_identifier) @definition.field)

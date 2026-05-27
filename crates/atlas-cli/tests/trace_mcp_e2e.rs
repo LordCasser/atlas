@@ -1032,7 +1032,9 @@ fn p12a_mcp_graph_error_returns_structured_response() {
         "response must have symbol field"
     );
     assert!(
-        json.get("total_nodes_visited").and_then(|v| v.as_u64()).is_some(),
+        json.get("total_nodes_visited")
+            .and_then(|v| v.as_u64())
+            .is_some(),
         "response must have total_nodes_visited field"
     );
 }
@@ -1618,7 +1620,11 @@ fn mcp_search_requires_scope() {
     // scope is no longer required — search defaults to "." (entire project).
     let (search_json, search_error) = call_tool(&mut router, "search", json!({ "query": "greet" }));
 
-    assert!(!search_error, "search without scope should succeed with manual index: {:?}", search_json);
+    assert!(
+        !search_error,
+        "search without scope should succeed with manual index: {:?}",
+        search_json
+    );
     // Scope defaults to project root; response is a valid ScopedSearchResponse.
     assert_eq!(search_json["query"].as_str(), Some("greet"));
     assert_eq!(search_json["parse_level"].as_str(), Some("structural"));

@@ -298,6 +298,7 @@ fn cpp_definition_kind(capture: &str) -> Option<SymbolKind> {
         "definition.class" => Some(SymbolKind::Class),
         "definition.namespace" => Some(SymbolKind::Namespace),
         "definition.enum" => Some(SymbolKind::Enum),
+        "definition.field" => Some(SymbolKind::Field),
         "definition.macro" => Some(SymbolKind::Macro),
         "definition.variable" => Some(SymbolKind::Variable),
         _ => None,
