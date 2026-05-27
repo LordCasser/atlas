@@ -553,7 +553,10 @@ fn normalize_php_dataflow_builder(
             )
         }
         "df.call_target" => node_text(node, source)
-            .map(|name| {
+            .map(|raw_name| {
+                // Strip $ sigil from variable_name nodes (dynamic method calls)
+                // and name nodes alike for consistent naming.
+                let name = strip_php_sigil(&raw_name).to_string();
                 let access_path = name.clone();
                 let callsite_id = find_call_expression_php(node).map(|ce| {
                     types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)

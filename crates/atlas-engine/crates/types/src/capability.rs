@@ -891,6 +891,8 @@ mod profiles {
     }
 
     // ---- Cangjie ----------------------------------------------------------
+    // Confidence raised from 0.62 to 0.65: method calls (obj.method())
+    // now captured via postfixExpression(fieldAccess, callSuffix) pattern.
 
     fn cangjie_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
@@ -911,41 +913,41 @@ mod profiles {
             ],
             limitations: vec![
                 "AST-driven local dataflow with basic parameter/local/return/call capture".into(),
-                "method call targets not captured (simple calls only)".into(),
+                "method call targets now captured (simple + obj.method() patterns)".into(),
                 "scope-chain-aware binding not implemented".into(),
             ],
-            confidence_floor: 0.62,
+            confidence_floor: 0.65,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.62),
-                references: FeatureSupport::supported_with_confidence(0.62),
-                imports: FeatureSupport::supported_with_confidence(0.62),
-                scopes: FeatureSupport::supported_with_confidence(0.62),
+                symbols: FeatureSupport::supported_with_confidence(0.65),
+                references: FeatureSupport::supported_with_confidence(0.65),
+                imports: FeatureSupport::supported_with_confidence(0.65),
+                scopes: FeatureSupport::supported_with_confidence(0.65),
                 call_graph: FeatureSupport::supported_with_limitations(
-                    0.62,
-                    vec!["simple function calls; method calls not captured"],
+                    0.65,
+                    vec!["simple function calls + method calls (obj.method())"],
                 ),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.62,
+                    0.65,
                     vec!["basic parameter/local binding extraction"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.62,
+                    0.65,
                     vec!["AST-driven local dataflow"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.62,
+                    0.65,
                     vec!["basic use-def via lexical bindings + dataflow"],
                 ),
                 field_access: FeatureSupport::supported_with_limitations(
-                    0.50,
+                    0.55,
                     vec!["basic field access capture"],
                 ),
                 call_arguments: FeatureSupport::supported_with_limitations(
-                    0.62,
+                    0.65,
                     vec!["basic call argument capture"],
                 ),
                 returns_flow: FeatureSupport::supported_with_limitations(
-                    0.62,
+                    0.65,
                     vec!["basic return value capture"],
                 ),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for Cangjie"),
@@ -1151,6 +1153,8 @@ mod profiles {
     // NOTE: PHP ArgToParam fixture (fx15) is marked should_panic — extraction
     //       does not produce DataNodes for function parameters.  Upgraded to
     //       DataflowFull with known extraction gap documented via fixture.
+    //       Confidence raised from 0.58 to 0.62: dynamic method calls now
+    //       emit low-confidence callsites/references instead of being absent.
     fn php_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "php".into(),
@@ -1175,31 +1179,31 @@ mod profiles {
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
-                "dynamic method calls via variable not resolved".into(),
+                "dynamic method calls via variable emit low-confidence edges (not yet resolved)".into(),
                 "namespace aliases resolved at reference resolution layer".into(),
             ],
-            confidence_floor: 0.58,
+            confidence_floor: 0.62,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.58),
-                references: FeatureSupport::supported_with_confidence(0.58),
-                imports: FeatureSupport::supported_with_confidence(0.58),
-                scopes: FeatureSupport::supported_with_confidence(0.58),
-                call_graph: FeatureSupport::supported_with_confidence(0.58),
+                symbols: FeatureSupport::supported_with_confidence(0.62),
+                references: FeatureSupport::supported_with_confidence(0.62),
+                imports: FeatureSupport::supported_with_confidence(0.62),
+                scopes: FeatureSupport::supported_with_confidence(0.62),
+                call_graph: FeatureSupport::supported_with_confidence(0.62),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.58,
+                    0.62,
                     vec!["name-based binding (no proper shadowing)"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.58,
+                    0.62,
                     vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.58,
+                    0.62,
                     vec!["name-based binding (no proper shadowing)"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.58),
-                call_arguments: FeatureSupport::supported_with_confidence(0.58),
-                returns_flow: FeatureSupport::supported_with_confidence(0.58),
+                field_access: FeatureSupport::supported_with_confidence(0.62),
+                call_arguments: FeatureSupport::supported_with_confidence(0.62),
+                returns_flow: FeatureSupport::supported_with_confidence(0.62),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for PHP"),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.55,
@@ -1215,6 +1219,8 @@ mod profiles {
     // NOTE: ArgToParam bridge fires (fx17 passes); ReturnToCall bridge (fx18) and
     //       basic local dataflow (fx32) also verified.  Upgraded to DataflowFull;
     //       gaps tracked via golden fixtures.
+    //       Confidence raised from 0.62 to 0.65: block/yield gap documented in
+    //       ruby.rs frontend; structured gap tracking in place.
     fn ruby_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "ruby".into(),
@@ -1240,33 +1246,33 @@ mod profiles {
                 "name-based binding (no proper shadowing)".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
                 "dynamic methods (method_missing / define_method) not yet verified".into(),
-                "block/yield implicit calls not yet verified".into(),
+                "block/yield implicit calls documented but not yet implemented".into(),
             ],
-            confidence_floor: 0.62,
+            confidence_floor: 0.65,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.62),
-                references: FeatureSupport::supported_with_confidence(0.62),
-                imports: FeatureSupport::supported_with_confidence(0.62),
-                scopes: FeatureSupport::supported_with_confidence(0.62),
-                call_graph: FeatureSupport::supported_with_confidence(0.62),
+                symbols: FeatureSupport::supported_with_confidence(0.65),
+                references: FeatureSupport::supported_with_confidence(0.65),
+                imports: FeatureSupport::supported_with_confidence(0.65),
+                scopes: FeatureSupport::supported_with_confidence(0.65),
+                call_graph: FeatureSupport::supported_with_confidence(0.65),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.62,
+                    0.65,
                     vec!["name-based binding (no proper shadowing)"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.62,
+                    0.65,
                     vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.62,
+                    0.65,
                     vec!["name-based binding (no proper shadowing)"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.62),
-                call_arguments: FeatureSupport::supported_with_confidence(0.62),
-                returns_flow: FeatureSupport::supported_with_confidence(0.62),
+                field_access: FeatureSupport::supported_with_confidence(0.65),
+                call_arguments: FeatureSupport::supported_with_confidence(0.65),
+                returns_flow: FeatureSupport::supported_with_confidence(0.65),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for Ruby"),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.62,
+                    0.65,
                     vec![
                         "cross-function bridges via summary tables",
                     ],
@@ -1279,6 +1285,8 @@ mod profiles {
     // NOTE: Golden fixtures fx19 (ArgToParam) and fx20 (ReturnToCall) exist.
     //       Bridge behavior may vary — gaps documented via should_panic if
     //       fixtures fail.
+    //       Extension function receiver (fun String.isValid()) now creates a
+    //       "this" binding as the first parameter.
     fn kotlin_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "kotlin".into(),
@@ -1303,7 +1311,7 @@ mod profiles {
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
-                "extension functions treated as regular functions".into(),
+                "extension functions: receiver creates 'this' binding; type-directed resolution not yet done".into(),
             ],
             confidence_floor: 0.67,
             features: Some(FeatureMatrix {

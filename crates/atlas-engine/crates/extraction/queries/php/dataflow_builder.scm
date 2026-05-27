@@ -22,6 +22,10 @@
 (member_call_expression
   name: (name) @df.call_target)
 
+;; --- Dynamic method calls: $obj->$method(args) ---
+(member_call_expression
+  name: (variable_name) @df.call_target)
+
 ;; --- Call arguments ---
 (arguments
   (_) @df.call_arg)

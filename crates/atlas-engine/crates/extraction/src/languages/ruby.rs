@@ -7,6 +7,13 @@
 //!
 //! Note: singleton methods (`def self.method`) are captured as Method, not
 //! differentiated from instance methods at the Symbolic level.
+//!
+//! ## Known gaps (documented, not yet implemented)
+//!
+//! - **Block/yield implicit calls**: `do |params| ... end` blocks passed to
+//!   method calls are not modeled as virtual callsites.  `yield(args)` does
+//!   not create dataflow edges to the calling context.  This means dataflow
+//!   tracing stops at block boundaries and yield is treated as a sink.
 
 use crate::languages::{node_range, node_text};
 

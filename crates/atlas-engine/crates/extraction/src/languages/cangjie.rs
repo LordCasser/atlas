@@ -391,10 +391,26 @@ fn is_cangjie_call_expr(node: tree_sitter::Node) -> bool {
     if node.kind() != "postfixExpression" {
         return false;
     }
-    (0..node.child_count()).any(|i| {
-        node.child(i as u32)
-            .map_or(false, |c| c.kind() == "callSuffix")
-    })
+    // Match both simple calls `func(args)` and method calls `obj.method(args)`.
+    // Simple call:  postfixExpression(atomicVariable, callSuffix)
+    // Method call:  postfixExpression(fieldAccess, callSuffix)
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i as u32) {
+            if child.kind() == "callSuffix" {
+                // Also check that we have a callable target (atomicVariable or fieldAccess)
+                let has_target = (0..node.child_count()).any(|j| {
+                    node.child(j as u32)
+                        .map_or(false, |c| {
+                            c.kind() == "atomicVariable" || c.kind() == "fieldAccess"
+                        })
+                });
+                if has_target {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn normalize_cangjie_dataflow(

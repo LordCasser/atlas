@@ -524,7 +524,7 @@ fn fx5_java_capability_declares_dataflow_full() {
 /// FX6: Python `trace_variable` should succeed (dataflow is partially
 /// supported), but the capability profile must declare CFG as unsupported.
 #[test]
-fn fx6_python_cfg_unsupported_in_capability() {
+fn fx6_python_cfg_supported_in_capability() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[(
         "app.py",
@@ -544,7 +544,7 @@ fn fx6_python_cfg_unsupported_in_capability() {
         20,
     );
 
-    // Capability profile must exist and declare CFG as unsupported.
+    // Python now has CFG support (CfgBuilder is language-aware as of Schema v3).
     let cap = resp
         .capability
         .as_ref()
@@ -554,19 +554,16 @@ fn fx6_python_cfg_unsupported_in_capability() {
     // Check feature matrix for CFG support.
     if let Some(ref features) = cap.features {
         assert!(
-            matches!(
-                features.cfg,
-                atlas_engine::capability::FeatureSupport::Unsupported { .. }
-            ),
-            "Python CFG must be declared Unsupported in FeatureMatrix, got {:?}",
+            features.cfg.is_supported(),
+            "Python CFG must be Supported in FeatureMatrix, got {:?}",
             features.cfg
         );
     }
 
-    // The CFG must NOT appear in the supported_features list.
+    // The CFG must appear in the supported_features list.
     assert!(
-        !cap.supported_features.contains(&"cfg".to_string()),
-        "cfg must NOT be in Python supported_features"
+        cap.supported_features.contains(&"cfg".to_string()),
+        "cfg must be in Python supported_features"
     );
 }
 

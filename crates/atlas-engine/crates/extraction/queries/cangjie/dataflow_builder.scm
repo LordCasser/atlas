@@ -22,6 +22,15 @@
     (varBindingPattern) @df.call_target)
   (callSuffix))
 
+;; --- Method call targets: obj.method(args) ---
+;; postfixExpression(fieldAccess(receiver, methodName), callSuffix)
+(postfixExpression
+  (fieldAccess
+    (_) @df.receiver
+    (atomicVariable
+      (varBindingPattern) @df.call_target))
+  (callSuffix))
+
 ;; --- Call arguments ---
 (callSuffix
   (_) @df.call_arg)

@@ -14,6 +14,10 @@
 (member_call_expression
   name: (name) @reference.call)
 
+;; Dynamic method calls ($obj->$method())
+(member_call_expression
+  name: (variable_name) @reference.call)
+
 ;; Static method calls (::)
 (scoped_call_expression
   name: (name) @reference.call)

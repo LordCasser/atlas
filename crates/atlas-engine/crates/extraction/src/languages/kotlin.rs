@@ -505,6 +505,7 @@ fn kotlin_extract_signature(
 fn kotlin_binding_kind(capture_name: &str) -> Option<BindingKind> {
     match capture_name {
         "lexical.parameter" => Some(BindingKind::Parameter),
+        "lexical.receiver" => Some(BindingKind::Parameter), // extension function receiver → "this"
         "lexical.local" => Some(BindingKind::Local),
         "lexical.catch_variable" => Some(BindingKind::CatchVariable),
         _ => None,
@@ -518,8 +519,13 @@ fn normalize_kotlin_lexical(
     file_id: FileId,
 ) -> Option<BindingDef> {
     let kind = kotlin_binding_kind(capture_name)?;
-    let name = node_text(node, source)?;
     let range = node_range(node);
+    // For extension function receivers, the binding name is "this"
+    let name = if capture_name == "lexical.receiver" {
+        "this".to_string()
+    } else {
+        node_text(node, source)?
+    };
     let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
     let id = BindingId::generate(&file_id, &scope_id, kind.as_str(), &name, range.start_byte);
     Some(BindingDef {

@@ -2,7 +2,9 @@
 ;; Captures: call, field access, type reference, instantiation
 
 ;; Function/method calls: postfixExpression + callSuffix
-(postfixExpression (fieldAccess (atomicVariable) @reference.call) (callSuffix))
+;; Method call: obj.method(args) — capture the method name (2nd atomicVariable in fieldAccess)
+(postfixExpression (fieldAccess (_) (atomicVariable) @reference.call) (callSuffix))
+;; Simple call: func(args)
 (postfixExpression (atomicVariable) @reference.call (callSuffix))
 
 ;; Field access: obj.field

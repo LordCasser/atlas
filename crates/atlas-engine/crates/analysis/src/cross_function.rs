@@ -16,8 +16,8 @@
 //!
 //! ## Confidence model
 //!
-//! - Summary-based edges: `source_confidence × 0.85` (cross-boundary penalty)
-//! - Runtime fallback edges: `SummaryEdgeProvider` confidence (backward compat)
+//! - Direct caller + summary bridge: `row.confidence × 0.92` (strong signal)
+//! - Runtime fallback (no summary): `SummaryEdgeProvider` default 0.67 (backward compat)
 
 use db::TraceStore;
 use types::enums::{DataFlowKind, DataNodeKind};
@@ -93,7 +93,7 @@ impl CrossFunctionBridge {
                                 source_id: row.source_node_id,
                                 target_id: param_id.clone(),
                                 kind: DataFlowKind::ArgToParam,
-                                confidence: row.confidence * 0.80,
+                                confidence: row.confidence * 0.92,
                                 provenance: format!(
                                     "summary bridge: caller_arg[{}] at callsite {} → callee param[{}]",
                                     arg_idx,
@@ -159,7 +159,7 @@ impl CrossFunctionBridge {
                     source_id: row.source_node_id,
                     target_id: call_result_id.clone(),
                     kind: DataFlowKind::ReturnToCall,
-                    confidence: row.confidence * 0.85,
+                    confidence: row.confidence * 0.92,
                     provenance: format!(
                         "summary bridge: callee return {} → call result {}",
                         hex::encode(row.return_id.as_bytes()),
