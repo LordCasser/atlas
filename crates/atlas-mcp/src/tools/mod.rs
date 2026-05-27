@@ -506,10 +506,14 @@ impl ToolRouter {
 
     /// Read source code for a symbol from disk.
     ///
-    /// Returns `None` if the file cannot be found, is outside the project root,
-    /// or the symbol range is invalid.  Never fails the entire request —
-    /// callers should silently omit the `source` field when this returns
-    /// `None`.
+    /// Returns `None` if the file cannot be found or is outside the project
+    /// root.  Never fails the entire request — callers should silently omit
+    /// the `source` field when this returns `None`.
+    ///
+    /// Returns the full file content (byte-for-byte equal to `Read`), matching
+    /// CodeGraph's source-inlining behavior.  Does not slice by `SymbolDef.range`
+    /// because tree-sitter queries capture name tokens, not full definition
+    /// nodes, so the stored range is too narrow.
     pub(crate) fn read_symbol_source(&self, symbol_id: &SymbolId) -> Option<String> {
         let sym = self.store.find_symbol_by_id(symbol_id).ok()??;
         let root = &self.project_root;
@@ -520,14 +524,7 @@ impl ToolRouter {
         if !canonical.starts_with(&canonical_root) {
             return None;
         }
-        let content = std::fs::read_to_string(&canonical).ok()?;
-        let all_lines: Vec<&str> = content.lines().collect();
-        let start = sym.range.start_line as usize;
-        let end = (sym.range.end_line as usize + 1).min(all_lines.len());
-        if start >= all_lines.len() {
-            return None;
-        }
-        Some(all_lines[start..end].join("\n"))
+        std::fs::read_to_string(&canonical).ok()
     }
 }
 
