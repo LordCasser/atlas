@@ -422,6 +422,34 @@ fn search_symbols_scoped(
         .max(50)
         .min(1000);
 
+    // When scope is empty (project root / "."), use non-scoped search
+    // functions — scoped equivalents treat empty scope as "no files".
+    if scope.is_empty() {
+        let mut symbols = store.find_symbols_by_name(query)?;
+        if symbols.is_empty() {
+            symbols = store.search_symbols(query)?;
+        }
+        symbols.truncate(candidate_limit);
+        if symbols.is_empty() && query.len() >= 2 {
+            symbols = store.search_symbols_by_name_like(
+                query,
+                None,
+                candidate_limit,
+                kind_filter.as_ref(),
+            )?;
+        }
+        // Filter by kind if specified (non-scoped methods don't all support kind_filter)
+        if let Some(kind) = kind_filter {
+            symbols.retain(|s| s.kind == kind);
+        }
+        symbols.sort_by(|a, b| {
+            score_symbol(query, b)
+                .partial_cmp(&score_symbol(query, a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        return Ok(symbols);
+    }
+
     let mut symbols =
         store.find_symbols_by_name_in_scope(query, scope, candidate_limit, kind_filter.as_ref())?;
     if symbols.is_empty() {
@@ -495,7 +523,8 @@ fn score_symbol(query: &str, sym: &SymbolDef) -> f64 {
 /// files.
 fn normalize_scope(scope: &str) -> String {
     let s = scope.trim();
-    // "." alone means the project root — normalize to "".
+    // "." is the project root — normalize to empty string so store methods
+    // treat it as "all files" where supported (count_files_in_scope).
     if s == "." {
         return String::new();
     }
