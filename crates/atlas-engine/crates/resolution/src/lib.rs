@@ -190,8 +190,10 @@ impl ResolutionSession {
             }
         }
 
-        // Strategy 6: Project-wide name search + fuzzy fallback
-        let candidates = self.global_index.find_by_name(&reference.name);
+        // Strategy 6: Project-wide name search + fuzzy fallback (P7: file-proximity scored)
+        let candidates = self
+            .global_index
+            .find_by_name_proximity(&reference.name, ctx.file.file_id);
         if !candidates.is_empty() {
             if let Some(matched) = self.name_matcher.best_match(
                 &candidates,

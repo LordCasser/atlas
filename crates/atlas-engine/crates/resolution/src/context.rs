@@ -5,8 +5,13 @@
 //!
 //! P4: `GlobalSymbolIndex` loads all project symbols into memory once,
 //! replacing per-reference FTS5 queries with in-memory exact + fuzzy matching.
+//!
+//! P7: File-proximity scoring added to `find_by_name_proximity` so that
+//! candidates from the same directory tree as the reference file are preferred
+//! during project-wide name search, reducing cross-module noise in fuzzy fallback.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use db::Store;
 use types::*;
@@ -15,6 +20,9 @@ use types::*;
 ///
 /// Built once at the start of resolution. Provides O(1) exact lookups by
 /// name/ID, plus bounded fuzzy fallback using Levenshtein distance.
+///
+/// P7: Tracks file parent directories so name lookups can score candidates
+/// by directory-tree proximity, reducing false matches across unrelated modules.
 #[derive(Debug, Clone)]
 pub struct GlobalSymbolIndex {
     /// All symbols in the project.
@@ -23,6 +31,9 @@ pub struct GlobalSymbolIndex {
     by_name: HashMap<String, Vec<SymbolDef>>,
     /// SymbolId → SymbolDef.
     by_id: HashMap<SymbolId, SymbolDef>,
+    /// FileId → parent directory path (without trailing '/'). Built once from
+    /// the store's file table to enable directory-proximity scoring.
+    file_parent_dir: HashMap<FileId, String>,
 }
 
 impl GlobalSymbolIndex {
@@ -38,10 +49,22 @@ impl GlobalSymbolIndex {
             by_name.entry(key).or_default().push(sym.clone());
         }
 
+        // Build file_id → parent directory map from the store's file table.
+        let mut file_parent_dir: HashMap<FileId, String> = HashMap::new();
+        if let Ok(files) = store.list_files() {
+            for f in &files {
+                if let Some(parent) = Path::new(&f.path).parent() {
+                    file_parent_dir
+                        .insert(f.file_id, parent.to_string_lossy().to_string());
+                }
+            }
+        }
+
         Ok(Self {
             symbols,
             by_name,
             by_id,
+            file_parent_dir,
         })
     }
 
@@ -51,6 +74,46 @@ impl GlobalSymbolIndex {
             .get(&name.to_lowercase())
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// Find symbols by exact name, sorted by directory proximity to the
+    /// reference's file. Candidates from the same directory tree as `file_id`
+    /// are placed first. This reduces cross-module false matches in
+    /// Strategy 6 project-wide name search.
+    ///
+    /// Tier 0 = same parent directory; tier 1 = same top-level directory;
+    /// tier 2 = unrelated.
+    pub fn find_by_name_proximity(
+        &self,
+        name: &str,
+        file_id: FileId,
+    ) -> Vec<SymbolDef> {
+        let candidates = self.find_by_name(name);
+        if candidates.len() <= 1 {
+            return candidates;
+        }
+
+        let ref_parent = self.file_parent_dir.get(&file_id);
+
+        let mut tier0: Vec<SymbolDef> = Vec::new();
+        let mut tier1: Vec<SymbolDef> = Vec::new();
+        let mut tier2: Vec<SymbolDef> = Vec::new();
+
+        for sym in candidates {
+            let sym_parent = self.file_parent_dir.get(&sym.file_id);
+            let tier = proximity_tier(ref_parent, sym_parent);
+            match tier {
+                0 => tier0.push(sym),
+                1 => tier1.push(sym),
+                _ => tier2.push(sym),
+            }
+        }
+
+        let mut result = Vec::with_capacity(tier0.len() + tier1.len() + tier2.len());
+        result.extend(tier0);
+        result.extend(tier1);
+        result.extend(tier2);
+        result
     }
 
     /// Bounded fuzzy search (Levenshtein, max 20 results).
@@ -132,6 +195,34 @@ impl GlobalSymbolIndex {
     /// Whether the index is empty.
     pub fn is_empty(&self) -> bool {
         self.symbols.is_empty()
+    }
+}
+
+/// Compute a proximity score for candidate sorting during name search.
+///
+/// 0 = same parent directory (strong signal: same module/package).
+/// 1 = same top-level directory component (weak signal: same subsystem).
+/// 2 = unrelated directory trees (minimum signal).
+fn proximity_tier(ref_parent: Option<&String>, sym_parent: Option<&String>) -> usize {
+    match (ref_parent, sym_parent) {
+        (Some(r), Some(s)) => {
+            if r == s {
+                return 0;
+            }
+            let r_top = Path::new(r)
+                .components()
+                .next()
+                .map(|c| c.as_os_str());
+            let s_top = Path::new(s)
+                .components()
+                .next()
+                .map(|c| c.as_os_str());
+            if r_top.is_some() && r_top == s_top {
+                return 1;
+            }
+            2
+        }
+        _ => 2,
     }
 }
 

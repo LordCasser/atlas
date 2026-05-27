@@ -30,7 +30,6 @@ impl ToolRouter {
             .collect();
         (
             serde_json::to_string(&json!({
-                "language_count": caps.len(),
                 "profiles": caps,
             }))
             .unwrap_or_else(|e| e.to_string()),

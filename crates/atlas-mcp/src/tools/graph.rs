@@ -255,8 +255,6 @@ impl ToolRouter {
                 "depth": d,
                 "callers": hop_callers,
                 "callees": hop_callees,
-                "caller_count": hop_callers.len(),
-                "callee_count": hop_callees.len(),
             }));
 
             frontier = next_frontier;
@@ -427,15 +425,10 @@ impl ToolRouter {
                     "kind": sym.kind.as_str(),
                     "language": sym.language.as_str(),
                     "file": self.resolve_file_path(&sym.file_id),
-                    "file_id": sym.file_id.to_hex(),
                     "range": { "line": sym.range.start_line, "column": sym.range.start_column },
                 },
-                "neighbors": {
-                    "incoming_count": incoming.len(),
-                    "outgoing_count": outgoing.len(),
-                    "incoming": incoming,
-                    "outgoing": outgoing,
-                },
+                "incoming": incoming,
+                "outgoing": outgoing,
             }))
             .unwrap_or_else(|e| e.to_string()),
             false,
@@ -455,19 +448,42 @@ impl ToolRouter {
         let sub = graph.impact(&sid, depth.min(5));
         let snap = graph.snapshot();
 
-        let nodes: Vec<_> = sub
-            .node_indices
-            .iter()
-            .take(30)
-            .map(|ix| Self::node_json(snap, *ix))
+        // Group impacted nodes by file for hierarchical output.
+        let mut file_groups: std::collections::HashMap<
+            atlas_engine::FileId,
+            Vec<serde_json::Value>,
+        > = std::collections::HashMap::new();
+        let mut total_shown = 0usize;
+
+        for &ix in &sub.node_indices {
+            if total_shown >= 30 {
+                break;
+            }
+            let node = snap.node(ix);
+            file_groups.entry(node.file_id).or_default().push(json!({
+                "name": node.name,
+                "qualified_name": node.qualified_name,
+                "kind": node.kind.as_str(),
+            }));
+            total_shown += 1;
+        }
+
+        let grouped: Vec<_> = file_groups
+            .into_iter()
+            .map(|(fid, symbols)| {
+                json!({
+                    "file": self.resolve_file_path(&fid),
+                    "symbols": symbols,
+                })
+            })
             .collect();
 
         (
             serde_json::to_string_pretty(&json!({
                 "symbol": qname,
                 "max_depth": depth,
-                "impacted_nodes": nodes.len(),
-                "nodes": nodes,
+                "impacted_nodes": total_shown,
+                "file_groups": grouped,
             }))
             .unwrap_or_else(|e| e.to_string()),
             false,

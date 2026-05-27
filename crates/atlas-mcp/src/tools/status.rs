@@ -118,7 +118,6 @@ impl ToolRouter {
         match self.store.list_files() {
             Ok(files) => (
                 serde_json::to_string_pretty(&json!({
-                    "count": files.len(),
                     "files": files.iter().map(|f| json!({
                         "path": f.path,
                         "language": f.language.as_str(),

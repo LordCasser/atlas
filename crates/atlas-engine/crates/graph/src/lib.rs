@@ -225,7 +225,10 @@ impl GraphEngine {
 
     // ── impact analysis ──────────────────────────────────────────────────
 
-    /// Impact radius: BFS outward (follows Calls + Contains + Imports) up to `depth`.
+    /// Impact radius: BFS outward (follows Calls + Imports) up to `depth`.
+    /// Only call and import edges are traversed; type references (References)
+    /// and container edges (Contains) are excluded to avoid noise from
+    /// struct fields, local variables, and type aliases.
     pub fn impact(&self, id: &SymbolId, depth: usize) -> Subgraph {
         let Some(&start) = self.snapshot.id_to_idx.get(id) else {
             return Subgraph::default();
@@ -236,9 +239,7 @@ impl GraphEngine {
             limit: 1000,
             edge_kind_filter: Some(vec![
                 EdgeKind::Calls,
-                EdgeKind::Contains,
                 EdgeKind::Imports,
-                EdgeKind::References,
             ]),
         };
         let visited = self.snapshot.bfs(&[start], &config);
@@ -268,9 +269,7 @@ impl GraphEngine {
             limit: 1000,
             edge_kind_filter: Some(vec![
                 EdgeKind::Calls,
-                EdgeKind::Contains,
                 EdgeKind::Imports,
-                EdgeKind::References,
             ]),
         };
         let visited = self.snapshot.bfs(&starts, &config);
