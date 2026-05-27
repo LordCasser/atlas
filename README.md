@@ -37,7 +37,7 @@ source code ──parse/extract──▶ .atlas/atlas.db ──query──▶ CL
 - **Local-first**: writes all index data to `<project>/.atlas/atlas.db`; no cloud service required.
 - **Deterministic extraction**: tree-sitter AST queries and stable blake3-based IDs instead of model guesses.
 - **Incremental sync**: content-hash based dirty-file detection with Git-aware file discovery.
-- **Agent-native MCP**: stdio MCP server exposing 23 bounded tools for search, graph, context, dependencies, trace, background tasks, and project management.
+- **Agent-native MCP**: stdio MCP server exposing 24 bounded tools for search, graph, context, dependencies, trace, background tasks, and project management.
 - **Graph + trace queries**: callers, callees, shortest path, impact, source-position lookup, variable origin tracing, and caller-path tracing.
 - **Explicit capability boundaries**: language capability metadata and trace diagnostics report partial results instead of silently overclaiming precision.
 
@@ -294,7 +294,7 @@ types/workspace/db ─▶ extraction/resolution/graph/analysis/search/context/fi
 
 ### Storage model
 
-Atlas stores index data in `.atlas/atlas.db` (schema version 1). Core tables include:
+Atlas stores index data in `.atlas/atlas.db` (schema version 3). Core tables include:
 
 ```text
 files              symbols            scopes             references
@@ -311,25 +311,25 @@ Default build:
 
 | Language | Extensions | Capability level |
 | --- | --- | --- |
-| TypeScript | `.ts`, `.tsx` | DataflowBasic |
-| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` | DataflowBasic |
-| Python | `.py`, `.pyi`, `.pyx` | DataflowBasic |
+| TypeScript | `.ts`, `.tsx` | DataflowFull |
+| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` | DataflowFull |
+| Python | `.py`, `.pyi`, `.pyx` | DataflowFull |
 
 `all-languages` build:
 
 | Language | Extensions | Capability level |
 | --- | --- | --- |
-| Java | `.java` | DataflowBasic best-effort |
-| C | `.c`, `.h` | DataflowBasic best-effort |
-| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | DataflowBasic best-effort |
-| ArkTS | `.ets`, `.sts` | DataflowBasic best-effort via TypeScript grammar |
-| Go | `.go` | DataflowBasic best-effort |
-| C# | `.cs` | DataflowBasic best-effort |
-| Rust | `.rs` | DataflowBasic best-effort |
-| PHP | `.php` | DataflowBasic best-effort |
-| Ruby | `.rb` | DataflowBasic best-effort |
-| Kotlin | `.kt`, `.kts` | DataflowBasic best-effort |
-| Cangjie | `.cj`, `.cangjie` | Symbolic best-effort |
+| Java | `.java` | DataflowFull |
+| C | `.c`, `.h` | DataflowFull |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | DataflowFull |
+| ArkTS | `.ets`, `.sts` | DataflowFull via TypeScript grammar |
+| Go | `.go` | DataflowFull |
+| C# | `.cs` | DataflowFull |
+| Rust | `.rs` | DataflowFull |
+| PHP | `.php` | DataflowFull |
+| Ruby | `.rb` | DataflowFull |
+| Kotlin | `.kt`, `.kts` | DataflowFull |
+| Cangjie | `.cj`, `.cangjie` | DataflowFull |
 
 Build variants:
 
@@ -343,13 +343,12 @@ cargo build --release -p atlas-cli --features "all-languages,mcp"
 
 Maintained documents:
 
-- [`docs/01-requirements.md`](docs/01-requirements.md) — product scope and acceptance criteria.
-- [`docs/02-architecture-constraints.md`](docs/02-architecture-constraints.md) — architectural rules and module boundaries.
-- [`docs/03-current-architecture.md`](docs/03-current-architecture.md) — implemented architecture + authoritative language capability table.
-- [`docs/04-roadmap.md`](docs/04-roadmap.md) — current and future work.
-- [`docs/05-testing-spec.md`](docs/05-testing-spec.md) — test layers, feature matrix, and release checks.
-- [`docs/06-performance-baseline.md`](docs/06-performance-baseline.md) — measured performance baselines.
-- [`docs/07-trace-contract.md`](docs/07-trace-contract.md) — trace JSON contract and diagnostics model.
+- [`docs/architecture.md`](docs/architecture.md) — authoritative architecture: constraints, modules, schema, dataflow, capability profiles, design decisions.
+- [`docs/requirements.md`](docs/requirements.md) — product scope and acceptance criteria.
+- [`docs/roadmap.md`](docs/roadmap.md) — current and future work.
+- [`docs/testing.md`](docs/testing.md) — test layers, feature matrix, and release checks.
+- [`docs/performance.md`](docs/performance.md) — measured performance baselines.
+- [`docs/trace-contract.md`](docs/trace-contract.md) — frozen trace JSON contract and diagnostics model.
 - [`skills/atlas/SKILL.md`](skills/atlas/SKILL.md) — Agent Skill for using Atlas from another agent.
 
 ## Development
@@ -369,8 +368,8 @@ Conventions:
 
 1. Keep crate dependencies acyclic and aligned with the architecture above.
 2. Add or update fixtures when changing extraction, resolution, graph, or trace behavior.
-3. Update [`docs/07-trace-contract.md`](docs/07-trace-contract.md) and tests when trace response fields or diagnostics change.
-4. Update [`docs/03-current-architecture.md`](docs/03-current-architecture.md) when implemented module boundaries, schema, CLI, MCP, or analysis behavior changes.
+3. Update [`docs/trace-contract.md`](docs/trace-contract.md) and tests when trace response fields or diagnostics change.
+4. Update [`docs/architecture.md`](docs/architecture.md) when implemented module boundaries, schema, CLI, MCP, or analysis behavior changes.
 5. Keep release-facing documentation in `docs/`; delete obsolete content rather than accumulating stale docs.
 
 ## Known limitations

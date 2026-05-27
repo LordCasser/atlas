@@ -14,14 +14,15 @@ Use Atlas as the deterministic code-facts layer before reasoning about a reposit
 
 ## Language support
 
-14 languages across two tiers:
+14 languages, all at **DataflowFull** level:
 
-| Tier | Languages | Capability |
-|------|-----------|------------|
-| **DataflowBasic** (13) | TypeScript, JavaScript, Python, Java, C, C++, Go, C#, Rust, PHP, Ruby, Kotlin, ArkTS | Symbols, references, imports, scopes, call graph, lexical bindings, intra-procedural dataflow (assign, call args, field access, return), use-def chains. TS/JS also have CFG. Trace variable/caller path. |
-| **Symbolic** (1) | Cangjie | Symbols, references, imports. No dataflow/trace. |
+| Language | Key capabilities |
+|----------|-----------------|
+| TypeScript, JavaScript | Symbols, references, imports, scopes, call graph, lexical bindings, intra-procedural dataflow, use-def chains, field access, call arguments, return flow, CFG, interprocedural summaries (ArgToParam + ReturnToCall) |
+| Python, Java, C, C++, Go, Rust | Same as above; Python/Java/C/C++/Go/Rust have CFG; C function pointers limited depth 3; C++ templates/overloads not modeled; Rust ReturnToCall gap documented |
+| C#, PHP, Ruby, Kotlin, ArkTS, Cangjie | Symbols, references, imports, call graph, lexical bindings, local dataflow, use-def, interprocedural summaries; CFG varies by language (see `language_capabilities`) |
 
-All 13 DataflowBasic + Cangjie are compiled by `all-languages`.
+All 14 languages compiled by `all-languages`.
 
 ## Requirements
 
@@ -38,13 +39,14 @@ A compiled Atlas binary (`atlas`) or an Atlas MCP server, plus a local source ch
    - Symbol lookup: `search` → `symbol`
    - Callers/callees: `callers`, `callees`, `callgraph`
    - Dependencies: `dependencies`, `dependents`
-   - Source position: `atlas_trace_point` with `file_path`, `line`, `column`
-   - Value origin: `atlas_trace_variable`
-   - Caller chain: `atlas_trace_caller_path`
+   - Source position: `trace_point` with `file_path`, `line`, `column`
+   - Value origin: `trace_variable`
+   - Caller chain: `trace_caller_path`
+   - Forward call trace: `trace_forward`
    - Agent context: `context`
 
 3. **Respect capability metadata**
-   - Call `atlas_language_capabilities` or `atlas doctor` when trace precision matters.
+   - Call `language_capabilities` or `atlas doctor` when trace precision matters.
    - `partial_result: true` and diagnostics are first-class output; explain limitations.
 
 4. **Refresh after edits**
@@ -71,8 +73,8 @@ atlas trace variable --project <repo> --file src/app.ts --line 12 --column 18 --
 |------|---------|---------------|
 | `status` | Project statistics | none |
 | `files` | Indexed file list | none |
-| `atlas_language_capabilities` | Per-language capability profiles | none |
-| `search` | Symbol search by name | `query`, optional `kind`, `limit` |
+| `language_capabilities` | Per-language capability profiles | none |
+| `search` | Symbol search by name | `query`, `scope` (required for manifest-only indexes), optional `kind`, `limit` |
 | `symbol` | Symbol details | `qualified_name` |
 | `neighbors` | Symbol graph neighborhood | `symbol`, optional `direction`, `depth`, `limit` |
 | `callers` | Incoming call edges | `symbol`, optional `limit` |
@@ -82,14 +84,17 @@ atlas trace variable --project <repo> --file src/app.ts --line 12 --column 18 --
 | `explore` | Symbol structure exploration | `symbol` |
 | `impact` | Impact analysis (what depends on) | `symbol`, optional `depth` |
 | `context` | Agent context snippet | `symbol` |
-| `atlas_trace_point` | Source-position inspection | `file_path` or `file_id`, `line`, `column` |
-| `atlas_trace_variable` | Variable provenance trace | `file_path` or `file_id`, `line`, `column`, optional `max_depth` |
-| `atlas_trace_caller_path` | Caller chain exploration | `symbol` or `symbol_name`, optional `max_depth` |
+| `trace_point` | Source-position inspection | `file_path` or `file_id`, `line`, `column` |
+| `trace_variable` | Variable provenance trace | `file_path` or `file_id`, `line`, `column`, optional `max_depth` |
+| `trace_caller_path` | Caller chain exploration | `symbol` or `symbol_name`, optional `max_depth` |
+| `trace_forward` | Forward call chain (how does A reach B?) | `from`, `to`, optional `max_depth` |
 | `usages` | Symbol usage sites | `symbol`, optional `limit` |
-| `dependencies` | File dependencies | `file_id`, optional `limit` |
-| `dependents` | File reverse dependencies | `file_id`, optional `limit` |
-| `index` | Index a project | `project` |
-| `open_project` | Open/switch project | `project` |
+| `dependencies` | File dependencies (outgoing) | `file_id`, optional `limit` |
+| `dependents` | File reverse dependencies (incoming) | `file_id`, optional `limit` |
+| `index` | Index active project (manifest mode) | optional `include`, `exclude`, `background` |
+| `open_project` | Open/switch active project | `project_path`, optional `storage`, `scan_files`, `background` |
+| `task_status` | Poll background task | `task_id` |
+| `wait_for_task` | Block until task completes | `task_id`, optional `timeout_secs` |
 
 ## Query tactics
 
@@ -97,7 +102,7 @@ atlas trace variable --project <repo> --file src/app.ts --line 12 --column 18 --
 - Prefer shallow graph depths (`depth: 1-2`) to avoid noisy results.
 - For barrel re-export chains (`import { X } from './barrel'` where barrel has `export * from './lib'`), Atlas follows the chain to the original definition via `ExportFrom` facts.
 - For code review, combine `impact` with `usages` and `context`.
-- For value flow debugging, call `atlas_trace_point` first, then `atlas_trace_variable` at the same position.
+- For value flow debugging, call `trace_point` first, then `trace_variable` at the same position.
 
 ## Trace response handling
 
@@ -117,7 +122,7 @@ When `partial_result: true` or diagnostics present, summarize the evidence and s
 - Cite Atlas evidence: symbol names, qualified names, file paths, edge kinds, trace diagnostics.
 - Atlas is best-effort static analysis with explicit language capability boundaries. Never claim compiler-grade certainty.
 - If Atlas returns nothing, try broader search (shorter name, no kind filter, larger `limit`), then state no indexed fact matched.
-- For languages at Symbolic tier (Cangjie), trace is unsupported. Use only symbol/reference facts.
+- All 14 languages have DataflowFull capability; specific features (CFG, interprocedural) vary — check `language_capabilities`.
 
 ## References
 

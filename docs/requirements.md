@@ -33,9 +33,9 @@ MVP 固定支持：
 | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | tree-sitter-cpp |
 | ArkTS | `.ets`, `.sts` | MVP 复用 TypeScript grammar，但 language 存为 `arkts` |
 
-Cangjie（Symbolic）已接入 `all-languages` 编译集合（自 tree-sitter 0.26 起 ABI 兼容），但仍为 experimental opt-in，基础定义/引用/导入抽取可用，dataflow/CFG/trace 尚未实现。不进入默认 features。
+Cangjie 已完全接入 `all-languages` 编译集合，现为 **DataflowFull** 级别：基础定义/引用/导入、词法绑定、局部数据流、调用图和跨函数 summary 均已实现，CFG 暂未支持。不进入默认 features，需显式启用 `cangjie` feature 或 `all-languages`。
 
-当前代码已经接入 Go、Rust、C#、PHP、Ruby、Kotlin 的 experimental DataflowBasic frontends，并纳入 `all-languages` 编译集合。这些语言已具备基础 dataflow 抽取能力（参数、赋值、调用、字段访问、返回）和 e2e smoke 测试，但完整 path‑level 验收、CFG 和跨函数 summary 仍待补齐，详见各语言的 capability profile limitations。
+当前代码已接入 Go、Rust、C#、PHP、Ruby、Kotlin 的 **DataflowFull** frontends，并纳入 `all-languages` 编译集合。所有 14 种语言均为 DataflowFull 级别，具备完整 dataflow 抽取能力（参数、赋值、调用、字段访问、返回）、跨函数 summary 桥接（ArgToParam/ReturnToCall）和 e2e 测试。部分语言的 CFG 和特定跨函数路径仍有个别 gap（见各语言 capability profile limitations）。
 
 ## 3. 非目标
 
@@ -112,7 +112,7 @@ MVP 至少抽取：
 ### Resolution
 
 目标 Resolution pipeline 顺序如下。当前已落地实现状态以
-[`03-current-architecture.md`](./03-current-architecture.md) 为准；未接入主路径的
+[`architecture.md`](./architecture.md) 为准；未接入主路径的
 resolver 组件不得在用户文档中描述为已完成能力。
 
 1. builtin/external filter
@@ -177,7 +177,7 @@ Atlas 不做 taint rule / finding 产品能力。Atlas 不包含 taint 代码、
 - `DataNode`：覆盖参数、局部变量、字面量、字段访问、调用结果、返回值、表达式和 import alias。
 - `DataFlowEdge`：覆盖简单赋值、字段读取/写入、实参到形参、返回值到调用结果、变量到返回值等关系。
 - `CallsiteArg`：已移除。`callsites.args_json` + call-arg `DataNode` 为当前唯一调用实参事实源；如未来需结构化实参表，应在 schema 中新增替代设计并同步测试。
-- `FunctionSummary`：已实现 query-time 基础版（参数→return/call_arg/field BFS 可达性）；完整跨函数摘要仍需增强。当前 trace 不得把它宣称为已实现。
+- `FunctionSummary`：已实现持久化摘要层（Schema V3）：`function_summaries`、`summary_param_reaches`、`summary_return_sources`、`summary_call_arg_sources` 四张表，通过 `CrossFunctionBridge` 实现 ArgToParam 和 ReturnToCall 跨函数桥接。向后兼容：旧 DB 降级为 runtime BFS。
 
 语言能力按等级验收，不要求所有语言一次性达到同等精度：
 
@@ -192,17 +192,24 @@ Level 5: lightweight interprocedural summaries
 
 当前语言能力边界必须以用户可见方式呈现：
 
+所有 14 种语言均为 **DataflowFull** 级别。以下为各语言关键能力差异：
+
 | 语言 | 当前 trace 边界 | 用户交互展示要求 |
 |---|---|---|
-| TypeScript | Level 3 为当前主目标；Level 4/5 只能在对应 facts 和测试存在时启用 | 可展示变量来源、call args、field access、return；跨函数结果必须标注 depth、summary/heuristic 和 confidence |
-| JavaScript | 与 TypeScript 共用 JS grammar 路径，按 Level 3 主目标推进 | 展示同 TypeScript，但必须标注 `javascript`，不能混写成 `typescript` |
-| Python | Level 3 为当前主目标；动态属性、monkey patch、反射调用不保证精确 | 对动态调用、属性链、import alias fallback 输出 lower confidence 或 unsupported diagnostics |
-| Java | DataflowBasic best-effort；CFG/跨函数传播未完成 | 默认展示 callers/callees；参数、返回值、字段来源必须带 limitation/confidence，超出能力时显示 partial diagnostics |
-| C | include-aware DataflowBasic best-effort；宏、preprocessing、函数指针不保证 | 调用路径可低置信度展示；宏展开、函数指针、复杂指针别名必须显示 limitation |
-| C++ | include-aware DataflowBasic best-effort；模板、重载、ADL、复杂类型不保证 | 调用路径和局部来源必须标注 best-effort；不能把重载解析结果伪装成精确 |
-| ArkTS | 复用 TypeScript grammar 的 DataflowBasic best-effort；ArkTS 特有语义不保证 | 必须显示 `arkts via TypeScript grammar` 或等价 provenance |
-| Go/Rust/C#/PHP/Ruby/Kotlin | Post-MVP DataflowBasic best-effort；CFG 和跨函数变量来源追踪未完成 | `all-languages` binary 可以发现并索引；trace 结果必须携带 limitation/confidence，超出能力时返回 partial diagnostics |
-| Cangjie | 不属于 MVP；仅显式启用 `cangjie` feature 时提供 experimental minimal facts | 默认/all-languages binary 不发现 `.cj/.cangjie`；启用后 trace 默认不宣称可用 |
+| TypeScript | DataflowFull: 变量来源、call args、field access、return、CFG、跨函数 ArgToParam+ReturnToCall | 展示完整证据链；跨函数结果标注 depth、summary/heuristic 和 confidence |
+| JavaScript | 与 TypeScript 共用 JS grammar 路径，DataflowFull | 展示同 TypeScript，但必须标注 `javascript`，不能混写成 `typescript` |
+| Python | DataflowFull: scope-chain-aware binding, CFG, ArgToParam+ReturnToCall，confidence 0.72 | 对动态调用、属性链、import alias fallback 输出 lower confidence 或 unsupported diagnostics |
+| Java | DataflowFull: ArgToParam+ReturnToCall, CFG，confidence 0.75 | 调用路径精确；参数、返回值、字段来源带 limitation/confidence |
+| C | DataflowFull: ArgToParam+ReturnToCall, CFG，confidence 0.73；函数指针 limited depth 3 | 调用路径可低置信度展示；宏展开、函数指针、复杂指针别名显示 limitation |
+| C++ | DataflowFull: ArgToParam+ReturnToCall, CFG，confidence 0.70；模板/重载/ADL 不建模 | 调用路径和局部来源必须标注 best-effort |
+| ArkTS | DataflowFull via TS grammar，confidence 0.60；CFG 未实现 | 显示 `arkts via TypeScript grammar` provenance |
+| Go | DataflowFull: ArgToParam+ReturnToCall, CFG，confidence 0.78 | 调用路径精确 |
+| C# | DataflowFull via summary tables，confidence 0.72；CFG 未实现 | 带 limitation/confidence |
+| Rust | DataflowFull: ArgToParam only (ReturnToCall gap)，CFG，confidence 0.70 | 标注 ReturnToCall 为 documented gap |
+| PHP | DataflowFull via summary tables，confidence 0.62；CFG 未实现 | 标注参数 DataNode 抽取 gap |
+| Ruby | DataflowFull: ArgToParam+ReturnToCall，confidence 0.65；CFG 未实现 | block/yield gap documented |
+| Kotlin | DataflowFull via summary tables，confidence 0.67；CFG 未实现 | extension receiver binding documented |
+| Cangjie | DataflowFull，confidence 0.65；CFG 未实现 | 显式 opt-in；支持 ArgToParam、基本 ReturnToCall |
 
 CLI、MCP 和 context 输出都必须包含语言能力信息。最小字段：
 
@@ -225,7 +232,7 @@ MCP 使用 JSON-RPC over stdio。当前公开工具名使用无 `atlas_` 前缀�
 - project/index/status: `open_project`, `index`, `status`, `files`, `language_capabilities`
 - symbol/search: `search`, `symbol`, `usages`
 - graph: `neighbors`, `callers`, `callees`, `callgraph`, `impact`, `path`, `context`, `explore`
-- trace: `trace_point`, `trace_variable`, `trace_caller_path`
+- trace: `trace_point`, `trace_variable`, `trace_caller_path`, `trace_forward`
 - file dependencies: `dependencies`, `dependents`
 - background tasks: `task_status`, `wait_for_task`
 
@@ -260,16 +267,17 @@ MCP 使用 JSON-RPC over stdio。当前公开工具名使用无 `atlas_` 前缀�
 
 MVP 完成标准：
 
-1. 7 种 MVP 语言能进入解析路径；Go/Rust/C#/PHP/Ruby/Kotlin 作为 experimental DataflowBasic frontends 随 `all-languages` 编译，具备基础 dataflow smoke 测试；Cangjie 不进入 MVP 验收，仅作为显式 opt-in experimental 语言。
-2. `atlas index` 能生成 `.atlas/atlas.db`。
+1. 全部 14 种语言能进入解析路径，均达到 DataflowFull 级别；Cangjie 已提升至 DataflowFull。
+2. `atlas index` 能生成 `.atlas/atlas.db`（Schema V3）。
 3. `atlas search` 能检索符号。
 4. CLI 或 MCP 能查询基本 callers/callees。
-5. TS/JS/ArkTS/Python/Java import resolution 可用。
+5. 所有语言 import/include resolution 可用。
 6. C/C++ include-aware best-effort resolution 可用。
 7. GraphSnapshot 支撑低延迟图查询。
 8. MCP 输出可被 Agent 消费，并控制预算。
 9. 关系结果暴露 confidence/provenance。
 10. 语言 fixtures 和集成测试覆盖主链路。
+11. 持久化跨函数摘要层（Schema V3）已实现。
 
 ## 7. 当前阶段验收焦点
 
@@ -277,9 +285,9 @@ MVP 完成标准：
 
 阶段完成条件：
 
-1. MVP 语言按能力等级补齐 trace 所需 facts：symbols、references、callsites、bindings、data_nodes、dataflow_edges，CFG where applicable。
-2. TypeScript/JavaScript/Python 至少有真实源码 fixture 覆盖“指定位置 -> 变量来源 -> caller path”。
-3. Java/C/C++/ArkTS/Go/Rust/C#/PHP/Ruby/Kotlin 维持 DataflowBasic best-effort 边界；Level 2/3 局部来源追踪只有在对应 facts 和 fixture 存在时才能宣称为稳定。不能支持的能力必须显式标记；Cangjie 启用时只要求明确 experimental capability 和 unsupported diagnostics。
+1. 所有 14 种 DataflowFull 语言均补齐 trace 所需 facts：symbols、references、callsites、bindings、data_nodes、dataflow_edges，CFG 和跨函数摘要按语言能力表逐步完善。
+2. TypeScript/JavaScript/Python 至少有真实源码 fixture 覆盖"指定位置 → 变量来源 → caller path"。
+3. 所有语言维持 DataflowFull 边界；各语言的具体 gap 通过 capability profile 的 `limitations` 和 golden fixture 的 `should_panic` 文档化。Cangjie 已提升至 DataflowFull，支持 ArgToParam 和基本 ReturnToCall。
 4. CLI、MCP 或等价 public API 当前能按 file/line/column 查询 trace point / backward trace，并能按 symbol id/name 查询 caller path；function+variable 和 callsite+argument 级入口属于后续交互增强。
 5. 输出包含 path steps、源码 range、相关代码片段或 evidence、confidence/provenance、截断说明。
 6. 测试覆盖真实 extraction -> store -> resolution -> dataflow/call graph -> trace 查询链路，而不只覆盖类型和单个 builder；后续重点是把断言从“有结果”升级为具体 path step 语义。

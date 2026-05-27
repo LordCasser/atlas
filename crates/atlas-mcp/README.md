@@ -1,6 +1,6 @@
 # atlas-mcp
 
-MCP (Model Context Protocol) server for Atlas. Exposes 23 tools over stdio JSON-RPC for AI coding assistants.
+MCP (Model Context Protocol) server for Atlas. Exposes 24 tools over stdio JSON-RPC for AI coding assistants.
 
 ## Architecture
 
@@ -37,6 +37,7 @@ AtlasMcpService (ServerHandler)
 | `trace_point` | `trace.rs` | No — uses RawTraceEngine directly |
 | `trace_variable` | `trace.rs` | No — lazy-loads dataflow internally |
 | `trace_caller_path` | `trace.rs` | No — uses RawTraceEngine directly |
+| `trace_forward` | `trace.rs` | No — uses RawTraceEngine directly |
 | `language_capabilities` | `capability.rs` | No |
 | `usages` | `usages.rs` | No — store queries |
 | `dependencies` | `dependencies.rs` | No — store queries |
@@ -68,7 +69,8 @@ names without the old `atlas_` prefix.
 | `context` | `symbol`: qualified name | — |
 | `trace_point` | `line`: integer, `column`: integer | `file_id`: hex string, `file_path`: project-relative path |
 | `trace_variable` | `line`: integer, `column`: integer | `file_id`: hex string, `file_path`: project-relative path, `max_depth`: integer (default 30) |
-| `trace_caller_path` | — | `symbol`: hex symbol id, `symbol_name`: lookup name, `max_depth`: integer (default 20) |
+| `trace_caller_path` | `symbol`: hex symbol id, `symbol_name`: lookup name | `max_depth`: integer (default 20) |
+| `trace_forward` | `from`: hex symbol id, `to`: hex symbol id | `max_depth`: integer (default 10) |
 | `language_capabilities` | — | — |
 | `usages` | `symbol`: qualified name | `limit`: integer (default 50) |
 | `dependencies` | `file_id`: hex string | `limit`: integer (default 50) |

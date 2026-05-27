@@ -32,7 +32,7 @@ User Query
          JSON → AI Agent / CLI user
 ```
 
-All three entry points return **the same envelope** — `TraceQueryResponse<T>` —
+All entry points return **the same envelope** — `TraceQueryResponse<T>` —
 so consumers parse one shape regardless of which query was made.
 
 ---
@@ -43,7 +43,7 @@ so consumers parse one shape regardless of which query was made.
 {
   "ok": true,
   "kind": "trace_variable",
-  "capability": { "language": "TypeScript", "capability_level": "DataflowBasic", ... },
+  "capability": { "language": "TypeScript", "capability_level": "dataflow_full", ... },
   "partial_result": false,
   "diagnostics": [],
   "result": { ... }
@@ -55,7 +55,7 @@ so consumers parse one shape regardless of which query was made.
 | `ok` | `bool` | ✅ | Transport-level success. `false` only on system errors (I/O, DB corruption). |
 | `kind` | `string` | ✅ | One of `"trace_point"`, `"trace_variable"`, `"trace_callers"`. |
 | `capability` | `LanguageCapabilityProfile\|null` | ✅ | The resolved language's capability profile. `null` when `ok=false`. |
-| `partial_result` | `bool` | ✅ | `true` when result is incomplete (unsupported lang, no data node, no callers). Inspect `diagnostics`. |
+| `partial_result` | `bool` | ✅ | `true` when result is incomplete. Inspect `diagnostics`. |
 | `diagnostics` | `TraceDiagnostic[]` | ✅ | May be empty. Each entry has `level`, `message`, optional `code`. |
 | `result` | `T\|null` | ✅ | The query result. `null` when `partial_result=true` or `ok=false`. |
 
@@ -103,25 +103,9 @@ so consumers parse one shape regardless of which query was made.
 | `callsite` | extract callsites | If at a call expression, full callsite with callee range. |
 | `file_id`, `line`, `column` | query params | Echo of the user's query position. |
 
-### What to expect
-
-- **At a call position**: `reference` + `resolved_symbol` + `callsite` (P0).
-- **At a variable use**: `reference` + `binding_use` + `data_node`.
-- **At a variable definition**: `binding` + `data_node`.
-- **At blank/comment space**: All fields likely `null/[]`, still valid JSON.
-
 ---
 
 ## 3. VariableTracePath (= TracePath) — trace_variable result
-
-`source` and `sink` are legacy v1 field names in the current JSON shape. Their
-semantics are provenance-only:
-
-- `source` means the farthest origin point reached by the backward slicer.
-- `sink` means the user-chosen query point.
-
-They do not refer to vulnerability rule concepts and must not be interpreted as
-scanner input/output categories.
 
 ```json
 {
@@ -137,8 +121,8 @@ scanner input/output categories.
 ```
 
 - `source` — the farthest origin point the slicer reached.
-- `sink` — the user-chosen query position (same as trace_point at that position).
-- `steps[]` — ordered from origin → query point, each step is one dataflow edge.
+- `sink` — the user-chosen query position.
+- `steps[]` — ordered from origin → query point.
 
 ### TracePathStep
 
@@ -168,9 +152,9 @@ scanner input/output categories.
 }
 ```
 
-- `root` — the farthest caller found (entry-point or exported function).
+- `root` — the farthest caller found.
 - `target` — the function the user queried.
-- `steps[]` — ordered root → target, each step is one call edge.
+- `steps[]` — ordered root → target.
 
 ### CallerChainStep
 
@@ -187,16 +171,9 @@ scanner input/output categories.
 }
 ```
 
-**Key evidence**: `range` points to the **actual call expression** (e.g., `helper(21)`),
-not the caller function's definition. `callsite.reference_id` can be traced back
-to the original call reference via Store queries.
-
 ### Single-chain semantics (locked)
 
-The explorer returns the **single farthest** caller chain via BFS from target to
-root. It does NOT enumerate all possible paths. This is an intentional design
-choice for bounded output. Future multi-path support will be opt-in via a new
-tool or parameter.
+The explorer returns the **single farthest** caller chain via BFS. It does NOT enumerate all possible paths.
 
 ---
 
@@ -209,9 +186,6 @@ tool or parameter.
   "symbol_name": "greet"
 }
 ```
-
-Attached to `TraceQueryResponse` or individual trace steps to provide human-readable
-context without extra database queries. Consumer-readable fields only; no internal IDs.
 
 ---
 
@@ -236,48 +210,26 @@ context without extra database queries. Consumer-readable fields only; no intern
 
 ## 7. Capability Model
 
-Each language has a `LanguageCapabilityProfile` that includes:
-
-1. **Coarse capability level** (`CapabilityLevel`): `None`, `Symbolic`, `DataflowBasic`, `DataflowFull`
-2. **Feature matrix** (`FeatureMatrix`): fine-grained per-feature flags with confidence floor, limitations, and structured reasons for unsupported features
-
-### Per-language FeatureMatrix (key features)
-
-| Feature | TS/JS | Python | Java | C/C++ | ArkTS | Go/Rust/C#/PHP/Ruby/Kotlin | Cangjie opt-in |
-|---------|:-----:|:------:|:----:|:-----:|:-----:|:-------------------------:|:-------:|
-| symbols | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| references | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| call_graph | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
-| lexical_bindings | ✓† | ✓†† | ✓†† | ✓†† | ✓†† | ✓†† | ✗ |
-| local_dataflow | ✓† | ✓† | ✓† | ✓† | ✓† | ✓† | ✗ |
-| use_def | ✓†† | ✓†† | ✓†† | ✓†† | ✓†† | ✓†† | ✗ |
-| cfg | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
-| interprocedural | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
-
-- ✓ = `Supported { confidence_floor: profile-specific }`
-- ✓† = Supported with limitations; local dataflow is AST-driven but still has language-specific gaps
-- ✓†† = Supported with reduced precision, primarily name/scope heuristic binding
-- ✗ = `Unsupported { reason: "..." }` with structured diagnostic
+Each language has a `LanguageCapabilityProfile` with `FeatureMatrix` for fine-grained per-feature capability checks. All 14 languages are at `DataflowFull` level.
 
 ### Capability gating
 
-Gating uses the **FeatureMatrix** (not the coarse `CapabilityLevel`):
-
-- `trace_variable`: gated on `FeatureMatrix.local_dataflow.is_supported()`.
-  Falls back to coarse `capability_level >= DataflowBasic` for backward compat.
-  If unsupported, response is `ok=true, partial_result=true`
-  with `diagnostics[].code = "unsupported_language"` and the
-  `Unsupported { reason }` string in the diagnostic message.
-
-- `trace_callers`: gated on `FeatureMatrix.call_graph.is_supported()`.
-  Falls back to `"call_graph" in supported_features` for backward compat.
-  If unsupported, same partial response pattern.
-
+- `trace_variable`: gated on `local_dataflow.is_supported()`.
+- `trace_callers`: gated on `call_graph.is_supported()`.
 - `trace_point`: **always available**, regardless of capability.
 
 ---
 
 ## 8. MCP Tool Contracts
+
+The 24 MCP tools use short names (no `atlas_` prefix):
+
+| Tool | Purpose |
+|------|---------|
+| `trace_point` | Resolve a code position to full context |
+| `trace_variable` | Walk backward through dataflow edges to find value origins |
+| `trace_caller_path` | Walk backward through call edges to find caller chain |
+| `trace_forward` | Walk forward through call edges (how does A reach B?) |
 
 ### tools/list returns:
 
@@ -293,15 +245,12 @@ Gating uses the **FeatureMatrix** (not the coarse `CapabilityLevel`):
       "line": { "type": "integer", "minimum": 1 },
       "column": { "type": "integer", "minimum": 1 }
     },
-    "required": []
+    "required": ["line", "column"]
   }
 }
 ```
 
-Same pattern for `trace_variable` (+ `max_depth`) and
-`trace_caller_path` (takes `symbol` hex ID or `symbol_name` instead of `file_id`/`file_path`/`line`/`column`). The current MCP schema permits either file identity form and validates missing arguments inside the handler so errors can use the same `TraceQueryResponse` envelope.
-
-### All three return `CallToolResult`:
+### All trace tools return `CallToolResult`:
 
 ```json
 {
@@ -319,17 +268,11 @@ Same pattern for `trace_variable` (+ `max_depth`) and
 
 ## 9. What Is NOT in This Contract
 
-These are explicitly excluded from the current frozen trace contract:
-
-- ❌ **Taint analysis** — Atlas does not include taint analysis. No scanner rules, finding tables, or scanner engine.
+- ❌ **Taint analysis** — Atlas does not include taint analysis.
 - ❌ **Multi-path caller chain** — single farthest chain only.
-- ❌ **Full interprocedural dataflow** — slicing is primarily intra-procedural,
-  with limited call-argument/caller-path evidence where facts exist.
-- ❌ **CFG-based feasibility** — dataflow slicing is use-def chain based,
-  not control-flow-graph reachability.
-- ❌ **Multi-language union types** — each file assumes a single language.
-- ❌ **Indexing semantics** — incremental indexing/sync is an indexing concern,
-  not part of the trace JSON contract.
+- ❌ **Full compiler-grade type checking**.
+- ❌ **CFG-based feasibility** — dataflow slicing is use-def chain based.
+- ❌ **Indexing semantics** — incremental indexing/sync is not part of the trace JSON contract.
 
 ---
 
@@ -338,13 +281,10 @@ These are explicitly excluded from the current frozen trace contract:
 ### CLI
 
 ```bash
-# Get full trace response as JSON
 atlas trace point --file src/app.ts --line 10 --column 15 --json
 atlas trace variable --file src/app.ts --line 10 --column 15 --json
 atlas trace caller-path --symbol <symbol-hex> --json
-
-# Human-readable
-atlas trace point --file src/app.ts --line 10 --column 15
+atlas trace forward --from <from-hex> --to <to-hex> --json
 ```
 
 ### MCP (from AI agent)
