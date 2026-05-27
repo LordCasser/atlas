@@ -65,6 +65,8 @@ pub trait DataflowReader {
     /// Batch lookup of multiple data nodes by ID.
     fn get_data_nodes(&self, ids: &[DataNodeId]) -> Result<HashMap<DataNodeId, DataNode>>;
     fn find_data_nodes_by_file(&self, file_id: &FileId) -> Result<Vec<DataNode>>;
+    /// Quick check: does this file have any data_nodes?
+    fn has_dataflow_for_file(&self, file_id: &FileId) -> Result<bool>;
     fn find_data_nodes_by_function(&self, function_id: &SymbolId) -> Result<Vec<DataNode>>;
     fn find_data_nodes_by_callsite(&self, callsite_id: &CallsiteId) -> Result<Vec<DataNode>>;
     fn find_dataflow_edges_by_source(&self, source: &DataNodeId) -> Result<Vec<DataFlowEdge>>;

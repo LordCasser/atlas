@@ -12,6 +12,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use db::store_rows::ArtifactRecord;
 use db::Store;
 use extraction::{ExtractionMode, LanguageFrontend, create_frontend};
 use types::enums::Language;
@@ -121,6 +122,34 @@ fn get_or_build(
             let mut payload = DataflowPayload::empty();
             payload.budget_exceeded = artifact.budget_exceeded;
             return Ok((true, payload));
+        }
+    }
+
+    // 1.5. Check for pre-built dataflow from a full index
+    // (`atlas index --analysis full`).  Full-index dataflow is written to
+    // `data_nodes` but NOT to `analysis_artifacts`, so the cache check
+    // above always misses.  If data_nodes already exist for this unit we
+    // record a synthetic artifact and skip lazy extraction — otherwise
+    // `replace_dataflow_for_unit` would DELETE the pre-built data.
+    {
+        let prebuilt = store.count_data_nodes_for_unit(unit).unwrap_or(0);
+        if prebuilt > 0 {
+            let current_hash = store
+                .get_file(&unit.file_id)?
+                .map(|f| f.content_hash)
+                .unwrap_or_default();
+            store.upsert_artifact(&ArtifactRecord {
+                file_id: unit.file_id,
+                unit_id: unit.unit_id,
+                layer: "dataflow".to_string(),
+                content_hash: current_hash,
+                status: "complete".to_string(),
+                node_count: Some(prebuilt as i64),
+                edge_count: None,
+                budget_exceeded: false,
+                built_at: String::new(),
+            })?;
+            return Ok((true, DataflowPayload::empty()));
         }
     }
 

@@ -406,6 +406,9 @@ impl DataflowReader for Store {
     fn find_data_nodes_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<DataNode>> {
         Store::find_data_nodes_by_file(self, file_id)
     }
+    fn has_dataflow_for_file(&self, file_id: &FileId) -> anyhow::Result<bool> {
+        Store::has_dataflow_for_file(self, file_id)
+    }
     fn find_data_nodes_by_function(&self, function_id: &SymbolId) -> anyhow::Result<Vec<DataNode>> {
         Store::find_data_nodes_by_function(self, function_id)
     }

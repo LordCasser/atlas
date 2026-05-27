@@ -330,6 +330,30 @@ impl Store {
         Ok(())
     }
 
+    /// Count data_nodes that belong to a specific AnalysisUnit.
+    ///
+    /// Used by the lazy loader to detect whether a full index
+    /// (`atlas index --analysis full`) has already built dataflow for
+    /// this unit, so it can skip lazy extraction and avoid deleting
+    /// pre-built data.
+    pub fn count_data_nodes_for_unit(&self, unit: &types::lazy::AnalysisUnit) -> anyhow::Result<usize> {
+        let conn = self.lock_read();
+        let count: i64 = if let Some(ref func_id) = unit.symbol_id {
+            conn.query_row(
+                "SELECT COUNT(*) FROM data_nodes WHERE function_id = ?1",
+                params![func_id],
+                |row| row.get(0),
+            )?
+        } else {
+            conn.query_row(
+                "SELECT COUNT(*) FROM data_nodes WHERE file_id = ?1 AND function_id IS NULL",
+                params![unit.file_id],
+                |row| row.get(0),
+            )?
+        };
+        Ok(count as usize)
+    }
+
     /// Get lazy dataflow statistics for status display.
     pub fn get_lazy_stats(&self) -> anyhow::Result<LazyStats> {
         let conn = self.lock_read();

@@ -189,6 +189,20 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Quick check: does this file have any pre-built data_nodes?
+    ///
+    /// Used by MCP handlers to skip lazy dataflow when a full index
+    /// (`atlas index --analysis full`) has already built dataflow.
+    pub fn has_dataflow_for_file(&self, file_id: &FileId) -> anyhow::Result<bool> {
+        let conn = self.lock_read();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM data_nodes WHERE file_id = ?1 LIMIT 1",
+            params![file_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     /// Find data nodes associated with a specific callsite (e.g. CallArg nodes).
     ///
     /// Used by summary-bridge trace to find call-arg data nodes for a given callsite.
