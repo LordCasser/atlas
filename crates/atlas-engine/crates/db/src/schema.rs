@@ -23,6 +23,7 @@
 //! - `analysis_artifacts` — lazy dataflow/CFG artifact tracking
 //! - `file_index_layers` — per-file per-layer index status
 //! - `project_metadata` — key-value project configuration
+//! - `function_pointer_annotations` — user-declared function-pointer dispatch annotations
 //! - `symbols_fts`    — FTS5 index on symbol names
 
 /// Current schema version.
@@ -359,6 +360,25 @@ CREATE TABLE IF NOT EXISTS project_metadata (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- User-declared function-pointer dispatch annotations.
+-- One annotation maps a struct field (function pointer) to its target function.
+CREATE TABLE IF NOT EXISTS function_pointer_annotations (
+    annotation_id    TEXT PRIMARY KEY NOT NULL,
+    source_symbol    BLOB NOT NULL REFERENCES symbols(symbol_id),
+    field_name       TEXT NOT NULL,
+    target_symbol    BLOB NOT NULL REFERENCES symbols(symbol_id),
+    confidence       REAL NOT NULL DEFAULT 1.0
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fpa_source_field
+    ON function_pointer_annotations(source_symbol, field_name);
+
+CREATE INDEX IF NOT EXISTS idx_fpa_source
+    ON function_pointer_annotations(source_symbol);
+
+CREATE INDEX IF NOT EXISTS idx_fpa_target
+    ON function_pointer_annotations(target_symbol);
+
 -- --- Indexes ---
 
 CREATE INDEX IF NOT EXISTS idx_files_path
@@ -508,6 +528,8 @@ mod tests {
         assert!(tables.contains(&"cfg_edges".to_string()));
         assert!(tables.contains(&"symbols_fts".to_string()));
         assert!(tables.contains(&"project_metadata".to_string()));
+        // Function pointer annotations
+        assert!(tables.contains(&"function_pointer_annotations".to_string()));
         // Summary tables
         assert!(tables.contains(&"function_summaries".to_string()));
         assert!(tables.contains(&"summary_param_reaches".to_string()));

@@ -197,6 +197,19 @@ impl Store {
         Ok(count)
     }
 
+    /// Delete edges by provenance string (e.g., "user_annotation").
+    ///
+    /// Used by `materialize_annotations` to clean stale annotation edges
+    /// before re-materializing. Returns the number of edges deleted.
+    pub fn delete_edges_by_provenance(&self, provenance: &str) -> anyhow::Result<usize> {
+        let conn = self.lock();
+        let count = conn.execute(
+            "DELETE FROM symbol_edges WHERE provenance = ?1",
+            rusqlite::params![provenance],
+        )?;
+        Ok(count)
+    }
+
     // ── Edges ───────────────────────────────────────────────────────────────
 
     /// Batch-insert edges inside a transaction.

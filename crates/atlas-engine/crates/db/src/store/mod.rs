@@ -14,6 +14,7 @@
 //! | `cfg`       | Control-flow graph |
 //! | `summary`   | Function summaries (persistence + query) |
 //! | `stats`     | Metadata, stats, path resolution |
+//! | `annotations` | Function-pointer dispatch annotations |
 //!
 //! ## Reader / Writer trait split
 //!
@@ -23,7 +24,6 @@
 //! Writer traits are deferred to a future cleanup pass (Item 10).
 
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
-use std::collections::HashSet;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -33,6 +33,7 @@ use crate::store_rows::*;
 use crate::store_writers::*;
 
 mod artifacts;
+mod annotations;
 mod cfg;
 mod dataflow;
 mod edges;
@@ -239,7 +240,7 @@ impl Store {
     }
 
     /// Run a closure inside a transaction.
-    fn with_transaction<F, T>(&self, f: F) -> anyhow::Result<T>
+    pub fn with_transaction<F, T>(&self, f: F) -> anyhow::Result<T>
     where
         F: FnOnce(&Transaction) -> anyhow::Result<T>,
     {
@@ -278,197 +279,28 @@ impl Store {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         for facts in batch {
-            // File info
-            tx.execute(
-                r#"INSERT OR REPLACE INTO files
-                   (file_id, path, language, content_hash, status, index_time)
-                   VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))"#,
-                params![
-                    facts.file.file_id,
-                    facts.file.path,
-                    facts.file.language.as_str(),
-                    facts.file.content_hash,
-                    facts.file.status.as_str(),
-                ],
-            )?;
-
-            if !facts.symbols.is_empty() {
-                write_symbols(&tx, &facts.symbols, &facts.layer)?;
-            }
-            if !facts.scopes.is_empty() {
-                write_scopes(&tx, &facts.scopes)?;
-            }
-            if !facts.references.is_empty() {
-                write_references(&tx, &facts.references)?;
-            }
-            if !facts.imports.is_empty() {
-                write_imports(&tx, &facts.imports)?;
-            }
-            // Defensive FK guard
-            let valid_sources: HashSet<_> = facts.symbols.iter().map(|s| s.id).collect();
-            if !facts.raw_edges.is_empty() {
-                let valid_edges: Vec<_> = facts
-                    .raw_edges
-                    .iter()
-                    .filter(|edge| valid_sources.contains(&edge.source))
-                    .cloned()
-                    .collect();
-                if !valid_edges.is_empty() {
-                    write_edges(&tx, &valid_edges)?;
-                }
-            }
-            if !facts.callsites.is_empty() {
-                let valid_callsites: Vec<_> = facts
-                    .callsites
-                    .iter()
-                    .filter(|callsite| {
-                        valid_sources.contains(&callsite.caller)
-                            && callsite
-                                .callee
-                                .map_or(true, |callee| valid_sources.contains(&callee))
-                    })
-                    .cloned()
-                    .collect();
-                if !valid_callsites.is_empty() {
-                    write_callsites(&tx, &valid_callsites)?;
-                }
-            }
-
-            // Binding data — FK guarded (scope_id, function_id for bindings;
-            // binding_id, scope_id for uses)
-            let valid_bindings: Vec<_> = facts
-                .bindings
-                .iter()
-                .filter(|b| {
-                    b.function_id
-                        .map_or(true, |fid| valid_sources.contains(&fid))
-                        && facts.scopes.iter().any(|s| s.id == b.scope_id)
-                        && b.symbol_id.map_or(true, |sid| valid_sources.contains(&sid))
-                })
-                .cloned()
-                .collect();
-            if !valid_bindings.is_empty() {
-                write_bindings(&tx, &valid_bindings)?;
-            }
-            let valid_binding_ids: HashSet<_> = valid_bindings.iter().map(|b| b.id).collect();
-            if !facts.binding_uses.is_empty() {
-                let valid_uses: Vec<_> = facts
-                    .binding_uses
-                    .iter()
-                    .filter(|bu| {
-                        bu.binding_id
-                            .map_or(false, |bid| valid_binding_ids.contains(&bid))
-                            && facts.scopes.iter().any(|s| s.id == bu.scope_id)
-                    })
-                    .cloned()
-                    .collect();
-                if !valid_uses.is_empty() {
-                    write_binding_uses(&tx, &valid_uses)?;
-                }
-            }
-
-            // Dataflow + CFG data — FK guarded like edges/callsites above
-            if !facts.data_nodes.is_empty() {
-                // Filter out data_nodes whose function_id references a symbol
-                // not in this batch (cross-file reference).  These will be
-                // resolved on a subsequent pass once the target symbol exists.
-                let safe_nodes: Vec<_> = facts
-                    .data_nodes
-                    .iter()
-                    .filter(|dn| {
-                        dn.function_id
-                            .map_or(true, |fid| valid_sources.contains(&fid))
-                            && dn
-                                .binding_id
-                                .map_or(true, |bid| valid_binding_ids.contains(&bid))
-                    })
-                    .cloned()
-                    .collect();
-                if !safe_nodes.is_empty() {
-                    write_data_nodes(&tx, &safe_nodes)?;
-                }
-            }
-            if !facts.dataflow_edges.is_empty() {
-                // Guard: only write edges whose source and target exist among
-                // the data_nodes we just committed (or will commit).
-                let valid_node_ids: HashSet<_> = facts
-                    .data_nodes
-                    .iter()
-                    .filter(|dn| {
-                        dn.function_id
-                            .map_or(true, |fid| valid_sources.contains(&fid))
-                            && dn
-                                .binding_id
-                                .map_or(true, |bid| valid_binding_ids.contains(&bid))
-                    })
-                    .map(|dn| dn.id)
-                    .collect();
-                let safe_edges: Vec<_> = facts
-                    .dataflow_edges
-                    .iter()
-                    .filter(|e| {
-                        valid_node_ids.contains(&e.source) && valid_node_ids.contains(&e.target)
-                    })
-                    .cloned()
-                    .collect();
-                if !safe_edges.is_empty() {
-                    write_dataflow_edges(&tx, &safe_edges)?;
-                }
-            }
-            if !facts.cfg_nodes.is_empty() {
-                let safe_cfg: Vec<_> = facts
-                    .cfg_nodes
-                    .iter()
-                    .filter(|cn| valid_sources.contains(&cn.function_id))
-                    .cloned()
-                    .collect();
-                if !safe_cfg.is_empty() {
-                    write_cfg_nodes(&tx, &safe_cfg)?;
-                }
-            }
-            if !facts.cfg_edges.is_empty() {
-                let valid_cfg_ids: HashSet<_> = facts
-                    .cfg_nodes
-                    .iter()
-                    .filter(|cn| valid_sources.contains(&cn.function_id))
-                    .map(|cn| cn.id)
-                    .collect();
-                let safe_cfg_edges: Vec<_> = facts
-                    .cfg_edges
-                    .iter()
-                    .filter(|e| {
-                        valid_cfg_ids.contains(&e.source) && valid_cfg_ids.contains(&e.target)
-                    })
-                    .cloned()
-                    .collect();
-                if !safe_cfg_edges.is_empty() {
-                    write_cfg_edges(&tx, &safe_cfg_edges)?;
-                }
-            }
-
-            // Record per-file per-layer index status.
-            // INSERT OR REPLACE semantics: overwrites existing row on
-            // (file_id, layer) conflict — no audit trail needed here.
-            let status = if facts.budget_exceeded {
-                "partial"
-            } else {
-                "complete"
-            };
-            tx.execute(
-                "INSERT OR REPLACE INTO file_index_layers
-                    (file_id, layer, content_hash, status, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, datetime('now'))",
-                params![
-                    facts.file.file_id,
-                    facts.layer,
-                    facts.file.content_hash,
-                    status
-                ],
-            )?;
+            write_file_facts(&tx, facts)?;
         }
 
         tx.commit()?;
         Ok(())
+    }
+
+    /// Atomically delete existing file data and insert new facts in one transaction.
+    ///
+    /// Used by lazy structural re-indexing to close the gap between
+    /// `delete_file_data` and `insert_file_facts` (ensures no concurrent
+    /// reader sees the file in a partially-deleted state).
+    ///
+    /// Callers must still call `invalidate_references_to_symbols_in_file` and
+    /// `delete_edges_for_file_references` before this method to preserve
+    /// cross-file references.
+    pub fn replace_file_facts(&self, file_id: &FileId, facts: &FileFacts) -> anyhow::Result<()> {
+        self.with_transaction(|tx| {
+            tx.execute("DELETE FROM files WHERE file_id = ?1", params![file_id])?;
+            write_file_facts(tx, facts)?;
+            Ok(())
+        })
     }
 }
 
