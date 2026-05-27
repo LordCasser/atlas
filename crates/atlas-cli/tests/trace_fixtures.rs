@@ -3015,3 +3015,172 @@ fn fx_cfg_python() {
         );
     }
 }
+
+/// Verify CFG for C: function must have Entry + Statement + Exit nodes
+/// with at least one edge.
+#[test]
+#[cfg(feature = "c")]
+fn fx_cfg_c() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg.c",
+        r#"int compute(int x) {
+    if (x > 0) {
+        return x * 2;
+    }
+    return 0;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg.c");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| matches!(s.kind, SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor))
+        .collect();
+    assert!(
+        !func_syms.is_empty(),
+        "expected at least one function symbol"
+    );
+
+    for sym in &func_syms {
+        let cfg_nodes = store.find_cfg_nodes_by_function(&sym.id).expect("cfg_nodes");
+        assert!(
+            cfg_nodes.len() >= 3,
+            "C CFG for '{}': expected >= 3 nodes, got {}",
+            sym.name,
+            cfg_nodes.len()
+        );
+        let has_entry = cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Entry);
+        let has_exit = cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Exit);
+        assert!(has_entry, "C CFG missing Entry node");
+        assert!(has_exit, "C CFG missing Exit node");
+
+        let mut edge_count = 0usize;
+        for node in &cfg_nodes {
+            let edges = store
+                .find_cfg_edges_by_source(&node.id)
+                .expect("cfg_edges");
+            edge_count += edges.len();
+        }
+        assert!(
+            edge_count > 0,
+            "C CFG for '{}': expected > 0 edges, got {}",
+            sym.name,
+            edge_count
+        );
+    }
+}
+
+/// Verify CFG for C++: function must have Entry + Statement + Exit nodes.
+#[test]
+#[cfg(feature = "cpp")]
+fn fx_cfg_cpp() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg.cpp",
+        r#"int compute(int x) {
+    if (x > 0) {
+        return x * 2;
+    }
+    return 0;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg.cpp");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| matches!(s.kind, SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor))
+        .collect();
+    assert!(
+        !func_syms.is_empty(),
+        "expected at least one function symbol"
+    );
+
+    for sym in &func_syms {
+        let cfg_nodes = store.find_cfg_nodes_by_function(&sym.id).expect("cfg_nodes");
+        assert!(
+            cfg_nodes.len() >= 3,
+            "C++ CFG for '{}': expected >= 3 nodes, got {}",
+            sym.name,
+            cfg_nodes.len()
+        );
+        let has_entry = cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Entry);
+        let has_exit = cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Exit);
+        assert!(has_entry, "C++ CFG missing Entry node");
+        assert!(has_exit, "C++ CFG missing Exit node");
+
+        let mut edge_count = 0usize;
+        for node in &cfg_nodes {
+            let edges = store
+                .find_cfg_edges_by_source(&node.id)
+                .expect("cfg_edges");
+            edge_count += edges.len();
+        }
+        assert!(
+            edge_count > 0,
+            "C++ CFG for '{}': expected > 0 edges, got {}",
+            sym.name,
+            edge_count
+        );
+    }
+}
+
+/// Verify CFG for Rust: function must have Entry + Statement + Exit nodes.
+#[test]
+#[cfg(feature = "rust")]
+fn fx_cfg_rust() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg.rs",
+        r#"fn compute(x: i32) -> i32 {
+    if x > 0 {
+        return x * 2;
+    }
+    return 0;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg.rs");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| matches!(s.kind, SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor))
+        .collect();
+    assert!(
+        !func_syms.is_empty(),
+        "expected at least one function symbol"
+    );
+
+    for sym in &func_syms {
+        let cfg_nodes = store.find_cfg_nodes_by_function(&sym.id).expect("cfg_nodes");
+        assert!(
+            cfg_nodes.len() >= 3,
+            "Rust CFG for '{}': expected >= 3 nodes, got {}",
+            sym.name,
+            cfg_nodes.len()
+        );
+        let has_entry = cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Entry);
+        let has_exit = cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Exit);
+        assert!(has_entry, "Rust CFG missing Entry node");
+        assert!(has_exit, "Rust CFG missing Exit node");
+
+        let mut edge_count = 0usize;
+        for node in &cfg_nodes {
+            let edges = store
+                .find_cfg_edges_by_source(&node.id)
+                .expect("cfg_edges");
+            edge_count += edges.len();
+        }
+        assert!(
+            edge_count > 0,
+            "Rust CFG for '{}': expected > 0 edges, got {}",
+            sym.name,
+            edge_count
+        );
+    }
+}

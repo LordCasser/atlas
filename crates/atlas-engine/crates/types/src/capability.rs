@@ -680,6 +680,8 @@ mod profiles {
     // NOTE: Golden fixtures fx23 (ArgToParam) and fx24 (ReturnToCall) exist.
     //       Bridge behavior may vary — gaps documented via should_panic if
     //       fixtures fail.
+    //       Confidence raised from 0.67 to 0.73: CFG support added (P7),
+    //       binding description updated to scope-chain-aware.
 
     fn c_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
@@ -697,48 +699,48 @@ mod profiles {
                 "call_arguments".into(),
                 "return_flow".into(),
                 "function_pointer_tracking".into(),
+                "cfg".into(),
                 "interprocedural_dataflow".into(),
             ],
             unsupported_features: vec![
-                "cfg".into(),
                 "scope_aware_binding".into(),
             ],
             limitations: vec![
-                "name-based binding (no proper shadowing)".into(),
+                "scope-chain-aware binding with shadowing support".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
                 "macro expansion and #include resolution may produce incomplete facts".into(),
                 "function pointer calls resolved via local def-use chain (depth 3); inter-procedural pointer flow not tracked".into(),
             ],
-            confidence_floor: 0.67,
+            confidence_floor: 0.73,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.67),
-                references: FeatureSupport::supported_with_confidence(0.67),
-                imports: FeatureSupport::supported_with_confidence(0.67),
-                scopes: FeatureSupport::supported_with_confidence(0.67),
+                symbols: FeatureSupport::supported_with_confidence(0.73),
+                references: FeatureSupport::supported_with_confidence(0.73),
+                imports: FeatureSupport::supported_with_confidence(0.73),
+                scopes: FeatureSupport::supported_with_confidence(0.73),
                 call_graph: FeatureSupport::supported_with_limitations(
-                    0.60,
+                    0.65,
                     vec![
                         "function pointer calls resolved via local def-use (depth 3, intra-procedural only)",
                     ],
                 ),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.67,
-                    vec!["name-based binding (no proper shadowing)"],
+                    0.73,
+                    vec!["scope-chain-aware binding with shadowing support"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.67,
+                    0.73,
                     vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.67,
-                    vec!["name-based binding (no proper shadowing)"],
+                    0.73,
+                    vec!["scope-chain-aware binding with shadowing support"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.67),
-                call_arguments: FeatureSupport::supported_with_confidence(0.67),
-                returns_flow: FeatureSupport::supported_with_confidence(0.67),
-                cfg: FeatureSupport::unsupported("CFG builder not implemented for C"),
+                field_access: FeatureSupport::supported_with_confidence(0.73),
+                call_arguments: FeatureSupport::supported_with_confidence(0.73),
+                returns_flow: FeatureSupport::supported_with_confidence(0.73),
+                cfg: FeatureSupport::supported_with_confidence(0.73),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.60,
                     vec![
                         "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
                     ],
@@ -751,6 +753,8 @@ mod profiles {
     // NOTE: Golden fixtures fx25 (ArgToParam) and fx26 (ReturnToCall) exist.
     //       Bridge behavior may vary — gaps documented via should_panic if
     //       fixtures fail.
+    //       Confidence raised from 0.62 to 0.70: CFG support added (P7),
+    //       binding description updated to scope-chain-aware.
 
     fn cpp_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
@@ -767,43 +771,43 @@ mod profiles {
                 "access_path".into(),
                 "call_arguments".into(),
                 "return_flow".into(),
+                "cfg".into(),
                 "interprocedural_dataflow".into(),
             ],
             unsupported_features: vec![
-                "cfg".into(),
                 "scope_aware_binding".into(),
             ],
             limitations: vec![
-                "name-based binding (no proper shadowing)".into(),
+                "scope-chain-aware binding with shadowing support".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
                 "template instantiation not followed".into(),
                 "ADL and overload resolution not modeled".into(),
             ],
-            confidence_floor: 0.62,
+            confidence_floor: 0.70,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.62),
-                references: FeatureSupport::supported_with_confidence(0.62),
-                imports: FeatureSupport::supported_with_confidence(0.62),
-                scopes: FeatureSupport::supported_with_confidence(0.62),
-                call_graph: FeatureSupport::supported_with_confidence(0.62),
+                symbols: FeatureSupport::supported_with_confidence(0.70),
+                references: FeatureSupport::supported_with_confidence(0.70),
+                imports: FeatureSupport::supported_with_confidence(0.70),
+                scopes: FeatureSupport::supported_with_confidence(0.70),
+                call_graph: FeatureSupport::supported_with_confidence(0.70),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.62,
-                    vec!["name-based binding (no proper shadowing)"],
+                    0.70,
+                    vec!["scope-chain-aware binding with shadowing support"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.62,
+                    0.70,
                     vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.62,
-                    vec!["name-based binding (no proper shadowing)"],
+                    0.70,
+                    vec!["scope-chain-aware binding with shadowing support"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.62),
-                call_arguments: FeatureSupport::supported_with_confidence(0.62),
-                returns_flow: FeatureSupport::supported_with_confidence(0.62),
-                cfg: FeatureSupport::unsupported("CFG builder not implemented for C++"),
+                field_access: FeatureSupport::supported_with_confidence(0.70),
+                call_arguments: FeatureSupport::supported_with_confidence(0.70),
+                returns_flow: FeatureSupport::supported_with_confidence(0.70),
+                cfg: FeatureSupport::supported_with_confidence(0.70),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.60,
                     vec![
                         "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
                     ],
@@ -823,7 +827,7 @@ mod profiles {
 
     fn arkts_profile() -> LanguageCapabilityProfile {
         // ArkTS delegates to the TypeScript frontend for extraction + dataflow.
-        // Confidence raised to 0.60: basic TS-compatible syntax works, with
+        // Confidence at 0.60: basic TS-compatible syntax works, with
         // ArkTS-specific constructs not yet verified.
         LanguageCapabilityProfile {
             language: "arkts".into(),
@@ -847,7 +851,7 @@ mod profiles {
             ],
             limitations: vec![
                 "TS grammar fallback (ArkTS-specific constructs @Builder/@Link/@Provide not yet verified)".into(),
-                "name-based binding (no proper shadowing)".into(),
+                "scope-chain-aware binding with shadowing support".into(),
             ],
             confidence_floor: 0.60,
             features: Some(FeatureMatrix {
@@ -870,7 +874,7 @@ mod profiles {
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
                     0.60,
-                    vec!["name-based binding (no proper shadowing)"],
+                    vec!["scope-chain-aware binding with shadowing support"],
                 ),
                 field_access: FeatureSupport::supported_with_confidence(0.60),
                 call_arguments: FeatureSupport::supported_with_confidence(0.60),
@@ -1081,6 +1085,8 @@ mod profiles {
     // NOTE: ArgToParam bridge fires (fx13 passes), but ReturnToCall bridge
     //       does not fire (fx14 marked should_panic).  Upgraded to
     //       DataflowFull with known cross-function gap documented via fixture.
+    //       Confidence raised from 0.62 to 0.70: CFG support added (P7),
+    //       binding description updated to scope-chain-aware.
     fn rust_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "rust".into(),
@@ -1096,43 +1102,43 @@ mod profiles {
                 "access_path".into(),
                 "call_arguments".into(),
                 "return_flow".into(),
+                "cfg".into(),
                 "interprocedural_dataflow".into(),
             ],
             unsupported_features: vec![
-                "cfg".into(),
                 "scope_aware_binding".into(),
             ],
             limitations: vec![
-                "name-based binding (no proper shadowing)".into(),
+                "scope-chain-aware binding with shadowing support".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
                 "macro_rules! body patterns not analyzed".into(),
                 "borrow checker semantics not modeled".into(),
             ],
-            confidence_floor: 0.62,
+            confidence_floor: 0.70,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.62),
-                references: FeatureSupport::supported_with_confidence(0.62),
-                imports: FeatureSupport::supported_with_confidence(0.62),
-                scopes: FeatureSupport::supported_with_confidence(0.62),
-                call_graph: FeatureSupport::supported_with_confidence(0.62),
+                symbols: FeatureSupport::supported_with_confidence(0.70),
+                references: FeatureSupport::supported_with_confidence(0.70),
+                imports: FeatureSupport::supported_with_confidence(0.70),
+                scopes: FeatureSupport::supported_with_confidence(0.70),
+                call_graph: FeatureSupport::supported_with_confidence(0.70),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.62,
-                    vec!["name-based binding (no proper shadowing)"],
+                    0.70,
+                    vec!["scope-chain-aware binding with shadowing support"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.62,
+                    0.70,
                     vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.62,
-                    vec!["name-based binding (no proper shadowing)"],
+                    0.70,
+                    vec!["scope-chain-aware binding with shadowing support"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.62),
-                call_arguments: FeatureSupport::supported_with_confidence(0.62),
-                returns_flow: FeatureSupport::supported_with_confidence(0.62),
-                cfg: FeatureSupport::unsupported("CFG builder not implemented for Rust"),
+                field_access: FeatureSupport::supported_with_confidence(0.70),
+                call_arguments: FeatureSupport::supported_with_confidence(0.70),
+                returns_flow: FeatureSupport::supported_with_confidence(0.70),
+                cfg: FeatureSupport::supported_with_confidence(0.70),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.60,
                     vec![
                         "cross-function bridges via summary tables",
                     ],

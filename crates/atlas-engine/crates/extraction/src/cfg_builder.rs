@@ -101,6 +101,28 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
                 "continue_statement", "break_statement",
             ],
         },
+        Language::C | Language::Cpp => CfgLanguageConfig {
+            block_kinds: &["compound_statement"],
+            if_kinds: &["if_statement"],
+            loop_kinds: &["for_statement", "while_statement", "do_statement"],
+            return_kinds: &["return_statement"],
+            throw_kinds: &[], // C has no throw; C++ has throw but via exceptions
+            stmt_kinds: &[
+                "expression_statement", "declaration",
+                "continue_statement", "break_statement",
+            ],
+        },
+        Language::Rust => CfgLanguageConfig {
+            block_kinds: &["block"],
+            if_kinds: &["if_expression"],
+            loop_kinds: &["for_expression", "while_expression", "loop_expression"],
+            return_kinds: &["return_expression"],
+            throw_kinds: &[], // Rust uses Result, not throw
+            stmt_kinds: &[
+                "expression_statement", "let_declaration",
+                "continue_expression", "break_expression",
+            ],
+        },
         _ => CfgLanguageConfig {
             // Default: TS/JS config (best-effort for unknown languages)
             block_kinds: &["statement_block"],
@@ -249,6 +271,14 @@ impl CfgContext<'_> {
                 // Deferred: treat as single statement
                 self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte);
                 i += 1;
+            } else if kind == "preproc_if" || kind == "preproc_def" {
+                // C/C++ preprocessor directives
+                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte);
+                i += 1;
+            } else if kind == "match_expression" {
+                // Rust match — complex control flow, deferred
+                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte);
+                i += 1;
             } else {
                 // Unknown constructs → treat as statement
                 self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte);
@@ -344,6 +374,7 @@ const FUNCTION_NODE_KINDS: &[&str] = &[
     "async_function_definition",
     "method_declaration",
     "constructor_declaration",
+    "function_item", // tree-sitter-rust
 ];
 
 /// Build per-function control-flow graphs by matching function symbols
