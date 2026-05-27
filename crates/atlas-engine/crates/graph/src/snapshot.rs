@@ -945,17 +945,6 @@ impl GraphSnapshot {
         self.dijkstra_core(from, to, max_depth, edge_kind_filter, direction, None, start_penalty)
     }
 
-    /// Return per-node edge lists for traversal based on direction constraint.
-    fn edge_lists_for(&self, current: NodeIx, direction: TraversalDirection) -> Vec<&Vec<EdgeIx>> {
-        match direction {
-            TraversalDirection::Outgoing => vec![&self.nodes[current].outgoing],
-            TraversalDirection::Incoming => vec![&self.nodes[current].incoming],
-            TraversalDirection::Both => {
-                vec![&self.nodes[current].outgoing, &self.nodes[current].incoming]
-            }
-        }
-    }
-
     // ── forward frontier ─────────────────────────────────────────────────
 
     /// Walk forward (outgoing direction only) from `start_symbols`, collecting
@@ -984,24 +973,17 @@ impl GraphSnapshot {
 
         while depth <= max_depth && !current.is_empty() {
             let mut next = Vec::new();
-
             for id in current.drain(..) {
-                if !visited.insert(id) {
-                    continue;
-                }
+                if !visited.insert(id) { continue; }
                 let ix = match self.id_to_idx.get(&id) {
                     Some(i) => *i,
                     None => continue,
                 };
                 let outgoing: Vec<(NodeIx, EdgeIx)> = self.neighbors(
-                    ix,
-                    TraversalDirection::Outgoing,
-                    edge_kind_filter,
+                    ix, TraversalDirection::Outgoing, edge_kind_filter,
                 );
                 let call_count = outgoing.len();
                 if call_count == 0 {
-                    // This node has zero forward call edges — it may be a
-                    // dynamic-dispatch boundary or a true leaf function.
                     frontier.push(FrontierNode {
                         symbol_id: id,
                         qname: self.nodes[ix].qualified_name.clone(),
@@ -1014,26 +996,16 @@ impl GraphSnapshot {
                     }
                 }
             }
-
-            if next.is_empty() {
-                // All nodes at this depth were leaves — forward chain exhausted.
-                break;
-            }
+            if next.is_empty() { break; }
             current = next;
             depth += 1;
         }
-
-        // If we reached max_depth without exhausting, include the last-level
-        // nodes as frontier (they may have outgoing edges we didn't explore
-        // further).
         if depth >= max_depth && !current.is_empty() {
             for id in current {
                 if visited.insert(id) {
                     if let Some(ix) = self.id_to_idx.get(&id) {
                         let outgoing = self.neighbors(
-                            *ix,
-                            TraversalDirection::Outgoing,
-                            edge_kind_filter,
+                            *ix, TraversalDirection::Outgoing, edge_kind_filter,
                         );
                         frontier.push(FrontierNode {
                             symbol_id: id,

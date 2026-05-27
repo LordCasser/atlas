@@ -75,7 +75,7 @@ atlas trace variable --project <repo> --file src/app.ts --line 12 --column 18 --
 | `files` | Indexed file list | none |
 | `language_capabilities` | Per-language capability profiles | none |
 | `search` | Symbol search by name | `query` (required), optional `scope`, `kind`, `limit`, `background` |
-| `symbol` | Symbol details with caller/callee summaries | `qualified_name` |
+| `symbol` | Symbol details with caller/callee summaries | `qualified_name`, optional `includeCode` |
 | `neighbors` | Symbol graph neighborhood | `symbol`, optional `direction`, `depth`, `limit` |
 | `callers` | Incoming call edges | `symbol`, optional `limit` |
 | `callees` | Outgoing call edges | `symbol`, optional `limit` |

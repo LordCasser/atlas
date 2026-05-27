@@ -61,7 +61,7 @@ names without the old `atlas_` prefix.
 | `status` | — | — |
 | `files` | — | — |
 | `search` | `query`: string | `scope`: string, `kind`: string, `limit`: integer (default 20), `background`: boolean |
-| `symbol` | `qualified_name`: string | — |
+| `symbol` | `qualified_name`: string | `includeCode`: boolean (default `false`) |
 | `neighbors` | `symbol`: qualified name | `direction`: `"outgoing"` \| `"incoming"` \| `"both"` (default `"both"`), `depth`: integer (default 1, max 3), `limit`: integer (default 50) |
 | `callers` | `symbol`: qualified name | `limit`: integer (default 20) |
 | `callees` | `symbol`: qualified name | `limit`: integer (default 20) |

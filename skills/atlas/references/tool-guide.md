@@ -50,7 +50,7 @@ All tools use short names (no `atlas_` prefix):
 | Indexed files | `files` | none |
 | Capability metadata | `language_capabilities` | none |
 | Symbol search | `search` | `query` (required), optional `scope`, `kind`, `limit`, `background` |
-| Symbol details | `symbol` | `qualified_name` (returns caller/callee summaries with file+line) |
+| Symbol details | `symbol` | `qualified_name`, optional `includeCode` (returns caller/callee summaries with file+line, plus enclosing definition source) |
 | Neighbor graph | `neighbors` | `symbol`, optional `direction`, `depth`, `limit` |
 | Callers | `callers` | `symbol`, optional `limit` |
 | Callees | `callees` | `symbol`, optional `limit` |
