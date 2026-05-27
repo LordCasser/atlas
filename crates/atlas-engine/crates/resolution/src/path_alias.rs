@@ -91,12 +91,10 @@ impl PathAliasResolver {
     /// 2. Check for wildcard pattern match (e.g., `@/*` matching `@/foo`)
     /// 3. If baseUrl is set, prepend it to relative paths
     pub fn resolve(&self, import_path: &str) -> Option<String> {
-        // Strategy 1: Exact match (no wildcard) — try all substitutions
+        // Strategy 1: Exact match (no wildcard) — first valid substitution wins.
         if let Some(substitutions) = self.paths.get(import_path) {
-            for sub in substitutions {
+            if let Some(sub) = substitutions.first() {
                 let resolved = self.apply_base_url(sub);
-                // For exact matches, the first valid substitution wins.
-                // Multi-target support: iterate all substitutions.
                 return Some(resolved);
             }
         }
