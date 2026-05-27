@@ -439,6 +439,32 @@ impl RawEdge {
 }
 
 // ---------------------------------------------------------------------------
+// FpAnnotation — user-declared function-pointer dispatch annotation
+// ---------------------------------------------------------------------------
+
+/// A user-declared annotation mapping a struct field (function pointer) to its
+/// concrete target function at runtime.  This bridges the gap between static
+/// analysis (which sees an indirect call through a function pointer) and the
+/// actual call graph (which needs to know the concrete callee).
+///
+/// For example, `Curl_handler.do_it` dispatches to `Curl_http` — the
+/// annotation says "when `do_it` field of `Curl_handler` is called, the actual
+/// callee is `Curl_http`".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FpAnnotation {
+    /// Deterministic annotation ID: blake3("fpa:" + source_hex + ":" + field_name).
+    pub annotation_id: String,
+    /// SymbolId of the function-pointer field (e.g., `Curl_handler.do_it`).
+    pub source_symbol: SymbolId,
+    /// Simple field name (e.g., "do_it").
+    pub field_name: String,
+    /// SymbolId of the target function (e.g., `Curl_http`).
+    pub target_symbol: SymbolId,
+    /// Confidence score (0.0-1.0); defaults to 1.0 (user-declared = certain).
+    pub confidence: f64,
+}
+
+// ---------------------------------------------------------------------------
 // FileInfo — metadata about a parsed file
 // ---------------------------------------------------------------------------
 

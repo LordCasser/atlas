@@ -602,6 +602,8 @@ pub enum Provenance {
     Heuristic,
     /// Detected via callback registration pattern match.
     CallbackPattern,
+    /// User-declared annotation (e.g., function-pointer dispatch).
+    UserAnnotation,
 }
 
 impl Provenance {
@@ -611,6 +613,7 @@ impl Provenance {
             Self::Scip => "scip",
             Self::Heuristic => "heuristic",
             Self::CallbackPattern => "callback_pattern",
+            Self::UserAnnotation => "user_annotation",
         }
     }
 
@@ -620,6 +623,7 @@ impl Provenance {
             "scip" => Some(Self::Scip),
             "heuristic" => Some(Self::Heuristic),
             "callback_pattern" => Some(Self::CallbackPattern),
+            "user_annotation" => Some(Self::UserAnnotation),
             _ => None,
         }
     }
