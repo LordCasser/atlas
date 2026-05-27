@@ -1,5 +1,10 @@
 //! Context tool: builds rich markdown context for a symbol.
-//! Includes transparent lazy structural extraction with progress.
+//!
+//! Includes transparent lazy structural extraction when the symbol is not yet
+//! indexed. After lazy extraction writes new facts to the DB, the in-memory
+//! graph snapshot is force-refreshed so that the context builder sees the
+//! newly parsed edges — closing the MCP call-flow gap where graph init
+//! happened before the handler's own structural extraction.
 
 use atlas_engine::LazyStructuralService;
 
@@ -16,6 +21,14 @@ impl ToolRouter {
             Ok(id) => id,
             Err(err) => return (err, true),
         };
+
+        // Force-refresh the graph to pick up edges written by lazy structural
+        // (Tier 3 in resolve_context_symbol). Without this, the context builder
+        // operates on a stale snapshot loaded before the handler's own
+        // structural extraction.
+        if let Err(e) = self.force_refresh_graph() {
+            return (format!("Graph refresh error: {:#}", e), true);
+        }
 
         self.send_progress(0.7, "Building context view...");
         match self.context_builder().build_context_for_symbol(&sid) {
@@ -122,7 +135,7 @@ impl ToolRouter {
 
         // ── Tier 4: nothing found ──
         let mut err = format!(
-            "Symbol '{}' not found by qualified name or simple name. Try 'atlas_search' first to discover the correct qualified_name for this symbol.",
+            "Symbol '{}' not found by qualified name or simple name. Try 'search' first to discover the correct qualified_name for this symbol.",
             qname
         );
         err.push_str(self.index_not_run_guidance());

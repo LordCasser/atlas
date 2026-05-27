@@ -41,6 +41,7 @@ pub(crate) struct PendingProjectActivation {
 // Sub-modules — one per capability category
 // -------------------------------------------------------------------
 
+pub(crate) mod annotations;
 pub(crate) mod capability;
 pub(crate) mod context;
 pub(crate) mod dependencies;
@@ -319,12 +320,33 @@ impl ToolRouter {
             return Ok(());
         }
         self.last_signature_check = std::time::Instant::now();
+        self.rebuild_if_signature_changed("Index signature changed, refreshing graph")
+    }
+
+    /// Force-refresh the graph snapshot regardless of cache cooldown.
+    ///
+    /// Called after lazy structural extraction writes new facts to the DB
+    /// (via the context tool's tier-3 symbol resolution), so that the
+    /// in-memory graph includes the newly parsed edges before graph-backed
+    /// tools run their queries.
+    pub(crate) fn force_refresh_graph(&mut self) -> anyhow::Result<()> {
+        if !self.graph_initialized {
+            return Ok(());
+        }
+        self.last_signature_check = std::time::Instant::now();
+        self.rebuild_if_signature_changed(
+            "Force-refreshing graph after lazy structural extraction",
+        )
+    }
+
+    /// Rebuild the graph snapshot from the store if the index signature changed.
+    fn rebuild_if_signature_changed(&mut self, reason: &str) -> anyhow::Result<()> {
         let current = self
             .store
             .index_signature()
             .unwrap_or_else(|_| self.cached_signature.clone());
         if current != self.last_graph_signature {
-            tracing::info!("Index signature changed, refreshing graph");
+            tracing::info!("{reason}");
             let graph = Arc::new(atlas_engine::GraphEngine::from_store(&self.store, 0.3)?);
             if let Some(ref mut s) = self.search {
                 s.refresh_graph(Arc::clone(&graph));
@@ -333,8 +355,8 @@ impl ToolRouter {
                 c.refresh_graph(graph);
             }
             self.last_graph_signature = current.clone();
-            // External index/sync may have changed layer distribution — re-check
-            // whether a manual full index now exists.
+            // Re-check whether a manual full index now exists (layer distribution
+            // may have changed after external index/sync or lazy structural).
             self.cached_manual_full_index.set(None);
         }
         self.cached_signature = current;
@@ -382,6 +404,9 @@ impl ToolRouter {
             "dependents" => self.handle_dependents(arguments),
             "task_status" => self.handle_task_status(arguments),
             "wait_for_task" => self.handle_wait_for_task(arguments),
+            "annotate_fp_dispatch" => self.handle_annotate_fp_dispatch(arguments),
+            "list_fp_annotations" => self.handle_list_fp_annotations(),
+            "delete_fp_annotation" => self.handle_delete_fp_annotation(arguments),
             _ => (format!("Unknown tool: {}", name), true),
         };
 
@@ -669,11 +694,11 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "trace_point".into(),
-            description: "Resolve a source position (file_id or file_path + line + column) to its full context: reference, symbol, data node, scope, bindings, and incident dataflow edges.".into(),
+            description: "Resolve a source position to its full context: reference, symbol, data node, scope, bindings, and incident dataflow edges. Requires either file_id or file_path AND line AND column.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
-                    "file_id": { "type": "string", "description": "File ID in hex (from atlas_files)" },
+                    "file_id": { "type": "string", "description": "File ID in hex (from files)" },
                     "file_path": { "type": "string", "description": "File path relative to project root (e.g. 'src/foo.ts')" },
                     "line": { "type": "integer", "description": "1-based line number" },
                     "column": { "type": "integer", "description": "1-based column number" },
@@ -683,11 +708,11 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "trace_variable".into(),
-            description: "Trace where a variable's value comes from. Walks backward through dataflow edges from a source position to find origins (parameters, literals, globals). Returns the full trace path with steps.".into(),
+            description: "Trace where a variable's value comes from. Walks backward through dataflow edges from a source position to find origins (parameters, literals, globals). Requires either file_id or file_path AND line AND column.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
-                    "file_id": { "type": "string", "description": "File ID in hex (from atlas_files)" },
+                    "file_id": { "type": "string", "description": "File ID in hex (from files)" },
                     "file_path": { "type": "string", "description": "File path relative to project root (e.g. 'src/foo.ts')" },
                     "line": { "type": "integer", "description": "1-based line number" },
                     "column": { "type": "integer", "description": "1-based column number" },
@@ -698,11 +723,11 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "trace_caller_path".into(),
-            description: "Trace how a function gets invoked. Walks backward through call edges (Calls/Instantiates/Implements) from a target symbol to its farthest caller. Returns the full caller chain.".into(),
+            description: "Trace how a function gets invoked. Walks backward through call edges (Calls/Instantiates/Implements) from a target symbol to its farthest caller. Requires either 'symbol' (hex ID) or 'symbol_name'.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
-                    "symbol": { "type": "string", "description": "Symbol ID in hex (from atlas_search or atlas_symbol)" },
+                    "symbol": { "type": "string", "description": "Symbol ID in hex (from search or symbol)" },
                     "symbol_name": { "type": "string", "description": "Symbol name for lookup (e.g. 'inner'). Alternative to 'symbol' hex ID." },
                     "max_depth": { "type": "integer", "description": "Maximum backward call depth (default 20)" },
                 })),
@@ -717,6 +742,8 @@ pub fn make_all_tools() -> Vec<Tool> {
                 properties: Some(json!({
                     "from": { "type": "string", "description": "Source symbol ID in hex" },
                     "to": { "type": "string", "description": "Target symbol ID in hex" },
+                    "from_name": { "type": "string", "description": "Source symbol name (alternative to 'from' hex ID, e.g. 'main')" },
+                    "to_name": { "type": "string", "description": "Target symbol name (alternative to 'to' hex ID, e.g. 'processRequest')" },
                     "max_depth": { "type": "integer", "description": "Maximum forward call depth (default 10)" },
                 })),
                 required: Some(vec!["from".into(), "to".into()]),
@@ -789,6 +816,41 @@ pub fn make_all_tools() -> Vec<Tool> {
                     "poll_interval_secs": { "type": "integer", "description": "Seconds between polls (default 2, 1-10)" },
                 })),
                 required: Some(vec!["task_id".into()]),
+            },
+        },
+        // ── Function-pointer dispatch annotations ──────────────────
+        Tool {
+            name: "annotate_fp_dispatch".into(),
+            description: "Declare a function-pointer dispatch annotation for C/C++ code. Maps a struct's function-pointer field to its concrete target function, enabling the call-graph to trace through indirect calls. Example: annotate_fp_dispatch(field_qname='Curl_handler.do_it', target_qname='Curl_http'). Only valid for C and C++ — other languages use dynamic dispatch detected by static analysis.".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "field_qname": { "type": "string", "description": "Qualified name of the function-pointer field in a struct (e.g., 'Curl_handler.do_it'). Must be a Field symbol." },
+                    "target_qname": { "type": "string", "description": "Qualified name of the target function (e.g., 'Curl_http'). Must be a Function symbol." },
+                    "confidence": { "type": "number", "description": "Confidence score 0.0-1.0 (default 1.0 for user-declared)." },
+                })),
+                required: Some(vec!["field_qname".into(), "target_qname".into()]),
+            },
+        },
+        Tool {
+            name: "list_fp_annotations".into(),
+            description: "List all declared function-pointer dispatch annotations. Returns annotation_id, source/target qualified names, and confidence for each.".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({})),
+                required: None,
+            },
+        },
+        Tool {
+            name: "delete_fp_annotation".into(),
+            description: "Delete a function-pointer dispatch annotation. Requires either annotation_id OR field_qname. After deletion, the materialized edge is removed on next re-index.".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "annotation_id": { "type": "string", "description": "Annotation ID (from list_fp_annotations)." },
+                    "field_qname": { "type": "string", "description": "Qualified name of the function-pointer field (alternative to annotation_id)." },
+                })),
+                required: None,
             },
         },
     ]

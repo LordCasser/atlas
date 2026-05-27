@@ -366,7 +366,7 @@ where
     // agent understand why and what to try next.
     if symbols.is_empty() && !precise {
         warnings.push(format!(
-            "Search for '{}' returned no results in scope '{}'. Possible causes: (1) symbol not yet structurally parsed — narrow scope to the file; (2) no exact match — try a broader query or use 'atlas_status' to confirm indexing coverage.",
+            "Search for '{}' returned no results in scope '{}'. Possible causes: (1) symbol not yet structurally parsed — narrow scope to the file; (2) no exact match — try a broader query or use 'status' to confirm indexing coverage.",
             query, normalized_scope
         ));
     }
