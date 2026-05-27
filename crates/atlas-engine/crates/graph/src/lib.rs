@@ -93,7 +93,8 @@ impl GraphEngine {
         let mut visited_nodes = std::collections::HashSet::new();
         let mut visited_edges = std::collections::HashSet::new();
         let mut frontier = vec![start_ix];
-        visited_nodes.insert(start_ix);
+        // Note: start_ix is NOT added to visited_nodes — callers/callees
+        // should not include the queried symbol in results.
 
         for _depth in 0..max_depth {
             let mut next_frontier = Vec::new();

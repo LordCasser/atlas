@@ -14,6 +14,6 @@ serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 
 [dev-dependencies]
-extraction = { path = "../extraction" }
+extraction = { path = "../extraction", features = ["typescript"] }
 resolution = { path = "../resolution" }
 tempfile = "3"
