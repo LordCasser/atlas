@@ -608,13 +608,22 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "path".into(),
-            description: "Find the shortest path between two symbols through the graph (BFS). By default only follows call edges (calls, instantiates, implements, registers_callback). Use edge_kinds to override.".into(),
+            description: "Find the shortest path between two symbols through the graph (BFS). By default only follows call edges (calls, instantiates, implements, registers_callback). Use edge_kinds to override. Each edge hop now includes `direction` (forward/reverse) and `confidence`. The path also includes `breakpoints` describing indirect hops, test code contamination, and reversed edges. Use `prefer_production: true` to prefer paths through production code over test files.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "from": { "type": "string", "description": "Source symbol qualified name" },
                     "to": { "type": "string", "description": "Target symbol qualified name" },
                     "max_depth": { "type": "integer", "description": "Max search depth (default 5, max 10)" },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["both", "outgoing", "incoming"],
+                        "description": "Edge direction constraint during BFS: 'both' (default) follows outgoing+incoming, 'outgoing' follows only forward/call edges, 'incoming' follows only reverse/caller edges."
+                    },
+                    "prefer_production": {
+                        "type": "boolean",
+                        "description": "When true, prefers paths through production (non-test) code. Test file nodes are deferred so production paths take priority even if longer by hop count. Default false."
+                    },
                     "edge_kinds": {
                         "type": "array",
                         "items": { "type": "string" },

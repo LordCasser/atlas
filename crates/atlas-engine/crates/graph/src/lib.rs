@@ -14,8 +14,8 @@ use types::ids::SymbolId;
 
 pub use graph_builder::{GraphBuilder, GraphBuilderStats};
 pub use snapshot::{
-    CallGraphView, GraphPath, GraphSnapshot, NodeIx, NodeSummary, Subgraph, TraversalConfig,
-    TraversalDirection,
+    CallGraphView, GraphPath, GraphSnapshot, NodeIx, NodeSummary, PathBreakpoint,
+    PathBreakpointKind, PathEdge, PathEdgeDirection, Subgraph, TraversalConfig, TraversalDirection,
 };
 
 use db::Store;
@@ -286,22 +286,29 @@ impl GraphEngine {
     ///
     /// When `edge_kind_filter` is `Some(kinds)`, only edges of the given kinds are
     /// traversed. `None` follows all edge kinds (backward-compatible).
+    ///
+    /// `direction` controls which edges are followed during BFS:
+    /// - `Outgoing`: only forward edges (source→target)
+    /// - `Incoming`: only reverse edges (target→source)
+    /// - `Both`: bidirectional (default for finding any path)
+    ///
+    /// When `prefer_production` is true, the BFS prefers paths through non-test
+    /// files. Test file nodes are deferred to a secondary exploration queue,
+    /// guaranteeing that if a pure production path exists, it will be returned
+    /// even if a shorter (by hop count) path through test code also exists.
     pub fn shortest_path(
         &self,
         from: &SymbolId,
         to: &SymbolId,
         max_depth: usize,
         edge_kind_filter: Option<&[EdgeKind]>,
+        direction: TraversalDirection,
+        prefer_production: bool,
     ) -> Option<GraphPath> {
         let from_ix = self.snapshot.id_to_idx.get(from)?;
         let to_ix = self.snapshot.id_to_idx.get(to)?;
-        let (node_indices, edge_indices) =
-            self.snapshot
-                .shortest_path(*from_ix, *to_ix, max_depth, edge_kind_filter)?;
-        Some(GraphPath {
-            node_indices,
-            edge_indices,
-        })
+        self.snapshot
+            .shortest_path(*from_ix, *to_ix, max_depth, edge_kind_filter, direction, prefer_production)
     }
 
     // ── usages ───────────────────────────────────────────────────────────
@@ -427,7 +434,7 @@ mod tests {
         let fid = make_file_id("test.ts");
         let a = make_symbol(fid, "main", "main", SymbolKind::Function);
         let c = make_symbol(fid, "log", "log", SymbolKind::Function);
-        let path = engine.shortest_path(&a.id, &c.id, 5, None);
+        let path = engine.shortest_path(&a.id, &c.id, 5, None, TraversalDirection::Both, false);
         assert!(path.is_some());
     }
 

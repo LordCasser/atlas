@@ -244,17 +244,27 @@ fn caller_path_score(
 
 /// Heuristic: is this function name likely a test or benchmark?
 ///
-/// Covers Go conventions (`Test*`, `Benchmark*`, `Example*`) and common
-/// patterns in other languages (`test_*`, `spec_*`).  This is intentionally
+/// Covers Go conventions (`Test*`, `Benchmark*`, `Example*`), common
+/// patterns in other languages (`test_*`, `spec_*`), and the plain `test`
+/// name used by curl/libtest conventions.  This is intentionally
 /// simple — false positives only affect scoring, not correctness.
 fn is_likely_test_name(name: &str) -> bool {
+    // Go convention
     name.starts_with("Test")
         || name.starts_with("Benchmark")
         || name.starts_with("Example")
+        // C/Python/JS pattern: test_*
         || name.starts_with("test_")
         || name.starts_with("spec_")
         || name.starts_with("it_")
+        // Rust pattern: fuzz_*
         || name.starts_with("Fuzz")
+        // Plain "test" — common in C (curl uses `test()` as the libtest entry point)
+        || name == "test"
+        // C test patterns: *_test
+        || name.ends_with("_test")
+        // SPEC harness: *_spec
+        || name.ends_with("_spec")
 }
 /// `RegistersCallback` is included so it appears in the path, but BFS
 /// traversal stops at callback boundaries (handled in the BFS loop above).
@@ -432,5 +442,44 @@ mod tests {
     #[test]
     fn is_call_edge_registers_callback() {
         assert!(is_call_edge(&EdgeKind::RegistersCallback));
+    }
+
+    #[test]
+    fn is_likely_test_name_matches_go_convention() {
+        assert!(is_likely_test_name("TestFoo"));
+        assert!(is_likely_test_name("BenchmarkBar"));
+        assert!(is_likely_test_name("ExampleQux"));
+    }
+
+    #[test]
+    fn is_likely_test_name_matches_snake_prefix() {
+        assert!(is_likely_test_name("test_integration"));
+        assert!(is_likely_test_name("spec_model"));
+        assert!(is_likely_test_name("it_should_work"));
+    }
+
+    #[test]
+    fn is_likely_test_name_matches_plain_test() {
+        // curl/libtest convention: `test()` is the test entry point
+        assert!(is_likely_test_name("test"));
+    }
+
+    #[test]
+    fn is_likely_test_name_matches_suffix() {
+        assert!(is_likely_test_name("my_test"));
+        assert!(is_likely_test_name("user_spec"));
+    }
+
+    #[test]
+    fn is_likely_test_name_rejects_normal_names() {
+        assert!(!is_likely_test_name("handle_request"));
+        assert!(!is_likely_test_name("main"));
+        assert!(!is_likely_test_name("calculate"));
+        assert!(!is_likely_test_name("contest")); // contains "test" but doesn't match patterns
+    }
+
+    #[test]
+    fn is_likely_test_name_matches_fuzz_prefix() {
+        assert!(is_likely_test_name("FuzzParser"));
     }
 }

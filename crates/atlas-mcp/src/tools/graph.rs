@@ -276,6 +276,11 @@ impl ToolRouter {
         let from_qname = get_str(args, "from");
         let to_qname = get_str(args, "to");
         let max_depth = get_u64(args, "max_depth").unwrap_or(5) as usize;
+        let prefer_production = args
+            .get("prefer_production")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let direction = Self::resolve_path_direction(args);
 
         let edge_kind_filter = match Self::resolve_path_edge_kinds(args) {
             Ok(f) => f,
@@ -292,7 +297,14 @@ impl ToolRouter {
         };
 
         let graph = self.context_builder().graph_snapshot();
-        match graph.shortest_path(&from_id, &to_id, max_depth.min(10), edge_kind_filter.as_deref()) {
+        match graph.shortest_path(
+            &from_id,
+            &to_id,
+            max_depth.min(10),
+            edge_kind_filter.as_deref(),
+            direction,
+            prefer_production,
+        ) {
             Some(path) => {
                 let snap = graph.snapshot();
                 let mut hops: Vec<serde_json::Value> = Vec::with_capacity(
@@ -300,19 +312,35 @@ impl ToolRouter {
                 );
                 for i in 0..path.node_indices.len() {
                     hops.push(Self::node_json(snap, path.node_indices[i]));
-                    if i < path.edge_indices.len() {
-                        let edge = snap.edge(path.edge_indices[i]);
+                    if i < path.edges.len() {
+                        let edge = snap.edge(path.edges[i].edge_ix);
                         hops.push(json!({
                             "edge_kind": edge.kind.as_str(),
+                            "direction": path.edges[i].direction.as_str(),
+                            "confidence": edge.confidence.as_f32(),
                         }));
                     }
                 }
+                // Serialize breakpoints
+                let breakpoints: Vec<serde_json::Value> = path
+                    .breakpoints
+                    .iter()
+                    .map(|bp| {
+                        json!({
+                            "kind": bp.kind.as_str(),
+                            "edge_index": bp.edge_index,
+                            "message": bp.message,
+                        })
+                    })
+                    .collect();
                 (
                     serde_json::to_string_pretty(&json!({
                         "from": from_qname,
                         "to": to_qname,
                         "path_length": path.node_indices.len(),
+                        "confidence": path.confidence,
                         "path": hops,
+                        "breakpoints": breakpoints,
                     }))
                     .unwrap_or_else(|e| e.to_string()),
                     false,
@@ -324,11 +352,24 @@ impl ToolRouter {
                     "to": to_qname,
                     "path_length": 0,
                     "path": [],
+                    "breakpoints": [],
                     "message": "No path found within depth limit",
                 }))
                 .unwrap_or_else(|e| e.to_string()),
                 false,
             ),
+        }
+    }
+
+    /// Resolve the `direction` parameter for path finding.
+    /// - Not provided or "both" → TraversalDirection::Both
+    /// - "outgoing" → TraversalDirection::Outgoing (only forward edges)
+    /// - "incoming" → TraversalDirection::Incoming (only reverse/caller edges)
+    fn resolve_path_direction(args: &serde_json::Value) -> TraversalDirection {
+        match get_str_opt(args, "direction") {
+            Some("outgoing") => TraversalDirection::Outgoing,
+            Some("incoming") => TraversalDirection::Incoming,
+            _ => TraversalDirection::Both,
         }
     }
 
