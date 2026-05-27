@@ -416,6 +416,24 @@ fn qualified_name_from_node_go(
                     }
                 }
             }
+            "source_file" => {
+                // Extract package name from package_clause child.
+                let mut cursor = parent.walk();
+                for child in parent.children(&mut cursor) {
+                    if child.kind() == "package_clause" {
+                        let mut pkg_cursor = child.walk();
+                        for pkg_child in child.children(&mut pkg_cursor) {
+                            if pkg_child.kind() == "package_identifier" {
+                                if let Ok(pkg) = pkg_child.utf8_text(source.as_bytes()) {
+                                    parts.push(pkg.to_string());
+                                }
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
             _ => {}
         }
         current = parent;

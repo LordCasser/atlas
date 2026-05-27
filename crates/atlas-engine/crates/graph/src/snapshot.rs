@@ -2129,4 +2129,31 @@ mod tests {
         assert!(!has_proxy,
             "Weighted Dijkstra should prefer the clean 3-hop path over the proxy 2-hop path");
     }
+
+    #[test]
+    fn test_callback_patterns_ts_js() {
+        let patterns: Vec<&str> = crate::graph_builder::CALLBACK_PATTERNS.iter().map(|(p, _)| *p).collect();
+        // TS/JS
+        assert!(patterns.contains(&"setTimeout"));
+        assert!(patterns.contains(&"setInterval"));
+        assert!(patterns.contains(&"setImmediate"));
+        assert!(patterns.contains(&"addEventListener"));
+        assert!(patterns.contains(&"subscribe"));
+        // Python
+        assert!(patterns.contains(&"create_task"));
+        assert!(patterns.contains(&"ensure_future"));
+        assert!(patterns.contains(&"Thread"));
+        assert!(patterns.contains(&"add_done_callback"));
+        // CSharp
+        assert!(patterns.contains(&"add_"));
+        // Java
+        assert!(patterns.contains(&"addActionListener"));
+        assert!(patterns.contains(&"addChangeListener"));
+        // Legacy
+        assert!(patterns.contains(&"pthread_create"));
+        assert!(patterns.contains(&"signal"));
+        assert!(patterns.contains(&"register"));
+        // Total count (no duplicates)
+        assert_eq!(patterns.len(), 21, "expected 21 unique callback patterns");
+    }
 }

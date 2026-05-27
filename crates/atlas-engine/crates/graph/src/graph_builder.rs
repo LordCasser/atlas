@@ -132,9 +132,12 @@ impl GraphBuilder {
 
         // Post-process: detect callback registrations and create RegistersCallback edges
         let callback_edges = Self::detect_callback_registrations(&edges, &self.store);
+        // Post-process: detect decorator registrations (Python @decorator patterns)
+        let decorator_edges = self.detect_decorator_registrations(&scoped);
         let all_edges: Vec<RawEdge> = edges
             .into_iter()
             .chain(callback_edges)
+            .chain(decorator_edges)
             .collect();
 
         let edge_count = all_edges.len();
@@ -674,16 +677,34 @@ main();
 // ───────────────────────────────────────────────────────────────────────────
 
 /// Known callback registration patterns: (callee name contains pattern, callback arg index).
-const CALLBACK_PATTERNS: &[(&str, usize)] = &[
+pub(crate) const CALLBACK_PATTERNS: &[(&str, usize)] = &[
+    // ── C/C++ patterns ──
     ("_set_", 1),                 // nghttp2_session_callbacks_set_*
     ("_callback", 1),             // set_callback(..., handler)
     ("pthread_create", 2),        // pthread_create(_, _, thread_fn, _)
-    ("signal", 1),                // signal(SIGINT, handler)
-    ("atexit", 0),               // atexit(cleanup)
+    ("signal", 1),                // signal(SIGINT, handler)  [also Python: signal.signal]
+    ("atexit", 0),               // atexit(cleanup)  [also Python: atexit.register]
     ("qsort", 3),                // qsort(base, n, sz, cmp)
+    ("register", 0),             // register_handler(handler)  [also Python: atexit.register]
+    // ── TypeScript / JavaScript / ArkTS patterns ──
+    ("setTimeout", 0),           // setTimeout(handler, delay)
+    ("setInterval", 0),          // setInterval(handler, interval)
+    ("setImmediate", 0),         // setImmediate(handler)
+    ("addEventListener", 1),     // el.addEventListener('click', handler)
+    ("subscribe", 0),            // observable.subscribe(handler)
+    // ── Python patterns ──
+    ("create_task", 0),          // asyncio.create_task(coro)
+    ("ensure_future", 0),        // asyncio.ensure_future(coro)
+    ("Thread", 0),               // threading.Thread(target=fn)
+    ("add_done_callback", 0),    // future.add_done_callback(fn)
+    // ── CSharp patterns ──
+    ("add_", 1),                 // event += handler  →  add_EventName(handler)
+    // ── Java patterns ──
+    ("addActionListener", 0),    // btn.addActionListener(handler)
+    ("addChangeListener", 0),    // component.addChangeListener(handler)
+    // ── Generic patterns (all languages) ──
     ("on_", 0),                  // on_click(handler), on_frame_recv(session, ...)
     ("add_listener", 1),          // add_listener(event, handler)
-    ("register", 0),             // register_handler(handler)
 ];
 
 impl GraphBuilder {
@@ -802,6 +823,96 @@ impl GraphBuilder {
             );
 
             result.push(rcb_edge);
+        }
+
+        result
+    }
+
+    /// Scan resolved references for Python decorator patterns and create
+    /// `RegistersCallback` edges from the decorator function to the
+    /// decorated definition.
+    ///
+    /// Uses line-number proximity: for each `Decoration` reference, finds
+    /// the nearest `Function`/`Method`/`Class` definition after it in the
+    /// same file.  This handles both module-level decorators (`@app.route`
+    /// on a top-level function) and class-level decorators (`@staticmethod`
+    /// on a method).
+    fn detect_decorator_registrations(
+        &self,
+        scoped: &[&(ReferenceUse, ResolvedTarget)],
+    ) -> Vec<RawEdge> {
+        use std::collections::HashMap;
+
+        // Group decoration references by file_id for efficient lookups.
+        let mut file_refs: HashMap<FileId, Vec<&ReferenceUse>> = HashMap::new();
+        let mut ref_target: HashMap<ReferenceId, &ResolvedTarget> = HashMap::new();
+
+        for (r, t) in scoped.iter() {
+            if r.kind == ReferenceKind::Decoration {
+                file_refs.entry(r.file_id).or_default().push(r);
+                ref_target.insert(r.id, t);
+            }
+        }
+        if file_refs.is_empty() {
+            return Vec::new();
+        }
+
+        let mut result = Vec::new();
+
+        for (file_id, refs) in &file_refs {
+            // Get all Function/Method/Class definitions in this file.
+            let defs = match self.store.find_symbols_by_file(file_id) {
+                Ok(syms) => syms,
+                Err(_) => continue,
+            };
+            let definable: Vec<&SymbolDef> = defs
+                .iter()
+                .filter(|s| {
+                    matches!(
+                        s.kind,
+                        SymbolKind::Function | SymbolKind::Method | SymbolKind::Class
+                    )
+                })
+                .collect();
+
+            if definable.is_empty() {
+                continue;
+            }
+
+            for r in refs {
+                let target = match ref_target.get(&r.id) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                // Find the nearest definition that starts at or after the
+                // decorator reference's line.
+                let ref_line = r.range.start_line;
+                let nearest = definable
+                    .iter()
+                    .filter(|d| d.range.start_line >= ref_line)
+                    .min_by_key(|d| d.range.start_line);
+
+                if let Some(def) = nearest {
+                    if def.range.start_line - ref_line > 20 {
+                        continue;
+                    }
+                    let edge = RawEdge::new(
+                        EdgeId::generate(
+                            &target.symbol_id,
+                            &def.id,
+                            "registers_callback",
+                            Some(&r.id),
+                            "decoration",
+                        ),
+                        target.symbol_id,
+                        def.id,
+                        EdgeKind::RegistersCallback,
+                        Confidence::new(0.75),
+                        Provenance::Heuristic,
+                    );
+                    result.push(edge);
+                }
+            }
         }
 
         result

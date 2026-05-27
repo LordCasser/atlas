@@ -189,7 +189,7 @@ fn enclosing_definition_kinds(kind: SymbolKind, lang: Language) -> &'static [&'s
             &["function_definition", "template_declaration"]
         }
         (Function | Method | Constructor, Python) => &["function_definition", "lambda"],
-        (Function | Method | Constructor, TypeScript | JavaScript) => &[
+        (Function | Method | Constructor, TypeScript | JavaScript | ArkTS) => &[
             "function_declaration",
             "function_expression",
             "arrow_function",
@@ -208,12 +208,13 @@ fn enclosing_definition_kinds(kind: SymbolKind, lang: Language) -> &'static [&'s
         }
         (Function | Method | Constructor, Ruby) => &["method", "singleton_method"],
         (Function | Method | Constructor, Kotlin) => &["function_declaration"],
-        (Function | Method | Constructor, Cangjie) => &["function_definition"],
+        (Function | Method | Constructor, Cangjie) => &["functionDefinition"],
 
         // ── Classes ──
+        (Class, Cangjie) => &["classDefinition"],
         (Class, Cpp) => &["class_specifier"],
         (Class, Python) => &["class_definition"],
-        (Class, TypeScript | JavaScript) => &["class_declaration", "class_expression"],
+        (Class, TypeScript | JavaScript | ArkTS) => &["class_declaration", "class_expression"],
         (Class, Java) => &["class_declaration"],
         (Class, CSharp) => &["class_declaration"],
         (Class, Php) => &["class_declaration"],
@@ -226,7 +227,8 @@ fn enclosing_definition_kinds(kind: SymbolKind, lang: Language) -> &'static [&'s
         (Struct, Rust) => &["struct_item"],
 
         // ── Interfaces / Traits ──
-        (Interface, TypeScript | JavaScript) => &["interface_declaration"],
+        (Interface, Cangjie) => &["interfaceDefinition"],
+        (Interface, TypeScript | JavaScript | ArkTS) => &["interface_declaration"],
         (Interface, Java) => &["interface_declaration"],
         (Interface, CSharp) => &["interface_declaration"],
         (Interface, Go) => &["type_declaration"],
@@ -236,7 +238,8 @@ fn enclosing_definition_kinds(kind: SymbolKind, lang: Language) -> &'static [&'s
         (Trait, Php) => &["trait_declaration"],
 
         // ── Enums ──
-        (Enum, TypeScript | JavaScript) => &["enum_declaration"],
+        (Enum, Cangjie) => &["enumDefinition"],
+        (Enum, TypeScript | JavaScript | ArkTS) => &["enum_declaration"],
         (Enum, Java) => &["enum_declaration"],
         (Enum, CSharp) => &["enum_declaration"],
         (Enum, Rust) => &["enum_item"],
@@ -244,14 +247,14 @@ fn enclosing_definition_kinds(kind: SymbolKind, lang: Language) -> &'static [&'s
         (Enum, Kotlin) => &["enum_class"],
 
         // ── Type aliases ──
-        (TypeAlias, TypeScript | JavaScript) => &["type_alias_declaration"],
+        (TypeAlias, TypeScript | JavaScript | ArkTS) => &["type_alias_declaration"],
         (TypeAlias, Go) => &["type_declaration"],
         (TypeAlias, Rust) => &["type_item"],
         (TypeAlias, C | Cpp) => &["type_definition"],
         (TypeAlias, Kotlin) => &["type_alias"],
 
         // ── Modules / Namespaces / Packages ──
-        (Module | Namespace, TypeScript | JavaScript) => &["module", "namespace_declaration"],
+        (Module | Namespace, TypeScript | JavaScript | ArkTS) => &["module", "namespace_declaration"],
         (Package, Java) => &["package_declaration"],
         (Module, Rust) => &["mod_item"],
 
