@@ -7,7 +7,7 @@ use atlas_engine::FileLock;
 use atlas_engine::progress::{ProgressPhase, ProgressState};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub fn run(project: &str, analysis: &str) -> Result<()> {
     let mode = match analysis {
@@ -53,9 +53,13 @@ pub fn run(project: &str, analysis: &str) -> Result<()> {
 
     // Run sync in background thread with progress
     let handle = std::thread::spawn(move || -> Result<_> {
-        ps.lock().unwrap().start_phase(ProgressPhase::Extraction, Some("Syncing...".into()));
+        ps.lock()
+            .unwrap()
+            .start_phase(ProgressPhase::Extraction, Some("Syncing...".into()));
         let stats = engine.sync()?;
-        ps.lock().unwrap().start_phase(ProgressPhase::Finalizing, None);
+        ps.lock()
+            .unwrap()
+            .start_phase(ProgressPhase::Finalizing, None);
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -89,7 +93,9 @@ pub fn run(project: &str, analysis: &str) -> Result<()> {
 
     // ── Summary rebuild (Schema v3: incrementally rebuild summaries
     //    for functions in changed files only, not the whole project) ──
-    let changed_paths: Vec<_> = changed.added.iter()
+    let changed_paths: Vec<_> = changed
+        .added
+        .iter()
         .chain(changed.modified.iter())
         .collect();
     let mut summary_count = 0usize;
@@ -100,13 +106,16 @@ pub fn run(project: &str, analysis: &str) -> Result<()> {
             if let Ok(Some(file_id)) = ctx.store.resolve_file_id(&ctx.root, &rel) {
                 if let Ok(symbols) = ctx.store.find_symbols_by_file(&file_id) {
                     for sym in symbols.iter().filter(|s| {
-                        matches!(s.kind,
+                        matches!(
+                            s.kind,
                             atlas_engine::enums::SymbolKind::Function
-                            | atlas_engine::enums::SymbolKind::Method
-                            | atlas_engine::enums::SymbolKind::Constructor)
+                                | atlas_engine::enums::SymbolKind::Method
+                                | atlas_engine::enums::SymbolKind::Constructor
+                        )
                     }) {
                         match atlas_engine::SummaryStore::build_for_function(
-                            &ctx.store, &sym.id,
+                            &ctx.store,
+                            &sym.id,
                             |s, fid| atlas_engine::SummaryBuilder::build(s, fid, None),
                         ) {
                             Ok(s) if !s.is_empty() => summary_count += 1,
@@ -118,8 +127,10 @@ pub fn run(project: &str, analysis: &str) -> Result<()> {
             }
         }
     }
-    println!("  Summaries:       {} updated ({} skipped / empty)",
-        summary_count, summary_skip);
+    println!(
+        "  Summaries:       {} updated ({} skipped / empty)",
+        summary_count, summary_skip
+    );
 
     if !stats.phase_timings.is_empty() {
         print_phase_timings(&stats.phase_timings);

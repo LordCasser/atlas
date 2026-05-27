@@ -223,6 +223,11 @@ impl SyncEngine {
         let edge_timing = edge_timer.items(build_stats.edges_built as u64).finish();
         phase_timings.push(edge_timing);
 
+        // 4c. Materialize user annotations as edges
+        if let Err(e) = graph::materialize_annotations(&self.store) {
+            eprintln!("Warning: failed to materialize annotations: {}", e);
+        }
+
         // Commit tsconfig hash baseline AFTER the full pipeline succeeded.
         // Committing earlier means a partial failure would leave the hash
         // updated, preventing retry on the next sync.

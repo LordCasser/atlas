@@ -2,7 +2,7 @@
 //!
 //! ## Design
 //! - **Worker thread**: runs the 9-phase indexing pipeline, updates ProgressState.
-//! - **Main thread**: runs the ratatui TUI render loop (or text fallback).
+//! - **Main thread**: runs the terminal progress loop (or text fallback).
 //! - **Phase 1 (parallel)**: Extract all files using Rayon — CPU-bound, no SQLite access.
 //! - **Phase 2 (sequential)**: Insert extracted facts into the store — SQLite single-writer.
 //! - **Phase 3**: Resolve all references (parallel matching + serial write).
@@ -104,10 +104,7 @@ pub fn run(
         let n = pc.fetch_add(1, Ordering::SeqCst);
         stop.store(true, Ordering::SeqCst);
         if n >= 1 {
-            // Second press — restore terminal and exit immediately.
-            // Don't call ratatui::try_restore() from a signal handler
-            // (not signal-safe); just let the process die and the OS
-            // will reset the terminal on exit.
+            // Second press — exit immediately.
             std::process::exit(1);
         }
     }) {
@@ -435,10 +432,15 @@ pub fn run(
     // ── Handle interrupt BEFORE joining worker ──
     if was_interrupted {
         if has_tty {
-            // Ctrl+C: leave progress display visible on screen (like wget).
-            tui.take().unwrap().leave();
+            // Restore the inline TUI, then print the interrupt summary as
+            // normal terminal output so the shell prompt follows it.
+            tui.take()
+                .unwrap()
+                .interrupt(&progress_state.lock().unwrap());
+        } else {
+            eprintln!();
+            crate::tui::progress::print_interrupted(&progress_state.lock().unwrap());
         }
-        crate::tui::progress::print_interrupted(&progress_state.lock().unwrap());
         return Ok(());
     }
 
@@ -451,10 +453,8 @@ pub fn run(
     let db_stats = store_for_main.get_stats()?;
 
     if has_tty {
-        // Render the summary via ratatui (replaces the progress bars
-        // with DB stats in the same 4-row viewport), then drop terminal
-        // and position cursor below the rendered content.  No manual
-        // escape-sequence clearing — ratatui handles all screen I/O.
+        // Restore the inline TUI, then print the final summary as normal
+        // command output so the shell prompt follows it immediately.
         tui.take().unwrap().finish(
             db_stats.total_files as u64,
             db_stats.total_symbols as u64,
