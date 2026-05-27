@@ -20,6 +20,10 @@ pub struct ContextBuilder {
     store: Arc<Store>,
     graph: RwLock<Arc<GraphEngine>>,
     project_root: Option<PathBuf>,
+    /// Optional callback for extracting symbol source via AST-aware parsing.
+    /// When set, `read_source_snippet` delegates to this callback; when `None`,
+    /// falls back to `TextRange`-based line extraction.
+    source_fn: Option<Arc<dyn Fn(&SymbolId) -> Option<String> + Send + Sync>>,
 }
 
 impl ContextBuilder {
@@ -28,6 +32,7 @@ impl ContextBuilder {
             store,
             graph: RwLock::new(graph),
             project_root: None,
+            source_fn: None,
         }
     }
 
@@ -36,6 +41,20 @@ impl ContextBuilder {
     /// will always be empty.
     pub fn with_project_root(mut self, root: PathBuf) -> Self {
         self.project_root = Some(root);
+        self
+    }
+
+    /// Set an optional AST-aware source extraction function.
+    ///
+    /// When provided, `read_source_snippet` delegates to this callback
+    /// instead of using `TextRange`-based line extraction.  The callback
+    /// receives a `SymbolId` and returns the exact source text for that
+    /// symbol (usually via tree-sitter re-parsing).
+    pub fn with_source_fn(
+        mut self,
+        f: Arc<dyn Fn(&SymbolId) -> Option<String> + Send + Sync>,
+    ) -> Self {
+        self.source_fn = Some(f);
         self
     }
 
@@ -239,10 +258,32 @@ impl ContextBuilder {
 
     /// Read the subject symbol's source code from disk.
     ///
-    /// When a `project_root` is set, reads the file from disk and extracts
-    /// the symbol's source lines.  Without a project root (legacy path),
-    /// returns `None`.
+    /// When `source_fn` is set, delegates to AST-aware extraction (tree-sitter
+    /// re-parsing). Otherwise falls back to `TextRange`-based line extraction.
     fn read_source_snippet(&self, sym: &SymbolDef) -> Option<SourceSnippet> {
+        // Primary path: AST-aware extraction via the injected callback.
+        if let Some(ref source_fn) = self.source_fn {
+            if let Some(text) = source_fn(&sym.id) {
+                let all_lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+                let total_lines = all_lines.len() as u32;
+                const MAX_CONTEXT_LINES: usize = 60;
+                let truncated = all_lines.len() > MAX_CONTEXT_LINES;
+                let lines = if truncated {
+                    all_lines.into_iter().take(MAX_CONTEXT_LINES).collect()
+                } else {
+                    all_lines
+                };
+                return Some(SourceSnippet {
+                    lines,
+                    start_line: sym.range.start_line,
+                    total_lines,
+                    truncated,
+                });
+            }
+            // Fall through to TextRange fallback if AST extraction returns None.
+        }
+
+        // Fallback: TextRange-based extraction (requires project_root).
         let root = self.project_root.as_ref()?;
         let file_info = self.store.get_file(&sym.file_id).ok().flatten()?;
         let full_path = root.join(&file_info.path);

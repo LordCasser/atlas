@@ -4,7 +4,8 @@
 //! HashMaps and adjacency lists. Snapshot is immutable after construction.
 
 use db::Store;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use types::ids::{FileId, SymbolId};
 use types::{
     Confidence, EdgeKind, Language, Provenance, RawEdge, SymbolDef, SymbolKind, Visibility,
@@ -14,6 +15,28 @@ use types::{
 
 pub type NodeIx = usize;
 pub type EdgeIx = usize;
+
+// ── ordered f64 wrapper (f64 doesn't impl Ord natively) ─────────────────
+
+/// An `f64` that implements `Ord` via [`f64::total_cmp`], suitable for use
+/// in `BinaryHeap`-based Dijkstra.
+#[derive(Clone, Copy, Debug)]
+struct OrdF64(f64);
+
+impl PartialEq for OrdF64 {
+    fn eq(&self, other: &Self) -> bool { self.0 == other.0 }
+}
+impl Eq for OrdF64 {}
+impl PartialOrd for OrdF64 {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for OrdF64 {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
 
 // ── per-node summary ────────────────────────────────────────────────────────
 
@@ -519,6 +542,9 @@ impl GraphSnapshot {
                 confidence: 1.0,
                 breakpoints: vec![],
                 edge_indices: vec![],
+                total_weight: 0.0,
+                test_hops: if self.nodes[from].is_test_file { 1 } else { 0 },
+                indirect_hops: 0,
             });
         }
         if from >= self.nodes.len() || to >= self.nodes.len() {
@@ -526,12 +552,15 @@ impl GraphSnapshot {
         }
 
         if prefer_production {
-            return self.shortest_path_prefer_production(from, to, max_depth, edge_kind_filter, direction);
+            return self.shortest_path_weighted_prod(from, to, max_depth, edge_kind_filter, direction);
         }
-        self.shortest_path_bfs(from, to, max_depth, edge_kind_filter, direction)
+        self.shortest_path_weighted(from, to, max_depth, edge_kind_filter, direction)
     }
 
     /// Standard bidirectional BFS — unchanged behavior, enhanced output.
+    /// Kept for backward compatibility; new code should use
+    /// [`shortest_path_weighted`] for semantically-aware pathfinding.
+    #[allow(dead_code)]
     fn shortest_path_bfs(
         &self,
         from: NodeIx,
@@ -594,6 +623,8 @@ impl GraphSnapshot {
     /// Production-preferring BFS using a two-queue approach (0-1 BFS).
     /// Nodes in test files have their exploration deferred behind all
     /// production nodes at the same depth.
+    /// Kept for backward compatibility; use [`shortest_path_weighted_prod`].
+    #[allow(dead_code)]
     fn shortest_path_prefer_production(
         &self,
         from: NodeIx,
@@ -804,12 +835,124 @@ impl GraphSnapshot {
             total_confidence / edges.len() as f64
         };
 
+        // Compute path quality metadata
+        let mut total_weight = 0.0f64;
+        let mut test_hops = 0usize;
+        let mut indirect_hops = 0usize;
+        for (i, node_ix) in path_nodes.iter().enumerate() {
+            if self.nodes[*node_ix].is_test_file {
+                test_hops += 1;
+            }
+            // Edge metadata: use the edge leaving this node (except last)
+            if i < raw_edges.len() {
+                let eix = raw_edges[i];
+                let edge = &self.edges[eix];
+                let next_node = path_nodes[i + 1];
+                if is_indirect_edge(&edge.kind) {
+                    indirect_hops += 1;
+                }
+                total_weight += self.edge_weight(eix, next_node);
+            }
+        }
+
         GraphPath {
             node_indices: path_nodes,
             edge_indices: raw_edges,
             edges,
             confidence,
             breakpoints,
+            total_weight,
+            test_hops,
+            indirect_hops,
+        }
+    }
+
+    // ── edge weighting ───────────────────────────────────────────────────
+
+    /// Compute the traversal weight for traversing `edge_ix` into `neighbor_ix`.
+    ///
+    /// Lower weight = more semantically direct path.  The weight penalises:
+    ///
+    /// | Factor                    | Max penalty | When                          |
+    /// |---------------------------|-------------|-------------------------------|
+    /// | Indirect calls            | +1.0        | Implements/Instantiates/RegistersCallback |
+    /// | Low-confidence edges      | +0.5        | confidence < 1.0              |
+    /// | Heuristic provenance      | +0.3        | Heuristic/CallbackPattern     |
+    /// | Edge-case file location   | +0.5        | docs/examples/test dirs       |
+    /// | Edge-case name patterns   | +0.5        | proxy/fallback/alt patterns   |
+    ///
+    /// The base weight is 1.0, so a "perfect" path of N hops has total_weight = N.
+    fn edge_weight(&self, edge_ix: EdgeIx, neighbor_ix: NodeIx) -> f64 {
+        let edge = &self.edges[edge_ix];
+        let node = &self.nodes[neighbor_ix];
+        let mut w = 1.0; // base hop cost
+
+        // ── Edge penalties ──
+        if is_indirect_edge(&edge.kind) {
+            w += 1.0;
+        }
+        w += (1.0 - edge.confidence.as_f32() as f64) * 0.5;
+
+        match edge.provenance {
+            Provenance::Heuristic | Provenance::CallbackPattern => w += 0.3,
+            _ => {}
+        }
+
+        // ── Node / file penalties ──
+        w += location_penalty(node);
+        w += name_pattern_penalty(node);
+
+        // Clamp: even heavily penalised edges contribute at least 1.0
+        w.max(1.0)
+    }
+
+    /// Weighted shortest path using Dijkstra's algorithm.
+    ///
+    /// Unlike BFS which minimises hop count, this minimises total traversal
+    /// weight — penalising edge-case functions (proxy/fallback patterns),
+    /// low-confidence edges, and indirect calls so that semantically-direct
+    /// paths are preferred even when they require more hops.
+    fn shortest_path_weighted(
+        &self,
+        from: NodeIx,
+        to: NodeIx,
+        max_depth: usize,
+        edge_kind_filter: Option<&[EdgeKind]>,
+        direction: TraversalDirection,
+    ) -> Option<GraphPath> {
+        self.dijkstra_core(from, to, max_depth, edge_kind_filter, direction, None, 0.0)
+    }
+
+    /// Weighted shortest path preferring production code.
+    ///
+    /// Adds a weight penalty for test-file nodes on top of the normal
+    /// edge weight.  This ensures a pure-production path with more hops
+    /// is preferred over a shorter test-contaminated path.
+    fn shortest_path_weighted_prod(
+        &self,
+        from: NodeIx,
+        to: NodeIx,
+        max_depth: usize,
+        edge_kind_filter: Option<&[EdgeKind]>,
+        direction: TraversalDirection,
+    ) -> Option<GraphPath> {
+        const TEST_FILE_PENALTY: f64 = 5.0;
+        let start_penalty = if self.nodes[from].is_test_file {
+            TEST_FILE_PENALTY
+        } else {
+            0.0
+        };
+        self.dijkstra_core(from, to, max_depth, edge_kind_filter, direction, None, start_penalty)
+    }
+
+    /// Return per-node edge lists for traversal based on direction constraint.
+    fn edge_lists_for(&self, current: NodeIx, direction: TraversalDirection) -> Vec<&Vec<EdgeIx>> {
+        match direction {
+            TraversalDirection::Outgoing => vec![&self.nodes[current].outgoing],
+            TraversalDirection::Incoming => vec![&self.nodes[current].incoming],
+            TraversalDirection::Both => {
+                vec![&self.nodes[current].outgoing, &self.nodes[current].incoming]
+            }
         }
     }
 
@@ -916,6 +1059,166 @@ impl GraphSnapshot {
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
+
+    // ── multi-path selection ────────────────────────────────────────────
+
+    /// Find up to `k` alternative paths with edge-removal diversity, ranked
+    /// by composite semantic+topological+centrality score (descending).
+    pub fn k_ranked_paths(
+        &self,
+        from: NodeIx,
+        to: NodeIx,
+        k: usize,
+        max_depth: usize,
+        edge_kind_filter: Option<&[EdgeKind]>,
+        direction: TraversalDirection,
+        prefer_production: bool,
+    ) -> Vec<RankedPath> {
+        let mut candidates: Vec<RankedPath> = Vec::with_capacity(k);
+        let primary = if prefer_production {
+            self.shortest_path_weighted_prod_ex(from, to, max_depth, edge_kind_filter, direction, None)
+        } else {
+            self.shortest_path_weighted_ex(from, to, max_depth, edge_kind_filter, direction, None)
+        };
+        let primary = match primary {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        candidates.push(RankedPath { path: primary, scores: CompositePathScore::default() });
+        if k <= 1 {
+            candidates[0].scores = self.score_path(&candidates[0].path);
+            return candidates;
+        }
+
+        let mut seen_edge_lists: HashSet<Vec<EdgeIx>> = HashSet::new();
+        seen_edge_lists.insert(primary_edge_id(&candidates[0].path));
+
+        for edge_idx in 0..candidates[0].path.edge_indices.len() {
+            if candidates.len() >= k { break; }
+            let mut excluded = HashSet::new();
+            excluded.insert(candidates[0].path.edge_indices[edge_idx]);
+            let alt = if prefer_production {
+                self.shortest_path_weighted_prod_ex(from, to, max_depth, edge_kind_filter, direction, Some(&excluded))
+            } else {
+                self.shortest_path_weighted_ex(from, to, max_depth, edge_kind_filter, direction, Some(&excluded))
+            };
+            if let Some(alt_path) = alt {
+                let eid = primary_edge_id(&alt_path);
+                if !seen_edge_lists.contains(&eid) && alt_path.node_indices.len() > 1 {
+                    seen_edge_lists.insert(eid);
+                    candidates.push(RankedPath { path: alt_path, scores: CompositePathScore::default() });
+                }
+            }
+        }
+
+        if candidates.len() < k && candidates[0].path.edge_indices.len() >= 2 {
+            let n = candidates[0].path.edge_indices.len();
+            'outer: for i in 0..n {
+                for j in (i + 1)..n {
+                    if candidates.len() >= k { break 'outer; }
+                    let mut excluded = HashSet::new();
+                    excluded.insert(candidates[0].path.edge_indices[i]);
+                    excluded.insert(candidates[0].path.edge_indices[j]);
+                    let alt = if prefer_production {
+                        self.shortest_path_weighted_prod_ex(from, to, max_depth, edge_kind_filter, direction, Some(&excluded))
+                    } else {
+                        self.shortest_path_weighted_ex(from, to, max_depth, edge_kind_filter, direction, Some(&excluded))
+                    };
+                    if let Some(alt_path) = alt {
+                        let eid = primary_edge_id(&alt_path);
+                        if !seen_edge_lists.contains(&eid) && alt_path.node_indices.len() > 1 {
+                            seen_edge_lists.insert(eid);
+                            candidates.push(RankedPath { path: alt_path, scores: CompositePathScore::default() });
+                        }
+                    }
+                }
+            }
+        }
+
+        for c in &mut candidates {
+            c.scores = self.score_path(&c.path);
+        }
+        candidates.sort_by(|a, b| {
+            b.scores.overall.total_cmp(&a.scores.overall)
+                .then_with(|| a.path.node_indices.len().cmp(&b.path.node_indices.len()))
+        });
+        candidates
+    }
+
+    fn score_path(&self, path: &GraphPath) -> CompositePathScore {
+        let n = path.node_indices.len();
+        if n <= 1 {
+            return CompositePathScore { overall: 1.0, semantic: 1.0, topology: 1.0, centrality: 1.0 };
+        }
+        let semantic: f64 = path.node_indices.iter()
+            .map(|&ix| { let n = &self.nodes[ix]; 1.0 - (name_pattern_penalty(n) + location_penalty(n)).min(1.0) })
+            .sum::<f64>() / n as f64;
+        let topology: f64 = if path.edge_indices.is_empty() { 1.0 } else {
+            path.edge_indices.iter()
+                .map(|&eix| { let e = &self.edges[eix]; let b = e.confidence.as_f32() as f64; if is_indirect_edge(&e.kind) { b*0.7 } else { b } })
+                .sum::<f64>() / path.edge_indices.len() as f64
+        };
+        let centrality: f64 = if n <= 2 { 0.7 } else {
+            path.node_indices[1..n-1].iter()
+                .map(|&ix| { let d = (self.nodes[ix].outgoing.len() + self.nodes[ix].incoming.len()) as f64; (d.min(10.0)/10.0).max(0.1) })
+                .sum::<f64>() / (n-2) as f64
+        };
+        CompositePathScore {
+            overall: semantic * 0.40 + topology * 0.35 + centrality * 0.25,
+            semantic, topology, centrality,
+        }
+    }
+
+    fn shortest_path_weighted_ex(&self, from: NodeIx, to: NodeIx, max_depth: usize,
+        edge_kind_filter: Option<&[EdgeKind]>, direction: TraversalDirection,
+        excluded_edges: Option<&HashSet<EdgeIx>>) -> Option<GraphPath> {
+        self.dijkstra_core(from, to, max_depth, edge_kind_filter, direction, excluded_edges, 0.0)
+    }
+
+    fn shortest_path_weighted_prod_ex(&self, from: NodeIx, to: NodeIx, max_depth: usize,
+        edge_kind_filter: Option<&[EdgeKind]>, direction: TraversalDirection,
+        excluded_edges: Option<&HashSet<EdgeIx>>) -> Option<GraphPath> {
+        const PEN: f64 = 5.0;
+        self.dijkstra_core(from, to, max_depth, edge_kind_filter, direction, excluded_edges,
+            if self.nodes[from].is_test_file { PEN } else { 0.0 })
+    }
+
+    fn dijkstra_core(&self, from: NodeIx, to: NodeIx, max_depth: usize,
+        edge_kind_filter: Option<&[EdgeKind]>, direction: TraversalDirection,
+        excluded_edges: Option<&HashSet<EdgeIx>>, start_cost: f64) -> Option<GraphPath> {
+        const PEN: f64 = 5.0;
+        let n = self.nodes.len();
+        let mut dist = vec![f64::INFINITY; n];
+        let mut parent = vec![None; n];
+        let mut parent_edge = vec![None; n];
+        let mut heap: BinaryHeap<(Reverse<OrdF64>, usize, NodeIx)> = BinaryHeap::new();
+        dist[from] = start_cost;
+        heap.push((Reverse(OrdF64(start_cost)), 0, from));
+        while let Some((Reverse(cost), depth, cur)) = heap.pop() {
+            if cost.0 > dist[cur] { continue; }
+            if cur == to { return Some(self.reconstruct_path(from, to, &parent_edge, &parent)); }
+            if depth >= max_depth { continue; }
+            for eix in self.edge_iter(cur, direction) {
+                if let Some(excl) = excluded_edges { if excl.contains(&eix) { continue; } }
+                let edge = &self.edges[eix];
+                if let Some(kinds) = edge_kind_filter { if !kinds.contains(&edge.kind) { continue; } }
+                let nb = if edge.source_ix == cur { edge.target_ix } else { edge.source_ix };
+                let mut nc = cost.0 + self.edge_weight(eix, nb);
+                if start_cost > 0.0 && self.nodes[nb].is_test_file { nc += PEN; }
+                if nc < dist[nb] { dist[nb] = nc; parent[nb] = Some(cur); parent_edge[nb] = Some(eix); heap.push((Reverse(OrdF64(nc)), depth+1, nb)); }
+            }
+        }
+        None
+    }
+
+    /// Iterate edge indices for a node given a direction, returning a flat iterator.
+    fn edge_iter(&self, node: NodeIx, direction: TraversalDirection) -> Box<dyn Iterator<Item = EdgeIx> + '_> {
+        match direction {
+            TraversalDirection::Outgoing => Box::new(self.nodes[node].outgoing.iter().copied()),
+            TraversalDirection::Incoming => Box::new(self.nodes[node].incoming.iter().copied()),
+            TraversalDirection::Both => Box::new(self.nodes[node].outgoing.iter().chain(self.nodes[node].incoming.iter()).copied()),
+        }
+    }
 }
 
 // ── traversal config ────────────────────────────────────────────────────────
@@ -940,7 +1243,7 @@ impl Default for TraversalConfig {
     fn default() -> Self {
         Self {
             direction: TraversalDirection::Outgoing,
-            max_depth: 3,
+            max_depth: 5,
             limit: 100,
             edge_kind_filter: None,
         }
@@ -948,6 +1251,35 @@ impl Default for TraversalConfig {
 }
 
 // ── result types ────────────────────────────────────────────────────────────
+
+/// Composite quality score for a call-graph path.
+///
+/// Computed from three independent dimensions, then combined into an overall
+/// score (0.0–1.0).  Higher = more semantically relevant.
+#[derive(Debug, Clone)]
+pub struct CompositePathScore {
+    /// Overall composite score (0.0–1.0, higher is better).
+    pub overall: f64,
+    /// Semantic quality: function-name and file-location relevance.
+    pub semantic: f64,
+    /// Topological quality: edge confidence and directness.
+    pub topology: f64,
+    /// Centrality: how central are the intermediate nodes in the call graph?
+    pub centrality: f64,
+}
+
+impl Default for CompositePathScore {
+    fn default() -> Self {
+        Self { overall: 1.0, semantic: 1.0, topology: 1.0, centrality: 1.0 }
+    }
+}
+
+/// A candidate path with its composite quality score.
+#[derive(Debug, Clone)]
+pub struct RankedPath {
+    pub path: GraphPath,
+    pub scores: CompositePathScore,
+}
 
 /// A subgraph induced by a traversal.
 #[derive(Debug, Clone, Default)]
@@ -1047,6 +1379,15 @@ pub struct GraphPath {
     /// Convenience: raw edge indices (computed from edges field).
     /// Kept for backward compatibility with existing callers.
     pub edge_indices: Vec<EdgeIx>,
+    /// Total traversal weight of this path (sum of per-edge weights).
+    /// Lower = more semantically direct; higher = passes through
+    /// edge-case code (proxy/fallback patterns, low-confidence edges).
+    pub total_weight: f64,
+    /// Number of hops that pass through test-file nodes.
+    pub test_hops: usize,
+    /// Number of indirect-call hops (Instantiates, Implements,
+    /// RegistersCallback edges).
+    pub indirect_hops: usize,
 }
 
 impl GraphPath {
@@ -1069,8 +1410,61 @@ impl GraphPath {
             confidence,
             breakpoints: vec![],
             edge_indices,
+            total_weight: 0.0,
+            test_hops: 0,
+            indirect_hops: 0,
         }
     }
+}
+
+/// Produce a stable identifier for a path's edge set for deduplication.
+fn primary_edge_id(path: &GraphPath) -> Vec<EdgeIx> {
+    let mut ids: Vec<EdgeIx> = path.edge_indices.clone();
+    ids.sort_unstable();
+    ids
+}
+
+// ── edge-weighting helpers (free functions) ──────────────────────────────
+
+/// Whether an edge kind represents an indirect call (not a direct Calls edge).
+fn is_indirect_edge(kind: &EdgeKind) -> bool {
+    matches!(
+        kind,
+        EdgeKind::Implements | EdgeKind::Instantiates | EdgeKind::RegistersCallback
+    )
+}
+
+/// Penalty for nodes in directories that suggest edge-case code
+/// (docs, examples, test fixtures).
+fn location_penalty(node: &NodeSummary) -> f64 {
+    // We don't have the file path directly in NodeSummary, but we can
+    // check is_test_file (set during construction from path heuristics).
+    if node.is_test_file {
+        return 0.5;
+    }
+    0.0
+}
+
+/// Penalty for function/qualified names matching edge-case patterns.
+///
+/// Functions whose names suggest proxy, fallback, alternate, or spare
+/// implementations are penalised because they typically represent
+/// non-primary code paths.
+fn name_pattern_penalty(node: &NodeSummary) -> f64 {
+    // Check the simple name (case-insensitive substring) for edge-case
+    // patterns. Qualified names are checked too for things like
+    // "socks5_proxy.c" appearing in the file-scoped qualified name.
+    let lower = node.qualified_name.to_lowercase();
+    let patterns = [
+        "proxy", "socks", "fallback", "alternate", "backup", "spare",
+        "alt_", "_alt",
+    ];
+    for pat in &patterns {
+        if lower.contains(pat) {
+            return 0.5;
+        }
+    }
+    0.0
 }
 
 // ── tests ───────────────────────────────────────────────────────────────────

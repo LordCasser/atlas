@@ -21,6 +21,7 @@ anyhow = "1"
 blake3 = "1"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
+tree-sitter = "0.26"
 tracing = "0.1"
 
 [dev-dependencies]

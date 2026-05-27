@@ -17,6 +17,7 @@ pub use annotation_graph::materialize_annotations;
 pub use graph_builder::{GraphBuilder, GraphBuilderStats};
 pub use snapshot::{
     CallGraphView, ForwardFrontier, FrontierNode, GraphPath, GraphSnapshot, NodeIx, NodeSummary,
+    CompositePathScore, RankedPath,
     PathBreakpoint, PathBreakpointKind, PathEdge, PathEdgeDirection, Subgraph, TraversalConfig,
     TraversalDirection,
 };

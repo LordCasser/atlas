@@ -216,6 +216,10 @@ impl ToolRouter {
 
     pub(crate) fn handle_symbol(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "qualified_name");
+        let include_code = args
+            .get("includeCode")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let symbols = match self.store.find_symbols_by_qname(qname) {
             Ok(s) => s,
             Err(e) => {
@@ -255,17 +259,24 @@ impl ToolRouter {
             .map(|&ix| self.node_json(snap, ix))
             .collect();
 
+        let mut result = json!({
+            "name": sym.name, "qualified_name": sym.qualified_name,
+            "kind": sym.kind.as_str(), "language": sym.language.as_str(),
+            "visibility": sym.visibility.as_ref().map(|v| v.as_str()), "signature": sym.signature,
+            "file": self.resolve_file_path(&sym.file_id),
+            "range": { "line": sym.range.start_line, "column": sym.range.start_column },
+            "caller_count": caller_nodes.len(), "callee_count": callee_nodes.len(),
+            "callers": caller_nodes, "callees": callee_nodes,
+        });
+        if include_code {
+            if let Some(src) = self.read_symbol_source(&sym.id) {
+                result["source"] = json!(src);
+            }
+        }
+
         (
-            serde_json::to_string_pretty(&json!({
-                "name": sym.name, "qualified_name": sym.qualified_name,
-                "kind": sym.kind.as_str(), "language": sym.language.as_str(),
-                "visibility": sym.visibility.as_ref().map(|v| v.as_str()), "signature": sym.signature,
-                "file": self.resolve_file_path(&sym.file_id),
-                "range": { "line": sym.range.start_line, "column": sym.range.start_column },
-                "caller_count": caller_nodes.len(), "callee_count": callee_nodes.len(),
-                "callers": caller_nodes, "callees": callee_nodes,
-            }))
-            .unwrap_or_else(|e| e.to_string()),
+            serde_json::to_string_pretty(&result)
+                .unwrap_or_else(|e| e.to_string()),
             false,
         )
     }

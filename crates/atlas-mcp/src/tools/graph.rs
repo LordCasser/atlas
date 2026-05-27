@@ -1,7 +1,7 @@
 //! Graph traversal tools: neighbors, callers, callees, callgraph, path,
 //! explore, and impact analysis.
 
-use atlas_engine::{EdgeKind, LazyStructuralService, SymbolId, TraversalConfig, TraversalDirection};
+use atlas_engine::{EdgeKind, LazyStructuralService, Store, SymbolId, TraversalConfig, TraversalDirection};
 
 use super::{ToolRouter, get_str, get_str_opt, get_u64};
 
@@ -336,6 +336,7 @@ impl ToolRouter {
         }
 
         let graph = self.context_builder().graph_snapshot();
+        let snap = graph.snapshot();
 
         // Try all SymbolId pairs for the same qname.  In C/C++, a symbol
         // declared in a header (.h) and defined in a source file (.c)
@@ -343,150 +344,196 @@ impl ToolRouter {
         // definition's ID has outgoing call edges.  The first pair (from_ids[0]
         // → to_ids[0]) matches the pre-fix behaviour; fallback pairs are
         // tried only when the first attempt fails.
-        let mut path_result = None;
+        let mut ranked = Vec::new();
+        let mut winning_from = None;
+        let mut winning_to = None;
         'id_search: for fid in &from_ids {
             for tid in &to_ids {
-                // Skip same-SymbolId pairs for reflexive queries.
                 if from_qname == to_qname && fid == tid {
                     continue;
                 }
-                if let Some(p) = graph.shortest_path(
-                    fid,
-                    tid,
-                    max_depth.min(10),
+                // K=5: find up to 5 alternative paths, ranked by composite score.
+                // Convert SymbolId → NodeIx for the snapshot.
+                let from_ix = match snap.id_to_idx.get(fid) { Some(ix) => *ix, None => continue };
+                let to_ix   = match snap.id_to_idx.get(tid) { Some(ix) => *ix, None => continue };
+                let candidates = snap.k_ranked_paths(
+                    from_ix, to_ix, 5, max_depth.min(10),
                     edge_kind_filter.as_deref(),
-                    direction,
-                    prefer_production,
-                ) {
-                    path_result = Some(p);
+                    direction, prefer_production,
+                );
+                if !candidates.is_empty() {
+                    ranked = candidates;
+                    winning_from = Some(*fid);
+                    winning_to = Some(*tid);
                     break 'id_search;
                 }
             }
         }
 
-        match path_result {
-            Some(path) => {
-                let snap = graph.snapshot();
-                let mut hops: Vec<serde_json::Value> = Vec::with_capacity(
-                    path.node_indices.len() + path.edge_indices.len(),
-                );
-                for i in 0..path.node_indices.len() {
-                    let mut node_json = self.node_json(snap, path.node_indices[i]);
-                    if include_code {
-                        let node = snap.node(path.node_indices[i]);
-                        if let Some(src) = self.read_symbol_source(&node.symbol_id) {
-                            node_json["source"] = json!(src);
-                        }
-                    }
-                    hops.push(node_json);
-                    if i < path.edges.len() {
-                        let edge = snap.edge(path.edges[i].edge_ix);
-                        hops.push(json!({
-                            "edge_kind": edge.kind.as_str(),
-                            "direction": path.edges[i].direction.as_str(),
-                            "confidence": edge.confidence.as_f32(),
-                        }));
-                    }
-                }
-                // Serialize breakpoints
-                let breakpoints: Vec<serde_json::Value> = path
-                    .breakpoints
-                    .iter()
-                    .map(|bp| {
-                        json!({
-                            "kind": bp.kind.as_str(),
-                            "edge_index": bp.edge_index,
-                            "message": bp.message,
-                        })
-                    })
-                    .collect();
-                (
-                    serde_json::to_string_pretty(&json!({
-                        "from": from_qname,
-                        "to": to_qname,
-                        "path_length": path.node_indices.len(),
-                        "confidence": path.confidence,
-                        "path": hops,
-                        "breakpoints": breakpoints,
-                    }))
-                    .unwrap_or_else(|e| e.to_string()),
-                    false,
-                )
-            }
-            None => {
-                let total_pairs = from_ids.len() * to_ids.len();
-                let mut message = format!(
-                    "No path found within max_depth={} (tried {} SymbolId pair{})",
-                    max_depth.min(10),
-                    total_pairs,
-                    if total_pairs == 1 { "" } else { "s" },
-                );
-                if total_pairs > 1 {
-                    message.push_str(
-                        ". Note: the same qualified name maps to multiple SymbolIds (e.g., declaration vs definition). All pairs were tried.",
-                    );
-                }
-                if !is_manual_full && max_depth < 10 {
-                    message.push_str(
-                        ". Tip: try a higher max_depth (up to 10), or run a full structural index (CLI: 'atlas index' without --analysis manifest) for deeper call-graph edges.",
-                    );
-                } else if !is_manual_full {
-                    message.push_str(
-                        ". Tip: the path may involve function pointers or dynamic dispatch not yet resolved. Try running a full structural index (CLI: 'atlas index').",
-                    );
-                } else {
-                    message.push_str(
-                        ". The symbols may not be connected by call edges, or the path exceeds the depth limit. Try a higher max_depth.",
-                    );
-                }
+        /// Resolve a SymbolId to a compact "file:line" label for ambiguity
+        /// reporting.
+        fn symbol_label(store: &Store, id: &SymbolId) -> String {
+            store
+                .find_symbol_by_id(id)
+                .ok()
+                .flatten()
+                .map(|s| {
+                    format!("{}:{}", store.get_file(&s.file_id).ok().flatten()
+                        .map(|f| f.path.clone()).unwrap_or_else(|| s.file_id.to_hex()),
+                        s.range.start_line + 1)
+                })
+                .unwrap_or_else(|| id.to_hex())
+        }
 
-                // Diagnostic frontier: when searching forward-only, compute
-                // how far we could reach from the source(s) before static edges
-                // were exhausted.  Frontier nodes with outgoing_call_count == 0
-                // are likely dynamic-dispatch (function pointer / virtual call)
-                // boundaries.
-                let frontier_nodes: Vec<serde_json::Value> =
-                    if direction == TraversalDirection::Outgoing {
-                        let frontier = graph.forward_frontier(
-                            &from_ids,
-                            max_depth.min(10),
-                            edge_kind_filter.as_deref(),
-                        );
-                        if !frontier.frontier_nodes.is_empty() {
-                            message.push_str(&format!(
-                                "\nForward frontier reached depth {} — {} node(s) with no further static callees (possible dynamic-dispatch boundaries):",
-                                frontier.depth_reached,
-                                frontier.frontier_nodes.len()
-                            ));
-                        }
-                        frontier
-                            .frontier_nodes
-                            .iter()
-                            .map(|n| {
-                                json!({
-                                    "qname": n.qname,
-                                    "depth": n.depth,
-                                    "outgoing_call_count": n.outgoing_call_count,
-                                })
-                            })
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-                (
-                    serde_json::to_string_pretty(&json!({
-                        "from": from_qname,
-                        "to": to_qname,
-                        "path_length": 0,
-                        "path": [],
-                        "breakpoints": [],
-                        "message": &message,
-                        "frontier": frontier_nodes,
-                    }))
-                    .unwrap_or_else(|e| e.to_string()),
-                    false,
-                )
-            },
+        /// Build JSON hops for a single path.
+        fn build_hops(
+            tool: &ToolRouter,
+            snap: &atlas_engine::GraphSnapshot,
+            path: &atlas_engine::GraphPath,
+            include_code: bool,
+        ) -> Vec<serde_json::Value> {
+            let mut hops: Vec<serde_json::Value> = Vec::with_capacity(
+                path.node_indices.len() + path.edge_indices.len(),
+            );
+            for i in 0..path.node_indices.len() {
+                let mut node_json = tool.node_json(snap, path.node_indices[i]);
+                if include_code {
+                    let node = snap.node(path.node_indices[i]);
+                    if let Some(src) = tool.read_symbol_source(&node.symbol_id) {
+                        node_json["source"] = json!(src);
+                    }
+                }
+                hops.push(node_json);
+                if i < path.edges.len() {
+                    let edge = snap.edge(path.edges[i].edge_ix);
+                    hops.push(json!({
+                        "edge_kind": edge.kind.as_str(),
+                        "direction": path.edges[i].direction.as_str(),
+                        "confidence": edge.confidence.as_f32(),
+                    }));
+                }
+            }
+            hops
+        }
+
+        if !ranked.is_empty() {
+            let snap = graph.snapshot();
+
+            // Primary path (rank 0) gets the full treatment.
+            let primary = &ranked[0];
+            let hops = build_hops(self, &snap, &primary.path, include_code);
+            let breakpoints: Vec<serde_json::Value> = primary.path.breakpoints.iter().map(|bp| {
+                json!({ "kind": bp.kind.as_str(), "edge_index": bp.edge_index, "message": bp.message })
+            }).collect();
+
+            let mut resp = json!({
+                "from": from_qname,
+                "to": to_qname,
+                "path_length": primary.path.node_indices.len(),
+                "confidence": primary.path.confidence,
+                "total_weight": primary.path.total_weight,
+                "test_hops": primary.path.test_hops,
+                "indirect_hops": primary.path.indirect_hops,
+                "path": hops,
+                "breakpoints": breakpoints,
+                "score": {
+                    "overall": primary.scores.overall,
+                    "semantic": primary.scores.semantic,
+                    "topology": primary.scores.topology,
+                    "centrality": primary.scores.centrality,
+                },
+            });
+
+            // Alternative paths (ranks 1+) — compact summaries.
+            if ranked.len() > 1 {
+                let alternatives: Vec<serde_json::Value> = ranked[1..].iter().map(|r| {
+                    let alt_hops = build_hops(self, &snap, &r.path, false);
+                    json!({
+                        "path": alt_hops,
+                        "total_weight": r.path.total_weight,
+                        "score": {
+                            "overall": r.scores.overall,
+                            "semantic": r.scores.semantic,
+                            "topology": r.scores.topology,
+                            "centrality": r.scores.centrality,
+                        },
+                    })
+                }).collect();
+                resp["alternatives"] = json!(alternatives);
+            }
+
+            // Ambiguity metadata
+            if from_ids.len() > 1 || to_ids.len() > 1 {
+                let mut ambiguity = json!({});
+                if from_ids.len() > 1 {
+                    if let Some(ref wid) = winning_from {
+                        ambiguity["matched_from"] = json!(symbol_label(&self.store, wid));
+                    }
+                    ambiguity["from_count"] = json!(from_ids.len());
+                }
+                if to_ids.len() > 1 {
+                    if let Some(ref wid) = winning_to {
+                        ambiguity["matched_to"] = json!(symbol_label(&self.store, wid));
+                    }
+                    ambiguity["to_count"] = json!(to_ids.len());
+                }
+                resp["ambiguity"] = ambiguity;
+            }
+
+            (serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()), false)
+        } else {
+            // No path found — diagnostic frontier.
+            let total_pairs = from_ids.len() * to_ids.len();
+            let mut message = format!(
+                "No path found within max_depth={} (tried {} SymbolId pair{})",
+                max_depth.min(10), total_pairs,
+                if total_pairs == 1 { "" } else { "s" },
+            );
+            // ... (same diagnostics as before) ...
+            if total_pairs > 1 {
+                if from_ids.len() > 10 || to_ids.len() > 10 {
+                    message.push_str(&format!(
+                        ". Note: '{}' matched {} SymbolId(s), '{}' matched {} SymbolId(s) — this is likely symbol-name ambiguity across files. Use a fully-qualified name to narrow the search.",
+                        from_qname, from_ids.len(), to_qname, to_ids.len(),
+                    ));
+                } else {
+                    message.push_str(". Note: the same qualified name maps to multiple SymbolIds (e.g., declaration vs definition). All pairs were tried.");
+                }
+            }
+            if !is_manual_full && max_depth < 10 {
+                message.push_str(". Tip: try a higher max_depth (up to 10), or run a full structural index (CLI: 'atlas index' without --analysis manifest) for deeper call-graph edges.");
+            } else if !is_manual_full {
+                message.push_str(". Tip: the path may involve function pointers or dynamic dispatch not yet resolved. Try running a full structural index (CLI: 'atlas index').");
+            } else {
+                message.push_str(". The symbols may not be connected by call edges, or the path exceeds the depth limit. Try a higher max_depth.");
+            }
+
+            const MAX_FRONTIER_NODES: usize = 20;
+            let frontier_nodes: Vec<serde_json::Value> =
+                if direction == TraversalDirection::Outgoing {
+                    let frontier = snap.forward_frontier(&from_ids, max_depth.min(10), edge_kind_filter.as_deref());
+                    let total = frontier.frontier_nodes.len();
+                    if total > 0 {
+                        let extra = if total > MAX_FRONTIER_NODES {
+                            " These are likely dynamic-dispatch (function pointer / virtual call) boundaries."
+                        } else { "" };
+                        message.push_str(&format!(
+                            "\nForward frontier reached depth {} — {} node(s) with no further static callees (showing first {}).{}",
+                            frontier.depth_reached, total, total.min(MAX_FRONTIER_NODES), extra,
+                        ));
+                    }
+                    frontier.frontier_nodes.iter().take(MAX_FRONTIER_NODES).map(|n| {
+                        json!({ "qname": n.qname, "depth": n.depth, "outgoing_call_count": n.outgoing_call_count })
+                    }).collect()
+                } else { Vec::new() };
+            (
+                serde_json::to_string_pretty(&json!({
+                    "from": from_qname, "to": to_qname,
+                    "path_length": 0, "path": [], "breakpoints": [],
+                    "message": &message, "frontier": frontier_nodes,
+                })).unwrap_or_else(|e| e.to_string()),
+                false,
+            )
         }
     }
 

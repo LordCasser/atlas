@@ -37,11 +37,15 @@ pub use lazy_crate::LazyDataflowService;
 // ── Internal modules ──────────────────────────────────────────────────────
 
 mod lazy_structural;
+mod source_extractor;
 
 /// Lazy structural service: on-demand full structural extraction.
 pub use lazy_structural::{
     CandidateProvider, DefaultCandidateProvider, EnsureStructuralResult, LazyStructuralService,
 };
+
+/// Source extraction: AST-based symbol source retrieval.
+pub use source_extractor::SourceExtractor;
 
 // ─── Re-exports ────────────────────────────────────────────────────────────
 
@@ -71,9 +75,10 @@ pub use extraction::{
 pub use filesync::{FileLock, SyncEngine, SyncStats, discovery};
 /// Graph layer: graph builder, query engine, snapshots, annotation materialization.
 pub use graph::{
-    CallGraphView, ForwardFrontier, FrontierNode, GraphBuilder, GraphBuilderStats, GraphEngine,
-    GraphPath, GraphSnapshot, NodeIx, PathBreakpoint, PathBreakpointKind, PathEdge,
-    PathEdgeDirection, Subgraph, TraversalConfig, TraversalDirection, materialize_annotations,
+    CallGraphView, CompositePathScore, ForwardFrontier, FrontierNode, GraphBuilder,
+    GraphBuilderStats, GraphEngine, GraphPath, GraphSnapshot, NodeIx, PathBreakpoint,
+    PathBreakpointKind, PathEdge, PathEdgeDirection, RankedPath, Subgraph, TraversalConfig,
+    TraversalDirection, materialize_annotations,
 };
 /// Resolution layer: reference resolver, path aliases, config hashing.
 pub use resolution::{

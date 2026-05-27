@@ -15,6 +15,7 @@ use atlas_engine::ContextBuilder;
 use atlas_engine::FileId;
 use atlas_engine::LazyDataflowService;
 use atlas_engine::SearchEngine;
+use atlas_engine::SourceExtractor;
 use atlas_engine::Store;
 use atlas_engine::SymbolId;
 
@@ -66,6 +67,8 @@ pub struct ToolRouter {
     /// Graph engines built lazily on first request (after MCP handshake).
     pub(crate) search: Option<SearchEngine>,
     pub(crate) context: Option<ContextBuilder>,
+    /// AST-aware source extractor (tree-sitter re-parsing).
+    pub(crate) source_extractor: SourceExtractor,
     /// Project root directory for snippet extraction.
     pub(crate) project_root: std::path::PathBuf,
     tools: Vec<Tool>,
@@ -104,11 +107,13 @@ impl ToolRouter {
     ) -> Self {
         let last_graph_signature = store.index_signature().unwrap_or_default();
         let lazy_service = LazyDataflowService::new(store.clone(), Some(project_root.clone()));
+        let source_extractor = SourceExtractor::new(store.clone(), project_root.clone());
         Self {
             store: store.clone(),
             lazy_service,
             search: Some(search),
             context: Some(context),
+            source_extractor,
             project_root,
             tools: make_all_tools(),
             last_graph_signature: last_graph_signature.clone(),
@@ -127,11 +132,13 @@ impl ToolRouter {
     pub fn new_empty(store: Arc<Store>, project_root: std::path::PathBuf) -> Self {
         let tools = make_all_tools();
         let lazy_service = LazyDataflowService::new(store.clone(), Some(project_root.clone()));
+        let source_extractor = SourceExtractor::new(store.clone(), project_root.clone());
         Self {
             store: store.clone(),
             lazy_service,
             search: None,
             context: None,
+            source_extractor,
             project_root,
             tools,
             last_graph_signature: String::new(),
@@ -195,6 +202,11 @@ impl ToolRouter {
             ContextBuilder::new(Arc::clone(&self.store), graph)
                 .with_project_root(self.project_root.clone()),
         );
+        // Register AST-aware source extraction callback.
+        let ext = self.source_extractor.clone();
+        if let Some(ctx) = self.context.take() {
+            self.context = Some(ctx.with_source_fn(Arc::new(move |id| ext.extract_source(id))));
+        }
         self.last_graph_signature = self.store.index_signature().unwrap_or_default();
         self.graph_initialized = true;
         tracing::info!("Graph snapshot ready.");
@@ -286,7 +298,8 @@ impl ToolRouter {
     pub(crate) fn activate_project(&mut self, project_root: std::path::PathBuf, store: Arc<Store>) {
         self.project_root = project_root.clone();
         self.store = store.clone();
-        self.lazy_service = LazyDataflowService::new(store, Some(project_root));
+        self.lazy_service = LazyDataflowService::new(store.clone(), Some(project_root.clone()));
+        self.source_extractor = SourceExtractor::new(store, project_root);
         self.search = None;
         self.context = None;
         self.graph_initialized = false;
@@ -528,27 +541,18 @@ impl ToolRouter {
         })
     }
 
-    /// Read source code for a symbol from disk.
+    /// Read source code for a symbol using AST-aware extraction.
     ///
-    /// Returns `None` if the file cannot be found or is outside the project
-    /// root.  Never fails the entire request — callers should silently omit
+    /// Delegates to [`SourceExtractor`] which re-parses the file with
+    /// tree-sitter and extracts the exact definition-node source text.
+    /// Falls back to `TextRange`-based line extraction when tree-sitter
+    /// parsing is unavailable.
+    ///
+    /// Returns `None` if the file cannot be found, is outside the project
+    /// root, or the symbol range is invalid.  Callers should silently omit
     /// the `source` field when this returns `None`.
-    ///
-    /// Returns the full file content (byte-for-byte equal to `Read`), matching
-    /// CodeGraph's source-inlining behavior.  Does not slice by `SymbolDef.range`
-    /// because tree-sitter queries capture name tokens, not full definition
-    /// nodes, so the stored range is too narrow.
     pub(crate) fn read_symbol_source(&self, symbol_id: &SymbolId) -> Option<String> {
-        let sym = self.store.find_symbol_by_id(symbol_id).ok()??;
-        let root = &self.project_root;
-        let file_info = self.store.get_file(&sym.file_id).ok().flatten()?;
-        let full_path = root.join(&file_info.path);
-        let canonical = full_path.canonicalize().ok()?;
-        let canonical_root = root.canonicalize().ok()?;
-        if !canonical.starts_with(&canonical_root) {
-            return None;
-        }
-        std::fs::read_to_string(&canonical).ok()
+        self.source_extractor.extract_source(symbol_id)
     }
 }
 
@@ -620,11 +624,15 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "symbol".into(),
-            description: "Get detailed info for a symbol by qualified name: kind, location, signature, and caller/callee summaries (name + file + line).".into(),
+            description: "Get detailed info for a symbol by qualified name: kind, location, signature, and caller/callee summaries (name + file + line). When includeCode is true, also returns the full source code of the enclosing definition (function/class/struct body) extracted via tree-sitter re-parsing.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "qualified_name": { "type": "string", "description": "Fully qualified symbol name" },
+                    "includeCode": {
+                        "type": "boolean",
+                        "description": "When true, includes the full source code of the enclosing definition (function/class/struct body). Default false."
+                    },
                 })),
                 required: Some(vec!["qualified_name".into()]),
             },
