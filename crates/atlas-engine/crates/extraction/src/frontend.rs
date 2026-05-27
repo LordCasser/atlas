@@ -445,7 +445,12 @@ impl LanguageFrontend {
             } else {
                 FeatureSupport::unsupported("CFG builder not available")
             },
-            interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
+            interprocedural_summaries: self
+                .capability
+                .features
+                .as_ref()
+                .map(|fm| fm.interprocedural_summaries.clone())
+                .unwrap_or_else(|| FeatureSupport::unsupported("not implemented")),
         }
     }
 }
@@ -508,7 +513,7 @@ mod tests {
 
         assert!(matrix.local_dataflow.is_supported());
         assert!(matrix.lexical_bindings.is_supported());
-        assert!(!matrix.interprocedural_summaries.is_supported());
+        assert!(matrix.interprocedural_summaries.is_supported());
     }
 
     #[cfg(feature = "typescript")]
@@ -849,17 +854,15 @@ mod tests {
                 );
             }
 
-            // Derived profile must produce valid string lists
+            // Derived profile must produce valid string lists.
+            // supported_features must never be empty for a working language.
             assert!(
                 !derived.supported_features.is_empty(),
                 "{:?}: no supported features",
                 lang
             );
-            assert!(
-                !derived.unsupported_features.is_empty(),
-                "{:?}: no unsupported features",
-                lang
-            );
+            // unsupported_features may be empty if all FeatureMatrix
+            // capabilities report `is_supported()` — that is valid.
         }
     }
 }

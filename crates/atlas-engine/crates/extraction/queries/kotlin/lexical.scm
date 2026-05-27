@@ -7,11 +7,12 @@
       (simple_identifier) @lexical.parameter)))
 
 ;; --- Extension function receiver (fun String.isValid()): create "this" binding ---
-;; tree-sitter-kotlin v0.4.0+ stores the receiver type in a named field
-(function_declaration
-  receiver: (type_reference) @lexical.receiver
-  name: (simple_identifier) @_ext_name
-  (function_value_parameters))
+;; NOTE: type_reference is not available in the pinned tree-sitter-kotlin revision
+;; (rev f66d290). Re-enable after upgrading to a grammar version that supports it.
+;; (function_declaration
+;;   receiver: (type_reference) @lexical.receiver
+;;   name: (simple_identifier) @_ext_name
+;;   (function_value_parameters))
 
 ;; --- Lambda parameters ---
 (lambda_literal
