@@ -1,14 +1,11 @@
-// TUI renderer — draws the compact progress display using ratatui.
+// TUI renderer — draws compact inline progress using ratatui.
 //
-// Layout (Plan B — compact with Gauge progress bar):
+// Layout (4 plain lines, no border):
 // ```
-// ┌─ Atlas Index ──────────────────────────────────────────
-// │
-// │  ◆ Scanning files · Computing hashes · Cleaning stale data
-// │  Parsing code  ████████░░░░░░░░░░░░  45%
-// │  · Storing data · Resolving refs · Building edges · Finalizing
-// │  Total: 8,234/18,432 | 1,240/s | elapsed 5.2s
-// └────────────────────────────────────────────────────────
+//  ◆ Scanning files · Computing hashes · Cleaning stale data
+//  Parsing code  ████████░░░░░░░░░░░░  45%
+//  · Storing data · Resolving refs · Building edges · Finalizing
+//  Total: 8,234/18,432 | 1,240/s | elapsed 5.2s
 // ```
 //
 // Completed phases are merged into one row, pending phases into another.
@@ -23,7 +20,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Paragraph},
+    widgets::{Gauge, Paragraph},
     Frame,
 };
 
@@ -49,12 +46,6 @@ pub fn render(
     let snap = guard.read_snapshot();
 
     let area = frame.area();
-    let block = Block::default()
-        .title(" Atlas Index ")
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(DIM));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
 
     // Group phases by state
     let completed: Vec<&atlas_engine::progress::PhaseEntry> =
@@ -71,7 +62,7 @@ pub fn render(
         Constraint::Length(1), // pending
         Constraint::Length(1), // footer
     ])
-    .split(inner);
+    .split(area);
 
     render_completed_row(frame, &completed, rows[0]);
     render_gauge_row(frame, running, &snap, rows[1]);

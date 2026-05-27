@@ -423,13 +423,11 @@ pub fn run(
     // ── Restore terminal ──
     if has_tty {
         if was_interrupted {
-            // Ctrl+C: clear the progress area so the interrupt message
-            // reads cleanly below.
-            crate::tui::progress::clear_and_restore();
+            // Ctrl+C: leave progress display visible on screen (like wget).
+            tui.take().unwrap().leave();
         } else {
-            // Normal completion: leave the progress display visible on
-            // screen (like wget), exit raw mode and position cursor
-            // below the rendered content.
+            // Normal completion: clear the progress rows in-place, then
+            // print a brief result summary in the reclaimed space.
             tui.take().unwrap().finish();
         }
     }
@@ -448,7 +446,7 @@ pub fn run(
     worker_result?;
 
     let db_stats = store_for_main.get_stats()?;
-    println!("\nDatabase status:");
+    println!("Database status:");
     println!("  Files:    {}", db_stats.total_files);
     println!("  Symbols:  {}", db_stats.total_symbols);
     println!("  Edges:    {}", db_stats.total_edges);

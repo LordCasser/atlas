@@ -23,9 +23,8 @@ use ratatui::{TerminalOptions, Viewport};
 use super::render;
 
 /// Number of terminal rows reserved for the inline progress display.
-/// Compact layout: block borders (2) + 4 content rows (completed, gauge,
-/// pending, footer) + 1 spare = 7 rows.
-const INLINE_ROWS: u16 = 7;
+/// 4 plain rows: completed, gauge, pending, footer.
+const INLINE_ROWS: u16 = 4;
 
 /// Owns the ratatui terminal and drives the render loop.
 pub struct TuiProgress {
@@ -131,9 +130,10 @@ impl TuiProgress {
         }
     }
 
-    /// Finish the TUI on normal completion — leaves the progress display
-    /// visible on screen (like `wget`) and positions the cursor below the
-    /// rendered area so subsequent output starts on a fresh line.
+    /// Finish on normal completion — clears the progress rows and positions
+    /// the cursor at the top of the cleared area, ready for the caller to
+    /// print a brief result summary.  Only the progress lines are cleared;
+    /// everything else on the terminal is left intact.
     pub fn finish(mut self) {
         // Render one final frame so the display shows completion state
         // (100% gauge, all phases completed) before shutting down.
@@ -141,12 +141,33 @@ impl TuiProgress {
 
         // Drop the terminal.  The Drop impl calls ratatui::try_restore(),
         // which disables raw mode and restores the cursor to its
+        // pre-init position (the start of the first progress row).
+        drop(self);
+
+        // Clear exactly INLINE_ROWS rows downward, then return cursor
+        // to the start.  ANSI escapes work in both raw and cooked mode.
+        for _ in 0..INLINE_ROWS {
+            let _ =
+                std::io::Write::write_all(&mut std::io::stdout(), b"\x1b[2K\x1b[1B");
+        }
+        let up = format!("\x1b[{}A", INLINE_ROWS);
+        let _ = std::io::Write::write_all(&mut std::io::stdout(), up.as_bytes());
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    }
+
+    /// Leave on Ctrl+C — exits raw mode while preserving the progress
+    /// display on screen (like `wget` on interrupt).  The cursor lands
+    /// below the rendered content so the interrupt message prints
+    /// cleanly without overwriting the progress lines.
+    pub fn leave(self) {
+        // Drop the terminal.  The Drop impl calls ratatui::try_restore(),
+        // which disables raw mode and restores the cursor to its
         // pre-init position (above the rendered inline content).
         drop(self);
 
         // Move cursor forward by INLINE_ROWS to land below the rendered
-        // content.  ANSI escapes work in both raw and cooked mode — the
-        // terminal emulator interprets them regardless of line discipline.
+        // content.  This allows the interrupt message to print on the
+        // next line without overwriting the progress display.
         let down = format!("\x1b[{}B", INLINE_ROWS);
         let _ = std::io::Write::write_all(&mut std::io::stdout(), down.as_bytes());
         let _ = std::io::Write::flush(&mut std::io::stdout());
