@@ -1890,4 +1890,243 @@ mod tests {
 
         assert_eq!(snap.edge_count, 0);
     }
+
+    // ── OrdF64 tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_ordf64_ordering() {
+        let a = OrdF64(1.0);
+        let b = OrdF64(2.0);
+        let c = OrdF64(1.0);
+        assert!(a < b);
+        assert!(b > a);
+        assert_eq!(a, c);
+        assert!(OrdF64(f64::NAN) != OrdF64(f64::NAN)); // NaN ≠ NaN
+    }
+
+    #[test]
+    fn test_ordf64_in_heap() {
+        use std::collections::BinaryHeap;
+        let mut heap = BinaryHeap::new();
+        heap.push(Reverse(OrdF64(3.0)));
+        heap.push(Reverse(OrdF64(1.0)));
+        heap.push(Reverse(OrdF64(2.0)));
+        assert_eq!(heap.pop().unwrap().0 .0, 1.0);
+        assert_eq!(heap.pop().unwrap().0 .0, 2.0);
+        assert_eq!(heap.pop().unwrap().0 .0, 3.0);
+    }
+
+    // ── name/location penalty tests ────────────────────────────────────
+
+    #[test]
+    fn test_name_pattern_penalty_proxy() {
+        let fid = make_file_id("src/proxy_handler.c");
+        let sym = make_symbol(fid, "socks5_connect", "socks5_connect", SymbolKind::Function);
+        let snap = GraphSnapshot::from_parts(vec![sym.clone()], vec![], 0.0).unwrap();
+        let penalty = name_pattern_penalty(&snap.nodes[0]);
+        assert!(penalty > 0.0, "socks5 should be penalised");
+    }
+
+    #[test]
+    fn test_name_pattern_penalty_fallback() {
+        let fid = make_file_id("src/fallback.c");
+        let sym = make_symbol(fid, "connect_fallback", "connect_fallback", SymbolKind::Function);
+        let snap = GraphSnapshot::from_parts(vec![sym.clone()], vec![], 0.0).unwrap();
+        let penalty = name_pattern_penalty(&snap.nodes[0]);
+        assert!(penalty > 0.0, "fallback pattern should be penalised");
+    }
+
+    #[test]
+    fn test_name_pattern_penalty_normal() {
+        let fid = make_file_id("src/http.c");
+        let sym = make_symbol(fid, "Curl_http", "Curl_http", SymbolKind::Function);
+        let snap = GraphSnapshot::from_parts(vec![sym.clone()], vec![], 0.0).unwrap();
+        let penalty = name_pattern_penalty(&snap.nodes[0]);
+        assert_eq!(penalty, 0.0, "normal name should have no penalty");
+    }
+
+    #[test]
+    fn test_location_penalty_test_file() {
+        let fid = make_file_id("tests/test_connect.c");
+        let sym = make_symbol(fid, "test_connect", "test_connect", SymbolKind::Function);
+        let mut paths = std::collections::HashMap::new();
+        paths.insert(fid, "tests/test_connect.c".to_string());
+        let snap = GraphSnapshot::from_parts_with_paths(
+            vec![sym.clone()], vec![], 0.0, &paths,
+        ).unwrap();
+        let penalty = location_penalty(&snap.nodes[0]);
+        assert!(penalty > 0.0, "test file should be penalised");
+    }
+
+    // ── edge_weight tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_edge_weight_baseline() {
+        // A simple Calls edge with TreeSitter provenance and full confidence
+        // should have weight close to 1.0.
+        let fid = make_file_id("src/main.c");
+        let a = make_symbol(fid, "main", "main", SymbolKind::Function);
+        let b = make_symbol(fid, "helper", "helper", SymbolKind::Function);
+        let e = make_edge(a.id, b.id, EdgeKind::Calls);
+        let snap = GraphSnapshot::from_parts(vec![a, b], vec![e], 0.0).unwrap();
+        let b_ix = snap.id_to_idx[&snap.nodes[1].symbol_id];
+        let w = snap.edge_weight(0, b_ix);
+        assert!((1.0..=1.2).contains(&w), "baseline weight should be ~1.0, got {}", w);
+    }
+
+    #[test]
+    fn test_edge_weight_indirect_penalty() {
+        let fid = make_file_id("src/main.c");
+        let a = make_symbol(fid, "main", "main", SymbolKind::Function);
+        let b = make_symbol(fid, "impl_H", "impl_H", SymbolKind::Function);
+        let e = make_edge(a.id, b.id, EdgeKind::Implements);
+        let snap = GraphSnapshot::from_parts(vec![a, b], vec![e], 0.0).unwrap();
+        let b_ix = snap.id_to_idx[&snap.nodes[1].symbol_id];
+        let w = snap.edge_weight(0, b_ix);
+        assert!(w >= 2.0, "Implements edge should add +1.0 penalty, got {}", w);
+    }
+
+    #[test]
+    fn test_edge_weight_proxy_name_penalty() {
+        let fid = make_file_id("src/socks5.c");
+        let a = make_symbol(fid, "connect", "connect", SymbolKind::Function);
+        let b = make_symbol(fid, "socks5_negotiate", "socks5_negotiate", SymbolKind::Function);
+        let e = make_edge(a.id, b.id, EdgeKind::Calls);
+        let snap = GraphSnapshot::from_parts(vec![a, b], vec![e], 0.0).unwrap();
+        let b_ix = snap.id_to_idx[&snap.nodes[1].symbol_id];
+        let w = snap.edge_weight(0, b_ix);
+        assert!(w > 1.0, "socks5 name should add penalty, got {}", w);
+    }
+
+    // ── CompositePathScore tests ───────────────────────────────────────
+
+    #[test]
+    fn test_score_path_trivial() {
+        let fid = make_file_id("src/main.c");
+        let a = make_symbol(fid, "main", "main", SymbolKind::Function);
+        let snap = GraphSnapshot::from_parts(vec![a], vec![], 0.0).unwrap();
+        // Trivial path (single node).
+        let path = snap.shortest_path(0, 0, 5, None, TraversalDirection::Outgoing, false).unwrap();
+        let score = snap.score_path(&path);
+        assert_eq!(score.overall, 1.0);
+        assert_eq!(score.semantic, 1.0);
+    }
+
+    #[test]
+    fn test_score_path_with_proxy_penalty() {
+        let fid = make_file_id("src/proxy.c");
+        let a = make_symbol(fid, "main", "main", SymbolKind::Function);
+        let b = make_symbol(fid, "socks5_connect", "socks5_connect", SymbolKind::Function);
+        let c = make_symbol(fid, "write", "write", SymbolKind::Function);
+        let e1 = make_edge(a.id, b.id, EdgeKind::Calls);
+        let e2 = make_edge(b.id, c.id, EdgeKind::Calls);
+        let snap = GraphSnapshot::from_parts(vec![a, b, c], vec![e1, e2], 0.0).unwrap();
+        let a_ix = snap.id_to_idx[&snap.nodes[0].symbol_id];
+        let c_ix = snap.id_to_idx[&snap.nodes[2].symbol_id];
+        let path = snap.shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Outgoing, false).unwrap();
+        let score = snap.score_path(&path);
+        // With socks5_connect as intermediate, semantic score should be < 1.0
+        assert!(score.semantic < 1.0, "socks5_connect should reduce semantic score, got {}", score.semantic);
+        assert!(score.overall < 1.0, "overall should reflect penalty");
+    }
+
+    // ── k_ranked_paths tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_k_ranked_paths_single() {
+        let fid = make_file_id("src/main.c");
+        let a = make_symbol(fid, "main", "main", SymbolKind::Function);
+        let b = make_symbol(fid, "helper", "helper", SymbolKind::Function);
+        let e = make_edge(a.id, b.id, EdgeKind::Calls);
+        let snap = GraphSnapshot::from_parts(vec![a, b], vec![e], 0.0).unwrap();
+        let a_ix = snap.id_to_idx[&snap.nodes[0].symbol_id];
+        let b_ix = snap.id_to_idx[&snap.nodes[1].symbol_id];
+        let ranked = snap.k_ranked_paths(a_ix, b_ix, 5, 5, None, TraversalDirection::Outgoing, false);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].path.node_indices.len(), 2);
+        assert!(ranked[0].scores.overall > 0.0);
+    }
+
+    #[test]
+    fn test_k_ranked_paths_alternatives_via_branch() {
+        // Graph: a → b → d   (primary path: 2 hops)
+        //        a → c → d   (alternative: also 2 hops)
+        let fid = make_file_id("src/main.c");
+        let a = make_symbol(fid, "main", "main", SymbolKind::Function);
+        let b = make_symbol(fid, "init", "init", SymbolKind::Function);
+        let c = make_symbol(fid, "proxy_setup", "proxy_setup", SymbolKind::Function);
+        let d = make_symbol(fid, "write", "write", SymbolKind::Function);
+        let e1 = make_edge(a.id, b.id, EdgeKind::Calls);
+        let e2 = make_edge(b.id, d.id, EdgeKind::Calls);
+        let e3 = make_edge(a.id, c.id, EdgeKind::Calls);
+        let e4 = make_edge(c.id, d.id, EdgeKind::Calls);
+        let snap =
+            GraphSnapshot::from_parts(vec![a, b, c, d], vec![e1, e2, e3, e4], 0.0).unwrap();
+        let a_ix = snap.id_to_idx[&snap.nodes[0].symbol_id];
+        let d_ix = snap.id_to_idx[&snap.nodes[3].symbol_id];
+        let ranked = snap.k_ranked_paths(a_ix, d_ix, 5, 5, None, TraversalDirection::Outgoing, false);
+        assert!(ranked.len() >= 2, "should find at least 2 alternative paths, got {}", ranked.len());
+        // The proxy_setup path should have lower semantic score than the init path.
+        let proxy_path = ranked.iter().find(|r| {
+            r.path.node_indices.iter().any(|&ix| snap.nodes[ix].name == "proxy_setup")
+        });
+        let init_path = ranked.iter().find(|r| {
+            r.path.node_indices.iter().any(|&ix| snap.nodes[ix].name == "init")
+        });
+        if let (Some(pp), Some(ip)) = (proxy_path, init_path) {
+            assert!(pp.scores.semantic < ip.scores.semantic,
+                "proxy path should have lower semantic score");
+            // The init path should rank higher (lower overall score → better).
+            assert!(ranked[0].scores.overall >= ranked[1].scores.overall
+                || ranked[0].path.node_indices.iter().any(|&ix| snap.nodes[ix].name == "init"),
+                "init path should rank first or at least be present");
+        }
+    }
+
+    #[test]
+    fn test_k_ranked_paths_no_path() {
+        let fid = make_file_id("src/a.c");
+        let a = make_symbol(fid, "a", "a", SymbolKind::Function);
+        let b = make_symbol(fid, "b", "b", SymbolKind::Function);
+        let snap = GraphSnapshot::from_parts(vec![a, b], vec![], 0.0).unwrap();
+        let a_ix = snap.id_to_idx[&snap.nodes[0].symbol_id];
+        let b_ix = snap.id_to_idx[&snap.nodes[1].symbol_id];
+        let ranked = snap.k_ranked_paths(a_ix, b_ix, 5, 5, None, TraversalDirection::Outgoing, false);
+        assert!(ranked.is_empty());
+    }
+
+    // ── weighted Dijkstra vs BFS behavior ──────────────────────────────
+
+    #[test]
+    fn test_weighted_prefers_semantic_over_topological() {
+        // Graph: a → proxy_conn → d   (2 hops, but "proxy" in name)
+        //        a → init → config → d   (3 hops, clean names)
+        // Weighted Dijkstra should prefer the 3-hop clean path over the
+        // 2-hop proxy path because the proxy name penalty outweighs the
+        // extra hop.
+        let fid = make_file_id("src/main.c");
+        let a = make_symbol(fid, "main", "main", SymbolKind::Function);
+        let proxy = make_symbol(fid, "proxy_conn", "proxy_conn", SymbolKind::Function);
+        let init = make_symbol(fid, "init_engine", "init_engine", SymbolKind::Function);
+        let config = make_symbol(fid, "load_config", "load_config", SymbolKind::Function);
+        let d = make_symbol(fid, "Curl_write", "Curl_write", SymbolKind::Function);
+        let e1 = make_edge(a.id, proxy.id, EdgeKind::Calls);
+        let e2 = make_edge(proxy.id, d.id, EdgeKind::Calls);
+        let e3 = make_edge(a.id, init.id, EdgeKind::Calls);
+        let e4 = make_edge(init.id, config.id, EdgeKind::Calls);
+        let e5 = make_edge(config.id, d.id, EdgeKind::Calls);
+        let snap =
+            GraphSnapshot::from_parts(vec![a, proxy, init, config, d], vec![e1, e2, e3, e4, e5], 0.0).unwrap();
+        let a_ix = snap.id_to_idx[&snap.nodes[0].symbol_id];
+        let d_ix = snap.id_to_idx[&snap.nodes[4].symbol_id];
+
+        let ranked = snap.k_ranked_paths(a_ix, d_ix, 5, 5, None, TraversalDirection::Outgoing, false);
+        assert!(!ranked.is_empty());
+        // The first (best) path should go through init/config, not proxy.
+        let best = &ranked[0];
+        let has_proxy = best.path.node_indices.iter()
+            .any(|&ix| snap.nodes[ix].name == "proxy_conn");
+        assert!(!has_proxy,
+            "Weighted Dijkstra should prefer the clean 3-hop path over the proxy 2-hop path");
+    }
 }

@@ -480,6 +480,78 @@ impl ToolRouter {
                 resp["ambiguity"] = ambiguity;
             }
 
+            // ── Path quality insight ───────────────────────────────────
+            //
+            // When the found path has low semantic quality (proxy/fallback
+            // patterns, low centrality), the true primary path was likely
+            // blocked by unresolved function pointers or dynamic dispatch.
+            // Compute guidance on where annotations would help.
+
+            let quality = if primary.scores.semantic >= 0.8 && primary.scores.overall >= 0.7 {
+                "direct"
+            } else if primary.scores.semantic >= 0.5 {
+                "indirect"
+            } else {
+                "fallback"
+            };
+
+            let mut insight = json!({ "quality": quality });
+
+            if quality == "fallback" || quality == "indirect" {
+                // Find function-pointer registration sites reachable from
+                // the path nodes — these are likely the reason the primary
+                // path wasn't found.
+                let mut fp_sites: Vec<serde_json::Value> = Vec::new();
+                for &nix in &primary.path.node_indices {
+                    let regs = snap.incoming_neighbors_with_kinds(&snap.node(nix).symbol_id);
+                    for (reg_ix, ek) in &regs {
+                        if *ek == atlas_engine::EdgeKind::RegistersCallback {
+                            let reg_node = snap.node(*reg_ix);
+                            fp_sites.push(json!({
+                                "at": reg_node.qualified_name,
+                                "registers": snap.node(nix).qualified_name,
+                                "guidance": format!(
+                                    "atlas_annotate_fp_dispatch(field_qname='{}...', target_qname='{}')",
+                                    reg_node.qualified_name, snap.node(nix).qualified_name
+                                ),
+                            }));
+                        }
+                    }
+                    if fp_sites.len() >= 5 { break; }
+                }
+                if !fp_sites.is_empty() {
+                    insight["fp_boundaries"] = json!(fp_sites);
+                }
+
+                // Compute forward frontier from source to show where
+                // function-pointer boundaries exist.
+                let frontier = snap.forward_frontier(
+                    &[snap.node(primary.path.node_indices[0]).symbol_id],
+                    max_depth.min(10),
+                    edge_kind_filter.as_deref(),
+                );
+                let blocked: Vec<serde_json::Value> = frontier.frontier_nodes.iter()
+                    .take(5)
+                    .filter(|n| n.outgoing_call_count == 0)
+                    .map(|n| json!({ "qname": n.qname, "depth": n.depth }))
+                    .collect();
+                if !blocked.is_empty() {
+                    insight["blocked_at"] = json!({
+                        "message": format!(
+                            "{} node(s) with no static forward edges — likely function-pointer or dynamic-dispatch boundaries",
+                            blocked.len()
+                        ),
+                        "nodes": blocked,
+                    });
+                }
+
+                insight["action"] = json!(
+                    "The primary path is likely blocked by unresolved function pointers. Use 'atlas_annotate_fp_dispatch' to declare known dispatches (e.g., curl handler tables, vtable assignments), then re-run the path query after annotation materialization."
+                );
+            }
+
+            resp["path_quality"] = insight;
+
             (serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()), false)
         } else {
             // No path found — diagnostic frontier.
