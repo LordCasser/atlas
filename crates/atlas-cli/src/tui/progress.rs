@@ -130,10 +130,14 @@ impl TuiProgress {
         }
     }
 
-    /// Finish on normal completion — clears the progress rows and positions
-    /// the cursor at the top of the cleared area, ready for the caller to
-    /// print a brief result summary.  Only the progress lines are cleared;
-    /// everything else on the terminal is left intact.
+    /// Finish on normal completion — clears the progress display and
+    /// prepares space for the result summary.
+    ///
+    /// Uses `\x1b[J` (clear from cursor to end of screen) instead of
+    /// row-by-row clearing, because the progress lines can wrap (narrow
+    /// terminals) and the summary output spans more rows than the
+    /// viewport height.  Clearing everything below the progress's
+    /// starting row guarantees no stale terminal content bleeds through.
     pub fn finish(mut self) {
         // Render one final frame so the display shows completion state
         // (100% gauge, all phases completed) before shutting down.
@@ -144,14 +148,13 @@ impl TuiProgress {
         // pre-init position (the start of the first progress row).
         drop(self);
 
-        // Clear exactly INLINE_ROWS rows downward, then return cursor
-        // to the start.  ANSI escapes work in both raw and cooked mode.
-        for _ in 0..INLINE_ROWS {
-            let _ =
-                std::io::Write::write_all(&mut std::io::stdout(), b"\x1b[2K\x1b[1B");
-        }
-        let up = format!("\x1b[{}A", INLINE_ROWS);
-        let _ = std::io::Write::write_all(&mut std::io::stdout(), up.as_bytes());
+        // `\x1b[J` = CSI J (Erase Display, param 0):
+        // clear from cursor position to end of screen.  The cursor is
+        // already at the progress-area start after try_restore, so this
+        // wipes the TUI rows *and* any old terminal content below them
+        // — enough headroom for the summary output.
+        let _ =
+            std::io::Write::write_all(&mut std::io::stdout(), b"\x1b[J");
         let _ = std::io::Write::flush(&mut std::io::stdout());
     }
 
