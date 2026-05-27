@@ -61,15 +61,22 @@ pub fn run(
         _ => ExtractionMode::Structural,
     };
 
-    // ── Configure rayon thread pool ────────────────────────────────────────
+    // ── Configure rayon thread pool (once, idempotent) ──────────────────
     // macOS spawns threads with a 512 KB stack by default, which overflows
     // during tree-sitter's recursive-descent parsing of deeply-nested files
     // (e.g. Linux kernel headers).  4 MB matches the tree-sitter playground
     // convention and is safe on all platforms.
-    rayon::ThreadPoolBuilder::new()
-        .stack_size(4 * 1024 * 1024)
-        .build_global()
-        .expect("failed to initialise rayon thread pool");
+    //
+    // `build_global()` can only succeed once per process; subsequent calls
+    // (e.g. in integration tests that run `index::run()` multiple times) will
+    // error.  Using `Once` ensures we only attempt the first time.
+    static RAYON_INIT: std::sync::Once = std::sync::Once::new();
+    RAYON_INIT.call_once(|| {
+        rayon::ThreadPoolBuilder::new()
+            .stack_size(4 * 1024 * 1024)
+            .build_global()
+            .expect("failed to initialise rayon thread pool");
+    });
 
     // ── Merge include/scope patterns ──
     let mut include_patterns: Vec<String> = includes.to_vec();
