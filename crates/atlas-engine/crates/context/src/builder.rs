@@ -230,12 +230,12 @@ impl ContextView {
         md.push_str("*Trail — follow these to explore further (no additional lookup needed):*\n");
         if !self.callee_details.is_empty() {
             let first_callee = &self.callee_details[0].symbol.qualified_name;
-            md.push_str(&format!("- **Calls** → `atlas_context` with `symbol: \"{}\"`\n", first_callee));
+            md.push_str(&format!("- **Calls** → `context` with `symbol: \"{}\"`\n", first_callee));
         }
         if !self.caller_details.is_empty() {
-            md.push_str(&format!("- **Called by** → `atlas_trace_caller_path` with `symbol_name: \"{}\"`\n", self.subject.name));
+            md.push_str(&format!("- **Called by** → `trace_caller_path` with `symbol_name: \"{}\"`\n", self.subject.name));
         }
-        md.push_str(&format!("- **Full source** → `atlas_explore` or `codegraph_node(\"{}\")` for the complete function body\n", self.subject.name));
+        md.push_str(&format!("- **Full source** → `explore` or `codegraph_node(\"{}\")` for the complete function body\n", self.subject.name));
         if self.dependencies.len() > 1 {
             md.push_str(&format!("- **Dependencies** → {} imported files\n", self.dependencies.len()));
         }

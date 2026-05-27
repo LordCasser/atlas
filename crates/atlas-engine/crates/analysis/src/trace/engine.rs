@@ -539,7 +539,7 @@ impl TraceEngine {
             return TraceQueryResponse::partial(
                 "trace_forward",
                 TraceDiagnostic::warning(&format!(
-                    "Source symbol '{}' not found in the index. The symbol may need structural parsing — try narrowing scope with 'atlas_search' on the containing file, or run 'atlas index' to ensure the project is fully indexed.",
+                    "Source symbol '{}' not found in the index. The symbol may need structural parsing — try narrowing scope with 'search' on the containing file, or run 'index' to ensure the project is fully indexed.",
                     source_id.to_hex()
                 ))
                 .with_code("symbol_not_found"),
@@ -556,12 +556,12 @@ impl TraceEngine {
             return TraceQueryResponse::partial(
                 "trace_forward",
                 TraceDiagnostic::warning(&format!(
-                    "Forward call-graph tracing is not available for {}. Consider using 'trace_caller_path' (reverse trace from target) or 'atlas_callgraph' for neighborhood exploration. If you believe call-graph edges should exist, verify that the '{lang_name}' feature is compiled into the Atlas binary (--features {lang_name}).",
+                    "Forward call-graph tracing is not available for {}. Consider using 'trace_caller_path' (reverse trace from target) or 'callgraph' for neighborhood exploration. If you believe call-graph edges should exist, verify that the '{lang_name}' feature is compiled into the Atlas binary (--features {lang_name}).",
                     lang_name,
                 ))
                 .with_code("unsupported_language")
                 .with_detail(format!(
-                    r#"{{"alternatives":["trace_caller_path","atlas_callgraph","atlas_context"],"language":"{lang_name}"}}"#
+                    r#"{{"alternatives":["trace_caller_path","callgraph","context"],"language":"{lang_name}"}}"#
                 )),
                 cap,
             );
@@ -578,7 +578,7 @@ impl TraceEngine {
             return TraceQueryResponse::partial(
                 "trace_forward",
                 TraceDiagnostic::warning(&format!(
-                    "Target symbol '{}' not found in the index. The symbol may need structural parsing — try running 'atlas_context' with its qualified name to trigger on-demand parsing.",
+                    "Target symbol '{}' not found in the index. The symbol may need structural parsing — try running 'context' with its qualified name to trigger on-demand parsing.",
                     target_id.to_hex()
                 ))
                 .with_code("target_not_found"),
@@ -936,7 +936,7 @@ fn add_caller_chain_trail(diagnostics: &mut Vec<TraceDiagnostic>, chain: &Caller
     let hop_count = chain.steps.len();
     diagnostics.push(
         TraceDiagnostic::info(&format!(
-            "Trail: {}→{} ({hop_count} hops). Next: `atlas_context` with `symbol: \"{}\"` for full source of root; `trace_caller_path` with `symbol_name: \"{}\"` to trace beyond root; `trace_forward` from root hex to trace the forward chain.",
+            "Trail: {}→{} ({hop_count} hops). Next: `context` with `symbol: \"{}\"` for full source of root; `trace_caller_path` with `symbol_name: \"{}\"` to trace beyond root; `trace_forward` from root hex to trace the forward chain.",
             root_name, target_name,
             chain.root.qualified_name,
             root_name,
@@ -955,7 +955,7 @@ fn add_forward_chain_trail(diagnostics: &mut Vec<TraceDiagnostic>, chain: &Forwa
     let hop_count = chain.steps.len();
     diagnostics.push(
         TraceDiagnostic::info(&format!(
-            "Trail: {}→{} ({hop_count} hops). Next: `atlas_context` with `symbol: \"{}\"` for full target source; `atlas_callgraph` from target to see its callees.",
+            "Trail: {}→{} ({hop_count} hops). Next: `context` with `symbol: \"{}\"` for full target source; `callgraph` from target to see its callees.",
             source_name, target_name,
             chain.target.qualified_name,
         ))
