@@ -44,7 +44,7 @@ pub fn run(project: &str) -> anyhow::Result<()> {
         .get_stats()
         .context("Failed to read database stats")?;
     println!("  SQLite:   {}", store_stats.sqlite_version);
-    println!("  Schema:   v{}", atlas_engine::CURRENT_SCHEMA_VERSION);
+    println!("  Atlas version: {}", env!("CARGO_PKG_VERSION"));
 
     Ok(())
 }

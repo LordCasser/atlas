@@ -1,6 +1,6 @@
 //! Store lifecycle: database open, schema init, cross-process locking.
 
-use crate::schema::{CURRENT_SCHEMA_VERSION, SCHEMA_DDL, SchemaStatus, check_and_migrate};
+use crate::schema::SCHEMA_DDL;
 use crate::store_fts::{chrono_now_ms, is_process_alive};
 
 use rusqlite::{Connection, params};
@@ -79,31 +79,12 @@ impl Store {
 
     /// Initialize the schema (idempotent).
     ///
-    /// On a fresh database creates all tables and records V1.
-    /// On an existing database runs pending migrations via [`check_and_migrate`].
-    /// Returns the schema status for the caller to report.
-    pub fn init_schema(&self) -> anyhow::Result<SchemaStatus> {
+    /// Creates all tables if they don't exist. Safe to call multiple times —
+    /// all DDL uses `CREATE TABLE IF NOT EXISTS`.
+    pub fn init_schema(&self) -> anyhow::Result<()> {
         let conn = self.lock();
         conn.execute_batch(SCHEMA_DDL)?;
-
-        // Run migration check — handles fresh, current, upgradable, and incompatible
-        let status = check_and_migrate(&conn)?;
-
-        // Record current version if schema_versions is empty (fresh DB)
-        if matches!(status, SchemaStatus::Current) {
-            let existing: i64 = conn
-                .query_row("SELECT COUNT(*) FROM schema_versions", [], |r| r.get(0))
-                .unwrap_or(0);
-            if existing == 0 {
-                conn.execute(
-                    "INSERT INTO schema_versions (version, description)
-                     VALUES (?1, ?2)",
-                    params![CURRENT_SCHEMA_VERSION, "v1: initial schema"],
-                )?;
-            }
-        }
-
-        Ok(status)
+        Ok(())
     }
 
     // ── Exclusive lock (cross-process, via project_metadata table) ─────────

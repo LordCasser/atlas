@@ -57,7 +57,7 @@ pub use analysis::trace::TraceQueryResponse;
 /// Context layer: AI context builder (callers, callees, peers).
 pub use context::ContextBuilder;
 /// Database store and schema version.
-pub use db::{CURRENT_SCHEMA_VERSION, MIGRATIONS, Store};
+pub use db::{CURRENT_SCHEMA_VERSION, Store};
 /// Summary persistence: build and query function summaries.
 pub use db::summary::{SummaryBuildStats, SummaryStore};
 /// Analysis: summary builder.

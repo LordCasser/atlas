@@ -248,7 +248,7 @@ atlas/
 │       └── crates/
 │           ├── types             # IDs, IR records, language/capability metadata
 │           ├── workspace         # project root and source-path abstractions
-│           ├── db                # SQLite schema, Store, readers/writers, migrations
+│           ├── db                # SQLite schema, Store, readers/writers
 │           ├── extraction        # tree-sitter frontends, SCM queries, scopes, bindings, dataflow, CFG
 │           ├── resolution        # reference/import/include/path-alias resolution
 │           ├── graph             # symbol edge builder, graph snapshot, graph traversal engine
@@ -294,13 +294,13 @@ types/workspace/db ─▶ extraction/resolution/graph/analysis/search/context/fi
 
 ### Storage model
 
-Atlas stores index data in `.atlas/atlas.db` (schema version 3). Core tables include:
+Atlas stores index data in `.atlas/atlas.db` (schema version 1). Core tables include:
 
 ```text
 files              symbols            scopes             references
 imports            symbol_edges       callsites          bindings
 binding_uses       data_nodes         dataflow_edges     cfg_nodes
-cfg_edges          project_metadata   schema_versions    symbols_fts
+cfg_edges          project_metadata   symbols_fts
 ```
 
 SQLite is the durable source of truth. In-memory graph snapshots are query accelerators and can be rebuilt from the database.

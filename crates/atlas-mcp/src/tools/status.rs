@@ -99,8 +99,6 @@ impl ToolRouter {
                 },
                 "database": {
                     "sqlite_version": stats.sqlite_version,
-                    "schema_version": self.store.schema_version().unwrap_or(0),
-                    "app_schema_version": atlas_engine::CURRENT_SCHEMA_VERSION,
                 },
                 "server": {
                     "atlas_version": env!("CARGO_PKG_VERSION"),

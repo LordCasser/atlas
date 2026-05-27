@@ -30,7 +30,7 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
 ### 1.4 CLI and database release gates
 
 - Ensure `atlas doctor` exposes release-relevant state.
-- Decide the V1 database compatibility policy (schema V3 with migration chain). ✅ V3 schema with V1→V2→V3 migration implemented.
+- Compatibility: V1 schema with no migration chain (direct DDL changes).
 - Make `.atlas/` cleanup and rebuild guidance explicit.
 - Keep JSON output stable for scripted use.
 - Publish verified performance baselines.

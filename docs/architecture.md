@@ -123,11 +123,11 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 
 ## 6. Persistence 约束
 
-### 6.1 Schema（当前版本：V3）
+### 6.1 Schema（当前版本：V1）
 
-`CURRENT_SCHEMA_VERSION = 3`。schema 变化时同步更新 `MIGRATIONS` 链。
+当前 schema 版本为 V1，所有变更直接在主 DDL 中进行，无需迁移。
 
-主要表（20 张）：
+主要表（19 张）：
 
 | 表 | 用途 |
 |----|------|
@@ -141,15 +141,14 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 | `bindings` / `binding_uses` | 词法绑定 |
 | `data_nodes` / `dataflow_edges` | 数据流节点与边 |
 | `cfg_nodes` / `cfg_edges` | 控制流图 |
-| `function_summaries` | 函数摘要元数据（V3 新增） |
-| `summary_param_reaches` | 参数 → 下游可达目标（V3 新增） |
-| `summary_return_sources` | 返回值 → 上游来源（V3 新增） |
-| `summary_call_arg_sources` | 调用参数 → 上游来源（V3 新增） |
+| `function_summaries` | 函数摘要元数据 |
+| `summary_param_reaches` | 参数 → 下游可达目标 |
+| `summary_return_sources` | 返回值 → 上游来源 |
+| `summary_call_arg_sources` | 调用参数 → 上游来源 |
 | `analysis_artifacts` | lazy dataflow/CFG 追踪 |
 | `file_index_layers` | 每文件每层索引状态 |
 | `project_metadata` | 项目级键值配置 |
 | `symbols_fts` | FTS5 符号名索引 |
-| `schema_versions` | 迁移追踪 |
 
 约束：
 - SQLite 使用 WAL。
@@ -157,13 +156,6 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 - 读路径可以短连接或 read API。
 - symbol graph 与 dataflow graph 必须分表。
 - `dataflow_edges` 保持纯 intra-procedural；跨函数事实仅存在于摘要表。
-
-### 6.2 Schema 迁移
-
-- V1 → V2：`references_v2` 改为 SQL-quoted `"references"`，移除旧 `edges` 表。
-- V2 → V3：新增 4 张摘要表 + `file_index_layers` 表。
-- 打开现有数据库时检查 `schema_versions`，低版本通过 `MIGRATIONS` 链升级，高版本拒绝。
-- `atlas doctor` 可报告当前版本、过新版本和缺失迁移路径。
 
 ## 7. 数据流
 

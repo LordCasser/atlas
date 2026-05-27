@@ -1,12 +1,6 @@
-//! Atlas-native SQLite schema DDL — with migration infrastructure.
+//! Atlas-native SQLite schema DDL.
 //!
-//! The schema is currently at **V3**.  Schema changes during development
-//! are made in-place.  Migration from V1 to future versions is supported
-//! via the ordered [`MIGRATIONS`] chain.  When no migration path exists
-//! (future→past downgrade or very old DB), the user is directed to
-//! `atlas init` for a fresh rebuild.
-//!
-//! Schema version: 3
+//! Schema version: 1
 //!
 //! ## Tables
 //! - `files`          — per-file metadata
@@ -14,7 +8,7 @@
 //! - `scopes`         — containment regions
 //! - `references`     — all reference uses (preserved after resolution)
 //! - `imports`        — import statements
-//! - `symbol_edges`   — semantic edges between symbols (renamed from edges)
+//! - `symbol_edges`   — semantic edges between symbols
 //! - `callsites`      — call expressions
 //! - `bindings`       — lexical binding definitions
 //! - `binding_uses`   — references to bindings
@@ -30,14 +24,9 @@
 //! - `file_index_layers` — per-file per-layer index status
 //! - `project_metadata` — key-value project configuration
 //! - `symbols_fts`    — FTS5 index on symbol names
-//! - `schema_versions` — migration tracking
 
 /// Current schema version.
-///
-/// When this value is raised, add matching entries to [`MIGRATIONS`] so
-/// existing databases can be upgraded or explicitly reported as needing a
-/// rebuild.
-pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub const CURRENT_SCHEMA_VERSION: i64 = 1;
 /// Complete DDL for a fresh database.
 pub const SCHEMA_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -370,13 +359,6 @@ CREATE TABLE IF NOT EXISTS project_metadata (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Schema single-version marker (no migration — always V1)
-CREATE TABLE IF NOT EXISTS schema_versions (
-    version     INTEGER PRIMARY KEY,
-    applied_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    description TEXT
-);
-
 -- --- Indexes ---
 
 CREATE INDEX IF NOT EXISTS idx_files_path
@@ -493,220 +475,6 @@ CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
 END;
 "#;
 
-// ---------------------------------------------------------------------------
-// Migration infrastructure
-// ---------------------------------------------------------------------------
-
-/// A single schema migration step.
-///
-/// Each entry in [`MIGRATIONS`] upgrades the database from `from_version`
-/// to `from_version + 1`.  Migrations are applied in order and must be
-/// idempotent (using `IF NOT EXISTS` / `IF EXISTS` where possible).
-pub struct Migration {
-    /// Source version this migration upgrades FROM.
-    pub from_version: i64,
-    /// SQL DDL to execute in a single transaction.
-    pub sql: &'static str,
-    /// Human-readable description (recorded in `schema_versions`).
-    pub description: &'static str,
-}
-
-/// Ordered migration chain.
-///
-/// When the database is at version N and [`CURRENT_SCHEMA_VERSION`] is M > N,
-/// migrations from index N-1 through M-1 are applied sequentially.  When no
-/// migration covers the gap, the user is directed to `atlas init`.
-///
-/// Add entries here when the schema changes:
-/// ```ignore
-/// pub const MIGRATIONS: &[Migration] = &[
-///     Migration { from_version: 1, sql: "ALTER TABLE ...", description: "v2: ..." },
-///     Migration { from_version: 2, sql: "CREATE INDEX ...", description: "v3: ..." },
-/// ];
-/// ```
-pub const MIGRATIONS: &[Migration] = &[
-    Migration {
-        from_version: 1,
-        sql: "ALTER TABLE symbols ADD COLUMN layer TEXT NOT NULL DEFAULT 'structural';
-                  CREATE TABLE IF NOT EXISTS file_index_layers (
-                      file_id         BLOB NOT NULL,
-                      layer           TEXT NOT NULL,
-                      content_hash    TEXT NOT NULL,
-                      status          TEXT NOT NULL DEFAULT 'complete',
-                      updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-                      PRIMARY KEY (file_id, layer),
-                      FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
-                  );
-                  CREATE INDEX IF NOT EXISTS idx_file_index_layers_file
-                      ON file_index_layers(file_id);",
-        description: "v2: add symbols.layer + file_index_layers table",
-    },
-    Migration {
-        from_version: 2,
-        sql: "CREATE TABLE IF NOT EXISTS function_summaries (
-                  function_id     BLOB PRIMARY KEY NOT NULL,
-                  node_count      INTEGER NOT NULL,
-                  edge_count      INTEGER NOT NULL,
-                  content_hash    TEXT NOT NULL,
-                  computed_at     TEXT NOT NULL DEFAULT (datetime('now')),
-                  FOREIGN KEY (function_id) REFERENCES symbols(symbol_id) ON DELETE CASCADE
-              );
-              CREATE TABLE IF NOT EXISTS summary_param_reaches (
-                  function_id     BLOB NOT NULL,
-                  param_id        BLOB NOT NULL,
-                  param_index     INTEGER NOT NULL,
-                  param_name      TEXT NOT NULL,
-                  target_kind     TEXT NOT NULL,
-                  target_node_id  BLOB NOT NULL,
-                  confidence      REAL NOT NULL DEFAULT 0.85,
-                  provenance      TEXT NOT NULL DEFAULT 'intraprocedural_dataflow',
-                  FOREIGN KEY (function_id) REFERENCES function_summaries(function_id) ON DELETE CASCADE
-              );
-              CREATE INDEX IF NOT EXISTS idx_spr_function ON summary_param_reaches(function_id);
-              CREATE INDEX IF NOT EXISTS idx_spr_param   ON summary_param_reaches(param_id);
-              CREATE TABLE IF NOT EXISTS summary_return_sources (
-                  function_id     BLOB NOT NULL,
-                  return_id       BLOB NOT NULL,
-                  source_node_id  BLOB NOT NULL,
-                  confidence      REAL NOT NULL DEFAULT 0.85,
-                  provenance      TEXT NOT NULL DEFAULT 'intraprocedural_dataflow',
-                  FOREIGN KEY (function_id) REFERENCES function_summaries(function_id) ON DELETE CASCADE
-              );
-              CREATE INDEX IF NOT EXISTS idx_srs_function ON summary_return_sources(function_id);
-              CREATE INDEX IF NOT EXISTS idx_srs_return   ON summary_return_sources(return_id);
-              CREATE TABLE IF NOT EXISTS summary_call_arg_sources (
-                  function_id     BLOB NOT NULL,
-                  callsite_id     BLOB NOT NULL,
-                  arg_index       INTEGER NOT NULL,
-                  arg_node_id     BLOB NOT NULL,
-                  source_node_id  BLOB NOT NULL,
-                  confidence      REAL NOT NULL DEFAULT 0.85,
-                  provenance      TEXT NOT NULL DEFAULT 'intraprocedural_dataflow',
-                  FOREIGN KEY (function_id) REFERENCES function_summaries(function_id) ON DELETE CASCADE
-              );
-              CREATE INDEX IF NOT EXISTS idx_scas_function ON summary_call_arg_sources(function_id);
-              CREATE INDEX IF NOT EXISTS idx_scas_callsite ON summary_call_arg_sources(callsite_id);",
-        description: "v3: add function_summaries + summary_param_reaches + summary_return_sources + summary_call_arg_sources tables",
-    },
-];
-
-/// Run pending migrations on a database connection.
-///
-/// Reads the current version from `schema_versions`, applies all migrations
-/// whose `from_version >= current_version` and < [`CURRENT_SCHEMA_VERSION`],
-/// and records each applied migration.
-///
-/// Returns the number of migrations applied.
-pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<usize> {
-    let current = current_schema_version(conn)?;
-    if current >= CURRENT_SCHEMA_VERSION {
-        return Ok(0); // up-to-date or newer (handled by check_schema_compat)
-    }
-
-    let mut applied = 0usize;
-    for mig in MIGRATIONS {
-        if mig.from_version < current {
-            continue; // already applied
-        }
-        if mig.from_version >= CURRENT_SCHEMA_VERSION {
-            break; // past target
-        }
-        // Only apply if this migration bridges from exactly where we are
-        if mig.from_version != current + applied as i64 {
-            anyhow::bail!(
-                "No migration from v{} to v{}; run `atlas init` to rebuild",
-                current + applied as i64,
-                CURRENT_SCHEMA_VERSION,
-            );
-        }
-        conn.execute_batch(mig.sql)?;
-        conn.execute(
-            "INSERT INTO schema_versions (version, description) VALUES (?1, ?2)",
-            rusqlite::params![mig.from_version + 1, mig.description],
-        )?;
-        applied += 1;
-    }
-    Ok(applied)
-}
-
-/// Read the current schema version from the database.
-///
-/// Returns 0 if the `schema_versions` table does not exist or is empty.
-pub fn current_schema_version(conn: &rusqlite::Connection) -> anyhow::Result<i64> {
-    let table_exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_versions'",
-            [],
-            |r| r.get::<_, i64>(0),
-        )
-        .map(|c| c > 0)
-        .unwrap_or(false);
-
-    if !table_exists {
-        return Ok(0);
-    }
-
-    let ver: Option<i64> = conn
-        .query_row(
-            "SELECT version FROM schema_versions ORDER BY version DESC LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .ok();
-    Ok(ver.unwrap_or(0))
-}
-
-/// Result of checking schema compatibility on DB open.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SchemaStatus {
-    /// Schema is current — no action needed.
-    Current,
-    /// Migrations were applied successfully.
-    Migrated { from: i64, to: i64, steps: usize },
-    /// DB is from a newer version — cannot proceed.
-    TooNew { db_version: i64, app_version: i64 },
-    /// DB needs migration but no path exists.
-    NeedsRebuild { db_version: i64, app_version: i64 },
-}
-
-/// Check schema compatibility and run pending migrations if possible.
-///
-/// Called after opening a database.  Returns the current status and any
-/// migration result.
-pub fn check_and_migrate(conn: &rusqlite::Connection) -> anyhow::Result<SchemaStatus> {
-    let db_ver = current_schema_version(conn)?;
-
-    if db_ver == 0 {
-        // Fresh DB or pre-versioning DB — will be initialized by init_schema
-        return Ok(SchemaStatus::Current);
-    }
-
-    if db_ver > CURRENT_SCHEMA_VERSION {
-        return Ok(SchemaStatus::TooNew {
-            db_version: db_ver,
-            app_version: CURRENT_SCHEMA_VERSION,
-        });
-    }
-
-    if db_ver < CURRENT_SCHEMA_VERSION {
-        let steps = run_migrations(conn)?;
-        if steps > 0 {
-            return Ok(SchemaStatus::Migrated {
-                from: db_ver,
-                to: CURRENT_SCHEMA_VERSION,
-                steps,
-            });
-        }
-        // No migration path available
-        return Ok(SchemaStatus::NeedsRebuild {
-            db_version: db_ver,
-            app_version: CURRENT_SCHEMA_VERSION,
-        });
-    }
-
-    Ok(SchemaStatus::Current)
-}
-
 #[cfg(test)]
 mod tests {
     use rusqlite::Connection;
@@ -740,56 +508,10 @@ mod tests {
         assert!(tables.contains(&"cfg_edges".to_string()));
         assert!(tables.contains(&"symbols_fts".to_string()));
         assert!(tables.contains(&"project_metadata".to_string()));
-        assert!(tables.contains(&"schema_versions".to_string()));
-        // Schema v3: summary tables
+        // Summary tables
         assert!(tables.contains(&"function_summaries".to_string()));
         assert!(tables.contains(&"summary_param_reaches".to_string()));
         assert!(tables.contains(&"summary_return_sources".to_string()));
         assert!(tables.contains(&"summary_call_arg_sources".to_string()));
-    }
-
-    #[test]
-    fn test_current_schema_version_on_fresh_db_is_zero() {
-        let conn = Connection::open_in_memory().unwrap();
-        // No schema_versions table → version 0
-        let ver = super::current_schema_version(&conn).unwrap();
-        assert_eq!(ver, 0);
-    }
-
-    #[test]
-    fn test_check_and_migrate_current_is_noop() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(super::SCHEMA_DDL).unwrap();
-        // Record current version (init_schema would do this)
-        conn.execute(
-            "INSERT INTO schema_versions (version, description) VALUES (?1, ?2)",
-            rusqlite::params![super::CURRENT_SCHEMA_VERSION, "v1: test"],
-        )
-        .unwrap();
-
-        let status = super::check_and_migrate(&conn).unwrap();
-        assert_eq!(status, super::SchemaStatus::Current);
-    }
-
-    #[test]
-    fn test_check_and_migrate_too_new_is_detected() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(super::SCHEMA_DDL).unwrap();
-        conn.execute(
-            "INSERT INTO schema_versions (version, description) VALUES (?1, ?2)",
-            rusqlite::params![999, "future version"],
-        )
-        .unwrap();
-
-        let status = super::check_and_migrate(&conn).unwrap();
-        assert!(matches!(status, super::SchemaStatus::TooNew { .. }));
-    }
-
-    #[test]
-    fn test_migrations_v1_to_v3_defined() {
-        // V1→V2 and V2→V3 migrations exist
-        assert_eq!(super::MIGRATIONS.len(), 2);
-        assert_eq!(super::MIGRATIONS[0].from_version, 1);
-        assert_eq!(super::MIGRATIONS[1].from_version, 2);
     }
 }

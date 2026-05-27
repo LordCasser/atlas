@@ -47,4 +47,3 @@ Callers are responsible for creating `.atlas/` and any parent directories
 | `symbols_fts` | (FTS5) | Full-text search over symbol names |
 | `project_metadata` | `key TEXT` | Project-level settings, exclusive lock state |
 | `analysis_artifacts` | `(file_id, unit_id, layer)` | Lazy dataflow build cache |
-| `schema_versions` | `version INTEGER` | Schema history marker |

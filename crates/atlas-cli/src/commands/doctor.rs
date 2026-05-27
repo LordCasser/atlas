@@ -47,59 +47,7 @@ pub fn run(project: &str) -> anyhow::Result<()> {
         println!("  [SKIP] SQLite FTS5 support (no database)");
     }
 
-    // 5. Schema version (with migration guidance)
-    if db_exists {
-        match check_schema(&db_path) {
-            Ok(Some(ver)) => {
-                let current = atlas_engine::CURRENT_SCHEMA_VERSION;
-                if ver == current {
-                    check(&format!("Schema version (v{ver})"), true, &mut all_ok);
-                } else if ver < current {
-                    // Check if migrations are available
-                    let has_migrations = atlas_engine::MIGRATIONS
-                        .iter()
-                        .any(|m| m.from_version >= ver && m.from_version < current);
-                    if has_migrations {
-                        check(
-                            &format!("Schema version (v{ver} → v{current}, auto-migratable)"),
-                            true,
-                            &mut all_ok,
-                        );
-                        println!("     Hint: Run `atlas init` to auto-migrate.");
-                    } else {
-                        check(
-                            &format!("Schema version (v{ver}, needs rebuild → v{current})"),
-                            false,
-                            &mut all_ok,
-                        );
-                        println!("     Hint: No migration path. Run `atlas init` to rebuild.");
-                    }
-                } else {
-                    check(
-                        &format!("Schema version (v{ver} > app v{current}, incompatible)"),
-                        false,
-                        &mut all_ok,
-                    );
-                    println!(
-                        "     Hint: Database is from a newer Atlas version. Upgrade Atlas or rebuild."
-                    );
-                }
-            }
-            Ok(None) => {
-                check(
-                    "Schema version (no schema_versions table)",
-                    false,
-                    &mut all_ok,
-                );
-                println!("     Hint: Run `atlas init` to initialize the database");
-            }
-            Err(e) => {
-                check(&format!("Schema version check ({e})"), false, &mut all_ok);
-            }
-        }
-    }
-
-    // 6. Language grammar availability (compile-time feature check)
+    // 5. Language grammar availability (compile-time feature check)
     println!();
     println!("  Language grammar support:");
     check_lang("TypeScript", cfg!(feature = "typescript"));
@@ -170,31 +118,6 @@ fn check_fts5(db_path: &Path) -> anyhow::Result<bool> {
         conn.prepare("SELECT 1 FROM pragma_compile_options WHERE compile_options = 'ENABLE_FTS5'")?;
     let has_fts5 = stmt.exists([])?;
     Ok(has_fts5)
-}
-
-/// Read the current schema version from the database.
-fn check_schema(db_path: &Path) -> anyhow::Result<Option<i64>> {
-    let conn = rusqlite::Connection::open(db_path)?;
-    // Check if schema_versions table exists
-    let table_exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_versions'",
-            [],
-            |r| r.get::<_, i64>(0),
-        )
-        .map(|c| c > 0)
-        .unwrap_or(false);
-
-    if !table_exists {
-        return Ok(None);
-    }
-
-    let ver: i64 = conn.query_row(
-        "SELECT version FROM schema_versions ORDER BY version DESC LIMIT 1",
-        [],
-        |r| r.get(0),
-    )?;
-    Ok(Some(ver))
 }
 
 /// Print per-language capability levels for all compiled-in languages.

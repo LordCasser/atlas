@@ -37,14 +37,6 @@ impl Store {
         }
     }
 
-    /// Get the schema version from the database.
-    pub fn schema_version(&self) -> anyhow::Result<i64> {
-        let conn = self.lock_read();
-        let mut stmt = conn.prepare("SELECT MAX(version) FROM schema_versions")?;
-        let version: Option<i64> = stmt.query_row([], |row| row.get(0))?;
-        Ok(version.unwrap_or(0))
-    }
-
     /// Return a compact signature for detecting whether indexed graph inputs changed.
     ///
     /// This is intentionally cheap and read-only. It combines core fact counts,

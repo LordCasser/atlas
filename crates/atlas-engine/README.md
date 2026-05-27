@@ -7,7 +7,7 @@ Public facade crate for Atlas. Re-exports all core types and provides the high-l
 | Module | Key exports |
 |--------|-------------|
 | `types` | All IR types (`SymbolDef`, `FileFacts`, `ReferenceUse`, ...) |
-| `db` | `Store`, `CURRENT_SCHEMA_VERSION` |
+| `db` | `Store` |
 | `workspace` | `Workspace`, `ProjectRoot`, `SourcePath` |
 | `extraction` | `ExtractionMode`, `LanguageFrontend`, `ParseWorkerPool`, `create_frontend` |
 | `resolution` | `ReferenceResolver`, `PathAliasResolver` |
