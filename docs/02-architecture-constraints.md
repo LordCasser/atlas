@@ -83,7 +83,6 @@ tree-sitter 0.26 parser
 - ArkTS MVP 复用 TypeScript grammar，但 language 必须是 `arkts`。
 - C/C++ 是 best-effort，不承诺完整 preprocessing、模板、重载。
 - Go/Rust/C#/PHP/Ruby/Kotlin 已从 post-MVP Symbolic frontends 升级为 experimental DataflowBasic frontends，接入 `all-languages`。各语言均具备基础 dataflow 抽取（参数、赋值、调用、字段访问、返回），并有对应的 e2e smoke 测试。完整 path‑level 验收、CFG 和 trace 变量来源能力仍待按语言逐一补齐，详见各语言的 capability profile `limitations`。宣称能力时必须附带实际 confidence_floor 和已知限制列表。
-- Bash 是显式 opt-in experimental frontend，不参与默认或 `all-languages` 验收。
 - Cangjie 是显式 opt-in experimental frontend（Symbolic 级别），不参与默认验收。自 tree-sitter 0.26 起 ABI 版本兼容（MAX_ABI ≥ 15），不再需要 ABI workaround。已加入 `all-languages` feature set。
 
 ## 5. Fact 模型约束

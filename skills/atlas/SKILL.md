@@ -1,8 +1,8 @@
 ---
 name: atlas
-description: Semantic code graph engine for local repositories. Indexes 15 languages (TypeScript, JavaScript, Python, Java, C, C++, Go, C#, Rust, PHP, Ruby, Kotlin, ArkTS, Cangjie, Bash) via tree-sitter 0.26 and exposes deterministic facts through CLI and MCP. Use for symbol search, call-graph traversal, callers/callees, dependency analysis, variable provenance tracing, caller-path exploration, barrel re-export resolution, or building AI context from indexed codebases.
+description: Semantic code graph engine for local repositories. Indexes 14 languages (TypeScript, JavaScript, Python, Java, C, C++, Go, C#, Rust, PHP, Ruby, Kotlin, ArkTS, Cangjie) via tree-sitter 0.26 and exposes deterministic facts through CLI and MCP. Use for symbol search, call-graph traversal, callers/callees, dependency analysis, variable provenance tracing, caller-path exploration, barrel re-export resolution, or building AI context from indexed codebases.
 license: MIT
-compatibility: Requires Rust toolchain. Build with `cargo build --release -p atlas-cli --features "all-languages,mcp,bash"`.
+compatibility: Requires Rust toolchain. Build with `cargo build --release -p atlas-cli --features "all-languages,mcp"`.
 metadata:
   version: "1.0"
   repository: https://github.com/lordcasser/atlas
@@ -14,14 +14,14 @@ Use Atlas as the deterministic code-facts layer before reasoning about a reposit
 
 ## Language support
 
-15 languages across two tiers:
+14 languages across two tiers:
 
 | Tier | Languages | Capability |
 |------|-----------|------------|
 | **DataflowBasic** (13) | TypeScript, JavaScript, Python, Java, C, C++, Go, C#, Rust, PHP, Ruby, Kotlin, ArkTS | Symbols, references, imports, scopes, call graph, lexical bindings, intra-procedural dataflow (assign, call args, field access, return), use-def chains. TS/JS also have CFG. Trace variable/caller path. |
-| **Symbolic** (2) | Cangjie, Bash | Symbols, references. Cangjie has imports. Bash has low-confidence call graph. No dataflow/trace. |
+| **Symbolic** (1) | Cangjie | Symbols, references, imports. No dataflow/trace. |
 
-All 13 DataflowBasic + Cangjie are compiled by `all-languages`. Bash requires explicit `bash` feature.
+All 13 DataflowBasic + Cangjie are compiled by `all-languages`.
 
 ## Requirements
 
@@ -117,7 +117,7 @@ When `partial_result: true` or diagnostics present, summarize the evidence and s
 - Cite Atlas evidence: symbol names, qualified names, file paths, edge kinds, trace diagnostics.
 - Atlas is best-effort static analysis with explicit language capability boundaries. Never claim compiler-grade certainty.
 - If Atlas returns nothing, try broader search (shorter name, no kind filter, larger `limit`), then state no indexed fact matched.
-- For languages at Symbolic tier (Cangjie, Bash), trace is unsupported. Use only symbol/reference facts.
+- For languages at Symbolic tier (Cangjie), trace is unsupported. Use only symbol/reference facts.
 
 ## References
 

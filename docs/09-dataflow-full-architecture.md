@@ -241,7 +241,7 @@ Phase 2a (pilot):       TypeScript → JavaScript       confidence 0.55→0.60
 Phase 2b (强静态):       Java → Go → C#               confidence 0.65→0.68 / 0.70→0.72
 Phase 2c (中等难度):     Rust → PHP → Ruby → Kotlin   confidence 各自+0.02~0.05
 Phase 2d (动态/难语言):   Python → C → C++ → ArkTS     confidence 各自+0.02~0.05
-Phase 2e (保持):         Cangjie (Symbolic)  Bash (Symbolic)
+Phase 2e (保持):         Cangjie (Symbolic)
 ```
 
 ## 4. 实施计划
@@ -293,7 +293,7 @@ Phase 2e (保持):         Cangjie (Symbolic)  Bash (Symbolic)
    - `0.85`: direct summary edge (intra-procedural BFS 可达)
    - `0.80 × 0.85 = 0.68`: single cross-boundary ArgToParam/ReturnToCall
    - `< 0.68`: multi-hop cross-boundary (confidence decay per hop)
-7. **Bash 和 Cangjie 保持 `Symbolic`，不进入 DataflowFull 演进路径。**
+7. **Cangjie 保持 `Symbolic`，不进入 DataflowFull 演进路径。**
 
 ## 6. 验证标准
 
@@ -369,11 +369,11 @@ atlas trace variable --file cross_fn.ts --line 10 --column 5 --json \
 - **不要**删除 `SummaryBuilder` 或 runtime fallback 路径（向后兼容旧 DB）
 - **不要**在 Phase 1 实现级联失效（`invalidate_function` 仅删除本函数数据即可）
 - **不要**修改任何 capability profile（Phase 2 的职责）
-- **不要**提升 Bash/Cangjie 的 capability level
+- **不要**提升 Cangjie 的 capability level
 
 ### 需要用户确认的问题
 
 1. **是否接受 4 张摘要表（而非简化方案）？** 已确认：保留 `summary_call_arg_sources`。
 2. **摘要计算时机：全量 index → 全局批处理，增量 sync/lazy → 逐文件增量。** 已确认。
 3. **语言推送顺序：TS→JS→Java→Go→C#→Rust→PHP→Ruby→Kotlin→Python→C→C++→ArkTS。** 已确认。
-4. **Bash/Cangjie 保持 Symbolic，不参与 DataflowFull。** 已确认。
+4. **Cangjie 保持 Symbolic，不参与 DataflowFull。** 已确认。

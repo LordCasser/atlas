@@ -195,7 +195,7 @@ Atlas 不包含污点分析（taint analysis）。当前产品主线为变量来
 - analysis/types 层提供 capability profile / feature matrix，描述每种语言当前支持的 trace level、supported features、unsupported features、known limitations 和 confidence floor。
 - CLI/MCP/context 不能自行推断语言能力，只能展示 analysis/engine 返回的 capability。
 - trace 查询即使返回 partial result，也必须同时返回 capability 和 diagnostics，说明哪些路径是完整证据、哪些只是 best-effort、哪些请求超出当前语言能力。
-- 当前 capability 边界：TypeScript/JavaScript/Python/Java/C/C++/ArkTS/Go/C#/Rust/PHP/Ruby/Kotlin 为 `DataflowBasic`，但除 TS/JS/Python 外主要是基础局部 dataflow + explicit limitations；Bash/Cangjie 是显式 opt-in experimental，其中 Bash 为 Symbolic、Cangjie 为 Symbolic 且 call graph/dataflow 仍 unsupported。`all-languages` 包含 MVP 7 语言和 Go/C#/Rust/PHP/Ruby/Kotlin，不包含 Bash/Cangjie。
+- 当前 capability 边界：TypeScript/JavaScript/Python/Java/C/C++/ArkTS/Go/C#/Rust/PHP/Ruby/Kotlin 为 `DataflowBasic`，但除 TS/JS/Python 外主要是基础局部 dataflow + explicit limitations；Cangjie 是显式 opt-in experimental，为 Symbolic 且 call graph/dataflow 仍 unsupported。`all-languages` 包含 MVP 7 语言和 Go/C#/Rust/PHP/Ruby/Kotlin/Cangjie。
 
 ## 8. Cargo Features
 
@@ -232,13 +232,6 @@ kotlin
 
 不完善/实验语言 features 目前是 opt-in，不计入 MVP 验收：
 - Cangjie（Symbolic）已纳入 `all-languages`（自 tree-sitter 0.26 ABI 兼容）
-- Bash 不在 `all-languages`，需显式启用 `bash` feature
-
-```text
-bash
-```
-
-未来新增语言仍按独立 adapter/query/fixture/capability profile 接入，不得修改中心 mega-extractor。
 
 ## 9. 当前演进决策
 
@@ -300,6 +293,5 @@ atlas-engine/crates/workspace: 项目根目录与路径抽象
 | Ruby | DataflowFull | ✗ | 0.55 | ArgToParam ✓, ReturnToCall ✗ | ✓ |
 | Kotlin | DataflowFull | ✗ | 0.67 | 两者均为 documented gap | ✓ |
 | Cangjie | Symbolic | ✗ | 0.60 | — | ✓ |
-| Bash | Symbolic | ✗ | 0.40 | — | ✗ (opt-in) |
 
 - Lazy dataflow 设计：analysis 层按需加载 dataflow facts（而非全量预加载），通过 `LazyWindow` 控制分析范围，`ExtractionMode::LazyDataflow` 支持增量按需抽取。详见 `dataflow_builder.rs` 和 `extraction_ctx.rs`。

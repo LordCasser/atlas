@@ -431,23 +431,6 @@ pub fn kotlin_callsite_extractor() -> GenericCallsiteExtractor {
     )
 }
 
-/// Bash callsite extractor.
-pub fn bash_callsite_extractor() -> GenericCallsiteExtractor {
-    GenericCallsiteExtractor::new(
-        &["command"],
-        &[],
-        &[],
-        &[
-            "function_definition",
-            "if_statement",
-            "while_statement",
-            "for_statement",
-            "case_statement",
-            "program",
-        ],
-    )
-}
-
 /// Ruby callsite extractor.
 pub fn ruby_callsite_extractor() -> GenericCallsiteExtractor {
     GenericCallsiteExtractor::new(
@@ -532,8 +515,6 @@ pub fn create_extractor(lang: types::enums::Language) -> Box<dyn CallsiteExtract
         types::enums::Language::Php => Box::new(php_callsite_extractor()),
         #[cfg(feature = "ruby")]
         types::enums::Language::Ruby => Box::new(ruby_callsite_extractor()),
-        #[cfg(feature = "bash")]
-        types::enums::Language::Bash => Box::new(bash_callsite_extractor()),
         #[cfg(feature = "kotlin")]
         types::enums::Language::Kotlin => Box::new(kotlin_callsite_extractor()),
         #[allow(unreachable_patterns)]

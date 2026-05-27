@@ -1423,6 +1423,170 @@ def fx_py_return_to_call_process():
 }
 
 // ────────────────────────────────────────────────────────────────
+// Python: Shadowing precision — inner scope x shadows outer x
+// ────────────────────────────────────────────────────────────────
+
+/// FX_PY_SHADOW: When `x` is shadowed in a nested scope (if_statement), the
+/// trace from `result` (which uses the inner `x`) must reach the inner `x`
+/// without conflating the outer `x`.  This proves that scope-chain-aware
+/// binding resolution (`resolve_bindings_to_nodes` in dataflow_builder.rs)
+/// works correctly for Python.
+#[test]
+#[cfg(feature = "python")]
+fn fx_py_shadow() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "shadow.py",
+        r#"def shadow_test():
+    x = "outer"            # outer x in function scope
+    if True:
+        x = "inner"        # inner x in conditional scope — shadows outer
+        result = x         # uses inner x, NOT outer x
+    return result          # <-- trace point
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("shadow.py");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    // Collect the two Local/assign_target nodes named "x" — first is outer, second is inner
+    let x_local_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Local && n.name.as_deref() == Some("x"))
+        .collect();
+    assert!(
+        x_local_nodes.len() >= 2,
+        "expected >=2 Local 'x' nodes (outer + inner), got {}",
+        x_local_nodes.len()
+    );
+    let outer_x = x_local_nodes[0];
+    let inner_x = x_local_nodes[1];
+
+    // Verify the two x bindings have different binding_ids (shadowing works)
+    assert!(
+        outer_x.binding_id != inner_x.binding_id,
+        "outer x (binding={:?}) and inner x (binding={:?}) must have distinct binding_ids",
+        outer_x.binding_id,
+        inner_x.binding_id
+    );
+
+    // Trace from result
+    let sink = find_node(&data_nodes, "result");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "python");
+
+    let path = resp.result.expect("trace path must exist");
+    assert!(!path.steps.is_empty(), "backward slice must have steps");
+
+    // ── CRITICAL: inner x must appear in the trace path ──
+    let inner_in_path = path
+        .steps
+        .iter()
+        .any(|step| step.from_node_id == inner_x.id || step.to_node_id == inner_x.id);
+    assert!(
+        inner_in_path,
+        "inner 'x' must be in the trace path (result uses inner x)"
+    );
+
+    // ── CRITICAL: outer x must NOT appear in the trace path ──
+    let violation = path
+        .steps
+        .iter()
+        .any(|step| step.from_node_id == outer_x.id || step.to_node_id == outer_x.id);
+    assert!(
+        !violation,
+        "shadowing violation: outer 'x' must NOT be in inner trace path"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────
+// Python: Destructuring / tuple unpacking dataflow
+// ────────────────────────────────────────────────────────────────
+
+/// FX_PY_DESTRUCTURE: `a, b = (1, 2)` must produce distinct Local data nodes
+/// for both `a` and `b`, and tracing from `result` must find both variable
+/// sources (a → result and b → result via the addition expression).
+#[test]
+#[cfg(feature = "python")]
+fn fx_py_destructure() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "destructure.py",
+        r#"def destructure_test():
+    a, b = (1, 2)
+    result = a + b
+    return result
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("destructure.py");
+
+    let engine = TraceEngine::new(store.clone());
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+
+    // Verify both a and b have Local nodes (destructuring captured)
+    let a_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Local && n.name.as_deref() == Some("a"))
+        .collect();
+    assert!(
+        !a_nodes.is_empty(),
+        "destructuring must produce Local node for 'a'"
+    );
+
+    let b_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Local && n.name.as_deref() == Some("b"))
+        .collect();
+    assert!(
+        !b_nodes.is_empty(),
+        "destructuring must produce Local node for 'b'"
+    );
+
+    // Verify both a and b have binding_ids set
+    assert!(
+        a_nodes[0].binding_id.is_some(),
+        "destructured 'a' must have binding_id"
+    );
+    assert!(
+        b_nodes[0].binding_id.is_some(),
+        "destructured 'b' must have binding_id"
+    );
+
+    // Trace from result
+    let sink = find_node(&data_nodes, "result");
+    let resp = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "python");
+
+    let path = resp.result.expect("trace path must exist");
+    assert!(!path.steps.is_empty(), "destructuring trace must have steps");
+
+    // Verify the trace path has Assign edges (from a, b → result)
+    let assign_count = path
+        .steps
+        .iter()
+        .filter(|s| s.edge_kind == DataFlowKind::Assign)
+        .count();
+    assert!(
+        assign_count >= 1,
+        "expected >=1 Assign edge from destructured vars, got {}",
+        assign_count
+    );
+}
+
+// ────────────────────────────────────────────────────────────────
 // C: Cross‑function ArgToParam
 // ────────────────────────────────────────────────────────────────
 

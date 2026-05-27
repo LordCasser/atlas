@@ -453,20 +453,6 @@ fn golden_kotlin_class() {
     run_golden("kotlin", "class", "kt", Language::Kotlin);
 }
 
-// -- Bash (opt-in-only, reduced fixtures) --
-
-#[cfg(feature = "bash")]
-#[test]
-fn golden_bash_simple() {
-    run_golden("bash", "simple", "sh", Language::Bash);
-}
-
-#[cfg(feature = "bash")]
-#[test]
-fn golden_bash_calls() {
-    run_golden("bash", "calls", "sh", Language::Bash);
-}
-
 // -- Cangjie (Symbolic, opt-in, reduced fixtures) --
 
 #[cfg(feature = "cangjie")]

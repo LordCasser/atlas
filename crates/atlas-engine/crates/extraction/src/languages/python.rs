@@ -504,10 +504,9 @@ impl LexicalBindingSpec for PythonAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.45,
+            0.55,
             vec![
-                "name-based binding (no proper shadowing)",
-                "assignment LHS treated as definition",
+                "scope-chain-aware binding with shadowing support; assignment LHS treated as definition",
             ],
         )
     }

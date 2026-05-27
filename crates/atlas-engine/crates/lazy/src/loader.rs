@@ -252,7 +252,6 @@ fn get_cached_frontend(lang: Language) -> Option<&'static LanguageFrontend> {
             Language::Php,
             Language::Ruby,
             Language::Kotlin,
-            Language::Bash,
         ];
         let mut cache = HashMap::new();
         for lang in languages {

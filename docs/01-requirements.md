@@ -35,7 +35,7 @@ MVP 固定支持：
 
 Cangjie（Symbolic）已接入 `all-languages` 编译集合（自 tree-sitter 0.26 起 ABI 兼容），但仍为 experimental opt-in，基础定义/引用/导入抽取可用，dataflow/CFG/trace 尚未实现。不进入默认 features。
 
-当前代码已经接入 Go、Rust、C#、PHP、Ruby、Kotlin 的 experimental DataflowBasic frontends，并纳入 `all-languages` 编译集合；Bash 是显式 opt-in experimental frontend，不在 `all-languages`。这些语言已具备基础 dataflow 抽取能力（参数、赋值、调用、字段访问、返回）和 e2e smoke 测试，但完整 path‑level 验收、CFG 和跨函数 summary 仍待补齐，详见各语言的 capability profile limitations。
+当前代码已经接入 Go、Rust、C#、PHP、Ruby、Kotlin 的 experimental DataflowBasic frontends，并纳入 `all-languages` 编译集合。这些语言已具备基础 dataflow 抽取能力（参数、赋值、调用、字段访问、返回）和 e2e smoke 测试，但完整 path‑level 验收、CFG 和跨函数 summary 仍待补齐，详见各语言的 capability profile limitations。
 
 ## 3. 非目标
 
@@ -60,7 +60,6 @@ MVP 可以 best-effort：
 - ArkTS via TypeScript grammar。
 - Cangjie grammar-based minimal extraction（Symbolic 级别，启用 `all-languages` 或显式启用 `cangjie` feature 时可用）。
 - Go/Rust/C#/PHP/Ruby/Kotlin 的基础 DataflowBasic 抽取和调用图（启用 `all-languages` 时）；完整 path-level 变量来源追踪、CFG 和跨函数 summary 仍以 capability limitations 和测试覆盖为准。
-- Bash 的低置信度命令调用抽取（仅显式启用 `bash` feature 时）。
 - 低置信度 name-based resolution。
 
 ## 4. 功能需求
@@ -203,7 +202,6 @@ Level 5: lightweight interprocedural summaries
 | C++ | include-aware DataflowBasic best-effort；模板、重载、ADL、复杂类型不保证 | 调用路径和局部来源必须标注 best-effort；不能把重载解析结果伪装成精确 |
 | ArkTS | 复用 TypeScript grammar 的 DataflowBasic best-effort；ArkTS 特有语义不保证 | 必须显示 `arkts via TypeScript grammar` 或等价 provenance |
 | Go/Rust/C#/PHP/Ruby/Kotlin | Post-MVP DataflowBasic best-effort；CFG 和跨函数变量来源追踪未完成 | `all-languages` binary 可以发现并索引；trace 结果必须携带 limitation/confidence，超出能力时返回 partial diagnostics |
-| Bash | Experimental opt-in Symbolic；命令调用低置信度，source/import 映射不可靠 | 默认/all-languages binary 不发现 `.sh/.bash`；启用后必须标注 low confidence |
 | Cangjie | 不属于 MVP；仅显式启用 `cangjie` feature 时提供 experimental minimal facts | 默认/all-languages binary 不发现 `.cj/.cangjie`；启用后 trace 默认不宣称可用 |
 
 CLI、MCP 和 context 输出都必须包含语言能力信息。最小字段：
@@ -262,7 +260,7 @@ MCP 使用 JSON-RPC over stdio。当前公开工具名使用无 `atlas_` 前缀�
 
 MVP 完成标准：
 
-1. 7 种 MVP 语言能进入解析路径；Go/Rust/C#/PHP/Ruby/Kotlin 作为 experimental DataflowBasic frontends 随 `all-languages` 编译，具备基础 dataflow smoke 测试；Bash/Cangjie 不进入 MVP 验收，仅作为显式 opt-in experimental 语言。
+1. 7 种 MVP 语言能进入解析路径；Go/Rust/C#/PHP/Ruby/Kotlin 作为 experimental DataflowBasic frontends 随 `all-languages` 编译，具备基础 dataflow smoke 测试；Cangjie 不进入 MVP 验收，仅作为显式 opt-in experimental 语言。
 2. `atlas index` 能生成 `.atlas/atlas.db`。
 3. `atlas search` 能检索符号。
 4. CLI 或 MCP 能查询基本 callers/callees。
@@ -281,7 +279,7 @@ MVP 完成标准：
 
 1. MVP 语言按能力等级补齐 trace 所需 facts：symbols、references、callsites、bindings、data_nodes、dataflow_edges，CFG where applicable。
 2. TypeScript/JavaScript/Python 至少有真实源码 fixture 覆盖“指定位置 -> 变量来源 -> caller path”。
-3. Java/C/C++/ArkTS/Go/Rust/C#/PHP/Ruby/Kotlin 维持 DataflowBasic best-effort 边界；Level 2/3 局部来源追踪只有在对应 facts 和 fixture 存在时才能宣称为稳定。不能支持的能力必须显式标记；Bash/Cangjie 启用时只要求明确 experimental capability 和 unsupported diagnostics。
+3. Java/C/C++/ArkTS/Go/Rust/C#/PHP/Ruby/Kotlin 维持 DataflowBasic best-effort 边界；Level 2/3 局部来源追踪只有在对应 facts 和 fixture 存在时才能宣称为稳定。不能支持的能力必须显式标记；Cangjie 启用时只要求明确 experimental capability 和 unsupported diagnostics。
 4. CLI、MCP 或等价 public API 当前能按 file/line/column 查询 trace point / backward trace，并能按 symbol id/name 查询 caller path；function+variable 和 callsite+argument 级入口属于后续交互增强。
 5. 输出包含 path steps、源码 range、相关代码片段或 evidence、confidence/provenance、截断说明。
 6. 测试覆盖真实 extraction -> store -> resolution -> dataflow/call graph -> trace 查询链路，而不只覆盖类型和单个 builder；后续重点是把断言从“有结果”升级为具体 path step 语义。

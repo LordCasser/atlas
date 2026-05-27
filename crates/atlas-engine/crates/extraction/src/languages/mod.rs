@@ -83,9 +83,6 @@ pub mod php;
 #[cfg(feature = "ruby")]
 pub mod ruby;
 
-#[cfg(feature = "bash")]
-pub mod bash;
-
 #[cfg(feature = "kotlin")]
 pub mod kotlin;
 
@@ -122,8 +119,6 @@ pub fn create_frontend(lang: Language) -> Option<crate::frontend::LanguageFronte
         Language::Php => Some(php::php_frontend()),
         #[cfg(feature = "ruby")]
         Language::Ruby => Some(ruby::ruby_frontend()),
-        #[cfg(feature = "bash")]
-        Language::Bash => Some(bash::bash_frontend()),
         #[cfg(feature = "kotlin")]
         Language::Kotlin => Some(kotlin::kotlin_frontend()),
         #[allow(unreachable_patterns)]

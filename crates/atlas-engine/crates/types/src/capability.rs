@@ -394,8 +394,6 @@ impl LanguageCapabilityProfile {
         profiles.push(Self::for_language(Php));
         #[cfg(feature = "ruby")]
         profiles.push(Self::for_language(Ruby));
-        #[cfg(feature = "bash")]
-        profiles.push(Self::for_language(Bash));
         #[cfg(feature = "kotlin")]
         profiles.push(Self::for_language(Kotlin));
 
@@ -425,7 +423,6 @@ mod profiles {
             Language::Rust => rust_profile(),
             Language::Php => php_profile(),
             Language::Ruby => ruby_profile(),
-            Language::Bash => bash_profile(),
             Language::Kotlin => kotlin_profile(),
         }
     }
@@ -553,9 +550,12 @@ mod profiles {
     }
 
     // ---- Python (DataflowFull) ---------------------------------------------
-    // NOTE: Golden fixtures fx21 (ArgToParam) and fx22 (ReturnToCall) exist.
-    //       Bridge behavior may vary — gaps documented via should_panic if
-    //       fixtures fail.
+    // NOTE: Golden fixtures fx21 (ArgToParam), fx22 (ReturnToCall),
+    //       fx_py_shadow (shadowing precision), and fx_py_destructure
+    //       (tuple unpacking) exist.
+    //       Confidence raised from 0.55 to 0.65: scope-chain-aware binding
+    //       resolution (resolve_bindings_to_nodes) correctly handles Python
+    //       shadowing as verified by fx_py_shadow.
 
     fn py_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
@@ -579,32 +579,32 @@ mod profiles {
                 "cfg".into(),
             ],
             limitations: vec![
-                "name-based binding (no proper shadowing)".into(),
-                "AST-driven local dataflow with language-specific gaps".into(),
-                "assignment LHS treated as binding definition".into(),
+                "scope-chain-aware use-def with binding_id grouping; edge cases in nested dynamic scopes".into(),
+                "AST-driven local dataflow; destructuring and control-flow not yet path-verified".into(),
+                "assignment LHS binding with scope-chain resolution".into(),
             ],
-            confidence_floor: 0.55,
+            confidence_floor: 0.65,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.55),
-                references: FeatureSupport::supported_with_confidence(0.55),
-                imports: FeatureSupport::supported_with_confidence(0.55),
-                scopes: FeatureSupport::supported_with_confidence(0.55),
-                call_graph: FeatureSupport::supported_with_confidence(0.55),
+                symbols: FeatureSupport::supported_with_confidence(0.65),
+                references: FeatureSupport::supported_with_confidence(0.65),
+                imports: FeatureSupport::supported_with_confidence(0.65),
+                scopes: FeatureSupport::supported_with_confidence(0.65),
+                call_graph: FeatureSupport::supported_with_confidence(0.65),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.45,
-                    vec!["assignment LHS treated as binding definition"],
+                    0.55,
+                    vec!["assignment LHS binding with scope-chain resolution"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.55,
-                    vec!["AST-driven local dataflow with language-specific gaps"],
+                    0.65,
+                    vec!["AST-driven local dataflow; destructuring and control-flow not yet path-verified"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.55,
-                    vec!["name-based use-def (may conflate same-named variables)"],
+                    0.65,
+                    vec!["scope-chain-aware use-def with binding_id grouping; edge cases in nested dynamic scopes"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.55),
-                call_arguments: FeatureSupport::supported_with_confidence(0.55),
-                returns_flow: FeatureSupport::supported_with_confidence(0.55),
+                field_access: FeatureSupport::supported_with_confidence(0.65),
+                call_arguments: FeatureSupport::supported_with_confidence(0.65),
+                returns_flow: FeatureSupport::supported_with_confidence(0.65),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for Python"),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.55,
@@ -1264,69 +1264,6 @@ mod profiles {
         }
     }
 
-    // ---- Bash (opt-in-only, scripting language) ----------------------------
-
-    fn bash_profile() -> LanguageCapabilityProfile {
-        LanguageCapabilityProfile {
-            language: "bash".into(),
-            capability_level: CapabilityLevel::Symbolic,
-            supported_features: vec![
-                "symbol_extraction".into(),
-                "reference_extraction".into(),
-                "call_graph".into(),
-            ],
-            unsupported_features: vec![
-                "import_resolution".into(),
-                "scope_extraction".into(),
-                "lexical_bindings".into(),
-                "dataflow".into(),
-                "cfg".into(),
-                "backward_trace".into(),
-            ],
-            limitations: vec![
-                "no DataFlowBuilder (dataflow queries not implemented)".into(),
-                "no LexicalBinder (lexical queries not implemented)".into(),
-                "scopes limited to file and function (no block scoping)".into(),
-                "command call targets may be variables/string-interpolated — unresolvable statically".into(),
-                "source / . builtins produce best-effort import facts".into(),
-                "alias and positional parameters ($1, $@) not captured".into(),
-            ],
-            confidence_floor: 0.40,
-            features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.50),
-                references: FeatureSupport::supported_with_confidence(0.50),
-                imports: FeatureSupport::unsupported(
-                    "import/include mapping unreliable for Bash source builtins",
-                ),
-                scopes: FeatureSupport::unsupported("scope query not implemented for Bash"),
-                call_graph: FeatureSupport::supported_with_limitations(
-                    0.40,
-                    vec!["command calls may be dynamically resolved — low confidence"],
-                ),
-                lexical_bindings: FeatureSupport::unsupported(
-                    "LexicalBinder not implemented for Bash",
-                ),
-                local_dataflow: FeatureSupport::unsupported(
-                    "DataFlowBuilder not implemented for Bash",
-                ),
-                use_def: FeatureSupport::unsupported(
-                    "requires lexical bindings and dataflow (both not implemented for Bash)",
-                ),
-                field_access: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for Bash)",
-                ),
-                call_arguments: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for Bash)",
-                ),
-                returns_flow: FeatureSupport::unsupported(
-                    "requires dataflow (not implemented for Bash)",
-                ),
-                cfg: FeatureSupport::unsupported("CFG builder not implemented for Bash"),
-                interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
-            }),
-        }
-    }
-
     // ---- Kotlin (DataflowFull) -----------------------------------------------
     // NOTE: Golden fixtures fx19 (ArgToParam) and fx20 (ReturnToCall) exist.
     //       Bridge behavior may vary — gaps documented via should_panic if
@@ -1670,88 +1607,6 @@ mod tests {
             matrix.interprocedural_summaries.is_supported(),
             "Cangjie interprocedural_summaries should be supported"
         );
-    }
-
-    #[test]
-    fn test_bash_capability_is_symbolic() {
-        let bash = LanguageCapabilityProfile::for_language(Language::Bash);
-        assert_eq!(
-            bash.capability_level,
-            CapabilityLevel::Symbolic,
-            "Bash should be Symbolic, not DataflowBasic"
-        );
-        let matrix = bash.features.as_ref().unwrap();
-        assert!(
-            matrix.symbols.is_supported(),
-            "Bash symbols should be supported"
-        );
-        assert!(
-            matrix.references.is_supported(),
-            "Bash references should be supported"
-        );
-        assert!(
-            !matrix.local_dataflow.is_supported(),
-            "Bash dataflow should be unsupported"
-        );
-        assert!(!matrix.cfg.is_supported(), "Bash CFG should be unsupported");
-        assert!(
-            !matrix.lexical_bindings.is_supported(),
-            "Bash lexical_bindings should be unsupported"
-        );
-    }
-
-    /// Verify that `all_compiled()` correctly gates experimental languages by feature flag.
-    #[test]
-    fn test_experimental_languages_in_all_compiled() {
-        let profiles = LanguageCapabilityProfile::all_compiled();
-
-        // Cangjie: should appear in all_compiled (now in all-languages)
-        #[cfg(feature = "cangjie")]
-        {
-            let cangjie = profiles.iter().find(|p| p.language == "cangjie");
-            assert!(
-                cangjie.is_some(),
-                "Cangjie should be in all_compiled when cangjie feature is enabled"
-            );
-            if let Some(cj) = cangjie {
-                assert_eq!(
-                    cj.capability_level,
-                    CapabilityLevel::DataflowFull,
-                    "Cangjie capability level should be DataflowFull"
-                );
-            }
-        }
-        #[cfg(not(feature = "cangjie"))]
-        {
-            assert!(
-                !profiles.iter().any(|p| p.language == "cangjie"),
-                "Cangjie should NOT be in all_compiled when cangjie feature is disabled"
-            );
-        }
-
-        // Bash: opt-in only, should appear only when feature is enabled
-        #[cfg(feature = "bash")]
-        {
-            let bash = profiles.iter().find(|p| p.language == "bash");
-            assert!(
-                bash.is_some(),
-                "Bash should be in all_compiled when bash feature is enabled"
-            );
-            if let Some(b) = bash {
-                assert_eq!(
-                    b.capability_level,
-                    CapabilityLevel::Symbolic,
-                    "Bash capability level should be Symbolic"
-                );
-            }
-        }
-        #[cfg(not(feature = "bash"))]
-        {
-            assert!(
-                !profiles.iter().any(|p| p.language == "bash"),
-                "Bash should NOT be in all_compiled when bash feature is disabled"
-            );
-        }
     }
 
     #[test]

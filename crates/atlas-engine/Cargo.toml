@@ -44,7 +44,6 @@ csharp = ["types/csharp", "extraction/csharp"]
 rust = ["types/rust", "extraction/rust"]
 php = ["types/php", "extraction/php"]
 ruby = ["types/ruby", "extraction/ruby"]
-bash = ["types/bash", "extraction/bash"]
 kotlin = ["types/kotlin", "extraction/kotlin"]
 
 all-languages = [

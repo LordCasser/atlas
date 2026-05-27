@@ -331,19 +331,12 @@ Default build:
 | Kotlin | `.kt`, `.kts` | DataflowBasic best-effort |
 | Cangjie | `.cj`, `.cangjie` | Symbolic best-effort |
 
-Experimental (opt-in only):
-
-| Language | Extensions | Feature |
-| --- | --- | --- |
-| Bash | `.sh`, `.bash` | `bash` |
-
 Build variants:
 
 ```bash
 cargo build --release -p atlas-cli
 cargo build --release -p atlas-cli --features all-languages
 cargo build --release -p atlas-cli --features "all-languages,mcp"
-cargo build --release -p atlas-cli --features "all-languages,mcp,bash"
 ```
 
 ## Documentation
@@ -402,7 +395,7 @@ source code
   → tree_sitter::Tree (CST)
 ```
 
-Tree-sitter is an incremental, error-tolerant parser. Atlas uses **14 language grammars** (TypeScript, Python, Java, C, C++, Go, C#, Rust, PHP, Ruby, Kotlin, ArkTS, Bash, Cangjie), each compiled from a `grammar.js` into a parser. Parsing is done per-file via a thread-local `Parser` to avoid allocation overhead.
+Tree-sitter is an incremental, error-tolerant parser. Atlas uses **13 language grammars** (TypeScript, Python, Java, C, C++, Go, C#, Rust, PHP, Ruby, Kotlin, ArkTS, Cangjie), each compiled from a `grammar.js` into a parser. Parsing is done per-file via a thread-local `Parser` to avoid allocation overhead.
 
 ### 2. Query → captures
 

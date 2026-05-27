@@ -1,7 +1,7 @@
 //! Language registry: loads tree-sitter grammars for enabled Atlas languages.
 //!
 //! All languages (including Cangjie) are ABI-compatible with tree-sitter 0.26
-//! (MAX_ABI ≥ 15).  Experimental languages like Cangjie and Bash remain opt-in
+//! (MAX_ABI ≥ 15).  Experimental languages like Cangjie remain opt-in
 //! at the capability level, but no longer require ABI-version workarounds.
 
 use anyhow::{Result, bail};
@@ -118,11 +118,6 @@ impl LanguageRegistry {
                 let lang: tree_sitter::Language = tree_sitter_ruby::LANGUAGE.into();
                 self.register(lang, Language::Ruby);
             }
-            #[cfg(feature = "bash")]
-            Language::Bash => {
-                let lang: tree_sitter::Language = tree_sitter_bash::LANGUAGE.into();
-                self.register(lang, Language::Bash);
-            }
             #[cfg(feature = "kotlin")]
             Language::Kotlin => {
                 let lang: tree_sitter::Language = tree_sitter_kotlin::LANGUAGE.into();
@@ -215,11 +210,6 @@ mod tests {
             LanguageRegistry::detect_language(Path::new("main.rb")),
             None
         );
-        #[cfg(not(feature = "bash"))]
-        assert_eq!(
-            LanguageRegistry::detect_language(Path::new("script.sh")),
-            None
-        );
         #[cfg(not(feature = "kotlin"))]
         assert_eq!(
             LanguageRegistry::detect_language(Path::new("Main.kt")),
@@ -299,13 +289,6 @@ mod tests {
     fn test_load_ruby() {
         let registry = LanguageRegistry::new(&[Language::Ruby]).unwrap();
         assert!(registry.has(Language::Ruby));
-    }
-
-    #[cfg(feature = "bash")]
-    #[test]
-    fn test_load_bash() {
-        let registry = LanguageRegistry::new(&[Language::Bash]).unwrap();
-        assert!(registry.has(Language::Bash));
     }
 
     #[cfg(feature = "kotlin")]

@@ -150,7 +150,6 @@ fn compiled_features() -> Vec<&'static str> {
             "php" => "php",
             "ruby" => "ruby",
             "kotlin" => "kotlin",
-            "bash" => "bash",
             "cangjie" => "cangjie",
             _ => "unknown",
         })

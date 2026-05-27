@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 
 /// Languages known to Atlas.
 ///
-/// Cangjie and Bash are intentionally retained as opt-in experimental
-/// languages and are not part of the MVP/default/all-languages compile set.
+/// Cangjie is intentionally retained as an opt-in experimental
+/// language and is not part of the MVP/default/all-languages compile set.
 ///
 /// Go, C#, Rust, PHP, Ruby, and Kotlin are post-MVP languages at Symbolic
 /// capability level and are included by the `all-languages` feature.
@@ -36,7 +36,6 @@ pub enum Language {
     Rust,
     Php,
     Ruby,
-    Bash,
     Kotlin,
 }
 
@@ -57,7 +56,6 @@ impl Language {
             Self::Rust => "rust",
             Self::Php => "php",
             Self::Ruby => "ruby",
-            Self::Bash => "bash",
             Self::Kotlin => "kotlin",
         }
     }
@@ -78,7 +76,6 @@ impl Language {
             "rust" => Some(Self::Rust),
             "php" => Some(Self::Php),
             "ruby" => Some(Self::Ruby),
-            "bash" => Some(Self::Bash),
             "kotlin" => Some(Self::Kotlin),
             _ => None,
         }
@@ -106,8 +103,6 @@ impl Language {
             "php" => Some(Self::Php),
             #[cfg(feature = "ruby")]
             "rb" => Some(Self::Ruby),
-            #[cfg(feature = "bash")]
-            "sh" | "bash" => Some(Self::Bash),
             #[cfg(feature = "kotlin")]
             "kt" | "kts" => Some(Self::Kotlin),
             _ => None,
@@ -139,8 +134,6 @@ impl Language {
         extensions.extend(["php"]);
         #[cfg(feature = "ruby")]
         extensions.extend(["rb"]);
-        #[cfg(feature = "bash")]
-        extensions.extend(["sh", "bash"]);
         #[cfg(feature = "kotlin")]
         extensions.extend(["kt", "kts"]);
         extensions
@@ -164,7 +157,6 @@ impl Language {
             Self::Rust => &["**/*.rs"],
             Self::Php => &["**/*.php"],
             Self::Ruby => &["**/*.rb"],
-            Self::Bash => &["**/*.sh", "**/*.bash"],
             Self::Kotlin => &["**/*.kt", "**/*.kts"],
         }
     }
@@ -1071,7 +1063,6 @@ mod tests {
             Language::Rust,
             Language::Php,
             Language::Ruby,
-            Language::Bash,
             Language::Kotlin,
         ] {
             assert_eq!(Language::from_str(lang.as_str()), Some(lang));
@@ -1106,10 +1097,6 @@ mod tests {
         assert_eq!(Language::from_extension("rb"), Some(Language::Ruby));
         #[cfg(not(feature = "ruby"))]
         assert_eq!(Language::from_extension("rb"), None);
-        #[cfg(feature = "bash")]
-        assert_eq!(Language::from_extension("sh"), Some(Language::Bash));
-        #[cfg(not(feature = "bash"))]
-        assert_eq!(Language::from_extension("sh"), None);
         #[cfg(feature = "kotlin")]
         assert_eq!(Language::from_extension("kt"), Some(Language::Kotlin));
         #[cfg(not(feature = "kotlin"))]
@@ -1131,8 +1118,6 @@ mod tests {
         assert_eq!(Language::from_extension("php"), None);
         #[cfg(not(feature = "ruby"))]
         assert_eq!(Language::from_extension("rb"), None);
-        #[cfg(not(feature = "bash"))]
-        assert_eq!(Language::from_extension("sh"), None);
         #[cfg(not(feature = "kotlin"))]
         assert_eq!(Language::from_extension("kt"), None);
     }

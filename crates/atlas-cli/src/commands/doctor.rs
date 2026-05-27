@@ -118,7 +118,6 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     check_lang("PHP", cfg!(feature = "php"));
     check_lang("Ruby", cfg!(feature = "ruby"));
     check_lang("Kotlin", cfg!(feature = "kotlin"));
-    check_experimental_lang("Bash", cfg!(feature = "bash"));
 
     println!();
     println!("  Compiled features: {}", compiled_features().join(", "));
@@ -319,9 +318,6 @@ fn compiled_features() -> Vec<&'static str> {
     }
     if cfg!(feature = "kotlin") {
         features.push("kotlin");
-    }
-    if cfg!(feature = "bash") {
-        features.push("bash");
     }
     if cfg!(feature = "cangjie") {
         features.push("cangjie");
