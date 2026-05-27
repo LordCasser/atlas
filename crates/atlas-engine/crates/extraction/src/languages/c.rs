@@ -286,7 +286,7 @@ fn qualified_name_from_node_c(name: &str, node: tree_sitter::Node, source: &str)
 fn c_definition_kind(capture: &str) -> Option<SymbolKind> {
     match capture {
         "definition.function" => Some(SymbolKind::Function),
-        "definition.class" => Some(SymbolKind::Class), // struct
+        "definition.class" => Some(SymbolKind::Struct), // C struct mapped to Struct kind
         "definition.enum" => Some(SymbolKind::Enum),
         "definition.type_alias" => Some(SymbolKind::TypeAlias), // typedef
         "definition.macro" => Some(SymbolKind::Macro),

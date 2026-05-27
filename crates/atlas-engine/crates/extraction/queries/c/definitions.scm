@@ -44,5 +44,24 @@
   (type_identifier)
   (field_identifier) @definition.field)
 
+;; Pointer-typed data field (single pointer): void *buffer; struct dso *ptr;
+;; field_identifier is direct child of pointer_declarator (NOT inside function_declarator)
+(field_declaration
+  (pointer_declarator
+    (field_identifier) @definition.field))
+
+;; Pointer-typed data field (double pointer): char **argv; struct node **head;
+(field_declaration
+  (pointer_declarator
+    (pointer_declarator
+      (field_identifier) @definition.field)))
+
+;; Pointer-typed data field (triple pointer): void ***data;
+(field_declaration
+  (pointer_declarator
+    (pointer_declarator
+      (pointer_declarator
+        (field_identifier) @definition.field))))
+
 ;; Variable declarations at file scope
 (declaration (identifier) @definition.variable)
