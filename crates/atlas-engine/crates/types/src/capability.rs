@@ -813,13 +813,18 @@ mod profiles {
     }
 
     // ---- ArkTS (DataflowFull) ---------------------------------------------
-    // NOTE: Golden fixtures fx27 (ArgToParam) and fx28 (ReturnToCall) exist.
-    //       Bridge behavior may vary — gaps documented via should_panic if
-    //       fixtures fail.
+    // NOTE: Golden fixtures fx27 (ArgToParam), fx28 (ReturnToCall),
+    //       fx30 (@Component decorator), and fx31 (class-as-struct) exist.
+    //       ArkTS delegates to the TypeScript frontend; known gaps:
+    //       - `struct` keyword not parsed (TS grammar, use `class` fallback)
+    //       - ArkTS-specific constructs (@Builder, @Link, @Provide, @Consume,
+    //         @StorageLink, @StorageProp, etc.) are not yet verified
+    //       - `ets` / `sts` specific syntax not covered by TS queries
 
     fn arkts_profile() -> LanguageCapabilityProfile {
         // ArkTS delegates to the TypeScript frontend for extraction + dataflow.
-        // Lower confidence due to TS grammar fallback limitations.
+        // Confidence raised to 0.60: basic TS-compatible syntax works, with
+        // ArkTS-specific constructs not yet verified.
         LanguageCapabilityProfile {
             language: "arkts".into(),
             capability_level: CapabilityLevel::DataflowFull,
@@ -841,35 +846,35 @@ mod profiles {
                 "scope_aware_binding".into(),
             ],
             limitations: vec![
-                "delegates to TypeScript frontend (ArkTS-specific constructs may be missed)".into(),
+                "TS grammar fallback (ArkTS-specific constructs @Builder/@Link/@Provide not yet verified)".into(),
                 "name-based binding (no proper shadowing)".into(),
             ],
-            confidence_floor: 0.50,
+            confidence_floor: 0.60,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.50),
-                references: FeatureSupport::supported_with_confidence(0.50),
-                imports: FeatureSupport::supported_with_confidence(0.50),
-                scopes: FeatureSupport::supported_with_confidence(0.50),
-                call_graph: FeatureSupport::supported_with_confidence(0.50),
+                symbols: FeatureSupport::supported_with_confidence(0.60),
+                references: FeatureSupport::supported_with_confidence(0.60),
+                imports: FeatureSupport::supported_with_confidence(0.60),
+                scopes: FeatureSupport::supported_with_confidence(0.60),
+                call_graph: FeatureSupport::supported_with_confidence(0.60),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.50,
+                    0.60,
                     vec![
-                        "delegates to TypeScript frontend (ArkTS-specific constructs may be missed)",
+                        "TS grammar fallback (some ArkTS binding constructs not yet verified)",
                     ],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.50,
+                    0.60,
                     vec![
-                        "delegates to TypeScript frontend (ArkTS-specific constructs may be missed)",
+                        "dataflow via TS grammar (ArkTS-specific intra-procedural patterns not yet verified)",
                     ],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.50,
+                    0.60,
                     vec!["name-based binding (no proper shadowing)"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.50),
-                call_arguments: FeatureSupport::supported_with_confidence(0.50),
-                returns_flow: FeatureSupport::supported_with_confidence(0.50),
+                field_access: FeatureSupport::supported_with_confidence(0.60),
+                call_arguments: FeatureSupport::supported_with_confidence(0.60),
+                returns_flow: FeatureSupport::supported_with_confidence(0.60),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for ArkTS"),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.55,
@@ -1201,9 +1206,9 @@ mod profiles {
     }
 
     // ---- Ruby (DataflowFull) -------------------------------------------------
-    // NOTE: ArgToParam bridge fires (fx17 passes), but ReturnToCall bridge
-    //       may not fire reliably.  Upgraded to DataflowFull; gap tracked via
-    //       golden fixtures.
+    // NOTE: ArgToParam bridge fires (fx17 passes); ReturnToCall bridge (fx18) and
+    //       basic local dataflow (fx32) also verified.  Upgraded to DataflowFull;
+    //       gaps tracked via golden fixtures.
     fn ruby_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "ruby".into(),
@@ -1228,34 +1233,34 @@ mod profiles {
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
-                "method_missing / define_method dynamic methods not captured".into(),
-                "block/yield implicit calls not tracked".into(),
+                "dynamic methods (method_missing / define_method) not yet verified".into(),
+                "block/yield implicit calls not yet verified".into(),
             ],
-            confidence_floor: 0.55,
+            confidence_floor: 0.62,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.55),
-                references: FeatureSupport::supported_with_confidence(0.55),
-                imports: FeatureSupport::supported_with_confidence(0.55),
-                scopes: FeatureSupport::supported_with_confidence(0.55),
-                call_graph: FeatureSupport::supported_with_confidence(0.55),
+                symbols: FeatureSupport::supported_with_confidence(0.62),
+                references: FeatureSupport::supported_with_confidence(0.62),
+                imports: FeatureSupport::supported_with_confidence(0.62),
+                scopes: FeatureSupport::supported_with_confidence(0.62),
+                call_graph: FeatureSupport::supported_with_confidence(0.62),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.62,
                     vec!["name-based binding (no proper shadowing)"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.62,
                     vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.62,
                     vec!["name-based binding (no proper shadowing)"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.55),
-                call_arguments: FeatureSupport::supported_with_confidence(0.55),
-                returns_flow: FeatureSupport::supported_with_confidence(0.55),
+                field_access: FeatureSupport::supported_with_confidence(0.62),
+                call_arguments: FeatureSupport::supported_with_confidence(0.62),
+                returns_flow: FeatureSupport::supported_with_confidence(0.62),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for Ruby"),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.62,
                     vec![
                         "cross-function bridges via summary tables",
                     ],

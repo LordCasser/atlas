@@ -1241,6 +1241,75 @@ end
 }
 
 // ────────────────────────────────────────────────────────────────
+// Ruby: Basic local dataflow — assignment → use → return within a function
+// ────────────────────────────────────────────────────────────────
+
+/// FX32: Within a single Ruby function, verify that local assignments, reads,
+/// and return value edges are produced. Proves basic dataflow reliability.
+#[test]
+#[cfg(feature = "ruby")]
+fn fx32_ruby_basic_local_dataflow() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "compute.rb",
+        r#"def compute
+  a = 10
+  b = a + 5
+  b * 2
+end
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("compute.rb");
+
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let engine = TraceEngine::new(store.clone());
+
+    // ── Trace backward from the expression `b` in `b * 2` ───────
+    let b_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.name.as_deref() == Some("b"))
+        .collect();
+    assert!(!b_nodes.is_empty(), "expected data nodes named 'b'");
+
+    // Use the last occurrence of 'b' (the use in `b * 2`)
+    let b_use = b_nodes.last().unwrap();
+    let resp = engine.trace_variable(
+        &file_id,
+        b_use.range.start_line + 1,
+        b_use.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "ruby");
+
+    let path = resp.result.expect("basic dataflow trace must produce path");
+    assert!(!path.steps.is_empty(), "trace must have steps");
+    assert!(
+        path.steps.iter().any(|s| {
+            matches!(
+                s.edge_kind,
+                DataFlowKind::Assign
+                    | DataFlowKind::Read
+                    | DataFlowKind::Write
+                    | DataFlowKind::ReturnValue
+            )
+        }),
+        "expected Assign/Read/Write/ReturnValue edge in local dataflow trace, got steps: {:?}",
+        path.steps.iter().map(|s| s.edge_kind).collect::<Vec<_>>()
+    );
+
+    // ── Verify function return node exists ──────────────────────
+    let return_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Return)
+        .collect();
+    assert!(
+        !return_nodes.is_empty(),
+        "expected at least one Return data node in Ruby function"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────
 // Kotlin: Cross‑function ArgToParam
 // ────────────────────────────────────────────────────────────────
 
@@ -1857,6 +1926,209 @@ function outer(): number {
     let path = resp.result.expect("cross-function return trace must produce path");
     assert!(!path.steps.is_empty(), "cross-function return trace must have steps");
     assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+}
+
+// ────────────────────────────────────────────────────────────────
+// ArkTS: @Component + @State decorator — symbol/scope/reference extraction
+// ────────────────────────────────────────────────────────────────
+
+/// FX30: ArkTS @Component and @State decorators using `class` (TS grammar
+/// fallback). Verifies symbols, references, and scopes are extracted for
+/// ArkTS-specific constructs.
+#[test]
+#[cfg(feature = "arkts")]
+fn fx30_arkts_component_decorator_extraction() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "component.ets",
+        r#"
+@Component
+class MyComponent {
+  @State count: number = 0;
+
+  build() {
+    console.log(this.count.toString())
+  }
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("component.ets");
+
+    // ── Symbols ──────────────────────────────────────────────────
+    let symbols = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols");
+    assert!(!symbols.is_empty(), "expected symbols for ArkTS @Component class");
+
+    let component_sym = symbols
+        .iter()
+        .find(|s| s.name == "MyComponent")
+        .expect("expected 'MyComponent' class symbol");
+    assert!(
+        matches!(
+            component_sym.kind,
+            atlas_engine::enums::SymbolKind::Class | atlas_engine::enums::SymbolKind::Struct
+        ),
+        "MyComponent should be a class/struct symbol, got {:?}",
+        component_sym.kind
+    );
+
+    let build_sym = symbols
+        .iter()
+        .find(|s| s.name == "build")
+        .expect("expected 'build' method symbol");
+    assert!(
+        matches!(
+            build_sym.kind,
+            atlas_engine::enums::SymbolKind::Method | atlas_engine::enums::SymbolKind::Function
+        ),
+        "build should be a method/function symbol, got {:?}",
+        build_sym.kind
+    );
+
+    // NOTE: class properties (e.g. @State count) are not captured as
+    //       symbols by the TS definitions.scm query — no @definition.property
+    //       capture exists. This is a known TS grammar fallback gap.
+
+    // ── References ───────────────────────────────────────────────
+    let refs = store
+        .find_references_by_file(&file_id)
+        .expect("references");
+    assert!(!refs.is_empty(), "expected references for ArkTS @Component class");
+
+    // this.count → should be captured as a @reference.field
+    let field_ref = refs
+        .iter()
+        .find(|r| r.name == "count")
+        .expect("expected reference to 'count' (via this.count member_expression)");
+    assert!(
+        field_ref.name == "count",
+        "reference name should be 'count', got {:?}",
+        field_ref.name
+    );
+
+    // console.log → should be captured as a @reference.call (method call)
+    let has_log_call = refs
+        .iter()
+        .any(|r| r.name == "log");
+    assert!(has_log_call, "expected reference to 'log' (console.log call)");
+
+    // ── Scopes ───────────────────────────────────────────────────
+    let scopes = store
+        .find_scopes_by_file(&file_id)
+        .expect("scopes");
+    assert!(!scopes.is_empty(), "expected scopes for ArkTS @Component class");
+
+    // NOTE: TS scope names are generated as Kind#byte_offset (e.g. Class#123),
+    //       not human-readable.  Verify by kind, not name.
+    let has_class_scope = scopes
+        .iter()
+        .any(|s| matches!(s.kind, atlas_engine::enums::ScopeKind::Class | atlas_engine::enums::ScopeKind::Struct));
+    assert!(
+        has_class_scope,
+        "expected a class/struct scope for MyComponent, got: {:?}",
+        scopes.iter().map(|s| s.kind).collect::<Vec<_>>()
+    );
+
+    let has_method_scope = scopes
+        .iter()
+        .any(|s| {
+            matches!(
+                s.kind,
+                atlas_engine::enums::ScopeKind::Method | atlas_engine::enums::ScopeKind::Function
+            )
+        });
+    assert!(
+        has_method_scope,
+        "expected a method/function scope for build(), got: {:?}",
+        scopes.iter().map(|s| s.kind).collect::<Vec<_>>()
+    );
+}
+
+// ────────────────────────────────────────────────────────────────
+// ArkTS: struct-as-class — symbol extraction + return type reference
+// ────────────────────────────────────────────────────────────────
+
+/// FX31: Since tree-sitter-typescript does not recognise the ArkTS `struct`
+/// keyword, `class` is used as the fallback syntax. Verifies that class symbols
+/// are extracted and that function return type annotations reference the class
+/// (symbol + reference coverage).
+#[test]
+#[cfg(feature = "arkts")]
+fn fx31_arkts_class_as_struct_extraction() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "point.ets",
+        r#"
+class Point {
+  x: number;
+  y: number;
+}
+function createPoint(): Point {
+  return { x: 1, y: 2 };
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("point.ets");
+
+    // ── Symbols ──────────────────────────────────────────────────
+    let symbols = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols");
+    assert!(!symbols.is_empty(), "expected symbols for ArkTS class-as-struct");
+
+    let point_sym = symbols
+        .iter()
+        .find(|s| s.name == "Point")
+        .expect("expected 'Point' class symbol");
+    assert!(
+        matches!(
+            point_sym.kind,
+            atlas_engine::enums::SymbolKind::Class | atlas_engine::enums::SymbolKind::Struct
+        ),
+        "Point should be a class/struct symbol, got {:?}",
+        point_sym.kind
+    );
+
+    let create_fn = symbols
+        .iter()
+        .find(|s| s.name == "createPoint")
+        .expect("expected 'createPoint' function symbol");
+    assert!(
+        matches!(create_fn.kind, atlas_engine::enums::SymbolKind::Function),
+        "createPoint should be a function symbol, got {:?}",
+        create_fn.kind
+    );
+
+    // ── Dataflow: trace return in createPoint ────────────────────
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let return_nodes: Vec<_> = data_nodes
+        .iter()
+        .filter(|n| n.kind == DataNodeKind::Return)
+        .collect();
+    assert!(!return_nodes.is_empty(), "expected a Return data node");
+    let ret_node = return_nodes[0];
+
+    let engine = TraceEngine::new(store.clone());
+    let resp = engine.trace_variable(
+        &file_id,
+        ret_node.range.start_line + 1,
+        ret_node.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "arkts");
+
+    let path = resp.result.expect("trace from return must produce path");
+    assert!(!path.steps.is_empty(), "trace must have steps");
+    assert!(
+        path.steps.iter().any(|s| {
+            matches!(s.edge_kind, DataFlowKind::ReturnValue | DataFlowKind::Assign)
+        }),
+        "expected ReturnValue or Assign edge in function return trace, got steps: {:?}",
+        path.steps.iter().map(|s| s.edge_kind).collect::<Vec<_>>()
+    );
 }
 
 // ────────────────────────────────────────────────────────────────
