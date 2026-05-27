@@ -15,6 +15,10 @@ use serde_json::json;
 impl ToolRouter {
     pub(crate) fn handle_context(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "symbol");
+        let include_code = args
+            .get("includeCode")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         self.send_progress(0.2, &format!("Building context for '{}'...", qname));
 
         let sid = match self.resolve_context_symbol(qname) {
@@ -35,11 +39,17 @@ impl ToolRouter {
             Ok(view) => {
                 let md = view.to_markdown();
                 self.send_progress(1.0, "Context complete");
+                let mut result = json!({
+                    "markdown": md,
+                });
+                if include_code {
+                    if let Some(src) = self.read_symbol_source(&sid) {
+                        result["source"] = json!(src);
+                    }
+                }
                 (
-                    serde_json::to_string_pretty(&json!({
-                        "markdown": md,
-                    }))
-                    .unwrap_or_else(|e| e.to_string()),
+                    serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|e| e.to_string()),
                     false,
                 )
             }

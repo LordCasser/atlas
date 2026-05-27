@@ -94,7 +94,7 @@ impl ToolRouter {
             .node_indices
             .iter()
             .take(limit)
-            .map(|ix| Self::node_json(snap, *ix))
+            .map(|ix| self.node_json(snap, *ix))
             .collect();
 
         (
@@ -124,7 +124,7 @@ impl ToolRouter {
         let snap = graph.snapshot();
         let shown = cg.callers.iter().take(limit);
 
-        let nodes: Vec<_> = shown.map(|ix| Self::node_json(snap, *ix)).collect();
+        let nodes: Vec<_> = shown.map(|ix| self.node_json(snap, *ix)).collect();
 
         (
             serde_json::to_string_pretty(&json!({
@@ -151,7 +151,7 @@ impl ToolRouter {
         let snap = graph.snapshot();
         let shown = cg.callees.iter().take(limit);
 
-        let nodes: Vec<_> = shown.map(|ix| Self::node_json(snap, *ix)).collect();
+        let nodes: Vec<_> = shown.map(|ix| self.node_json(snap, *ix)).collect();
 
         (
             serde_json::to_string_pretty(&json!({
@@ -186,7 +186,7 @@ impl ToolRouter {
         // Hop 0: the root symbol itself
         hops.push(json!({
             "depth": 0,
-            "symbol": Self::node_json(snap, snap.id_to_idx.get(&sid).copied().unwrap_or(0)),
+            "symbol": self.node_json(snap, snap.id_to_idx.get(&sid).copied().unwrap_or(0)),
             "callers": [],
             "callees": [],
         }));
@@ -223,7 +223,8 @@ impl ToolRouter {
                         "qualified_name": snap.node(neighbor_ix).qualified_name,
                         "kind": snap.node(neighbor_ix).kind.as_str(),
                         "edge": edge_kind.as_str(),
-                        "file_id": snap.node(neighbor_ix).file_id.short_hex(),
+                        "file": self.resolve_file_path(&snap.node(neighbor_ix).file_id),
+                        "line": snap.node(neighbor_ix).start_line,
                     }));
                 }
                 // Outgoing edges → callees
@@ -242,7 +243,8 @@ impl ToolRouter {
                         "qualified_name": snap.node(neighbor_ix).qualified_name,
                         "kind": snap.node(neighbor_ix).kind.as_str(),
                         "edge": edge_kind.as_str(),
-                        "file_id": snap.node(neighbor_ix).file_id.short_hex(),
+                        "file": self.resolve_file_path(&snap.node(neighbor_ix).file_id),
+                        "line": snap.node(neighbor_ix).start_line,
                     }));
                 }
             }
@@ -280,6 +282,10 @@ impl ToolRouter {
             .get("prefer_production")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let include_code = args
+            .get("includeCode")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let direction = Self::resolve_path_direction(args);
 
         let edge_kind_filter = match Self::resolve_path_edge_kinds(args) {
@@ -311,7 +317,14 @@ impl ToolRouter {
                     path.node_indices.len() + path.edge_indices.len(),
                 );
                 for i in 0..path.node_indices.len() {
-                    hops.push(Self::node_json(snap, path.node_indices[i]));
+                    let mut node_json = self.node_json(snap, path.node_indices[i]);
+                    if include_code {
+                        let node = snap.node(path.node_indices[i]);
+                        if let Some(src) = self.read_symbol_source(&node.symbol_id) {
+                            node_json["source"] = json!(src);
+                        }
+                    }
+                    hops.push(node_json);
                     if i < path.edges.len() {
                         let edge = snap.edge(path.edges[i].edge_ix);
                         hops.push(json!({
@@ -406,6 +419,10 @@ impl ToolRouter {
 
     pub(crate) fn handle_explore(&self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "symbol");
+        let include_code = args
+            .get("includeCode")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let symbols = match self.store.find_symbols_by_qname(qname) {
             Ok(s) => s,
@@ -424,6 +441,12 @@ impl ToolRouter {
             }
         };
 
+        let source = if include_code {
+            self.read_symbol_source(&sym.id)
+        } else {
+            None
+        };
+
         let graph = self.context_builder().graph_snapshot();
         let snap = graph.snapshot();
 
@@ -439,6 +462,8 @@ impl ToolRouter {
                     "kind": n.kind.as_str(),
                     "edge_kind": edge_kind.as_str(),
                     "direction": "incoming",
+                    "file": self.resolve_file_path(&n.file_id),
+                    "line": n.start_line,
                 })
             })
             .collect();
@@ -454,20 +479,27 @@ impl ToolRouter {
                     "kind": n.kind.as_str(),
                     "edge_kind": edge_kind.as_str(),
                     "direction": "outgoing",
+                    "file": self.resolve_file_path(&n.file_id),
+                    "line": n.start_line,
                 })
             })
             .collect();
 
+        let mut sym_obj = json!({
+            "name": sym.name,
+            "qualified_name": sym.qualified_name,
+            "kind": sym.kind.as_str(),
+            "language": sym.language.as_str(),
+            "file": self.resolve_file_path(&sym.file_id),
+            "range": { "line": sym.range.start_line, "column": sym.range.start_column },
+        });
+        if let Some(ref src) = source {
+            sym_obj["source"] = json!(src);
+        }
+
         (
             serde_json::to_string_pretty(&json!({
-                "symbol": {
-                    "name": sym.name,
-                    "qualified_name": sym.qualified_name,
-                    "kind": sym.kind.as_str(),
-                    "language": sym.language.as_str(),
-                    "file": self.resolve_file_path(&sym.file_id),
-                    "range": { "line": sym.range.start_line, "column": sym.range.start_column },
-                },
+                "symbol": sym_obj,
                 "incoming": incoming,
                 "outgoing": outgoing,
             }))
@@ -505,6 +537,7 @@ impl ToolRouter {
                 "name": node.name,
                 "qualified_name": node.qualified_name,
                 "kind": node.kind.as_str(),
+                "line": node.start_line,
             }));
             total_shown += 1;
         }

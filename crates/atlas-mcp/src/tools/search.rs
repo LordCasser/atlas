@@ -32,6 +32,7 @@ struct SearchHit {
     language: String,
     score: f64,
     file: String,
+    line: u32,
     layer: String,
 }
 
@@ -239,14 +240,34 @@ impl ToolRouter {
             }
         };
         let graph = self.search_engine().graph_snapshot();
-        (serde_json::to_string_pretty(&json!({
-            "name": sym.name, "qualified_name": sym.qualified_name,
-            "kind": sym.kind.as_str(), "language": sym.language.as_str(),
-            "visibility": sym.visibility.as_ref().map(|v| v.as_str()), "signature": sym.signature,
-            "file": self.resolve_file_path(&sym.file_id),
-            "range": { "line": sym.range.start_line, "column": sym.range.start_column },
-            "callers": graph.callers(&sym.id).callers.len(), "callees": graph.callees(&sym.id).callees.len(),
-        })).unwrap_or_else(|e| e.to_string()), false)
+        let snap = graph.snapshot();
+
+        let caller_nodes: Vec<_> = graph
+            .callers(&sym.id)
+            .callers
+            .iter()
+            .map(|&ix| self.node_json(snap, ix))
+            .collect();
+        let callee_nodes: Vec<_> = graph
+            .callees(&sym.id)
+            .callees
+            .iter()
+            .map(|&ix| self.node_json(snap, ix))
+            .collect();
+
+        (
+            serde_json::to_string_pretty(&json!({
+                "name": sym.name, "qualified_name": sym.qualified_name,
+                "kind": sym.kind.as_str(), "language": sym.language.as_str(),
+                "visibility": sym.visibility.as_ref().map(|v| v.as_str()), "signature": sym.signature,
+                "file": self.resolve_file_path(&sym.file_id),
+                "range": { "line": sym.range.start_line, "column": sym.range.start_column },
+                "caller_count": caller_nodes.len(), "callee_count": callee_nodes.len(),
+                "callers": caller_nodes, "callees": callee_nodes,
+            }))
+            .unwrap_or_else(|e| e.to_string()),
+            false,
+        )
     }
 }
 
@@ -491,6 +512,7 @@ fn symbol_hit(store: &Store, query: &str, sym: SymbolDef) -> anyhow::Result<Sear
         language: sym.language.as_str().to_string(),
         score,
         file,
+        line: sym.range.start_line,
         layer: sym.layer,
     })
 }

@@ -228,16 +228,17 @@ impl GraphEngine {
 
     // ── impact analysis ──────────────────────────────────────────────────
 
-    /// Impact radius: BFS outward (follows Calls + Imports) up to `depth`.
-    /// Only call and import edges are traversed; type references (References)
-    /// and container edges (Contains) are excluded to avoid noise from
-    /// struct fields, local variables, and type aliases.
+    /// Impact radius: BFS bidirectionally (follows Calls + Imports) up to `depth`.
+    /// Both downstream (what this affects) and upstream (what affects this)
+    /// are traversed. Only call and import edges are traversed; type references
+    /// (References) and container edges (Contains) are excluded to avoid noise
+    /// from struct fields, local variables, and type aliases.
     pub fn impact(&self, id: &SymbolId, depth: usize) -> Subgraph {
         let Some(&start) = self.snapshot.id_to_idx.get(id) else {
             return Subgraph::default();
         };
         let config = TraversalConfig {
-            direction: TraversalDirection::Outgoing,
+            direction: TraversalDirection::Both,
             max_depth: depth,
             limit: 1000,
             edge_kind_filter: Some(vec![
@@ -254,7 +255,7 @@ impl GraphEngine {
 
     /// Impact radius including container children.
     /// Expands the starting set by adding all symbols whose `container` is the target,
-    /// then runs outward BFS.
+    /// then runs bidirectional BFS.
     pub fn impact_with_children(&self, id: &SymbolId, depth: usize) -> Subgraph {
         let Some(&start) = self.snapshot.id_to_idx.get(id) else {
             return Subgraph::default();
@@ -267,7 +268,7 @@ impl GraphEngine {
             }
         }
         let config = TraversalConfig {
-            direction: TraversalDirection::Outgoing,
+            direction: TraversalDirection::Both,
             max_depth: depth,
             limit: 1000,
             edge_kind_filter: Some(vec![

@@ -25,6 +25,7 @@ pub struct NodeSummary {
     pub name: String,
     pub qualified_name: String,
     pub file_id: FileId,
+    pub start_line: u32,
     pub language: Language,
     pub is_test_file: bool,
     pub container: Option<SymbolId>,
@@ -43,6 +44,7 @@ impl NodeSummary {
             name: sym.name,
             qualified_name: sym.qualified_name,
             file_id: sym.file_id,
+            start_line: sym.range.start_line,
             language: sym.language,
             is_test_file: false, // set later during snapshot construction
             container: sym.container,

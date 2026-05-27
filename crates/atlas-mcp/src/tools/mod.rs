@@ -493,13 +493,41 @@ impl ToolRouter {
     }
 
     /// Render a node from the graph snapshot to JSON.
-    pub(crate) fn node_json(snap: &atlas_engine::GraphSnapshot, ix: atlas_engine::NodeIx) -> Value {
+    pub(crate) fn node_json(&self, snap: &atlas_engine::GraphSnapshot, ix: atlas_engine::NodeIx) -> Value {
         let n = snap.node(ix);
         json!({
             "name": n.name,
             "qualified_name": n.qualified_name,
             "kind": n.kind.as_str(),
+            "file": self.resolve_file_path(&n.file_id),
+            "line": n.start_line,
         })
+    }
+
+    /// Read source code for a symbol from disk.
+    ///
+    /// Returns `None` if the file cannot be found, is outside the project root,
+    /// or the symbol range is invalid.  Never fails the entire request —
+    /// callers should silently omit the `source` field when this returns
+    /// `None`.
+    pub(crate) fn read_symbol_source(&self, symbol_id: &SymbolId) -> Option<String> {
+        let sym = self.store.find_symbol_by_id(symbol_id).ok()??;
+        let root = &self.project_root;
+        let file_info = self.store.get_file(&sym.file_id).ok().flatten()?;
+        let full_path = root.join(&file_info.path);
+        let canonical = full_path.canonicalize().ok()?;
+        let canonical_root = root.canonicalize().ok()?;
+        if !canonical.starts_with(&canonical_root) {
+            return None;
+        }
+        let content = std::fs::read_to_string(&canonical).ok()?;
+        let all_lines: Vec<&str> = content.lines().collect();
+        let start = sym.range.start_line as usize;
+        let end = (sym.range.end_line as usize + 1).min(all_lines.len());
+        if start >= all_lines.len() {
+            return None;
+        }
+        Some(all_lines[start..end].join("\n"))
     }
 }
 
@@ -571,7 +599,7 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "symbol".into(),
-            description: "Get detailed info for a symbol by qualified name with caller/callee counts.".into(),
+            description: "Get detailed info for a symbol by qualified name: kind, location, signature, and caller/callee summaries (name + file + line).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
@@ -654,6 +682,10 @@ pub fn make_all_tools() -> Vec<Tool> {
                         "items": { "type": "string" },
                         "description": "Edge kinds to follow. Default: [\"calls\", \"instantiates\", \"implements\", \"registers_callback\"]. Use [] or [\"*\"] for all edge kinds."
                     },
+                    "includeCode": {
+                        "type": "boolean",
+                        "description": "When true, includes source code for each node in the path. Default false."
+                    },
                 })),
                 required: Some(vec!["from".into(), "to".into()]),
             },
@@ -665,13 +697,17 @@ pub fn make_all_tools() -> Vec<Tool> {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "symbol": { "type": "string", "description": "Qualified symbol name" },
+                    "includeCode": {
+                        "type": "boolean",
+                        "description": "When true, includes source code for the subject symbol. Default false."
+                    },
                 })),
                 required: Some(vec!["symbol".into()]),
             },
         },
         Tool {
             name: "impact".into(),
-            description: "Compute impact analysis: all symbols reachable from a given symbol (BFS outward).".into(),
+            description: "Compute impact analysis: all symbols reachable from a given symbol (BFS bidirectionally — both downstream and upstream).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
@@ -688,6 +724,10 @@ pub fn make_all_tools() -> Vec<Tool> {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "symbol": { "type": "string", "description": "Qualified symbol name" },
+                    "includeCode": {
+                        "type": "boolean",
+                        "description": "When true, includes the subject symbol's full source code alongside markdown. Default false."
+                    },
                 })),
                 required: Some(vec!["symbol".into()]),
             },
