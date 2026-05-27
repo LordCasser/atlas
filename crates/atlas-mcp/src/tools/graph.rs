@@ -18,6 +18,48 @@ fn is_call_edge(kind: &EdgeKind) -> bool {
     )
 }
 
+/// Default edge kinds for path finding — call relationships only.
+/// Excludes non-control-flow edges (References, TypeOf, Contains, etc.)
+/// to avoid semantically meaningless paths in security analysis.
+const DEFAULT_PATH_EDGES: &[EdgeKind] = &[
+    EdgeKind::Calls,
+    EdgeKind::Instantiates,
+    EdgeKind::Implements,
+    EdgeKind::RegistersCallback,
+];
+
+/// Parse a snake_case edge kind string to an EdgeKind.
+fn parse_edge_kind(s: &str) -> Result<EdgeKind, String> {
+    match s {
+        "calls" => Ok(EdgeKind::Calls),
+        "instantiates" => Ok(EdgeKind::Instantiates),
+        "implements" => Ok(EdgeKind::Implements),
+        "registers_callback" => Ok(EdgeKind::RegistersCallback),
+        "references" => Ok(EdgeKind::References),
+        "contains" => Ok(EdgeKind::Contains),
+        "imports" => Ok(EdgeKind::Imports),
+        "includes" => Ok(EdgeKind::Includes),
+        "exports" => Ok(EdgeKind::Exports),
+        "extends" => Ok(EdgeKind::Extends),
+        "typeof" => Ok(EdgeKind::TypeOf),
+        "returns" => Ok(EdgeKind::Returns),
+        "overrides" => Ok(EdgeKind::Overrides),
+        "decorates" => Ok(EdgeKind::Decorates),
+        "defines" => Ok(EdgeKind::Defines),
+        "argument" => Ok(EdgeKind::Argument),
+        "parameter" => Ok(EdgeKind::Parameter),
+        "assigns" => Ok(EdgeKind::Assigns),
+        "reads" => Ok(EdgeKind::Reads),
+        "writes" => Ok(EdgeKind::Writes),
+        "field_read" => Ok(EdgeKind::FieldRead),
+        "field_write" => Ok(EdgeKind::FieldWrite),
+        _ => Err(format!(
+            "Unknown edge kind: '{}'. Valid kinds: calls, instantiates, implements, registers_callback, references, contains, imports, includes, exports, extends, typeof, returns, overrides, decorates, defines, argument, parameter, assigns, reads, writes, field_read, field_write",
+            s
+        )),
+    }
+}
+
 impl ToolRouter {
     pub(crate) fn handle_neighbors(&self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "symbol");
@@ -237,6 +279,11 @@ impl ToolRouter {
         let to_qname = get_str(args, "to");
         let max_depth = get_u64(args, "max_depth").unwrap_or(5) as usize;
 
+        let edge_kind_filter = match Self::resolve_path_edge_kinds(args) {
+            Ok(f) => f,
+            Err(e) => return (e, true),
+        };
+
         let from_id = match self.resolve_qname(from_qname) {
             Ok(id) => id,
             Err(e) => return (e, true),
@@ -247,20 +294,27 @@ impl ToolRouter {
         };
 
         let graph = self.context_builder().graph_snapshot();
-        match graph.shortest_path(&from_id, &to_id, max_depth.min(10)) {
+        match graph.shortest_path(&from_id, &to_id, max_depth.min(10), edge_kind_filter.as_deref()) {
             Some(path) => {
                 let snap = graph.snapshot();
-                let nodes: Vec<_> = path
-                    .node_indices
-                    .iter()
-                    .map(|ix| Self::node_json(snap, *ix))
-                    .collect();
+                let mut hops: Vec<serde_json::Value> = Vec::with_capacity(
+                    path.node_indices.len() + path.edge_indices.len(),
+                );
+                for i in 0..path.node_indices.len() {
+                    hops.push(Self::node_json(snap, path.node_indices[i]));
+                    if i < path.edge_indices.len() {
+                        let edge = snap.edge(path.edge_indices[i]);
+                        hops.push(json!({
+                            "edge_kind": edge.kind.as_str(),
+                        }));
+                    }
+                }
                 (
                     serde_json::to_string_pretty(&json!({
                         "from": from_qname,
                         "to": to_qname,
-                        "path_length": nodes.len(),
-                        "path": nodes,
+                        "path_length": path.node_indices.len(),
+                        "path": hops,
                     }))
                     .unwrap_or_else(|e| e.to_string()),
                     false,
@@ -278,6 +332,37 @@ impl ToolRouter {
                 false,
             ),
         }
+    }
+
+    /// Resolve the `edge_kinds` parameter to an optional edge kind filter.
+    /// - Not provided → defaults to call edges only (DEFAULT_PATH_EDGES)
+    /// - Empty array or `["*"]` → follows all edge kinds (None)
+    /// - Specific kinds → filtered to those kinds
+    fn resolve_path_edge_kinds(args: &serde_json::Value) -> Result<Option<Vec<EdgeKind>>, String> {
+        let raw = match args.get("edge_kinds") {
+            None | Some(serde_json::Value::Null) => {
+                return Ok(Some(DEFAULT_PATH_EDGES.to_vec()));
+            }
+            Some(v) => v,
+        };
+        let arr = raw
+            .as_array()
+            .ok_or_else(|| "edge_kinds must be an array of strings".to_string())?;
+        if arr.is_empty() {
+            return Ok(None); // all edge kinds
+        }
+        if arr.len() == 1 && arr[0].as_str() == Some("*") {
+            return Ok(None); // wildcard → all edge kinds
+        }
+        let mut kinds = Vec::with_capacity(arr.len());
+        for v in arr {
+            let s = v.as_str().unwrap_or("");
+            if s == "*" {
+                return Err("'*' must be the only value in edge_kinds".to_string());
+            }
+            kinds.push(parse_edge_kind(s)?);
+        }
+        Ok(Some(kinds))
     }
 
     pub(crate) fn handle_explore(&self, args: &serde_json::Value) -> (String, bool) {

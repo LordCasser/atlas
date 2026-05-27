@@ -354,10 +354,19 @@ impl GraphSnapshot {
         result
     }
 
-    /// Shortest path between two nodes (BFS). Returns node indices in order.
-    pub fn shortest_path(&self, from: NodeIx, to: NodeIx, max_depth: usize) -> Option<Vec<NodeIx>> {
+    /// Shortest path between two nodes (BFS). Returns (node_indices, edge_indices).
+    ///
+    /// When `edge_kind_filter` is `Some(kinds)`, only edges of the given kinds
+    /// are traversed. `None` follows all edge kinds (backward-compatible).
+    pub fn shortest_path(
+        &self,
+        from: NodeIx,
+        to: NodeIx,
+        max_depth: usize,
+        edge_kind_filter: Option<&[EdgeKind]>,
+    ) -> Option<(Vec<NodeIx>, Vec<EdgeIx>)> {
         if from == to {
-            return Some(vec![from]);
+            return Some((vec![from], vec![]));
         }
         if from >= self.nodes.len() || to >= self.nodes.len() {
             return None;
@@ -365,6 +374,7 @@ impl GraphSnapshot {
 
         let mut visited = vec![false; self.nodes.len()];
         let mut parent = vec![None; self.nodes.len()];
+        let mut parent_edge = vec![None; self.nodes.len()];
         let mut queue = VecDeque::new();
 
         visited[from] = true;
@@ -372,18 +382,22 @@ impl GraphSnapshot {
 
         while let Some((current, depth)) = queue.pop_front() {
             if current == to {
-                // Reconstruct path
-                let mut path = Vec::new();
+                // Reconstruct path: walk parent pointers from to → from
+                let mut path_nodes = Vec::new();
+                let mut path_edges = Vec::new();
                 let mut node = to;
                 loop {
-                    path.push(node);
+                    path_nodes.push(node);
                     if node == from {
                         break;
                     }
+                    // The edge that was used to reach this node
+                    path_edges.push(parent_edge[node].unwrap());
                     node = parent[node].unwrap();
                 }
-                path.reverse();
-                return Some(path);
+                path_nodes.reverse();
+                path_edges.reverse();
+                return Some((path_nodes, path_edges));
             }
 
             if depth >= max_depth {
@@ -394,6 +408,12 @@ impl GraphSnapshot {
             for edge_list in [&self.nodes[current].outgoing, &self.nodes[current].incoming] {
                 for &eix in edge_list {
                     let edge = &self.edges[eix];
+                    // Apply edge kind filter
+                    if let Some(kinds) = edge_kind_filter {
+                        if !kinds.contains(&edge.kind) {
+                            continue;
+                        }
+                    }
                     let neighbor = if edge.source_ix == current {
                         edge.target_ix
                     } else {
@@ -402,6 +422,7 @@ impl GraphSnapshot {
                     if !visited[neighbor] {
                         visited[neighbor] = true;
                         parent[neighbor] = Some(current);
+                        parent_edge[neighbor] = Some(eix);
                         queue.push_back((neighbor, depth + 1));
                     }
                 }
@@ -595,8 +616,36 @@ mod tests {
 
         let a_ix = snap.id_to_idx[&a.id];
         let c_ix = snap.id_to_idx[&c.id];
-        let path = snap.shortest_path(a_ix, c_ix, 5).unwrap();
+        let (path, edges) = snap.shortest_path(a_ix, c_ix, 5, None).unwrap();
         assert_eq!(path.len(), 3);
+        assert_eq!(edges.len(), 2); // a→b, b→c
+    }
+
+    #[test]
+    fn test_graph_shortest_path_edge_filter() {
+        let fid = make_file_id("test.ts");
+        let a = make_symbol(fid, "a", "a", SymbolKind::Function);
+        let b = make_symbol(fid, "b", "b", SymbolKind::Function);
+        let c = make_symbol(fid, "c", "c", SymbolKind::Struct);
+        // a calls b (Calls edge), b references c (References edge)
+        let e1 = make_edge(a.id, b.id, EdgeKind::Calls);
+        let e2 = make_edge(b.id, c.id, EdgeKind::References);
+
+        let snap =
+            GraphSnapshot::from_parts(vec![a.clone(), b.clone(), c.clone()], vec![e1, e2], 0.0)
+                .unwrap();
+
+        let a_ix = snap.id_to_idx[&a.id];
+        let c_ix = snap.id_to_idx[&c.id];
+
+        // With calls-only filter: no path (References edge blocked)
+        let result = snap.shortest_path(a_ix, c_ix, 5, Some(&[EdgeKind::Calls]));
+        assert!(result.is_none(), "calls-only filter should block References edge");
+
+        // With no filter: path exists through references edge
+        let (path, edges) = snap.shortest_path(a_ix, c_ix, 5, None).unwrap();
+        assert_eq!(path.len(), 3);
+        assert_eq!(edges.len(), 2);
     }
 
     #[test]

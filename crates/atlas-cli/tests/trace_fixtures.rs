@@ -14,7 +14,7 @@
 use atlas_engine::GraphBuilder;
 use atlas_engine::ReferenceResolver;
 use atlas_engine::Store;
-use atlas_engine::enums::{DataFlowKind, DataNodeKind, Language};
+use atlas_engine::enums::{CfgNodeKind, DataFlowKind, DataNodeKind, Language, SymbolKind};
 use atlas_engine::extract_file;
 use atlas_engine::ids::FileId;
 use atlas_engine::trace::{Locator, Slicer, TraceEngine};
@@ -2840,5 +2840,178 @@ func process(): String {
         assert_source_name(&path, "secret");
         assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
         assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+    }
+}
+
+// ── CFG fixture tests ─────────────────────────────────────────────────────
+
+/// Verify CFG for Java: function must have Entry + Statement + Exit nodes
+/// with at least one edge.
+#[test]
+#[cfg(feature = "java")]
+fn fx_cfg_java() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg.java",
+        r#"class App {
+    int compute(int x) {
+        if (x > 0) {
+            return x * 2;
+        }
+        return 0;
+    }
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg.java");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| matches!(s.kind, SymbolKind::Method | SymbolKind::Function | SymbolKind::Constructor))
+        .collect();
+    assert!(
+        !func_syms.is_empty(),
+        "expected at least one function/method symbol"
+    );
+
+    for sym in &func_syms {
+        let cfg_nodes = store.find_cfg_nodes_by_function(&sym.id).expect("cfg_nodes");
+        assert!(
+            cfg_nodes.len() >= 3,
+            "Java CFG for '{}': expected >= 3 nodes, got {}",
+            sym.name,
+            cfg_nodes.len()
+        );
+        let has_entry = cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Entry);
+        let has_exit = cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Exit);
+        assert!(has_entry, "Java CFG missing Entry node");
+        assert!(has_exit, "Java CFG missing Exit node");
+
+        let mut edge_count = 0usize;
+        for node in &cfg_nodes {
+            let edges = store
+                .find_cfg_edges_by_source(&node.id)
+                .expect("cfg_edges");
+            edge_count += edges.len();
+        }
+        assert!(
+            edge_count > 0,
+            "Java CFG for '{}': expected > 0 edges, got {}",
+            sym.name,
+            edge_count
+        );
+    }
+}
+
+/// Verify CFG for Go: function must have Entry + Statement + Exit nodes.
+#[test]
+#[cfg(feature = "go")]
+fn fx_cfg_go() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg.go",
+        r#"package main
+
+func compute(x int) int {
+    if x > 0 {
+        return x * 2
+    }
+    return 0
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg.go");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| matches!(s.kind, SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor))
+        .collect();
+    assert!(
+        !func_syms.is_empty(),
+        "expected at least one function symbol"
+    );
+
+    for sym in &func_syms {
+        let cfg_nodes = store.find_cfg_nodes_by_function(&sym.id).expect("cfg_nodes");
+        assert!(
+            cfg_nodes.len() >= 3,
+            "Go CFG for '{}': expected >= 3 nodes, got {}",
+            sym.name,
+            cfg_nodes.len()
+        );
+        let has_entry = cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Entry);
+        let has_exit = cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Exit);
+        assert!(has_entry, "Go CFG missing Entry node");
+        assert!(has_exit, "Go CFG missing Exit node");
+
+        let mut edge_count = 0usize;
+        for node in &cfg_nodes {
+            let edges = store
+                .find_cfg_edges_by_source(&node.id)
+                .expect("cfg_edges");
+            edge_count += edges.len();
+        }
+        assert!(
+            edge_count > 0,
+            "Go CFG for '{}': expected > 0 edges, got {}",
+            sym.name,
+            edge_count
+        );
+    }
+}
+
+/// Verify CFG for Python: function must have Entry + Statement + Exit nodes.
+#[test]
+#[cfg(feature = "python")]
+fn fx_cfg_python() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg.py",
+        r#"def compute(x: int) -> int:
+    if x > 0:
+        return x * 2
+    return 0
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg.py");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| matches!(s.kind, SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor))
+        .collect();
+    assert!(
+        !func_syms.is_empty(),
+        "expected at least one function symbol"
+    );
+
+    for sym in &func_syms {
+        let cfg_nodes = store.find_cfg_nodes_by_function(&sym.id).expect("cfg_nodes");
+        assert!(
+            cfg_nodes.len() >= 3,
+            "Python CFG for '{}': expected >= 3 nodes, got {}",
+            sym.name,
+            cfg_nodes.len()
+        );
+        let has_entry = cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Entry);
+        let has_exit = cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Exit);
+        assert!(has_entry, "Python CFG missing Entry node");
+        assert!(has_exit, "Python CFG missing Exit node");
+
+        let mut edge_count = 0usize;
+        for node in &cfg_nodes {
+            let edges = store
+                .find_cfg_edges_by_source(&node.id)
+                .expect("cfg_edges");
+            edge_count += edges.len();
+        }
+        assert!(
+            edge_count > 0,
+            "Python CFG for '{}': expected > 0 edges, got {}",
+            sym.name,
+            edge_count
+        );
     }
 }

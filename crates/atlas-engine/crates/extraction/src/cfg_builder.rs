@@ -28,9 +28,94 @@
 
 use tree_sitter::Node;
 use types::cfg::{CfgEdge, CfgNode};
-use types::enums::{CfgEdgeKind, CfgNodeKind, SymbolKind};
+use types::enums::{CfgEdgeKind, CfgNodeKind, Language, SymbolKind};
 use types::ids::SymbolId;
 use types::structs::{SymbolDef, TextRange};
+
+// ── CfgLanguageConfig ───────────────────────────────────────────────────────
+
+/// Language-specific tree-sitter node kind names used by the CFG builder.
+struct CfgLanguageConfig {
+    /// Node kinds that represent function body blocks.
+    block_kinds: &'static [&'static str],
+    /// Node kinds for if/else branches.
+    if_kinds: &'static [&'static str],
+    /// Node kinds for loops (for, while, do).
+    loop_kinds: &'static [&'static str],
+    /// Node kinds for return statements.
+    return_kinds: &'static [&'static str],
+    /// Node kinds for throw/raise statements.
+    throw_kinds: &'static [&'static str],
+    /// Node kinds for expression/declaration statements.
+    stmt_kinds: &'static [&'static str],
+}
+
+/// Return the language-specific CFG configuration for the given language.
+fn cfg_config(lang: Language) -> CfgLanguageConfig {
+    match lang {
+        Language::TypeScript | Language::JavaScript | Language::ArkTS => CfgLanguageConfig {
+            block_kinds: &["statement_block"],
+            if_kinds: &["if_statement"],
+            loop_kinds: &["for_statement", "while_statement", "do_statement"],
+            return_kinds: &["return_statement"],
+            throw_kinds: &["throw_statement"],
+            stmt_kinds: &[
+                "expression_statement", "variable_declaration", "lexical_declaration",
+                "continue_statement", "break_statement",
+                "debugger_statement", "empty_statement",
+            ],
+        },
+        Language::Java => CfgLanguageConfig {
+            block_kinds: &["block"],
+            if_kinds: &["if_statement"],
+            loop_kinds: &[
+                "for_statement", "while_statement", "do_statement",
+                "enhanced_for_statement",
+            ],
+            return_kinds: &["return_statement"],
+            throw_kinds: &["throw_statement"],
+            stmt_kinds: &[
+                "expression_statement", "local_variable_declaration",
+                "continue_statement", "break_statement",
+            ],
+        },
+        Language::Go => CfgLanguageConfig {
+            block_kinds: &["block"],
+            if_kinds: &["if_statement"],
+            loop_kinds: &["for_statement"],
+            return_kinds: &["return_statement"],
+            throw_kinds: &[], // Go has no throw
+            stmt_kinds: &[
+                "expression_statement", "short_var_declaration", "var_declaration",
+                "continue_statement", "break_statement",
+            ],
+        },
+        Language::Python => CfgLanguageConfig {
+            block_kinds: &["block"],
+            if_kinds: &["if_statement", "elif_clause", "else_clause"],
+            loop_kinds: &["for_statement", "while_statement"],
+            return_kinds: &["return_statement"],
+            throw_kinds: &["raise_statement"],
+            stmt_kinds: &[
+                "expression_statement", "assignment",
+                "continue_statement", "break_statement",
+            ],
+        },
+        _ => CfgLanguageConfig {
+            // Default: TS/JS config (best-effort for unknown languages)
+            block_kinds: &["statement_block"],
+            if_kinds: &["if_statement"],
+            loop_kinds: &["for_statement", "while_statement", "do_statement"],
+            return_kinds: &["return_statement"],
+            throw_kinds: &["throw_statement"],
+            stmt_kinds: &[
+                "expression_statement", "variable_declaration", "lexical_declaration",
+                "continue_statement", "break_statement",
+                "debugger_statement", "empty_statement",
+            ],
+        },
+    }
+}
 
 // ── CfgBuilder ──────────────────────────────────────────────────────────────
 
@@ -51,19 +136,27 @@ struct CfgContext<'a> {
     edges: Vec<CfgEdge>,
     source: &'a [u8],
     prev_node_id: Option<types::ids::CfgNodeId>,
+    config: CfgLanguageConfig,
 }
 
 impl CfgBuilder {
     /// Build CFG for a function node.
     ///
     /// Scans the function body for statements and produces CFG nodes/edges.
-    pub fn build(function_id: &SymbolId, function_node: Node, source_bytes: &[u8]) -> CfgResult {
+    pub fn build(
+        language: Language,
+        function_id: &SymbolId,
+        function_node: Node,
+        source_bytes: &[u8],
+    ) -> CfgResult {
+        let config = cfg_config(language);
         let mut ctx = CfgContext {
             function_id: *function_id,
             nodes: Vec::new(),
             edges: Vec::new(),
             source: source_bytes,
             prev_node_id: None,
+            config,
         };
 
         // 1. Create Entry node
@@ -71,7 +164,7 @@ impl CfgBuilder {
         ctx.prev_node_id = Some(entry_id);
 
         // 2. Find the statement block
-        let body = find_function_body(function_node);
+        let body = find_function_body(function_node, ctx.config.block_kinds);
 
         // 3. Walk the body
         if let Some(body) = body {
@@ -135,47 +228,31 @@ impl CfgContext<'_> {
             let kind = stmt.kind();
             let stmt_range = node_text_range(&stmt, self.source);
 
-            match kind {
-                "if_statement" => {
-                    i = self.walk_if(&children, i, stmt_range.start_byte);
-                }
-                "for_statement" | "while_statement" | "do_statement" => {
-                    i = self.walk_loop(&children, i, stmt_range.start_byte);
-                }
-                "return_statement" => {
-                    self.emit_stmt(CfgNodeKind::Return, stmt_range.start_byte);
-                    // Return → Exit (connect to exit outside)
-                    i += 1;
-                }
-                "throw_statement" => {
-                    self.emit_stmt(CfgNodeKind::Throw, stmt_range.start_byte);
-                    i += 1;
-                }
-                "expression_statement"
-                | "variable_declaration"
-                | "lexical_declaration"
-                | "continue_statement"
-                | "break_statement"
-                | "debugger_statement"
-                | "empty_statement" => {
-                    self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte);
-                    i += 1;
-                }
-                // Might be a nested block or other construct
-                "statement_block" => {
-                    self.walk_block(stmt, stmt_range.start_byte);
-                    i += 1;
-                }
-                "try_statement" | "switch_statement" => {
-                    // Deferred: treat as single statement
-                    self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte);
-                    i += 1;
-                }
-                _ => {
-                    // Unknown constructs → treat as statement
-                    self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte);
-                    i += 1;
-                }
+            if self.config.if_kinds.contains(&kind) {
+                i = self.walk_if(&children, i, stmt_range.start_byte);
+            } else if self.config.loop_kinds.contains(&kind) {
+                i = self.walk_loop(&children, i, stmt_range.start_byte);
+            } else if self.config.return_kinds.contains(&kind) {
+                self.emit_stmt(CfgNodeKind::Return, stmt_range.start_byte);
+                i += 1;
+            } else if self.config.throw_kinds.contains(&kind) {
+                self.emit_stmt(CfgNodeKind::Throw, stmt_range.start_byte);
+                i += 1;
+            } else if self.config.stmt_kinds.contains(&kind) {
+                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte);
+                i += 1;
+            } else if self.config.block_kinds.contains(&kind) {
+                // Nested block
+                self.walk_block(stmt, stmt_range.start_byte);
+                i += 1;
+            } else if kind == "try_statement" || kind == "switch_statement" {
+                // Deferred: treat as single statement
+                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte);
+                i += 1;
+            } else {
+                // Unknown constructs → treat as statement
+                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte);
+                i += 1;
             }
         }
     }
@@ -225,18 +302,18 @@ impl CfgContext<'_> {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-fn find_function_body(node: Node) -> Option<Node> {
+fn find_function_body<'a>(node: Node<'a>, block_kinds: &[&str]) -> Option<Node<'a>> {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        if child.kind() == "statement_block" {
+        if block_kinds.contains(&child.kind()) {
             return Some(child);
         }
         // Arrow function: body might be an expression
         if node.kind() == "arrow_function" && child.kind() != "formal_parameters" {
             return Some(child);
         }
-        // Recursive: the statement_block might be nested
-        if let Some(found) = find_function_body(child) {
+        // Recursive: the block might be nested
+        if let Some(found) = find_function_body(child, block_kinds) {
             return Some(found);
         }
     }
@@ -272,6 +349,7 @@ const FUNCTION_NODE_KINDS: &[&str] = &[
 /// Build per-function control-flow graphs by matching function symbols
 /// to tree-sitter nodes.
 pub(crate) fn build_cfg_for_functions<'a>(
+    language: Language,
     root: Node<'a>,
     symbols: &[SymbolDef],
     source_bytes: &[u8],
@@ -291,7 +369,7 @@ pub(crate) fn build_cfg_for_functions<'a>(
 
     for sym in &function_symbols {
         if let Some(func_node) = find_function_node(root, sym) {
-            let result = CfgBuilder::build(&sym.id, func_node, source_bytes);
+            let result = CfgBuilder::build(language, &sym.id, func_node, source_bytes);
             all_nodes.extend(result.nodes);
             all_edges.extend(result.edges);
         }
@@ -377,7 +455,7 @@ mod tests {
         let (tree, source_bytes) = parse_ts(source);
         let (func_node, func_id) = find_function(&tree, &source_bytes);
 
-        let result = CfgBuilder::build(&func_id, func_node, &source_bytes);
+        let result = CfgBuilder::build(Language::TypeScript, &func_id, func_node, &source_bytes);
 
         assert!(
             result.nodes.len() >= 3,
@@ -398,7 +476,7 @@ mod tests {
         let (tree, source_bytes) = parse_ts(source);
         let (func_node, func_id) = find_function(&tree, &source_bytes);
 
-        let result = CfgBuilder::build(&func_id, func_node, &source_bytes);
+        let result = CfgBuilder::build(Language::TypeScript, &func_id, func_node, &source_bytes);
 
         let has_branch = result.nodes.iter().any(|n| n.kind == CfgNodeKind::Branch);
         let has_join = result.nodes.iter().any(|n| n.kind == CfgNodeKind::Join);

@@ -555,13 +555,18 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "path".into(),
-            description: "Find the shortest path between two symbols through the graph (BFS).".into(),
+            description: "Find the shortest path between two symbols through the graph (BFS). By default only follows call edges (calls, instantiates, implements, registers_callback). Use edge_kinds to override.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "from": { "type": "string", "description": "Source symbol qualified name" },
                     "to": { "type": "string", "description": "Target symbol qualified name" },
                     "max_depth": { "type": "integer", "description": "Max search depth (default 5, max 10)" },
+                    "edge_kinds": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Edge kinds to follow. Default: [\"calls\", \"instantiates\", \"implements\", \"registers_callback\"]. Use [] or [\"*\"] for all edge kinds."
+                    },
                 })),
                 required: Some(vec!["from".into(), "to".into()]),
             },

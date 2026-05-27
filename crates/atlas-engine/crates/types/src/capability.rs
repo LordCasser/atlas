@@ -553,9 +553,9 @@ mod profiles {
     // NOTE: Golden fixtures fx21 (ArgToParam), fx22 (ReturnToCall),
     //       fx_py_shadow (shadowing precision), and fx_py_destructure
     //       (tuple unpacking) exist.
-    //       Confidence raised from 0.55 to 0.65: scope-chain-aware binding
+    //       Confidence raised from 0.65 to 0.72: scope-chain-aware binding
     //       resolution (resolve_bindings_to_nodes) correctly handles Python
-    //       shadowing as verified by fx_py_shadow.
+    //       shadowing as verified by fx_py_shadow.  CFG support added (P7).
 
     fn py_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
@@ -572,42 +572,42 @@ mod profiles {
                 "access_path".into(),
                 "call_arguments".into(),
                 "return_flow".into(),
+                "cfg".into(),
                 "interprocedural_dataflow".into(),
             ],
             unsupported_features: vec![
                 "scope_aware_binding".into(),
-                "cfg".into(),
             ],
             limitations: vec![
                 "scope-chain-aware use-def with binding_id grouping; edge cases in nested dynamic scopes".into(),
                 "AST-driven local dataflow; destructuring and control-flow not yet path-verified".into(),
                 "assignment LHS binding with scope-chain resolution".into(),
             ],
-            confidence_floor: 0.65,
+            confidence_floor: 0.72,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.65),
-                references: FeatureSupport::supported_with_confidence(0.65),
-                imports: FeatureSupport::supported_with_confidence(0.65),
-                scopes: FeatureSupport::supported_with_confidence(0.65),
-                call_graph: FeatureSupport::supported_with_confidence(0.65),
+                symbols: FeatureSupport::supported_with_confidence(0.72),
+                references: FeatureSupport::supported_with_confidence(0.72),
+                imports: FeatureSupport::supported_with_confidence(0.72),
+                scopes: FeatureSupport::supported_with_confidence(0.72),
+                call_graph: FeatureSupport::supported_with_confidence(0.72),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.72,
                     vec!["assignment LHS binding with scope-chain resolution"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.65,
+                    0.72,
                     vec!["AST-driven local dataflow; destructuring and control-flow not yet path-verified"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.65,
+                    0.72,
                     vec!["scope-chain-aware use-def with binding_id grouping; edge cases in nested dynamic scopes"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.65),
-                call_arguments: FeatureSupport::supported_with_confidence(0.65),
-                returns_flow: FeatureSupport::supported_with_confidence(0.65),
-                cfg: FeatureSupport::unsupported("CFG builder not implemented for Python"),
+                field_access: FeatureSupport::supported_with_confidence(0.72),
+                call_arguments: FeatureSupport::supported_with_confidence(0.72),
+                returns_flow: FeatureSupport::supported_with_confidence(0.72),
+                cfg: FeatureSupport::supported_with_confidence(0.72),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.72,
                     vec![
                         "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
                     ],
@@ -633,41 +633,41 @@ mod profiles {
                 "access_path".into(),
                 "call_arguments".into(),
                 "return_flow".into(),
+                "cfg".into(),
                 "interprocedural_dataflow".into(),
             ],
             unsupported_features: vec![
-                "cfg".into(),
                 "scope_aware_binding".into(),
             ],
             limitations: vec![
                 "scope-chain-aware binding with shadowing support; edge cases in nested expressions".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
             ],
-            confidence_floor: 0.68,
+            confidence_floor: 0.75,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.68),
-                references: FeatureSupport::supported_with_confidence(0.68),
-                imports: FeatureSupport::supported_with_confidence(0.68),
-                scopes: FeatureSupport::supported_with_confidence(0.68),
-                call_graph: FeatureSupport::supported_with_confidence(0.68),
+                symbols: FeatureSupport::supported_with_confidence(0.75),
+                references: FeatureSupport::supported_with_confidence(0.75),
+                imports: FeatureSupport::supported_with_confidence(0.75),
+                scopes: FeatureSupport::supported_with_confidence(0.75),
+                call_graph: FeatureSupport::supported_with_confidence(0.75),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.68,
+                    0.75,
                     vec!["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.68,
+                    0.75,
                     vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.68,
+                    0.75,
                     vec!["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.68),
-                call_arguments: FeatureSupport::supported_with_confidence(0.68),
-                returns_flow: FeatureSupport::supported_with_confidence(0.68),
-                cfg: FeatureSupport::unsupported("CFG builder not implemented for Java"),
+                field_access: FeatureSupport::supported_with_confidence(0.75),
+                call_arguments: FeatureSupport::supported_with_confidence(0.75),
+                returns_flow: FeatureSupport::supported_with_confidence(0.75),
+                cfg: FeatureSupport::supported_with_confidence(0.75),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.75,
                     vec![
                         "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
                     ],
@@ -972,10 +972,10 @@ mod profiles {
                 "access_path".into(),
                 "call_arguments".into(),
                 "return_flow".into(),
+                "cfg".into(),
                 "interprocedural_dataflow".into(),
             ],
             unsupported_features: vec![
-                "cfg".into(),
                 "scope_aware_binding".into(),
             ],
             limitations: vec![
@@ -983,31 +983,31 @@ mod profiles {
                 "AST-driven local dataflow with language-specific gaps".into(),
                 "generic type parameters not captured in dataflow layer".into(),
             ],
-            confidence_floor: 0.72,
+            confidence_floor: 0.78,
             features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.72),
-                references: FeatureSupport::supported_with_confidence(0.72),
-                imports: FeatureSupport::supported_with_confidence(0.72),
-                scopes: FeatureSupport::supported_with_confidence(0.72),
-                call_graph: FeatureSupport::supported_with_confidence(0.72),
+                symbols: FeatureSupport::supported_with_confidence(0.78),
+                references: FeatureSupport::supported_with_confidence(0.78),
+                imports: FeatureSupport::supported_with_confidence(0.78),
+                scopes: FeatureSupport::supported_with_confidence(0.78),
+                call_graph: FeatureSupport::supported_with_confidence(0.78),
                 lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.72,
+                    0.78,
                     vec!["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
                 ),
                 local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.72,
+                    0.78,
                     vec!["AST-driven local dataflow with language-specific gaps"],
                 ),
                 use_def: FeatureSupport::supported_with_limitations(
-                    0.72,
+                    0.78,
                     vec!["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.72),
-                call_arguments: FeatureSupport::supported_with_confidence(0.72),
-                returns_flow: FeatureSupport::supported_with_confidence(0.72),
-                cfg: FeatureSupport::unsupported("CFG builder not implemented for Go"),
+                field_access: FeatureSupport::supported_with_confidence(0.78),
+                call_arguments: FeatureSupport::supported_with_confidence(0.78),
+                returns_flow: FeatureSupport::supported_with_confidence(0.78),
+                cfg: FeatureSupport::supported_with_confidence(0.78),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.78,
                     vec![
                         "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
                     ],
@@ -1560,8 +1560,8 @@ mod tests {
             "Python local_dataflow should be supported"
         );
         assert!(
-            !matrix.cfg.is_supported(),
-            "Python cfg should be unsupported"
+            matrix.cfg.is_supported(),
+            "Python cfg should be supported"
         );
     }
 

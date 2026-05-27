@@ -129,6 +129,16 @@ impl GraphEngine {
         EdgeKind::Implements,
     ];
 
+    /// Default edge kinds for path-finding (calls + dynamic dispatch boundaries).
+    /// Excludes non-control-flow edges (References, TypeOf, Contains, etc.)
+    /// to avoid semantically meaningless paths in security analysis.
+    pub const PATH_EDGES: &[EdgeKind] = &[
+        EdgeKind::Calls,
+        EdgeKind::Instantiates,
+        EdgeKind::Implements,
+        EdgeKind::RegistersCallback,
+    ];
+
     // ── callers / callees / callgraph ────────────────────────────────────
 
     /// Find direct callers (incoming Calls + promoted Instantiates/Implements edges).
@@ -272,19 +282,25 @@ impl GraphEngine {
 
     // ── shortest path ────────────────────────────────────────────────────
 
-    /// Find the shortest path between two symbols (follows all edge kinds).
+    /// Find the shortest path between two symbols.
+    ///
+    /// When `edge_kind_filter` is `Some(kinds)`, only edges of the given kinds are
+    /// traversed. `None` follows all edge kinds (backward-compatible).
     pub fn shortest_path(
         &self,
         from: &SymbolId,
         to: &SymbolId,
         max_depth: usize,
+        edge_kind_filter: Option<&[EdgeKind]>,
     ) -> Option<GraphPath> {
         let from_ix = self.snapshot.id_to_idx.get(from)?;
         let to_ix = self.snapshot.id_to_idx.get(to)?;
-        let path = self.snapshot.shortest_path(*from_ix, *to_ix, max_depth)?;
+        let (node_indices, edge_indices) =
+            self.snapshot
+                .shortest_path(*from_ix, *to_ix, max_depth, edge_kind_filter)?;
         Some(GraphPath {
-            node_indices: path,
-            edge_indices: vec![],
+            node_indices,
+            edge_indices,
         })
     }
 
@@ -411,7 +427,7 @@ mod tests {
         let fid = make_file_id("test.ts");
         let a = make_symbol(fid, "main", "main", SymbolKind::Function);
         let c = make_symbol(fid, "log", "log", SymbolKind::Function);
-        let path = engine.shortest_path(&a.id, &c.id, 5);
+        let path = engine.shortest_path(&a.id, &c.id, 5, None);
         assert!(path.is_some());
     }
 
