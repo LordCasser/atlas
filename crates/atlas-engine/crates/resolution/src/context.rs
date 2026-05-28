@@ -28,6 +28,9 @@ use types::*;
 pub struct GlobalSymbolIndex {
     /// All symbols in the project.
     symbols: Vec<SymbolDef>,
+    /// Pre-computed lower-case names for each symbol (same index as `symbols`).
+    /// Avoids millions of .to_lowercase() calls during fuzzy_search.
+    lower_names: Vec<String>,
     /// name (lowercase) → Vec<SymbolDef> (exact name match).
     by_name: HashMap<String, Vec<SymbolDef>>,
     /// SymbolId → SymbolDef.
@@ -53,10 +56,12 @@ impl GlobalSymbolIndex {
         let symbols = store.load_all_symbols()?;
         let mut by_name: HashMap<String, Vec<SymbolDef>> = HashMap::new();
         let mut by_id: HashMap<SymbolId, SymbolDef> = HashMap::new();
+        let mut lower_names: Vec<String> = Vec::with_capacity(symbols.len());
 
         for sym in &symbols {
             by_id.insert(sym.id, sym.clone());
             let key = sym.name.to_lowercase();
+            lower_names.push(key.clone());
             by_name.entry(key).or_default().push(sym.clone());
         }
 
@@ -73,6 +78,7 @@ impl GlobalSymbolIndex {
 
         Ok(Self {
             symbols,
+            lower_names,
             by_name,
             by_id,
             file_parent_dir,
@@ -188,16 +194,14 @@ impl GlobalSymbolIndex {
         let mut candidates: Vec<(usize, SymbolDef)> = self
             .symbols
             .iter()
-            .filter(|s| {
-                let s_name = s.name.to_lowercase();
-                let s_len = s_name.len();
-                // Fast length check
+            .zip(self.lower_names.iter())
+            .filter(|(_s, s_lower)| {
+                let s_len = s_lower.len();
                 if s_len < min_len || s_len > max_len {
                     return false;
                 }
-                // Trigram check (skip for short names)
                 if !trigrams.is_empty() && s_len >= 3 {
-                    let has_common = s_name
+                    let has_common = s_lower
                         .as_bytes()
                         .windows(3)
                         .any(|w| trigrams.contains(std::str::from_utf8(w).unwrap_or("")));
@@ -207,8 +211,8 @@ impl GlobalSymbolIndex {
                 }
                 true
             })
-            .filter_map(|s| {
-                let d = types::levenshtein(&lower, &s.name.to_lowercase());
+            .filter_map(|(s, s_lower)| {
+                let d = types::levenshtein(&lower, s_lower);
                 if d <= max_distance {
                     Some((d, s.clone()))
                 } else {
@@ -292,6 +296,10 @@ pub struct ResolutionContext {
     pub imports: Vec<ImportDef>,
 
     // --- Indexes ---
+    /// Import name (imported_name or local_name alias) → indices into `imports`.
+    /// Enables O(1) import filtering in Strategy 5 instead of iterating all
+    /// imports per reference.
+    pub imports_by_name: HashMap<String, Vec<usize>>,
     /// ScopeId → symbols in scope (including children).
     pub symbols_by_scope: HashMap<ScopeId, Vec<Arc<SymbolDef>>>,
 
@@ -352,11 +360,23 @@ impl ResolutionContext {
             }
         }
 
+        // Pre-index imports by name for O(1) Strategy 5 filtering.
+        let mut imports_by_name: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, import) in imports.iter().enumerate() {
+            if !import.imported_name.is_empty() {
+                imports_by_name.entry(import.imported_name.clone()).or_default().push(i);
+            }
+            if let Some(ref alias) = import.local_name {
+                imports_by_name.entry(alias.clone()).or_default().push(i);
+            }
+        }
+
         Ok(Self {
             file,
             symbols,
             scopes,
             imports,
+            imports_by_name,
             symbols_by_scope,
             symbols_by_id,
             symbols_by_qname,

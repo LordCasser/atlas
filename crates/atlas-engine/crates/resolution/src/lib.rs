@@ -115,48 +115,45 @@ fn resolve_one_core(
 
     // Strategy 5: Import/include resolution
     //
-    // Scopes imports by matching the reference name against each import's
-    // local_name (alias) or imported_name.  For aliased imports such as
-    // `import { foo as bar }` where the reference is `bar`, the import
-    // relationship directly establishes the mapping — no name_matcher
-    // pass is needed because the candidate symbol names differ from the
-    // reference name.
-    for import in &ctx.imports {
-        let import_local = import.local_name.as_deref().unwrap_or("");
-        let matches_by_name = import.imported_name == reference.name;
-        let matches_by_alias = !import_local.is_empty() && import_local == reference.name;
+    // Uses the pre-built imports_by_name index for O(1) lookup instead of
+    // iterating all imports per reference.  The index maps import imported_name
+    // and local_name (alias) to indices into ctx.imports.
+    if let Some(import_indices) = ctx.imports_by_name.get(&reference.name) {
+        for &idx in import_indices {
+            let import = &ctx.imports[idx];
+            let import_local = import.local_name.as_deref().unwrap_or("");
+            let matches_by_alias = !import_local.is_empty() && import_local == reference.name;
 
-        if !matches_by_name && !matches_by_alias {
-            continue;
-        }
-
-        if let Ok(candidates) = import_resolver.resolve_import(import) {
-            if let Ok(chain_candidates) = import_resolver
-                .resolve_through_reexports(import, candidates)
-            {
-                // Alias match: trust the import relationship directly.
-                if matches_by_alias {
-                    if let Some(first) = chain_candidates.first() {
+            if let Ok(candidates) = import_resolver.resolve_import(import) {
+                if let Ok(chain_candidates) = import_resolver
+                    .resolve_through_reexports(import, candidates)
+                {
+                    // Alias match: trust the import relationship directly.
+                    if matches_by_alias {
+                        if let Some(first) = chain_candidates.first() {
+                            return Some(ResolvedTarget {
+                                symbol_id: first.id,
+                                confidence: Confidence::new(0.8),
+                                strategy: ResolutionStrategy::ImportResolved,
+                                provenance: Provenance::Heuristic,
+                            });
+                        }
+                    }
+                    // Exact-name match: use name_matcher to filter candidates.
+                    // (The index only contains imports whose imported_name or
+                    // local_name equals reference.name, so we always match.)
+                    if let Some(matched) = name_matcher.best_match(
+                        &chain_candidates,
+                        &reference.name,
+                        Confidence::certain(),
+                    ) {
                         return Some(ResolvedTarget {
-                            symbol_id: first.id,
+                            symbol_id: matched.symbol_id,
                             confidence: Confidence::new(0.8),
                             strategy: ResolutionStrategy::ImportResolved,
                             provenance: Provenance::Heuristic,
                         });
                     }
-                }
-                // Exact-name match: use name_matcher to filter candidates.
-                if let Some(matched) = name_matcher.best_match(
-                    &chain_candidates,
-                    &reference.name,
-                    Confidence::certain(),
-                ) {
-                    return Some(ResolvedTarget {
-                        symbol_id: matched.symbol_id,
-                        confidence: Confidence::new(0.8),
-                        strategy: ResolutionStrategy::ImportResolved,
-                        provenance: Provenance::Heuristic,
-                    });
                 }
             }
         }
