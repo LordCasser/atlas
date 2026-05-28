@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 
 use db::Store;
 use rayon::prelude::*;
@@ -425,7 +426,7 @@ impl ReferenceResolver {
         &mut self,
         store: Arc<Store>,
         progress_mutex: Option<&std::sync::Arc<std::sync::Mutex<types::progress::ProgressState>>>,
-        on_progress: Option<&dyn Fn(u64, u64)>,
+        _on_progress: Option<&dyn Fn(u64, u64)>,
     ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
         if let Some(mutex) = progress_mutex {
             mutex.lock().unwrap().start_phase(ProgressPhase::Resolution, None);
@@ -445,104 +446,104 @@ impl ReferenceResolver {
             map.into_iter().collect()
         };
 
-        // ── Phase 1: Parallel resolution (reads only) ──
+        // ── Phase 1 + Phase 2: streaming via bounded mpsc channel ──
         //
-        // Step A (serial, 1 lock): Pre-build ResolutionContext for every file
-        // so that rayon threads never touch the Store mutex.  This eliminates
-        // the primary bottleneck on large projects: 8+ threads serializing on
-        // a single SQLite connection for 4 queries per file.
+        // Step A (serial, 1 lock): Pre-build ResolutionContext for every file.
         //
-        // Step B (parallel, lock-free): Each thread resolves its file's refs
-        // against its pre-built context — pure memory, zero contention.
+        // Step B (parallel, rayon): Each thread resolves its file's refs
+        // against its pre-built context and sends results through a bounded
+        // sync_channel.  Phase 2 (DB writes) runs in a dedicated thread that
+        // starts consuming as soon as the first batch of results arrives.
+        //
+        // Phase 2 (writer thread): Accumulates batches of 2000 resolved refs,
+        // writes them to the DB, and updates progress.  Also collects the full
+        // all_resolved Vec for the caller (graph builder needs it).
         let matched_counter = Arc::new(AtomicU64::new(0));
-        let mc = &matched_counter;
         let session = &session;
 
         let progress_atomic = progress_mutex
             .map(|a| Arc::clone(&a.lock().unwrap().atomic_current));
 
-        // Step A: build all contexts (one lock acquisition via the Store's
-        // internal get_file / find_symbols_by_file etc.).
+        // Step A: build all contexts
         let mut file_groups: Vec<(FileId, Vec<ReferenceUse>, ResolutionContext)> =
             Vec::with_capacity(by_file.len());
         for (fid, refs) in by_file {
             match ResolutionContext::build(&store, fid) {
                 Ok(ctx) => file_groups.push((fid, refs, ctx)),
-                Err(_e) => { /* skip — context build failed, refs remain unresolved */ }
+                Err(_e) => { /* skip */ }
             }
         }
 
-        // Step B: pure-memory parallel resolution
-        let per_file_results: Vec<(ReferenceUse, ResolvedTarget)> = file_groups
-            .par_iter()
-            .map(|(_fid, refs, ctx)| {
-                let result = session.resolve_refs_in_ctx(refs, ctx);
-                let count = result.len() as u64;
-                let total_matched = mc.fetch_add(count, Ordering::Relaxed) + count;
-                if let Some(ref ac) = progress_atomic {
-                    ac.store(total_matched, Ordering::Relaxed);
-                }
-                result
-            })
-            .flatten()
-            .collect();
+        // Bounded channel — capacity 4000 balances memory vs throughput.
+        let (tx, rx) = mpsc::sync_channel::<(ReferenceUse, ResolvedTarget)>(4000);
 
-        // Update progress state with Phase 1 result (for TUI to display the
-        // matched count + rate before Phase 2 begins).
-        if let Some(mutex) = progress_mutex {
-            let matched = matched_counter.load(Ordering::Relaxed);
-            mutex.lock().unwrap().set_current(matched);
-        }
+        // Spawn Phase 2 writer thread that also collects all_resolved.
+        let writer_store = store.clone();
+        let writer_progress = progress_mutex.map(|a| Arc::clone(a));
+        let writer_handle = std::thread::spawn(move || -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
+            let mut stats = ResolutionStats::default();
+            stats.total_refs = total_refs as usize;
+            let mut pending: Vec<(ReferenceId, ResolvedTarget)> = Vec::with_capacity(2000);
+            let mut all: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
+            let batch_size = 2000;
+            let mut processed = 0u64;
 
-        // ── Phase 2: Serial write + progress ──
-        if let Some(mutex) = progress_mutex {
-            mutex.lock().unwrap().enter_phase2(total_refs);
-        }
+            for (reference, target) in rx {
+                pending.push((reference.id, target.clone()));
+                let strategy = target.strategy.as_str().to_string();
+                all.push((reference, target));
+                processed += 1;
+                stats.resolved += 1;
+                *stats.by_strategy.entry(strategy).or_default() += 1;
 
-        let mut stats = ResolutionStats::default();
-        stats.total_refs = total_refs as usize;
-
-        let mut pending: Vec<(ReferenceId, ResolvedTarget)> = Vec::new();
-        let all_resolved = per_file_results; // moved in
-        let mut processed = 0u64;
-        let batch_size = 2000;
-
-        for (reference, target) in &all_resolved {
-            pending.push((reference.id, target.clone()));
-            processed += 1;
-            stats.resolved += 1;
-            *stats
-                .by_strategy
-                .entry(target.strategy.as_str().to_string())
-                .or_default() += 1;
-
-            if pending.len() >= batch_size {
-                store.batch_update_resolutions(&pending)?;
-                pending.clear();
-
-                if let Some(cb) = on_progress {
-                    cb(processed, total_refs);
-                }
-                if let Some(mutex) = progress_mutex {
-                    mutex.lock().unwrap().set_current(processed);
+                if pending.len() >= batch_size {
+                    writer_store.batch_update_resolutions(&pending)?;
+                    pending.clear();
+                    if let Some(ref ps) = writer_progress {
+                        let _ = ps.lock().map(|mut p| p.set_current(processed));
+                    }
                 }
             }
+            if !pending.is_empty() {
+                writer_store.batch_update_resolutions(&pending)?;
+                if let Some(ref ps) = writer_progress {
+                    let _ = ps.lock().map(|mut p| p.set_current(processed));
+                }
+            }
+            stats.unresolved = total_refs as usize - stats.resolved;
+            Ok((all, stats))
+        });
+
+        // Enter Phase 2 progress bar before spawning rayon to show percentage.
+        if let Some(ref ps) = progress_mutex {
+            let _ = ps.lock().map(|mut p| p.enter_phase2(total_refs));
         }
 
-        // Final flush
-        if !pending.is_empty() {
-            store.batch_update_resolutions(&pending)?;
-            if let Some(cb) = on_progress {
-                cb(processed, total_refs);
+        // Step B: pure-memory parallel resolution — send results to channel.
+        let mc = &matched_counter;
+        file_groups.par_iter().for_each(|(_fid, refs, ctx)| {
+            let results = session.resolve_refs_in_ctx(refs, ctx);
+            let count = results.len() as u64;
+            let total = mc.fetch_add(count, Ordering::Relaxed) + count;
+            if let Some(ref ac) = progress_atomic {
+                ac.store(total, Ordering::Relaxed);
             }
-            if let Some(mutex) = progress_mutex {
-                mutex.lock().unwrap().set_current(processed);
+            for r in results {
+                if tx.send(r).is_err() { break; }
+            }
+        });
+        drop(tx);
+
+        match writer_handle.join() {
+            Ok(Ok((all_resolved, stats))) => Ok((all_resolved, stats)),
+            Ok(Err(e)) => Err(e),
+            Err(panic) => {
+                let msg = panic.downcast_ref::<&str>().map(|s| s.to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown panic".into());
+                Err(anyhow::anyhow!("Phase 2 writer panicked: {}", msg))
             }
         }
-
-        stats.unresolved = total_refs as usize - stats.resolved;
-
-        Ok((all_resolved, stats))
     }
 
     /// Wrapper that builds the session internally (convenience when you
@@ -550,10 +551,10 @@ impl ReferenceResolver {
     pub fn resolve_all_parallel_simple(
         &mut self,
         progress_mutex: Option<&std::sync::Arc<std::sync::Mutex<types::progress::ProgressState>>>,
-        on_progress: Option<&dyn Fn(u64, u64)>,
+        _on_progress: Option<&dyn Fn(u64, u64)>,
     ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
         let store = self.store.clone();
-        self.resolve_all_parallel(store, progress_mutex, on_progress)
+        self.resolve_all_parallel(store, progress_mutex, _on_progress)
     }
 
     /// Resolve references scoped to a specific set of files (lazy structural).
