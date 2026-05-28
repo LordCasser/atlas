@@ -53,7 +53,7 @@ so consumers parse one shape regardless of which query was made.
 | Field | Type | Always present? | Semantics |
 |-------|------|:---:|-----------|
 | `ok` | `bool` | ✅ | Transport-level success. `false` only on system errors (I/O, DB corruption). |
-| `kind` | `string` | ✅ | One of `"trace_point"`, `"trace_variable"`, `"trace_callers"`. |
+| `kind` | `string` | ✅ | One of `"trace_point"`, `"trace_variable"`, `"trace_caller_path"`, `"trace_forward"`. |
 | `capability` | `LanguageCapabilityProfile\|null` | ✅ | The resolved language's capability profile. `null` when `ok=false`. |
 | `partial_result` | `bool` | ✅ | `true` when result is incomplete. Inspect `diagnostics`. |
 | `diagnostics` | `TraceDiagnostic[]` | ✅ | May be empty. Each entry has `level`, `message`, optional `code`. |
@@ -140,7 +140,7 @@ so consumers parse one shape regardless of which query was made.
 
 ---
 
-## 4. CallerPath (= CallerChain) — trace_callers result
+## 4. CallerChain — trace_caller_path result
 
 ```json
 {
@@ -174,6 +174,27 @@ so consumers parse one shape regardless of which query was made.
 ### Single-chain semantics (locked)
 
 The explorer returns the **single farthest** caller chain via BFS. It does NOT enumerate all possible paths.
+
+---
+
+## 4b. ForwardCallChain — trace_forward result
+
+Shares the same shape as `CallerChain` but the BFS walks **forward** (caller → callee) rather than backward.
+
+```json
+{
+  "root": { "id": "...", "name": "main", "kind": "Function", ... },
+  "steps": [ <CallerChainStep>, ... ],
+  "target": { "id": "...", "name": "processRequest", "kind": "Function", ... },
+  "nodes_visited": 84,
+  "max_depth_reached": 5
+}
+```
+
+- `root` — the source function the user queried.
+- `target` — the destination function reached.
+- `steps[]` — ordered root → target (same `CallerChainStep` type as caller_path).
+- `kind` in envelope: `"trace_forward"`.
 
 ---
 
@@ -215,7 +236,8 @@ Each language has a `LanguageCapabilityProfile` with `FeatureMatrix` for fine-gr
 ### Capability gating
 
 - `trace_variable`: gated on `local_dataflow.is_supported()`.
-- `trace_callers`: gated on `call_graph.is_supported()`.
+- `trace_caller_path`: gated on `call_graph.is_supported()`.
+- `trace_forward`: gated on `call_graph.is_supported()`.
 - `trace_point`: **always available**, regardless of capability.
 
 ---

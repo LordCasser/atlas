@@ -117,21 +117,32 @@ impl ToolRouter {
                     let project_root = prepared.project_root.clone();
                     let result = serde_json::to_value(&prepared.result)
                         .unwrap_or_else(|e| json!({ "ok": false, "error": e.to_string() }));
-                    pending.lock().unwrap().insert(
-                        tid.clone(),
-                        PendingProjectActivation {
-                            project_root,
-                            store: prepared.store,
-                        },
-                    );
-                    task_manager.complete_task(
-                        &tid,
-                        json!({
-                            "open_project": result,
-                            "activation": "pending",
-                            "next_action": "Call task_status or wait_for_task with this task_id; the completed task will activate the prepared project."
-                        }),
-                    );
+                    match pending.lock() {
+                        Ok(mut guard) => {
+                            guard.insert(
+                                tid.clone(),
+                                PendingProjectActivation {
+                                    project_root,
+                                    store: prepared.store,
+                                },
+                            );
+                            task_manager.complete_task(
+                                &tid,
+                                json!({
+                                    "open_project": result,
+                                    "activation": "pending",
+                                    "next_action": "Call task_status or wait_for_task with this task_id; the completed task will activate the prepared project."
+                                }),
+                            );
+                        }
+                        Err(_poison) => {
+                            tracing::error!(
+                                "Mutex poisoned on pending project activations; task '{}' activation failed",
+                                tid
+                            );
+                            task_manager.fail_task(&tid, "Internal server state corrupted (mutex poisoned)");
+                        }
+                    }
                 }
                 Err(resp) => {
                     let msg = resp

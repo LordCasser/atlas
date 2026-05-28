@@ -131,7 +131,7 @@ pub struct PhaseEntry {
 /// TUI render loop.  The worker thread writes through the methods below.
 pub struct ProgressState {
     /// Ordered phase timeline (includes completed + current + pending).
-    pub phases: Vec<PhaseEntry>,
+    pub(crate) phases: Vec<PhaseEntry>,
 
     /// Atomic counter for the current phase — used by parallel stages
     /// (rayon) where the worker thread increments lock-free.
@@ -154,7 +154,7 @@ pub struct ProgressState {
     /// Whether we've entered Phase 2 (serial-write) of a phase that
     /// started with Phase 1 (parallel-match).  When true, the TUI
     /// renders a percentage bar instead of a spinner + rate.
-    pub phase2_active: bool,
+    pub(crate) phase2_active: bool,
 }
 
 impl ProgressState {

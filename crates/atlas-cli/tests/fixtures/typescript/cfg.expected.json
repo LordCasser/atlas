@@ -67,6 +67,12 @@
       "kind": "branch"
     },
     {
+      "kind": "return"
+    },
+    {
+      "kind": "return"
+    },
+    {
       "kind": "join"
     },
     {
@@ -91,12 +97,12 @@
     },
     {
       "source_kind": "branch",
-      "target_kind": "join",
+      "target_kind": "return",
       "kind": "true_branch"
     },
     {
       "source_kind": "branch",
-      "target_kind": "join",
+      "target_kind": "return",
       "kind": "false_branch"
     },
     {

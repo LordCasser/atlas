@@ -14,14 +14,13 @@ use std::collections::{HashMap, VecDeque};
 
 use db::{CallGraphReader, SymbolReader};
 use types::caller_path::{ForwardChain, ForwardChainStep};
-use types::enums::EdgeKind;
-use types::ids::{ReferenceId, SymbolId};
-use types::structs::TextRange;
-use types::trace::{BoundaryKind, BoundaryMarker};
+use types::ids::SymbolId;
+
+use super::call_chain;
 
 /// Default maximum depth for forward-chain traversal.
-#[allow(dead_code)]
-pub const DEFAULT_MAX_DEPTH: usize = 20;
+#[allow(unused_imports)]
+pub use call_chain::DEFAULT_MAX_DEPTH;
 
 /// Explores forward call chains from a source symbol to a target.
 pub struct ForwardPathExplorer;
@@ -51,10 +50,7 @@ impl ForwardPathExplorer {
         };
 
         // BFS forward: node_id → (predecessor, edge_kind, ref_id, location)
-        let mut predecessors: HashMap<
-            String,
-            (SymbolId, EdgeKind, Option<ReferenceId>, Option<TextRange>),
-        > = HashMap::new();
+        let mut predecessors: call_chain::PredecessorMap = HashMap::new();
         let mut visited: HashMap<String, usize> = HashMap::new();
         let mut queue: VecDeque<(SymbolId, usize)> = VecDeque::new();
 
@@ -85,7 +81,7 @@ impl ForwardPathExplorer {
 
             let edges = store.find_edges_by_source(&current_id)?;
             for edge in &edges {
-                if !is_fwd_edge(&edge.kind) {
+                if !call_chain::is_call_graph_edge(&edge.kind) {
                     continue;
                 }
 
@@ -135,129 +131,31 @@ impl ForwardPathExplorer {
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
-fn is_fwd_edge(kind: &EdgeKind) -> bool {
-    matches!(
-        kind,
-        EdgeKind::Calls
-            | EdgeKind::Instantiates
-            | EdgeKind::Implements
-            | EdgeKind::RegistersCallback
-    )
-}
-
 fn reconstruct_fwd_path(
-    predecessors: &HashMap<String, (SymbolId, EdgeKind, Option<ReferenceId>, Option<TextRange>)>,
+    predecessors: &call_chain::PredecessorMap,
     source_id: &SymbolId,
     target_id: &SymbolId,
     store: &(impl SymbolReader + CallGraphReader),
 ) -> anyhow::Result<Vec<ForwardChainStep>> {
-    // Walk backward from target to source
-    let mut raw_steps: Vec<(
-        SymbolId,
-        SymbolId,
-        EdgeKind,
-        Option<ReferenceId>,
-        Option<TextRange>,
-    )> = Vec::new();
-    let mut current = target_id.clone();
-
-    while &current != source_id {
-        let key = hex::encode(current.as_bytes());
-        match predecessors.get(&key) {
-            Some((pred_id, kind, ref_id, location)) => {
-                raw_steps.push((
-                    pred_id.clone(),
-                    current.clone(),
-                    kind.clone(),
-                    ref_id.clone(),
-                    location.clone(),
-                ));
-                current = pred_id.clone();
-            }
-            None => break,
-        }
-    }
-
-    raw_steps.reverse();
-
-    // Prefetch symbols
-    let mut symbol_cache: HashMap<SymbolId, types::SymbolDef> = HashMap::new();
-    {
-        let mut unique_ids = std::collections::HashSet::new();
-        for (caller, callee, _, _, _) in &raw_steps {
-            unique_ids.insert(caller.clone());
-            unique_ids.insert(callee.clone());
-        }
-        for id in &unique_ids {
-            if let Ok(Some(sym)) = store.find_symbol_by_id(id) {
-                symbol_cache.insert(id.clone(), sym);
-            }
-        }
-    }
-
-    let mut steps = Vec::new();
-    for (idx, (caller, callee, kind, ref_id, edge_location)) in raw_steps.into_iter().enumerate() {
-        let caller_sym = symbol_cache.get(&caller);
-        let callee_sym = symbol_cache.get(&callee);
-
-        let file_id = caller_sym
-            .map(|s| s.file_id)
-            .unwrap_or_else(|| types::ids::FileId::generate("unknown"));
-
-        let callsite = if let Some(ref rid) = ref_id {
-            store.find_callsite_by_reference_id(rid).ok().flatten()
-        } else {
-            None
-        };
-
-        let range = if let Some(ref cs) = callsite {
-            Some(cs.range)
-        } else {
-            edge_location
-                .clone()
-                .or_else(|| caller_sym.map(|s| s.range))
-        };
-
-        let caller_name = caller_sym.map(|s| s.name.clone()).unwrap_or_default();
-        let callee_name = callee_sym.map(|s| s.name.clone()).unwrap_or_default();
-
-        let desc = match &kind {
-            EdgeKind::RegistersCallback => format!("{} registers {}", caller_name, callee_name),
-            _ => format!("{} → {}", caller_name, callee_name),
-        };
-
-        let mut step = ForwardChainStep::new(
-            idx as u32,
-            caller,
-            callee,
-            kind.clone(),
-            file_id,
-            range,
-            &desc,
-        );
-        step.callsite = callsite;
-
-        if kind == EdgeKind::RegistersCallback {
-            step.boundary = Some(BoundaryMarker {
-                kind: BoundaryKind::CallbackRegistration {
-                    registrant: caller_name.clone(),
-                    callback: callee_name.clone(),
-                },
-                message: format!(
-                    "'{}' is registered as a callback by '{}'. It will be invoked dynamically.",
-                    callee_name, caller_name
-                ),
-                suggestion: format!(
-                    "Use explore on '{}' to find its own callers.",
-                    callee_name
-                ),
-                bridge_target: Some(callee.to_hex()),
-            });
-        }
-
-        steps.push(step);
-    }
-
+    let raw = call_chain::reconstruct_path(predecessors, target_id, source_id, store)?;
+    let steps = raw
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let mut step = ForwardChainStep::new(
+                i as u32,
+                s.caller,
+                s.callee,
+                s.kind,
+                s.file_id,
+                s.range,
+                &s.description,
+            );
+            step.callsite = s.callsite;
+            step.boundary = s.boundary;
+            step
+        })
+        .collect();
     Ok(steps)
 }
 

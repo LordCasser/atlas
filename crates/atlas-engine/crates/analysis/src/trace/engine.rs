@@ -16,6 +16,8 @@
 //!   to internal `FileId` with exact, suffix, and absolute-path probing.
 
 use std::{
+    cell::RefCell,
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -112,6 +114,13 @@ impl<T> TraceQueryResponse<T> {
 pub struct TraceEngine {
     store: Arc<Store>,
     project_root: Option<PathBuf>,
+    /// Cached canonical project root (computed once at construction).
+    /// Avoids repeated `canonicalize()` syscalls in `is_file_in_project`.
+    canonical_root: Option<PathBuf>,
+    /// Cache of file path → content, keyed by canonical path.
+    /// Avoids repeated `read_to_string` for the same file in
+    /// `extract_snippet` / `extract_context_snippet`.
+    file_cache: RefCell<HashMap<PathBuf, String>>,
 }
 
 impl TraceEngine {
@@ -122,6 +131,8 @@ impl TraceEngine {
         Self {
             store,
             project_root: None,
+            canonical_root: None,
+            file_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -130,9 +141,12 @@ impl TraceEngine {
     /// When a project root is provided, [`Evidence.snippet`] will be populated
     /// by reading the relevant source line from disk.
     pub fn new_with_root(store: Arc<Store>, project_root: PathBuf) -> Self {
+        let canonical_root = project_root.canonicalize().ok();
         Self {
             store,
             project_root: Some(project_root),
+            canonical_root,
+            file_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -141,9 +155,13 @@ impl TraceEngine {
     /// Convenience wrapper around [`Self::new_with_root`] that uses the
     /// workspace's canonical project root.
     pub fn new_with_workspace(store: Arc<Store>, workspace: &workspace::Workspace) -> Self {
+        let project_root = workspace.root().to_path_buf();
+        let canonical_root = project_root.canonicalize().ok();
         Self {
             store,
-            project_root: Some(workspace.root().to_path_buf()),
+            project_root: Some(project_root),
+            canonical_root,
+            file_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -777,13 +795,23 @@ impl TraceEngine {
     /// joined with newlines.  The target line is included.
     fn extract_context_snippet(&self, file_path: &str, line_0based: u32, context_lines: usize) -> Option<String> {
         let root = self.project_root.as_ref()?;
+        let canonical_root = self.canonical_root.as_ref()?;
         let full_path = root.join(file_path);
         let canonical = full_path.canonicalize().ok()?;
-        let canonical_root = root.canonicalize().ok()?;
-        if !canonical.starts_with(&canonical_root) {
+        if !canonical.starts_with(canonical_root) {
             return None;
         }
-        let content = std::fs::read_to_string(&canonical).ok()?;
+        // Check file-content cache to avoid repeated disk reads.
+        let content = {
+            let mut cache = self.file_cache.borrow_mut();
+            if let Some(cached) = cache.get(&canonical) {
+                cached.clone()
+            } else {
+                let text = std::fs::read_to_string(&canonical).ok()?;
+                cache.insert(canonical.clone(), text.clone());
+                text
+            }
+        };
         let all_lines: Vec<&str> = content.lines().collect();
         let center = line_0based as usize;
         if center >= all_lines.len() {
@@ -810,14 +838,23 @@ impl TraceEngine {
     /// cannot be read, or the line is out of bounds.
     fn extract_snippet(&self, file_path: &str, line_0based: u32) -> Option<String> {
         let root = self.project_root.as_ref()?;
+        let canonical_root = self.canonical_root.as_ref()?;
         let full_path = root.join(file_path);
         let canonical = full_path.canonicalize().ok()?;
-        // Canonicalize root too — macOS symlinks /var→/private/var
-        let canonical_root = root.canonicalize().ok()?;
-        if !canonical.starts_with(&canonical_root) {
+        if !canonical.starts_with(canonical_root) {
             return None;
         }
-        let content = std::fs::read_to_string(&canonical).ok()?;
+        // Check file-content cache to avoid repeated disk reads.
+        let content = {
+            let mut cache = self.file_cache.borrow_mut();
+            if let Some(cached) = cache.get(&canonical) {
+                cached.clone()
+            } else {
+                let text = std::fs::read_to_string(&canonical).ok()?;
+                cache.insert(canonical.clone(), text.clone());
+                text
+            }
+        };
         let line_idx = line_0based as usize;
         content.lines().nth(line_idx).map(|l| l.trim().to_string())
     }
@@ -831,13 +868,13 @@ impl TraceEngine {
         let Some(root) = self.project_root.as_ref() else {
             return false;
         };
+        let Some(canonical_root) = self.canonical_root.as_ref() else {
+            return false;
+        };
         let Ok(full_path) = root.join(file_path).canonicalize() else {
             return false;
         };
-        let Ok(canonical_root) = root.canonicalize() else {
-            return false;
-        };
-        full_path.starts_with(&canonical_root)
+        full_path.starts_with(canonical_root)
     }
 
     /// Resolve a file path from a file_id.

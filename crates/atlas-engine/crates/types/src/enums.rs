@@ -253,7 +253,7 @@ impl SymbolKind {
 // EdgeKind — semantic relationships between symbols
 // ---------------------------------------------------------------------------
 
-/// 21 semantic edge kinds.
+/// 22 semantic edge kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EdgeKind {
@@ -403,7 +403,7 @@ impl ReferenceKind {
 // ImportKind — type of import statement
 // ---------------------------------------------------------------------------
 
-/// 5 import kinds matching common language patterns.
+/// 6 import kinds matching common language patterns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ImportKind {
@@ -547,7 +547,7 @@ impl Visibility {
 // ResolutionStrategy — how a reference was resolved
 // ---------------------------------------------------------------------------
 
-/// 5 strategies for resolving a reference to a symbol.
+/// 7 strategies for resolving a reference to a symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolutionStrategy {
@@ -709,6 +709,9 @@ pub struct Confidence(f32);
 impl Confidence {
     /// Create a new Confidence, clamping to [0.0, 1.0].
     pub fn new(v: f32) -> Self {
+        if v.is_nan() {
+            return Self(0.5); // silent default for NaN
+        }
         Self(v.clamp(0.0, 1.0))
     }
 
@@ -808,7 +811,7 @@ impl BindingKind {
 // DataNodeKind — data-flow node categories
 // ---------------------------------------------------------------------------
 
-/// 11 data-node kinds.  Used by [`super::dataflow::DataNode`].
+/// 13 data-node kinds.  Used by [`super::dataflow::DataNode`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DataNodeKind {

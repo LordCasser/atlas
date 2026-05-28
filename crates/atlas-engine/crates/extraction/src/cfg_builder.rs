@@ -289,32 +289,140 @@ impl CfgContext<'_> {
 
     /// Handle if/else: Branch → TrueBranch → cons → Join ← FalseBranch ← alt → Join
     /// Returns the index after the if_statement.
-    fn walk_if(&mut self, _children: &[Node], _idx: usize, start_byte: u32) -> usize {
-        // Create Branch node and connect from previous
-        let branch_id = self.emit_stmt(CfgNodeKind::Branch, start_byte);
+    fn walk_if(&mut self, children: &[Node], idx: usize, start_byte: u32) -> usize {
+        let if_node = &children[idx];
 
-        // For now, emit a Branch that goes to a Join (full sub-block walking deferred)
+        // 1. Create Branch node, connect from previous
+        let branch_id = self.add_node(CfgNodeKind::Branch, start_byte);
+        if let Some(prev) = self.prev_node_id.take() {
+            self.add_edge(&prev, &branch_id, CfgEdgeKind::Normal);
+        }
+
+        // 2. Find consequence and alternative branches
+        let (cons_node, alt_node) = find_if_branches(*if_node, self.config.block_kinds);
+
+        // 3. Walk consequence body
+        let cons_end = if let Some(cons) = cons_node {
+            let saved_edge_count = self.edges.len();
+            self.prev_node_id = Some(branch_id);
+            self.walk_branch_body(cons);
+            // Fix first edge: Branch→first node of consequence to TrueBranch
+            if self.edges.len() > saved_edge_count {
+                self.edges[saved_edge_count].kind = CfgEdgeKind::TrueBranch;
+            }
+            self.prev_node_id.take()
+        } else {
+            None
+        };
+
+        // 4. Walk alternative body (if present)
+        let alt_end = if let Some(alt) = alt_node {
+            let saved_edge_count = self.edges.len();
+            self.prev_node_id = Some(branch_id);
+            self.walk_branch_body(alt);
+            // Fix first edge: Branch→first node of alternative to FalseBranch
+            if self.edges.len() > saved_edge_count {
+                self.edges[saved_edge_count].kind = CfgEdgeKind::FalseBranch;
+            }
+            self.prev_node_id.take()
+        } else {
+            None
+        };
+
+        // 5. Create Join node and connect tails
         let join_id = self.add_node(CfgNodeKind::Join, start_byte + 1);
 
-        // Connect Branch → Join (placeholder — full resolution requires sub-node access)
-        self.add_edge(&branch_id, &join_id, CfgEdgeKind::TrueBranch);
-        self.add_edge(&branch_id, &join_id, CfgEdgeKind::FalseBranch);
+        // Connect consequence tail → Join (if branch didn't end with return/throw)
+        if let Some(ref last) = cons_end {
+            if *last != branch_id {
+                self.add_edge(last, &join_id, CfgEdgeKind::Normal);
+            }
+        }
+        // Connect alternative tail → Join
+        if let Some(ref last) = alt_end {
+            if *last != branch_id {
+                self.add_edge(last, &join_id, CfgEdgeKind::Normal);
+            }
+        }
+        // If no else clause, Branch → Join via FalseBranch
+        if alt_node.is_none() {
+            self.add_edge(&branch_id, &join_id, CfgEdgeKind::FalseBranch);
+        }
 
         self.prev_node_id = Some(join_id);
-        _idx + 1
+        idx + 1
     }
 
-    /// Handle for/while/do: Loop → body → LoopBack → exit
-    fn walk_loop(&mut self, _children: &[Node], _idx: usize, start_byte: u32) -> usize {
-        let loop_id = self.emit_stmt(CfgNodeKind::Loop, start_byte);
-        let post_id = self.add_node(CfgNodeKind::Statement, start_byte + 1);
+    /// Walk a single branch body (consequence or alternative).
+    /// If the node is a block, walk its children; otherwise emit as statement.
+    fn walk_branch_body(&mut self, node: Node) {
+        if self.config.block_kinds.contains(&node.kind()) {
+            let range = node_text_range(&node, self.source);
+            self.walk_block(node, range.start_byte);
+        } else {
+            // Single-statement body (e.g., `if (x) return 1;`)
+            let range = node_text_range(&node, self.source);
+            // Determine node kind from the statement type
+            let kind = if self.config.return_kinds.contains(&node.kind()) {
+                CfgNodeKind::Return
+            } else if self.config.throw_kinds.contains(&node.kind()) {
+                CfgNodeKind::Throw
+            } else {
+                CfgNodeKind::Statement
+            };
+            self.emit_stmt(kind, range.start_byte);
+        }
+    }
 
-        // Connect Loop → post-loop, and LoopBack edge
-        self.add_edge(&loop_id, &post_id, CfgEdgeKind::Normal);
-        self.add_edge(&post_id, &loop_id, CfgEdgeKind::LoopBack);
+    /// Handle for/while/do: Loop → body → LoopBack → exit (Join)
+    fn walk_loop(&mut self, children: &[Node], idx: usize, start_byte: u32) -> usize {
+        let loop_node = &children[idx];
 
-        self.prev_node_id = Some(post_id);
-        _idx + 1
+        // 1. Create Loop node, connect from previous
+        let loop_id = self.add_node(CfgNodeKind::Loop, start_byte);
+        if let Some(prev) = self.prev_node_id.take() {
+            self.add_edge(&prev, &loop_id, CfgEdgeKind::Normal);
+        }
+
+        // 2. Find and walk the loop body
+        let body = find_loop_body(*loop_node, self.config.block_kinds);
+
+        let body_last = if let Some(body) = body {
+            self.prev_node_id = Some(loop_id);
+
+            if self.config.block_kinds.contains(&body.kind()) {
+                let body_range = node_text_range(&body, self.source);
+                self.walk_block(body, body_range.start_byte);
+            } else {
+                // Single-statement body
+                let body_range = node_text_range(&body, self.source);
+                // Determine node kind
+                let kind = if self.config.return_kinds.contains(&body.kind()) {
+                    CfgNodeKind::Return
+                } else if self.config.throw_kinds.contains(&body.kind()) {
+                    CfgNodeKind::Throw
+                } else {
+                    CfgNodeKind::Statement
+                };
+                self.emit_stmt(kind, body_range.start_byte);
+            }
+
+            self.prev_node_id.take()
+        } else {
+            None
+        };
+
+        // 3. LoopBack edge: last body node → Loop (if body didn't end with return/throw)
+        if let Some(ref last) = body_last {
+            self.add_edge(last, &loop_id, CfgEdgeKind::LoopBack);
+        }
+
+        // 4. Exit edge: Loop → Join (post-loop)
+        let join_id = self.add_node(CfgNodeKind::Join, start_byte + 1);
+        self.add_edge(&loop_id, &join_id, CfgEdgeKind::Normal);
+
+        self.prev_node_id = Some(join_id);
+        idx + 1
     }
 
     /// Emit a statement/return/throw node and connect to previous.
@@ -331,6 +439,89 @@ impl CfgContext<'_> {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// For an if-like node, find the consequence and alternative branch bodies.
+///
+/// In tree-sitter, the else branch is wrapped in an `else_clause` node in some
+/// languages (TS/JS/Rust) or may be a direct child in others (Java/Go/C).
+/// This helper handles both cases.
+fn find_if_branches<'a>(
+    node: Node<'a>,
+    block_kinds: &[&str],
+) -> (Option<Node<'a>>, Option<Node<'a>>) {
+    let mut cursor = node.walk();
+    let children: Vec<Node> = node.named_children(&mut cursor).collect();
+
+    // Strategy 1: find direct block_kind children
+    let blocks: Vec<Node> = children
+        .iter()
+        .filter(|c| block_kinds.contains(&c.kind()))
+        .copied()
+        .collect();
+
+    let cons = if blocks.len() >= 1 {
+        Some(blocks[0])
+    } else if children.len() >= 2 {
+        // Fallback: index-based (children[0]=condition, children[1]=consequence)
+        Some(children[1])
+    } else {
+        None
+    };
+
+    // Find alternative: look for else_clause wrapper first, then direct block_kind
+    let mut alt = None;
+    if blocks.len() >= 2 {
+        alt = Some(blocks[1]);
+    } else {
+        // Search for wrapper nodes that contain the alternative body
+        for child in &children {
+            match child.kind() {
+                "else_clause" | "else" => {
+                    let mut sub_cursor = child.walk();
+                    let sub_children: Vec<Node> =
+                        child.named_children(&mut sub_cursor).collect();
+                    // Prefer a block_kind body, fall back to first child
+                    for sub in &sub_children {
+                        if block_kinds.contains(&sub.kind()) {
+                            alt = Some(*sub);
+                            break;
+                        }
+                    }
+                    if alt.is_none() {
+                        alt = sub_children.first().copied();
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+        // Fallback: if still no alternative, try children[2] direct
+        if alt.is_none() && children.len() > 2 {
+            alt = children.get(2).copied();
+        }
+    }
+
+    (cons, alt)
+}
+
+/// Find the body block/statement of a loop node (for/while/do).
+///
+/// Looks for a child matching `block_kinds` first; if none found, returns
+/// the last named child (single-statement body like `while (x) doSomething();`).
+fn find_loop_body<'a>(node: Node<'a>, block_kinds: &[&str]) -> Option<Node<'a>> {
+    let mut cursor = node.walk();
+    let children: Vec<Node> = node.named_children(&mut cursor).collect();
+
+    // Prefer block_kind children (statement_block, block, compound_statement)
+    for child in &children {
+        if block_kinds.contains(&child.kind()) {
+            return Some(*child);
+        }
+    }
+
+    // Fallback: last named child (for single-statement body)
+    children.last().copied()
+}
 
 fn find_function_body<'a>(node: Node<'a>, block_kinds: &[&str]) -> Option<Node<'a>> {
     let mut cursor = node.walk();

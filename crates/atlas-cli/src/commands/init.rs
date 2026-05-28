@@ -49,38 +49,35 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Quick check: does the directory contain source files we can recognize?
+/// Quick check: does the directory (recursively) contain source files we can recognize?
+/// Stops at first match to avoid unnecessary directory walking.
 fn has_source_files(root: &std::path::Path) -> bool {
-    let mut found = false;
-
-    // Walk up to 100 entries deep, stop early on first match
-    if let Ok(entries) = std::fs::read_dir(root) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if Language::from_path(&path).is_some() {
-                    found = true;
-                    break;
-                }
-            }
-            if path.is_dir() {
-                // Shallow recursive into first-level subdirs
-                if let Ok(sub_entries) = std::fs::read_dir(&path) {
-                    for sub in sub_entries.flatten() {
-                        let sub_path = sub.path();
-                        if sub_path.is_file() {
-                            if Language::from_path(&sub_path).is_some() {
-                                found = true;
-                                break;
-                            }
+    fn walk(dir: &std::path::Path, depth: u32) -> bool {
+        // Cap depth at 20 to prevent infinite recursion on symlink cycles.
+        if depth > 20 {
+            return false;
+        }
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    if Language::from_path(&path).is_some() {
+                        return true;
+                    }
+                } else if path.is_dir() {
+                    // Avoid traversing hidden / build directories for performance.
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if name.starts_with('.') || name == "node_modules" || name == "target" || name == "build" {
+                            continue;
                         }
+                    }
+                    if walk(&path, depth + 1) {
+                        return true;
                     }
                 }
             }
-            if found {
-                break;
-            }
         }
+        false
     }
-    found
+    walk(root, 0)
 }

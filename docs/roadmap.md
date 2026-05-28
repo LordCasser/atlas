@@ -50,6 +50,8 @@ cargo test -p atlas-cli --features "all-languages,mcp"
 
 All 14 languages are now at `DataflowFull` level. The current schema added 4 persistent summary tables (`function_summaries`, `summary_param_reaches`, `summary_return_sources`, `summary_call_arg_sources`) with `CrossFunctionBridge` for ArgToParam/ReturnToCall interprocedural bridges.
 
+> **Known gap**: CFG builder (`cfg_builder.rs`) has placeholder `walk_if`/`walk_loop` implementations — if/else sub-blocks and loop bodies are not traversed. This means CFG output is structurally incomplete for conditional and loop branches. The `DataflowFull` label reflects the dataflow/lexical/reference pipeline, not CFG completeness.
+
 ### 2.2 Lazy Index (three phases) ✅
 
 - **P0: Scope Index** — `--include`/`--scope`/`--exclude` range-limited indexing.

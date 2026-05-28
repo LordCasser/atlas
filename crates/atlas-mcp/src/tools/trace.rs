@@ -65,7 +65,13 @@ impl ToolRouter {
             self.send_progress(0.3, "Ensuring structural index...");
             let lazy =
                 LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-            let _ = lazy.ensure_structural_for_file(&file_id);
+            if let Err(e) = lazy.ensure_structural_for_file(&file_id) {
+                tracing::warn!(
+                    "Lazy structural extraction failed for file {}: {}",
+                    file_id,
+                    e
+                );
+            }
         }
 
         let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
@@ -137,7 +143,13 @@ impl ToolRouter {
             self.send_progress(0.2, "Ensuring structural index...");
             let lazy =
                 LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-            let _ = lazy.ensure_structural_for_file(&file_id);
+            if let Err(e) = lazy.ensure_structural_for_file(&file_id) {
+                tracing::warn!(
+                    "Lazy structural extraction failed for file {}: {}",
+                    file_id,
+                    e
+                );
+            }
         }
 
         // Lazy-load dataflow before tracing, so Locator can find data nodes.
@@ -148,7 +160,10 @@ impl ToolRouter {
         let file_has_dataflow = self
             .store
             .has_dataflow_for_file(&file_id)
-            .unwrap_or(false);
+            .unwrap_or_else(|e| {
+                tracing::warn!("Failed to check dataflow for file {}: {}", file_id, e);
+                false
+            });
         let lazy_start = std::time::Instant::now();
         let mut partial = false;
         let mut lazy_diags: Vec<TraceDiagnostic> = Vec::new();
@@ -232,6 +247,17 @@ impl ToolRouter {
             };
             engine.trace_callers(&target_id, max_depth)
         } else if let Some(name) = symbol_name {
+            // Lazy structural: ensure name-based symbols are structurally parsed
+            if !self.has_manual_full_index() {
+                self.send_progress(0.3, "Ensuring structural extraction...");
+                let lazy = LazyStructuralService::new(
+                    self.store.clone(),
+                    Some(self.project_root.clone()),
+                );
+                if let Err(e) = lazy.ensure_structural_for_symbol(name) {
+                    tracing::warn!("Lazy structural extraction failed for '{}': {}", name, e);
+                }
+            }
             engine.trace_callers_by_name(name, max_depth)
         } else {
             let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
@@ -262,6 +288,19 @@ impl ToolRouter {
 
         // Name-based lookup (new path — avoids requiring hex IDs)
         if let (Some(fname), Some(tname)) = (from_name, to_name) {
+            // Lazy structural: ensure name-based symbols are structurally parsed
+            if !self.has_manual_full_index() {
+                self.send_progress(0.3, "Ensuring structural extraction...");
+                let lazy = LazyStructuralService::new(
+                    self.store.clone(),
+                    Some(self.project_root.clone()),
+                );
+                for name in [fname, tname] {
+                    if let Err(e) = lazy.ensure_structural_for_symbol(name) {
+                        tracing::warn!("Lazy structural extraction failed for '{}': {}", name, e);
+                    }
+                }
+            }
             let resp = engine.trace_forward_by_name(fname, tname, max_depth);
             let is_error = !resp.ok;
             return (

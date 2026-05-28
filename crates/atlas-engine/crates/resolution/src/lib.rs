@@ -38,9 +38,147 @@ pub use config::{commit_config_hashes, detect_config_change};
 pub use include_graph::IncludeGraph;
 pub use path_alias::PathAliasResolver;
 
+// ── Shared resolution core ─────────────────────────────────────────────────
+//
+// Both ResolutionSession and ReferenceResolver need the same 6-strategy
+// resolution pipeline.  The only behavioral difference is Strategy 6
+// (project-wide name search): one uses file-proximity scoring, the other
+// uses plain name lookup.  Parameterizing that difference lets both structs
+// share a single implementation.
+
+/// The 6-strategy resolution core — pure function, no I/O.
+///
+/// `global_index` and `proximity_file_id` control Strategy 6:
+/// - `Some(idx)` + `Some(fid)`: proximity-scored search (ResolutionSession)
+/// - `Some(idx)` + `None`: plain name search (ReferenceResolver)
+/// - `None`: skip Strategy 6 entirely (global_index not built yet)
+fn resolve_one_core(
+    reference: &ReferenceUse,
+    ctx: &ResolutionContext,
+    import_resolver: &ImportResolver,
+    name_matcher: &NameMatcher,
+    global_index: Option<&GlobalSymbolIndex>,
+    proximity_file_id: Option<FileId>,
+) -> Option<ResolvedTarget> {
+    // Strategy 1: Built-in / external filter
+    if BuiltinFilter::is_builtin(&reference.name, ctx.file.language) {
+        return None;
+    }
+
+    // Strategy 2: Scope-local exact match
+    if let Some(scope_id) = reference.scope_id {
+        if let Some(sym) = ctx.lookup_scoped(scope_id, &reference.name) {
+            return Some(ResolvedTarget {
+                symbol_id: sym.id,
+                confidence: Confidence::certain(),
+                strategy: ResolutionStrategy::ExactMatch,
+                provenance: Provenance::TreeSitter,
+            });
+        }
+    }
+
+    // Strategy 3: Container/class-local
+    if let Some(source_sym) = reference.source_symbol {
+        if let Some(source) = ctx.symbols_by_id.get(&source_sym) {
+            // If the source symbol is a method, look for the target in its containing class
+            if let Some(container) = source.container {
+                if let Some(container_sym) = ctx.symbols_by_id.get(&container) {
+                    if let Some(scope) = container_sym.scope_id {
+                        if let Some(sym) = ctx.lookup_scoped(scope, &reference.name) {
+                            return Some(ResolvedTarget {
+                                symbol_id: sym.id,
+                                confidence: Confidence::certain(),
+                                strategy: ResolutionStrategy::ExactMatch,
+                                provenance: Provenance::TreeSitter,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Strategy 4: Same-file exact match
+    let same_file = ctx.find_in_file_by_name(&reference.name);
+    if let Some(matched) = name_matcher.best_match(
+        &same_file,
+        &reference.name,
+        Confidence::certain(),
+    ) {
+        return Some(ResolvedTarget {
+            symbol_id: matched.symbol_id,
+            confidence: matched.confidence,
+            strategy: matched.strategy,
+            provenance: matched.provenance,
+        });
+    }
+
+    // Strategy 5: Import/include resolution
+    for import in &ctx.imports {
+        if let Ok(candidates) = import_resolver.resolve_import(import) {
+            // Try re-export chain walking first (barrel files)
+            if let Ok(chain_candidates) = import_resolver
+                .resolve_through_reexports(import, candidates)
+            {
+                if let Some(matched) = name_matcher.best_match(
+                    &chain_candidates,
+                    &reference.name,
+                    Confidence::certain(),
+                ) {
+                    return Some(ResolvedTarget {
+                        symbol_id: matched.symbol_id,
+                        confidence: Confidence::new(0.8),
+                        strategy: ResolutionStrategy::ImportResolved,
+                        provenance: Provenance::Heuristic,
+                    });
+                }
+            }
+        }
+    }
+
+    // Strategy 6: Project-wide name search + fuzzy fallback
+    if let Some(idx) = global_index {
+        let candidates = match proximity_file_id {
+            Some(fid) => idx.find_by_name_proximity(&reference.name, fid),
+            None => idx.find_by_name(&reference.name),
+        };
+        if !candidates.is_empty() {
+            if let Some(matched) = name_matcher.best_match(
+                &candidates,
+                &reference.name,
+                Confidence::new(0.6),
+            ) {
+                return Some(ResolvedTarget {
+                    symbol_id: matched.symbol_id,
+                    confidence: matched.confidence,
+                    strategy: ResolutionStrategy::FuzzyMatch,
+                    provenance: Provenance::Heuristic,
+                });
+            }
+        }
+        let fuzzy = idx.fuzzy_search(&reference.name, 2);
+        if !fuzzy.is_empty() {
+            if let Some(matched) = name_matcher.best_match(
+                &fuzzy,
+                &reference.name,
+                Confidence::new(0.4),
+            ) {
+                return Some(ResolvedTarget {
+                    symbol_id: matched.symbol_id,
+                    confidence: matched.confidence,
+                    strategy: ResolutionStrategy::FuzzyMatch,
+                    provenance: Provenance::Heuristic,
+                });
+            }
+        }
+    }
+
+    None
+}
+
 // ── ResolutionSession ──────────────────────────────────────────────────────
 //
-// A thread-safe, rad-only resolution context that can be shared across
+// A thread-safe, read-only resolution context that can be shared across
 // rayon threads during parallel resolution.  All fields are Arc'd so the
 // session implements Send + Sync.
 
@@ -109,122 +247,20 @@ impl ResolutionSession {
         Ok(results)
     }
 
-    /// The 6-strategy resolution core — pure function, no I/O.
+    /// Resolve one reference using the shared core with file-proximity scoring.
     fn resolve_one(
         &self,
         reference: &ReferenceUse,
         ctx: &ResolutionContext,
     ) -> Option<ResolvedTarget> {
-        // Strategy 1: Built-in / external filter
-        if BuiltinFilter::is_builtin(&reference.name, ctx.file.language) {
-            return None;
-        }
-
-        // Strategy 2: Scope-local exact match
-        if let Some(scope_id) = reference.scope_id {
-            if let Some(sym) = ctx.lookup_scoped(scope_id, &reference.name) {
-                return Some(ResolvedTarget {
-                    symbol_id: sym.id,
-                    confidence: Confidence::certain(),
-                    strategy: ResolutionStrategy::ExactMatch,
-                    provenance: Provenance::TreeSitter,
-                });
-            }
-        }
-
-        // Strategy 3: Container/class-local
-        if let Some(source_sym) = reference.source_symbol {
-            if let Some(source) = ctx.symbols_by_id.get(&source_sym) {
-                if let Some(container) = source.container {
-                    if let Some(container_sym) = ctx.symbols_by_id.get(&container) {
-                        if let Some(scope) = container_sym.scope_id {
-                            if let Some(sym) = ctx.lookup_scoped(scope, &reference.name) {
-                                return Some(ResolvedTarget {
-                                    symbol_id: sym.id,
-                                    confidence: Confidence::certain(),
-                                    strategy: ResolutionStrategy::ExactMatch,
-                                    provenance: Provenance::TreeSitter,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Strategy 4: Same-file exact match
-        let same_file = ctx.find_in_file_by_name(&reference.name);
-        if let Some(matched) = self.name_matcher.best_match(
-            &same_file,
-            &reference.name,
-            Confidence::certain(),
-        ) {
-            return Some(ResolvedTarget {
-                symbol_id: matched.symbol_id,
-                confidence: matched.confidence,
-                strategy: matched.strategy,
-                provenance: matched.provenance,
-            });
-        }
-
-        // Strategy 5: Import/include resolution
-        for import in &ctx.imports {
-            if let Ok(candidates) = self.import_resolver.resolve_import(import) {
-                if let Ok(chain_candidates) = self
-                    .import_resolver
-                    .resolve_through_reexports(import, candidates)
-                {
-                    if let Some(matched) = self.name_matcher.best_match(
-                        &chain_candidates,
-                        &reference.name,
-                        Confidence::certain(),
-                    ) {
-                        return Some(ResolvedTarget {
-                            symbol_id: matched.symbol_id,
-                            confidence: Confidence::new(0.8),
-                            strategy: ResolutionStrategy::ImportResolved,
-                            provenance: Provenance::Heuristic,
-                        });
-                    }
-                }
-            }
-        }
-
-        // Strategy 6: Project-wide name search + fuzzy fallback (P7: file-proximity scored)
-        let candidates = self
-            .global_index
-            .find_by_name_proximity(&reference.name, ctx.file.file_id);
-        if !candidates.is_empty() {
-            if let Some(matched) = self.name_matcher.best_match(
-                &candidates,
-                &reference.name,
-                Confidence::new(0.6),
-            ) {
-                return Some(ResolvedTarget {
-                    symbol_id: matched.symbol_id,
-                    confidence: matched.confidence,
-                    strategy: ResolutionStrategy::FuzzyMatch,
-                    provenance: Provenance::Heuristic,
-                });
-            }
-        }
-        let fuzzy = self.global_index.fuzzy_search(&reference.name, 2);
-        if !fuzzy.is_empty() {
-            if let Some(matched) = self.name_matcher.best_match(
-                &fuzzy,
-                &reference.name,
-                Confidence::new(0.4),
-            ) {
-                return Some(ResolvedTarget {
-                    symbol_id: matched.symbol_id,
-                    confidence: matched.confidence,
-                    strategy: ResolutionStrategy::FuzzyMatch,
-                    provenance: Provenance::Heuristic,
-                });
-            }
-        }
-
-        None
+        resolve_one_core(
+            reference,
+            ctx,
+            &self.import_resolver,
+            &self.name_matcher,
+            Some(&self.global_index),
+            Some(ctx.file.file_id),
+        )
     }
 }
 
@@ -348,7 +384,7 @@ impl ReferenceResolver {
     pub fn resolve_all_parallel(
         &mut self,
         store: Arc<Store>,
-        progress_mutex: Option<&std::sync::Mutex<types::progress::ProgressState>>,
+        progress_mutex: Option<&std::sync::Arc<std::sync::Mutex<types::progress::ProgressState>>>,
         on_progress: Option<&dyn Fn(u64, u64)>,
     ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
         if let Some(mutex) = progress_mutex {
@@ -377,6 +413,11 @@ impl ReferenceResolver {
         let mc = &matched_counter;
         let session = &session;
 
+        // Clone the Arc so rayon threads can periodically update the
+        // progress state (otherwise the TUI looks frozen during long-running
+        // Phase 1 on large projects).
+        let progress_arc = progress_mutex.map(|a| Arc::clone(a));
+
         let per_file_results: Vec<(ReferenceUse, ResolvedTarget)> = by_file
             .par_iter()
             .map(|(file_id, refs)| {
@@ -384,7 +425,16 @@ impl ReferenceResolver {
                 let single: &[(FileId, Vec<ReferenceUse>)] = &[(*file_id, refs.clone())];
                 let result = session.resolve_file(store_ref, single);
                 let count = result.as_ref().map_or(0, |v| v.len() as u64);
-                mc.fetch_add(count, Ordering::Relaxed);
+                let total_matched = mc.fetch_add(count, Ordering::Relaxed) + count;
+                // Periodic heartbeat — update TUI every 500 resolved refs so
+                // the spinner and rate counter stay visible.
+                if let Some(ref ps_arc) = progress_arc {
+                    if total_matched % 500 == 0 && total_matched > 0 {
+                        if let Ok(mut ps) = ps_arc.lock() {
+                            ps.set_current(total_matched);
+                        }
+                    }
+                }
                 result.unwrap_or_default()
             })
             .flatten()
@@ -452,7 +502,7 @@ impl ReferenceResolver {
     /// already have a `ReferenceResolver` and just want parallelism).
     pub fn resolve_all_parallel_simple(
         &mut self,
-        progress_mutex: Option<&std::sync::Mutex<types::progress::ProgressState>>,
+        progress_mutex: Option<&std::sync::Arc<std::sync::Mutex<types::progress::ProgressState>>>,
         on_progress: Option<&dyn Fn(u64, u64)>,
     ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
         let store = self.store.clone();
@@ -545,119 +595,14 @@ impl ReferenceResolver {
         reference: &ReferenceUse,
         ctx: &ResolutionContext,
     ) -> Option<ResolvedTarget> {
-        // ---- Strategy 1: Built-in / external filter ----
-        // Builtins are filtered out entirely — there is no real symbol in the DB
-        // to resolve against, and creating a ResolvedTarget with SymbolId::default()
-        // would produce edges with invalid ghost targets.
-        if BuiltinFilter::is_builtin(&reference.name, ctx.file.language) {
-            return None;
-        }
-
-        // ---- Strategy 2: Scope-local exact match ----
-        if let Some(scope_id) = reference.scope_id {
-            if let Some(sym) = ctx.lookup_scoped(scope_id, &reference.name) {
-                return Some(ResolvedTarget {
-                    symbol_id: sym.id,
-                    confidence: Confidence::certain(),
-                    strategy: ResolutionStrategy::ExactMatch,
-                    provenance: Provenance::TreeSitter,
-                });
-            }
-        }
-
-        // ---- Strategy 3: Container/class-local ----
-        if let Some(source_sym) = reference.source_symbol {
-            if let Some(source) = ctx.symbols_by_id.get(&source_sym) {
-                // If the source symbol is a method, look for the target in its containing class
-                if let Some(container) = source.container {
-                    if let Some(container_sym) = ctx.symbols_by_id.get(&container) {
-                        if let Some(scope) = container_sym.scope_id {
-                            if let Some(sym) = ctx.lookup_scoped(scope, &reference.name) {
-                                return Some(ResolvedTarget {
-                                    symbol_id: sym.id,
-                                    confidence: Confidence::certain(),
-                                    strategy: ResolutionStrategy::ExactMatch,
-                                    provenance: Provenance::TreeSitter,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // ---- Strategy 4: Same-file exact match ----
-        let same_file = ctx.find_in_file_by_name(&reference.name);
-        if let Some(matched) =
-            self.name_matcher
-                .best_match(&same_file, &reference.name, Confidence::certain())
-        {
-            return Some(ResolvedTarget {
-                symbol_id: matched.symbol_id,
-                confidence: matched.confidence,
-                strategy: matched.strategy,
-                provenance: matched.provenance,
-            });
-        }
-
-        // ---- Strategy 5: Import/include resolution ----
-        for import in &ctx.imports {
-            if let Ok(candidates) = self.import_resolver.resolve_import(import) {
-                // Try re-export chain walking first (barrel files)
-                if let Ok(chain_candidates) = self
-                    .import_resolver
-                    .resolve_through_reexports(import, candidates)
-                {
-                    if let Some(matched) = self.name_matcher.best_match(
-                        &chain_candidates,
-                        &reference.name,
-                        Confidence::certain(),
-                    ) {
-                        return Some(ResolvedTarget {
-                            symbol_id: matched.symbol_id,
-                            confidence: Confidence::new(0.8),
-                            strategy: ResolutionStrategy::ImportResolved,
-                            provenance: Provenance::Heuristic,
-                        });
-                    }
-                }
-            }
-        }
-
-        // ---- Strategy 6: Project-wide name search (P4: in-memory index) ----
-        if let Some(ref idx) = self.global_index {
-            let candidates = idx.find_by_name(&reference.name);
-            if !candidates.is_empty() {
-                if let Some(matched) =
-                    self.name_matcher
-                        .best_match(&candidates, &reference.name, Confidence::new(0.6))
-                {
-                    return Some(ResolvedTarget {
-                        symbol_id: matched.symbol_id,
-                        confidence: matched.confidence,
-                        strategy: ResolutionStrategy::FuzzyMatch,
-                        provenance: Provenance::Heuristic,
-                    });
-                }
-            }
-            // Bounded fuzzy fallback
-            let fuzzy = idx.fuzzy_search(&reference.name, 2);
-            if !fuzzy.is_empty() {
-                if let Some(matched) =
-                    self.name_matcher
-                        .best_match(&fuzzy, &reference.name, Confidence::new(0.4))
-                {
-                    return Some(ResolvedTarget {
-                        symbol_id: matched.symbol_id,
-                        confidence: matched.confidence,
-                        strategy: ResolutionStrategy::FuzzyMatch,
-                        provenance: Provenance::Heuristic,
-                    });
-                }
-            }
-        }
-
-        None
+        resolve_one_core(
+            reference,
+            ctx,
+            &self.import_resolver,
+            &self.name_matcher,
+            self.global_index.as_ref(),
+            None,
+        )
     }
 }
 

@@ -21,7 +21,7 @@ impl Store {
                 source_symbol: row.get(1)?,
                 field_name: row.get(2)?,
                 target_symbol: row.get(3)?,
-                confidence: row.get(4)?,
+                confidence: Confidence::new(row.get::<_, f64>(4)? as f32),
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -40,7 +40,7 @@ impl Store {
                 source_symbol: row.get(1)?,
                 field_name: row.get(2)?,
                 target_symbol: row.get(3)?,
-                confidence: row.get(4)?,
+                confidence: Confidence::new(row.get::<_, f64>(4)? as f32),
             })
         })?;
         match rows.next() {
@@ -68,7 +68,7 @@ impl Store {
                 source_symbol: row.get(1)?,
                 field_name: row.get(2)?,
                 target_symbol: row.get(3)?,
-                confidence: row.get(4)?,
+                confidence: Confidence::new(row.get::<_, f64>(4)? as f32),
             })
         })?;
         match rows.next() {
@@ -93,7 +93,7 @@ impl Store {
                 annotation.source_symbol,
                 annotation.field_name,
                 annotation.target_symbol,
-                annotation.confidence,
+                annotation.confidence.as_f32() as f64,
             ],
         )?;
         Ok(())
@@ -200,7 +200,7 @@ mod tests {
             source_symbol: source,
             field_name: "do_it".into(),
             target_symbol: target,
-            confidence: 1.0,
+            confidence: Confidence::new(1.0),
         };
 
         store.upsert_fp_annotation(&ann).unwrap();
@@ -230,7 +230,7 @@ mod tests {
             source_symbol: source,
             field_name: "handler".into(),
             target_symbol: target1,
-            confidence: 1.0,
+            confidence: Confidence::new(1.0),
         };
         store.upsert_fp_annotation(&ann1).unwrap();
 
@@ -239,14 +239,14 @@ mod tests {
             source_symbol: source,
             field_name: "handler".into(),
             target_symbol: target2,
-            confidence: 0.8,
+            confidence: Confidence::new(0.8),
         };
         store.upsert_fp_annotation(&ann2).unwrap();
 
         let all = store.get_all_fp_annotations().unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].target_symbol, target2);
-        assert!((all[0].confidence - 0.8).abs() < 0.001);
+        assert!((all[0].confidence.as_f32() - 0.8).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -264,7 +264,7 @@ mod tests {
             source_symbol: source,
             field_name: "cb".into(),
             target_symbol: target,
-            confidence: 1.0,
+            confidence: Confidence::new(1.0),
         };
         store.upsert_fp_annotation(&ann).unwrap();
 
@@ -287,7 +287,7 @@ mod tests {
             source_symbol: source,
             field_name: "f".into(),
             target_symbol: target,
-            confidence: 1.0,
+            confidence: Confidence::new(1.0),
         };
         store.upsert_fp_annotation(&ann).unwrap();
 

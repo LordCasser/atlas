@@ -1183,12 +1183,41 @@ impl GraphSnapshot {
         None
     }
 
-    /// Iterate edge indices for a node given a direction, returning a flat iterator.
-    fn edge_iter(&self, node: NodeIx, direction: TraversalDirection) -> Box<dyn Iterator<Item = EdgeIx> + '_> {
+    /// Iterate edge indices for a node given a direction.
+    fn edge_iter(&self, node: NodeIx, direction: TraversalDirection) -> EdgeIterKind<'_> {
         match direction {
-            TraversalDirection::Outgoing => Box::new(self.nodes[node].outgoing.iter().copied()),
-            TraversalDirection::Incoming => Box::new(self.nodes[node].incoming.iter().copied()),
-            TraversalDirection::Both => Box::new(self.nodes[node].outgoing.iter().chain(self.nodes[node].incoming.iter()).copied()),
+            TraversalDirection::Outgoing => EdgeIterKind::Single(self.nodes[node].outgoing.iter().copied()),
+            TraversalDirection::Incoming => EdgeIterKind::Single(self.nodes[node].incoming.iter().copied()),
+            TraversalDirection::Both => EdgeIterKind::Both(
+                self.nodes[node].outgoing.iter().chain(self.nodes[node].incoming.iter()).copied(),
+            ),
+        }
+    }
+}
+
+/// Static enum over the two iterator shapes produced by [`GraphSnapshot::edge_iter`].
+/// Eliminates dynamic dispatch in the Dijkstra hot loop.
+enum EdgeIterKind<'a> {
+    Single(std::iter::Copied<std::slice::Iter<'a, EdgeIx>>),
+    Both(std::iter::Copied<std::iter::Chain<std::slice::Iter<'a, EdgeIx>, std::slice::Iter<'a, EdgeIx>>>),
+}
+
+impl<'a> Iterator for EdgeIterKind<'a> {
+    type Item = EdgeIx;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            EdgeIterKind::Single(iter) => iter.next(),
+            EdgeIterKind::Both(iter) => iter.next(),
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            EdgeIterKind::Single(iter) => iter.size_hint(),
+            EdgeIterKind::Both(iter) => iter.size_hint(),
         }
     }
 }

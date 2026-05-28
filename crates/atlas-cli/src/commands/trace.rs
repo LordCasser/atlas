@@ -59,7 +59,9 @@ pub fn run_point(
     // Transparent lazy structural: ensure the target file has structural data
     {
         let lazy = LazyStructuralService::new(ctx.store.clone(), Some(ctx.root.clone()));
-        let _ = lazy.ensure_structural_for_file(&file_id);
+        if let Err(e) = lazy.ensure_structural_for_file(&file_id) {
+            tracing::warn!("Lazy structural extraction failed: {}", e);
+        }
     }
 
     let resp = engine.trace_point(&file_id, line, column);
@@ -172,7 +174,9 @@ pub fn run_variable(
     // Transparent lazy structural: ensure the target file has structural data
     {
         let lazy = LazyStructuralService::new(ctx.store.clone(), Some(ctx.root.clone()));
-        let _ = lazy.ensure_structural_for_file(&file_id);
+        if let Err(e) = lazy.ensure_structural_for_file(&file_id) {
+            tracing::warn!("Lazy structural extraction failed: {}", e);
+        }
     }
 
     let resp = engine.trace_variable(&file_id, line, column, max_depth);

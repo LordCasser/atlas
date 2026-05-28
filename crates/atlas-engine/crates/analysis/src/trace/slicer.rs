@@ -106,12 +106,25 @@ impl Slicer {
             // CLOSEST preceding definition (largest start_byte) so the BFS
             // chain hops through all intermediate assignments rather than
             // jumping straight to the earliest definition.
+            // Pre-fetch all source data nodes once, then sort from the
+            // in-memory map.  This avoids O(n log n) DB queries inside the
+            // comparator — each candidate's node is fetched exactly once.
+            let data_nodes: HashMap<DataNodeId, DataNode> = candidates
+                .iter()
+                .filter_map(|e| {
+                    store
+                        .get_data_node(&e.source)
+                        .ok()
+                        .flatten()
+                        .map(|dn| (e.source, dn))
+                })
+                .collect();
+
             candidates.sort_by(|a, b| {
                 use std::cmp::Ordering;
-                let a_dn = store.get_data_node(&a.source).ok().flatten();
-                let b_dn = store.get_data_node(&b.source).ok().flatten();
+                let a_dn = data_nodes.get(&a.source);
+                let b_dn = data_nodes.get(&b.source);
                 let a_local = a_dn
-                    .as_ref()
                     .map(|dn| {
                         matches!(
                             dn.kind,
@@ -121,7 +134,6 @@ impl Slicer {
                     })
                     .unwrap_or(false);
                 let b_local = b_dn
-                    .as_ref()
                     .map(|dn| {
                         matches!(
                             dn.kind,

@@ -28,13 +28,13 @@ use std::collections::{HashMap, VecDeque};
 use db::{CallGraphReader, SymbolReader};
 use types::caller_path::{CallerChain, CallerChainStep};
 use types::enums::EdgeKind;
-use types::ids::{ReferenceId, SymbolId};
-use types::structs::TextRange;
-use types::trace::{BoundaryKind, BoundaryMarker};
+use types::ids::SymbolId;
+
+use super::call_chain;
 
 /// Default maximum depth for caller-chain traversal.
-#[allow(dead_code)]
-pub const DEFAULT_MAX_DEPTH: usize = 20;
+#[allow(unused_imports)]
+pub use call_chain::DEFAULT_MAX_DEPTH;
 
 /// Explores reverse call chains from a target symbol.
 pub struct CallerPathExplorer;
@@ -62,10 +62,7 @@ impl CallerPathExplorer {
         };
 
         // BFS backward: node_id → (predecessor, edge_kind, ref_id, location)
-        let mut predecessors: HashMap<
-            String,
-            (SymbolId, EdgeKind, Option<ReferenceId>, Option<TextRange>),
-        > = HashMap::new();
+        let mut predecessors: call_chain::PredecessorMap = HashMap::new();
         let mut visited: HashMap<String, usize> = HashMap::new(); // node_id hex → depth
         let mut queue: VecDeque<(SymbolId, usize)> = VecDeque::new();
 
@@ -88,7 +85,7 @@ impl CallerPathExplorer {
             for edge in &edges {
                 // Only follow call-related edges (include RegistersCallback for
                 // path display, but they halt further BFS traversal).
-                if !is_call_edge(&edge.kind) {
+                if !call_chain::is_call_graph_edge(&edge.kind) {
                     continue;
                 }
 
@@ -136,7 +133,7 @@ impl CallerPathExplorer {
                         // Budget exhausted — check if this caller has unexplored
                         // callers of its own (not just the edge we already followed).
                         let caller_edges = store.find_edges_by_target(caller)?;
-                        if caller_edges.iter().any(|e| is_call_edge(&e.kind)) {
+                        if caller_edges.iter().any(|e| call_chain::is_call_graph_edge(&e.kind)) {
                             truncated = true;
                             // Track this frontier node as the farthest known point.
                             if new_depth > farthest_depth {
@@ -228,7 +225,7 @@ fn caller_path_score(
         .find_symbol_by_id(caller_id)
         .ok()
         .flatten()
-        .map(|s| is_likely_test_name(&s.name))
+        .map(|s| call_chain::is_likely_test_name(&s.name))
         .unwrap_or(false);
 
     let production_bonus: f64 = if is_test { 0.0 } else { 100.0 };
@@ -242,244 +239,32 @@ fn caller_path_score(
     production_bonus + depth_value
 }
 
-/// Heuristic: is this function name likely a test or benchmark?
-///
-/// Covers Go conventions (`Test*`, `Benchmark*`, `Example*`), common
-/// patterns in other languages (`test_*`, `spec_*`), and the plain `test`
-/// name used by curl/libtest conventions.  This is intentionally
-/// simple — false positives only affect scoring, not correctness.
-fn is_likely_test_name(name: &str) -> bool {
-    // Go convention
-    name.starts_with("Test")
-        || name.starts_with("Benchmark")
-        || name.starts_with("Example")
-        // C/Python/JS pattern: test_*
-        || name.starts_with("test_")
-        || name.starts_with("spec_")
-        || name.starts_with("it_")
-        // Rust pattern: fuzz_*
-        || name.starts_with("Fuzz")
-        // Plain "test" — common in C (curl uses `test()` as the libtest entry point)
-        || name == "test"
-        // C test patterns: *_test
-        || name.ends_with("_test")
-        // SPEC harness: *_spec
-        || name.ends_with("_spec")
-}
-/// `RegistersCallback` is included so it appears in the path, but BFS
-/// traversal stops at callback boundaries (handled in the BFS loop above).
-fn is_call_edge(kind: &EdgeKind) -> bool {
-    matches!(
-        kind,
-        EdgeKind::Calls
-            | EdgeKind::Instantiates
-            | EdgeKind::Implements
-            | EdgeKind::RegistersCallback
-    )
-}
-
 /// Reconstruct the forward path from `root_id` to `target_id` by walking
 /// the predecessor chain backward (from target up to root, then reversing).
 fn reconstruct_call_path(
-    predecessors: &HashMap<String, (SymbolId, EdgeKind, Option<ReferenceId>, Option<TextRange>)>,
+    predecessors: &call_chain::PredecessorMap,
     root_id: &SymbolId,
     target_id: &SymbolId,
     store: &(impl SymbolReader + CallGraphReader),
 ) -> anyhow::Result<Vec<CallerChainStep>> {
-    // Walk from target upward to root, collecting steps in reverse
-    let mut raw_steps: Vec<(
-        SymbolId,
-        SymbolId,
-        EdgeKind,
-        Option<ReferenceId>,
-        Option<TextRange>,
-    )> = Vec::new();
-    let mut current = target_id.clone();
-
-    while &current != root_id {
-        let key = hex::encode(current.as_bytes());
-        match predecessors.get(&key) {
-            Some((pred_id, kind, ref_id, location)) => {
-                // pred_id calls current_id: pred → current
-                raw_steps.push((
-                    pred_id.clone(),
-                    current.clone(),
-                    kind.clone(),
-                    ref_id.clone(),
-                    location.clone(),
-                ));
-                current = pred_id.clone();
-            }
-            None => break,
-        }
-    }
-
-    // Reverse to get root→target order
-    raw_steps.reverse();
-
-    // Prefetch all unique caller/callee symbols once to avoid N+1 queries.
-    let mut symbol_cache: std::collections::HashMap<types::ids::SymbolId, types::SymbolDef> =
-        std::collections::HashMap::new();
-    {
-        let mut unique_ids: std::collections::HashSet<types::ids::SymbolId> =
-            std::collections::HashSet::new();
-        for (caller, callee, _, _, _) in &raw_steps {
-            unique_ids.insert(caller.clone());
-            unique_ids.insert(callee.clone());
-        }
-        for id in &unique_ids {
-            if let Ok(Some(sym)) = store.find_symbol_by_id(id) {
-                symbol_cache.insert(id.clone(), sym);
-            }
-        }
-    }
-
-    let mut steps = Vec::new();
-    for (idx, (caller, callee, kind, ref_id, edge_location)) in raw_steps.into_iter().enumerate() {
-        let caller_sym = symbol_cache.get(&caller);
-        let callee_sym = symbol_cache.get(&callee);
-
-        let file_id = caller_sym
-            .map(|s| s.file_id)
-            .unwrap_or_else(|| types::ids::FileId::generate("unknown"));
-
-        // Look up the callsite via the edge's ref_id.
-        let callsite = if let Some(ref rid) = ref_id {
-            store.find_callsite_by_reference_id(rid).ok().flatten()
-        } else {
-            None
-        };
-
-        // Primary range: use the full callsite range (call expression) if
-        // available, then the edge location (callee token), then the caller
-        // symbol range as last resort.
-        let range = if let Some(ref cs) = callsite {
-            Some(cs.range)
-        } else {
-            edge_location
-                .clone()
-                .or_else(|| caller_sym.map(|s| s.range))
-        };
-
-        let caller_name = caller_sym.map(|s| s.name.clone()).unwrap_or_default();
-        let callee_name = callee_sym.map(|s| s.name.clone()).unwrap_or_default();
-
-        let desc = match &kind {
-            EdgeKind::RegistersCallback => format!("{} registers {}", caller_name, callee_name),
-            _ => format!("{} → {}", caller_name, callee_name),
-        };
-
-        let mut step = CallerChainStep::new(
-            idx as u32,
-            caller,
-            callee,
-            kind.clone(),
-            file_id,
-            range,
-            &desc,
-        );
-        step.callsite = callsite;
-
-        // Populate boundary marker for callback registrations
-        if kind == EdgeKind::RegistersCallback {
-            step.boundary = Some(BoundaryMarker {
-                kind: BoundaryKind::CallbackRegistration {
-                    registrant: caller_name.clone(),
-                    callback: callee_name.clone(),
-                },
-                message: format!(
-                    "'{}' is registered as a callback by '{}'. It will be invoked dynamically. Static call-graph tracing stops here.",
-                    callee_name, caller_name
-                ),
-                suggestion: format!(
-                    "Use explore on '{}' to find its own callers and understand the invocation context.",
-                    callee_name
-                ),
-                bridge_target: Some(callee.to_hex()),
-            });
-        }
-
-        steps.push(step);
-    }
-
+    let raw = call_chain::reconstruct_path(predecessors, target_id, root_id, store)?;
+    let steps = raw
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let mut step = CallerChainStep::new(
+                i as u32,
+                s.caller,
+                s.callee,
+                s.kind,
+                s.file_id,
+                s.range,
+                &s.description,
+            );
+            step.callsite = s.callsite;
+            step.boundary = s.boundary;
+            step
+        })
+        .collect();
     Ok(steps)
-}
-
-// ---------------------------------------------------------------------------
-// tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use types::enums::EdgeKind;
-
-    #[test]
-    fn is_call_edge_calls() {
-        assert!(is_call_edge(&EdgeKind::Calls));
-    }
-
-    #[test]
-    fn is_call_edge_instantiates() {
-        assert!(is_call_edge(&EdgeKind::Instantiates));
-    }
-
-    #[test]
-    fn is_call_edge_implements() {
-        assert!(is_call_edge(&EdgeKind::Implements));
-    }
-
-    #[test]
-    fn is_not_call_edge_references() {
-        assert!(!is_call_edge(&EdgeKind::References));
-    }
-
-    #[test]
-    fn is_not_call_edge_contains() {
-        assert!(!is_call_edge(&EdgeKind::Contains));
-    }
-
-    #[test]
-    fn is_call_edge_registers_callback() {
-        assert!(is_call_edge(&EdgeKind::RegistersCallback));
-    }
-
-    #[test]
-    fn is_likely_test_name_matches_go_convention() {
-        assert!(is_likely_test_name("TestFoo"));
-        assert!(is_likely_test_name("BenchmarkBar"));
-        assert!(is_likely_test_name("ExampleQux"));
-    }
-
-    #[test]
-    fn is_likely_test_name_matches_snake_prefix() {
-        assert!(is_likely_test_name("test_integration"));
-        assert!(is_likely_test_name("spec_model"));
-        assert!(is_likely_test_name("it_should_work"));
-    }
-
-    #[test]
-    fn is_likely_test_name_matches_plain_test() {
-        // curl/libtest convention: `test()` is the test entry point
-        assert!(is_likely_test_name("test"));
-    }
-
-    #[test]
-    fn is_likely_test_name_matches_suffix() {
-        assert!(is_likely_test_name("my_test"));
-        assert!(is_likely_test_name("user_spec"));
-    }
-
-    #[test]
-    fn is_likely_test_name_rejects_normal_names() {
-        assert!(!is_likely_test_name("handle_request"));
-        assert!(!is_likely_test_name("main"));
-        assert!(!is_likely_test_name("calculate"));
-        assert!(!is_likely_test_name("contest")); // contains "test" but doesn't match patterns
-    }
-
-    #[test]
-    fn is_likely_test_name_matches_fuzz_prefix() {
-        assert!(is_likely_test_name("FuzzParser"));
-    }
 }

@@ -506,6 +506,8 @@ fn search_symbols_scoped(
         score_symbol(query, b)
             .partial_cmp(&score_symbol(query, a))
             .unwrap_or(std::cmp::Ordering::Equal)
+            // Tie-break by qualified_name for deterministic ordering
+            .then_with(|| a.qualified_name.cmp(&b.qualified_name))
     });
     Ok(symbols)
 }

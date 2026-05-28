@@ -133,11 +133,11 @@ impl ToolRouter {
         let hex = blake3::hash(field_id.as_bytes()).to_hex();
         let annotation_id = format!("fpa:{}:{}", &hex[..16], field_name);
 
-        let confidence = args
-            .get("confidence")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1.0)
-            .clamp(0.0, 1.0);
+        let confidence = atlas_engine::Confidence::new(
+            args.get("confidence")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(1.0) as f32,
+        );
 
         let annotation = FpAnnotation {
             annotation_id: annotation_id.clone(),

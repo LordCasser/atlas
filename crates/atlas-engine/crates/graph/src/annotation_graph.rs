@@ -19,7 +19,7 @@
 
 use db::Store;
 use types::ids::EdgeId;
-use types::{Confidence, EdgeKind, Provenance, RawEdge};
+use types::{EdgeKind, Provenance, RawEdge};
 
 /// Materialize all function-pointer annotations as `symbol_edges` rows.
 ///
@@ -57,7 +57,7 @@ pub fn materialize_annotations(store: &Store) -> anyhow::Result<usize> {
             ann.source_symbol,
             ann.target_symbol,
             EdgeKind::Calls,
-            Confidence::new(ann.confidence as f32),
+            ann.confidence,
             Provenance::UserAnnotation,
         );
         edge.metadata = Some(metadata.clone());
@@ -83,7 +83,7 @@ pub fn materialize_annotations(store: &Store) -> anyhow::Result<usize> {
                         caller,
                         ann.target_symbol,
                         EdgeKind::Calls,
-                        Confidence::new(ann.confidence as f32),
+                        ann.confidence,
                         Provenance::UserAnnotation,
                     );
                     bridge_edge.metadata = Some(metadata.clone());
@@ -101,7 +101,7 @@ mod tests {
     use super::*;
     use types::ids::{FileId, ReferenceId};
     use types::{
-        FileInfo, Language, ParseStatus, ReferenceUse,
+        Confidence, FileInfo, Language, ParseStatus, ReferenceUse,
         SymbolDef, SymbolKind, TextRange,
     };
 
@@ -190,7 +190,7 @@ mod tests {
             source_symbol: field,
             field_name: "do_it".into(),
             target_symbol: target,
-            confidence: 1.0,
+            confidence: Confidence::new(1.0),
         };
         store.upsert_fp_annotation(&ann).unwrap();
 
@@ -220,7 +220,7 @@ mod tests {
             source_symbol: field,
             field_name: "handler".into(),
             target_symbol: target,
-            confidence: 1.0,
+            confidence: Confidence::new(1.0),
         };
         store.upsert_fp_annotation(&ann).unwrap();
 
@@ -248,7 +248,7 @@ mod tests {
             source_symbol: field,
             field_name: "handler".into(),
             target_symbol: target_a,
-            confidence: 1.0,
+            confidence: Confidence::new(1.0),
         };
         store.upsert_fp_annotation(&ann_a).unwrap();
         materialize_annotations(&store).unwrap();
@@ -260,7 +260,7 @@ mod tests {
             source_symbol: field,
             field_name: "handler".into(),
             target_symbol: target_b,
-            confidence: 1.0,
+            confidence: Confidence::new(1.0),
         };
         store.upsert_fp_annotation(&ann_b).unwrap();
         materialize_annotations(&store).unwrap();
@@ -339,7 +339,7 @@ mod tests {
             source_symbol: field,
             field_name: "do_it".into(),
             target_symbol: target,
-            confidence: 1.0,
+            confidence: Confidence::new(1.0),
         };
         store.upsert_fp_annotation(&ann).unwrap();
 

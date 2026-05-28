@@ -229,10 +229,6 @@ pub fn run(
         );
         ps.lock().unwrap().set_total(dirty_total as u64);
 
-        if dirty_total > 5_000 && !mode.produces_manifest() && reused == 0 {
-            // Large project guidance (printed after TUI restore, so we skip)
-        }
-
         let pool = ParseWorkerPool::new(WorkerConfig::default());
         let extracted_count = AtomicUsize::new(0);
         let per_lang_mutex = Mutex::new(PerLanguageStats::new());
@@ -315,6 +311,10 @@ pub fn run(
         const CHECKPOINT_INTERVAL: u64 = 500;
         let mut next_checkpoint = CHECKPOINT_INTERVAL;
         for chunk in extracted.chunks(BATCH_SIZE) {
+            if interrupted() {
+                store.end_bulk_write()?;
+                return Ok(());
+            }
             let facts: Vec<_> = chunk.iter().map(|ef| ef.facts.clone()).collect();
             if let Err(_e) = store.insert_file_facts_batch(&facts) {
                 for ef in chunk {
@@ -359,7 +359,7 @@ pub fn run(
         );
         let (resolved, _stats) = resolver.resolve_all_parallel(
             store.clone(),
-            Some(ps.as_ref()),
+            Some(&ps),
             None,
         )?;
 
@@ -429,11 +429,26 @@ pub fn run(
         stop_flag.load(Ordering::SeqCst) // was_interrupted = stop_flag is set
     };
 
-    // ── Handle interrupt BEFORE joining worker ──
+    // ── Join worker unconditionally ──
+    // The worker checks stop_flag at phase boundaries and will exit cleanly.
+    // We MUST join before returning so the FileLock RAII guard (line 89)
+    // isn't dropped while the worker is still accessing the database.
+    if was_interrupted {
+        tracing::info!("interrupted: waiting for worker to finish...");
+    }
+    let worker_result = worker.join().unwrap_or_else(|e| {
+        Err(anyhow::anyhow!("Worker thread panicked: {:?}", e))
+    });
+
+    // Report worker result (whether it completed or was interrupted).
+    if let Err(ref e) = worker_result {
+        if was_interrupted {
+            tracing::warn!("worker thread returned error during interrupt: {:?}", e);
+        }
+    }
+
     if was_interrupted {
         if has_tty {
-            // Restore the inline TUI, then print the interrupt summary as
-            // normal terminal output so the shell prompt follows it.
             tui.take()
                 .unwrap()
                 .interrupt(&progress_state.lock().unwrap());
@@ -444,10 +459,7 @@ pub fn run(
         return Ok(());
     }
 
-    // ── Normal completion: join worker, render summary frame, restore ──
-    let worker_result = worker.join().unwrap_or_else(|e| {
-        Err(anyhow::anyhow!("Worker thread panicked: {:?}", e))
-    });
+    // Normal completion: propagate worker errors.
     worker_result?;
 
     let db_stats = store_for_main.get_stats()?;

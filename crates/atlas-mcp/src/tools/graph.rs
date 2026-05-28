@@ -184,9 +184,18 @@ impl ToolRouter {
         let mut total_nodes = 0usize;
 
         // Hop 0: the root symbol itself
+        let root_ix = match snap.id_to_idx.get(&sid).copied() {
+            Some(ix) => ix,
+            None => {
+                return (
+                    format!("symbol '{}' not found in graph snapshot", qname),
+                    true,
+                );
+            }
+        };
         hops.push(json!({
             "depth": 0,
-            "symbol": self.node_json(snap, snap.id_to_idx.get(&sid).copied().unwrap_or(0)),
+            "symbol": self.node_json(snap, root_ix),
             "callers": [],
             "callees": [],
         }));
@@ -322,7 +331,13 @@ impl ToolRouter {
                     self.store.clone(),
                     Some(self.project_root.clone()),
                 );
-                let _ = lazy.ensure_structural_for_file_ids(&file_ids);
+                if let Err(e) = lazy.ensure_structural_for_file_ids(&file_ids) {
+                    tracing::warn!(
+                        "Lazy structural extraction failed for {} files: {}",
+                        file_ids.len(),
+                        e
+                    );
+                }
 
                 // Force-refresh graph snapshot so newly extracted edges are
                 // visible to the BFS below.

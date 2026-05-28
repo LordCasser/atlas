@@ -289,6 +289,21 @@ impl LazyStructuralService {
             anyhow::anyhow!("frontend not available for {:?}", file_info.language)
         })?;
         let resolved_path = self.resolve_file_path(&file_info.path);
+        // Security: ensure path is within project root.
+        if let Some(root) = &self.project_root {
+            let canonical_root = root.canonicalize().with_context(|| {
+                format!("failed to canonicalize project root {}", root.display())
+            })?;
+            let canonical_file = resolved_path.canonicalize().with_context(|| {
+                format!("failed to canonicalize {}", resolved_path.display())
+            })?;
+            anyhow::ensure!(
+                canonical_file.starts_with(&canonical_root),
+                "path traversal detected: {} is outside project root {}",
+                canonical_file.display(),
+                canonical_root.display()
+            );
+        }
         let source = std::fs::read_to_string(&resolved_path)
             .with_context(|| format!("failed to read {}", resolved_path.display()))?;
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();

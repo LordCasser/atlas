@@ -105,37 +105,41 @@ impl SourceExtractor {
         let ts_lang = frontend.parser.tree_sitter_language();
 
         // Acquire a thread-local parser.
+        // Use a scope guard to ensure the parser is always returned to the cache,
+        // even on early returns (parse failure, missing node, etc.).
         let mut parser = TL_PARSER.with(|cell| {
             cell.borrow_mut()
                 .take()
                 .unwrap_or_else(tree_sitter::Parser::new)
         });
-        parser.set_language(&ts_lang).ok()?;
-        let tree = parser.parse(source.as_bytes(), None)?;
-        let root = tree.root_node();
 
-        // Find the CST node at the symbol's byte position.
-        let start_byte = sym.range.start_byte as usize;
-        let end_byte = sym.range.end_byte as usize;
-        let node = root.descendant_for_byte_range(start_byte, end_byte)?;
+        // Run extraction; the parser is returned to cache on every path.
+        let result = (|| -> Option<String> {
+            parser.set_language(&ts_lang).ok()?;
+            let tree = parser.parse(source.as_bytes(), None)?;
+            let root = tree.root_node();
 
-        // Walk up to find the enclosing definition node.
-        let def_node = find_enclosing_definition(node, sym.kind, lang)?;
+            // Find the CST node at the symbol's byte position.
+            let start_byte = sym.range.start_byte as usize;
+            let end_byte = sym.range.end_byte as usize;
+            let node = root.descendant_for_byte_range(start_byte, end_byte)?;
 
-        // Extract the exact source text using the definition node's byte range.
-        let def_start = def_node.start_byte() as usize;
-        let def_end = def_node.end_byte() as usize;
-        if def_start >= source.len() || def_end > source.len() || def_start >= def_end {
-            // Return parser to thread-local cache.
-            TL_PARSER.with(|cell| *cell.borrow_mut() = Some(parser));
-            return None;
-        }
-        let result = source[def_start..def_end].to_string();
+            // Walk up to find the enclosing definition node.
+            let def_node = find_enclosing_definition(node, sym.kind, lang)?;
 
-        // Return parser to thread-local cache.
+            // Extract the exact source text using the definition node's byte range.
+            let def_start = def_node.start_byte() as usize;
+            let def_end = def_node.end_byte() as usize;
+            if def_start >= source.len() || def_end > source.len() || def_start >= def_end {
+                return None;
+            }
+            Some(source[def_start..def_end].to_string())
+        })();
+
+        // Always return parser to thread-local cache.
         TL_PARSER.with(|cell| *cell.borrow_mut() = Some(parser));
 
-        Some(result)
+        result
     }
 
     /// Fallback: line-based extraction from `TextRange`.

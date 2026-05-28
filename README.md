@@ -298,10 +298,12 @@ types/workspace/db ─▶ extraction/resolution/graph/analysis/search/context/fi
 Atlas stores index data in `.atlas/atlas.db` (schema version 1). Core tables include:
 
 ```text
-files              symbols            scopes             references
-imports            symbol_edges       callsites          bindings
-binding_uses       data_nodes         dataflow_edges     cfg_nodes
-cfg_edges          project_metadata   symbols_fts
+files                    symbols            scopes               references
+imports                  symbol_edges       callsites            bindings
+binding_uses             data_nodes         dataflow_edges       cfg_nodes
+cfg_edges                function_summaries summary_param_reaches summary_return_sources
+summary_call_arg_sources analysis_artifacts file_index_layers    project_metadata
+symbols_fts
 ```
 
 SQLite is the durable source of truth. In-memory graph snapshots are query accelerators and can be rebuilt from the database.
@@ -456,7 +458,7 @@ The `DataFlowBuilder` does NOT use tree-sitter queries — it walks the CST dire
 
 `DataNode` records the source location (byte range), kind (Local, Param, Field, CallArg, Return, Expr), and function scope. `DataFlowEdge` connects a source node to a target node with a directed kind and confidence score.
 
-### 6. CFG → control flow (8 languages)
+### 6. CFG → control flow (partial, 8 languages)
 
 ```text
 CST root (per function)
@@ -464,7 +466,7 @@ CST root (per function)
   → CfgNode + CfgEdge (Entry → blocks → Exit)
 ```
 
-CFG construction walks the function AST, identifying control-flow splits (`if_statement`, `switch_case`, `try_statement`, `for_statement`, `while_statement`) and building a graph of basic blocks. Each `CfgNode` records the byte range it covers, and `CfgEdge` connects predecessor → successor. CFG is available for TypeScript, JavaScript, Python, Java, C, C++, Go, and Rust.
+CFG construction walks the function AST, identifying control-flow splits (`if_statement`, `switch_case`, `try_statement`, `for_statement`, `while_statement`) and building a graph of basic blocks. Each `CfgNode` records the byte range it covers, and `CfgEdge` connects predecessor → successor. CFG has basic support for TypeScript, JavaScript, Python, Java, C, C++, Go, and Rust. **Note**: if/else sub-block walking and loop-body traversal are currently placeholders; the CFG is structurally incomplete for conditional and loop branches.
 
 ### 7. Trace → cross-procedural variable provenance
 

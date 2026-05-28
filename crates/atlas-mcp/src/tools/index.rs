@@ -348,7 +348,13 @@ pub(crate) fn run_index(
         .collect();
     // Invalidate cross-file references pointing into these files
     for fid in &file_ids {
-        let _ = store.invalidate_references_to_symbols_in_file(fid);
+        if let Err(e) = store.invalidate_references_to_symbols_in_file(fid) {
+            tracing::warn!(
+                "Failed to invalidate cross-file references for file {}: {}",
+                fid,
+                e
+            );
+        }
     }
     // Delete existing data for these files (CASCADE cleans related rows)
     if let Err(e) = store.delete_files_batch(&file_ids) {

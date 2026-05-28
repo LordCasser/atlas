@@ -49,7 +49,7 @@ macro_rules! define_id {
                 hex::encode(self.0)
             }
 
-            /// GitHub-style short hex (first 7 chars).
+            /// Short hex prefix (first 4 bytes / 8 hex chars of blake3 hash).
             pub fn short_hex(&self) -> String {
                 hex::encode(&self.0[..4])
             }

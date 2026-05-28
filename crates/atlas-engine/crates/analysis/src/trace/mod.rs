@@ -24,6 +24,7 @@
 //! - **Capability** determines whether dataflow tracing is available for a
 //!   given language, or only symbolic lookup.
 
+mod call_chain;
 mod caller_path;
 mod engine;
 mod forward_path;

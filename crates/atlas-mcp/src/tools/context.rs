@@ -66,13 +66,19 @@ impl ToolRouter {
     /// Tier 4: name match with multiple candidates → return suggestions
     fn resolve_context_symbol(&mut self, qname: &str) -> Result<atlas_engine::SymbolId, String> {
         // ── Tier 1: exact qualified-name match ──
-        let symbols = self.store.find_symbols_by_qname(qname).unwrap_or_default();
+        let symbols = self.store.find_symbols_by_qname(qname).unwrap_or_else(|e| {
+            tracing::warn!("DB error on find_symbols_by_qname: {}", e);
+            Default::default()
+        });
         if let Some(id) = symbols.first().map(|s| s.id) {
             return Ok(id);
         }
 
         // ── Tier 2: name-based search (look for symbol by simple name) ──
-        let name_matches = self.store.find_symbols_by_name(qname).unwrap_or_default();
+        let name_matches = self.store.find_symbols_by_name(qname).unwrap_or_else(|e| {
+            tracing::warn!("DB error on find_symbols_by_name: {}", e);
+            Default::default()
+        });
         if name_matches.len() == 1 {
             // Unambiguous — use it directly
             return Ok(name_matches[0].id);
@@ -117,13 +123,19 @@ impl ToolRouter {
         }
 
         // Re-query after lazy extraction (tier 1 again on freshly-parsed data)
-        let retry = self.store.find_symbols_by_qname(qname).unwrap_or_default();
+        let retry = self.store.find_symbols_by_qname(qname).unwrap_or_else(|e| {
+            tracing::warn!("DB error on retry find_symbols_by_qname: {}", e);
+            Default::default()
+        });
         if let Some(sym) = retry.first() {
             return Ok(sym.id);
         }
 
         // Re-check name after lazy extraction
-        let fresh_matches = self.store.find_symbols_by_name(qname).unwrap_or_default();
+        let fresh_matches = self.store.find_symbols_by_name(qname).unwrap_or_else(|e| {
+            tracing::warn!("DB error on retry find_symbols_by_name: {}", e);
+            Default::default()
+        });
         if fresh_matches.len() == 1 {
             return Ok(fresh_matches[0].id);
         }

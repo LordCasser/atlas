@@ -389,8 +389,11 @@ pub fn extract_file_with_mode(
     let mut callsites: Vec<Callsite> = references
         .iter()
         .filter(|r| r.kind == ReferenceKind::Call && r.source_symbol.is_some())
-        .map(|r| {
-            let caller = r.source_symbol.unwrap(); // safe: filter ensures Some
+        .filter_map(|r| {
+            let caller = match r.source_symbol {
+                Some(s) => s,
+                None => return None, // filter ensures Some, but be defensive
+            };
             let cs_id = CallsiteId::generate(&r.id, Some(&caller), r.range.start_byte);
 
             let parts = frontend.callsites.extract_callsite(
@@ -442,7 +445,7 @@ pub fn extract_file_with_mode(
                 })
                 .collect();
 
-            Callsite {
+            Some(Callsite {
                 id: cs_id,
                 reference_id: Some(r.id),
                 caller,
@@ -451,7 +454,7 @@ pub fn extract_file_with_mode(
                 args,
                 range: callsite_range,
                 callee_range,
-            }
+            })
         })
         .collect();
 

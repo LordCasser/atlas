@@ -472,8 +472,6 @@ CREATE INDEX IF NOT EXISTS idx_cfg_edges_kind
 -- Optimized lookups for reader traits (trace/analysis hot paths).
 CREATE INDEX IF NOT EXISTS idx_symbols_name
     ON symbols(name);
-CREATE INDEX IF NOT EXISTS idx_files_path
-    ON files(path);
 
 -- --- FTS Triggers ---
 

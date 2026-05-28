@@ -82,7 +82,18 @@ pub fn run(project: &str, analysis: &str) -> Result<()> {
     }
     eprint!("\r  Syncing... done\n");
 
-    let stats = handle.join().unwrap()?;
+    let stats = match handle.join() {
+        Ok(Ok(stats)) => stats,
+        Ok(Err(e)) => return Err(e),
+        Err(panic) => {
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".into());
+            return Err(anyhow::anyhow!("Sync worker panicked: {}", msg));
+        }
+    };
 
     println!("\nSync complete:");
     println!("  Files reindexed: {}", stats.files_reindexed);

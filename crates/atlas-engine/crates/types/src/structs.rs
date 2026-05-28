@@ -461,7 +461,7 @@ pub struct FpAnnotation {
     /// SymbolId of the target function (e.g., `Curl_http`).
     pub target_symbol: SymbolId,
     /// Confidence score (0.0-1.0); defaults to 1.0 (user-declared = certain).
-    pub confidence: f64,
+    pub confidence: Confidence,
 }
 
 // ---------------------------------------------------------------------------
