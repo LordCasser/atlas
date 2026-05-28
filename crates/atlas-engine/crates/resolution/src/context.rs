@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use db::Store;
 use types::*;
@@ -273,13 +273,17 @@ fn proximity_tier(ref_parent: Option<&String>, sym_parent: Option<&String>) -> u
 }
 
 /// In-memory resolution context for a single file.
-#[derive(Debug, Clone)]
+///
+/// All symbol indexes store `Arc<SymbolDef>` so the same symbol can be
+/// indexed by scope, ID, and qualified name with zero data copies —
+/// only atomic reference-count increments.
+#[derive(Debug)]
 pub struct ResolutionContext {
     /// File being resolved.
     pub file: FileInfo,
 
-    /// All symbols in this file.
-    pub symbols: Vec<SymbolDef>,
+    /// All symbols in this file (owned for Clone + into_iter consumers).
+    pub symbols: Vec<Arc<SymbolDef>>,
 
     /// All scopes in this file.
     pub scopes: Vec<ScopeDef>,
@@ -288,14 +292,14 @@ pub struct ResolutionContext {
     pub imports: Vec<ImportDef>,
 
     // --- Indexes ---
-    /// ScopeId → Vec<SymbolDef> (symbols in scope, including children).
-    pub symbols_by_scope: HashMap<ScopeId, Vec<SymbolDef>>,
+    /// ScopeId → symbols in scope (including children).
+    pub symbols_by_scope: HashMap<ScopeId, Vec<Arc<SymbolDef>>>,
 
     /// SymbolId → SymbolDef (direct lookup).
-    pub symbols_by_id: HashMap<SymbolId, SymbolDef>,
+    pub symbols_by_id: HashMap<SymbolId, Arc<SymbolDef>>,
 
     /// qualified_name → SymbolDef (exact qname match).
-    pub symbols_by_qname: HashMap<String, SymbolDef>,
+    pub symbols_by_qname: HashMap<String, Arc<SymbolDef>>,
 
     /// ScopeId → ScopeDef.
     pub scopes_by_id: HashMap<ScopeId, ScopeDef>,
@@ -311,14 +315,19 @@ impl ResolutionContext {
             .get_file(&file_id)?
             .ok_or_else(|| anyhow::anyhow!("File not found in store"))?;
 
-        let symbols = store.find_symbols_by_file(&file_id)?;
+        let symbols: Vec<Arc<SymbolDef>> = store
+            .find_symbols_by_file(&file_id)?
+            .into_iter()
+            .map(Arc::new)
+            .collect();
         let scopes = store.find_scopes_by_file(&file_id)?;
         let imports = store.find_imports_by_file(&file_id)?;
 
-        // Build indexes
-        let mut symbols_by_scope: HashMap<ScopeId, Vec<SymbolDef>> = HashMap::new();
-        let mut symbols_by_id: HashMap<SymbolId, SymbolDef> = HashMap::new();
-        let mut symbols_by_qname: HashMap<String, SymbolDef> = HashMap::new();
+        // Build indexes — Symbols are stored as Arc so that the same symbol
+        // can appear in multiple indexes with zero data copies (only refcount).
+        let mut symbols_by_scope: HashMap<ScopeId, Vec<Arc<SymbolDef>>> = HashMap::new();
+        let mut symbols_by_id: HashMap<SymbolId, Arc<SymbolDef>> = HashMap::new();
+        let mut symbols_by_qname: HashMap<String, Arc<SymbolDef>> = HashMap::new();
         let mut scopes_by_id: HashMap<ScopeId, ScopeDef> = HashMap::new();
         let mut scope_parents: HashMap<ScopeId, ScopeId> = HashMap::new();
 
@@ -330,15 +339,16 @@ impl ResolutionContext {
         }
 
         for sym in &symbols {
+            let arc = Arc::clone(sym);
             // Group by scope
-            if let Some(sid) = sym.scope_id {
-                symbols_by_scope.entry(sid).or_default().push(sym.clone());
+            if let Some(sid) = arc.scope_id {
+                symbols_by_scope.entry(sid).or_default().push(Arc::clone(&arc));
             }
             // Index by ID
-            symbols_by_id.insert(sym.id, sym.clone());
+            symbols_by_id.insert(arc.id, Arc::clone(&arc));
             // Index by qualified name
-            if !sym.qualified_name.is_empty() {
-                symbols_by_qname.insert(sym.qualified_name.clone(), sym.clone());
+            if !arc.qualified_name.is_empty() {
+                symbols_by_qname.insert(arc.qualified_name.clone(), Arc::clone(&arc));
             }
         }
 
@@ -358,7 +368,7 @@ impl ResolutionContext {
     // --- Convenience lookups ---
 
     /// Find symbols directly in the given scope (NOT including children).
-    pub fn symbols_in_scope(&self, scope_id: ScopeId) -> &[SymbolDef] {
+    pub fn symbols_in_scope(&self, scope_id: ScopeId) -> &[Arc<SymbolDef>] {
         match self.symbols_by_scope.get(&scope_id) {
             Some(v) => v.as_slice(),
             None => &[],
@@ -369,15 +379,13 @@ impl ResolutionContext {
     pub fn lookup_scoped(&self, scope_id: ScopeId, name: &str) -> Option<&SymbolDef> {
         let mut current = Some(scope_id);
         while let Some(sid) = current {
-            // Search in this scope
             if let Some(syms) = self.symbols_by_scope.get(&sid) {
                 for s in syms {
                     if s.name == name {
-                        return Some(s);
+                        return Some(&**s);
                     }
                 }
             }
-            // Move to parent
             current = self.scope_parents.get(&sid).copied();
         }
         None
@@ -388,12 +396,12 @@ impl ResolutionContext {
         self.symbols
             .iter()
             .filter(|s| s.name == name)
-            .cloned()
+            .map(|s| (**s).clone())
             .collect()
     }
 
     /// Exact qualified-name lookup in indexes.
     pub fn find_by_qname(&self, qname: &str) -> Option<&SymbolDef> {
-        self.symbols_by_qname.get(qname)
+        self.symbols_by_qname.get(qname).map(|v| &**v)
     }
 }
