@@ -247,6 +247,23 @@ impl ResolutionSession {
         Ok(results)
     }
 
+    /// Resolve a batch of references with a pre-built context — pure memory,
+    /// no Store access.  Designed for pre-loaded contexts in parallel
+    /// resolution to eliminate lock contention on the single Store mutex.
+    fn resolve_refs_in_ctx(
+        &self,
+        references: &[ReferenceUse],
+        ctx: &ResolutionContext,
+    ) -> Vec<(ReferenceUse, ResolvedTarget)> {
+        let mut results = Vec::with_capacity(references.len());
+        for reference in references {
+            if let Some(target) = self.resolve_one(reference, ctx) {
+                results.push((reference.clone(), target));
+            }
+        }
+        results
+    }
+
     /// Resolve one reference using the shared core with file-proximity scoring.
     fn resolve_one(
         &self,
@@ -406,37 +423,43 @@ impl ReferenceResolver {
         };
 
         // ── Phase 1: Parallel resolution (reads only) ──
-        // The counter tracks matched references (not total), giving the user
-        // a sense of throughput ("8,234 matched · 1,240/s").  For the TUI,
-        // Phase 1 shows a spinner + rate; Phase 2 shows a percentage bar.
         //
-        // We clone ProgressState.atomic_current (Arc<AtomicU64>) and share it
-        // with rayon threads lock-free — each thread does a single Relaxed
-        // store per file, and the TUI reads the same Arc via its snapshot
-        // path (zero contention, zero mutex traffic).
+        // Step A (serial, 1 lock): Pre-build ResolutionContext for every file
+        // so that rayon threads never touch the Store mutex.  This eliminates
+        // the primary bottleneck on large projects: 8+ threads serializing on
+        // a single SQLite connection for 4 queries per file.
+        //
+        // Step B (parallel, lock-free): Each thread resolves its file's refs
+        // against its pre-built context — pure memory, zero contention.
         let matched_counter = Arc::new(AtomicU64::new(0));
         let mc = &matched_counter;
         let session = &session;
 
-        // Clone the Arc<AtomicU64> so rayon threads can publish progress
-        // without ever touching the ProgressState mutex.
         let progress_atomic = progress_mutex
             .map(|a| Arc::clone(&a.lock().unwrap().atomic_current));
 
-        let per_file_results: Vec<(ReferenceUse, ResolvedTarget)> = by_file
+        // Step A: build all contexts (one lock acquisition via the Store's
+        // internal get_file / find_symbols_by_file etc.).
+        let mut file_groups: Vec<(FileId, Vec<ReferenceUse>, ResolutionContext)> =
+            Vec::with_capacity(by_file.len());
+        for (fid, refs) in by_file {
+            match ResolutionContext::build(&store, fid) {
+                Ok(ctx) => file_groups.push((fid, refs, ctx)),
+                Err(_e) => { /* skip — context build failed, refs remain unresolved */ }
+            }
+        }
+
+        // Step B: pure-memory parallel resolution
+        let per_file_results: Vec<(ReferenceUse, ResolvedTarget)> = file_groups
             .par_iter()
-            .map(|(file_id, refs)| {
-                let store_ref: &Store = &store;
-                let single: &[(FileId, Vec<ReferenceUse>)] = &[(*file_id, refs.clone())];
-                let result = session.resolve_file(store_ref, single);
-                let count = result.as_ref().map_or(0, |v| v.len() as u64);
+            .map(|(_fid, refs, ctx)| {
+                let result = session.resolve_refs_in_ctx(refs, ctx);
+                let count = result.len() as u64;
                 let total_matched = mc.fetch_add(count, Ordering::Relaxed) + count;
-                // Lock-free progress — store directly into the AtomicU64
-                // that the TUI snapshot reads every 200 ms.
                 if let Some(ref ac) = progress_atomic {
                     ac.store(total_matched, Ordering::Relaxed);
                 }
-                result.unwrap_or_default()
+                result
             })
             .flatten()
             .collect();
