@@ -204,6 +204,17 @@ trace             = inter-procedural, by composing summaries along call graph
 - `GraphSnapshot` 发布后不可变；Sync 只有在写事务成功后刷新 snapshot。
 - 删除或修改文件时必须失效相关 references 和 edges。
 
+**调用边仅限项目内部符号**：Atlas 只在 caller 和 callee 两端符号都已索引时创建调用边 (`Calls`/`Instantiates`/`Implements`)。外部包的引用（如 `import { useState } from 'react'`、`#include <stdio.h>` 中的 `printf`）因目标符号不在项目的 symbol table 中，不会产生边。具体机制：
+
+1. **解析阶段**：外部符号在项目中无对应 symbol，reference 保持 unresolved
+2. **边构建阶段**：`create_edges_for_reference` 通过 `find_symbol_by_id` 校验目标符号存在于 store；不存在则 `return Ok(edges)`（空 Vec）。source 符号（reference 的 enclosing function/class）不存在时间样跳过。
+
+```text
+项目内 foo()             → edge 创建 ✅
+import { bar } from 'lodash'  → bar() 无 edge ❌
+顶层表达式调用（无 enclosing 函数） → 无 edge ❌
+```
+
 置信度分层：
 
 ```text

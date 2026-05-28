@@ -384,6 +384,7 @@ Conventions:
 - TypeScript barrel/re-export chains use best-effort name fallback rather than a full export graph.
 - Dataflow and trace precision varies by language; inspect `atlas doctor` or `language_capabilities` before relying on a trace result.
 - MCP serves a local SQLite index; run `atlas sync` or `atlas index` after source changes.
+- Call edges (`Calls`, `Instantiates`, `Implements`) are only created when both the caller and callee are indexed project symbols. External library calls (e.g., `useState` from `react`, `printf` from `stdio.h`) do not produce edges. See [Edge visibility](#edge-visibility-project-internal-symbols-only) for details.
 
 ## How tree-sitter powers dataflow extraction
 
@@ -467,6 +468,28 @@ CST root (per function)
 ```
 
 CFG construction walks the function AST, identifying control-flow splits (`if_statement`, `switch_case`, `try_statement`, `for_statement`, `while_statement`) and building a graph of basic blocks. Each `CfgNode` records the byte range it covers, and `CfgEdge` connects predecessor → successor. CFG is available for TypeScript, JavaScript, Python, Java, C, C++, Go, Rust, and Cangjie. C#, PHP, Ruby, and Kotlin do not yet have CFG support.
+
+### Edge visibility: project-internal symbols only
+
+Atlas only creates call edges (`Calls`, `Instantiates`, `Implements`) when **both the caller and the callee are indexed symbols in the project**. If a reference resolves to a symbol outside the project — for example, an import from an external package like `react`, `lodash`, or `std` — no edge is produced.
+
+**How this works**:
+
+1. **Resolution phase** — Each reference is resolved against the project's symbol table. External imports (e.g., `import { useState } from 'react'`) cannot be resolved because the target symbols are not indexed. These references remain unresolved.
+
+2. **Edge building phase** — `GraphBuilder::create_edges_for_reference` verifies that the resolved target symbol exists in the store via `find_symbol_by_id`. If the target symbol is not found (external / not indexed), no incoming edge is added to the project's call graph. Similarly, edges require the **source** symbol (the enclosing function/class containing the reference) to exist — top-level statements without a containing symbol produce no edges.
+
+**Implications**:
+
+| Scenario | Edge created? |
+|----------|:---:|
+| `foo()` where `foo` is defined in the project | ✅ |
+| `foo()` where `foo` is imported from an external package | ❌ |
+| `new Foo()` where `Foo` is a class defined in the project | ✅ |
+| `useState()` where `useState` comes from `react` | ❌ |
+| Top-level expression call (no enclosing function/class) | ❌ |
+
+This design ensures the call graph is **self-contained** — all edges point to symbols that the user can inspect, trace, and navigate within their own codebase. External API calls are intentionally excluded to keep the graph focused on project-internal structure.
 
 ### 7. Trace → cross-procedural variable provenance
 
