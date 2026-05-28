@@ -11,6 +11,7 @@
 //! - References (from all other reference kinds)
 //! - Contains (from container → child relationships discovered during resolution)
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use db::Store;
@@ -37,14 +38,27 @@ impl GraphBuilder {
     /// P5: Edge creation is parallelized — each reference produces edges independently
     /// via Rayon. Results are collected and batch-inserted.
     pub fn build_all(&self, resolved: &[(ReferenceUse, ResolvedTarget)]) -> GraphBuilderStats {
-        // P5: Parallel edge creation (each reference is independent).
-        // Warnings are collected into a Mutex-protected Vec.
+        // Preload target symbols to eliminate DB queries in the parallel loop.
+        let symbol_cache: HashMap<SymbolId, SymbolDef> = {
+            let mut ids = HashSet::new();
+            for (_, target) in resolved {
+                ids.insert(target.symbol_id);
+            }
+            let mut map = HashMap::with_capacity(ids.len());
+            for id in ids {
+                if let Ok(Some(sym)) = self.store.find_symbol_by_id(&id) {
+                    map.insert(id, sym);
+                }
+            }
+            map
+        };
+
         let warnings: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
         let edges: Vec<RawEdge> = resolved
             .par_iter()
             .filter_map(|(reference, target)| {
-                match self.create_edges_for_reference(reference, target) {
+                match self.create_edges_for_reference(reference, target, Some(&symbol_cache)) {
                     Ok(edges) => Some(edges),
                     Err(e) => {
                         if let Ok(mut w) = warnings.lock() {
@@ -114,7 +128,7 @@ impl GraphBuilder {
         let edges: Vec<RawEdge> = scoped
             .par_iter()
             .filter_map(|(reference, target)| {
-                match self.create_edges_for_reference(reference, target) {
+                match self.create_edges_for_reference(reference, target, None) {
                     Ok(edges) => Some(edges),
                     Err(e) => {
                         if let Ok(mut w) = warnings.lock() {
@@ -179,13 +193,17 @@ impl GraphBuilder {
         &self,
         reference: &ReferenceUse,
         target: &ResolvedTarget,
+        symbol_cache: Option<&HashMap<SymbolId, SymbolDef>>,
     ) -> anyhow::Result<Vec<RawEdge>> {
         let mut edges = Vec::new();
 
-        // Look up target symbol from the DB (supports cross-file targets)
-        let target_sym = match self.store.find_symbol_by_id(&target.symbol_id)? {
-            Some(s) => s,
-            None => return Ok(edges),
+        // Look up target symbol — use cache if provided, else query the store.
+        let target_sym = match symbol_cache.and_then(|c| c.get(&target.symbol_id)) {
+            Some(s) => s.clone(),
+            None => match self.store.find_symbol_by_id(&target.symbol_id)? {
+                Some(s) => s,
+                None => return Ok(edges),
+            },
         };
 
         // Source is the enclosing function/class that contains the reference
@@ -216,6 +234,7 @@ impl GraphBuilder {
                             let mut pointer_edges = self.create_edges_for_reference(
                                 reference,
                                 &resolved_target,
+                                symbol_cache,
                             )?;
                             edges.append(&mut pointer_edges);
                             return Ok(edges);
