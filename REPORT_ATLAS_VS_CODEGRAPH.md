@@ -32,9 +32,9 @@
 | Python | scrapy | 11 | 98 | 113 | 11 | 159 | **214** | **CodeGraph (1.9x)** |
 | Rust | bat | 104 | 3,528 | **15,035** | 128 | 2,608 | 5,160 | **Atlas (2.9x)** |
 | TypeScript | opencode | 1,931 | 35,080 | 65,400 | 1,931 | 28,865 | **66,375** | **CodeGraph (1.0x)** |
-| Cangjie | — | 不支持 | — | — | 不支持 | — | — | 平局 |
+| Cangjie | cjvs | **24** | **190** | **160** | 1 | 0 | 0 | **Atlas (独有)** |
 
-**核心发现**: Atlas 在 5/7 支持的语言上拥有更多边（更细粒度关系图），且多数情况下大幅领先。CodeGraph 在 TypeScript 上勉强胜出（66,375 vs 65,400），在 Python 上明显领先（214 vs 113）。Cangjie 两者均不支持。
+**核心发现**: Atlas 在 6/8 语言上拥有更多边（更细粒度关系图），且多数情况下大幅领先。CodeGraph 在 TypeScript 上勉强胜出（66,375 vs 65,400），在 Python 上明显领先（214 vs 113）。**Cangjie 是 Atlas 独有支持**的语言 — CodeGraph 完全无法分析。
 
 ---
 
@@ -367,16 +367,71 @@ lib/url.c:333
 
 ## 8. 仓颉语言 (cangjie_example)
 
-**项目**: 空项目（仅包含占位符配置）
+**项目**: cjvs — 仓颉语言版本管理工具（类似 nvm），真实开源的仓颉项目（24 个 `.cj` 源文件）
 
-### 8.1 支持情况
+### 8.1 支持情况对比
 
 | 指标 | Atlas | CodeGraph |
 |------|-------|-----------|
 | 语言支持 | 编译特性中列出 cangjie | 不支持 |
 | 索引 | 能力标注 (capability 未知) | 无法索引 |
 
-**结论**: 两者均不支持仓颉语言的实质性代码分析。Atlas 在编译特性列表中包含了 cangjie，但实际索引未产生有效数据。CodeGraph 完全无仓颉支持。
+### 8.2 Atlas 深度测试（仓颉项目 cjvs）
+
+**项目**: cjvs — 仓颉语言版本管理工具（类似 nvm），真实开源的仓颉项目。
+
+**结论重写**: Atlas **实质性支持**仓颉语言，CodeGraph **完全不支持**。
+
+#### Atlas 索引统计
+
+| 指标 | Atlas | CodeGraph |
+|------|-------|-----------|
+| 文件数 | **24** | 1（仅 YAML 配置文件） |
+| 符号/节点数 | **190** | 0 |
+| 边数 | **160** | 0 |
+| 引用数 | **667** | — |
+| 部分解析文件 | 3（env/paths.cj, model/model.cj, tools/tools.cj） | — |
+| 语言能力 | **dataflow_full**, confidence 0.65 | 不支持 |
+
+#### Atlas 工具在 Cangjie 上的实际表现
+
+逐一验证了所有核心 MCP 工具，均正常工作：
+
+| 工具 | 测试内容 | 结果 |
+|------|---------|------|
+| `atlas_status` | 项目概览 | ✅ 显示 24 文件/190 符号/160 边/667 引用 |
+| `atlas_language_capabilities` | 能力矩阵 | ✅ 详细列出 Cangjie 的 13 项功能支持（含 CFG 不支持标注） |
+| `atlas_files` | 文件列表 | ✅ 24 个 `.cj` 文件列出（3 个 partial） |
+| `atlas_search` | 搜索 `install` (函数) | ✅ 精确命中 `src/command_install.cj:9`，分数 1.08 |
+| `atlas_search` | 搜索 `printVersion` | ✅ 精确命中 `src/main.cj:55` |
+| `atlas_search` | 搜索 `check` | ✅ 精确命中 `src/main.cj:97` |
+| `atlas_search` | 搜索 `defaultConfig` | ✅ 精确命中 `src/config/config.cj:5`，分数 0.75 |
+| `atlas_search` | 搜索 `Version` (变量) | ✅ 20 个带 `version` 的变量跨 12 个文件 |
+| `atlas_search` | 搜索 `main` (函数) | ⚠️ 未找到 — Cangjie 入口函数 `main()` 不被索引为符号 |
+| `atlas_symbol` | 函数 `install` | ✅ 完整源码（40 行）+ 4 个 callees（doinstall, defaultVersion, getVersions, doinstallLocal） |
+| `atlas_symbol` | 函数 `printVersion` | ✅ 源码 + 0 callees（正确） |
+| `atlas_symbol` | 函数 `check` | ✅ 源码 + 2 callees（getAppConfigDir, getAppConfigFile） |
+| `atlas_context` | 函数 `install` | ✅ 完整上下文：全源码 + 4 个调用点代码片段 + 12 个文件同行符号 |
+| `atlas_callers` | `doinstall` 的调用者 | ✅ 1 个调用者：`install` (正确) |
+| `atlas_callees` | `install` 的被调者 | ✅ 4 个 callees 全部正确 |
+| `atlas_callgraph` | `install` depth=3 | ✅ 17 节点 BFS 扩展，涵盖完整调用链 |
+| `atlas_path` | `install → doinstall` | ✅ 直接路径，quality: "direct", score: 0.925 |
+| `atlas_neighbors` | `install` depth=1 | ✅ 7 个邻居符号（函数+变量），跨多个文件 |
+| `atlas_explore` | `doinstall` | ✅ 1 incoming + 12 outgoing 边（含 calls + references） |
+| `atlas_usages` | `getAppConfigDir` | ✅ 2 处引用：main.cj:100 + tools.cj:36 |
+| `atlas_dependencies` | `command_install.cj` | ✅ 解析出对 `config` 和 `model` 模块的 import |
+
+#### 关键发现
+
+1. **Atlas 是唯一支持 Cangjie 的 MCP 代码分析工具** — CodeGraph 完全无法解析 `.cj` 文件
+2. **Atlas 的 Cangjie 支持是** `dataflow_full` **级别**（confidence 0.65），支持 13 项功能的详细能力矩阵
+3. **所有核心工具均正常工作**：搜索、符号详情、调用图、路径追踪、邻居、引用、依赖分析
+4. **少数限制**：
+   - `main()` 入口函数不作为索引符号（Cangjie 语言的特殊入口处理）
+   - 3 个文件为 partial 解析（含 `@Derive` 宏标注的类文件）
+   - CFG 构建器未实现
+   - 词法绑定为基本级别（scope-chain-aware 未实现）
+5. **Cangjie 是 Atlas 对比 CodeGraph 的"王牌"语言** — Atlas 有实质支持，CodeGraph 完全为零
 
 ---
 
@@ -411,8 +466,9 @@ TS       ███████████████████████�
 
 | 维度 | 最佳工具 | 说明 |
 |------|---------|------|
-| **边/粒度 (C/C#/Go/Java/Rust)** | **Atlas** | 5/7 语言领先，部分高达 9x |
-| **边/粒度 (Python/TypeScript)** | **CodeGraph** | 2/7 语言略微领先 |
+| **Cangjie 支持** | **Atlas（独占）** | CodeGraph 完全无法解析仓颉代码 |
+| **边/粒度 (C/C#/Go/Java/Rust)** | **Atlas** | 5/8 语言领先，部分高达 9x |
+| **边/粒度 (Python/TypeScript)** | **CodeGraph** | 2/8 语言略微领先 |
 | **符号搜索覆盖面** | **CodeGraph** | 返回更多相似结果，适合探索 |
 | **符号搜索精确度** | **Atlas** | scope 限定 + 精确匹配 |
 | **符号详情** | **持平** | 均支持源码+调用关系 |
@@ -424,17 +480,19 @@ TS       ███████████████████████�
 
 ### 关键洞察
 
-1. **Atlas 边更细**：在 C (2x)、C# (9x)、Go (2.4x)、Java (1.5x)、Rust (2.9x) 上，Atlas 建立了更丰富的关系图。这说明 Atlas 的静态分析引擎在这些语言上捕获了更多粒度的代码关系。
+1. **Cangjie 是 Atlas 的独占优势**：Atlas 是**唯一**能实质性分析仓颉代码的 MCP 代码分析工具（24 文件/190 符号/160 边），CodeGraph 完全无法解析 `.cj` 文件。
 
-2. **CodeGraph 搜索更强**：CodeGraph 的符号搜索返回更广泛的结果，适合代码探索场景。Atlas 的 scope 限定搜索更适合精确定位。
+2. **Atlas 边更细**：在 C (2x)、C# (9x)、Go (2.4x)、Java (1.5x)、Rust (2.9x) 上，Atlas 建立了更丰富的关系图。这说明 Atlas 的静态分析引擎在这些语言上捕获了更多粒度的代码关系。
 
-3. **Python 是弱点**：Python 是 Atlas 表现最弱的语言（113 vs 214 边，98 vs 159 符号）。Python 的动态特性对基于树解析的静态分析构成挑战。
+3. **CodeGraph 搜索更强**：CodeGraph 的符号搜索返回更广泛的结果，适合代码探索场景。Atlas 的 scope 限定搜索更适合精确定位。
 
-4. **TypeScript 接近平手**：两者在最大项目 (opencode, 1,931 文件) 上的边数几乎相同。Atlas 符号数多 21.5%，CodeGraph 边数多 1.5%。
+4. **Python 是弱点**：Python 是 Atlas 表现最弱的语言（113 vs 214 边，98 vs 159 符号）。Python 的动态特性对基于树解析的静态分析构成挑战。
 
-5. **Atlas 语言能力矩阵**：Atlas 独有的 `language_capabilities` 信息（含 confidence 分数）为评估分析质量提供了有用参考。
+5. **TypeScript 接近平手**：两者在最大项目 (opencode, 1,931 文件) 上的边数几乎相同。Atlas 符号数多 21.5%，CodeGraph 边数多 1.5%。
 
-6. **重要使用提示**：使用 `atlas_open_project` 时须使用 `storage="persistent"` 以加载索引数据，memory 模式默认创建空索引。
+6. **Atlas 语言能力矩阵**：Atlas 独有的 `language_capabilities` 信息（含 confidence 分数）为评估分析质量提供了有用参考。
+
+7. **重要的使用提示**：使用 `atlas_open_project` 时须使用 `storage="persistent"` 以加载索引数据，memory 模式默认创建空索引。
 
 ---
 

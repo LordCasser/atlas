@@ -173,19 +173,23 @@ pub fn run(
         if !hash_result.deleted.is_empty() {
             let deleted_count = hash_result.deleted.len() as u64;
             ps.lock().unwrap().set_total(deleted_count);
-            let mut i = 0u64;
-            for rel_path in &hash_result.deleted {
-                let sp = SourcePath::try_from_relative(&rel_path.to_string_lossy())
-                    .context("invalid deleted path")?;
-                let file_id = atlas_engine::FileId::generate(sp.as_str());
-                store.invalidate_references_to_symbols_in_file(&file_id)?;
-                store.delete_edges_for_file_references(&file_id)?;
-                store.delete_file_data(&file_id)?;
-                i += 1;
+            // Collect file IDs first for batch operations.
+            let file_ids: Vec<atlas_engine::FileId> = hash_result.deleted.iter()
+                .filter_map(|rel_path| {
+                    let sp = SourcePath::try_from_relative(&rel_path.to_string_lossy()).ok()?;
+                    Some(atlas_engine::FileId::generate(sp.as_str()))
+                })
+                .collect();
+            // Invalidate references + delete edges per file (these cascade).
+            for (i, fid) in file_ids.iter().enumerate() {
+                store.invalidate_references_to_symbols_in_file(fid)?;
+                store.delete_edges_for_file_references(fid)?;
                 if i % 50 == 0 {
-                    ps.lock().unwrap().set_current(i);
+                    ps.lock().unwrap().set_current(i as u64);
                 }
             }
+            // Batch delete file data (CASCADE handles remaining rows).
+            store.delete_files_batch(&file_ids)?;
             ps.lock().unwrap().set_current(deleted_count);
         }
 
@@ -304,7 +308,7 @@ pub fn run(
         // 100 files/txn — full-analysis data is dense (thousands of
         // rows per file for dataflow/CFG/bindings).  Larger batches
         // choke SQLite's B-tree with millions of rows per transaction.
-        const BATCH_SIZE: usize = 100;
+        const BATCH_SIZE: usize = 500;
         let mut written = 0u64;
         // PASSIVE WAL checkpoint every 500 files to keep the WAL
         // below ~200 MB even under full-analysis load.
