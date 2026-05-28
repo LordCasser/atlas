@@ -127,7 +127,7 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 
 当前 schema 版本为 V1，所有变更直接在主 DDL 中进行，无需迁移。
 
-主要表（19 张）：
+主要表（22 张）：
 
 | 表 | 用途 |
 |----|------|
@@ -149,6 +149,7 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 | `file_index_layers` | 每文件每层索引状态 |
 | `project_metadata` | 项目级键值配置 |
 | `symbols_fts` | FTS5 符号名索引 |
+| `function_pointer_annotations` | C/C++ 函数指针 dispatch 注解 |
 
 约束：
 - SQLite 使用 WAL。

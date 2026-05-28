@@ -66,7 +66,7 @@ names without the old `atlas_` prefix.
 | `callers` | `symbol`: qualified name | `limit`: integer (default 20) |
 | `callees` | `symbol`: qualified name | `limit`: integer (default 20) |
 | `callgraph` | `symbol`: qualified name | `depth`: integer (default 3, max 5), `limit`: integer (default 100) |
-| `path` | `from`: qualified name, `to`: qualified name | `max_depth`: integer (default 5, max 10), `direction`: `"both"` \| `"outgoing"` \| `"incoming"` (default `"both"`), `prefer_production`: boolean (default `false`), `edge_kinds`: string[] (default `["calls","instantiates","implements","registers_callback"]`), `includeCode`: boolean (default `false`) |
+| `path` | `from`: qualified name, `to`: qualified name | `max_depth`: integer (default 5, max 10), `direction`: `"outgoing"` \| `"incoming"` \| `"both"` (default `"outgoing"`), `prefer_production`: boolean (default `false`), `edge_kinds`: string[] (default `["calls","instantiates","implements","registers_callback"]`), `includeCode`: boolean (default `false`) |
 | `explore` | `symbol`: qualified name | `includeCode`: boolean (default `false`) |
 | `impact` | `symbol`: qualified name | `depth`: integer (default 3, max 5) |
 | `context` | `symbol`: qualified name | `includeCode`: boolean (default `false`) |

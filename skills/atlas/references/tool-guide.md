@@ -62,7 +62,7 @@ All tools use short names (no `atlas_` prefix):
 | Point inspection | `trace_point` | `file_path` or `file_id`, `line`, `column` |
 | Variable origin | `trace_variable` | `file_path` or `file_id`, `line`, `column`, optional `max_depth` |
 | Caller chain | `trace_caller_path` | `symbol` (hex ID) or `symbol_name`, optional `max_depth` |
-| Forward call trace | `trace_forward` | `from`, `to`, optional `from_name`, `to_name`, `max_depth` |
+| Forward call trace | `trace_forward` | hex IDs (`from`, `to`) or names (`from_name`, `to_name`), optional `max_depth` |
 | Symbol usages | `usages` | `symbol`, optional `limit` |
 | File dependencies | `dependencies` | `file_id`, optional `limit` |
 | File dependents | `dependents` | `file_id`, optional `limit` |

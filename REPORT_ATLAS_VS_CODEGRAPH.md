@@ -2,7 +2,7 @@
 
 > 报告生成日期: 2026-05-28
 > 环境: 每个 example 项目下均执行了 `codegraph init .` 和 `codegraph index`
-> Atlas 版本: 1.0.0 (Rust 实现), CodeGraph 版本: 11.10.1 (TypeScript 实现)
+> Atlas 版本: 1.1.0 (Rust 实现), CodeGraph 版本: 11.10.1 (TypeScript 实现)
 > **重要更正**: 此前使用 `atlas_open_project` 默认 memory 模式导致索引数据为 0，本报告数据均来自 persistent 模式（.atlas/atlas.db 持久索引）
 
 ---

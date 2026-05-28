@@ -25,9 +25,6 @@ cargo build -p atlas-cli
 
 # All languages + MCP
 cargo build -p atlas-cli --features "all-languages,mcp"
-
-# All languages + MCP + experimental
-cargo build -p atlas-cli --features "all-languages,mcp,cangjie"
 ```
 
 ## Test structure

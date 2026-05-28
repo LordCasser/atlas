@@ -805,7 +805,7 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "trace_forward".into(),
-            description: "Trace the forward call chain from source to target. Answers 'how does A reach B?' by walking forward through call edges. Returns per-hop source snippets and edge types.".into(),
+            description: "Trace the forward call chain from source to target. Answers 'how does A reach B?' by walking forward through call edges. Returns per-hop source snippets and edge types. Accepts either hex symbol IDs ('from'/'to') or symbol names ('from_name'/'to_name').".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
@@ -815,7 +815,7 @@ pub fn make_all_tools() -> Vec<Tool> {
                     "to_name": { "type": "string", "description": "Target symbol name (alternative to 'to' hex ID, e.g. 'processRequest')" },
                     "max_depth": { "type": "integer", "description": "Maximum forward call depth (default 10)" },
                 })),
-                required: Some(vec!["from".into(), "to".into()]),
+                required: None,
             },
         },
         Tool {

@@ -22,4 +22,4 @@ Public facade crate for Atlas. Re-exports all core types and provides the high-l
 
 The `Engine` struct is a convenience wrapper for testing and simple use cases. Production code (MCP server, CLI commands) typically constructs `Store`, `LazyDataflowService`, and trace engines directly.
 
-For detailed architecture, see [`../../docs/03-current-architecture.md`](../../docs/03-current-architecture.md).
+For detailed architecture, see [`../../docs/architecture.md`](../../docs/architecture.md).
