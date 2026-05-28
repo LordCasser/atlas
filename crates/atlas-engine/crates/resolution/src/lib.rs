@@ -410,12 +410,13 @@ impl ReferenceResolver {
         // a sense of throughput ("8,234 matched · 1,240/s").  For the TUI,
         // Phase 1 shows a spinner + rate; Phase 2 shows a percentage bar.
         let matched_counter = Arc::new(AtomicU64::new(0));
+        let last_reported = Arc::new(AtomicU64::new(0));
         let mc = &matched_counter;
+        let lr = &last_reported;
         let session = &session;
 
-        // Clone the Arc so rayon threads can periodically update the
-        // progress state (otherwise the TUI looks frozen during long-running
-        // Phase 1 on large projects).
+        // Clone the Arc so rayon threads can update the progress state
+        // (otherwise the TUI shows a static "[Resolving refs]" without rate).
         let progress_arc = progress_mutex.map(|a| Arc::clone(a));
 
         let per_file_results: Vec<(ReferenceUse, ResolvedTarget)> = by_file
@@ -426,10 +427,14 @@ impl ReferenceResolver {
                 let result = session.resolve_file(store_ref, single);
                 let count = result.as_ref().map_or(0, |v| v.len() as u64);
                 let total_matched = mc.fetch_add(count, Ordering::Relaxed) + count;
-                // Periodic heartbeat — update TUI every 500 resolved refs so
-                // the spinner and rate counter stay visible.
+                // Publish progress at coarse intervals so the TUI rate
+                // display stays live.  Using a compare-and-swap avoids the
+                // modulo races that happen with concurrent fetch_add tails.
                 if let Some(ref ps_arc) = progress_arc {
-                    if total_matched % 500 == 0 && total_matched > 0 {
+                    let prev = lr.load(Ordering::Relaxed);
+                    let step = prev.max(1).max(total_matched / 20); // ~5% steps
+                    if total_matched.saturating_sub(prev) >= step {
+                        lr.store(total_matched, Ordering::Relaxed);
                         if let Ok(mut ps) = ps_arc.lock() {
                             ps.set_current(total_matched);
                         }
