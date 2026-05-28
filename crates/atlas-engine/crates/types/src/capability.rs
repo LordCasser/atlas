@@ -950,7 +950,7 @@ mod profiles {
                     0.65,
                     vec!["basic return value capture"],
                 ),
-                cfg: FeatureSupport::unsupported("CFG builder not implemented for Cangjie"),
+                cfg: FeatureSupport::supported_with_confidence(0.60),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.55,
                     vec![

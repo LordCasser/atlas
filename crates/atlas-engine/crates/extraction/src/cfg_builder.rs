@@ -123,6 +123,18 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
                 "continue_expression", "break_expression",
             ],
         },
+        Language::Cangjie => CfgLanguageConfig {
+            block_kinds: &["block"],
+            if_kinds: &["ifExpression"],
+            loop_kinds: &[
+                "whileExpression", "forInExpression", "doWhileExpression",
+            ],
+            return_kinds: &["jumpExpression"], // jumpExpression covers return/break/continue
+            throw_kinds: &[],
+            stmt_kinds: &[
+                "variableDeclaration", "expressionStatement",
+            ],
+        },
         _ => CfgLanguageConfig {
             // Default: TS/JS config (best-effort for unknown languages)
             block_kinds: &["statement_block"],

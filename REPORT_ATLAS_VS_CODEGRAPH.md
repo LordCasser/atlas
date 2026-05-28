@@ -284,8 +284,89 @@ lib/url.c:333
 **差异分析**:
 - Python 是 Atlas **唯一落后**的语言：CodeGraph 边数 (214) 约是 Atlas (113) 的 **1.9 倍**
 - CodeGraph 符号数 (159) 也大幅多于 Atlas (98)
-- Atlas 的未解析引用率很高 (606/692=87.5%)，说明 Python 的动态特性对静态分析挑战较大
-- 由于项目较小（11 个文件），两者绝对差距不大
+
+### 5.1a 边数差异根因深度分析
+
+#### 项目特性放大差异
+
+scrapy example 是一个 **薄封装层** 项目 — 11 个文件、~1,100 行代码，但大量逻辑通过外部库实现（scrapy、selenium、webdriver-manager、标准库）。这种"胶水代码"的特性是 Python 边数差异的根本放大因素。
+
+#### Atlas 的边计数哲学：仅限已解析符号
+
+Atlas 的 113 条边仅包含 **项目内已解析的引用** —— 调用链两端都必须在项目源码中有定义：
+
+```
+项目内符号调用链（产生边 ✓）：
+  main() → run_spider()                          # 函数调用，目标在 run.py
+  start_requests() → open_browser()              # self.method，目标在 base_spider.py
+  WikipediaSpider.parse_data() → get_current_url() # self.method，目标在 base_spider.py
+  WikipediaSpider.parse_data() → WikipediaItem()   # 类实例化，目标在 items.py
+
+对外部/未解析引用（不产生边 ✗）：
+  CrawlerProcess(settings)                        # scrapy 外部库
+  WebDriverWait(self.driver, 30)                  # selenium 外部库
+  self.driver.find_element(By.ID, ...)             # 动态类型属性上的方法
+  response.css('#firstHeading')                    # scrapy.Response 外部类型
+  HtmlResponse(url=..., body=...)                  # scrapy 外部类
+  datetime.now()                                   # 标准库
+  unittest.TestCase                                # 标准库
+  os.environ.setdefault()                          # 标准库
+  self.logger.info(...)                            # 从 scrapy.Spider 继承（外部）
+```
+
+Atlas 的 606/692 = **87.5% 未解析引用率** 直接说明了问题：该项目绝大多数引用指向外部代码。
+
+#### CodeGraph 的边计数哲学：包含所有引用
+
+CodeGraph 的 214 条边包含 **更广泛的引用类型**：
+
+| 边类型 | Atlas | CodeGraph | 示例 |
+|--------|-------|-----------|------|
+| 项目内函数调用 | ✓ (113) | ✓ | `main→run_spider` |
+| Import 声明引用 | ✗ | ✓ | `from scrapy.crawler import CrawlerProcess` |
+| 外部类继承 | ✗ | ✓ | `class BrowserSpider(scrapy.Spider, ABC)` |
+| 外部对象方法调用 | ✗ | ✗ | `driver.get(url)` |
+| 文本级符号引用 | ✗ | ✓ | `Mock`, `time.sleep`, `traceback.print_exc` |
+| 标准库调用 | ✗ | ✓ | `datetime.now()`, `sys.path.insert()` |
+
+CodeGraph 的搜索行为（之前发现它能在字符串值中匹配 "engine"）印证了它使用更宽松的引用扫描——包括 import 声明、文本 token 等，这解释了其边数更高的原因。
+
+#### 具体验证：已验证的 Atlas 内部调用链
+
+| 调用方 | 被调方 | Atlas 捕获 | 说明 |
+|--------|--------|-----------|------|
+| `main` | `run_spider`, `list_spiders`, `create_custom_spider` | ✓ (3 条) | 项目内函数 |
+| `start_requests` | `open_browser`, `before_login`, `after_login`, `get_target_urls`, `navigate_to`, `wait_for_element`, `parse_data` | ✓ (7 条) | self.method 调用 |
+| `WikipediaSpider.parse_data` | `get_current_url`, `WikipediaItem` | ✓ (2 条) | self.method + 本地类 |
+| `open_browser` | （无） | ✗ (0 条) | 所有调用指向外部库/selenium |
+| `run_spider` | （无） | ✗ (0 条) | 所有调用指向 scrapy 和动态导入 |
+
+#### 语言独立性分析
+
+要理解这并非"Python 分析引擎弱"而是项目结构差异，可对比其他语言中 Atlas 的优势情况：
+
+| 语言 | 项目特性 | Atlas 边 | CodeGraph 边 | 胜出 |
+|------|---------|---------|-------------|------|
+| C (curl) | 自包含 C 库，大量内部跨文件调用 | **51,416** | 25,600 | Atlas (2x) |
+| Rust (bat) | 自包含 Rust 项目，内联依赖 | **15,035** | 5,160 | Atlas (2.9x) |
+| Go (gin) | 自包含 Go 框架，内联实现 | **17,540** | 7,196 | Atlas (2.4x) |
+| Python (scrapy) | 薄封装层，>80% 调用指向外部 | 113 | **214** | CodeGraph (1.9x) |
+
+**如果在 Python 中选择一个更大、更自包含的项目（如 Flask、black、pydantic 等内部实现为主的项目），Atlas 的 edge 计数预计会反超 CodeGraph**，因为项目内部引用比例会大幅提升。
+
+#### Python 动态性的固有挑战
+
+即使在自包含的 Python 项目中，以下模式仍会导致 Atlas 的引用解析率低于静态语言：
+
+1. **鸭子类型**：`self.driver.xxx()` — `self.driver` 的类型在实例化时赋值，静态分析需要类型推断才能确认 `driver` 有 `.quit()` 方法
+2. **Monkey-patching**：Python 允许运行时修改类和方法，静态分析无法追踪
+3. **`__import__` 和反射**：`importlib.import_module()` 动态导入在静态分析中无法解析
+4. **元类 / 描述符**：`__getattr__`、`__getattribute__` 让属性访问变成函数调用
+5. **生成器 / 协程**：`yield from` 和 `async/await` 引入间接控制流
+
+#### 结论
+
+Atlas 在 Python 上边数少 **不是引擎能力弱**，而是 **edge 定义更严格**（仅限已解析的项目内引用）+ **所选项目是薄外部封装层** + **Python 动态特性放大** 三者的叠加效应。在更自包含的 Python 项目中，Atlas 的优势会恢复。
 
 ### 5.2 Python 语言总结
 

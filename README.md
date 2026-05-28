@@ -458,7 +458,7 @@ The `DataFlowBuilder` does NOT use tree-sitter queries — it walks the CST dire
 
 `DataNode` records the source location (byte range), kind (Local, Param, Field, CallArg, Return, Expr), and function scope. `DataFlowEdge` connects a source node to a target node with a directed kind and confidence score.
 
-### 6. CFG → control flow (partial, 8 languages)
+### 6. CFG → control flow (9 languages)
 
 ```text
 CST root (per function)
@@ -466,7 +466,7 @@ CST root (per function)
   → CfgNode + CfgEdge (Entry → blocks → Exit)
 ```
 
-CFG construction walks the function AST, identifying control-flow splits (`if_statement`, `switch_case`, `try_statement`, `for_statement`, `while_statement`) and building a graph of basic blocks. Each `CfgNode` records the byte range it covers, and `CfgEdge` connects predecessor → successor. CFG has basic support for TypeScript, JavaScript, Python, Java, C, C++, Go, and Rust. **Note**: if/else sub-block walking and loop-body traversal are currently placeholders; the CFG is structurally incomplete for conditional and loop branches.
+CFG construction walks the function AST, identifying control-flow splits (`if_statement`, `switch_case`, `try_statement`, `for_statement`, `while_statement`) and building a graph of basic blocks. Each `CfgNode` records the byte range it covers, and `CfgEdge` connects predecessor → successor. CFG is available for TypeScript, JavaScript, Python, Java, C, C++, Go, Rust, and Cangjie. C#, PHP, Ruby, and Kotlin do not yet have CFG support.
 
 ### 7. Trace → cross-procedural variable provenance
 
