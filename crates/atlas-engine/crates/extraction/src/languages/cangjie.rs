@@ -32,7 +32,14 @@ fn normalize_cangjie_definition(
     file_id: FileId,
 ) -> Option<SymbolDef> {
     let kind = cj_definition_kind(capture_name)?;
-    let name = node_text(node, source)?;
+    // mainDefinition has no name child — its first child IS the entry
+    // keyword token (TOKENS.MAIN = "main").  Extract text from child(0)
+    // rather than the whole node (which would be "main(): Unit { ... }").
+    let name = if capture_name == "definition.entry" {
+        node.child(0)?.utf8_text(source.as_bytes()).ok()?.to_string()
+    } else {
+        node_text(node, source)?
+    };
     let range = node_range(node);
 
     let qualified_name = qualified_name_from_node_cj("", &name, node, source);
@@ -295,6 +302,7 @@ fn cj_definition_kind(capture: &str) -> Option<SymbolKind> {
         "definition.interface" => Some(SymbolKind::Interface),
         "definition.enum" => Some(SymbolKind::Enum),
         "definition.function" => Some(SymbolKind::Function),
+        "definition.entry" => Some(SymbolKind::Function), // mainDefinition
         "definition.variable" => Some(SymbolKind::Variable),
         _ => None,
     }

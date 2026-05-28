@@ -27,30 +27,36 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             cross: false
+            asset: atlas-linux-x86_64.tar.gz
 
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
             cross: false
+            asset: atlas-linux-arm64.tar.gz
 
           # ── Linux (cross-compile) ─────────────────────────────
           - target: riscv64gc-unknown-linux-gnu
             os: ubuntu-latest
             cross: true
+            asset: atlas-linux-riscv64.tar.gz
 
           # ── macOS (Apple Silicon, mainstream) ──────────────────
           - target: aarch64-apple-darwin
             os: macos-latest
             cross: false
+            asset: atlas-macos-arm64.tar.gz
 
           # ── Windows (native) ──────────────────────────────────
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             cross: false
+            asset: atlas-windows-x86_64.zip
 
           # ── Windows ARM (cross from Linux via cargo-xwin) ─────
           - target: aarch64-pc-windows-msvc
             os: ubuntu-latest
             xwin: true
+            asset: atlas-windows-arm64.zip
 
     steps:
       - name: Checkout
@@ -95,24 +101,24 @@ jobs:
         run: |
           EXE=${{ contains(matrix.target, 'windows') && 'atlas.exe' || 'atlas' }}
           cd target/${{ matrix.target }}/release
-          tar czf ../../../atlas-${{ matrix.target }}.tar.gz "$EXE"
+          tar czf ../../../${{ matrix.asset }} "$EXE"
 
       - name: Package (Windows native)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           cd target\${{ matrix.target }}\release
-          Compress-Archive -Path atlas.exe -DestinationPath ..\..\..\atlas-${{ matrix.target }}.zip
+          Compress-Archive -Path atlas.exe -DestinationPath ..\..\..\${{ matrix.asset }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: atlas-${{ matrix.target }}
-          path: atlas-${{ matrix.target }}.*
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
 
       - name: Upload to release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: atlas-${{ matrix.target }}.*
+          files: ${{ matrix.asset }}
           fail_on_unmatched_files: false
