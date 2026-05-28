@@ -190,23 +190,30 @@ impl ToolRouter {
     pub(crate) fn handle_list_fp_annotations(&self) -> (String, bool) {
         match self.store.get_all_fp_annotations() {
             Ok(annotations) => {
+                // Batch-lookup all source + target symbols to avoid N+1 queries.
+                let mut symbol_ids = std::collections::HashSet::new();
+                for a in &annotations {
+                    symbol_ids.insert(a.source_symbol);
+                    symbol_ids.insert(a.target_symbol);
+                }
+                let mut symbol_map: std::collections::HashMap<atlas_engine::SymbolId, String> =
+                    std::collections::HashMap::new();
+                for id in symbol_ids {
+                    let qname = self.store.find_symbol_by_id(&id).ok().flatten()
+                        .map(|s| s.qualified_name);
+                    if let Some(qn) = qname {
+                        symbol_map.insert(id, qn);
+                    }
+                }
+
                 let items: Vec<serde_json::Value> = annotations
                     .iter()
                     .map(|a| {
-                        // Resolve qnames for display
-                        let source_qname = self
-                            .store
-                            .find_symbol_by_id(&a.source_symbol)
-                            .ok()
-                            .flatten()
-                            .map(|s| s.qualified_name)
+                        let source_qname = symbol_map.get(&a.source_symbol)
+                            .cloned()
                             .unwrap_or_else(|| a.field_name.clone());
-                        let target_qname = self
-                            .store
-                            .find_symbol_by_id(&a.target_symbol)
-                            .ok()
-                            .flatten()
-                            .map(|s| s.qualified_name)
+                        let target_qname = symbol_map.get(&a.target_symbol)
+                            .cloned()
                             .unwrap_or_else(|| "?".to_string());
 
                         json!({

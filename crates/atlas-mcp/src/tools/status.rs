@@ -43,7 +43,9 @@ impl ToolRouter {
 
         // Build per-language capability summary for languages present in the project.
         let mut lang_caps = Vec::new();
-        for (lang_name, _count) in &stats.files_by_language {
+        let mut sorted_langs: Vec<&(String, i64)> = stats.files_by_language.iter().collect();
+        sorted_langs.sort_by(|a, b| a.0.cmp(&b.0));
+        for (lang_name, _count) in &sorted_langs {
             if let Some(lang) = Language::from_str(lang_name) {
                 let profile = LanguageCapabilityProfile::for_language(lang);
                 lang_caps.push(json!({

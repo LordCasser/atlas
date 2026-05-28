@@ -258,8 +258,11 @@ impl ToolRouter {
                 }
             }
 
-            hop_callers.truncate(limit.saturating_sub(total_nodes));
-            hop_callees.truncate(limit.saturating_sub(total_nodes.saturating_add(hop_callers.len())));
+            // Split remaining budget evenly between callers and callees.
+            let remaining = limit.saturating_sub(total_nodes);
+            let half = remaining / 2;
+            hop_callers.truncate(half);
+            hop_callees.truncate(remaining.saturating_sub(half));
             total_nodes = total_nodes.saturating_add(hop_callers.len()).saturating_add(hop_callees.len());
 
             hops.push(json!({

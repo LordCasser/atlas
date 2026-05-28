@@ -103,30 +103,23 @@ mod tests {
 
     #[test]
     fn verbosity_fallback_warn() {
-        // No env vars set → should default to "warn"
-        // SAFETY: test runs sequentially (Rust test harness default);
-        // we restore state afterward.
-        unsafe {
-            std::env::remove_var("ATLAS_LOG");
-            std::env::remove_var("RUST_LOG");
-        }
+        // No env vars set — should default to "warn".
+        // Note: set_var/remove_var are safe since Rust 1.70.
+        // These tests must run sequentially (no parallel env mutation).
+        std::env::remove_var("ATLAS_LOG");
+        std::env::remove_var("RUST_LOG");
         let filter = build_env_filter(Verbosity::Default);
         assert!(filter.max_level_hint().is_some());
     }
 
     #[test]
     fn atlas_log_takes_precedence() {
-        // SAFETY: test isolation — we set and then restore.
-        unsafe {
-            std::env::set_var("ATLAS_LOG", "trace");
-            std::env::set_var("RUST_LOG", "error");
-        }
+        std::env::set_var("ATLAS_LOG", "trace");
+        std::env::set_var("RUST_LOG", "error");
         let filter = build_env_filter(Verbosity::Default);
         assert!(filter.max_level_hint().is_some());
         // Cleanup
-        unsafe {
-            std::env::remove_var("ATLAS_LOG");
-            std::env::remove_var("RUST_LOG");
-        }
+        std::env::remove_var("ATLAS_LOG");
+        std::env::remove_var("RUST_LOG");
     }
 }
