@@ -12,6 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Mutex;
 
 use db::Store;
 use types::*;
@@ -23,7 +24,7 @@ use types::*;
 ///
 /// P7: Tracks file parent directories so name lookups can score candidates
 /// by directory-tree proximity, reducing false matches across unrelated modules.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct GlobalSymbolIndex {
     /// All symbols in the project.
     symbols: Vec<SymbolDef>,
@@ -34,6 +35,16 @@ pub struct GlobalSymbolIndex {
     /// FileId → parent directory path (without trailing '/'). Built once from
     /// the store's file table to enable directory-proximity scoring.
     file_parent_dir: HashMap<FileId, String>,
+
+    // ── Per-session caches ──────────────────────────────────────────────
+    /// Cached fuzzy-search results keyed by (lower_name, max_distance).
+    /// Avoids O(N) Levenshtein scan when the same unresolved name hits
+    /// Strategy 6 across multiple files.
+    fuzzy_cache: Mutex<HashMap<(String, usize), Vec<SymbolDef>>>,
+    /// Cached proximity results keyed by (lower_name, file_id).
+    /// Avoids re-sorting candidates into tiers when the same (name, file)
+    /// pair appears repeatedly.
+    proximity_cache: Mutex<HashMap<(String, FileId), Vec<SymbolDef>>>,
 }
 
 impl GlobalSymbolIndex {
@@ -65,6 +76,8 @@ impl GlobalSymbolIndex {
             by_name,
             by_id,
             file_parent_dir,
+            fuzzy_cache: Mutex::new(HashMap::new()),
+            proximity_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -88,8 +101,21 @@ impl GlobalSymbolIndex {
         name: &str,
         file_id: FileId,
     ) -> Vec<SymbolDef> {
+        // ── Cache check ──
+        let lower = name.to_lowercase();
+        let cache_key = (lower, file_id);
+        if let Ok(cache) = self.proximity_cache.lock() {
+            if let Some(cached) = cache.get(&cache_key) {
+                return cached.clone();
+            }
+        }
+
         let candidates = self.find_by_name(name);
         if candidates.len() <= 1 {
+            // Cache the trivial result too.
+            if let Ok(mut cache) = self.proximity_cache.lock() {
+                cache.insert(cache_key, candidates.clone());
+            }
             return candidates;
         }
 
@@ -113,16 +139,30 @@ impl GlobalSymbolIndex {
         result.extend(tier0);
         result.extend(tier1);
         result.extend(tier2);
+
+        if let Ok(mut cache) = self.proximity_cache.lock() {
+            cache.insert(cache_key, result.clone());
+        }
         result
     }
 
     /// Bounded fuzzy search (Levenshtein, max 20 results).
     ///
     /// Uses length pruning and trigram pre-filtering to avoid O(N×name)
-    /// Levenshtein scan over all project symbols.  Results are cached by
-    /// query name for the lifetime of the index.
+    /// Levenshtein scan over all project symbols.  Results are cached
+    /// per (lower_name, max_distance) so repeated queries (e.g., the same
+    /// unresolved name in Strategy 6 across many files) return instantly.
     pub fn fuzzy_search(&self, name: &str, max_distance: usize) -> Vec<SymbolDef> {
         let lower = name.to_lowercase();
+        let key = (lower.clone(), max_distance);
+
+        // ── Cache check ──
+        if let Ok(cache) = self.fuzzy_cache.lock() {
+            if let Some(cached) = cache.get(&key) {
+                return cached.clone();
+            }
+        }
+
         let name_len = lower.len();
 
         // ── Length pruning ──
@@ -179,7 +219,13 @@ impl GlobalSymbolIndex {
 
         candidates.sort_by_key(|(d, _)| *d);
         candidates.truncate(20);
-        candidates.into_iter().map(|(_, s)| s).collect()
+        let result: Vec<SymbolDef> = candidates.into_iter().map(|(_, s)| s).collect();
+
+        // Cache for subsequent queries of the same (name, distance).
+        if let Ok(mut cache) = self.fuzzy_cache.lock() {
+            cache.insert(key, result.clone());
+        }
+        result
     }
 
     /// Find a symbol by ID.

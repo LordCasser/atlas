@@ -198,7 +198,23 @@ pub(crate) fn normalize_ts_import(
 ) -> Option<ImportDef> {
     let (kind, module, imported_name) = ts_import_info(capture_name, node, source)?;
     let range = node_range(node);
-    let local_name = imported_name.clone();
+
+    // For aliased imports/exports, the captured node is the alias (e.g. `bar` in
+    // `import { foo as bar }`), but imported_name should hold the original exported
+    // name. Walk up to the parent specifier's `name` field to get it.
+    let (imported_name, local_name) = if capture_name == "import.alias" || capture_name == "export.alias" {
+        // parent is import_specifier or export_specifier — both have a `name` field
+        let original = node
+            .parent()
+            .and_then(|p| p.child_by_field_name("name"))
+            .and_then(|n| node_text(n, source))
+            .unwrap_or_else(|| imported_name.clone());
+        let alias = imported_name.clone(); // this is the alias text from ts_import_info
+        (original, alias)
+    } else {
+        let local = imported_name.clone();
+        (imported_name, local)
+    };
     let is_relative = module.starts_with('.');
     let is_wildcard = capture_name.contains("wildcard")
         // `export.module` without an accompanying `export.name` = wildcard re-export

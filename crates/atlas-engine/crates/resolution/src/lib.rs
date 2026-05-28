@@ -114,12 +114,38 @@ fn resolve_one_core(
     }
 
     // Strategy 5: Import/include resolution
+    //
+    // Scopes imports by matching the reference name against each import's
+    // local_name (alias) or imported_name.  For aliased imports such as
+    // `import { foo as bar }` where the reference is `bar`, the import
+    // relationship directly establishes the mapping — no name_matcher
+    // pass is needed because the candidate symbol names differ from the
+    // reference name.
     for import in &ctx.imports {
+        let import_local = import.local_name.as_deref().unwrap_or("");
+        let matches_by_name = import.imported_name == reference.name;
+        let matches_by_alias = !import_local.is_empty() && import_local == reference.name;
+
+        if !matches_by_name && !matches_by_alias {
+            continue;
+        }
+
         if let Ok(candidates) = import_resolver.resolve_import(import) {
-            // Try re-export chain walking first (barrel files)
             if let Ok(chain_candidates) = import_resolver
                 .resolve_through_reexports(import, candidates)
             {
+                // Alias match: trust the import relationship directly.
+                if matches_by_alias {
+                    if let Some(first) = chain_candidates.first() {
+                        return Some(ResolvedTarget {
+                            symbol_id: first.id,
+                            confidence: Confidence::new(0.8),
+                            strategy: ResolutionStrategy::ImportResolved,
+                            provenance: Provenance::Heuristic,
+                        });
+                    }
+                }
+                // Exact-name match: use name_matcher to filter candidates.
                 if let Some(matched) = name_matcher.best_match(
                     &chain_candidates,
                     &reference.name,
@@ -482,7 +508,7 @@ impl ReferenceResolver {
         let mut pending: Vec<(ReferenceId, ResolvedTarget)> = Vec::new();
         let all_resolved = per_file_results; // moved in
         let mut processed = 0u64;
-        let batch_size = 500;
+        let batch_size = 2000;
 
         for (reference, target) in &all_resolved {
             pending.push((reference.id, target.clone()));
@@ -828,6 +854,101 @@ shutdown();
             callee_names.contains(&"greet"),
             "expected greet to be callee of main, got: {:?}",
             callee_names
+        );
+    }
+
+    /// Reproduce suspected bug: aliased import `import { foo as bar }`
+    /// should still resolve `bar()` → Calls → `foo`.
+    #[test]
+    fn test_aliased_import_resolves_to_correct_symbol() {
+        // ── File 1: lib.ts — exports a function ──
+        let lib_src = r#"export function greet(name: string): string {
+    return `Hello, ${name}!`;
+}
+"#;
+        let lib_id = FileId::generate("lib.ts");
+        let ts_frontend = create_frontend(Language::TypeScript).unwrap();
+        let lib_facts = extract_file(
+            &ts_frontend,
+            lib_id,
+            &PathBuf::from("lib.ts"),
+            lib_src,
+            "abc",
+        )
+        .expect("lib.ts extraction failed");
+
+        // ── File 2: main.ts — aliased import + call ──
+        let main_src = r#"import { greet as hello } from './lib';
+
+function main() {
+    hello("World");
+}
+main();
+"#;
+        let main_id = FileId::generate("main.ts");
+        let main_facts = extract_file(
+            &ts_frontend,
+            main_id,
+            &PathBuf::from("main.ts"),
+            main_src,
+            "abc",
+        )
+        .expect("main.ts extraction failed");
+
+        // ── Store and resolve ──
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        store.insert_file_facts(&lib_facts).expect("insert lib.ts");
+        store.insert_file_facts(&main_facts).expect("insert main.ts");
+
+        let mut resolver = ReferenceResolver::new(Arc::clone(&store));
+        let (resolved, _stats) = resolver.resolve_all().expect("resolution failed");
+
+        // Build edges
+        let builder = GraphBuilder::new(Arc::clone(&store));
+        builder.build_all(&resolved);
+
+        // Build graph and verify
+        let graph = GraphEngine::from_store(&store, 0.0).expect("graph build failed");
+
+        let greet_id = store
+            .find_symbols_by_qname("greet")
+            .unwrap()
+            .first()
+            .unwrap()
+            .id;
+
+        let main_id = store
+            .find_symbols_by_qname("main")
+            .unwrap()
+            .first()
+            .unwrap()
+            .id;
+
+        // Verify: main → greet via aliased import
+        let main_callees = graph.callees(&main_id);
+        let callee_names: Vec<&str> = main_callees
+            .callees
+            .iter()
+            .map(|ix| graph.snapshot().node(*ix).name.as_str())
+            .collect();
+        assert!(
+            callee_names.contains(&"greet"),
+            "expected greet to be callee of main (via aliased import 'hello'), got: {:?}",
+            callee_names
+        );
+
+        // Verify callers: greet is called by main
+        let greet_callers = graph.callers(&greet_id);
+        let caller_names: Vec<&str> = greet_callers
+            .callers
+            .iter()
+            .map(|ix| graph.snapshot().node(*ix).name.as_str())
+            .collect();
+        assert!(
+            caller_names.contains(&"main"),
+            "expected main to be caller of greet (via aliased import 'hello'), got: {:?}",
+            caller_names
         );
     }
 }

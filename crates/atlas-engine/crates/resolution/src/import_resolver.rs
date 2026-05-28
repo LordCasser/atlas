@@ -53,17 +53,13 @@ impl ImportResolver {
                 .resolve(&import.module)
                 .unwrap_or_else(|| import.module.clone());
             if resolved_module != import.module {
-                let target_name = import
-                    .local_name
-                    .as_deref()
-                    .or_else(|| {
-                        if import.imported_name.is_empty() {
-                            None
-                        } else {
-                            Some(import.imported_name.as_str())
-                        }
-                    })
-                    .unwrap_or("");
+                // Use imported_name (the actual symbol name in the source module)
+                // rather than local_name (which may be an alias like "hello" for "greet").
+                let target_name = if import.imported_name.is_empty() {
+                    import.local_name.as_deref().unwrap_or("")
+                } else {
+                    import.imported_name.as_str()
+                };
                 if !target_name.is_empty() {
                     let file_results = self.resolve_by_module_path(&resolved_module, target_name);
                     if !file_results.is_empty() {
@@ -84,10 +80,12 @@ impl ImportResolver {
         }
 
         if results.is_empty() {
-            let fallback_name = import.local_name.clone().or_else(|| {
-                let n = import.imported_name.clone();
-                if n.is_empty() { None } else { Some(n) }
-            });
+            // Fallback: prefer imported_name (actual symbol name) over local_name (alias).
+            let fallback_name = if import.imported_name.is_empty() {
+                import.local_name.clone()
+            } else {
+                Some(import.imported_name.clone())
+            };
 
             if let Some(ref name) = fallback_name {
                 // Strategy A: module-path-aware lookup (constrains to import target)
@@ -121,10 +119,12 @@ impl ImportResolver {
         if import.kind == ImportKind::ExportFrom {
             return Ok(candidates);
         }
-        let target_name = import
-            .local_name
-            .as_deref()
-            .unwrap_or(&import.imported_name);
+        // Use imported_name (actual symbol name) — local_name may be an alias.
+        let target_name = if import.imported_name.is_empty() {
+            import.local_name.as_deref().unwrap_or("")
+        } else {
+            import.imported_name.as_str()
+        };
         if target_name.is_empty() {
             return Ok(candidates);
         }
@@ -257,13 +257,14 @@ impl ImportResolver {
 
         match import.kind {
             ImportKind::Import | ImportKind::Package | ImportKind::Use => {
-                let n: &str = if !local.is_empty() {
-                    local
-                } else {
-                    name.as_str()
-                };
-                if !n.is_empty() {
-                    candidates.push(n.to_string());
+                // imported_name is the actual name in the source module.
+                // local_name is the alias used in the importing file (may differ).
+                // We MUST look up the imported_name, not the alias.
+                if !name.is_empty() {
+                    candidates.push(name.clone());
+                }
+                if !local.is_empty() {
+                    candidates.push(local.to_string());
                 }
             }
             ImportKind::FromImport => {
