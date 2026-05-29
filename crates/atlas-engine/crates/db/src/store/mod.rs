@@ -302,6 +302,44 @@ impl Store {
             Ok(())
         })
     }
+
+    /// Invalidate cross-file references, delete outgoing edges, and atomically
+    /// replace a file's facts — all within a single transaction.
+    ///
+    /// Unlike `replace_file_facts`, callers do NOT need to separately call
+    /// `invalidate_references_to_symbols_in_file` and
+    /// `delete_edges_for_file_references` before calling this method.
+    pub fn replace_file_facts_with_invalidation(
+        &self,
+        file_id: &FileId,
+        facts: &FileFacts,
+    ) -> anyhow::Result<()> {
+        self.with_transaction(|tx| {
+            // Invalidate cross-file references pointing to this file's symbols.
+            tx.execute(
+                r#"UPDATE "references" SET
+                    resolved_symbol_id = NULL,
+                    resolved_confidence = NULL,
+                    resolved_strategy = NULL,
+                    resolved_provenance = NULL
+                   WHERE resolved_symbol_id IN (
+                       SELECT symbol_id FROM symbols WHERE file_id = ?1
+                   )"#,
+                params![file_id],
+            )?;
+            // Delete outgoing edges derived from this file's references.
+            tx.execute(
+                r#"DELETE FROM symbol_edges WHERE ref_id IN (
+                    SELECT reference_id FROM "references" WHERE file_id = ?1
+                )"#,
+                params![file_id],
+            )?;
+            // Atomically delete old facts and insert new ones.
+            tx.execute("DELETE FROM files WHERE file_id = ?1", params![file_id])?;
+            write_file_facts(tx, facts)?;
+            Ok(())
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------

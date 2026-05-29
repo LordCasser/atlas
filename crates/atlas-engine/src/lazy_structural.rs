@@ -238,12 +238,12 @@ impl LazyStructuralService {
 
     fn ensure_structural_for_files(&self, file_ids: &[FileId]) -> Result<EnsureStructuralResult> {
         let start = std::time::Instant::now();
+        let mut built_file_ids: Vec<FileId> = Vec::new();
         let mut result = EnsureStructuralResult {
             files_built: 0,
             files_cached: 0,
             budget_exceeded: false,
         };
-        let mut built_file_ids: Vec<FileId> = Vec::new();
 
         for file_id in file_ids {
             if start.elapsed().as_millis() > LAZY_STRUCTURAL_BUDGET_MS as u128 {
@@ -308,12 +308,8 @@ impl LazyStructuralService {
             .with_context(|| format!("failed to read {}", resolved_path.display()))?;
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
 
-        // Invalidate cross-file references BEFORE the atomic replace
-        // (preserves reference rows so they can be re-resolved).
-        self.store
-            .invalidate_references_to_symbols_in_file(file_id)?;
-        self.store.delete_edges_for_file_references(file_id)?;
-
+        // Extract BEFORE any destructive invalidation — if extraction fails,
+        // no destructive operations have been performed.
         let facts = extract_file_with_mode(
             &frontend,
             *file_id,
@@ -323,8 +319,10 @@ impl LazyStructuralService {
             ExtractionMode::Structural,
         )?;
 
-        // Atomically delete old data and insert new facts.
-        self.store.replace_file_facts(file_id, &facts)?;
+        // Invalidate cross-file references, delete outgoing edges, and
+        // atomically replace file facts — all in a single transaction so
+        // a partial failure cannot leave references in a destroyed state.
+        self.store.replace_file_facts_with_invalidation(file_id, &facts)?;
 
         tracing::info!(
             "Lazy structural: {} ({} symbols, {} refs)",
