@@ -157,7 +157,7 @@ impl Store {
                     tx.prepare("SELECT cfg_node_id FROM cfg_nodes WHERE function_id = ?1")?
                 } else {
                     tx.prepare(
-                        "SELECT cfg_node_id FROM cfg_nodes WHERE function_id IS NULL",
+                        "SELECT cfg_node_id FROM cfg_nodes WHERE file_id = ?1 AND function_id IS NULL",
                     )?
                 };
                 let cn_ids: Vec<CfgNodeId> = if let Some(ref func_id) = unit.symbol_id {
@@ -165,7 +165,7 @@ impl Store {
                         .filter_map(|r| r.ok())
                         .collect()
                 } else {
-                    stmt.query_map([], |row| row.get::<_, CfgNodeId>(0))?
+                    stmt.query_map(params![unit.file_id], |row| row.get::<_, CfgNodeId>(0))?
                         .filter_map(|r| r.ok())
                         .collect()
                 };
@@ -183,7 +183,7 @@ impl Store {
                         params![func_id],
                     )?;
                 } else {
-                    tx.execute("DELETE FROM cfg_nodes WHERE function_id IS NULL", [])?;
+                    tx.execute("DELETE FROM cfg_nodes WHERE file_id = ?1 AND function_id IS NULL", params![unit.file_id])?;
                 }
             }
 

@@ -153,61 +153,48 @@ impl ToolRouter {
         }
 
         // Lazy-load dataflow before tracing, so Locator can find data nodes.
-        // Skip lazy when this file already has pre-built dataflow from a full
-        // index (`atlas index --analysis full`); otherwise the lazy loader
-        // would cache-miss, DELETE the pre-built data, and replace it with
-        // budget-limited lazy data.
-        let file_has_dataflow = self
-            .store
-            .has_dataflow_for_file(&file_id)
-            .unwrap_or_else(|e| {
-                tracing::warn!("Failed to check dataflow for file {}: {}", file_id, e);
-                false
-            });
+        // Always trigger lazy dataflow extraction — the loader internally
+        // checks for pre-built data via `count_data_nodes_for_unit` and skips
+        // extraction when data already exists.
         let lazy_start = std::time::Instant::now();
         let mut partial = false;
         let mut lazy_diags: Vec<TraceDiagnostic> = Vec::new();
         let lazy_summary: Option<LazySummary>;
-        if !file_has_dataflow {
-            match self
-                .lazy_service
-                .ensure_for_position(&file_id, line, column)
-            {
-                Ok(window) => {
-                    lazy_summary = Some(LazySummary {
-                        triggered: true,
-                        units_built: window.units_built,
-                        units_cached: window.units_cached,
-                        truncated: window.truncated,
-                        duration_ms: lazy_start.elapsed().as_millis() as u64,
-                    });
-                    if window.truncated {
-                        partial = true;
-                        lazy_diags.push(
-                            TraceDiagnostic::warning(
-                                "Lazy dataflow reached its internal budget. Result is partial. For full offline coverage, run `atlas index --analysis full`."
-                            ).with_code("lazy_dataflow_budget_exceeded")
-                        );
-                    }
-                }
-                Err(e) => {
+        match self
+            .lazy_service
+            .ensure_for_position(&file_id, line, column)
+        {
+            Ok(window) => {
+                lazy_summary = Some(LazySummary {
+                    triggered: true,
+                    units_built: window.units_built,
+                    units_cached: window.units_cached,
+                    truncated: window.truncated,
+                    duration_ms: lazy_start.elapsed().as_millis() as u64,
+                });
+                if window.truncated {
                     partial = true;
-                    lazy_summary = Some(LazySummary {
-                        triggered: true,
-                        units_built: 0,
-                        units_cached: 0,
-                        truncated: true,
-                        duration_ms: lazy_start.elapsed().as_millis() as u64,
-                    });
                     lazy_diags.push(
-                        TraceDiagnostic::warning(&format!("Lazy dataflow build failed: {e}"))
-                            .with_code("lazy_dataflow_build_failed"),
+                        TraceDiagnostic::warning(
+                            "Lazy dataflow reached its internal budget. Result is partial. For full offline coverage, run `atlas index --analysis full`."
+                        ).with_code("lazy_dataflow_budget_exceeded")
                     );
                 }
             }
-        } else {
-            // File already has full-index dataflow — no lazy extraction needed.
-            lazy_summary = None;
+            Err(e) => {
+                partial = true;
+                lazy_summary = Some(LazySummary {
+                    triggered: true,
+                    units_built: 0,
+                    units_cached: 0,
+                    truncated: true,
+                    duration_ms: lazy_start.elapsed().as_millis() as u64,
+                });
+                lazy_diags.push(
+                    TraceDiagnostic::warning(&format!("Lazy dataflow build failed: {e}"))
+                        .with_code("lazy_dataflow_build_failed"),
+                );
+            }
         }
 
         let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
