@@ -10,13 +10,13 @@ Public facade crate for Atlas. Re-exports all core types and provides the high-l
 | `db` | `Store` |
 | `workspace` | `Workspace`, `ProjectRoot`, `SourcePath` |
 | `extraction` | `ExtractionMode`, `LanguageFrontend`, `ParseWorkerPool`, `create_frontend` |
-| `resolution` | `ReferenceResolver`, `PathAliasResolver` |
+| `resolution` | `ReferenceResolver`, `PathAliasResolver`, `PATH_ALIAS_CONFIG_FILES` |
 | `graph` | `GraphEngine`, `GraphBuilder`, `GraphSnapshot`, `TraversalConfig` |
 | `lazy` | `LazyDataflowService` (on-demand dataflow loading) |
 | `analysis::trace` | `TraceEngine` (as `RawTraceEngine`), `TraceQueryResponse` |
 | `search` | `SearchEngine` |
 | `context` | `ContextBuilder` |
-| `filesync` | `FileLock`, `SyncEngine`, `discovery` |
+| `filesync` | `FileLock`, `SyncEngine`, `discovery`, `build_dirty_set`, `clean_stale_file_ids`, `run_index_pipeline` |
 
 ## Engine struct
 

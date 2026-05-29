@@ -13,6 +13,25 @@ Falls back to filesystem traversal when no Git repository is found.
 
 Content-hash based dirty file detection. Compares stored `content_hash` in the database with `blake3(file_contents)` on disk.
 
+### dirty
+
+Shared hash-based dirty-set computation for full indexing. It compares
+project-relative discovered files against stored DB hashes and returns dirty,
+clean, and deleted file sets without performing extraction or cleanup.
+
+### index_pipeline
+
+Entry-point-neutral indexing pipeline. It discovers files, cleans stale facts,
+extracts `FileFacts`, and optionally runs reference resolution plus graph edge
+building for non-manifest modes. CLI, MCP, and sync callers remain responsible
+for locking, UI/progress, background execution, and choosing the extraction mode.
+
+### cleanup
+
+Shared stale-index cleanup. It invalidates incoming references to old symbols,
+deletes outgoing edges derived from old file references, removes old file facts,
+and clears per-file index layer records before callers insert replacement facts.
+
 ### watcher
 
 (Planned) Filesystem watcher integration for automatic re-indexing.
@@ -39,6 +58,16 @@ discover_files(root, config) → Vec<PathBuf>
 // Sync
 SyncEngine::new(store) → SyncEngine
 SyncEngine::sync(root) → SyncStats
+
+// Dirty set
+build_dirty_set(store, discovered, root) → DirtySet
+
+// Shared index pipeline
+run_index_pipeline(store, root, IndexPipelineOptions::new(mode)) → IndexPipelineStats
+
+// Shared cleanup
+clean_stale_file_paths(store, paths) → Vec<FileId>
+clean_stale_file_ids(store, file_ids) → ()
 
 // Locking
 FileLock::acquire(&store) → FileLockGuard

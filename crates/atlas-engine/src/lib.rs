@@ -72,7 +72,16 @@ pub use extraction::{
     create_frontend, extract_file, extract_file_with_mode,
 };
 /// Sync layer: incremental sync engine, file lock, file discovery.
-pub use filesync::{FileLock, SyncEngine, SyncStats, discovery};
+pub use filesync::{
+    DirtySet, ExtractedFile, ExtractedFiles, ExtractionPhaseStats, FileLock, GraphResult,
+    IndexPipelineOptions, IndexPipelineStats, IndexProgress, IndexProgressCallback,
+    SyncEngine, SyncStats, WriteBatchStats, build_dirty_set, clean_stale_file_ids,
+    clean_stale_file_paths, discovery, phase_build_summaries, phase_cleanup_file_ids,
+    phase_cleanup_stale, phase_dirty_check, phase_discover, phase_extract_serial,
+    phase_finalize, phase_init_frontends, phase_materialize_annotations,
+    phase_resolve_and_build, phase_write_batched, phase_write_single,
+    run_index_pipeline, source_file_id,
+};
 /// Graph layer: graph builder, query engine, snapshots, annotation materialization.
 pub use graph::{
     CallGraphView, CompositePathScore, ForwardFrontier, FrontierNode, GraphBuilder,
@@ -82,8 +91,8 @@ pub use graph::{
 };
 /// Resolution layer: reference resolver, path aliases, config hashing.
 pub use resolution::{
-    PathAliasResolver, ReferenceResolver, ResolutionSession, ResolutionStats,
-    commit_config_hashes, detect_config_change,
+    PATH_ALIAS_CONFIG_FILES, PathAliasConfig, PathAliasResolver, ReferenceResolver,
+    ResolutionSession, ResolutionStats, commit_config_hashes, detect_config_change,
 };
 /// Search layer: FTS5 + fuzzy search engine.
 pub use search::{SearchEngine, SearchOptions, SearchResult};

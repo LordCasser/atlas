@@ -38,6 +38,14 @@ impl PathAliasResolver {
         }
     }
 
+    /// Load path aliases from `tsconfig.json` or `jsconfig.json` in a project
+    /// root. `tsconfig.json` wins when both are present.
+    pub fn from_project_root(root: &Path) -> Self {
+        Self::from_tsconfig(&root.join("tsconfig.json"))
+            .or_else(|| Self::from_jsconfig(&root.join("jsconfig.json")))
+            .unwrap_or_else(Self::empty)
+    }
+
     /// Parse a tsconfig.json file and extract baseUrl + paths.
     ///
     /// Returns `None` if the file doesn't exist or can't be parsed.

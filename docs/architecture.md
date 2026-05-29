@@ -224,9 +224,15 @@ import { bar } from 'lodash'  → bar() 无 edge ❌
 0.90 import/package exact
 0.80 framework convention / namespace proximity
 0.70 same-file or same-package name match
+0.60 project-wide exact name fallback
 0.50 fuzzy / ambiguous fallback
 <0.50 unresolved or speculative
 ```
+
+约束：
+- project-wide exact name fallback 记录为 `name_only`，不能伪装成 `fuzzy_match`。
+- `fuzzy_match` 仅用于真实编辑距离 fallback。
+- 1-2 字符短名不执行 project-wide edit-distance fallback；短名只能通过 scope、same-file、import 或 exact name 解析。
 
 ## 9. 语言能力边界
 
@@ -305,6 +311,28 @@ LanguageCapabilityProfile
 
 **P2: Lazy Structural** — 查询时按需触发完整 structural extraction。`LazyStructuralService` + `CandidateProvider` + `StructuralLoader`。
 
+### 10.2 共享索引管线
+
+`filesync::IndexPipeline` 是入口无关的索引主链路，负责：
+
+```text
+discover files
+  → compute dirty set (optional, caller-controlled)
+  → clean stale facts
+  → extract FileFacts
+  → optional reference resolution
+  → optional graph edge build
+```
+
+约束：
+- CLI、MCP、sync 入口只负责参数解释、锁、UI/进度、后台任务和错误展示。
+- 共享管线不直接输出终端文本、不依赖 MCP transport，也不安装 Ctrl+C handler。
+- `ExtractionMode::Manifest` 在抽取后停止；`Structural` / `Full` 继续执行 resolution 和 graph build。
+- 新增索引阶段时优先进入共享管线，再由入口层决定是否暴露配置。
+- `filesync::build_dirty_set` 是 full index 的 hash-check 边界；CLI 不直接实现 DB hash diff。
+- `filesync::clean_stale_file_*` 是 stale facts 清理边界；所有入口必须先清理 incoming refs 和 outgoing edges，再删除旧 facts。
+- path alias 配置文件集合由 `resolution::PATH_ALIAS_CONFIG_FILES` 定义，当前为 `tsconfig.json` 和 `jsconfig.json`；检测、提交 hash、加载 resolver 必须使用同一来源。
+
 ## 11. Search、Context、MCP、CLI
 
 ### 11.1 Search
@@ -336,6 +364,7 @@ LanguageCapabilityProfile
 - 后续请求通过 `maybe_refresh_graph()`（5 秒缓存签名检查）检测外部索引变化。
 - 当 handler 内部触发 lazy structural 并写入新 facts（如 `context` 的 Tier 3 解析），handler 显式调用 `force_refresh_graph()`（跳过缓存冷却），确保 graph 包含刚解析的边。
 - `open_project` 不索引，只激活项目；调用后需单独 `index`。
+- `index` handler 调用共享 `IndexPipeline`，MCP 入口仍选择 manifest-only 策略以保护交互延迟。
 - `search` 的 `scope` 对 manifest-only 索引为强制参数；存在 manual full index 时为可选。
 - `background: true` 支持：`search`, `index`, `open_project`。
 - 结果截断 25KB，额外 content block 标注截断信息。

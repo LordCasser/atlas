@@ -21,32 +21,16 @@ use atlas_engine::FailureCategory;
 use atlas_engine::FileLock;
 use atlas_engine::Language;
 use atlas_engine::LanguageFrontend;
-use atlas_engine::SourcePath;
-use atlas_engine::discovery::{DiscoveryConfig, discover_files};
 use atlas_engine::progress::{ProgressPhase, ProgressState};
 use atlas_engine::{self, LanguageRegistry, ParseWorkerPool, WorkerConfig};
 use atlas_engine::PerLanguageStats;
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
-
-/// Result of extracting a single file.
-struct ExtractedFile {
-    _rel_path: PathBuf,
-    lang: Language,
-    facts: atlas_engine::FileFacts,
-}
-
-/// Result of the hash-check phase.
-struct HashCheckResult {
-    dirty: Vec<PathBuf>,
-    clean_count: usize,
-    deleted: Vec<PathBuf>,
-}
 
 pub fn run(
     project: &str,
@@ -138,14 +122,8 @@ pub fn run(
 
         // ── Discovery ──
         ps.lock().unwrap().start_phase(ProgressPhase::Discovery, None);
-        let mut config = DiscoveryConfig::default();
-        if !include_patterns.is_empty() {
-            config.include_patterns = include_patterns.clone();
-        }
-        if !exclude.is_empty() {
-            config.exclude_patterns = exclude.clone();
-        }
-        let discovered = discover_files(&root, &config).context("Failed to discover files")?;
+        let discovered = atlas_engine::phase_discover(&root, &include_patterns, &exclude)
+            .context("Failed to discover files")?;
         if discovered.is_empty() {
             ps.lock().unwrap().start_phase(ProgressPhase::Finalizing, None);
             anyhow::bail!("No recognizable source files found in {}", root.display());
@@ -159,7 +137,7 @@ pub fn run(
         if interrupted() { return Ok(()); }
 
         // ── Hash check ──
-        let hash_result = build_dirty_set(&store, &discovered, &root)?;
+        let hash_result = atlas_engine::phase_dirty_check(&store, &discovered, &root)?;
         let dirty = &hash_result.dirty;
         let reused = hash_result.clean_count;
         ps.lock().unwrap().start_phase(
@@ -173,23 +151,7 @@ pub fn run(
         if !hash_result.deleted.is_empty() {
             let deleted_count = hash_result.deleted.len() as u64;
             ps.lock().unwrap().set_total(deleted_count);
-            // Collect file IDs first for batch operations.
-            let file_ids: Vec<atlas_engine::FileId> = hash_result.deleted.iter()
-                .filter_map(|rel_path| {
-                    let sp = SourcePath::try_from_relative(&rel_path.to_string_lossy()).ok()?;
-                    Some(atlas_engine::FileId::generate(sp.as_str()))
-                })
-                .collect();
-            // Invalidate references + delete edges per file (these cascade).
-            for (i, fid) in file_ids.iter().enumerate() {
-                store.invalidate_references_to_symbols_in_file(fid)?;
-                store.delete_edges_for_file_references(fid)?;
-                if i % 50 == 0 {
-                    ps.lock().unwrap().set_current(i as u64);
-                }
-            }
-            // Batch delete file data (CASCADE handles remaining rows).
-            store.delete_files_batch(&file_ids)?;
+            atlas_engine::phase_cleanup_stale(&store, &hash_result.deleted)?;
             ps.lock().unwrap().set_current(deleted_count);
         }
 
@@ -264,7 +226,7 @@ pub fn run(
                     per_lang_mutex.lock().unwrap_or_else(|e| e.into_inner())
                         .record_file(lang, extract_ms, failed, fail_cat);
                 }
-                facts_opt.map(|facts| ExtractedFile { _rel_path: rel_path.clone(), lang, facts })
+                facts_opt.map(|facts| atlas_engine::ExtractedFile { rel_path: rel_path.clone(), language: lang, facts })
             })
             .collect();
 
@@ -274,7 +236,6 @@ pub fn run(
         let extracted_count = extracted.len();
         let _failed_count = dirty_total.saturating_sub(extracted_count);
 
-        let mut per_lang = per_lang_mutex.into_inner().unwrap();
 
         // ── Clean stale facts ──
         ps.lock().unwrap().start_phase(
@@ -282,10 +243,7 @@ pub fn run(
             Some(format!("{} re-indexed", extracted_count)),
         );
         let file_ids: Vec<_> = extracted.iter().map(|ef| ef.facts.file.file_id).collect();
-        for fid in &file_ids {
-            let _ = store.invalidate_references_to_symbols_in_file(fid);
-        }
-        store.delete_files_batch(&file_ids)
+        atlas_engine::phase_cleanup_file_ids(&store, &file_ids)
             .context("Failed to clean stale facts")?;
 
         if interrupted() { return Ok(()); }
@@ -297,63 +255,34 @@ pub fn run(
         );
         ps.lock().unwrap().set_total(extracted_count as u64);
 
-        // Bulk-write mode: disable synchronous & FK checks.  Keep
-        // wal_autocheckpoint at default (1000 pages) so the WAL
-        // self-truncates — for full-analysis, each batch easily
-        // produces > 1000 pages of WAL, and a growing WAL makes
-        // subsequent transactions O(WAL-size) slower.
-        store.begin_bulk_write()?;
+        let extracted_files = atlas_engine::ExtractedFiles {
+            items: extracted,
+            stats: atlas_engine::ExtractionPhaseStats {
+                attempted: dirty_total,
+                succeeded: extracted_count,
+                failed: dirty_total.saturating_sub(extracted_count),
+                symbols: 0,
+            },
+        };
 
-        let mut _insert_failures = 0usize;
-        // 100 files/txn — full-analysis data is dense (thousands of
-        // rows per file for dataflow/CFG/bindings).  Larger batches
-        // choke SQLite's B-tree with millions of rows per transaction.
-        const BATCH_SIZE: usize = 500;
-        let mut written = 0u64;
-        // PASSIVE WAL checkpoint every 500 files to keep the WAL
-        // below ~200 MB even under full-analysis load.
-        const CHECKPOINT_INTERVAL: u64 = 500;
-        let mut next_checkpoint = CHECKPOINT_INTERVAL;
-        for chunk in extracted.chunks(BATCH_SIZE) {
-            if interrupted() {
-                store.end_bulk_write()?;
-                return Ok(());
-            }
-            let facts: Vec<_> = chunk.iter().map(|ef| ef.facts.clone()).collect();
-            if let Err(_e) = store.insert_file_facts_batch(&facts) {
-                for ef in chunk {
-                    match store.insert_file_facts(&ef.facts) {
-                        Ok(_) => {}
-                        Err(_) => {
-                            _insert_failures += 1;
-                            per_lang.record_file(ef.lang, 0, true, Some("db_insert_error"));
-                        }
-                    }
-                }
-            }
-            written += chunk.len() as u64;
-            if written >= next_checkpoint {
-                let _ = store.checkpoint_wal();
-                next_checkpoint = written + CHECKPOINT_INTERVAL;
-            }
-            ps.lock().unwrap().set_current(written);
-        }
-
-        // Restore safety defaults and flush WAL.
-        store.end_bulk_write()?;
-        let _ = store.checkpoint_wal_truncate();
+        let _write_stats = atlas_engine::phase_write_batched(
+            &store,
+            &extracted_files,
+            500,
+            500,
+            |written| {
+                ps.lock().unwrap().set_current(written);
+            },
+            || interrupted(),
+        )?;
 
         if interrupted() { return Ok(()); }
 
         // ── Resolution (parallel matching + serial write) ──
-        let path_alias = atlas_engine::PathAliasResolver::from_tsconfig(&root.join("tsconfig.json"))
-            .or_else(|| atlas_engine::PathAliasResolver::from_jsconfig(&root.join("jsconfig.json")))
-            .unwrap_or_else(atlas_engine::PathAliasResolver::empty);
+        let path_alias = atlas_engine::PathAliasConfig::resolver(&root);
 
-        let tsconfig_changed = atlas_engine::detect_config_change(
-            &store, &root, &["tsconfig.json", "jsconfig.json"],
-        )?;
-        if tsconfig_changed {
+        let path_alias_config_changed = atlas_engine::PathAliasConfig::has_changed(&store, &root)?;
+        if path_alias_config_changed {
             store.invalidate_all_references()?;
             store.delete_all_edges()?;
         }
@@ -376,7 +305,7 @@ pub fn run(
         ps.lock().unwrap().set_current(resolved.len() as u64);
 
         // ── Materialize user annotations as edges ──
-        if let Err(e) = atlas_engine::materialize_annotations(&store) {
+        if let Err(e) = atlas_engine::phase_materialize_annotations(&store) {
             eprintln!("Warning: failed to materialize annotations: {}", e);
         }
 
@@ -385,30 +314,12 @@ pub fn run(
             ProgressPhase::Finalizing,
             Some("Building summaries...".into()),
         );
-        let _summary_stats = atlas_engine::SummaryStore::build_all(&store, |s, fid| {
-            atlas_engine::SummaryBuilder::build(s, fid, None)
-        })?;
+        let _summary_stats = atlas_engine::phase_build_summaries(&store)?;
         if interrupted() { return Ok(()); }
 
         // ── Finalize ──
-        if tsconfig_changed {
-            atlas_engine::commit_config_hashes(&store, &root, &["tsconfig.json"])?;
-        }
-        store.set_metadata(
-            "last_index_time",
-            &std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-                .to_string(),
-        )?;
-        store.set_metadata("last_index_root", &root.display().to_string())?;
-        store.set_metadata(
-            "indexed_scope",
-            &indexed_scope_json(&include_patterns),
-        )?;
-
         ps.lock().unwrap().start_phase(ProgressPhase::Finalizing, None);
+        atlas_engine::phase_finalize(&store, &root, &include_patterns)?;
 
         done_w.store(true, Ordering::SeqCst);
         Ok(())
@@ -488,58 +399,6 @@ pub fn run(
     Ok(())
 }
 
-// ── P1: Hash-based dirty set computation ──────────────────────────────────
-
-fn build_dirty_set(
-    store: &atlas_engine::Store,
-    discovered: &[PathBuf],
-    root: &Path,
-) -> anyhow::Result<HashCheckResult> {
-    let current_hashes: HashMap<String, String> = discovered
-        .par_iter()
-        .filter_map(|rel_path| {
-            let abs_path = root.join(rel_path);
-            let content = std::fs::read(&abs_path).ok()?;
-            let hash = blake3::hash(&content).to_hex().to_string();
-            let key = SourcePath::try_from_relative(&rel_path.to_string_lossy()).ok()?;
-            Some((key.as_str().to_string(), hash))
-        })
-        .collect();
-
-    let db_files = store.list_files().unwrap_or_default();
-    let db_hashes: HashMap<String, String> = db_files
-        .iter()
-        .map(|f| (f.path.clone(), f.content_hash.clone()))
-        .collect();
-    let db_paths: HashSet<String> = db_hashes.keys().cloned().collect();
-
-    let mut dirty = Vec::new();
-    let mut clean_count = 0usize;
-    let discovered_set: HashSet<String> = current_hashes.keys().cloned().collect();
-
-    for rel_path in discovered {
-        let key = match SourcePath::try_from_relative(&rel_path.to_string_lossy()) {
-            Ok(sp) => sp.as_str().to_string(),
-            Err(_) => continue,
-        };
-        match db_hashes.get(&key) {
-            None => { dirty.push(rel_path.clone()); }
-            Some(db_hash) => {
-                if let Some(curr_hash) = current_hashes.get(&key) {
-                    if curr_hash == db_hash { clean_count += 1; }
-                    else { dirty.push(rel_path.clone()); }
-                } else { dirty.push(rel_path.clone()); }
-            }
-        }
-    }
-
-    let deleted: Vec<PathBuf> = db_paths.difference(&discovered_set)
-        .map(|p| PathBuf::from(p))
-        .collect();
-
-    Ok(HashCheckResult { dirty, clean_count, deleted })
-}
-
 // ── Extraction helpers ────────────────────────────────────────────────────
 
 fn extract_one_with_frontend(
@@ -565,12 +424,11 @@ fn extract_one_with_frontend(
     let content_hash = blake3::hash(source.as_bytes()).to_hex();
     let relative = path.strip_prefix(root).unwrap_or(path);
     let rel_str = relative.to_string_lossy().to_string();
-    let sp = SourcePath::try_from_relative(&rel_str).map_err(|_| ExtractionError {
+    let file_id = atlas_engine::source_file_id(relative).map_err(|_| ExtractionError {
         file_path: rel_str.clone(),
         category: FailureCategory::IoError,
         message: format!("invalid source path: {}", relative.display()),
     })?;
-    let file_id = atlas_engine::FileId::generate(sp.as_str());
     pool.extract_one(frontend, file_id, relative, &source, &content_hash, mode)
 }
 
@@ -581,6 +439,7 @@ fn scope_to_glob(scope: &str) -> String {
     else { format!("{}/**", scope.trim_end_matches('/')) }
 }
 
+#[allow(dead_code)]
 fn indexed_scope_json(patterns: &[String]) -> String {
     if patterns.is_empty() { "[]".to_string() }
     else { serde_json::to_string(patterns).unwrap_or_else(|_| "[]".to_string()) }

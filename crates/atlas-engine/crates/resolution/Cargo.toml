@@ -16,6 +16,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
-extraction = { path = "../extraction" }
+extraction = { path = "../extraction", features = ["typescript"] }
 graph = { path = "../graph" }
 tempfile = "3"

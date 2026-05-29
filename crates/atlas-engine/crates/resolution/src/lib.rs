@@ -35,7 +35,7 @@ pub mod include_graph;
 pub mod name_matcher;
 pub mod path_alias;
 
-pub use config::{commit_config_hashes, detect_config_change};
+pub use config::{PathAliasConfig, PATH_ALIAS_CONFIG_FILES, commit_config_hashes, detect_config_change};
 pub use include_graph::IncludeGraph;
 pub use path_alias::PathAliasResolver;
 
@@ -175,10 +175,13 @@ fn resolve_one_core(
                 return Some(ResolvedTarget {
                     symbol_id: matched.symbol_id,
                     confidence: matched.confidence,
-                    strategy: ResolutionStrategy::FuzzyMatch,
-                    provenance: Provenance::Heuristic,
+                    strategy: matched.strategy,
+                    provenance: matched.provenance,
                 });
             }
+        }
+        if !should_run_fuzzy_fallback(&reference.name) {
+            return None;
         }
         let fuzzy = idx.fuzzy_search(&reference.name, 2);
         if !fuzzy.is_empty() {
@@ -198,6 +201,13 @@ fn resolve_one_core(
     }
 
     None
+}
+
+fn should_run_fuzzy_fallback(name: &str) -> bool {
+    // Very short identifiers (`i`, `x`, `id`, `ok`) produce large ambiguous
+    // candidate sets and weak evidence. Exact project-wide name lookup above
+    // still handles them; this only disables edit-distance fallback.
+    name.chars().count() >= 3
 }
 
 // ── ResolutionSession ──────────────────────────────────────────────────────
@@ -681,6 +691,13 @@ mod tests {
     use extraction::extract_file;
     use graph::{GraphBuilder, GraphEngine};
     use std::path::PathBuf;
+
+    #[test]
+    fn short_names_skip_edit_distance_fuzzy_fallback() {
+        assert!(!should_run_fuzzy_fallback("i"));
+        assert!(!should_run_fuzzy_fallback("id"));
+        assert!(should_run_fuzzy_fallback("idx"));
+    }
 
     /// Verifies that cross-file import → call creates a structural Calls edge
     /// through the Resolver + GraphBuilder pipeline.

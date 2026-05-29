@@ -4,13 +4,11 @@
 //! root. Structural/full parsing is intentionally handled by scoped query tools
 //! on demand so MCP clients do not block on large repositories.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use atlas_engine::{
-    ExtractionMode, FileId, FileLock, GraphBuilder, Language, LanguageRegistry, ParseWorkerPool,
-    PhaseTimer, ReferenceResolver, Store, WorkerConfig, create_frontend,
-    discovery::{DiscoveryConfig, discover_files},
+    run_index_pipeline, ExtractionMode, FileLock, IndexPipelineOptions, IndexPipelineStats,
+    IndexProgress, IndexProgressCallback,
 };
 
 use super::ToolRouter;
@@ -110,13 +108,13 @@ impl ToolRouter {
 
         // Run the index pipeline
         let progress_sender = self.progress_sender.clone();
-        match run_index(
+        match run_mcp_index(
             &self.store,
             &self.project_root,
             mode,
-            &include_patterns,
-            &exclude_patterns,
-            progress_sender,
+            include_patterns,
+            exclude_patterns,
+            progress_sender.map(progress_callback_from_sender),
         ) {
             Ok(stats) => {
                 result.ok = true;
@@ -209,13 +207,25 @@ impl ToolRouter {
             };
 
             task_manager.update_progress(&tid, 5.0, "Discovering and indexing files...");
-            match run_index(
+            let progress = {
+                let task_manager = task_manager.clone();
+                let tid = tid.clone();
+                Arc::new(move |progress: IndexProgress| {
+                    task_manager.update_progress(
+                        &tid,
+                        (progress.fraction * 100.0).clamp(0.0, 100.0),
+                        progress.message.as_deref().unwrap_or("Indexing..."),
+                    );
+                }) as IndexProgressCallback
+            };
+
+            match run_mcp_index(
                 &store,
                 &project_root,
                 mode,
-                &include_patterns,
-                &exclude_patterns,
-                None,
+                include_patterns,
+                exclude_patterns,
+                Some(progress),
             ) {
                 Ok(stats) => {
                     let mut result = IndexResult {
@@ -266,250 +276,6 @@ impl ToolRouter {
     }
 }
 
-pub(crate) struct IndexStats {
-    pub(crate) discovered: usize,
-    pub(crate) indexed: usize,
-    pub(crate) failed: usize,
-    pub(crate) symbols: usize,
-    pub(crate) resolved: usize,
-}
-
-/// Run the full index pipeline against `project_root`.
-///
-/// Writes directly to the provided store. The caller is responsible for
-/// FileLock coordination in persistent mode.
-///
-/// If `progress_sender` is provided, progress reports are sent at each major
-/// phase: discovery (10%), extraction (10%-60%), resolution (80%), graph (95%).
-pub(crate) fn run_index(
-    store: &Arc<Store>,
-    project_root: &std::path::Path,
-    mode: ExtractionMode,
-    include_patterns: &[String],
-    exclude_patterns: &[String],
-    progress_sender: Option<super::ProgressSender>,
-) -> anyhow::Result<IndexStats> {
-    // ── Discovery ──────────────────────────────────────────────────────────
-    let _disc_timer = PhaseTimer::start("discovery");
-    let mut config = DiscoveryConfig::default();
-    if !include_patterns.is_empty() {
-        config.include_patterns = include_patterns.to_vec();
-    }
-    if !exclude_patterns.is_empty() {
-        config.exclude_patterns = exclude_patterns.to_vec();
-    }
-    let discovered = discover_files(project_root, &config)?;
-    if discovered.is_empty() {
-        return Ok(IndexStats {
-            discovered: 0,
-            indexed: 0,
-            failed: 0,
-            symbols: 0,
-            resolved: 0,
-        });
-    }
-
-    // ── Progress: discovery complete ─────────────────────────────────────
-    let total_files = discovered.len() as f64;
-    if let Some(ref sender) = progress_sender {
-        let _ = sender.send((
-            0.10,
-            Some(1.0),
-            Some(format!(
-                "Discovered {} files, starting extraction...",
-                discovered.len()
-            )),
-        ));
-    }
-
-    // ── Language init ──────────────────────────────────────────────────────
-    let languages: Vec<Language> = discovered
-        .iter()
-        .filter_map(|p| Language::from_path(p))
-        .fold(Vec::new(), |mut acc, lang| {
-            if !acc.contains(&lang) {
-                acc.push(lang);
-            }
-            acc
-        });
-
-    let _registry = LanguageRegistry::new(&languages)?;
-    let frontend_cache: HashMap<Language, atlas_engine::LanguageFrontend> = languages
-        .iter()
-        .filter_map(|&lang| create_frontend(lang).map(|fe| (lang, fe)))
-        .collect();
-
-    // ── Clean stale facts ──────────────────────────────────────────────────
-    // Delete existing facts for files that will be re-indexed.
-    // We collect all FileIds first, then delete them.
-    let file_ids: Vec<FileId> = discovered
-        .iter()
-        .map(|p| FileId::generate(&p.to_string_lossy()))
-        .collect();
-    // Invalidate cross-file references pointing into these files
-    for fid in &file_ids {
-        if let Err(e) = store.invalidate_references_to_symbols_in_file(fid) {
-            tracing::warn!(
-                "Failed to invalidate cross-file references for file {}: {}",
-                fid,
-                e
-            );
-        }
-    }
-    // Delete existing data for these files (CASCADE cleans related rows)
-    if let Err(e) = store.delete_files_batch(&file_ids) {
-        anyhow::bail!("Failed to clean stale facts: {:#}", e);
-    }
-
-    // ── Parallel extraction ───────────────────────────────────────────────
-    let pool = ParseWorkerPool::new(WorkerConfig::default());
-    let mut indexed = 0usize;
-    let mut failed = 0usize;
-    let mut total_symbols = 0usize;
-
-    for (i, rel_path) in discovered.iter().enumerate() {
-        let abs_path = project_root.join(rel_path);
-        let lang = match Language::from_path(rel_path) {
-            Some(l) => l,
-            None => continue,
-        };
-        let frontend = match frontend_cache.get(&lang) {
-            Some(f) => f,
-            None => continue,
-        };
-
-        let source = match std::fs::read_to_string(&abs_path) {
-            Ok(s) => s,
-            Err(_) => {
-                failed += 1;
-                continue;
-            }
-        };
-
-        let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
-        let file_id = FileId::generate(&rel_path.to_string_lossy());
-
-        match pool.extract_one(
-            frontend,
-            file_id,
-            rel_path,
-            &source,
-            &content_hash,
-            mode.clone(),
-        ) {
-            Ok(facts) => {
-                total_symbols += facts.symbols.len();
-                // Insert facts into a separate write Store connection
-                // to avoid holding the MCP server's read lock.
-                if let Err(e) = store.insert_file_facts(&facts) {
-                    failed += 1;
-                    tracing::warn!("Insert failed for {}: {:#}", rel_path.display(), e);
-                } else {
-                    indexed += 1;
-                }
-            }
-            Err(e) => {
-                failed += 1;
-                tracing::warn!(
-                    "Extraction failed for {}: {}",
-                    rel_path.display(),
-                    e.message
-                );
-            }
-        }
-
-        // ── Progress: extraction (10%-60%, report every 50 files) ────────
-        if let Some(ref sender) = progress_sender {
-            if i % 50 == 0 || i == discovered.len() - 1 {
-                let fraction = 0.10 + 0.50 * (indexed + failed) as f64 / total_files.max(1.0);
-                let msg = format!(
-                    "Extracting files... {}/{} processed ({} indexed, {} failed)",
-                    indexed + failed,
-                    discovered.len(),
-                    indexed,
-                    failed
-                );
-                let _ = sender.send((fraction.min(0.60), Some(1.0), Some(msg)));
-            }
-        }
-    }
-
-    // ── Progress: extraction complete ────────────────────────────────────
-    if let Some(ref sender) = progress_sender {
-        let _ = sender.send((
-            0.65,
-            Some(1.0),
-            Some(format!(
-                "Extraction complete: {} indexed, {} failed ({} symbols found)",
-                indexed, failed, total_symbols
-            )),
-        ));
-    }
-
-    if matches!(mode, ExtractionMode::Manifest) {
-        if let Some(ref sender) = progress_sender {
-            let _ = sender.send((
-                1.0,
-                Some(1.0),
-                Some(format!(
-                    "Manifest indexing complete: {} files indexed ({} failed), {} symbols",
-                    indexed, failed, total_symbols
-                )),
-            ));
-        }
-        return Ok(IndexStats {
-            discovered: discovered.len(),
-            indexed,
-            failed,
-            symbols: total_symbols,
-            resolved: 0,
-        });
-    }
-
-    // ── Reference resolution ──────────────────────────────────────────────
-    if let Some(ref sender) = progress_sender {
-        let _ = sender.send((
-            0.75,
-            Some(1.0),
-            Some("Resolving symbol references...".into()),
-        ));
-    }
-    let mut resolver = ReferenceResolver::new(store.clone());
-    let (resolved_refs, _stats) = match resolver.resolve_all() {
-        Ok(r) => r,
-        Err(e) => {
-            anyhow::bail!("Reference resolution failed: {:#}", e);
-        }
-    };
-
-    // ── Graph build ───────────────────────────────────────────────────────
-    if let Some(ref sender) = progress_sender {
-        let _ = sender.send((0.90, Some(1.0), Some("Building symbol graph...".into())));
-    }
-    let builder = GraphBuilder::new(store.clone());
-    let _build_stats = builder.build_all(&resolved_refs);
-
-    // ── Progress: indexing complete ──────────────────────────────────────
-    if let Some(ref sender) = progress_sender {
-        let _ = sender.send((
-            1.0,
-            Some(1.0),
-            Some(format!(
-                "Indexing complete: {} files indexed ({} failed), {} symbols, {} resolved",
-                indexed, failed, total_symbols, _stats.resolved
-            )),
-        ));
-    }
-
-    Ok(IndexStats {
-        discovered: discovered.len(),
-        indexed,
-        failed,
-        symbols: total_symbols,
-        resolved: _stats.resolved,
-    })
-}
-
 fn append_warning(slot: &mut Option<String>, message: String) {
     match slot {
         Some(existing) if !existing.is_empty() => {
@@ -518,6 +284,29 @@ fn append_warning(slot: &mut Option<String>, message: String) {
         }
         _ => *slot = Some(message),
     }
+}
+
+fn run_mcp_index(
+    store: &Arc<atlas_engine::Store>,
+    project_root: &std::path::Path,
+    mode: ExtractionMode,
+    include_patterns: Vec<String>,
+    exclude_patterns: Vec<String>,
+    progress: Option<IndexProgressCallback>,
+) -> anyhow::Result<IndexPipelineStats> {
+    let mut options = IndexPipelineOptions::new(mode)
+        .with_include_patterns(include_patterns)
+        .with_exclude_patterns(exclude_patterns);
+    if let Some(progress) = progress {
+        options = options.with_progress(progress);
+    }
+    run_index_pipeline(store, project_root, options)
+}
+
+fn progress_callback_from_sender(sender: super::ProgressSender) -> IndexProgressCallback {
+    Arc::new(move |progress: IndexProgress| {
+        let _ = sender.send((progress.fraction, progress.total, progress.message));
+    })
 }
 
 fn reject_analysis_result() -> String {

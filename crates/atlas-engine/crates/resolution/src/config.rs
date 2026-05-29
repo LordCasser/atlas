@@ -22,6 +22,54 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use db::Store;
 
+use crate::path_alias::PathAliasResolver;
+
+/// Project-level configuration files that can affect TypeScript/JavaScript
+/// path alias resolution.
+pub const PATH_ALIAS_CONFIG_FILES: &[&str] = &["tsconfig.json", "jsconfig.json"];
+
+// ── PathAliasConfig: unified entry point ───────────────────────────────────
+
+/// Bundles path-alias config tracking into a single entry point.
+///
+/// Callers no longer need to import [`PATH_ALIAS_CONFIG_FILES`],
+/// [`detect_config_change`], and [`commit_config_hashes`] separately.
+/// The two-phase detect-then-commit flow is preserved:
+///
+/// ```ignore
+/// use resolution::PathAliasConfig;
+///
+/// if PathAliasConfig::has_changed(&store, root)? {
+///     // ... invalidate references and edges ...
+///     PathAliasConfig::commit(&store, root)?;
+/// }
+/// let resolver = PathAliasConfig::resolver(root);
+/// ```
+pub struct PathAliasConfig;
+
+impl PathAliasConfig {
+    /// The set of config files watched for changes.
+    pub const FILES: &'static [&'static str] = PATH_ALIAS_CONFIG_FILES;
+
+    /// Read-only check: have any watched config files changed since the
+    /// last commit?  Does **not** write to `project_metadata`.
+    pub fn has_changed(store: &Store, root: &Path) -> Result<bool> {
+        detect_config_change(store, root, Self::FILES)
+    }
+
+    /// Record current config file hashes as the new comparison baseline.
+    /// Call **after** invalidation completed successfully.
+    pub fn commit(store: &Store, root: &Path) -> Result<()> {
+        commit_config_hashes(store, root, Self::FILES)
+    }
+
+    /// Convenience: load a [`PathAliasResolver`] from `tsconfig.json` /
+    /// `jsconfig.json` in `root`.
+    pub fn resolver(root: &Path) -> PathAliasResolver {
+        PathAliasResolver::from_project_root(root)
+    }
+}
+
 /// Check whether any watched config file changed since the last commit.
 ///
 /// **Read-only.**  Does NOT write to `project_metadata`.  After the caller

@@ -4,6 +4,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use types::Language;
 
 use crate::discovery::DiscoveryConfig;
 
@@ -34,13 +35,6 @@ pub struct ChangedFiles {
     pub added: Vec<PathBuf>,
     pub modified: Vec<PathBuf>,
     pub deleted: Vec<PathBuf>,
-    /// Whether `tsconfig.json` has changed since the last sync.
-    /// When true, the sync engine invalidates all import resolutions and
-    /// rebuilds edges, because path aliases may have changed.
-    ///
-    /// Note: only `tsconfig.json` is currently supported; `jsconfig.json`
-    /// is not checked (the resolver loads tsconfig only).
-    pub tsconfig_changed: bool,
 }
 
 impl ChangedFiles {
@@ -49,7 +43,7 @@ impl ChangedFiles {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.total() == 0 && !self.tsconfig_changed
+        self.total() == 0
     }
 }
 
@@ -80,14 +74,25 @@ pub fn detect_git_changes(root: &Path) -> Option<ChangedFiles> {
         let (status, path) = parse_porcelain_line(line);
         let full_path = root.join(path);
         match status {
-            PorcelainStatus::Added => changes.added.push(full_path),
-            PorcelainStatus::Modified => changes.modified.push(full_path),
-            PorcelainStatus::Deleted => changes.deleted.push(full_path),
+            PorcelainStatus::Added if is_supported_source_path(Path::new(path)) => {
+                changes.added.push(full_path)
+            }
+            PorcelainStatus::Modified if is_supported_source_path(Path::new(path)) => {
+                changes.modified.push(full_path)
+            }
+            PorcelainStatus::Deleted if is_supported_source_path(Path::new(path)) => {
+                changes.deleted.push(full_path)
+            }
             PorcelainStatus::Renamed(new_path) => {
                 // Old file data must be cleaned, new file must be indexed
-                changes.deleted.push(full_path);
-                changes.added.push(root.join(new_path));
+                if is_supported_source_path(Path::new(path)) {
+                    changes.deleted.push(full_path);
+                }
+                if is_supported_source_path(Path::new(&new_path)) {
+                    changes.added.push(root.join(new_path));
+                }
             }
+            _ => {}
         }
     }
 
@@ -96,6 +101,10 @@ pub fn detect_git_changes(root: &Path) -> Option<ChangedFiles> {
     } else {
         Some(changes)
     }
+}
+
+fn is_supported_source_path(path: &Path) -> bool {
+    Language::from_path(path).is_some()
 }
 
 #[derive(Debug)]
@@ -220,10 +229,16 @@ mod tests {
             added: vec![PathBuf::from("a.ts")],
             modified: vec![PathBuf::from("b.py")],
             deleted: vec![],
-            tsconfig_changed: false,
         };
         assert_eq!(changes.total(), 2);
         assert!(!changes.is_empty());
+    }
+
+    #[test]
+    fn unsupported_paths_are_not_source_paths() {
+        assert!(is_supported_source_path(Path::new("src/main.ts")));
+        assert!(!is_supported_source_path(Path::new("README.md")));
+        assert!(!is_supported_source_path(Path::new("tsconfig.json")));
     }
 
     #[test]
