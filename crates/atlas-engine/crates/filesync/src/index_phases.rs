@@ -303,6 +303,12 @@ pub fn phase_write_batched(
     mut on_progress: impl FnMut(u64),
     mut interrupted: impl FnMut() -> bool,
 ) -> Result<WriteBatchStats> {
+    anyhow::ensure!(
+        batch_size > 0,
+        "batch_size must be > 0, got {}",
+        batch_size
+    );
+
     let mut stats = WriteBatchStats {
         written: 0,
         batch_failures: 0,
@@ -382,13 +388,25 @@ pub fn phase_build_summaries(store: &Arc<Store>) -> Result<usize> {
     Ok(stats.functions_summarized)
 }
 
-/// Finalize the index: commit path-alias config, write metadata.
+/// Commit the current path-alias config hash baseline.
+///
+/// Call this **after** invalidation (when path alias config has changed)
+/// to record the new baseline.  The detect→invalidate→commit ordering
+/// is critical — committing before invalidation would cause the next
+/// `PathAliasConfig::has_changed()` to return `false` while stale
+/// references/edges remain.
+pub fn phase_commit_path_alias_config(store: &Arc<Store>, root: &Path) -> Result<()> {
+    PathAliasConfig::commit(store, root)
+}
+
+/// Finalize the index: write metadata (last_index_time, last_index_root,
+/// indexed_scope).  Does **not** commit path alias config — use
+/// [`phase_commit_path_alias_config`] for that.
 pub fn phase_finalize(
     store: &Arc<Store>,
     root: &Path,
     scope_patterns: &[String],
 ) -> Result<()> {
-    PathAliasConfig::commit(store, root)?;
     store.set_metadata(
         "last_index_time",
         &std::time::SystemTime::now()
