@@ -232,6 +232,8 @@ impl ToolRouter {
             Some(s) => s,
             None => {
                 self.try_lazy_structural(qname);
+                // Force-refresh graph so callers/callees reflect newly parsed edges
+                let _ = self.force_refresh_graph();
                 let retry = self.store.find_symbols_by_qname(qname).unwrap_or_default();
                 match retry.into_iter().next() {
                     Some(s) => s,
