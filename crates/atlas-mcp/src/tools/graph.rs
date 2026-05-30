@@ -1,7 +1,7 @@
 //! Graph traversal tools: neighbors, callers, callees, callgraph, path,
 //! explore, and impact analysis.
 
-use atlas_engine::{EdgeKind, LazyStructuralService, Store, SymbolId, TraversalConfig, TraversalDirection};
+use atlas_engine::{EdgeKind, LazyCoordinator, LazyStructuralService, Store, SymbolId, TraversalConfig, TraversalDirection};
 
 use super::{ToolRouter, get_str, get_str_opt, get_u64};
 
@@ -320,7 +320,6 @@ impl ToolRouter {
         // discover a path.  Skip when a manual full index already exists.
         let is_manual_full = self.has_manual_full_index();
         if !is_manual_full {
-            // Collect unique file IDs from all resolved SymbolIds.
             use std::collections::HashSet;
             let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
             for id in from_ids.iter().chain(to_ids.iter()) {
@@ -330,25 +329,38 @@ impl ToolRouter {
             }
             let file_ids: Vec<_> = file_ids_set.into_iter().collect();
             if !file_ids.is_empty() {
+                // Use LazyCoordinator for closure-aware lazy structural:
+                // expands include/import dependencies before building endpoint files.
+                let coordinator = LazyCoordinator::with_project_root(
+                    self.store.clone(),
+                    self.project_root.clone(),
+                );
                 let lazy = LazyStructuralService::new(
                     self.store.clone(),
                     Some(self.project_root.clone()),
                 );
-                if let Err(e) = lazy.ensure_structural_for_file_ids(&file_ids) {
-                    tracing::warn!(
-                        "Lazy structural extraction failed for {} files: {}",
-                        file_ids.len(),
-                        e
-                    );
+                let mut total_built: Vec<atlas_engine::FileId> = Vec::new();
+                for file_id in &file_ids {
+                    match coordinator.ensure_structural_with_closure(&lazy, file_id) {
+                        Ok((result, _job_id)) => {
+                            total_built.extend(result.built_file_ids);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Lazy structural failed for path endpoint: {:#}",
+                                e
+                            );
+                        }
+                    }
                 }
-
-                // Force-refresh graph snapshot so newly extracted edges are
-                // visible to the BFS below.
-                if let Err(e) = self.force_refresh_graph() {
-                    tracing::warn!(
-                        "Graph refresh after lazy structural extraction failed: {}",
-                        e
-                    );
+                if !total_built.is_empty() {
+                    // Refresh graph with built files — uses per-file replace
+                    if let Err(e) = self.refresh_graph_for_files(&total_built) {
+                        tracing::warn!(
+                            "Graph refresh after lazy structural extraction failed: {}",
+                            e
+                        );
+                    }
                 }
             }
         }

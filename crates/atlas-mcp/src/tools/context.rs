@@ -118,8 +118,24 @@ impl ToolRouter {
         let is_manual_full = self.has_manual_full_index();
         if !is_manual_full {
             self.send_progress(0.5, "Extracting structural data...");
+            // Use LazyCoordinator for closure-aware lazy structural:
+            // expands include/import dependencies to cross-file resolution.
+            let coordinator = atlas_engine::LazyCoordinator::with_project_root(
+                self.store.clone(),
+                self.project_root.clone(),
+            );
             let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-            let _ = lazy.ensure_structural_for_symbol(qname);
+            match coordinator.ensure_structural_for_symbol_with_closure(&lazy, qname) {
+                Ok(result) => {
+                    if !result.built_file_ids.is_empty() {
+                        // Refresh graph so subsequent graph-backed tools see new edges
+                        let _ = self.refresh_graph_for_files(&result.built_file_ids);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Lazy structural failed for '{}': {:#}", qname, e);
+                }
+            }
         }
 
         // Re-query after lazy extraction (tier 1 again on freshly-parsed data)

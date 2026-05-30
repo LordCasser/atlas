@@ -9,6 +9,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use atlas_engine::ContextBuilder;
@@ -76,6 +77,9 @@ pub struct ToolRouter {
     last_graph_signature: String,
     /// True once the graph has been built at least once.
     graph_initialized: bool,
+    /// Set by background search when lazy structural writes new facts.
+    /// Checked by [`maybe_refresh_graph`] to skip the 5-second cooldown.
+    graph_stale_flag: Arc<AtomicBool>,
     /// Cached signature to avoid per-request COUNT queries.
     cached_signature: String,
     /// When the cached signature was last checked (avoids re-query within cooldown).
@@ -118,6 +122,7 @@ impl ToolRouter {
             tools: make_all_tools(),
             last_graph_signature: last_graph_signature.clone(),
             graph_initialized: true,
+            graph_stale_flag: Arc::new(AtomicBool::new(false)),
             cached_signature: last_graph_signature,
             last_signature_check: std::time::Instant::now(),
             progress_sender: None,
@@ -143,6 +148,7 @@ impl ToolRouter {
             tools,
             last_graph_signature: String::new(),
             graph_initialized: false,
+            graph_stale_flag: Arc::new(AtomicBool::new(false)),
             cached_signature: String::new(),
             last_signature_check: std::time::Instant::now(),
             progress_sender: None,
@@ -328,6 +334,14 @@ impl ToolRouter {
         if !self.graph_initialized {
             return Ok(());
         }
+        // Background task(s) may have triggered lazy structural —
+        // skip cooldown to pick up new facts immediately.
+        if self.graph_stale_flag.swap(false, Ordering::AcqRel) {
+            self.last_signature_check = self
+                .last_signature_check
+                .checked_sub(std::time::Duration::from_secs(10))
+                .unwrap_or(self.last_signature_check);
+        }
         // Cache signature for 5 seconds
         if self.last_signature_check.elapsed().as_secs() < 5 {
             return Ok(());
@@ -354,16 +368,52 @@ impl ToolRouter {
 
     /// Refresh graph after lazy structural extraction.
     ///
-    /// Currently does a full graph rebuild. Once delta merge is implemented,
-    /// this can be optimized to apply only changed file_ids. The threshold
-    /// check is preserved for future delta optimization.
+    /// Uses per-file replace for small change sets: clones the existing
+    /// in-memory snapshot, removes old nodes/edges for the changed files
+    /// via [`remove_files_in_place`], then merges the fresh data from
+    /// the store.  For large change sets (> 500 files), falls back to
+    /// full rebuild (cloning the snapshot becomes costlier than SQLite scan).
     pub(crate) fn refresh_graph_for_files(
         &mut self,
-        _file_ids: &[FileId],
+        file_ids: &[FileId],
     ) -> anyhow::Result<()> {
-        // For now, always do full refresh after lazy structural.
-        // Delta merge is planned for a future phase.
-        self.force_refresh_graph()
+        if !self.graph_initialized || file_ids.is_empty() {
+            return Ok(());
+        }
+
+        const REPLACE_THRESHOLD: usize = 500;
+        if file_ids.len() > REPLACE_THRESHOLD {
+            return self.force_refresh_graph();
+        }
+
+        // Clone the existing snapshot and replace changed files in-place
+        let old_graph = match self.search.as_ref() {
+            Some(s) => s.graph_snapshot(),
+            None => return self.force_refresh_graph(),
+        };
+        let file_paths: std::collections::HashMap<FileId, String> = self
+            .store
+            .list_files()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|f| (f.file_id, f.path))
+            .collect();
+
+        let old_snap = old_graph.snapshot();
+        let mut new_snapshot = old_snap.clone();
+        new_snapshot.replace_files_in_place(&self.store, file_ids, 0.3, &file_paths)?;
+
+        let new_graph = Arc::new(atlas_engine::GraphEngine::from_snapshot(new_snapshot));
+        if let Some(ref mut s) = self.search {
+            s.refresh_graph(Arc::clone(&new_graph));
+        }
+        if let Some(ref mut c) = self.context {
+            c.refresh_graph(new_graph);
+        }
+
+        self.last_graph_signature = self.store.index_signature().unwrap_or_default();
+        self.cached_manual_full_index.set(None);
+        Ok(())
     }
 
     /// Rebuild the graph snapshot from the store if the index signature changed.

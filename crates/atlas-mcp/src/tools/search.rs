@@ -4,6 +4,7 @@
 //! search calls do not build the whole graph snapshot or trigger unbounded
 //! extraction on large repositories.
 
+use atlas_engine::FileId;
 use atlas_engine::LazyCoordinator;
 use atlas_engine::LazyStructuralService;
 use atlas_engine::Store;
@@ -47,6 +48,10 @@ struct ScopedSearchResponse {
     results: Vec<SearchHit>,
     warnings: Vec<String>,
     background_preparse: Option<String>,
+    /// Internal: file IDs built during lazy structural extraction.
+    /// The caller should refresh the in-memory graph with these.
+    #[serde(skip)]
+    built_file_ids: Vec<FileId>,
 }
 
 impl ToolRouter {
@@ -96,7 +101,12 @@ impl ToolRouter {
         if background {
             return self.handle_search_background(query, limit, kind, &scope, is_manual_full);
         }
-        self.handle_search_sync(query, limit, kind, &scope, is_manual_full)
+        let (result_str, is_err, built_file_ids) =
+            self.handle_search_sync(query, limit, kind, &scope, is_manual_full);
+        if !built_file_ids.is_empty() {
+            let _ = self.refresh_graph_for_files(&built_file_ids);
+        }
+        (result_str, is_err)
     }
 
     fn handle_search_sync(
@@ -106,12 +116,13 @@ impl ToolRouter {
         kind: Option<&str>,
         scope: &str,
         is_manual_full: bool,
-    ) -> (String, bool) {
+    ) -> (String, bool, Vec<FileId>) {
         self.send_progress(0.1, &format!("Searching for '{}' in {}...", query, scope));
         if !self.has_indexed_files() {
             return (
                 "No indexed files found — please run 'index' tool first.".into(),
                 true,
+                Vec::new(),
             );
         }
 
@@ -129,10 +140,11 @@ impl ToolRouter {
             Err(err) => {
                 let mut s = format!("Search error: {}", err);
                 s.push_str(self.index_not_run_guidance());
-                return (s, true);
+                return (s, true, Vec::new());
             }
         };
 
+        let built_file_ids = response.built_file_ids.clone();
         self.send_progress(
             1.0,
             &format!("Search complete ({} results)", response.results.len()),
@@ -140,6 +152,7 @@ impl ToolRouter {
         (
             serde_json::to_string_pretty(&response).unwrap_or_else(|e| e.to_string()),
             false,
+            built_file_ids,
         )
     }
 
@@ -156,6 +169,7 @@ impl ToolRouter {
         let store = self.store.clone();
         let project_root = self.project_root.clone();
         let task_manager = self.task_manager.clone();
+        let flag = Arc::clone(&self.graph_stale_flag);
         let q = query.to_string();
         let k = kind.map(|s| s.to_string());
         let sc = scope.to_string();
@@ -180,11 +194,12 @@ impl ToolRouter {
                     return;
                 }
             };
-            task_manager.complete_task(
-                &tid,
-                serde_json::to_value(&response)
-                    .unwrap_or_else(|e| json!({ "ok": false, "error": e.to_string() })),
-            );
+            if !response.built_file_ids.is_empty() {
+                flag.store(true, std::sync::atomic::Ordering::Release);
+            }
+            let json_response = serde_json::to_value(&response)
+                .unwrap_or_else(|e| json!({ "ok": false, "error": e.to_string() }));
+            task_manager.complete_task(&tid, json_response);
         });
 
         (
@@ -313,6 +328,7 @@ where
     let scope_file_count = store.count_files_in_scope(&normalized_scope)?;
     let mut warnings = Vec::new();
     let mut background_preparse = None;
+    let mut built_file_ids: Vec<FileId> = Vec::new();
     let kind_filter = kind.and_then(SymbolKind::from_str);
 
     if scope_file_count == 0 {
@@ -329,6 +345,7 @@ where
             results: Vec::new(),
             warnings,
             background_preparse,
+            built_file_ids: Vec::new(),
         });
     }
 
@@ -360,20 +377,35 @@ where
         let max_files = scope_file_count.max(SYNC_STRUCTURAL_SCOPE_FILE_LIMIT);
         let file_ids =
             store.list_file_ids_in_scope(&normalized_scope, max_files)?;
+        let coordinator = LazyCoordinator::with_project_root(
+            store.clone(),
+            project_root.clone(),
+        );
         let lazy = LazyStructuralService::new(store.clone(), Some(project_root.clone()));
-        match lazy.ensure_structural_for_file_ids(&file_ids) {
-            Ok(result) => {
-                if result.budget_exceeded {
-                    warnings.push(
-                        "Structural parsing hit the per-query budget; results may still be partial. Narrow the scope for exact parsing."
-                            .into(),
-                    );
+        let mut total_built: Vec<FileId> = Vec::new();
+        let mut total_budget_exceeded = false;
+        for file_id in &file_ids {
+            match coordinator.ensure_structural_with_closure(&lazy, file_id) {
+                Ok((result, _job_id)) => {
+                    total_built.extend(result.built_file_ids);
+                    total_budget_exceeded |= result.budget_exceeded;
+                }
+                Err(err) => {
+                    warnings.push(format!(
+                        "Structural parsing failed for {}: {:#}",
+                        file_id, err
+                    ));
                 }
             }
-            Err(err) => warnings.push(format!(
-                "Structural parsing failed for scoped search; returning indexed symbols only: {err:#}"
-            )),
         }
+        if total_budget_exceeded {
+            warnings.push(
+                "Structural parsing hit budget; narrow the scope for exact results."
+                    .into(),
+            );
+        }
+        // Store built file IDs for the caller to refresh the graph.
+        built_file_ids = total_built;
     } else if !is_manual_full {
         // Single actionable warning — no contradictory "returning manifest results"
         // when results may actually be empty.
@@ -452,6 +484,7 @@ where
         results,
         warnings,
         background_preparse,
+        built_file_ids,
     })
 }
 
@@ -589,7 +622,17 @@ fn spawn_preparse(
     file_ids: Vec<atlas_engine::FileId>,
 ) {
     std::thread::spawn(move || {
+        // Use LazyCoordinator for closure-aware lazy structural
+        // so preparsed results are consistent with sync search results.
+        let coordinator = atlas_engine::LazyCoordinator::with_project_root(
+            store.clone(),
+            project_root.clone(),
+        );
         let lazy = LazyStructuralService::new(store, Some(project_root));
-        let _ = lazy.ensure_structural_for_file_ids(&file_ids);
+        for file_id in &file_ids {
+            let _ = coordinator.ensure_structural_with_closure(&lazy, file_id);
+        }
+        // Note: graph refresh is not done here — preparse is best-effort.
+        // The next sync graph-backed request will trigger maybe_refresh_graph.
     });
 }
