@@ -501,7 +501,11 @@ Atlas 不包含污点分析（taint analysis）。产品主线为变量来源追
 
 - **构建期间的并发读取**：当请求遇到处于 `AlreadyBuilding` 状态的 lazy job 时，它立即返回而不等待构建完成。同一 MCP 会话中的后续请求可能观察到过期数据。客户端应在短暂延迟后重试。
 
-- **Include 根目录自动检测**：仅 `project_root/include/` 会被自动添加。Linux 内核项目还需额外配置 `arch/<arch>/include/`、`include/generated/` 和编译器 `-I` 标志。Future work: MCP/CLI configuration entry for explicit include roots; currently only `project_root/include/` is auto-detected and the `ClosurePlanner::with_include_roots()` API is available for programmatic configuration.
+- **Include root auto-detection**: `project_root/include/` is auto-detected.
+  Additional directories can be passed per-request via the `include_roots`
+  MCP parameter.   Large C/C++ projects (e.g., the Linux kernel) may need project-specific
+  include directories like `arch/<arch>/include/` or `include/generated/`.
+  See MCP README for usage.
 
 - **零初始语义**：`open_project` 激活项目但不会索引它。在 search/trace 之前需要显式调用 `index`（manifest extraction）。没有 manifest 索引，lazy extraction 缺乏起点。
 

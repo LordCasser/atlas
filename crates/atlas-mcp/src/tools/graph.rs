@@ -325,6 +325,10 @@ impl ToolRouter {
         // discover a path.  Skip when a manual full index already exists.
         let is_manual_full = self.has_manual_full_index();
         if !is_manual_full {
+            let (roots, root_warnings) = self.include_roots_from_args(args);
+            for w in &root_warnings {
+                tracing::warn!("include_roots: {}", w);
+            }
             use std::collections::HashSet;
             let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
             for id in from_ids.iter().chain(to_ids.iter()) {
@@ -339,7 +343,8 @@ impl ToolRouter {
                 let coordinator = LazyCoordinator::with_project_root(
                     self.store.clone(),
                     self.project_root.clone(),
-                );
+                )
+                .with_include_roots(roots);
                 let lazy =
                     LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
                 let mut total_built: Vec<atlas_engine::FileId> = Vec::new();

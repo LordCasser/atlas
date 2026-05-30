@@ -64,10 +64,15 @@ impl ToolRouter {
         let is_manual_full = self.has_manual_full_index();
         if !is_manual_full {
             self.send_progress(0.3, "Ensuring structural index...");
+            let (roots, root_warnings) = self.include_roots_from_args(args);
+            for w in &root_warnings {
+                tracing::warn!("include_roots: {}", w);
+            }
             let lazy =
                 LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
             let coordinator =
-                LazyCoordinator::with_project_root(self.store.clone(), self.project_root.clone());
+                LazyCoordinator::with_project_root(self.store.clone(), self.project_root.clone())
+                    .with_include_roots(roots);
             match coordinator.ensure_structural_with_closure(&lazy, &file_id) {
                 Ok(result) => {
                     if !result.0.built_file_ids.is_empty() {
@@ -151,10 +156,15 @@ impl ToolRouter {
         let is_manual_full = self.has_manual_full_index();
         if !is_manual_full {
             self.send_progress(0.2, "Ensuring structural index...");
+            let (roots, root_warnings) = self.include_roots_from_args(args);
+            for w in &root_warnings {
+                tracing::warn!("include_roots: {}", w);
+            }
             let lazy =
                 LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
             let coordinator =
-                LazyCoordinator::with_project_root(self.store.clone(), self.project_root.clone());
+                LazyCoordinator::with_project_root(self.store.clone(), self.project_root.clone())
+                    .with_include_roots(roots);
             match coordinator.ensure_structural_with_closure(&lazy, &file_id) {
                 Ok(result) => {
                     if !result.0.built_file_ids.is_empty() {
@@ -258,12 +268,17 @@ impl ToolRouter {
             // Lazy structural: ensure name-based symbols are structurally parsed
             if !self.has_manual_full_index() {
                 self.send_progress(0.3, "Ensuring structural extraction...");
+                let (roots, root_warnings) = self.include_roots_from_args(args);
+                for w in &root_warnings {
+                    tracing::warn!("include_roots: {}", w);
+                }
                 let lazy =
                     LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
                 let coordinator = LazyCoordinator::with_project_root(
                     self.store.clone(),
                     self.project_root.clone(),
-                );
+                )
+                .with_include_roots(roots);
                 match coordinator.ensure_structural_for_symbol_with_closure(&lazy, name) {
                     Ok(result) => {
                         if !result.built_file_ids.is_empty() {
@@ -308,12 +323,17 @@ impl ToolRouter {
             // Lazy structural: ensure name-based symbols are structurally parsed
             if !self.has_manual_full_index() {
                 self.send_progress(0.3, "Ensuring structural extraction...");
+                let (roots, root_warnings) = self.include_roots_from_args(args);
+                for w in &root_warnings {
+                    tracing::warn!("include_roots: {}", w);
+                }
                 let lazy =
                     LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
                 let coordinator = LazyCoordinator::with_project_root(
                     self.store.clone(),
                     self.project_root.clone(),
-                );
+                )
+                .with_include_roots(roots);
                 for name in [fname, tname] {
                     match coordinator.ensure_structural_for_symbol_with_closure(&lazy, name) {
                         Ok(result) => {

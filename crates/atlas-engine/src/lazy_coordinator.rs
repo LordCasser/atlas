@@ -25,6 +25,7 @@
 //!
 //! - (no outstanding Phase 4 items)
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -64,6 +65,8 @@ impl Drop for PrewarmGuard {
 pub struct LazyCoordinator {
     store: Arc<Store>,
     project_root: Option<std::path::PathBuf>,
+    /// Request-scoped include roots for C/C++ angle-bracket resolution.
+    include_roots: Vec<IncludeRoot>,
 }
 
 impl LazyCoordinator {
@@ -71,6 +74,7 @@ impl LazyCoordinator {
         Self {
             store,
             project_root: None,
+            include_roots: vec![],
         }
     }
 
@@ -80,7 +84,38 @@ impl LazyCoordinator {
         Self {
             store,
             project_root: Some(project_root),
+            include_roots: vec![],
         }
+    }
+
+    /// Set request-scoped include roots for C/C++ angle-bracket resolution.
+    pub fn with_include_roots(mut self, roots: Vec<IncludeRoot>) -> Self {
+        self.include_roots = roots;
+        self
+    }
+
+    /// Merge request-scoped roots with auto-detected defaults.
+    /// Request roots take priority; defaults appended after dedup.
+    fn effective_include_roots(&self) -> Vec<IncludeRoot> {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut merged = Vec::new();
+        // 1. Request roots first (highest priority)
+        for root in &self.include_roots {
+            if seen.insert(root.path.clone()) {
+                merged.push(root.clone());
+            }
+        }
+        // 2. Auto-detected defaults
+        if let Some(ref proj_root) = self.project_root {
+            let include_dir = proj_root.join("include");
+            if include_dir.exists() && include_dir.is_dir() {
+                let path = "include".to_string();
+                if seen.insert(path.clone()) {
+                    merged.push(IncludeRoot { path });
+                }
+            }
+        }
+        merged
     }
 
     /// Ensure structural layer for a file, with job tracking and dedup.
@@ -146,19 +181,9 @@ impl LazyCoordinator {
         service: &LazyStructuralService,
         seed: &FileId,
     ) -> Result<(EnsureStructuralResult, String)> {
-        let planner = {
-            let mut p = ClosurePlanner::new(self.store.clone(), self.project_root.clone());
-            // Auto-detect common C include roots
-            if let Some(ref root) = self.project_root {
-                let include_dir = root.join("include");
-                if include_dir.exists() {
-                    p = p.with_include_roots(vec![IncludeRoot {
-                        path: "include".to_string(),
-                    }]);
-                }
-            }
-            p
-        };
+        let planner_roots = self.effective_include_roots();
+        let planner = ClosurePlanner::new(self.store.clone(), self.project_root.clone())
+            .with_include_roots(planner_roots);
         let workset = planner.plan_for_seed(seed)?;
 
         let mut result = EnsureStructuralResult {
@@ -382,6 +407,27 @@ mod tests {
     // Implementations will be filled in as the coordinator evolves.
 
     use std::sync::Arc;
+
+    use crate::closure_planner::IncludeRoot;
+    use crate::lazy_coordinator::LazyCoordinator;
+
+    #[test]
+    fn effective_include_roots_request_priority() {
+        let store = Arc::new(db::Store::open_in_memory().unwrap());
+        let request_roots = vec![
+            IncludeRoot {
+                path: "arch/x86/include".into(),
+            },
+            IncludeRoot {
+                path: "include".into(),
+            },
+        ];
+        let coord = LazyCoordinator::new(store).with_include_roots(request_roots);
+        let merged = coord.effective_include_roots();
+        // Request roots come first
+        assert_eq!(merged[0].path, "arch/x86/include");
+        assert_eq!(merged[1].path, "include");
+    }
 
     #[test]
     fn lazy_closure_ensures_dependency_resolution_symbols() {

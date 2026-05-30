@@ -126,6 +126,15 @@ Notes:
   `delete_fp_annotation`) are only valid for C and C++; materialized edges
   appear in the call graph after the next `index` run.
 
+### Request-scoped include roots
+
+For C/C++ projects, you can pass `include_roots` to help resolve `#include <...>` during lazy structural extraction. The roots are project-relative, request-scoped, and not persisted. Default auto-detection includes `project_root/include/`.
+
+Example:
+```json
+{"query": "do_sched", "scope": "kernel/sched", "include_roots": ["include", "third_party/include"]}
+```
+
 ## Key design decisions
 
 - **Graph is lazily initialized**: `ToolRouter::ensure_graph_initialized()` is called by the MCP server layer before dispatching to graph-backed tools. Store-backed tools (search, trace, status, files, usages) skip graph construction entirely.

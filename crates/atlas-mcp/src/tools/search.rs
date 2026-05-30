@@ -73,6 +73,7 @@ impl ToolRouter {
             .get("background")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
         // When a manual full structural index exists (built via CLI `atlas index`),
         // scope restrictions are lifted and lazy structural is disabled — all
@@ -100,10 +101,25 @@ impl ToolRouter {
         };
 
         if background {
-            return self.handle_search_background(query, limit, kind, &scope, is_manual_full);
+            return self.handle_search_background(
+                query,
+                limit,
+                kind,
+                &scope,
+                is_manual_full,
+                include_roots,
+                root_warnings,
+            );
         }
-        let (result_str, is_err, built_file_ids) =
-            self.handle_search_sync(query, limit, kind, &scope, is_manual_full);
+        let (result_str, is_err, built_file_ids) = self.handle_search_sync(
+            query,
+            limit,
+            kind,
+            &scope,
+            is_manual_full,
+            include_roots,
+            root_warnings,
+        );
         if !built_file_ids.is_empty() {
             let _ = self.refresh_graph_for_files(&built_file_ids);
         }
@@ -117,6 +133,8 @@ impl ToolRouter {
         kind: Option<&str>,
         scope: &str,
         is_manual_full: bool,
+        include_roots: Vec<atlas_engine::IncludeRoot>,
+        root_warnings: Vec<String>,
     ) -> (String, bool, Vec<FileId>) {
         self.send_progress(0.1, &format!("Searching for '{}' in {}...", query, scope));
         if !self.has_indexed_files() {
@@ -135,6 +153,8 @@ impl ToolRouter {
             kind,
             scope,
             is_manual_full,
+            include_roots,
+            root_warnings,
             Arc::clone(&self.graph_stale_flag),
             Some(|percent, message: String| self.send_progress(percent, &message)),
         ) {
@@ -165,6 +185,8 @@ impl ToolRouter {
         kind: Option<&str>,
         scope: &str,
         is_manual_full: bool,
+        include_roots: Vec<atlas_engine::IncludeRoot>,
+        root_warnings: Vec<String>,
     ) -> (String, bool) {
         let task_id = self.task_manager.create_task("search", "search");
         let tid = task_id.clone();
@@ -175,6 +197,8 @@ impl ToolRouter {
         let q = query.to_string();
         let k = kind.map(|s| s.to_string());
         let sc = scope.to_string();
+        let roots_for_thread = include_roots.clone();
+        let root_warnings_for_thread = root_warnings.clone();
 
         std::thread::spawn(move || {
             task_manager.update_progress(&tid, 5.0, "Starting scoped search...");
@@ -186,6 +210,8 @@ impl ToolRouter {
                 k.as_deref(),
                 &sc,
                 is_manual_full,
+                roots_for_thread,
+                root_warnings_for_thread,
                 Arc::clone(&flag),
                 Some(|percent, message: String| {
                     task_manager.update_progress(&tid, percent * 100.0, &message)
@@ -224,14 +250,15 @@ impl ToolRouter {
     /// Trigger lazy structural extraction for the given query.  When a manual
     /// full index already exists, this is a no-op — all files already have
     /// complete structural data.
-    fn try_lazy_structural(&mut self, query: &str) {
+    fn try_lazy_structural(&mut self, query: &str, include_roots: Vec<atlas_engine::IncludeRoot>) {
         // Manual full index: structural data already complete — skip lazy extraction.
         if self.has_manual_full_index() {
             return;
         }
         let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
         let coordinator =
-            LazyCoordinator::with_project_root(self.store.clone(), self.project_root.clone());
+            LazyCoordinator::with_project_root(self.store.clone(), self.project_root.clone())
+                .with_include_roots(include_roots);
         match coordinator.ensure_structural_for_symbol_with_closure(&lazy, query) {
             Ok(result) => {
                 if !result.built_file_ids.is_empty() {
@@ -250,6 +277,10 @@ impl ToolRouter {
             .get("includeCode")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
+        for w in &root_warnings {
+            tracing::warn!("include_roots: {}", w);
+        }
         let symbols = match self.store.find_symbols_by_qname(qname) {
             Ok(s) => s,
             Err(e) => {
@@ -259,9 +290,17 @@ impl ToolRouter {
             }
         };
         let sym = match symbols.into_iter().next() {
-            Some(s) => s,
+            Some(s) => {
+                // Even when symbol is already indexed (manifest tier-1 hit),
+                // if include_roots was passed, trigger lazy structural
+                // to expand the dependency closure with custom include paths.
+                if !include_roots.is_empty() {
+                    self.try_lazy_structural(qname, include_roots);
+                }
+                s
+            }
             None => {
-                self.try_lazy_structural(qname);
+                self.try_lazy_structural(qname, include_roots);
                 let retry = self.store.find_symbols_by_qname(qname).unwrap_or_default();
                 match retry.into_iter().next() {
                     Some(s) => s,
@@ -319,6 +358,8 @@ fn execute_scoped_search<F>(
     kind: Option<&str>,
     scope: &str,
     is_manual_full: bool,
+    include_roots: Vec<atlas_engine::IncludeRoot>,
+    root_warnings: Vec<String>,
     flag: Arc<AtomicBool>,
     progress: Option<F>,
 ) -> anyhow::Result<ScopedSearchResponse>
@@ -327,7 +368,7 @@ where
 {
     let normalized_scope = normalize_scope(scope);
     let scope_file_count = store.count_files_in_scope(&normalized_scope)?;
-    let mut warnings = Vec::new();
+    let mut warnings: Vec<String> = root_warnings;
     let mut background_preparse = None;
     let mut built_file_ids: Vec<FileId> = Vec::new();
     let kind_filter = kind.and_then(SymbolKind::from_str);
@@ -377,7 +418,8 @@ where
         }
         let max_files = scope_file_count.max(SYNC_STRUCTURAL_SCOPE_FILE_LIMIT);
         let file_ids = store.list_file_ids_in_scope(&normalized_scope, max_files)?;
-        let coordinator = LazyCoordinator::with_project_root(store.clone(), project_root.clone());
+        let coordinator = LazyCoordinator::with_project_root(store.clone(), project_root.clone())
+            .with_include_roots(include_roots.clone());
         let lazy = LazyStructuralService::new(store.clone(), Some(project_root.clone()));
         let mut total_built: Vec<FileId> = Vec::new();
         let mut total_budget_exceeded = false;
@@ -452,7 +494,13 @@ where
             .take(PREHEAT_FILE_LIMIT)
             .collect();
         if !precise && scope_file_count <= PREHEAT_SCOPE_FILE_LIMIT && !result_file_ids.is_empty() {
-            spawn_preparse(store.clone(), project_root, result_file_ids, flag.clone());
+            spawn_preparse(
+                store.clone(),
+                project_root,
+                result_file_ids,
+                include_roots.clone(),
+                flag.clone(),
+            );
             background_preparse = Some(format!(
                 "Scheduled structural preparse for up to {} result-adjacent files.",
                 PREHEAT_FILE_LIMIT
@@ -615,13 +663,15 @@ fn spawn_preparse(
     store: Arc<Store>,
     project_root: std::path::PathBuf,
     file_ids: Vec<atlas_engine::FileId>,
+    include_roots: Vec<atlas_engine::IncludeRoot>,
     flag: Arc<std::sync::atomic::AtomicBool>,
 ) {
     std::thread::spawn(move || {
         // Use LazyCoordinator for closure-aware lazy structural
         // so preparsed results are consistent with sync search results.
         let coordinator =
-            atlas_engine::LazyCoordinator::with_project_root(store.clone(), project_root.clone());
+            atlas_engine::LazyCoordinator::with_project_root(store.clone(), project_root.clone())
+                .with_include_roots(include_roots);
         let lazy = LazyStructuralService::new(store, Some(project_root));
         for file_id in &file_ids {
             let _ = coordinator.ensure_structural_with_closure(&lazy, file_id);

@@ -7,7 +7,7 @@
 //!   status, search, graph, context, trace, capability.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -543,6 +543,89 @@ impl ToolRouter {
         }
     }
 
+    /// Parse and validate `include_roots` from MCP arguments.
+    /// Returns project-relative roots and any validation warnings.
+    pub(crate) fn include_roots_from_args(
+        &self,
+        args: &serde_json::Value,
+    ) -> (Vec<atlas_engine::IncludeRoot>, Vec<String>) {
+        let mut roots = Vec::new();
+        let mut warnings = Vec::new();
+
+        let arr = match args.get("include_roots") {
+            Some(serde_json::Value::Array(a)) => a,
+            Some(_) => {
+                warnings.push("include_roots must be an array of strings".into());
+                return (roots, warnings);
+            }
+            None => return (roots, warnings),
+        };
+
+        const MAX_ROOTS: usize = 16;
+        if arr.len() > MAX_ROOTS {
+            warnings.push(format!(
+                "include_roots: truncated from {} to {MAX_ROOTS} entries",
+                arr.len()
+            ));
+        }
+
+        let mut seen: HashSet<String> = HashSet::new();
+        for item in arr.iter().take(MAX_ROOTS) {
+            let raw = match item.as_str() {
+                Some(s) => s,
+                None => {
+                    warnings.push("include_roots: non-string entry skipped".into());
+                    continue;
+                }
+            };
+
+            // Validate
+            if raw.len() > 256 {
+                warnings.push(format!("include_roots: path too long (>256): {raw}"));
+                continue;
+            }
+            if raw.starts_with('/') || raw.starts_with('\\') {
+                warnings.push(format!("include_roots: absolute path rejected: {raw}"));
+                continue;
+            }
+            // Reject Windows drive-letter paths (C:\foo → C:/foo is still absolute)
+            let is_drive_letter = raw.len() >= 2
+                && raw.as_bytes()[0].is_ascii_alphabetic()
+                && raw.as_bytes()[1] == b':';
+            if is_drive_letter {
+                warnings.push(format!("include_roots: absolute path rejected: {raw}"));
+                continue;
+            }
+
+            // Normalize
+            let normalized = match normalize_project_relative_path(raw) {
+                Some(p) => p,
+                None => {
+                    warnings.push(format!("include_roots: path escapes project: {raw}"));
+                    continue;
+                }
+            };
+
+            if normalized.is_empty() || normalized == "." {
+                warnings.push(format!("include_roots: empty path after normalize: {raw}"));
+                continue;
+            }
+
+            // Warn if directory doesn't exist (non-fatal)
+            if !self.project_root.join(&normalized).is_dir() {
+                warnings.push(format!(
+                    "include_roots: directory not found (used anyway): {normalized}"
+                ));
+            }
+
+            if seen.insert(normalized.clone()) {
+                roots.push(atlas_engine::IncludeRoot { path: normalized });
+            }
+        }
+
+        (roots, warnings)
+    }
+
     // -------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------
@@ -678,6 +761,7 @@ pub fn make_all_tools() -> Vec<Tool> {
                     "kind": { "type": "string", "description": "Optional SymbolKind filter (function, class, ...)" },
                     "limit": { "type": "integer", "description": "Max results (default 20)" },
                     "background": { "type": "boolean", "description": "Run search as background task (returns task_id for task_status polling)" },
+                    "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
                 required: Some(vec!["query".into()]),
             },
@@ -693,6 +777,7 @@ pub fn make_all_tools() -> Vec<Tool> {
                         "type": "boolean",
                         "description": "When true, includes the full source code of the enclosing definition (function/class/struct body). Default false."
                     },
+                    "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
                 required: Some(vec!["qualified_name".into()]),
             },
@@ -775,6 +860,7 @@ pub fn make_all_tools() -> Vec<Tool> {
                         "type": "boolean",
                         "description": "When true, includes source code for each node in the path. Default false."
                     },
+                    "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
                 required: Some(vec!["from".into(), "to".into()]),
             },
@@ -817,6 +903,7 @@ pub fn make_all_tools() -> Vec<Tool> {
                         "type": "boolean",
                         "description": "When true, includes the subject symbol's full source code alongside markdown. Default false."
                     },
+                    "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
                 required: Some(vec!["symbol".into()]),
             },
@@ -831,6 +918,7 @@ pub fn make_all_tools() -> Vec<Tool> {
                     "file_path": { "type": "string", "description": "File path relative to project root (e.g. 'src/foo.ts')" },
                     "line": { "type": "integer", "description": "1-based line number" },
                     "column": { "type": "integer", "description": "1-based column number" },
+                    "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
                 required: Some(vec!["line".into(), "column".into()]),
             },
@@ -846,6 +934,7 @@ pub fn make_all_tools() -> Vec<Tool> {
                     "line": { "type": "integer", "description": "1-based line number" },
                     "column": { "type": "integer", "description": "1-based column number" },
                     "max_depth": { "type": "integer", "description": "Maximum backward traversal depth (default 30)" },
+                    "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
                 required: Some(vec!["line".into(), "column".into()]),
             },
@@ -859,6 +948,7 @@ pub fn make_all_tools() -> Vec<Tool> {
                     "symbol": { "type": "string", "description": "Symbol ID in hex (from search or symbol)" },
                     "symbol_name": { "type": "string", "description": "Symbol name for lookup (e.g. 'inner'). Alternative to 'symbol' hex ID." },
                     "max_depth": { "type": "integer", "description": "Maximum backward call depth (default 20)" },
+                    "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
                 required: None,
             },
@@ -874,6 +964,7 @@ pub fn make_all_tools() -> Vec<Tool> {
                     "from_name": { "type": "string", "description": "Source symbol name (alternative to 'from' hex ID, e.g. 'main')" },
                     "to_name": { "type": "string", "description": "Target symbol name (alternative to 'to' hex ID, e.g. 'processRequest')" },
                     "max_depth": { "type": "integer", "description": "Maximum forward call depth (default 10)" },
+                    "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
                 required: None,
             },
@@ -1040,4 +1131,73 @@ fn truncate(s: &str, max_len: usize) -> &str {
         end = idx;
     }
     &s[..end]
+}
+
+/// Normalize a project-relative path: replace backslashes, remove leading ./
+/// components, collapse redundant slashes, reject path-escape patterns.
+fn normalize_project_relative_path(raw: &str) -> Option<String> {
+    let raw = raw.replace('\\', "/");
+    let raw = raw.trim_start_matches("./");
+    let raw = raw.trim_end_matches('/');
+
+    let mut components = Vec::new();
+    for comp in raw.split('/') {
+        match comp {
+            "" | "." => continue,
+            ".." => {
+                if components.is_empty() {
+                    return None; // escape attempt
+                }
+                components.pop();
+            }
+            _ => components.push(comp),
+        }
+    }
+
+    if components.is_empty() {
+        return None;
+    }
+    Some(components.join("/"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_project_relative_path_accepts_include() {
+        assert_eq!(
+            normalize_project_relative_path("include"),
+            Some("include".into())
+        );
+    }
+
+    #[test]
+    fn normalize_project_relative_path_strips_dot_slash() {
+        assert_eq!(
+            normalize_project_relative_path("./src/include"),
+            Some("src/include".into())
+        );
+    }
+
+    #[test]
+    fn normalize_project_relative_path_converts_backslash() {
+        assert_eq!(
+            normalize_project_relative_path("src\\include"),
+            Some("src/include".into())
+        );
+    }
+
+    #[test]
+    fn normalize_project_relative_path_rejects_escape() {
+        assert_eq!(normalize_project_relative_path("../outside"), None);
+    }
+
+    #[test]
+    fn normalize_project_relative_path_collapses_double_dot_within() {
+        assert_eq!(
+            normalize_project_relative_path("a/b/../c"),
+            Some("a/c".into())
+        );
+    }
 }
