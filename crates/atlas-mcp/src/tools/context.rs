@@ -81,29 +81,8 @@ impl ToolRouter {
         if let Some(id) = symbols.first().map(|s| s.id) {
             // When tier-1 hits and include_roots was passed, still trigger
             // lazy structural for this symbol's file to expand the dependency
-            // closure with custom include paths.  The coordinator handles
-            // caching — no redundant extraction if the file is already structural.
-            let is_manual_full = self.has_manual_full_index();
-            if !is_manual_full && !include_roots.is_empty() {
-                if let Some(file_id) = symbols.first().map(|s| s.file_id) {
-                    let coordinator = atlas_engine::LazyCoordinator::with_project_root(
-                        self.store.clone(),
-                        self.project_root.clone(),
-                    )
-                    .with_include_roots(include_roots);
-                    let lazy = LazyStructuralService::new(
-                        self.store.clone(),
-                        Some(self.project_root.clone()),
-                    );
-                    if let Ok((result, _job_id)) =
-                        coordinator.ensure_structural_with_closure(&lazy, &file_id)
-                    {
-                        if !result.built_file_ids.is_empty() {
-                            let _ = self.refresh_graph_for_files(&result.built_file_ids);
-                        }
-                    }
-                }
-            }
+            // closure with custom include paths.
+            self.ensure_structural_for_symbol_file(symbols[0].file_id, include_roots);
             return Ok(id);
         }
 
@@ -114,6 +93,7 @@ impl ToolRouter {
         });
         if name_matches.len() == 1 {
             // Unambiguous — use it directly
+            self.ensure_structural_for_symbol_file(name_matches[0].file_id, include_roots);
             return Ok(name_matches[0].id);
         }
         if name_matches.len() > 1 {
@@ -126,6 +106,7 @@ impl ToolRouter {
                 .filter(|s| s.qualified_name.to_lowercase().contains(&q_lower))
                 .collect();
             if matching_qnames.len() == 1 {
+                self.ensure_structural_for_symbol_file(matching_qnames[0].file_id, include_roots);
                 return Ok(matching_qnames[0].id);
             }
             if matching_qnames.len() > 1 {
@@ -213,5 +194,29 @@ impl ToolRouter {
         );
         err.push_str(self.index_not_run_guidance());
         Err(err)
+    }
+
+    /// Trigger closure-aware lazy structural for a symbol's file,
+    /// propagating custom include_roots.  No-op when a manual full index
+    /// exists or include_roots is empty.
+    fn ensure_structural_for_symbol_file(
+        &mut self,
+        file_id: atlas_engine::FileId,
+        include_roots: Vec<atlas_engine::IncludeRoot>,
+    ) {
+        if self.has_manual_full_index() || include_roots.is_empty() {
+            return;
+        }
+        let coordinator = atlas_engine::LazyCoordinator::with_project_root(
+            self.store.clone(),
+            self.project_root.clone(),
+        )
+        .with_include_roots(include_roots);
+        let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
+        if let Ok((result, _job_id)) = coordinator.ensure_structural_with_closure(&lazy, &file_id) {
+            if !result.built_file_ids.is_empty() {
+                let _ = self.refresh_graph_for_files(&result.built_file_ids);
+            }
+        }
     }
 }

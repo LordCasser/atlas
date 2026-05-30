@@ -263,6 +263,34 @@ impl ToolRouter {
                     );
                 }
             };
+            // Hex ID path — still trigger lazy structural for the symbol's file
+            // so include_roots can expand the dependency closure.
+            if !self.has_manual_full_index() {
+                let (roots, root_warnings) = self.include_roots_from_args(args);
+                for w in &root_warnings {
+                    tracing::warn!("include_roots: {}", w);
+                }
+                if !roots.is_empty() {
+                    if let Ok(Some(sym)) = self.store.find_symbol_by_id(&target_id) {
+                        let coordinator = LazyCoordinator::with_project_root(
+                            self.store.clone(),
+                            self.project_root.clone(),
+                        )
+                        .with_include_roots(roots);
+                        let lazy = LazyStructuralService::new(
+                            self.store.clone(),
+                            Some(self.project_root.clone()),
+                        );
+                        if let Ok((result, _)) =
+                            coordinator.ensure_structural_with_closure(&lazy, &sym.file_id)
+                        {
+                            if !result.built_file_ids.is_empty() {
+                                let _ = self.refresh_graph_for_files(&result.built_file_ids);
+                            }
+                        }
+                    }
+                }
+            }
             engine.trace_callers(&target_id, max_depth)
         } else if let Some(name) = symbol_name {
             // Lazy structural: ensure name-based symbols are structurally parsed
@@ -401,6 +429,43 @@ impl ToolRouter {
                 );
             }
         };
+
+        // Hex ID path — still trigger lazy structural for endpoint files
+        // so include_roots can expand the dependency closure.
+        if !self.has_manual_full_index() {
+            let (roots, root_warnings) = self.include_roots_from_args(args);
+            for w in &root_warnings {
+                tracing::warn!("include_roots: {}", w);
+            }
+            if !roots.is_empty() {
+                // Collect unique file_ids from both endpoint symbols
+                let mut file_set: std::collections::HashSet<atlas_engine::FileId> =
+                    std::collections::HashSet::new();
+                for id in [&from_id, &to_id] {
+                    if let Ok(Some(sym)) = self.store.find_symbol_by_id(id) {
+                        file_set.insert(sym.file_id);
+                    }
+                }
+                for file_id in &file_set {
+                    let coordinator = LazyCoordinator::with_project_root(
+                        self.store.clone(),
+                        self.project_root.clone(),
+                    )
+                    .with_include_roots(roots.clone());
+                    let lazy = LazyStructuralService::new(
+                        self.store.clone(),
+                        Some(self.project_root.clone()),
+                    );
+                    if let Ok((result, _)) =
+                        coordinator.ensure_structural_with_closure(&lazy, file_id)
+                    {
+                        if !result.built_file_ids.is_empty() {
+                            let _ = self.refresh_graph_for_files(&result.built_file_ids);
+                        }
+                    }
+                }
+            }
+        }
 
         let resp = engine.trace_forward(&from_id, &to_id, max_depth);
         let is_error = !resp.ok;
