@@ -21,11 +21,9 @@
 //! - Delta graph refresh (scoped graph rebuild for affected files)
 //! - Budget tracking with precision degradation (PrecisionTier in results)
 //!
-//! # Remaining (Phase 4+)
+//! # Remaining (Phase 5+)
 //!
-//! - Prebuilt dataflow guard
-//! - Linux semantic augmentation
-//! - Cost-aware dataflow
+//! - (no outstanding Phase 4 items)
 
 use std::sync::Arc;
 
@@ -165,8 +163,11 @@ impl LazyCoordinator {
         let mut last_job_id = String::new();
 
         for file_id in &workset.order {
+            let is_seed = file_id == seed;
+            let layer_name = if is_seed { "structural" } else { "resolution_symbols" };
+
             // In-flight dedup: reuse existing job if one is active
-            if let Some(active) = self.store.find_active_lazy_job(file_id, "structural")? {
+            if let Some(active) = self.store.find_active_lazy_job(file_id, layer_name)? {
                 if active.status == "building" || active.status == "queued" {
                     result.files_cached += 1;
                     last_job_id = active.job_id;
@@ -179,15 +180,21 @@ impl LazyCoordinator {
             self.store.upsert_lazy_job_queued(
                 &job_id,
                 file_id,
-                "structural",
+                layer_name,
                 Some("lazy_coordinator::ensure_structural_with_closure"),
                 None,
                 Some(LAZY_STRUCTURAL_BUDGET_MS as i64),
             )?;
-            self.store.start_lazy_job(file_id, "structural")?;
+            self.store.start_lazy_job(file_id, layer_name)?;
 
             // Execute extraction for this file
-            match service.ensure_structural_for_file(file_id) {
+            // For deps, use resolution_symbols; for seed, use structural.
+            let build_result = if is_seed {
+                service.ensure_structural_for_file(file_id)
+            } else {
+                service.ensure_resolution_symbols_for_file(file_id)
+            };
+            match build_result {
                 Ok(r) => {
                     result.files_built += r.files_built;
                     result.files_cached += r.files_cached;

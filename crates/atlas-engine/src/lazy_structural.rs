@@ -242,6 +242,133 @@ impl LazyStructuralService {
         }))
     }
 
+    /// Check whether a file already has a complete resolution_symbols layer
+    /// (or better — structural counts as superset).
+    pub fn has_resolution_symbols_layer(&self, file_id: &FileId) -> Result<bool> {
+        if self.has_structural_layer(file_id).unwrap_or(false) {
+            return Ok(true);
+        }
+        let file_info = match self.store.get_file(file_id)? {
+            Some(fi) => fi,
+            None => return Ok(false),
+        };
+        match self.store.get_file_index_layer(file_id, layer::RESOLUTION_SYMBOLS) {
+            Ok(Some((s, hash))) => Ok(s == status::COMPLETE && hash == file_info.content_hash),
+            _ => Ok(false),
+        }
+    }
+
+    /// Ensure a file has at least resolution_symbols layer (not full structural).
+    /// Used for import dependencies that only need to serve as resolution targets.
+    pub fn ensure_resolution_symbols_for_file(
+        &self,
+        file_id: &FileId,
+    ) -> Result<EnsureStructuralResult> {
+        self.ensure_resolution_symbols_for_file_ids(&[*file_id])
+    }
+
+    /// Ensure resolution_symbols for multiple files.
+    pub fn ensure_resolution_symbols_for_file_ids(
+        &self,
+        file_ids: &[FileId],
+    ) -> Result<EnsureStructuralResult> {
+        let start = std::time::Instant::now();
+        let mut result = EnsureStructuralResult {
+            files_built: 0,
+            files_cached: 0,
+            budget_exceeded: false,
+            built_file_ids: vec![],
+            precision_tier: PrecisionTier::Unavailable,
+        };
+
+        for file_id in file_ids {
+            if start.elapsed().as_millis() > LAZY_STRUCTURAL_BUDGET_MS as u128 {
+                result.budget_exceeded = true;
+                break;
+            }
+            if self.has_resolution_symbols_layer(file_id)? {
+                result.files_cached += 1;
+                continue;
+            }
+            match self.reindex_file_resolution_symbols(file_id) {
+                Ok(()) => {
+                    result.files_built += 1;
+                    result.built_file_ids.push(*file_id);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Lazy resolution_symbols failed for {:?}: {:#}",
+                        file_id,
+                        e
+                    );
+                }
+            }
+        }
+
+        if !result.built_file_ids.is_empty() {
+            self.incremental_resolve_and_build(&result.built_file_ids)?;
+        }
+
+        result.precision_tier = crate::precision::structural_precision(
+            result.files_built,
+            result.files_cached,
+            result.budget_exceeded,
+        );
+
+        Ok(result)
+    }
+
+    /// Re-extract a single file with ResolutionSymbols mode.
+    fn reindex_file_resolution_symbols(&self, file_id: &FileId) -> Result<()> {
+        let file_info = self
+            .store
+            .get_file(file_id)?
+            .ok_or_else(|| anyhow::anyhow!("file not found: {:?}", file_id))?;
+        let frontend = create_frontend(file_info.language).ok_or_else(|| {
+            anyhow::anyhow!("frontend not available for {:?}", file_info.language)
+        })?;
+        let resolved_path = self.resolve_file_path(&file_info.path);
+        // Security: ensure path is within project root.
+        if let Some(root) = &self.project_root {
+            let canonical_root = root.canonicalize().with_context(|| {
+                format!("failed to canonicalize project root {}", root.display())
+            })?;
+            let canonical_file = resolved_path.canonicalize().with_context(|| {
+                format!("failed to canonicalize {}", resolved_path.display())
+            })?;
+            anyhow::ensure!(
+                canonical_file.starts_with(&canonical_root),
+                "path traversal detected: {} is outside project root {}",
+                canonical_file.display(),
+                canonical_root.display()
+            );
+        }
+        let source = std::fs::read_to_string(&resolved_path)
+            .with_context(|| format!("failed to read {}", resolved_path.display()))?;
+        let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+
+        let facts = extract_file_with_mode(
+            &frontend,
+            *file_id,
+            std::path::Path::new(&file_info.path),
+            &source,
+            &content_hash,
+            ExtractionMode::ResolutionSymbols,
+        )?;
+
+        // Invalidate cross-file references, delete outgoing edges, and
+        // atomically replace file facts — all in a single transaction.
+        self.store
+            .replace_file_facts_with_invalidation(file_id, &facts)?;
+
+        tracing::info!(
+            "Lazy resolution_symbols: {} ({} symbols)",
+            file_info.path,
+            facts.symbol_count()
+        );
+        Ok(())
+    }
+
     // ── Internal ────────────────────────────────────────────────────────
 
     fn ensure_structural_for_files(&self, file_ids: &[FileId]) -> Result<EnsureStructuralResult> {
@@ -407,5 +534,38 @@ mod tests {
         let provider = DefaultCandidateProvider::new(store, None);
         let candidates = provider.candidates_for_path("src/main.rs").unwrap();
         assert_eq!(candidates.len(), 1);
+    }
+
+    #[test]
+    fn test_has_resolution_symbols_layer_empty_db() {
+        let store = test_store();
+        let svc = LazyStructuralService::new(store, None);
+        let fid = FileId::generate("test.ts");
+        assert!(!svc.has_resolution_symbols_layer(&fid).unwrap());
+    }
+
+    #[test]
+    fn test_has_resolution_symbols_layer_when_structural_exists() {
+        use types::Language;
+
+        let store = test_store();
+        let svc = LazyStructuralService::new(store.clone(), None);
+
+        // Manually insert a file with structural layer
+        let fid = FileId::generate("test.ts");
+        let file_info = types::structs::FileInfo {
+            file_id: fid,
+            path: "test.ts".to_string(),
+            language: Language::TypeScript,
+            content_hash: "abc123".to_string(),
+            status: types::enums::ParseStatus::Success,
+        };
+        store.upsert_file(&file_info).unwrap();
+        store
+            .upsert_file_index_layer(&fid, layer::STRUCTURAL, "abc123", status::COMPLETE)
+            .unwrap();
+
+        // When structural layer exists, has_resolution_symbols_layer should return true
+        assert!(svc.has_resolution_symbols_layer(&fid).unwrap());
     }
 }

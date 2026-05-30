@@ -169,14 +169,18 @@ pub fn extract_file_with_mode(
         });
     }
 
-    // 3. Extract and normalize references
-    let mut references = extract_and_normalize(
-        &ectx,
-        frontend.references.reference_query(),
-        &mut diagnostics,
-        "references",
-        |ctx, capture| frontend.references.normalize(ctx, capture),
-    )?;
+    // 3. Extract and normalize references (skip in ResolutionSymbols mode)
+    let mut references = if mode.produces_references() {
+        extract_and_normalize(
+            &ectx,
+            frontend.references.reference_query(),
+            &mut diagnostics,
+            "references",
+            |ctx, capture| frontend.references.normalize(ctx, capture),
+        )?
+    } else {
+        vec![]
+    };
 
     // 4. Extract and normalize imports
     let imports = extract_and_normalize(
@@ -230,6 +234,41 @@ pub fn extract_file_with_mode(
                 sym.range.end_column = scope.range.end_column;
             }
         }
+    }
+
+    // ResolutionSymbols mode: return after symbols + imports + scopes + scope_tree.
+    // Dependencies only need to be resolution targets, not full structural extraction.
+    if matches!(mode, ExtractionMode::ResolutionSymbols) {
+        let file_path_str = file_path.display().to_string().replace('\\', "/");
+        return Ok(FileFacts {
+            file: FileInfo {
+                file_id,
+                path: file_path_str,
+                language,
+                content_hash: content_hash.to_string(),
+                status: if root.has_error() {
+                    ParseStatus::Partial
+                } else {
+                    ParseStatus::Success
+                },
+            },
+            symbols,
+            scopes,
+            imports,
+            references: vec![],
+            exports: vec![],
+            raw_edges: vec![],
+            callsites: vec![],
+            bindings: vec![],
+            binding_uses: vec![],
+            data_nodes: vec![],
+            dataflow_edges: vec![],
+            cfg_nodes: vec![],
+            cfg_edges: vec![],
+            diagnostics,
+            budget_exceeded: false,
+            layer: "resolution_symbols".to_string(),
+        });
     }
 
     // 7a. Extract lexical bindings (P7: skip if unsupported)
@@ -1464,6 +1503,71 @@ int main() {
     }
 
     // ── Lazy dataflow integration tests ─────────────────────────────────
+
+    // ── ResolutionSymbols tests ─────────────────────────────────────
+
+    /// Phase 4: ResolutionSymbols mode produces symbols + scopes + imports,
+    /// but no references, dataflow, callsites, or lexical bindings.
+    #[test]
+    #[cfg(feature = "typescript")]
+    fn resolution_symbols_mode_output_shape() {
+        let frontend = ts_frontend();
+        let source = "const x = 1;\nimport { y } from './dep';\nfunction f() { return x + y; }\n";
+        let file_id = FileId::generate("test_res_sym.ts");
+        let path = std::path::Path::new("test_res_sym.ts");
+
+        let facts = extract_file_with_mode(
+            &frontend,
+            file_id,
+            path,
+            source,
+            "abc",
+            ExtractionMode::ResolutionSymbols,
+        )
+        .unwrap();
+
+        // Should produce symbols (all, not just top-level)
+        assert!(
+            !facts.symbols.is_empty(),
+            "ResolutionSymbols: should have symbols"
+        );
+        // Should produce scopes
+        assert!(
+            !facts.scopes.is_empty(),
+            "ResolutionSymbols: should have scopes"
+        );
+        // Should produce imports
+        assert!(
+            !facts.imports.is_empty(),
+            "ResolutionSymbols: should have imports"
+        );
+        // Should NOT produce references
+        assert!(
+            facts.references.is_empty(),
+            "ResolutionSymbols: references must be empty"
+        );
+        // Should NOT produce dataflow
+        assert!(
+            facts.data_nodes.is_empty(),
+            "ResolutionSymbols: data_nodes must be empty"
+        );
+        assert!(
+            facts.dataflow_edges.is_empty(),
+            "ResolutionSymbols: dataflow_edges must be empty"
+        );
+        // Should NOT produce callsites
+        assert!(
+            facts.callsites.is_empty(),
+            "ResolutionSymbols: callsites must be empty"
+        );
+        // Should NOT produce lexical bindings
+        assert!(
+            facts.bindings.is_empty(),
+            "ResolutionSymbols: bindings must be empty"
+        );
+        // Should have the correct layer name
+        assert_eq!(facts.layer, "resolution_symbols");
+    }
 
     /// 7a: Structural mode produces no dataflow/CFG, but keeps bindings.
     #[test]

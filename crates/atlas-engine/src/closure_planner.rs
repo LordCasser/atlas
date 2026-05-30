@@ -38,6 +38,9 @@ pub struct DependencyClosure {
     pub transitive_deps: Vec<FileId>,
     /// Dependencies that are missing a structural layer.
     pub missing_structural: Vec<FileId>,
+    /// Dependencies that are missing a resolution_symbols layer
+    /// (and not already covered by missing_structural).
+    pub missing_resolution_symbols: Vec<FileId>,
     /// Dependencies that are missing even a manifest layer.
     pub missing_manifest: Vec<FileId>,
     /// Deepest BFS level reached in this closure.
@@ -94,11 +97,17 @@ impl ClosurePlanner {
         let mut direct_deps: Vec<FileId> = Vec::new();
         let mut transitive_deps: Vec<FileId> = Vec::new();
         let mut missing_structural: Vec<FileId> = Vec::new();
+        let mut missing_resolution_symbols: Vec<FileId> = Vec::new();
         let mut missing_manifest: Vec<FileId> = Vec::new();
         let mut max_depth_reached: usize = 0;
 
         // Classify the seed file itself
-        self.classify_file(seed, &mut missing_structural, &mut missing_manifest);
+        self.classify_file(
+            seed,
+            &mut missing_structural,
+            &mut missing_resolution_symbols,
+            &mut missing_manifest,
+        );
 
         for depth in 0..self.max_depth {
             let level_size = queue.len();
@@ -116,7 +125,12 @@ impl ClosurePlanner {
             for file_id in &current_level {
                 // Classify dep files at this depth
                 if depth > 0 {
-                    self.classify_file(file_id, &mut missing_structural, &mut missing_manifest);
+                    self.classify_file(
+                        file_id,
+                        &mut missing_structural,
+                        &mut missing_resolution_symbols,
+                        &mut missing_manifest,
+                    );
                 }
 
                 let importing_file_dir = match self.get_file_dir(file_id) {
@@ -197,6 +211,7 @@ impl ClosurePlanner {
             direct_deps,
             transitive_deps,
             missing_structural,
+            missing_resolution_symbols,
             missing_manifest,
             max_depth_reached,
             total_files: visited.len(),
@@ -238,10 +253,18 @@ impl ClosurePlanner {
         &self,
         file_id: &FileId,
         missing_structural: &mut Vec<FileId>,
+        missing_resolution_symbols: &mut Vec<FileId>,
         missing_manifest: &mut Vec<FileId>,
     ) {
         if !self.has_complete_layer(file_id, layer::STRUCTURAL) {
             missing_structural.push(*file_id);
+        }
+        // resolution_symbols: structural is a superset, so only track when
+        // neither structural nor resolution_symbols is complete.
+        if !self.has_complete_layer(file_id, layer::STRUCTURAL)
+            && !self.has_complete_layer(file_id, layer::RESOLUTION_SYMBOLS)
+        {
+            missing_resolution_symbols.push(*file_id);
         }
         if !self.has_complete_layer(file_id, layer::MANIFEST) {
             missing_manifest.push(*file_id);
