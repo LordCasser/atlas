@@ -19,6 +19,7 @@ use anyhow::Result;
 use db::Store;
 use types::ids::{FileId, SymbolId};
 use types::lazy::LazyWindow;
+use types::structs::precision::PrecisionTier;
 
 /// Public entry point for the `atlas-engine` facade.
 ///
@@ -60,6 +61,16 @@ impl LazyDataflowService {
         window.truncated = window.truncated || result.budget_exceeded;
         window.units_built = result.units_built;
         window.units_cached = result.units_cached;
+
+        // Compute dataflow precision tier
+        {
+            let planned = window.units.len();
+            let built = result.units_built;
+            let budget_exceeded = result.budget_exceeded;
+            let tier = compute_dataflow_precision(built, planned, budget_exceeded);
+            window.precision_tier = Some(format!("{:?}", tier));
+        }
+
         Ok(window)
     }
 
@@ -71,6 +82,36 @@ impl LazyDataflowService {
         window.truncated = window.truncated || result.budget_exceeded;
         window.units_built = result.units_built;
         window.units_cached = result.units_cached;
+
+        // Compute dataflow precision tier
+        {
+            let planned = window.units.len();
+            let built = result.units_built;
+            let budget_exceeded = result.budget_exceeded;
+            let tier = compute_dataflow_precision(built, planned, budget_exceeded);
+            window.precision_tier = Some(format!("{:?}", tier));
+        }
+
         Ok(window)
+    }
+}
+
+/// Compute dataflow precision tier from build counts and budget status.
+///
+/// Inline here (duplicated from atlas-engine's `dataflow_precision`) to
+/// avoid a dependency on atlas-engine from the lazy crate.
+fn compute_dataflow_precision(built: usize, planned: usize, budget_exceeded: bool) -> PrecisionTier {
+    if planned == 0 {
+        PrecisionTier::Unavailable
+    } else if built == 0 {
+        if budget_exceeded {
+            PrecisionTier::ManifestOnly
+        } else {
+            PrecisionTier::Unavailable
+        }
+    } else if budget_exceeded && built < planned {
+        PrecisionTier::PartialExact
+    } else {
+        PrecisionTier::Exact
     }
 }

@@ -42,6 +42,19 @@ impl GraphEngine {
         })
     }
 
+    /// Build a scoped GraphEngine containing only symbols and edges for
+    /// the given files. Faster than full rebuild when only a few files changed.
+    pub fn from_files(
+        store: &Store,
+        file_ids: &[types::ids::FileId],
+        confidence_threshold: f32,
+    ) -> anyhow::Result<Self> {
+        let snapshot = GraphSnapshot::from_files(store, file_ids, confidence_threshold)?;
+        Ok(Self {
+            snapshot: Arc::new(snapshot),
+        })
+    }
+
     /// Build from an already-constructed snapshot (for testing).
     pub fn from_snapshot(snapshot: GraphSnapshot) -> Self {
         Self {

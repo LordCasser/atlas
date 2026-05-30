@@ -19,6 +19,7 @@ use types::ids::{BindingId, CfgNodeId, DataNodeId, FileId};
 use types::lazy::{AnalysisUnit, LazyWindow};
 
 use crate::constants::LAZY_DATAFLOW_BUDGET_MS;
+use crate::planner::estimate_unit_cost;
 
 /// Data produced by a single lazy dataflow build.
 struct DataflowPayload {
@@ -85,7 +86,17 @@ impl LazyDataflowLoader {
             groups.entry(unit.file_id).or_default().push(unit);
         }
 
-        for (_file_id, units) in &groups {
+        // Sort file groups by total estimated cost (cheapest first) so maximal
+        // units complete within budget before expensive files consume it.
+        let mut sorted_groups: Vec<(FileId, Vec<&AnalysisUnit>)> = groups.into_iter().collect();
+        sorted_groups.sort_by_key(|(_, units)| {
+            units
+                .iter()
+                .map(|u| estimate_unit_cost(u))
+                .sum::<u64>()
+        });
+
+        for (_file_id, units) in &sorted_groups {
             // Budget guard — check before each file group
             if start.elapsed().as_millis() > LAZY_DATAFLOW_BUDGET_MS as u128 {
                 result.budget_exceeded = true;

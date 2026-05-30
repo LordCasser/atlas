@@ -159,6 +159,7 @@ impl LazyDataflowPlanner {
             truncated,
             units_built: 0,
             units_cached: 0,
+            precision_tier: None,
         })
     }
 
@@ -234,8 +235,17 @@ impl LazyDataflowPlanner {
             truncated,
             units_built: 0,
             units_cached: 0,
+            precision_tier: None,
         })
     }
+}
+
+/// Estimate extraction cost for a unit based on byte range.
+/// Larger functions cost more to parse and build CFG/dataflow for.
+pub(crate) fn estimate_unit_cost(unit: &AnalysisUnit) -> u64 {
+    let byte_size = unit.range.end_byte.saturating_sub(unit.range.start_byte) as u64;
+    // Minimum cost of 1 so we never divide by zero
+    byte_size.max(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -342,5 +352,59 @@ fn add_if_new_by_id(
 ) {
     if let Ok(Some(sym)) = store.find_symbol_by_id(&source_id) {
         add_if_new(&sym, units, seen, frontier);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use types::ids::FileId;
+    use types::lazy::AnalysisUnit;
+    use types::structs::TextRange;
+
+    fn make_unit(file_id: FileId, start_byte: u32, end_byte: u32) -> AnalysisUnit {
+        let range = TextRange {
+            start_byte,
+            end_byte,
+            start_line: 1,
+            start_column: start_byte + 1,
+            end_line: 1,
+            end_column: end_byte + 1,
+        };
+        AnalysisUnit::from_top_level(file_id, range)
+    }
+
+    #[test]
+    fn test_estimate_unit_cost_empty() {
+        let file_id = FileId::generate("test.rs");
+        // start_byte == end_byte → byte_size 0 → clamped to 1
+        let unit = make_unit(file_id, 100, 100);
+        assert_eq!(estimate_unit_cost(&unit), 1);
+    }
+
+    #[test]
+    fn test_estimate_unit_cost_small() {
+        let file_id = FileId::generate("test.rs");
+        let unit = make_unit(file_id, 0, 50);
+        assert_eq!(estimate_unit_cost(&unit), 50);
+    }
+
+    #[test]
+    fn test_estimate_unit_cost_large() {
+        let file_id = FileId::generate("test.rs");
+        let unit = make_unit(file_id, 0, 5000);
+        assert_eq!(estimate_unit_cost(&unit), 5000);
+    }
+
+    #[test]
+    fn test_estimate_unit_cost_minimum_always_one() {
+        // start_byte > end_byte (unusual) → saturating_sub gives 0 → clamped to 1
+        let file_id = FileId::generate("test.rs");
+        let unit = make_unit(file_id, 200, 100);
+        assert_eq!(estimate_unit_cost(&unit), 1);
     }
 }

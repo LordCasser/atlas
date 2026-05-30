@@ -236,6 +236,26 @@ impl GraphSnapshot {
         Self::from_parts_with_paths(symbols, edges, confidence_threshold, &file_paths)
     }
 
+    /// Load symbols and edges only for specific files (scoped graph).
+    ///
+    /// Useful for targeted graph refresh after lazy structural extraction
+    /// affects a small set of files. For large file sets, prefer `from_store`.
+    pub fn from_files(
+        store: &Store,
+        file_ids: &[FileId],
+        confidence_threshold: f32,
+    ) -> anyhow::Result<Self> {
+        let symbols = store.find_symbols_by_files(file_ids)?;
+        let edges = store.find_edges_for_files(file_ids)?;
+        let file_paths: HashMap<FileId, String> = store
+            .list_files()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|f| (f.file_id, f.path))
+            .collect();
+        Self::from_parts_with_paths(symbols, edges, confidence_threshold, &file_paths)
+    }
+
     /// Build from already-loaded vectors (useful for testing).
     /// All files are treated as non-test (is_test_file = false).
     pub fn from_parts(
