@@ -1307,7 +1307,66 @@ fn normalize_project_relative_path(raw: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
     use super::*;
+
+    // ── Helper: create an in-memory store with schema ────────────────────
+    fn test_store() -> Arc<Store> {
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        Arc::new(store)
+    }
+
+    // ── Helper: register a minimal TypeScript file ──────────────────────
+    fn register_test_file(store: &Store, path: &str) -> FileId {
+        let file_id = FileId::generate(path);
+        store
+            .upsert_file(&atlas_engine::FileInfo {
+                file_id,
+                path: path.into(),
+                language: atlas_engine::Language::TypeScript,
+                content_hash: "hash1".into(),
+                status: atlas_engine::ParseStatus::Success,
+            })
+            .unwrap();
+        file_id
+    }
+
+    // ── Helper: insert a minimal function symbol ────────────────────────
+    fn insert_test_symbol(store: &Store, file_id: FileId, name: &str) {
+        let range = atlas_engine::TextRange {
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 11,
+        };
+        let sym = atlas_engine::SymbolDef {
+            id: SymbolId::generate(&file_id, "typescript", name, "function", None),
+            kind: atlas_engine::SymbolKind::Function,
+            name: name.into(),
+            qualified_name: format!("{}.{}", name, name),
+            symbol_path: vec![name.into()],
+            file_id,
+            language: atlas_engine::Language::TypeScript,
+            range,
+            name_range: range,
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".into(),
+        };
+        store.insert_symbols(&[sym]).unwrap();
+    }
 
     #[test]
     fn normalize_project_relative_path_accepts_include() {
@@ -1377,5 +1436,119 @@ mod tests {
         add_json_warnings(&mut val, vec!["r1".into()], vec!["l1".into()]);
         let warns = val["warnings"].as_array().unwrap();
         assert_eq!(warns.len(), 2);
+    }
+
+    // ── Regression: include_roots validation produces diagnostics ────
+
+    #[test]
+    fn trace_point_invalid_include_roots_returns_diagnostics() {
+        let store = test_store();
+        register_test_file(&store, "test.ts");
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+
+        let args = serde_json::json!({
+            "file_path": "test.ts",
+            "line": 1,
+            "column": 1,
+            "include_roots": ["/absolute/rejected"]
+        });
+
+        let (resp_str, _is_error) = router.handle_trace_point(&args);
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let diags = resp["diagnostics"].as_array().unwrap();
+        assert!(
+            !diags.is_empty(),
+            "Expected diagnostics for invalid include_roots"
+        );
+        let codes: Vec<&str> = diags.iter().filter_map(|d| d["code"].as_str()).collect();
+        assert!(
+            codes.contains(&"include_roots_warning"),
+            "Expected include_roots_warning code, got: {:?}",
+            codes
+        );
+    }
+
+    #[test]
+    fn trace_variable_invalid_include_roots_returns_diagnostics() {
+        let store = test_store();
+        register_test_file(&store, "test.ts");
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+
+        let args = serde_json::json!({
+            "file_path": "test.ts",
+            "line": 1,
+            "column": 1,
+            "max_depth": 5,
+            "include_roots": ["/absolute/rejected"]
+        });
+
+        let (resp_str, _) = router.handle_trace_variable(&args);
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let diags = resp["diagnostics"].as_array();
+        assert!(diags.is_some(), "Expected diagnostics");
+        let codes: Vec<&str> = diags.unwrap().iter().filter_map(|d| d["code"].as_str()).collect();
+        assert!(
+            codes.contains(&"include_roots_warning"),
+            "Expected include_roots_warning, got: {:?}",
+            codes
+        );
+    }
+
+    // ── Regression: symbol/context with invalid include_roots → warnings ──
+
+    #[test]
+    fn symbol_existing_invalid_include_roots_returns_warning() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "test.ts");
+        insert_test_symbol(&store, file_id, "test_func");
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let args = serde_json::json!({
+            "qualified_name": "test_func.test_func",
+            "include_roots": ["/absolute/rejected"]
+        });
+
+        let (resp_str, is_error) = router.handle_symbol(&args);
+        assert!(!is_error, "Expected success, got: {}", resp_str);
+
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let warns = resp["warnings"].as_array();
+        assert!(warns.is_some(), "Expected 'warnings' field in: {}", resp_str);
+        assert!(
+            !warns.unwrap().is_empty(),
+            "Expected non-empty warnings in: {}",
+            resp_str
+        );
+    }
+
+    #[test]
+    fn context_existing_invalid_include_roots_returns_warning() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "test.ts");
+        insert_test_symbol(&store, file_id, "test_func");
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let args = serde_json::json!({
+            "symbol": "test_func.test_func",
+            "include_roots": ["/absolute/rejected"]
+        });
+
+        let (resp_str, is_error) = router.handle_context(&args);
+        assert!(!is_error, "Expected success, got: {}", resp_str);
+
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let warns = resp["warnings"].as_array();
+        assert!(warns.is_some(), "Expected 'warnings' field in: {}", resp_str);
+        assert!(
+            !warns.unwrap().is_empty(),
+            "Expected non-empty warnings in: {}",
+            resp_str
+        );
     }
 }
