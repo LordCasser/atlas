@@ -316,6 +316,10 @@ CREATE INDEX IF NOT EXISTS idx_lazy_jobs_file_layer_status
 CREATE INDEX IF NOT EXISTS idx_lazy_jobs_status
     ON lazy_jobs(status);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_lazy_jobs_active_uniq
+    ON lazy_jobs (file_id, target_layer)
+    WHERE status IN ('queued', 'building');
+
 -- ===== Summary tables (Schema v3) =====
 
 -- Function summary metadata: one row per function.

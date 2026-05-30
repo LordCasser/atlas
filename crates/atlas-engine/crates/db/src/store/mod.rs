@@ -41,7 +41,7 @@ mod edges;
 mod files;
 mod fk_guards;
 mod index_layers;
-mod lazy_jobs;
+pub(crate) mod lazy_jobs;
 mod lifecycle;
 mod scopes;
 mod stats;
@@ -325,7 +325,7 @@ impl Store {
                     resolved_strategy = NULL,
                     resolved_provenance = NULL
                    WHERE resolved_symbol_id IN (
-                       SELECT symbol_id FROM symbols WHERE file_id = ?1
+                        SELECT symbol_id FROM symbols WHERE file_id = ?1
                    )"#,
                 params![file_id],
             )?;
@@ -339,6 +339,37 @@ impl Store {
             // Atomically delete old facts and insert new ones.
             tx.execute("DELETE FROM files WHERE file_id = ?1", params![file_id])?;
             write_file_facts(tx, facts)?;
+            Ok(())
+        })
+    }
+
+    /// Upsert resolution_symbols layer without destroying richer layers.
+    ///
+    /// Only writes symbols, scopes, and imports — does NOT touch references,
+    /// dataflow, or any other table.  Does NOT invalidate existing cross-file
+    /// resolved references.  Safe to call when structural data already exists:
+    /// the richer structural layer is preserved.
+    pub fn upsert_resolution_symbols(&self, file_id: &FileId, facts: &FileFacts) -> anyhow::Result<()> {
+        self.with_transaction(|tx| {
+            // Upsert symbols with resolution_symbols layer tag
+            if !facts.symbols.is_empty() {
+                write_symbols(tx, &facts.symbols, "resolution_symbols")?;
+            }
+            // Upsert scopes
+            if !facts.scopes.is_empty() {
+                write_scopes(tx, &facts.scopes)?;
+            }
+            // Upsert imports
+            if !facts.imports.is_empty() {
+                write_imports(tx, &facts.imports)?;
+            }
+            // Record the resolution_symbols layer
+            tx.execute(
+                "INSERT OR REPLACE INTO file_index_layers
+                    (file_id, layer, content_hash, status, updated_at)
+                 VALUES (?1, 'resolution_symbols', ?2, 'complete', datetime('now'))",
+                params![file_id, facts.file.content_hash],
+            )?;
             Ok(())
         })
     }

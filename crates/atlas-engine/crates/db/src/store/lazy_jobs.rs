@@ -23,6 +23,14 @@ pub struct LazyJob {
     pub error_msg: Option<String>,
 }
 
+/// Result of trying to claim a lazy job atomically.
+pub enum ClaimResult {
+    /// This caller owns the job and must execute the build.
+    Claimed { job_id: String },
+    /// Another caller is already building this file+layer.
+    AlreadyBuilding { job_id: String },
+}
+
 impl Store {
     /// Create a new job in 'queued' state. Returns the job_id.
     ///
@@ -51,6 +59,60 @@ impl Store {
             params![job_id, file_id, target_layer, trigger_query, depends_on, budget_ms],
         )?;
         Ok(job_id.to_string())
+    }
+
+    /// Atomically claim a lazy build job or return the existing one.
+    ///
+    /// In a single transaction:
+    /// 1. Checks if a 'queued' or 'building' job exists for this file+layer
+    /// 2. If exists → returns AlreadyBuilding with that job_id
+    /// 3. If not → inserts new row and returns Claimed with assigned job_id
+    ///
+    /// Only the owner may proceed to build. Non-owners must NOT build.
+    pub fn claim_lazy_job(
+        &self,
+        file_id: &FileId,
+        target_layer: &str,
+        trigger_query: Option<&str>,
+        depends_on: Option<&str>,
+        budget_ms: Option<i64>,
+    ) -> anyhow::Result<ClaimResult> {
+        self.with_transaction(|tx| {
+            // Check for existing active job inside the transaction
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT job_id FROM lazy_jobs
+                     WHERE file_id = ?1 AND target_layer = ?2
+                       AND status IN ('queued', 'building')
+                     LIMIT 1",
+                    params![file_id, target_layer],
+                    |row| row.get(0),
+                )
+                .ok();
+
+            if let Some(job_id) = existing {
+                return Ok(ClaimResult::AlreadyBuilding { job_id });
+            }
+
+            // Generate job_id and insert
+            let job_id = format!(
+                "lazy_{:x}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_micros()
+            );
+
+            tx.execute(
+                "INSERT INTO lazy_jobs
+                    (job_id, file_id, target_layer, status, trigger_query, depends_on,
+                     started_at, budget_ms)
+                 VALUES (?1, ?2, ?3, 'building', ?4, ?5, datetime('now'), ?6)",
+                params![job_id, file_id, target_layer, trigger_query, depends_on, budget_ms],
+            )?;
+
+            Ok(ClaimResult::Claimed { job_id })
+        })
     }
 
     /// Transition a job from 'queued' to 'building'. Returns the job.
@@ -287,5 +349,51 @@ mod tests {
         let file_id = FileId::generate("src/nonexistent.c");
         let result = store.start_lazy_job(&file_id, "structural").unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn claim_lazy_job_atomic_dedup() {
+        let store = test_store();
+        let file_id = FileId::generate("src/atomic.c");
+
+        // Register the file first (FK constraint)
+        let file_info = types::FileInfo {
+            file_id,
+            path: "src/atomic.c".into(),
+            language: types::Language::C,
+            content_hash: "abc".into(),
+            status: types::ParseStatus::Success,
+        };
+        store.upsert_file(&file_info).unwrap();
+
+        // First claim succeeds
+        let claim1 = store
+            .claim_lazy_job(&file_id, "structural", None, None, None)
+            .unwrap();
+        let job_id1 = match &claim1 {
+            ClaimResult::Claimed { job_id } => job_id.clone(),
+            _ => panic!("expected Claimed, got AlreadyBuilding"),
+        };
+
+        // Second claim returns AlreadyBuilding
+        let claim2 = store
+            .claim_lazy_job(&file_id, "structural", None, None, None)
+            .unwrap();
+        assert!(
+            matches!(claim2, ClaimResult::AlreadyBuilding { .. }),
+            "second claim should return AlreadyBuilding"
+        );
+
+        // Complete the first job
+        store.complete_lazy_job(&job_id1).unwrap();
+
+        // After completion, claim succeeds again (no active job)
+        let claim3 = store
+            .claim_lazy_job(&file_id, "structural", None, None, None)
+            .unwrap();
+        assert!(
+            matches!(claim3, ClaimResult::Claimed { .. }),
+            "claim after completion should succeed"
+        );
     }
 }

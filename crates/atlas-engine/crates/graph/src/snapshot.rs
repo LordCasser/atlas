@@ -240,6 +240,8 @@ impl GraphSnapshot {
     ///
     /// Useful for targeted graph refresh after lazy structural extraction
     /// affects a small set of files. For large file sets, prefer `from_store`.
+    /// Reserved for future delta graph merge implementation.
+    #[allow(dead_code)]
     pub fn from_files(
         store: &Store,
         file_ids: &[FileId],

@@ -25,8 +25,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use db::Store;
-use types::ids::FileId;
-use types::{layer, status};
+use regex::Regex;
+use types::ids::{FileId, ImportId};
+use types::structs::ImportDef;
+use types::{ImportKind, layer, status};
 
 /// Snapshot of a seed file's dependency graph.
 #[derive(Debug, Clone)]
@@ -242,6 +244,9 @@ impl ClosurePlanner {
 
     /// Convenience: plan + prioritize in one call.
     pub fn plan_for_seed(&self, seed: &FileId) -> Result<PrioritizedWorkset> {
+        // Bootstrap: if seed is manifest-only and has no imports in DB,
+        // scan the source file directly for import statements.
+        let _ = self.bootstrap_imports_from_source(seed);
         let closure = self.plan_closure(seed)?;
         Ok(self.prioritize(&closure))
     }
@@ -338,6 +343,82 @@ impl ClosurePlanner {
     fn _project_root(&self) -> Option<&std::path::Path> {
         self.project_root.as_deref()
     }
+
+    /// Bootstrap imports for a seed file by scanning source directly.
+    ///
+    /// This is used when the seed file is manifest-only and has no imports
+    /// in the database.  Scans for C #include and C++ include patterns
+    /// directly from source text.
+    ///
+    /// Errors are logged but not propagated — the caller falls back to
+    /// DB-only import lookup.
+    fn bootstrap_imports_from_source(&self, file_id: &FileId) -> Result<()> {
+        // Only bootstrap if no imports exist yet
+        match self.store.find_imports_by_file(file_id) {
+            Ok(imports) if !imports.is_empty() => return Ok(()),
+            Err(_) => { /* proceed with bootstrap */ }
+            _ => { /* proceed with bootstrap */ }
+        }
+
+        let file_info = self
+            .store
+            .get_file(file_id)?
+            .ok_or_else(|| anyhow::anyhow!("file not found: {:?}", file_id))?;
+
+        let resolved_path = self.resolve_source_path(&file_info.path);
+        let source = match std::fs::read_to_string(&resolved_path) {
+            Ok(s) => s,
+            Err(_) => return Ok(()), // File not on disk — skip
+        };
+
+        // Scan for include/import patterns
+        let imports = scan_c_includes(file_id, &file_info.path, &source);
+
+        // Write discovered imports to DB
+        if !imports.is_empty() {
+            self.store.insert_imports(&imports)?;
+        }
+        Ok(())
+    }
+
+    fn resolve_source_path(&self, relative: &str) -> std::path::PathBuf {
+        match &self.project_root {
+            Some(root) => root.join(relative),
+            None => std::path::PathBuf::from(relative),
+        }
+    }
+}
+
+// ── C include scanner ───────────────────────────────────────────────────────
+
+/// Scan C source for `#include` directives.
+///
+/// Lightweight regex-based scanner for `#include <...>` and `#include "..."`
+/// patterns.  Used as a fallback when the manifest index lacks import rows.
+fn scan_c_includes(file_id: &FileId, _file_path: &str, source: &str) -> Vec<ImportDef> {
+    // Regex pattern: #include <...> or #include "..."
+    let re = Regex::new(r#"#include\s+[<"]([^>"]+)[>"]"#).unwrap();
+    let mut imports = Vec::new();
+    for (cap_idx, cap) in re.captures_iter(source).enumerate() {
+        let module = cap[1].to_string();
+        let is_relative = module.starts_with('.') || module.contains('/');
+        // Compute a reasonable start_byte for deterministic ImportId
+        let start_byte = cap.get(0).map_or(cap_idx as u32, |m| m.start() as u32);
+        let import_id = ImportId::generate(file_id, "include", &module, None, start_byte);
+        imports.push(ImportDef {
+            id: import_id,
+            file_id: *file_id,
+            kind: ImportKind::Include,
+            module,
+            imported_name: String::new(),
+            local_name: None,
+            alias: None,
+            is_wildcard: false,
+            is_relative,
+            range: Default::default(),
+        });
+    }
+    imports
 }
 
 // ── Path normalisation (no filesystem access) ─────────────────────────────

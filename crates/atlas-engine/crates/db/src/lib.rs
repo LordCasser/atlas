@@ -9,6 +9,7 @@ pub(crate) mod store_writers;
 
 pub use readers::{CallGraphReader, DataflowReader, FileReader, SymbolReader, TraceStore};
 pub use schema::{CURRENT_SCHEMA_VERSION, SCHEMA_DDL};
+pub use store::lazy_jobs::ClaimResult;
 pub use store::{Store, StoreStats};
 
 // Re-export summary types for the analysis layer

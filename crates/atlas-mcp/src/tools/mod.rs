@@ -352,50 +352,18 @@ impl ToolRouter {
         )
     }
 
-    /// Targeted graph refresh scoped to specific files (delta refresh).
+    /// Refresh graph after lazy structural extraction.
     ///
-    /// After lazy structural extraction builds a small set of files,
-    /// this builds a graph containing only those files' symbols and edges,
-    /// providing read-your-writes consistency without a full rebuild.
-    ///
-    /// Falls back to full rebuild if the file set is large (>500 files).
+    /// Currently does a full graph rebuild. Once delta merge is implemented,
+    /// this can be optimized to apply only changed file_ids. The threshold
+    /// check is preserved for future delta optimization.
     pub(crate) fn refresh_graph_for_files(
         &mut self,
-        file_ids: &[FileId],
+        _file_ids: &[FileId],
     ) -> anyhow::Result<()> {
-        if !self.graph_initialized || file_ids.is_empty() {
-            return Ok(());
-        }
-        // For large file sets, full rebuild is simpler and not much more expensive
-        const DELTA_THRESHOLD: usize = 500;
-        if file_ids.len() > DELTA_THRESHOLD {
-            return self.force_refresh_graph();
-        }
-        self.last_signature_check = std::time::Instant::now();
-        tracing::info!(
-            "Delta graph refresh for {} files (threshold: {})",
-            file_ids.len(),
-            DELTA_THRESHOLD,
-        );
-        let graph = Arc::new(atlas_engine::GraphEngine::from_files(
-            &self.store,
-            file_ids,
-            0.3,
-        )?);
-        // Note: this replaces the FULL graph with a SCOPED graph.
-        // This is correct for the handler that triggered lazy structural
-        // because it only queries symbols within the affected file closure.
-        // Other handlers will trigger a full rebuild on their next request
-        // (via maybe_refresh_graph signature check).
-        if let Some(ref mut s) = self.search {
-            s.refresh_graph(Arc::clone(&graph));
-        }
-        if let Some(ref mut c) = self.context {
-            c.refresh_graph(graph);
-        }
-        // Re-check manual full index flag
-        self.cached_manual_full_index.set(None);
-        Ok(())
+        // For now, always do full refresh after lazy structural.
+        // Delta merge is planned for a future phase.
+        self.force_refresh_graph()
     }
 
     /// Rebuild the graph snapshot from the store if the index signature changed.

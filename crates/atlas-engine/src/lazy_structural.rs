@@ -356,10 +356,12 @@ impl LazyStructuralService {
             ExtractionMode::ResolutionSymbols,
         )?;
 
-        // Invalidate cross-file references, delete outgoing edges, and
-        // atomically replace file facts — all in a single transaction.
+        // Non-destructive upsert: writes symbols, scopes, and imports
+        // without destroying existing structural data or invalidating
+        // cross-file resolved references.  Safe when structural layer
+        // already exists on this file.
         self.store
-            .replace_file_facts_with_invalidation(file_id, &facts)?;
+            .upsert_resolution_symbols(file_id, &facts)?;
 
         tracing::info!(
             "Lazy resolution_symbols: {} ({} symbols)",

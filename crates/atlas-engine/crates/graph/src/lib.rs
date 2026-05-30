@@ -44,6 +44,9 @@ impl GraphEngine {
 
     /// Build a scoped GraphEngine containing only symbols and edges for
     /// the given files. Faster than full rebuild when only a few files changed.
+    ///
+    /// Reserved for future delta graph merge implementation.
+    #[allow(dead_code)]
     pub fn from_files(
         store: &Store,
         file_ids: &[types::ids::FileId],
