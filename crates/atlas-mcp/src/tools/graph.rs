@@ -1,10 +1,7 @@
 //! Graph traversal tools: neighbors, callers, callees, callgraph, path,
 //! explore, and impact analysis.
 
-use atlas_engine::{
-    EdgeKind, LazyCoordinator, LazyStructuralService, Store, SymbolId, TraversalConfig,
-    TraversalDirection,
-};
+use atlas_engine::{EdgeKind, Store, SymbolId, TraversalConfig, TraversalDirection};
 
 use super::{ToolRouter, get_str, get_str_opt, get_u64};
 
@@ -322,53 +319,21 @@ impl ToolRouter {
         // Transparent lazy structural: ensure both endpoint files have full
         // structural data before path finding.  A manifest-only index (MCP
         // default) may lack the intra-file call edges that BFS needs to
-        // discover a path.  Skip when a manual full index already exists.
-        let is_manual_full = self.has_manual_full_index();
-        if !is_manual_full {
-            let (roots, root_warnings) = self.include_roots_from_args(args);
-            for w in &root_warnings {
-                tracing::warn!("include_roots: {}", w);
-            }
-            use std::collections::HashSet;
-            let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
-            for id in from_ids.iter().chain(to_ids.iter()) {
-                if let Some(sym) = self.store.find_symbol_by_id(id).ok().flatten() {
-                    file_ids_set.insert(sym.file_id);
-                }
-            }
-            let file_ids: Vec<_> = file_ids_set.into_iter().collect();
-            if !file_ids.is_empty() {
-                // Use LazyCoordinator for closure-aware lazy structural:
-                // expands include/import dependencies before building endpoint files.
-                let coordinator = LazyCoordinator::with_project_root(
-                    self.store.clone(),
-                    self.project_root.clone(),
-                )
-                .with_include_roots(roots);
-                let lazy =
-                    LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-                let mut total_built: Vec<atlas_engine::FileId> = Vec::new();
-                for file_id in &file_ids {
-                    match coordinator.ensure_structural_with_closure(&lazy, file_id) {
-                        Ok((result, _job_id)) => {
-                            total_built.extend(result.built_file_ids);
-                        }
-                        Err(e) => {
-                            tracing::warn!("Lazy structural failed for path endpoint: {:#}", e);
-                        }
-                    }
-                }
-                if !total_built.is_empty() {
-                    // Refresh graph with built files — uses per-file replace
-                    if let Err(e) = self.refresh_graph_for_files(&total_built) {
-                        tracing::warn!(
-                            "Graph refresh after lazy structural extraction failed: {}",
-                            e
-                        );
-                    }
-                }
+        // discover a path.
+        let (roots, root_warnings) = self.include_roots_from_args(args);
+        for w in &root_warnings {
+            tracing::warn!("include_roots: {}", w);
+        }
+        use std::collections::HashSet;
+        let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
+        for id in from_ids.iter().chain(to_ids.iter()) {
+            if let Some(sym) = self.store.find_symbol_by_id(id).ok().flatten() {
+                file_ids_set.insert(sym.file_id);
             }
         }
+        let lazy_warnings = self.ensure_structural_for_files(file_ids_set, roots);
+        // Cache for no-path diagnostics below (used in user-facing messages).
+        let is_manual_full = self.has_manual_full_index();
 
         let graph = self.context_builder().graph_snapshot();
         let snap = graph.snapshot();
@@ -610,6 +575,13 @@ impl ToolRouter {
 
             resp["path_quality"] = insight;
 
+            // Surface include_roots and lazy-structural warnings to the caller.
+            let mut all_warnings: Vec<String> = root_warnings;
+            all_warnings.extend(lazy_warnings);
+            if !all_warnings.is_empty() {
+                resp["warnings"] = json!(all_warnings);
+            }
+
             (
                 serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
                 false,
@@ -669,11 +641,15 @@ impl ToolRouter {
             } else {
                 Vec::new()
             };
+            // Surface include_roots and lazy-structural warnings.
+            let mut all_warnings: Vec<String> = root_warnings;
+            all_warnings.extend(lazy_warnings);
             (
                 serde_json::to_string_pretty(&json!({
                     "from": from_qname, "to": to_qname,
                     "path_length": 0, "path": [], "breakpoints": [],
                     "message": &message, "frontier": frontier_nodes,
+                    "warnings": all_warnings,
                 }))
                 .unwrap_or_else(|e| e.to_string()),
                 false,

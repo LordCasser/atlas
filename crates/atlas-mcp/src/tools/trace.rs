@@ -10,6 +10,8 @@ use atlas_engine::{
 
 use super::{ToolRouter, get_str_opt, get_u64, resolve_file_id};
 
+use serde_json::json;
+
 impl ToolRouter {
     pub(crate) fn handle_trace_point(&mut self, args: &serde_json::Value) -> (String, bool) {
         let file_hex = get_str_opt(args, "file_id");
@@ -247,8 +249,12 @@ impl ToolRouter {
         let symbol_hex = args["symbol"].as_str().filter(|s| !s.is_empty());
         let symbol_name = args["symbol_name"].as_str().filter(|s| !s.is_empty());
         let max_depth = args["max_depth"].as_u64().unwrap_or(20) as usize;
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
+        for w in &root_warnings {
+            tracing::warn!("include_roots: {}", w);
+        }
+        let mut lazy_warnings: Vec<String> = Vec::new();
 
-        let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
         let resp = if let Some(hex) = symbol_hex {
             let target_id: SymbolId = match hex.parse() {
                 Ok(id) => id,
@@ -263,50 +269,25 @@ impl ToolRouter {
                     );
                 }
             };
-            // Hex ID path — still trigger lazy structural for the symbol's file
-            // so include_roots can expand the dependency closure.
-            if !self.has_manual_full_index() {
-                let (roots, root_warnings) = self.include_roots_from_args(args);
-                for w in &root_warnings {
-                    tracing::warn!("include_roots: {}", w);
-                }
-                if !roots.is_empty() {
-                    if let Ok(Some(sym)) = self.store.find_symbol_by_id(&target_id) {
-                        let coordinator = LazyCoordinator::with_project_root(
-                            self.store.clone(),
-                            self.project_root.clone(),
-                        )
-                        .with_include_roots(roots);
-                        let lazy = LazyStructuralService::new(
-                            self.store.clone(),
-                            Some(self.project_root.clone()),
-                        );
-                        if let Ok((result, _)) =
-                            coordinator.ensure_structural_with_closure(&lazy, &sym.file_id)
-                        {
-                            if !result.built_file_ids.is_empty() {
-                                let _ = self.refresh_graph_for_files(&result.built_file_ids);
-                            }
-                        }
-                    }
-                }
+            // Ensure structural data for this symbol's file
+            if let Ok(Some(sym)) = self.store.find_symbol_by_id(&target_id) {
+                lazy_warnings =
+                    self.ensure_structural_for_files([sym.file_id], include_roots.clone());
             }
+            let engine =
+                RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
             engine.trace_callers(&target_id, max_depth)
         } else if let Some(name) = symbol_name {
             // Lazy structural: ensure name-based symbols are structurally parsed
             if !self.has_manual_full_index() {
                 self.send_progress(0.3, "Ensuring structural extraction...");
-                let (roots, root_warnings) = self.include_roots_from_args(args);
-                for w in &root_warnings {
-                    tracing::warn!("include_roots: {}", w);
-                }
-                let lazy =
-                    LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
                 let coordinator = LazyCoordinator::with_project_root(
                     self.store.clone(),
                     self.project_root.clone(),
                 )
-                .with_include_roots(roots);
+                .with_include_roots(include_roots);
+                let lazy =
+                    LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
                 match coordinator.ensure_structural_for_symbol_with_closure(&lazy, name) {
                     Ok(result) => {
                         if !result.built_file_ids.is_empty() {
@@ -318,6 +299,8 @@ impl ToolRouter {
                     }
                 }
             }
+            let engine =
+                RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
             engine.trace_callers_by_name(name, max_depth)
         } else {
             let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
@@ -331,8 +314,19 @@ impl ToolRouter {
         };
         let is_error = !resp.ok;
 
+        // Inject warnings into the response JSON
+        let mut all_warnings: Vec<String> = root_warnings;
+        all_warnings.extend(lazy_warnings);
+        if all_warnings.is_empty() {
+            return (
+                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                is_error,
+            );
+        }
+        let mut resp_json = serde_json::to_value(&resp).unwrap_or(json!({"ok": false}));
+        resp_json["warnings"] = json!(all_warnings);
         (
-            serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+            serde_json::to_string(&resp_json).unwrap_or_else(|e| e.to_string()),
             is_error,
         )
     }
@@ -343,25 +337,24 @@ impl ToolRouter {
         let from_name = args["from_name"].as_str().filter(|s| !s.is_empty());
         let to_name = args["to_name"].as_str().filter(|s| !s.is_empty());
         let max_depth = args["max_depth"].as_u64().unwrap_or(10) as usize;
-
-        let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
+        for w in &root_warnings {
+            tracing::warn!("include_roots: {}", w);
+        }
+        let mut lazy_warnings: Vec<String> = Vec::new();
 
         // Name-based lookup (new path — avoids requiring hex IDs)
         if let (Some(fname), Some(tname)) = (from_name, to_name) {
             // Lazy structural: ensure name-based symbols are structurally parsed
             if !self.has_manual_full_index() {
                 self.send_progress(0.3, "Ensuring structural extraction...");
-                let (roots, root_warnings) = self.include_roots_from_args(args);
-                for w in &root_warnings {
-                    tracing::warn!("include_roots: {}", w);
-                }
-                let lazy =
-                    LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
                 let coordinator = LazyCoordinator::with_project_root(
                     self.store.clone(),
                     self.project_root.clone(),
                 )
-                .with_include_roots(roots);
+                .with_include_roots(include_roots);
+                let lazy =
+                    LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
                 for name in [fname, tname] {
                     match coordinator.ensure_structural_for_symbol_with_closure(&lazy, name) {
                         Ok(result) => {
@@ -379,10 +372,23 @@ impl ToolRouter {
                     }
                 }
             }
+            let engine =
+                RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
             let resp = engine.trace_forward_by_name(fname, tname, max_depth);
             let is_error = !resp.ok;
+            // Inject warnings
+            let mut all_warnings: Vec<String> = root_warnings;
+            all_warnings.extend(lazy_warnings);
+            if all_warnings.is_empty() {
+                return (
+                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                    is_error,
+                );
+            }
+            let mut resp_json = serde_json::to_value(&resp).unwrap_or(json!({"ok": false}));
+            resp_json["warnings"] = json!(all_warnings);
             return (
-                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                serde_json::to_string(&resp_json).unwrap_or_else(|e| e.to_string()),
                 is_error,
             );
         }
@@ -430,47 +436,31 @@ impl ToolRouter {
             }
         };
 
-        // Hex ID path — still trigger lazy structural for endpoint files
-        // so include_roots can expand the dependency closure.
-        if !self.has_manual_full_index() {
-            let (roots, root_warnings) = self.include_roots_from_args(args);
-            for w in &root_warnings {
-                tracing::warn!("include_roots: {}", w);
-            }
-            if !roots.is_empty() {
-                // Collect unique file_ids from both endpoint symbols
-                let mut file_set: std::collections::HashSet<atlas_engine::FileId> =
-                    std::collections::HashSet::new();
-                for id in [&from_id, &to_id] {
-                    if let Ok(Some(sym)) = self.store.find_symbol_by_id(id) {
-                        file_set.insert(sym.file_id);
-                    }
-                }
-                for file_id in &file_set {
-                    let coordinator = LazyCoordinator::with_project_root(
-                        self.store.clone(),
-                        self.project_root.clone(),
-                    )
-                    .with_include_roots(roots.clone());
-                    let lazy = LazyStructuralService::new(
-                        self.store.clone(),
-                        Some(self.project_root.clone()),
-                    );
-                    if let Ok((result, _)) =
-                        coordinator.ensure_structural_with_closure(&lazy, file_id)
-                    {
-                        if !result.built_file_ids.is_empty() {
-                            let _ = self.refresh_graph_for_files(&result.built_file_ids);
-                        }
-                    }
-                }
+        // Ensure structural for endpoint files
+        let mut file_set: std::collections::HashSet<atlas_engine::FileId> =
+            std::collections::HashSet::new();
+        for id in [&from_id, &to_id] {
+            if let Ok(Some(sym)) = self.store.find_symbol_by_id(id) {
+                file_set.insert(sym.file_id);
             }
         }
+        lazy_warnings = self.ensure_structural_for_files(file_set, include_roots);
 
+        let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
         let resp = engine.trace_forward(&from_id, &to_id, max_depth);
         let is_error = !resp.ok;
+        let mut all_warnings: Vec<String> = root_warnings;
+        all_warnings.extend(lazy_warnings);
+        if all_warnings.is_empty() {
+            return (
+                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                is_error,
+            );
+        }
+        let mut resp_json = serde_json::to_value(&resp).unwrap_or(json!({"ok": false}));
+        resp_json["warnings"] = json!(all_warnings);
         (
-            serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+            serde_json::to_string(&resp_json).unwrap_or_else(|e| e.to_string()),
             is_error,
         )
     }

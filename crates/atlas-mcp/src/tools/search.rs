@@ -289,14 +289,12 @@ impl ToolRouter {
                 return (s, true);
             }
         };
+        let mut lazy_warnings = Vec::new();
         let sym = match symbols.into_iter().next() {
             Some(s) => {
-                // Even when symbol is already indexed (manifest tier-1 hit),
-                // if include_roots was passed, trigger lazy structural
-                // to expand the dependency closure with custom include paths.
-                if !include_roots.is_empty() {
-                    self.try_lazy_structural(qname, include_roots);
-                }
+                // Ensure structural data for this file so caller/callee
+                // results include fresh edges from lazy extraction.
+                lazy_warnings = self.ensure_structural_for_files([s.file_id], include_roots);
                 s
             }
             None => {
@@ -312,6 +310,7 @@ impl ToolRouter {
                 }
             }
         };
+        // Re-acquire graph after lazy structural may have refreshed it
         let graph = self.search_engine().graph_snapshot();
         let snap = graph.snapshot();
 
@@ -341,6 +340,12 @@ impl ToolRouter {
             if let Some(src) = self.read_symbol_source(&sym.id) {
                 result["source"] = json!(src);
             }
+        }
+        // Surface include_roots and lazy-structural warnings to the caller.
+        let mut all_warnings: Vec<String> = root_warnings;
+        all_warnings.extend(lazy_warnings);
+        if !all_warnings.is_empty() {
+            result["warnings"] = json!(all_warnings);
         }
 
         (

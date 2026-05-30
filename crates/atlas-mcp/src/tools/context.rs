@@ -26,8 +26,8 @@ impl ToolRouter {
             tracing::warn!("include_roots: {}", w);
         }
 
-        let sid = match self.resolve_context_symbol(qname, include_roots) {
-            Ok(id) => id,
+        let (sid, lazy_warnings) = match self.resolve_context_symbol(qname, include_roots) {
+            Ok((id, warnings)) => (id, warnings),
             Err(err) => return (err, true),
         };
 
@@ -52,6 +52,12 @@ impl ToolRouter {
                         result["source"] = json!(src);
                     }
                 }
+                // Surface include_roots and lazy-structural warnings to the caller.
+                let mut all_warnings: Vec<String> = root_warnings;
+                all_warnings.extend(lazy_warnings);
+                if !all_warnings.is_empty() {
+                    result["warnings"] = json!(all_warnings);
+                }
                 (
                     serde_json::to_string_pretty(&result).unwrap_or_else(|e| e.to_string()),
                     false,
@@ -68,22 +74,25 @@ impl ToolRouter {
     ///         then picks the highest-scored unambiguous match
     /// Tier 3: lazy structural extraction + re-query
     /// Tier 4: name match with multiple candidates → return suggestions
+    ///
+    /// Returns the resolved SymbolId and any lazy-structural warnings.
     fn resolve_context_symbol(
         &mut self,
         qname: &str,
         include_roots: Vec<atlas_engine::IncludeRoot>,
-    ) -> Result<atlas_engine::SymbolId, String> {
+    ) -> Result<(atlas_engine::SymbolId, Vec<String>), String> {
+        let mut warnings = Vec::new();
+
         // ── Tier 1: exact qualified-name match ──
         let symbols = self.store.find_symbols_by_qname(qname).unwrap_or_else(|e| {
             tracing::warn!("DB error on find_symbols_by_qname: {}", e);
             Default::default()
         });
         if let Some(id) = symbols.first().map(|s| s.id) {
-            // When tier-1 hits and include_roots was passed, still trigger
-            // lazy structural for this symbol's file to expand the dependency
-            // closure with custom include paths.
-            self.ensure_structural_for_symbol_file(symbols[0].file_id, include_roots);
-            return Ok(id);
+            // Ensure structural data for this file (include_roots optional,
+            // always relevant) so graph queries see complete edges.
+            warnings.extend(self.ensure_structural_for_files([symbols[0].file_id], include_roots));
+            return Ok((id, warnings));
         }
 
         // ── Tier 2: name-based search (look for symbol by simple name) ──
@@ -93,8 +102,9 @@ impl ToolRouter {
         });
         if name_matches.len() == 1 {
             // Unambiguous — use it directly
-            self.ensure_structural_for_symbol_file(name_matches[0].file_id, include_roots);
-            return Ok(name_matches[0].id);
+            warnings
+                .extend(self.ensure_structural_for_files([name_matches[0].file_id], include_roots));
+            return Ok((name_matches[0].id, warnings));
         }
         if name_matches.len() > 1 {
             // Multiple matches — try case-insensitive qualified-name substring
@@ -106,8 +116,10 @@ impl ToolRouter {
                 .filter(|s| s.qualified_name.to_lowercase().contains(&q_lower))
                 .collect();
             if matching_qnames.len() == 1 {
-                self.ensure_structural_for_symbol_file(matching_qnames[0].file_id, include_roots);
-                return Ok(matching_qnames[0].id);
+                warnings.extend(
+                    self.ensure_structural_for_files([matching_qnames[0].file_id], include_roots),
+                );
+                return Ok((matching_qnames[0].id, warnings));
             }
             if matching_qnames.len() > 1 {
                 let suggestions: Vec<&str> = matching_qnames
@@ -127,13 +139,13 @@ impl ToolRouter {
         }
 
         // ── Tier 3: try lazy structural, then re-query ──
-        // Skip when a manual full index already exists — all files already have
-        // complete structural facts.
+        // Use LazyCoordinator for closure-aware lazy structural:
+        // expands include/import dependencies to cross-file resolution.
+        // `has_manual_full_index()` is checked inside ensure_structural_for_files,
+        // but tier 3 does symbol-based lookup so perform explicit check here.
         let is_manual_full = self.has_manual_full_index();
         if !is_manual_full {
             self.send_progress(0.5, "Extracting structural data...");
-            // Use LazyCoordinator for closure-aware lazy structural:
-            // expands include/import dependencies to cross-file resolution.
             let coordinator = atlas_engine::LazyCoordinator::with_project_root(
                 self.store.clone(),
                 self.project_root.clone(),
@@ -160,7 +172,7 @@ impl ToolRouter {
             Default::default()
         });
         if let Some(sym) = retry.first() {
-            return Ok(sym.id);
+            return Ok((sym.id, warnings));
         }
 
         // Re-check name after lazy extraction
@@ -169,7 +181,7 @@ impl ToolRouter {
             Default::default()
         });
         if fresh_matches.len() == 1 {
-            return Ok(fresh_matches[0].id);
+            return Ok((fresh_matches[0].id, warnings));
         }
         if fresh_matches.len() > 1 {
             let suggestions: Vec<&str> = fresh_matches
@@ -194,29 +206,5 @@ impl ToolRouter {
         );
         err.push_str(self.index_not_run_guidance());
         Err(err)
-    }
-
-    /// Trigger closure-aware lazy structural for a symbol's file,
-    /// propagating custom include_roots.  No-op when a manual full index
-    /// exists or include_roots is empty.
-    fn ensure_structural_for_symbol_file(
-        &mut self,
-        file_id: atlas_engine::FileId,
-        include_roots: Vec<atlas_engine::IncludeRoot>,
-    ) {
-        if self.has_manual_full_index() || include_roots.is_empty() {
-            return;
-        }
-        let coordinator = atlas_engine::LazyCoordinator::with_project_root(
-            self.store.clone(),
-            self.project_root.clone(),
-        )
-        .with_include_roots(include_roots);
-        let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-        if let Ok((result, _job_id)) = coordinator.ensure_structural_with_closure(&lazy, &file_id) {
-            if !result.built_file_ids.is_empty() {
-                let _ = self.refresh_graph_for_files(&result.built_file_ids);
-            }
-        }
     }
 }

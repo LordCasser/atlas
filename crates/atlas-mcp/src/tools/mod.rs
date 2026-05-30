@@ -14,7 +14,9 @@ use std::sync::{Arc, Mutex};
 
 use atlas_engine::ContextBuilder;
 use atlas_engine::FileId;
+use atlas_engine::LazyCoordinator;
 use atlas_engine::LazyDataflowService;
+use atlas_engine::LazyStructuralService;
 use atlas_engine::SearchEngine;
 use atlas_engine::SourceExtractor;
 use atlas_engine::Store;
@@ -629,6 +631,53 @@ impl ToolRouter {
     // -------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------
+
+    /// Ensure structural data for the given files, with optional
+    /// include_roots for C/C++ angle-bracket resolution.
+    /// Returns warnings for any failures (the caller should surface these
+    /// in the MCP response).
+    ///
+    /// No-op when a manual full index already exists.
+    pub(crate) fn ensure_structural_for_files(
+        &mut self,
+        file_ids: impl IntoIterator<Item = FileId>,
+        include_roots: Vec<atlas_engine::IncludeRoot>,
+    ) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if self.has_manual_full_index() {
+            return warnings;
+        }
+        // Deduplicate
+        let file_set: HashSet<_> = file_ids.into_iter().collect();
+        if file_set.is_empty() {
+            return warnings;
+        }
+        let coordinator =
+            LazyCoordinator::with_project_root(self.store.clone(), self.project_root.clone())
+                .with_include_roots(include_roots);
+        let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
+        let mut total_built: Vec<FileId> = Vec::new();
+        for file_id in &file_set {
+            match coordinator.ensure_structural_with_closure(&lazy, file_id) {
+                Ok((result, _job_id)) => {
+                    total_built.extend(result.built_file_ids);
+                }
+                Err(e) => {
+                    warnings.push(format!(
+                        "Lazy structural extraction failed for {}: {:#}",
+                        file_id.to_hex(),
+                        e
+                    ));
+                }
+            }
+        }
+        if !total_built.is_empty() {
+            if let Err(e) = self.refresh_graph_for_files(&total_built) {
+                warnings.push(format!("Graph refresh failed: {:#}", e));
+            }
+        }
+        warnings
+    }
 
     /// Resolve a qualified name to a SymbolId, returning error string on failure.
     /// When the store has no indexed files, the error includes guidance to run `index`.
