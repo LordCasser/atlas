@@ -4,7 +4,8 @@
 
 use atlas_engine::SymbolId;
 use atlas_engine::{
-    LazyStructuralService, LazySummary, RawTraceEngine, TraceDiagnostic, TraceQueryResponse,
+    LazyCoordinator, LazyStructuralService, LazySummary, RawTraceEngine, TraceDiagnostic,
+    TraceQueryResponse,
 };
 
 use super::{ToolRouter, get_str_opt, get_u64, resolve_file_id};
@@ -61,16 +62,27 @@ impl ToolRouter {
         // Skip when a manual full index already exists — all files already have
         // complete structural facts.
         let is_manual_full = self.has_manual_full_index();
-        if !is_manual_full {
+            if !is_manual_full {
             self.send_progress(0.3, "Ensuring structural index...");
             let lazy =
                 LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-            if let Err(e) = lazy.ensure_structural_for_file(&file_id) {
-                tracing::warn!(
-                    "Lazy structural extraction failed for file {}: {}",
-                    file_id,
-                    e
-                );
+            let coordinator = LazyCoordinator::with_project_root(
+                self.store.clone(),
+                self.project_root.clone(),
+            );
+            match coordinator.ensure_structural_with_closure(&lazy, &file_id) {
+                Ok(result) => {
+                    if !result.0.built_file_ids.is_empty() {
+                        let _ = self.refresh_graph_for_files(&result.0.built_file_ids);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Lazy structural extraction failed for file {}: {}",
+                        file_id,
+                        e
+                    );
+                }
             }
         }
 
@@ -143,12 +155,23 @@ impl ToolRouter {
             self.send_progress(0.2, "Ensuring structural index...");
             let lazy =
                 LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-            if let Err(e) = lazy.ensure_structural_for_file(&file_id) {
-                tracing::warn!(
-                    "Lazy structural extraction failed for file {}: {}",
-                    file_id,
-                    e
-                );
+            let coordinator = LazyCoordinator::with_project_root(
+                self.store.clone(),
+                self.project_root.clone(),
+            );
+            match coordinator.ensure_structural_with_closure(&lazy, &file_id) {
+                Ok(result) => {
+                    if !result.0.built_file_ids.is_empty() {
+                        let _ = self.refresh_graph_for_files(&result.0.built_file_ids);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Lazy structural extraction failed for file {}: {}",
+                        file_id,
+                        e
+                    );
+                }
             }
         }
 
@@ -171,6 +194,7 @@ impl ToolRouter {
                     units_cached: window.units_cached,
                     truncated: window.truncated,
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
+                    precision_tier: window.precision_tier.clone(),
                 });
                 if window.truncated {
                     partial = true;
@@ -189,6 +213,7 @@ impl ToolRouter {
                     units_cached: 0,
                     truncated: true,
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
+                    precision_tier: None,
                 });
                 lazy_diags.push(
                     TraceDiagnostic::warning(&format!("Lazy dataflow build failed: {e}"))
@@ -212,7 +237,7 @@ impl ToolRouter {
         )
     }
 
-    pub(crate) fn handle_trace_caller_path(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_trace_caller_path(&mut self, args: &serde_json::Value) -> (String, bool) {
         let symbol_hex = args["symbol"].as_str().filter(|s| !s.is_empty());
         let symbol_name = args["symbol_name"].as_str().filter(|s| !s.is_empty());
         let max_depth = args["max_depth"].as_u64().unwrap_or(20) as usize;
@@ -241,8 +266,19 @@ impl ToolRouter {
                     self.store.clone(),
                     Some(self.project_root.clone()),
                 );
-                if let Err(e) = lazy.ensure_structural_for_symbol(name) {
-                    tracing::warn!("Lazy structural extraction failed for '{}': {}", name, e);
+                let coordinator = LazyCoordinator::with_project_root(
+                    self.store.clone(),
+                    self.project_root.clone(),
+                );
+                match coordinator.ensure_structural_for_symbol_with_closure(&lazy, name) {
+                    Ok(result) => {
+                        if !result.built_file_ids.is_empty() {
+                            let _ = self.refresh_graph_for_files(&result.built_file_ids);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Lazy structural extraction failed for '{}': {}", name, e);
+                    }
                 }
             }
             engine.trace_callers_by_name(name, max_depth)
@@ -264,7 +300,7 @@ impl ToolRouter {
         )
     }
 
-    pub(crate) fn handle_trace_forward(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_trace_forward(&mut self, args: &serde_json::Value) -> (String, bool) {
         let from_hex = args["from"].as_str().filter(|s| !s.is_empty());
         let to_hex = args["to"].as_str().filter(|s| !s.is_empty());
         let from_name = args["from_name"].as_str().filter(|s| !s.is_empty());
@@ -282,9 +318,20 @@ impl ToolRouter {
                     self.store.clone(),
                     Some(self.project_root.clone()),
                 );
+                let coordinator = LazyCoordinator::with_project_root(
+                    self.store.clone(),
+                    self.project_root.clone(),
+                );
                 for name in [fname, tname] {
-                    if let Err(e) = lazy.ensure_structural_for_symbol(name) {
-                        tracing::warn!("Lazy structural extraction failed for '{}': {}", name, e);
+                    match coordinator.ensure_structural_for_symbol_with_closure(&lazy, name) {
+                        Ok(result) => {
+                            if !result.built_file_ids.is_empty() {
+                                let _ = self.refresh_graph_for_files(&result.built_file_ids);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Lazy structural extraction failed for '{}': {}", name, e);
+                        }
                     }
                 }
             }

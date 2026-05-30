@@ -4,6 +4,7 @@
 //! search calls do not build the whole graph snapshot or trigger unbounded
 //! extraction on large repositories.
 
+use atlas_engine::LazyCoordinator;
 use atlas_engine::LazyStructuralService;
 use atlas_engine::Store;
 use atlas_engine::SymbolDef;
@@ -211,7 +212,20 @@ impl ToolRouter {
             return;
         }
         let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-        let _ = lazy.ensure_structural_for_symbol(query);
+        let coordinator = LazyCoordinator::with_project_root(
+            self.store.clone(),
+            self.project_root.clone(),
+        );
+        match coordinator.ensure_structural_for_symbol_with_closure(&lazy, query) {
+            Ok(result) => {
+                if !result.built_file_ids.is_empty() {
+                    let _ = self.refresh_graph_for_files(&result.built_file_ids);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Lazy structural extraction failed for '{}': {}", query, e);
+            }
+        }
     }
 
     pub(crate) fn handle_symbol(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -232,8 +246,6 @@ impl ToolRouter {
             Some(s) => s,
             None => {
                 self.try_lazy_structural(qname);
-                // Force-refresh graph so callers/callees reflect newly parsed edges
-                let _ = self.force_refresh_graph();
                 let retry = self.store.find_symbols_by_qname(qname).unwrap_or_default();
                 match retry.into_iter().next() {
                     Some(s) => s,

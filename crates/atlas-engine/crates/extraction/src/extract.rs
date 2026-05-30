@@ -1585,6 +1585,7 @@ int main() {
             truncated: false,
             units_built: 0,
             units_cached: 0,
+            precision_tier: None,
         };
 
         let facts = extract_file_with_mode(
@@ -1656,6 +1657,7 @@ int main() {
             truncated: false,
             units_built: 0,
             units_cached: 0,
+            precision_tier: None,
         };
 
         let facts_lazy = extract_file_with_mode(

@@ -303,7 +303,68 @@ LanguageCapabilityProfile
 - Java/C/C++/ArkTS/Go/C#/Rust/PHP/Ruby/Kotlin/Cangjie 的 CFG 未实现或部分实现（见能力表）。
 - per-file timeout 尚未完全强制。
 
-### 10.1 Lazy Index（三阶段演进，全部已实现）
+### 10.1 查询时 lazy index 架构（多阶段演进）
+
+当前系统实现了三阶段 lazy index 结构，并在 Phase 1
+（当前阶段）建立 foundation 基础设施。后续阶段将逐步接入。
+
+#### 10.1.1 Layer 层次结构
+
+提取精度按层（layer）建模，从最轻量到最完整：
+
+| Layer | 说明 |
+|-------|------|
+| `manifest` | 仅顶层符号（type/function/class 声明），无引用、无 scope。通过 `--analysis manifest` 产生。 |
+| `resolution_symbols` | **(Phase 2 新增)** 最小符号层，仅供跨文件引用解析使用。包含函数、typedef、struct、enum 和 exports，但不包含完整引用、scope 或 dataflow。 |
+| `structural` | 完整符号、引用、scope、边。通过 `--analysis structural` 或 lazy structural 产生。 |
+| `dataflow` | 所有 structural 事实 + per-function dataflow/CFG。通过 `--analysis full` 或 lazy dataflow 产生。 |
+
+Layer 通过 `SymbolDef.layer` 和 `file_index_layers.layer` 字段标识。
+
+#### 10.1.2 Lazy job 生命周期
+
+所有 lazy extraction 触发均通过 `lazy_jobs` 表追踪，确保可观测性和并发去重：
+
+```
+queued → building → complete
+                  → failed
+```
+
+- **queued**: 作业已注册但尚未开始。
+- **building**: 正在执行提取。
+- **complete**: 提取成功完成。
+- **failed**: 提取失败（`error_msg` 记录原因）。
+
+Job ID 基于时间戳生成（`lazy_{microsecond_hex}`），同一 `(file_id, target_layer)` 在 `queued`/`building` 状态下有且仅有一条活跃记录。并发请求通过 `find_active_lazy_job` 的 dedup 语义使用同一 job_id。
+
+Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `lazy_jobs` 表。
+
+#### 10.1.3 精度等级
+
+查询响应携带精度信息，告知消费方结果的完整度：
+
+| Precision Level | 条件 |
+|-----------------|------|
+| `Exact` | 目标文件有完整 structural+dataflow，预算未超。 |
+| `PartialExact` | structural 完整但 dataflow 被预算截断。 |
+| `DegradedStructural` | structural 预算超支，仅有 manifest 或 resolution_symbols。 |
+| `LocalDataflowOnly` | dataflow 仅对当前函数可用，无跨文件传播。 |
+| `ManifestOnly` | 仅顶层符号可用。 |
+| `Unavailable` | 文件未索引或语言不支持。 |
+
+#### 10.1.4 In-flight 一致性
+
+- **去重**: `lazy_jobs` 表 + `find_active_lazy_job` 确保同一 file+layer 不会并行构建两次。
+- **读写一致性**: 每个 handler 在触发 lazy extraction 后，在自己的写事务中可见刚写的数据；读操作通过 `StoreReader`（独立只读连接）访问。
+- **Delta graph refresh**（Phase 3）: lazy structural 写入后，增加显式 graph snapshot 刷新步骤，确保图查询立即可见新边。
+
+#### 10.1.5 Phase 2 目标
+
+- `ClosurePlanner`: 基于 import/include 图计算依赖闭包，确保被引用文件的 `resolution_symbols` 层先于主文件的 structural 层构建。
+- `resolution_symbols` 层实现: 轻量提取模式，仅产出声明的符号定义（无引用、无 scope），供跨文件引用解析使用。
+- Linux 增强边界: 对 C 语言的特定惯用法（syscall 宏、EXPORT_SYMBOL、initcall、static inline）在提取后进行后处理增强，不改动通用提取管道。
+
+#### 10.1.6 已实现的阶段
 
 **P0: Scope Index** — 允许 `--include`/`--scope`/`--exclude` 限制索引范围，降低大型项目 index 时间和 DB 体积。
 
