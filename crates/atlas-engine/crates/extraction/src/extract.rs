@@ -98,6 +98,22 @@ pub fn extract_file_with_mode(
     // 1. Parse (P2: uses thread-local parser to avoid per-file alloc)
     let ts_lang = frontend.parser.tree_sitter_language();
     let language = frontend.language();
+
+    // Simple and extremely fast ArkTS struct -> class preprocessing.
+    // By replacing with spaces we preserve exact byte lengths, offsets, and line/column indices.
+    let processed_source: String;
+    let source = if language == Language::ArkTS {
+        processed_source = source
+            .replace("struct ", "class  ")
+            .replace("struct\t", "class \t")
+            .replace("struct\n", "class \n")
+            .replace("struct\r", "class \r")
+            .replace("struct{", "class {");
+        &processed_source
+    } else {
+        source
+    };
+
     let source_bytes = source.as_bytes();
     let tree = tl_parse(&ts_lang, source_bytes, file_path, language)?;
     let root = tree.root_node();
