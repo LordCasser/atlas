@@ -347,7 +347,7 @@ impl LazyStructuralService {
             .with_context(|| format!("failed to read {}", resolved_path.display()))?;
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
 
-        let facts = extract_file_with_mode(
+        let mut facts = extract_file_with_mode(
             &frontend,
             *file_id,
             std::path::Path::new(&file_info.path),
@@ -355,6 +355,18 @@ impl LazyStructuralService {
             &content_hash,
             ExtractionMode::ResolutionSymbols,
         )?;
+
+        // Post-extraction: enrich with kernel-specific semantics
+        let aug = crate::linux_augment::LinuxAugmenter::augment(&mut facts, &source);
+        if aug.symbols_exported > 0 || aug.initcall_edges > 0 || aug.syscall_detected > 0 {
+            tracing::info!(
+                "Linux augment: {} exports, {} initcall edges, {} syscalls for {}",
+                aug.symbols_exported,
+                aug.initcall_edges,
+                aug.syscall_detected,
+                file_info.path,
+            );
+        }
 
         // Non-destructive upsert: writes symbols, scopes, and imports
         // without destroying existing structural data or invalidating
