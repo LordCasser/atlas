@@ -8,8 +8,8 @@ use crate::languages::{node_range, node_text};
 
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
-    LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
-    SymbolExtractorSpec,
+    LexicalBindingSpec, NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec,
+    ScopeExtractorSpec, SymbolExtractorSpec,
 };
 use crate::languages::shared::SymbolDefBuilder;
 use types::capability::FeatureSupport;
@@ -266,6 +266,7 @@ pub(crate) fn java_frontend() -> LanguageFrontend {
         lexical: Box::new(JavaAdapter),
         dataflow: Box::new(JavaAdapter),
         capability: cap,
+        recovery: Box::new(NoOpRecovery),
     })
 }
 

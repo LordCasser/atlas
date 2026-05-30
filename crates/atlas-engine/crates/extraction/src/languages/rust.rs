@@ -11,8 +11,8 @@ use crate::dataflow_builder::NodePosKey;
 use crate::extraction_ctx::ExtractionCtx;
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
-    LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
-    SymbolExtractorSpec,
+    LexicalBindingSpec, NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec,
+    ScopeExtractorSpec, SymbolExtractorSpec,
 };
 use crate::languages::shared::SymbolDefBuilder;
 use std::collections::HashMap;
@@ -377,6 +377,7 @@ pub(crate) fn rust_frontend() -> LanguageFrontend {
         lexical: Box::new(RustAdapter),
         dataflow: Box::new(RustAdapter),
         capability: cap,
+        recovery: Box::new(NoOpRecovery),
     })
 }
 

@@ -6,8 +6,8 @@ use crate::languages::{node_range, node_text};
 
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
-    LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
-    SymbolExtractorSpec,
+    LexicalBindingSpec, NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec,
+    ScopeExtractorSpec, SymbolExtractorSpec,
 };
 use crate::languages::shared::SymbolDefBuilder;
 use types::bindings::BindingDef;
@@ -265,6 +265,7 @@ pub(crate) fn cangjie_frontend() -> LanguageFrontend {
         lexical: Box::new(CangjieAdapter),
         dataflow: Box::new(CangjieAdapter),
         capability: cap,
+        recovery: Box::new(NoOpRecovery),
     })
 }
 

@@ -9,8 +9,9 @@
 use crate::languages::{node_range, node_text};
 
 use crate::frontend::{
-    Capture, DataflowSpec, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, NormalizeCtx,
-    ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec, SymbolExtractorSpec,
+    Capture, DataflowSpec, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec,
+    NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
+    SymbolExtractorSpec,
 };
 
 use types::*;
@@ -643,6 +644,7 @@ pub fn typescript_frontend() -> LanguageFrontend {
         lexical: Box::new(TypeScriptFrontendSpec),
         dataflow: Box::new(TypeScriptFrontendSpec),
         capability: LanguageCapabilityProfile::for_language(Language::TypeScript),
+        recovery: Box::new(NoOpRecovery),
     })
 }
 
