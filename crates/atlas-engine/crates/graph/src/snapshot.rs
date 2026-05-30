@@ -239,8 +239,7 @@ impl GraphSnapshot {
     /// Load symbols and edges only for specific files (scoped graph).
     ///
     /// Useful for targeted graph refresh after lazy structural extraction
-    /// affects a small set of files. For large file sets, prefer `from_store`.
-    /// Reserved for future delta graph merge implementation.
+    /// affects a small set of files, or for constructing test graphs.
     #[allow(dead_code)]
     pub fn from_files(
         store: &Store,
@@ -353,6 +352,233 @@ impl GraphSnapshot {
             file_index,
             edge_count,
         })
+    }
+
+    /// Remove all nodes and edges belonging to `file_ids`, preserving the
+    /// indices of unaffected nodes by shifting (Vec-based reindex).
+    ///
+    /// Complexity: O(|nodes| + |edges|) in memory — avoids SQLite I/O.
+    /// Used as the first step of [`replace_files_in_place`].
+    pub fn remove_files_in_place(&mut self, file_ids: &[FileId]) {
+        let file_set: HashSet<FileId> = file_ids.iter().copied().collect();
+        let mut removed_ix: HashSet<NodeIx> = HashSet::new();
+        for fid in &file_set {
+            if let Some(ixes) = self.file_index.get(fid) {
+                removed_ix.extend(ixes);
+            }
+        }
+        if removed_ix.is_empty() {
+            return;
+        }
+
+        // Build old→new index mapping
+        let mut old_to_new: Vec<Option<usize>> = vec![None; self.nodes.len()];
+        let mut new_nodes: Vec<NodeSummary> =
+            Vec::with_capacity(self.nodes.len() - removed_ix.len());
+        for (old_ix, node) in self.nodes.iter().enumerate() {
+            if removed_ix.contains(&old_ix) {
+                continue;
+            }
+            old_to_new[old_ix] = Some(new_nodes.len());
+            new_nodes.push(node.clone());
+        }
+
+        // Rebuild lookup maps from filtered nodes
+        self.nodes = new_nodes;
+        self.id_to_idx.clear();
+        self.name_index.clear();
+        self.qname_index.clear();
+        self.file_index.clear();
+        for (ix, node) in self.nodes.iter().enumerate() {
+            self.id_to_idx.insert(node.symbol_id, ix);
+            self.name_index
+                .entry(node.name.clone())
+                .or_default()
+                .push(ix);
+            self.qname_index
+                .entry(node.qualified_name.clone())
+                .or_default()
+                .push(ix);
+            self.file_index.entry(node.file_id).or_default().push(ix);
+        }
+
+        // Filter edges: keep only those whose source and target both survived
+        let mut new_edges: Vec<EdgeSummary> =
+            Vec::with_capacity(self.edges.len());
+        for edge in &self.edges {
+            let Some(new_src) = old_to_new[edge.source_ix] else {
+                continue;
+            };
+            let Some(new_tgt) = old_to_new[edge.target_ix] else {
+                continue;
+            };
+            new_edges.push(EdgeSummary {
+                edge_id: edge.edge_id,
+                source: edge.source,
+                target: edge.target,
+                kind: edge.kind,
+                confidence: edge.confidence,
+                provenance: edge.provenance,
+                source_ix: new_src,
+                target_ix: new_tgt,
+            });
+        }
+        self.edges = new_edges;
+        self.edge_count = self.edges.len();
+
+        // Rebuild adjacency lists (outgoing / incoming)
+        for node in &mut self.nodes {
+            node.outgoing.clear();
+            node.incoming.clear();
+        }
+        for (edge_ix, edge) in self.edges.iter().enumerate() {
+            self.nodes[edge.source_ix].outgoing.push(edge_ix);
+            self.nodes[edge.target_ix].incoming.push(edge_ix);
+        }
+        tracing::debug!(
+            "remove_files_in_place: dropped {} nodes, kept {}",
+            removed_ix.len(),
+            self.nodes.len()
+        );
+    }
+
+    /// Replace all graph data for `changed_file_ids` atomically:
+    /// 1. Remove old nodes/edges belonging to these files
+    /// 2. Load the latest symbols/edges from store
+    /// 3. Merge the new data
+    ///
+    /// This is correct for both first-time indexing AND re-indexing
+    /// (changed files).  Avoids the full `store.get_all_symbols()` scan.
+    pub fn replace_files_in_place(
+        &mut self,
+        store: &Store,
+        changed_file_ids: &[FileId],
+        confidence_threshold: f32,
+        file_paths: &HashMap<FileId, String>,
+    ) -> anyhow::Result<()> {
+        // 1. Remove old data for changed files
+        self.remove_files_in_place(changed_file_ids);
+
+        // 2. Load new data from store (small query — only changed files)
+        let new_symbols = store.find_symbols_by_files(changed_file_ids)?;
+        let new_edges = store.find_edges_for_files(changed_file_ids)?;
+
+        // 3. Merge new data (merge_delta already handles existing-symbol dedup)
+        self.merge_delta_in_place(new_symbols, new_edges, confidence_threshold, file_paths);
+
+        Ok(())
+    }
+
+    /// Experimental: append delta nodes/edges from newly-added files.
+    ///
+    /// **WARNING**: This method is append-only. It adds new symbols/edges
+    /// but does NOT remove old symbols/edges from re-indexed files.
+    /// Safe ONLY for files that have never been indexed before.
+    /// For re-indexing (changed files), use [`replace_files_in_place`]
+    /// or full [`GraphSnapshot::from_store`].
+    #[allow(dead_code)]
+    pub fn merge_delta_in_place(
+        &mut self,
+        new_symbols: Vec<SymbolDef>,
+        new_edges: Vec<RawEdge>,
+        confidence_threshold: f32,
+        file_paths: &HashMap<FileId, String>,
+    ) {
+        // ── Deduplicate: skip symbols already present ──────────────────
+        let existing: HashSet<SymbolId> = self.id_to_idx.keys().copied().collect();
+        let new_count = new_symbols.len();
+        let mut added_nodes = 0usize;
+
+        for sym in new_symbols {
+            if existing.contains(&sym.id) {
+                continue;
+            }
+            let mut node = NodeSummary::from_symbol(sym);
+            // Resolve test file status
+            if let Some(path) = file_paths.get(&node.file_id) {
+                node.is_test_file = is_likely_test_path(path);
+            }
+            let ix = self.nodes.len();
+            self.id_to_idx.insert(node.symbol_id, ix);
+            self.name_index
+                .entry(node.name.clone())
+                .or_default()
+                .push(ix);
+            self.qname_index
+                .entry(node.qualified_name.clone())
+                .or_default()
+                .push(ix);
+            self.file_index.entry(node.file_id).or_default().push(ix);
+            self.nodes.push(node);
+            added_nodes += 1;
+        }
+
+        if added_nodes > 0 {
+            tracing::debug!(
+                "Delta merge: {added_nodes} new nodes (of {new_count} candidate symbols)"
+            );
+        }
+
+        // ── Merge edges ────────────────────────────────────────────────
+        let mut added_edges = 0usize;
+
+        for e in new_edges {
+            if e.confidence.as_f32() < confidence_threshold {
+                continue;
+            }
+            let Some(&source_ix) = self.id_to_idx.get(&e.source) else {
+                continue;
+            };
+            let Some(&target_ix) = self.id_to_idx.get(&e.target) else {
+                continue;
+            };
+            let edge_ix = self.edges.len();
+            self.edges.push(EdgeSummary {
+                edge_id: e.id,
+                source: e.source,
+                target: e.target,
+                kind: e.kind,
+                confidence: e.confidence,
+                provenance: e.provenance,
+                source_ix,
+                target_ix,
+            });
+            self.nodes[source_ix].outgoing.push(edge_ix);
+            self.nodes[target_ix].incoming.push(edge_ix);
+            added_edges += 1;
+        }
+
+        if added_edges > 0 {
+            tracing::debug!("Delta merge: {added_edges} new edges");
+        }
+
+        self.edge_count = self.edges.len();
+    }
+
+    /// Experimental: clone snapshot then merge delta nodes/edges from given files.
+    ///
+    /// **WARNING**: Delegates to [`merge_delta_in_place`] which is append-only.
+    /// It adds new symbols/edges but does NOT remove old symbols/edges from
+    /// re-indexed files. Safe ONLY for files that have never been indexed before.
+    /// For re-indexing (changed files), use full [`GraphSnapshot::from_store`].
+    #[allow(dead_code)]
+    pub fn from_store_with_delta(
+        old: &GraphSnapshot,
+        store: &Store,
+        changed_file_ids: &[FileId],
+        confidence_threshold: f32,
+    ) -> anyhow::Result<Self> {
+        let file_paths: HashMap<FileId, String> = store
+            .list_files()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|f| (f.file_id, f.path))
+            .collect();
+        let new_symbols = store.find_symbols_by_files(changed_file_ids)?;
+        let new_edges = store.find_edges_for_files(changed_file_ids)?;
+        let mut new_snapshot = old.clone();
+        new_snapshot.merge_delta_in_place(new_symbols, new_edges, confidence_threshold, &file_paths);
+        Ok(new_snapshot)
     }
 
     // ── lookups ──────────────────────────────────────────────────────────

@@ -44,8 +44,6 @@ impl GraphEngine {
 
     /// Build a scoped GraphEngine containing only symbols and edges for
     /// the given files. Faster than full rebuild when only a few files changed.
-    ///
-    /// Reserved for future delta graph merge implementation.
     #[allow(dead_code)]
     pub fn from_files(
         store: &Store,
@@ -53,6 +51,31 @@ impl GraphEngine {
         confidence_threshold: f32,
     ) -> anyhow::Result<Self> {
         let snapshot = GraphSnapshot::from_files(store, file_ids, confidence_threshold)?;
+        Ok(Self {
+            snapshot: Arc::new(snapshot),
+        })
+    }
+
+    /// Experimental: build GraphEngine by cloning existing snapshot and merging
+    /// only delta nodes/edges from the given files.
+    ///
+    /// **WARNING**: Delegates to [`GraphSnapshot::merge_delta_in_place`] which is
+    /// append-only. It adds new symbols/edges but does NOT remove old symbols/edges
+    /// from re-indexed files. Safe ONLY for files that have never been indexed before.
+    /// For re-indexing (changed files), use full [`GraphEngine::from_store`].
+    #[allow(dead_code)]
+    pub fn from_store_with_delta(
+        old: &GraphSnapshot,
+        store: &Store,
+        changed_file_ids: &[types::ids::FileId],
+        confidence_threshold: f32,
+    ) -> anyhow::Result<Self> {
+        let snapshot = GraphSnapshot::from_store_with_delta(
+            old,
+            store,
+            changed_file_ids,
+            confidence_threshold,
+        )?;
         Ok(Self {
             snapshot: Arc::new(snapshot),
         })
