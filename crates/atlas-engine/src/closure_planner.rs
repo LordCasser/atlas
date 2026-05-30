@@ -30,6 +30,15 @@ use types::ids::{FileId, ImportId};
 use types::structs::ImportDef;
 use types::{ImportKind, layer, status};
 
+/// A directory to search when resolving angle-bracket includes (`#include <...>`).
+///
+/// Project-relative path, e.g. `"include"`, `"arch/x86/include"`.
+#[derive(Debug, Clone)]
+pub struct IncludeRoot {
+    /// Project-relative directory path (uses `/` separator on all platforms).
+    pub path: String,
+}
+
 /// Snapshot of a seed file's dependency graph.
 #[derive(Debug, Clone)]
 pub struct DependencyClosure {
@@ -61,6 +70,7 @@ pub struct PrioritizedWorkset {
 pub struct ClosurePlanner {
     store: Arc<Store>,
     project_root: Option<std::path::PathBuf>,
+    include_roots: Vec<IncludeRoot>,
     max_depth: usize,
     max_closure_files: usize,
 }
@@ -73,6 +83,7 @@ impl ClosurePlanner {
         Self {
             store,
             project_root,
+            include_roots: Vec::new(),
             max_depth: 2,
             max_closure_files: 64,
         }
@@ -82,6 +93,15 @@ impl ClosurePlanner {
     pub fn with_limits(mut self, max_depth: usize, max_closure_files: usize) -> Self {
         self.max_depth = max_depth;
         self.max_closure_files = max_closure_files;
+        self
+    }
+
+    /// Set include roots for angle-bracket include resolution.
+    ///
+    /// Each root is a project-relative directory to search when resolving
+    /// `#include <...>` directives (C/C++).
+    pub fn with_include_roots(mut self, roots: Vec<IncludeRoot>) -> Self {
+        self.include_roots = roots;
         self
     }
 
@@ -247,7 +267,24 @@ impl ClosurePlanner {
         // Bootstrap: if seed is manifest-only and has no imports in DB,
         // scan the source file directly for import statements.
         let _ = self.bootstrap_imports_from_source(seed);
-        let closure = self.plan_closure(seed)?;
+
+        // Discover same-name companion files (e.g., "foo.c" ↔ "foo.h").
+        let siblings = self.discover_sibling_files(seed)?;
+
+        let mut closure = self.plan_closure(seed)?;
+
+        // Inject discovered sibling files as additional direct deps, so
+        // they are built before the seed during lazy extraction.
+        for sibling_id in &siblings {
+            if !closure.direct_deps.contains(sibling_id)
+                && !closure.transitive_deps.contains(sibling_id)
+                && *sibling_id != closure.seed_file
+            {
+                closure.direct_deps.push(*sibling_id);
+                closure.total_files += 1;
+            }
+        }
+
         Ok(self.prioritize(&closure))
     }
 
@@ -312,29 +349,30 @@ impl ClosurePlanner {
     /// the module path, normalises (resolves `.` and `..`), generates a
     /// [`FileId`], and checks the files table for existence.
     ///
-    /// Bare imports (`is_relative = false`, e.g. "react") return `None`
-    /// because they refer to external dependencies not in the index.
+    /// For non-relative imports (angle-bracket `#include <...>`): searches
+    /// the configured include roots via [`resolve_angle_include`].
     fn resolve_import_target(
         &self,
         importing_file_dir: &str,
         module: &str,
         is_relative: bool,
     ) -> Result<Option<FileId>> {
-        if !is_relative {
-            return Ok(None);
-        }
+        if is_relative {
+            let candidate = std::path::Path::new(importing_file_dir).join(module);
+            let normalized = normalize_path(&candidate);
 
-        let candidate = std::path::Path::new(importing_file_dir).join(module);
-        let normalized = normalize_path(&candidate);
+            if normalized.is_empty() {
+                return Ok(None);
+            }
 
-        if normalized.is_empty() {
-            return Ok(None);
-        }
-
-        let file_id = FileId::generate(&normalized);
-        match self.store.get_file(&file_id)? {
-            Some(_) => Ok(Some(file_id)),
-            None => Ok(None),
+            let file_id = FileId::generate(&normalized);
+            match self.store.get_file(&file_id)? {
+                Some(_) => Ok(Some(file_id)),
+                None => Ok(None),
+            }
+        } else {
+            // Try include roots for angle-bracket includes
+            self.resolve_angle_include(module)
         }
     }
 
@@ -342,6 +380,70 @@ impl ClosurePlanner {
     #[allow(dead_code)]
     fn _project_root(&self) -> Option<&std::path::Path> {
         self.project_root.as_deref()
+    }
+
+    /// Resolve an angle-bracket include module string by searching the
+    /// configured include roots.
+    ///
+    /// For each root directory, joins the module path, normalises, and
+    /// checks the files table for existence. Returns the first match.
+    fn resolve_angle_include(&self, module: &str) -> Result<Option<FileId>> {
+        for root in &self.include_roots {
+            let candidate = std::path::Path::new(&root.path).join(module);
+            let normalized = normalize_path(&candidate);
+            if normalized.is_empty() {
+                continue;
+            }
+            let file_id = FileId::generate(&normalized);
+            if self.store.get_file(&file_id)?.is_some() {
+                return Ok(Some(file_id));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Discover same-name companion files (e.g., "foo.c" ↔ "foo.h").
+    ///
+    /// When processing a seed `.c` file, discovers a same-name `.h` in the
+    /// same directory; when processing a `.h` file, discovers a same-name
+    /// `.c`.  Other extensions (`.cc`, `.cpp`, `.cxx`, `.hpp`, `.hxx`) are
+    /// also handled.
+    fn discover_sibling_files(&self, file_id: &FileId) -> Result<Vec<FileId>> {
+        let file_info = match self.store.get_file(file_id)? {
+            Some(fi) => fi,
+            None => return Ok(vec![]),
+        };
+        let path = std::path::Path::new(&file_info.path);
+        let parent = match path.parent() {
+            Some(p) => p,
+            None => return Ok(vec![]),
+        };
+        let stem = match path.file_stem() {
+            Some(s) => s.to_string_lossy().to_string(),
+            None => return Ok(vec![]),
+        };
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // Determine the companion extension
+        let companion_ext = if ext == "c" || ext == "cc" || ext == "cpp" || ext == "cxx" {
+            "h"
+        } else if ext == "h" || ext == "hpp" || ext == "hxx" {
+            "c"
+        } else {
+            return Ok(vec![]);
+        };
+
+        // Check if companion file exists in DB
+        let companion_path = parent.join(format!("{}.{}", stem, companion_ext));
+        let normalized = normalize_path(&companion_path);
+        let companion_id = FileId::generate(&normalized);
+        match self.store.get_file(&companion_id)? {
+            Some(_) => Ok(vec![companion_id]),
+            None => Ok(vec![]),
+        }
     }
 
     /// Bootstrap imports for a seed file by scanning source directly.
@@ -393,16 +495,21 @@ impl ClosurePlanner {
 
 /// Scan C source for `#include` directives.
 ///
-/// Lightweight regex-based scanner for `#include <...>` and `#include "..."`
+/// Lightweight regex-based scanner for `#include "..."` and `#include <...>`
 /// patterns.  Used as a fallback when the manifest index lacks import rows.
-fn scan_c_includes(file_id: &FileId, _file_path: &str, source: &str) -> Vec<ImportDef> {
-    // Regex pattern: #include <...> or #include "..."
-    let re = Regex::new(r#"#include\s+[<"]([^>"]+)[>"]"#).unwrap();
+///
+/// Distinguishes local from system includes per the C standard:
+/// - `#include "..."` → always relative (searches including file's directory first)
+/// - `#include <...>` → never relative (system/library include paths)
+pub(crate) fn scan_c_includes(file_id: &FileId, _file_path: &str, source: &str) -> Vec<ImportDef> {
+    // Separate patterns for quoted (local) vs angle (system) includes
+    let quote_re = Regex::new(r##"#include\s+"([^"]+)""##).unwrap();
+    let angle_re = Regex::new(r#"#include\s+<([^>]+)>"#).unwrap();
     let mut imports = Vec::new();
-    for (cap_idx, cap) in re.captures_iter(source).enumerate() {
+
+    // Quoted includes: always relative (C standard §6.10.2)
+    for (cap_idx, cap) in quote_re.captures_iter(source).enumerate() {
         let module = cap[1].to_string();
-        let is_relative = module.starts_with('.') || module.contains('/');
-        // Compute a reasonable start_byte for deterministic ImportId
         let start_byte = cap.get(0).map_or(cap_idx as u32, |m| m.start() as u32);
         let import_id = ImportId::generate(file_id, "include", &module, None, start_byte);
         imports.push(ImportDef {
@@ -414,10 +521,30 @@ fn scan_c_includes(file_id: &FileId, _file_path: &str, source: &str) -> Vec<Impo
             local_name: None,
             alias: None,
             is_wildcard: false,
-            is_relative,
+            is_relative: true,
             range: Default::default(),
         });
     }
+
+    // Angle includes: never relative (system/external headers)
+    for (cap_idx, cap) in angle_re.captures_iter(source).enumerate() {
+        let module = cap[1].to_string();
+        let start_byte = cap.get(0).map_or(cap_idx as u32, |m| m.start() as u32);
+        let import_id = ImportId::generate(file_id, "include", &module, None, start_byte);
+        imports.push(ImportDef {
+            id: import_id,
+            file_id: *file_id,
+            kind: ImportKind::Include,
+            module,
+            imported_name: String::new(),
+            local_name: None,
+            alias: None,
+            is_wildcard: false,
+            is_relative: false,
+            range: Default::default(),
+        });
+    }
+
     imports
 }
 
@@ -458,6 +585,8 @@ fn normalize_path(path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use types::enums::{Language, ParseStatus};
+    use types::structs::FileInfo;
 
     #[test]
     fn normalize_path_drops_dot() {
@@ -491,6 +620,49 @@ mod tests {
 
     // ── Integration tests (ignored — require multi-file DB setup) ──────
 
+    // ── Bootstrap scanner tests ─────────────────────────────────────
+
+    #[test]
+    fn bootstrap_scanner_quote_vs_angle() {
+        // Verify that scan_c_includes correctly distinguishes local
+        // `#include "..."` (is_relative=true) from system `<...>`
+        // (is_relative=false).
+        use types::ids::FileId;
+
+        let file_id = FileId::generate("src/main.c");
+        let source = concat!(
+            "#include \"util.h\"\n",
+            "#include <stdio.h>\n",
+            "#include \"dir/helper.h\"\n",
+            "#include <stdlib.h>\n",
+            "int main() { return 0; }\n",
+        );
+
+        let imports = scan_c_includes(&file_id, "src/main.c", source);
+
+        assert_eq!(imports.len(), 4, "should discover all 4 includes");
+
+        // Quoted includes are always relative
+        let util = imports.iter().find(|i| i.module == "util.h").unwrap();
+        assert!(util.is_relative, "#include \"util.h\" must be relative");
+
+        let helper = imports
+            .iter()
+            .find(|i| i.module == "dir/helper.h")
+            .unwrap();
+        assert!(
+            helper.is_relative,
+            "#include \"dir/helper.h\" must be relative"
+        );
+
+        // Angle includes are never relative
+        let stdio = imports.iter().find(|i| i.module == "stdio.h").unwrap();
+        assert!(!stdio.is_relative, "#include <stdio.h> must NOT be relative");
+
+        let stdlib = imports.iter().find(|i| i.module == "stdlib.h").unwrap();
+        assert!(!stdlib.is_relative, "#include <stdlib.h> must NOT be relative");
+    }
+
     #[test]
     #[ignore = "Phase 2: needs multi-file DB setup with imports"]
     fn closure_plan_discovers_direct_deps() {
@@ -514,5 +686,139 @@ mod tests {
     #[ignore = "Phase 2: needs multi-file DB setup with imports"]
     fn prioritize_deps_before_seed() {
         // Setup: seed imports dep. Verify workset.order has dep before seed.
+    }
+
+    // ── Include root resolution tests ─────────────────────────────────
+
+    #[test]
+    fn test_resolve_angle_include_with_roots() {
+        let store = std::sync::Arc::new({
+            let s = Store::open_in_memory().unwrap();
+            s.init_schema().unwrap();
+            s
+        });
+
+        // Register files at include/linux/fs.h and arch/x86/include/asm/foo.h
+        let fs_h_id = FileId::generate("include/linux/fs.h");
+        let foo_h_id = FileId::generate("arch/x86/include/asm/foo.h");
+
+        store
+            .upsert_file(&FileInfo {
+                file_id: fs_h_id,
+                path: "include/linux/fs.h".into(),
+                language: Language::C,
+                content_hash: "abc".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        store
+            .upsert_file(&FileInfo {
+                file_id: foo_h_id,
+                path: "arch/x86/include/asm/foo.h".into(),
+                language: Language::C,
+                content_hash: "abc".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+
+        let planner = ClosurePlanner::new(store, None).with_include_roots(vec![
+            IncludeRoot {
+                path: "include".to_string(),
+            },
+            IncludeRoot {
+                path: "arch/x86/include".to_string(),
+            },
+        ]);
+
+        // Resolve angle-bracket includes through include roots
+        let fs_h = planner.resolve_angle_include("linux/fs.h").unwrap();
+        assert!(fs_h.is_some(), "linux/fs.h should resolve via include/ root");
+        assert_eq!(fs_h.unwrap(), fs_h_id);
+
+        let foo_h = planner.resolve_angle_include("asm/foo.h").unwrap();
+        assert!(foo_h.is_some(), "asm/foo.h should resolve via arch/x86/include/ root");
+        assert_eq!(foo_h.unwrap(), foo_h_id);
+
+        // A non-existent module should return None
+        let missing = planner.resolve_angle_include("nonexistent/baz.h").unwrap();
+        assert!(missing.is_none(), "unknown module should return None");
+    }
+
+    // ── Sibling discovery tests ───────────────────────────────────────
+
+    #[test]
+    fn test_sibling_discovery_c_to_h() {
+        let store = std::sync::Arc::new({
+            let s = Store::open_in_memory().unwrap();
+            s.init_schema().unwrap();
+            s
+        });
+
+        let main_c_id = FileId::generate("kernel/main.c");
+        let main_h_id = FileId::generate("kernel/main.h");
+
+        store
+            .upsert_file(&FileInfo {
+                file_id: main_c_id,
+                path: "kernel/main.c".into(),
+                language: Language::C,
+                content_hash: "abc".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        store
+            .upsert_file(&FileInfo {
+                file_id: main_h_id,
+                path: "kernel/main.h".into(),
+                language: Language::C,
+                content_hash: "abc".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+
+        let planner = ClosurePlanner::new(store, None);
+
+        // From main.c, discover main.h
+        let siblings = planner.discover_sibling_files(&main_c_id).unwrap();
+        assert_eq!(siblings.len(), 1, "should discover one sibling file");
+        assert_eq!(siblings[0], main_h_id, "should discover main.h from main.c");
+    }
+
+    #[test]
+    fn test_sibling_discovery_h_to_c() {
+        let store = std::sync::Arc::new({
+            let s = Store::open_in_memory().unwrap();
+            s.init_schema().unwrap();
+            s
+        });
+
+        let main_c_id = FileId::generate("kernel/main.c");
+        let main_h_id = FileId::generate("kernel/main.h");
+
+        store
+            .upsert_file(&FileInfo {
+                file_id: main_c_id,
+                path: "kernel/main.c".into(),
+                language: Language::C,
+                content_hash: "abc".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        store
+            .upsert_file(&FileInfo {
+                file_id: main_h_id,
+                path: "kernel/main.h".into(),
+                language: Language::C,
+                content_hash: "abc".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+
+        let planner = ClosurePlanner::new(store, None);
+
+        // From main.h, discover main.c
+        let siblings = planner.discover_sibling_files(&main_h_id).unwrap();
+        assert_eq!(siblings.len(), 1, "should discover one sibling file");
+        assert_eq!(siblings[0], main_c_id, "should discover main.c from main.h");
     }
 }

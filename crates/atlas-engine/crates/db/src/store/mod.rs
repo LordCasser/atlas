@@ -343,14 +343,45 @@ impl Store {
         })
     }
 
-    /// Upsert resolution_symbols layer without destroying richer layers.
+    /// Upsert symbols, scopes, and imports from a ResolutionSymbols extraction.
     ///
-    /// Only writes symbols, scopes, and imports — does NOT touch references,
-    /// dataflow, or any other table.  Does NOT invalidate existing cross-file
-    /// resolved references.  Safe to call when structural data already exists:
-    /// the richer structural layer is preserved.
+    /// # Content hash contract
+    ///
+    /// When the parsed content hash differs from the stored file hash, this
+    /// method atomically updates `files.content_hash` in the same transaction.
+    /// This means:
+    /// - The new resolution_symbols layer is consistent with the on-disk content.
+    /// - Pre-existing layers (manifest, structural) with the old hash become
+    ///   stale: their `file_index_layers` hash no longer matches
+    ///   `files.content_hash`, so `has_complete_layer()` returns `false` for
+    ///   them.
+    /// - On the next lazy access, those stale layers are rebuilt from current
+    ///   content.
+    ///
+    /// This is the "safe update file row" strategy (as opposed to "reject
+    /// stale"): progressive enrichment of a file never silently serves stale
+    /// data.
     pub fn upsert_resolution_symbols(&self, file_id: &FileId, facts: &FileFacts) -> anyhow::Result<()> {
         self.with_transaction(|tx| {
+            // Sync files.content_hash if it has changed since the manifest
+            // index.  The layer hash must match the DB file hash for
+            // `has_complete_layer()` to recognise the layer as complete.
+            let db_hash: Option<String> = tx
+                .query_row(
+                    "SELECT content_hash FROM files WHERE file_id = ?1",
+                    params![file_id],
+                    |row| row.get(0),
+                )
+                .ok();
+            if let Some(ref db_hash) = db_hash {
+                if db_hash != &facts.file.content_hash {
+                    tx.execute(
+                        "UPDATE files SET content_hash = ?1 WHERE file_id = ?2",
+                        params![facts.file.content_hash, file_id],
+                    )?;
+                }
+            }
+
             // Upsert symbols with resolution_symbols layer tag
             if !facts.symbols.is_empty() {
                 write_symbols(tx, &facts.symbols, "resolution_symbols")?;
@@ -1310,6 +1341,61 @@ mod tests {
             dependents.iter().any(|(path, _mod)| path == "src/app.c"),
             "expected src/app.c in dependents of src/dir/helper.h, got: {:?}",
             dependents
+        );
+    }
+
+    /// Regression: upsert_resolution_symbols must sync files.content_hash
+    /// when it differs from the DB record, so has_complete_layer() sees
+    /// matching hashes and recognises the layer as complete.
+    #[test]
+    fn test_upsert_resolution_symbols_updates_content_hash() {
+        let store = test_store();
+        let file_id = FileId::generate("src/main.c");
+
+        // Register file with "old_hash"
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: "src/main.c".into(),
+                language: Language::C,
+                content_hash: "old_hash".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+
+        // Create FileFacts with a different content_hash
+        let facts = FileFacts {
+            file: FileInfo {
+                file_id,
+                path: "src/main.c".into(),
+                language: Language::C,
+                content_hash: "new_hash".into(),
+                status: ParseStatus::Success,
+            },
+            ..Default::default()
+        };
+
+        store.upsert_resolution_symbols(&file_id, &facts).unwrap();
+
+        // Assert files.content_hash was updated
+        let file_info = store.get_file(&file_id).unwrap().unwrap();
+        assert_eq!(
+            file_info.content_hash, "new_hash",
+            "files.content_hash should be synced to the new hash"
+        );
+
+        // Assert file_index_layers has the new hash and complete status
+        let layer = store
+            .get_file_index_layer(&file_id, "resolution_symbols")
+            .unwrap()
+            .expect("resolution_symbols layer should exist");
+        assert_eq!(
+            layer.0, "complete",
+            "layer status should be complete"
+        );
+        assert_eq!(
+            layer.1, "new_hash",
+            "layer content_hash should match the new hash"
         );
     }
 }

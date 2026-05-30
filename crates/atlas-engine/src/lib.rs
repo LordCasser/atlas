@@ -44,7 +44,7 @@ mod precision;
 mod source_extractor;
 
 /// Closure planner: dependency-closure-aware lazy extraction planning.
-pub use closure_planner::{ClosurePlanner, DependencyClosure, PrioritizedWorkset};
+pub use closure_planner::{ClosurePlanner, DependencyClosure, IncludeRoot, PrioritizedWorkset};
 
 /// Lazy coordinator: orchestrates lazy extraction with job tracking and in-flight dedup.
 pub use lazy_coordinator::LazyCoordinator;

@@ -372,6 +372,18 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `lazy_jobs` 表�
 
 **P2: Lazy Structural** — 查询时按需触发完整 structural extraction。`LazyStructuralService` + `CandidateProvider` + `StructuralLoader`。
 
+### Content hash consistency
+
+When `upsert_resolution_symbols` detects that the on-disk file content
+has changed since the last `files` row write (different content hash),
+it atomically updates `files.content_hash` in the same transaction.
+All pre-existing richer layers (structural, dataflow) become stale
+because their recorded layer hash no longer matches the updated file
+hash.  On next lazy access they will be rebuilt from current content.
+
+This "safe-update" strategy means progressive enrichment never silently
+serves stale data, at the cost of potentially rebuilding stale layers.
+
 ### 10.2 共享索引管线
 
 `filesync::IndexPipeline` 是入口无关的索引主链路，负责：
