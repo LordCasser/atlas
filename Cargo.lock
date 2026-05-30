@@ -154,6 +154,7 @@ dependencies = [
  "graph",
  "hex",
  "lazy",
+ "regex",
  "resolution",
  "search",
  "serde",

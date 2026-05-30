@@ -36,8 +36,18 @@ pub use lazy_crate::LazyDataflowService;
 
 // ── Internal modules ──────────────────────────────────────────────────────
 
+mod closure_planner;
+mod lazy_coordinator;
 mod lazy_structural;
+mod linux_augment;
+mod precision;
 mod source_extractor;
+
+/// Closure planner: dependency-closure-aware lazy extraction planning.
+pub use closure_planner::{ClosurePlanner, DependencyClosure, PrioritizedWorkset};
+
+/// Lazy coordinator: orchestrates lazy extraction with job tracking and in-flight dedup.
+pub use lazy_coordinator::LazyCoordinator;
 
 /// Lazy structural service: on-demand full structural extraction.
 pub use lazy_structural::{
@@ -328,6 +338,7 @@ impl Engine {
                     units_cached: window.units_cached,
                     truncated: window.truncated,
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
+                    precision_tier: window.precision_tier.clone(),
                 });
                 if window.truncated {
                     partial = true;
@@ -346,6 +357,7 @@ impl Engine {
                     units_cached: 0,
                     truncated: true,
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
+                    precision_tier: None,
                 });
                 lazy_diagnostics.push(
                     TraceDiagnostic::warning(&format!("Lazy dataflow build failed: {e}"))

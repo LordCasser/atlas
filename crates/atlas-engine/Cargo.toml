@@ -20,6 +20,7 @@ lazy = { path = "crates/lazy" }
 anyhow = "1"
 blake3 = "1"
 hex = "0.4"
+regex = "1"
 serde = { version = "1", features = ["derive"] }
 tree-sitter = "0.26"
 tracing = "0.1"

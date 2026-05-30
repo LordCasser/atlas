@@ -32,13 +32,14 @@ use anyhow::{Context, Result};
 use db::Store;
 use extraction::{ExtractionMode, create_frontend, extract_file_with_mode};
 use types::ids::FileId;
+use types::structs::precision::PrecisionTier;
 use types::{layer, status};
 
 /// Maximum candidate files to consider for lazy structural loading.
 const MAX_CANDIDATE_FILES: usize = 20;
 
 /// Wall-clock budget for a lazy structural invocation (milliseconds).
-const LAZY_STRUCTURAL_BUDGET_MS: u64 = 30_000;
+pub(crate) const LAZY_STRUCTURAL_BUDGET_MS: u64 = 30_000;
 
 // ---------------------------------------------------------------------------
 // CandidateProvider trait
@@ -151,6 +152,11 @@ pub struct EnsureStructuralResult {
     pub files_built: usize,
     pub files_cached: usize,
     pub budget_exceeded: bool,
+    /// FileIds that were actually built (not cached).
+    /// Used by delta graph refresh to scope the in-memory graph rebuild.
+    pub built_file_ids: Vec<FileId>,
+    /// Precision tier reflecting data quality after this lazy operation.
+    pub precision_tier: PrecisionTier,
 }
 
 /// Entry point for query-driven lazy structural extraction.
@@ -160,7 +166,7 @@ pub struct EnsureStructuralResult {
 pub struct LazyStructuralService {
     store: Arc<Store>,
     project_root: Option<PathBuf>,
-    candidate_provider: Box<dyn CandidateProvider>,
+    pub(crate) candidate_provider: Box<dyn CandidateProvider>,
 }
 
 impl LazyStructuralService {
@@ -196,6 +202,8 @@ impl LazyStructuralService {
                 files_built: 0,
                 files_cached: 0,
                 budget_exceeded: false,
+                built_file_ids: vec![],
+                precision_tier: PrecisionTier::Unavailable,
             });
         }
         self.ensure_structural_for_files(&candidates)
@@ -238,11 +246,12 @@ impl LazyStructuralService {
 
     fn ensure_structural_for_files(&self, file_ids: &[FileId]) -> Result<EnsureStructuralResult> {
         let start = std::time::Instant::now();
-        let mut built_file_ids: Vec<FileId> = Vec::new();
         let mut result = EnsureStructuralResult {
             files_built: 0,
             files_cached: 0,
             budget_exceeded: false,
+            built_file_ids: vec![],
+            precision_tier: PrecisionTier::Unavailable,
         };
 
         for file_id in file_ids {
@@ -257,7 +266,7 @@ impl LazyStructuralService {
             match self.reindex_file_structural(file_id) {
                 Ok(()) => {
                     result.files_built += 1;
-                    built_file_ids.push(*file_id);
+                    result.built_file_ids.push(*file_id);
                 }
                 Err(e) => {
                     tracing::warn!("Lazy structural failed for {:?}: {:#}", file_id, e);
@@ -265,9 +274,16 @@ impl LazyStructuralService {
             }
         }
 
-        if !built_file_ids.is_empty() {
-            self.incremental_resolve_and_build(&built_file_ids)?;
+        if !result.built_file_ids.is_empty() {
+            self.incremental_resolve_and_build(&result.built_file_ids)?;
         }
+
+        // Compute precision tier from build results
+        result.precision_tier = crate::precision::structural_precision(
+            result.files_built,
+            result.files_cached,
+            result.budget_exceeded,
+        );
 
         Ok(result)
     }
@@ -310,7 +326,7 @@ impl LazyStructuralService {
 
         // Extract BEFORE any destructive invalidation — if extraction fails,
         // no destructive operations have been performed.
-        let facts = extract_file_with_mode(
+        let mut facts = extract_file_with_mode(
             &frontend,
             *file_id,
             std::path::Path::new(&file_info.path),
@@ -318,6 +334,18 @@ impl LazyStructuralService {
             &content_hash,
             ExtractionMode::Structural,
         )?;
+
+        // Post-extraction: enrich with kernel-specific semantics
+        let aug = crate::linux_augment::LinuxAugmenter::augment(&mut facts, &source);
+        if aug.symbols_exported > 0 || aug.initcall_edges > 0 || aug.syscall_detected > 0 {
+            tracing::info!(
+                "Linux augment: {} exports, {} initcall edges, {} syscalls for {}",
+                aug.symbols_exported,
+                aug.initcall_edges,
+                aug.syscall_detected,
+                file_info.path,
+            );
+        }
 
         // Invalidate cross-file references, delete outgoing edges, and
         // atomically replace file facts — all in a single transaction so
