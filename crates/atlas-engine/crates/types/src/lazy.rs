@@ -88,6 +88,11 @@ pub struct LazyWindow {
     /// Units whose dataflow was already cached (populated at runtime).
     #[serde(default)]
     pub units_cached: usize,
+    /// Dataflow precision tier (set by LazyDataflowService after loading).
+    /// None if dataflow was not loaded via lazy path.
+    /// Stored as a Debug/serde string to avoid cross-crate coupling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub precision_tier: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

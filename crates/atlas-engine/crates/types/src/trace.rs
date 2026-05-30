@@ -243,6 +243,10 @@ pub struct LazySummary {
     pub truncated: bool,
     /// Wall-clock time spent on lazy dataflow loading (milliseconds).
     pub duration_ms: u64,
+    /// Precision tier of the dataflow result (set by lazy dataflow service).
+    /// None means no lazy dataflow was triggered or tier is irrelevant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub precision_tier: Option<String>,
 }
 
 /// A single step in a trace path — connects two data nodes via a dataflow edge.

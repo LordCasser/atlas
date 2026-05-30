@@ -15,6 +15,7 @@
 //! | `summary`   | Function summaries (persistence + query) |
 //! | `stats`     | Metadata, stats, path resolution |
 //! | `annotations` | Function-pointer dispatch annotations |
+//! | `lazy_jobs` | Lazy build job tracking (queued/building/complete/failed) |
 //!
 //! ## Reader / Writer trait split
 //!
@@ -40,6 +41,7 @@ mod edges;
 mod files;
 mod fk_guards;
 mod index_layers;
+mod lazy_jobs;
 mod lifecycle;
 mod scopes;
 mod stats;

@@ -22,6 +22,7 @@
 //! - `summary_call_arg_sources`  — call argument → upstream source mapping
 //! - `analysis_artifacts` — lazy dataflow/CFG artifact tracking
 //! - `file_index_layers` — per-file per-layer index status
+//! - `lazy_jobs`      — lazy build job tracking (queued/building/complete/failed)
 //! - `project_metadata` — key-value project configuration
 //! - `function_pointer_annotations` — user-declared function-pointer dispatch annotations
 //! - `symbols_fts`    — FTS5 index on symbol names
@@ -292,6 +293,29 @@ CREATE TABLE IF NOT EXISTS file_index_layers (
 CREATE INDEX IF NOT EXISTS idx_file_index_layers_file
     ON file_index_layers(file_id);
 
+-- Lazy build job tracking: one row per (file_id, target_layer, job_id).
+-- Jobs transition: queued → building → complete/failed.
+-- The (file_id, target_layer, status) index enables in-flight dedup queries.
+CREATE TABLE IF NOT EXISTS lazy_jobs (
+    job_id        TEXT PRIMARY KEY NOT NULL,
+    file_id       BLOB NOT NULL,
+    target_layer  TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'queued',
+    trigger_query TEXT,
+    depends_on    TEXT,
+    started_at    TEXT,
+    completed_at  TEXT,
+    budget_ms     INTEGER,
+    error_msg     TEXT,
+    FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_lazy_jobs_file_layer_status
+    ON lazy_jobs(file_id, target_layer, status);
+
+CREATE INDEX IF NOT EXISTS idx_lazy_jobs_status
+    ON lazy_jobs(status);
+
 -- ===== Summary tables (Schema v3) =====
 
 -- Function summary metadata: one row per function.
@@ -526,6 +550,8 @@ mod tests {
         assert!(tables.contains(&"cfg_edges".to_string()));
         assert!(tables.contains(&"symbols_fts".to_string()));
         assert!(tables.contains(&"project_metadata".to_string()));
+        // Lazy jobs tracking
+        assert!(tables.contains(&"lazy_jobs".to_string()));
         // Function pointer annotations
         assert!(tables.contains(&"function_pointer_annotations".to_string()));
         // Summary tables

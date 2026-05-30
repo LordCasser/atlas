@@ -269,6 +269,43 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Find symbol edges whose source or target is in any of the given files.
+    ///
+    /// Uses a subquery to find symbol_ids belonging to `file_ids`, then
+    /// selects edges where source or target matches.  Used by delta graph
+    /// refresh to scope edge loading to only the files affected by lazy
+    /// structural extraction.
+    pub fn find_edges_for_files(&self, file_ids: &[FileId]) -> anyhow::Result<Vec<RawEdge>> {
+        if file_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.lock_read();
+        let file_placeholders: Vec<String> = file_ids.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "SELECT e.edge_id, e.source, e.target, e.kind, e.confidence, e.provenance,
+                    e.ref_id, e.location_0, e.location_1, e.location_2,
+                    e.location_3, e.location_4, e.location_5,
+                    e.metadata, e.resolved_by
+             FROM symbol_edges e
+             WHERE e.source IN (SELECT symbol_id FROM symbols WHERE file_id IN ({}))
+                OR e.target IN (SELECT symbol_id FROM symbols WHERE file_id IN ({}))
+             ORDER BY e.kind",
+            file_placeholders.join(","),
+            file_placeholders.join(","),
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        // Both IN clauses use same file_ids — bind twice
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(file_ids.len() * 2);
+        for fid in file_ids {
+            params.push(fid as &dyn rusqlite::types::ToSql);
+        }
+        for fid in file_ids {
+            params.push(fid as &dyn rusqlite::types::ToSql);
+        }
+        let rows = stmt.query_map(params.as_slice(), row_to_edge)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     // ── Callsites ───────────────────────────────────────────────────────────
 
     /// Batch-insert callsites inside a transaction.

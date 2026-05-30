@@ -36,6 +36,35 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Find symbols across multiple files in a single query.
+    ///
+    /// Used by delta graph refresh to load only the symbols for files
+    /// affected by lazy structural extraction, avoiding a full scan.
+    pub fn find_symbols_by_files(&self, file_ids: &[FileId]) -> anyhow::Result<Vec<SymbolDef>> {
+        if file_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.lock_read();
+        let placeholders: Vec<String> = file_ids.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "SELECT symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
+                    language,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column,
+                    name_start_byte, name_end_byte, name_start_line, name_start_column,
+                    name_end_line, name_end_column,
+                    signature, visibility, exported, static_, async_,
+                    container_id, scope_id, package_name, namespace_path_json, layer
+             FROM symbols WHERE file_id IN ({}) ORDER BY qualified_name",
+            placeholders.join(",")
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::types::ToSql> =
+            file_ids.iter().map(|f| f as &dyn rusqlite::types::ToSql).collect();
+        let rows = stmt.query_map(params.as_slice(), row_to_symbol)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// FTS5 search by name (default limit 50).
     pub fn search_symbols(&self, query: &str) -> anyhow::Result<Vec<SymbolDef>> {
         self.search_symbols_with_limit(query, 50, None)

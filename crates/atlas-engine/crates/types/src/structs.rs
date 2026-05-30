@@ -130,20 +130,63 @@ fn default_layer() -> String {
 pub mod layer {
     /// Top-level symbols only (from `--analysis manifest`).
     pub const MANIFEST: &str = "manifest";
+    /// Minimal symbol layer for dependency closure — only declaration-level
+    /// symbols (functions, typedefs, structs, enums, exports) usable for
+    /// cross-file reference resolution. Does NOT include full references,
+    /// scopes, or dataflow.
+    pub const RESOLUTION_SYMBOLS: &str = "resolution_symbols";
     /// Full symbols + references + scopes (from `--analysis structural`).
     pub const STRUCTURAL: &str = "structural";
     /// Dataflow nodes/edges (from lazy dataflow or `--analysis full`).
     pub const DATAFLOW: &str = "dataflow";
 }
 
-/// Named constants for `file_index_layers.status` values.
+/// Named constants for `file_index_layers.status` and `lazy_jobs.status` values.
 pub mod status {
     /// Layer extraction completed successfully.
     pub const COMPLETE: &str = "complete";
+    /// Layer build is queued but not yet started (used by lazy_jobs tracking).
+    pub const QUEUED: &str = "queued";
+    /// Layer build is in progress (used by lazy_jobs tracking).
+    pub const BUILDING: &str = "building";
     /// Layer extraction was truncated (budget exceeded).
     pub const PARTIAL: &str = "partial";
     /// Layer extraction failed.
     pub const FAILED: &str = "failed";
+    /// A lower-precision layer has been superseded by a higher-precision one
+    /// (e.g., resolution_symbols superseded by structural).
+    pub const SUPERSEDED: &str = "superseded";
+}
+
+/// Precision tier for lazy analysis results.
+///
+/// Six tiers from Unavailable (no data) to Exact (complete analysis).
+/// The tier reflects the quality of data available for a file/symbol
+/// after lazy extraction, combining both structural and dataflow layers.
+pub mod precision {
+    use serde::{Deserialize, Serialize};
+
+    /// Graded precision level of lazy analysis data.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+    pub enum PrecisionTier {
+        /// No data available at all (extraction failed or not attempted).
+        Unavailable = 0,
+        /// Only top-level symbols from manifest (function/struct/enum/typedef names).
+        /// No body analysis, no references, no scopes.
+        ManifestOnly = 1,
+        /// Dataflow within individual function bodies, but no cross-file resolution.
+        /// Body-level CFG, data nodes, bindings exist; cross-file references not resolved.
+        LocalDataflowOnly = 2,
+        /// Structural extraction was started but budget exceeded mid-build.
+        /// Some files have complete structural, others may have only manifest or nothing.
+        /// Cross-file reference resolution is incomplete.
+        DegradedStructural = 3,
+        /// Structural is complete, but dataflow was truncated (budget exceeded).
+        /// All cross-file references are resolved, but dataflow is partial.
+        PartialExact = 4,
+        /// Full structural + dataflow, all resolution complete.
+        Exact = 5,
+    }
 }
 
 impl SymbolDef {
