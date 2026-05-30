@@ -331,7 +331,8 @@ impl ToolRouter {
                 file_ids_set.insert(sym.file_id);
             }
         }
-        let lazy_warnings = self.ensure_structural_for_files(file_ids_set, roots);
+        let outcome = self.ensure_structural_for_files(file_ids_set, roots);
+        let lazy_warnings = outcome.warnings;
         // Cache for no-path diagnostics below (used in user-facing messages).
         let is_manual_full = self.has_manual_full_index();
 
@@ -644,14 +645,16 @@ impl ToolRouter {
             // Surface include_roots and lazy-structural warnings.
             let mut all_warnings: Vec<String> = root_warnings;
             all_warnings.extend(lazy_warnings);
+            let mut resp = json!({
+                "from": from_qname, "to": to_qname,
+                "path_length": 0, "path": [], "breakpoints": [],
+                "message": &message, "frontier": frontier_nodes,
+            });
+            if !all_warnings.is_empty() {
+                resp["warnings"] = json!(all_warnings);
+            }
             (
-                serde_json::to_string_pretty(&json!({
-                    "from": from_qname, "to": to_qname,
-                    "path_length": 0, "path": [], "breakpoints": [],
-                    "message": &message, "frontier": frontier_nodes,
-                    "warnings": all_warnings,
-                }))
-                .unwrap_or_else(|e| e.to_string()),
+                serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
                 false,
             )
         }

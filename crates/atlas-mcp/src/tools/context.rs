@@ -6,8 +6,6 @@
 //! newly parsed edges — closing the MCP call-flow gap where graph init
 //! happened before the handler's own structural extraction.
 
-use atlas_engine::LazyStructuralService;
-
 use super::{ToolRouter, get_str};
 
 use serde_json::json;
@@ -91,7 +89,10 @@ impl ToolRouter {
         if let Some(id) = symbols.first().map(|s| s.id) {
             // Ensure structural data for this file (include_roots optional,
             // always relevant) so graph queries see complete edges.
-            warnings.extend(self.ensure_structural_for_files([symbols[0].file_id], include_roots));
+            warnings.extend(
+                self.ensure_structural_for_files([symbols[0].file_id], include_roots)
+                    .warnings,
+            );
             return Ok((id, warnings));
         }
 
@@ -102,8 +103,10 @@ impl ToolRouter {
         });
         if name_matches.len() == 1 {
             // Unambiguous — use it directly
-            warnings
-                .extend(self.ensure_structural_for_files([name_matches[0].file_id], include_roots));
+            warnings.extend(
+                self.ensure_structural_for_files([name_matches[0].file_id], include_roots)
+                    .warnings,
+            );
             return Ok((name_matches[0].id, warnings));
         }
         if name_matches.len() > 1 {
@@ -117,7 +120,8 @@ impl ToolRouter {
                 .collect();
             if matching_qnames.len() == 1 {
                 warnings.extend(
-                    self.ensure_structural_for_files([matching_qnames[0].file_id], include_roots),
+                    self.ensure_structural_for_files([matching_qnames[0].file_id], include_roots)
+                        .warnings,
                 );
                 return Ok((matching_qnames[0].id, warnings));
             }
@@ -139,31 +143,15 @@ impl ToolRouter {
         }
 
         // ── Tier 3: try lazy structural, then re-query ──
-        // Use LazyCoordinator for closure-aware lazy structural:
-        // expands include/import dependencies to cross-file resolution.
-        // `has_manual_full_index()` is checked inside ensure_structural_for_files,
-        // but tier 3 does symbol-based lookup so perform explicit check here.
+        // `has_manual_full_index()` is checked inside
+        // `ensure_structural_for_symbol_name`, but tier 3 does
+        // symbol-based lookup so we check here to skip the progress
+        // message when lazy work is a no-op.
         let is_manual_full = self.has_manual_full_index();
         if !is_manual_full {
             self.send_progress(0.5, "Extracting structural data...");
-            let coordinator = atlas_engine::LazyCoordinator::with_project_root(
-                self.store.clone(),
-                self.project_root.clone(),
-            )
-            .with_include_roots(include_roots);
-            let lazy =
-                LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-            match coordinator.ensure_structural_for_symbol_with_closure(&lazy, qname) {
-                Ok(result) => {
-                    if !result.built_file_ids.is_empty() {
-                        // Refresh graph so subsequent graph-backed tools see new edges
-                        let _ = self.refresh_graph_for_files(&result.built_file_ids);
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Lazy structural failed for '{}': {:#}", qname, e);
-                }
-            }
+            let outcome = self.ensure_structural_for_symbol_name(qname, include_roots.clone());
+            warnings.extend(outcome.warnings);
         }
 
         // Re-query after lazy extraction (tier 1 again on freshly-parsed data)

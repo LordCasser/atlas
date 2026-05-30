@@ -21,6 +21,7 @@ use atlas_engine::SearchEngine;
 use atlas_engine::SourceExtractor;
 use atlas_engine::Store;
 use atlas_engine::SymbolId;
+use atlas_engine::TraceDiagnostic;
 
 use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolInputSchema};
 
@@ -58,6 +59,18 @@ pub(crate) mod status;
 pub(crate) mod trace;
 pub(crate) mod usages;
 pub(crate) mod wait_for;
+
+// -------------------------------------------------------------------
+// StructuralEnsureOutcome
+// -------------------------------------------------------------------
+
+/// Result of lazy structural extraction triggered via
+/// [`ensure_structural_for_files`] or [`ensure_structural_for_symbol_name`].
+#[allow(dead_code)]
+pub(crate) struct StructuralEnsureOutcome {
+    pub warnings: Vec<String>,
+    pub built_file_ids: Vec<atlas_engine::FileId>,
+}
 
 // -------------------------------------------------------------------
 // ToolRouter
@@ -634,33 +647,39 @@ impl ToolRouter {
 
     /// Ensure structural data for the given files, with optional
     /// include_roots for C/C++ angle-bracket resolution.
-    /// Returns warnings for any failures (the caller should surface these
-    /// in the MCP response).
+    /// Returns outcome with warnings and built file IDs (the caller should
+    /// surface warnings in the MCP response).
     ///
     /// No-op when a manual full index already exists.
     pub(crate) fn ensure_structural_for_files(
         &mut self,
         file_ids: impl IntoIterator<Item = FileId>,
         include_roots: Vec<atlas_engine::IncludeRoot>,
-    ) -> Vec<String> {
+    ) -> StructuralEnsureOutcome {
         let mut warnings = Vec::new();
+        let mut built_file_ids = Vec::new();
         if self.has_manual_full_index() {
-            return warnings;
+            return StructuralEnsureOutcome {
+                warnings,
+                built_file_ids,
+            };
         }
         // Deduplicate
         let file_set: HashSet<_> = file_ids.into_iter().collect();
         if file_set.is_empty() {
-            return warnings;
+            return StructuralEnsureOutcome {
+                warnings,
+                built_file_ids,
+            };
         }
         let coordinator =
             LazyCoordinator::with_project_root(self.store.clone(), self.project_root.clone())
                 .with_include_roots(include_roots);
         let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-        let mut total_built: Vec<FileId> = Vec::new();
         for file_id in &file_set {
             match coordinator.ensure_structural_with_closure(&lazy, file_id) {
                 Ok((result, _job_id)) => {
-                    total_built.extend(result.built_file_ids);
+                    built_file_ids.extend(result.built_file_ids);
                 }
                 Err(e) => {
                     warnings.push(format!(
@@ -671,12 +690,57 @@ impl ToolRouter {
                 }
             }
         }
-        if !total_built.is_empty() {
-            if let Err(e) = self.refresh_graph_for_files(&total_built) {
+        if !built_file_ids.is_empty() {
+            if let Err(e) = self.refresh_graph_for_files(&built_file_ids) {
                 warnings.push(format!("Graph refresh failed: {:#}", e));
             }
         }
-        warnings
+        StructuralEnsureOutcome {
+            warnings,
+            built_file_ids,
+        }
+    }
+
+    /// Ensure structural data for files containing a symbol name,
+    /// with optional include_roots.  Useful for name-based lookups
+    /// where the file_id is not yet known.
+    pub(crate) fn ensure_structural_for_symbol_name(
+        &mut self,
+        symbol_name: &str,
+        include_roots: Vec<atlas_engine::IncludeRoot>,
+    ) -> StructuralEnsureOutcome {
+        let mut warnings = Vec::new();
+        let mut built_file_ids = Vec::new();
+        if self.has_manual_full_index() {
+            return StructuralEnsureOutcome {
+                warnings,
+                built_file_ids,
+            };
+        }
+        let coordinator =
+            LazyCoordinator::with_project_root(self.store.clone(), self.project_root.clone())
+                .with_include_roots(include_roots);
+        let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
+        match coordinator.ensure_structural_for_symbol_with_closure(&lazy, symbol_name) {
+            Ok(result) => {
+                built_file_ids = result.built_file_ids;
+            }
+            Err(e) => {
+                warnings.push(format!(
+                    "Lazy structural extraction failed for '{}': {:#}",
+                    symbol_name, e
+                ));
+            }
+        }
+        if !built_file_ids.is_empty() {
+            if let Err(e) = self.refresh_graph_for_files(&built_file_ids) {
+                warnings.push(format!("Graph refresh failed: {:#}", e));
+            }
+        }
+        StructuralEnsureOutcome {
+            warnings,
+            built_file_ids,
+        }
     }
 
     /// Resolve a qualified name to a SymbolId, returning error string on failure.
@@ -746,6 +810,38 @@ impl ToolRouter {
     pub(crate) fn read_symbol_source(&self, symbol_id: &SymbolId) -> Option<String> {
         self.source_extractor.extract_source(symbol_id)
     }
+}
+
+// -------------------------------------------------------------------
+// Shared helper functions (module-level, not on ToolRouter)
+// -------------------------------------------------------------------
+
+/// Merge root validation warnings and lazy structural warnings into a JSON
+/// response's `"warnings"` array. Only adds the key when non-empty.
+pub(crate) fn add_json_warnings(
+    value: &mut serde_json::Value,
+    root_warnings: Vec<String>,
+    lazy_warnings: Vec<String>,
+) {
+    let mut all: Vec<String> = Vec::new();
+    all.extend(root_warnings);
+    all.extend(lazy_warnings);
+    if !all.is_empty() {
+        value["warnings"] =
+            serde_json::Value::Array(all.into_iter().map(serde_json::Value::String).collect());
+    }
+}
+
+/// Convert lazy/include_roots warnings into TraceDiagnostics for
+/// injection into trace responses.
+pub(crate) fn warnings_to_trace_diagnostics(
+    warnings: Vec<String>,
+    code: &str,
+) -> Vec<TraceDiagnostic> {
+    warnings
+        .into_iter()
+        .map(|msg| TraceDiagnostic::warning(&msg).with_code(code))
+        .collect()
 }
 
 // -------------------------------------------------------------------
@@ -1248,5 +1344,38 @@ mod tests {
             normalize_project_relative_path("a/b/../c"),
             Some("a/c".into())
         );
+    }
+
+    #[test]
+    fn structural_ensure_outcome_default() {
+        let outcome = StructuralEnsureOutcome {
+            warnings: vec![],
+            built_file_ids: vec![],
+        };
+        assert!(outcome.warnings.is_empty());
+        assert!(outcome.built_file_ids.is_empty());
+    }
+
+    #[test]
+    fn warnings_to_trace_diagnostics_converts() {
+        let diags = warnings_to_trace_diagnostics(vec!["test error".into()], "test_code");
+        assert!(!diags.is_empty());
+        assert_eq!(diags[0].code, Some("test_code".into()));
+        assert_eq!(diags[0].message, "test error");
+    }
+
+    #[test]
+    fn add_json_warnings_empty_is_noop() {
+        let mut val = serde_json::json!({});
+        add_json_warnings(&mut val, vec![], vec![]);
+        assert!(val.get("warnings").is_none());
+    }
+
+    #[test]
+    fn add_json_warnings_merges() {
+        let mut val = serde_json::json!({});
+        add_json_warnings(&mut val, vec!["r1".into()], vec!["l1".into()]);
+        let warns = val["warnings"].as_array().unwrap();
+        assert_eq!(warns.len(), 2);
     }
 }

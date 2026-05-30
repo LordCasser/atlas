@@ -11,7 +11,7 @@ use atlas_engine::Store;
 use atlas_engine::SymbolDef;
 use atlas_engine::SymbolKind;
 
-use super::{ToolRouter, get_str, get_str_opt, get_u64};
+use super::{ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64};
 
 use serde_json::json;
 use std::sync::Arc;
@@ -247,30 +247,6 @@ impl ToolRouter {
         )
     }
 
-    /// Trigger lazy structural extraction for the given query.  When a manual
-    /// full index already exists, this is a no-op — all files already have
-    /// complete structural data.
-    fn try_lazy_structural(&mut self, query: &str, include_roots: Vec<atlas_engine::IncludeRoot>) {
-        // Manual full index: structural data already complete — skip lazy extraction.
-        if self.has_manual_full_index() {
-            return;
-        }
-        let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-        let coordinator =
-            LazyCoordinator::with_project_root(self.store.clone(), self.project_root.clone())
-                .with_include_roots(include_roots);
-        match coordinator.ensure_structural_for_symbol_with_closure(&lazy, query) {
-            Ok(result) => {
-                if !result.built_file_ids.is_empty() {
-                    let _ = self.refresh_graph_for_files(&result.built_file_ids);
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Lazy structural extraction failed for '{}': {}", query, e);
-            }
-        }
-    }
-
     pub(crate) fn handle_symbol(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "qualified_name");
         let include_code = args
@@ -289,16 +265,25 @@ impl ToolRouter {
                 return (s, true);
             }
         };
-        let mut lazy_warnings = Vec::new();
+        let lazy_warnings;
         let sym = match symbols.into_iter().next() {
             Some(s) => {
-                // Ensure structural data for this file so caller/callee
-                // results include fresh edges from lazy extraction.
-                lazy_warnings = self.ensure_structural_for_files([s.file_id], include_roots);
-                s
+                // Ensure structural data so caller/callee results
+                // include fresh edges from lazy extraction.
+                let outcome = self.ensure_structural_for_files([s.file_id], include_roots.clone());
+                lazy_warnings = outcome.warnings;
+                // Re-query after lazy — structural replace may have
+                // updated symbol metadata or source ranges.
+                self.store
+                    .find_symbols_by_qname(qname)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .next()
+                    .unwrap_or(s)
             }
             None => {
-                self.try_lazy_structural(qname, include_roots);
+                let outcome = self.ensure_structural_for_symbol_name(qname, include_roots.clone());
+                lazy_warnings = outcome.warnings;
                 let retry = self.store.find_symbols_by_qname(qname).unwrap_or_default();
                 match retry.into_iter().next() {
                     Some(s) => s,
@@ -342,11 +327,7 @@ impl ToolRouter {
             }
         }
         // Surface include_roots and lazy-structural warnings to the caller.
-        let mut all_warnings: Vec<String> = root_warnings;
-        all_warnings.extend(lazy_warnings);
-        if !all_warnings.is_empty() {
-            result["warnings"] = json!(all_warnings);
-        }
+        add_json_warnings(&mut result, root_warnings, lazy_warnings);
 
         (
             serde_json::to_string_pretty(&result).unwrap_or_else(|e| e.to_string()),
