@@ -1,0 +1,45 @@
+{
+  "symbols": [
+    {
+      "name": "build",
+      "kind": "method"
+    },
+    {
+      "name": "SimpleWidget",
+      "kind": "struct"
+    }
+  ],
+  "references": [
+    {
+      "text": "info",
+      "kind": "call"
+    },
+    {
+      "text": "info",
+      "kind": "field_access"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "struct#350",
+      "kind": "struct"
+    },
+    {
+      "name": "Method#374",
+      "kind": "method"
+    },
+    {
+      "name": "Block#382",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "build"
+    }
+  ]
+}

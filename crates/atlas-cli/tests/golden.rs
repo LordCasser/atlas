@@ -267,6 +267,18 @@ fn golden_arkts_simple() {
     run_golden("arkts", "simple", "ets", Language::ArkTS);
 }
 
+#[cfg(feature = "arkts")]
+#[test]
+fn golden_arkts_struct_simple() {
+    run_golden("arkts", "struct_simple", "ets", Language::ArkTS);
+}
+
+#[cfg(feature = "arkts")]
+#[test]
+fn golden_arkts_struct_complex() {
+    run_golden("arkts", "struct_complex", "ets", Language::ArkTS);
+}
+
 // ---------------------------------------------------------------------------
 // P2: Import resolution golden tests
 // ---------------------------------------------------------------------------

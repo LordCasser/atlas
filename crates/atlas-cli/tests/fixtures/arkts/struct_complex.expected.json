@@ -1,0 +1,89 @@
+{
+  "symbols": [
+    {
+      "name": "Column",
+      "kind": "method"
+    },
+    {
+      "name": "ComplexWidget",
+      "kind": "struct"
+    }
+  ],
+  "references": [
+    {
+      "text": "build",
+      "kind": "call"
+    },
+    {
+      "text": "Text",
+      "kind": "call"
+    },
+    {
+      "text": "title",
+      "kind": "field_access"
+    },
+    {
+      "text": "increment",
+      "kind": "call"
+    },
+    {
+      "text": "count",
+      "kind": "field_access"
+    },
+    {
+      "text": "aboutToAppear",
+      "kind": "call"
+    },
+    {
+      "text": "info",
+      "kind": "call"
+    },
+    {
+      "text": "info",
+      "kind": "field_access"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "struct#443",
+      "kind": "struct"
+    },
+    {
+      "name": "Method#534",
+      "kind": "method"
+    },
+    {
+      "name": "Block#543",
+      "kind": "block"
+    },
+    {
+      "name": "Block#593",
+      "kind": "block"
+    },
+    {
+      "name": "Block#645",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "ComplexWidget"
+    },
+    {
+      "caller": "Column"
+    },
+    {
+      "caller": "ComplexWidget"
+    },
+    {
+      "caller": "ComplexWidget"
+    },
+    {
+      "caller": "ComplexWidget"
+    }
+  ]
+}
