@@ -67,7 +67,7 @@ cargo install --path crates/atlas-cli --features "all-languages,mcp"
 ## Quick start
 
 ```bash
-# Run from your project root — `--project` defaults to `.`
+# Run from your project root
 # Create .atlas/ and initialize the SQLite schema
 atlas init
 
@@ -83,8 +83,9 @@ atlas search "UserService"
 atlas context "my.module.UserService"
 ```
 
-All commands accept `--project <path>` when running from outside the project
-directory (supports both relative and absolute paths).
+Non-MCP CLI commands accept `--project <path>` when running from outside the
+project directory (supports both relative and absolute paths). The MCP server
+uses the client's current working directory.
 
 ## CLI
 
@@ -127,32 +128,28 @@ atlas mcp
 
 ### Client configuration
 
-`--project` defaults to `.`, so atlas uses the client's working directory.
-This enables a **global configuration** that works across all projects without
-hardcoding project paths. You can also switch projects at runtime with the
-`open_project` MCP tool.
-
-> Some clients (e.g., Claude Desktop) start from unpredictable working
-> directories. For those clients, use **project mode** with an explicit
-> `--project <path>`.
+Atlas MCP uses the client's current working directory. Configure the MCP server
+without a project path, and start the client from the repository you want Atlas
+to inspect. You can also switch projects at runtime with the `open_project`
+MCP tool.
 
 Config files by client:
 
-| Client | Global config |
-|---|---|
-| Claude Code | `~/.claude.json` |
-| Codex CLI | `~/.codex/config.toml` |
-| OpenCode | `~/.config/opencode/opencode.json` |
-| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) |
-| Cursor | Cursor Settings → MCP → Add new MCP server |
+| Client | Global config | Project config |
+|---|---|---|
+| Claude Code | `~/.claude.json` | `.claude/settings.local.json` |
+| Codex CLI | `~/.codex/config.toml` | - |
+| OpenCode | `~/.config/opencode/opencode.json` | `opencode.json` in the project root |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) | - |
+| Cursor | Cursor Settings -> MCP -> Add new MCP server | `.cursor/mcp.json` |
 
-> Claude Code and OpenCode also support project-level config:
-> `.claude/settings.local.json` and `.opencode/opencode.json`.
+> Claude/Cursor-style clients use `mcpServers` with `command` and `args`.
+> OpenCode uses its own `mcp` object: each server is `type: "local"` and
+> `command` is a single array containing the executable and arguments.
 
-#### Global mode — no `--project`
+#### MCP server config
 
-Recommended for agents that start from the project directory (Claude Code,
-Codex CLI, OpenCode). One config works for every project.
+Use the same no-project configuration for every repository.
 
 Claude Code (`~/.claude.json`):
 
@@ -171,10 +168,12 @@ OpenCode (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "mcpServers": {
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
     "atlas": {
-      "command": "/path/to/atlas",
-      "args": ["mcp"]
+      "type": "local",
+      "command": ["/path/to/atlas", "mcp"],
+      "enabled": true
     }
   }
 }
@@ -186,36 +185,6 @@ Codex CLI (`~/.codex/config.toml`):
 [mcp_servers.atlas]
 command = "/path/to/atlas"
 args = ["mcp"]
-enabled = true
-```
-
-#### Project mode — explicit `--project`
-
-Use when the client's working directory is unpredictable, or when you want
-to lock atlas to a specific codebase.
-
-Claude Desktop:
-
-```json
-{
-  "mcpServers": {
-    "atlas": {
-      "command": "/path/to/atlas",
-      "args": ["mcp", "--project", "/path/to/project"]
-    }
-  }
-}
-```
-
-Claude Code, OpenCode, Cursor — same JSON format as above. Just add
-`"--project"` and the path to the `args` array.
-
-Codex CLI (`~/.codex/config.toml`):
-
-```toml
-[mcp_servers.atlas]
-command = "/path/to/atlas"
-args = ["mcp", "--project", "/path/to/project"]
 enabled = true
 ```
 
