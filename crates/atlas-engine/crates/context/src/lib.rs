@@ -122,8 +122,10 @@ impl ContextBuilder {
         let callee_syms = resolve_symbols(&self.store, &filtered_callees)?;
 
         // Build detailed caller/callee info with source snippets
-        let caller_details = self.build_caller_details(symbol_id, &filtered_callers, &caller_syms)?;
-        let callee_details = self.build_callee_details(symbol_id, &filtered_callees, &callee_syms)?;
+        let caller_details =
+            self.build_caller_details(symbol_id, &filtered_callers, &caller_syms)?;
+        let callee_details =
+            self.build_callee_details(symbol_id, &filtered_callees, &callee_syms)?;
 
         let subject_source = self.read_source_snippet(sym);
 
@@ -189,9 +191,11 @@ impl ContextBuilder {
         let mut details = Vec::new();
         for caller_sym in caller_syms {
             // Find the edge from this caller to the subject
-            let edge = edges.iter().find(|e| e.source == caller_sym.id
-                && (e.kind == types::EdgeKind::Calls
-                    || e.kind == types::EdgeKind::RegistersCallback));
+            let edge = edges.iter().find(|e| {
+                e.source == caller_sym.id
+                    && (e.kind == types::EdgeKind::Calls
+                        || e.kind == types::EdgeKind::RegistersCallback)
+            });
             let line = edge
                 .and_then(|e| e.location.as_ref())
                 .map(|r| r.start_line)
@@ -204,7 +208,9 @@ impl ContextBuilder {
                 symbol: caller_sym.clone(),
                 callsite_line: line,
                 callsite_snippet,
-                edge_kind: edge.map(|e| e.kind.clone()).unwrap_or(types::EdgeKind::Calls),
+                edge_kind: edge
+                    .map(|e| e.kind.clone())
+                    .unwrap_or(types::EdgeKind::Calls),
             });
         }
         Ok(details)
@@ -219,9 +225,11 @@ impl ContextBuilder {
         let edges = self.store.find_edges_by_source(subject_id)?;
         let mut details = Vec::new();
         for callee_sym in callee_syms {
-            let edge = edges.iter().find(|e| e.target == callee_sym.id
-                && (e.kind == types::EdgeKind::Calls
-                    || e.kind == types::EdgeKind::RegistersCallback));
+            let edge = edges.iter().find(|e| {
+                e.target == callee_sym.id
+                    && (e.kind == types::EdgeKind::Calls
+                        || e.kind == types::EdgeKind::RegistersCallback)
+            });
             let line = edge
                 .and_then(|e| e.location.as_ref())
                 .map(|r| r.start_line)
@@ -234,7 +242,9 @@ impl ContextBuilder {
                 symbol: callee_sym.clone(),
                 callsite_line: line,
                 callsite_snippet,
-                edge_kind: edge.map(|e| e.kind.clone()).unwrap_or(types::EdgeKind::Calls),
+                edge_kind: edge
+                    .map(|e| e.kind.clone())
+                    .unwrap_or(types::EdgeKind::Calls),
                 callee_signature: callee_sym.signature.clone(),
             });
         }

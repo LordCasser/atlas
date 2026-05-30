@@ -11,8 +11,8 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use db::store_rows::ArtifactRecord;
 use db::Store;
+use db::store_rows::ArtifactRecord;
 use extraction::{ExtractionMode, LanguageFrontend, create_frontend};
 use types::enums::Language;
 use types::ids::{BindingId, CfgNodeId, DataNodeId, FileId};
@@ -89,12 +89,8 @@ impl LazyDataflowLoader {
         // Sort file groups by total estimated cost (cheapest first) so maximal
         // units complete within budget before expensive files consume it.
         let mut sorted_groups: Vec<(FileId, Vec<&AnalysisUnit>)> = groups.into_iter().collect();
-        sorted_groups.sort_by_key(|(_, units)| {
-            units
-                .iter()
-                .map(|u| estimate_unit_cost(u))
-                .sum::<u64>()
-        });
+        sorted_groups
+            .sort_by_key(|(_, units)| units.iter().map(|u| estimate_unit_cost(u)).sum::<u64>());
 
         for (_file_id, units) in &sorted_groups {
             // Budget guard — check before each file group
@@ -313,10 +309,7 @@ fn partition_payload_for_unit(payload: &DataflowPayload, unit: &AnalysisUnit) ->
     let cfg_nodes: Vec<types::CfgNode> = payload
         .cfg_nodes
         .iter()
-        .filter(|cn| {
-            unit.symbol_id
-                .map_or(false, |sid| cn.function_id == sid)
-        })
+        .filter(|cn| unit.symbol_id.map_or(false, |sid| cn.function_id == sid))
         .cloned()
         .collect();
     let cfg_node_ids: HashSet<CfgNodeId> = cfg_nodes.iter().map(|cn| cn.id).collect();
@@ -334,7 +327,10 @@ fn partition_payload_for_unit(payload: &DataflowPayload, unit: &AnalysisUnit) ->
     let binding_uses: Vec<types::BindingUse> = payload
         .binding_uses
         .iter()
-        .filter(|bu| bu.binding_id.map_or(false, |bid| binding_ids.contains(&bid)))
+        .filter(|bu| {
+            bu.binding_id
+                .map_or(false, |bid| binding_ids.contains(&bid))
+        })
         .cloned()
         .collect();
 

@@ -409,8 +409,7 @@ fn walk_for_assign_edges(
                 Some(v)
             }
         });
-        if let (Some(name_node), Some(value_node)) = (name_node_opt, value_node)
-        {
+        if let (Some(name_node), Some(value_node)) = (name_node_opt, value_node) {
             let name_kind = name_node.kind();
             if name_kind == "object_pattern"
                 || name_kind == "array_pattern"
@@ -491,36 +490,32 @@ fn walk_for_assign_edges(
     // The simple_identifier is nested inside variable_declaration;
     // the expression is a direct unnamed child of property_declaration.
     if kind == "property_declaration" {
-        let name_node = node
-            .child_by_field_name("declarator")
-            .or_else(|| {
-                // Look for simple_identifier inside variable_declaration
-                (0..node.child_count())
-                    .filter_map(|i| node.child(i as u32))
-                    .find(|c| c.kind() == "variable_declaration")
-                    .and_then(|vd| {
-                        (0..vd.child_count())
-                            .filter_map(|i| vd.child(i as u32))
-                            .find(|c| c.kind() == "simple_identifier")
-                    })
-            });
-        let expr_node = node
-            .child_by_field_name("expr")
-            .or_else(|| {
-                // Fallback: find expression after '='
-                let mut seen_eq = false;
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i as u32) {
-                        if seen_eq && child.is_named() {
-                            return Some(child);
-                        }
-                        if child.kind() == "=" {
-                            seen_eq = true;
-                        }
+        let name_node = node.child_by_field_name("declarator").or_else(|| {
+            // Look for simple_identifier inside variable_declaration
+            (0..node.child_count())
+                .filter_map(|i| node.child(i as u32))
+                .find(|c| c.kind() == "variable_declaration")
+                .and_then(|vd| {
+                    (0..vd.child_count())
+                        .filter_map(|i| vd.child(i as u32))
+                        .find(|c| c.kind() == "simple_identifier")
+                })
+        });
+        let expr_node = node.child_by_field_name("expr").or_else(|| {
+            // Fallback: find expression after '='
+            let mut seen_eq = false;
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i as u32) {
+                    if seen_eq && child.is_named() {
+                        return Some(child);
+                    }
+                    if child.kind() == "=" {
+                        seen_eq = true;
                     }
                 }
-                None
-            });
+            }
+            None
+        });
         if let (Some(name_node), Some(expr_node)) = (name_node, expr_node) {
             let name_key = NodePosKey {
                 start_byte: name_node.start_byte() as u32,

@@ -361,15 +361,16 @@ pub fn extract_file_with_mode(
             .supported_features
             .contains(&"cfg".to_string())
     {
-        let cfg_result = super::cfg_builder::build_cfg_for_functions(language, root, &symbols, source_bytes)
-            .unwrap_or_else(|e| {
-                diagnostics.push(ExtractDiagnostic {
-                    level: DiagnosticLevel::Warning,
-                    message: format!("CFG builder failed: {e}"),
-                    range: None,
+        let cfg_result =
+            super::cfg_builder::build_cfg_for_functions(language, root, &symbols, source_bytes)
+                .unwrap_or_else(|e| {
+                    diagnostics.push(ExtractDiagnostic {
+                        level: DiagnosticLevel::Warning,
+                        message: format!("CFG builder failed: {e}"),
+                        range: None,
+                    });
+                    CfgResult::default()
                 });
-                CfgResult::default()
-            });
         (cfg_result.nodes, cfg_result.edges)
     } else {
         (vec![], vec![])

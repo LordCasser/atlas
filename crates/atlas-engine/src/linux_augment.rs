@@ -73,8 +73,8 @@ impl LinuxAugmenter {
     /// Marks the matching function as exported (`sym.exported = true`)
     /// and adds its `SymbolId` to `facts.exports`.
     fn detect_export_symbol(facts: &mut FileFacts, source: &str) -> usize {
-        let re = Regex::new(r"EXPORT_SYMBOL(?:_GPL)?\s*\(\s*(\w+)\s*\)")
-            .expect("EXPORT_SYMBOL regex");
+        let re =
+            Regex::new(r"EXPORT_SYMBOL(?:_GPL)?\s*\(\s*(\w+)\s*\)").expect("EXPORT_SYMBOL regex");
         let mut count = 0;
 
         for cap in re.captures_iter(source) {
@@ -118,13 +118,7 @@ impl LinuxAugmenter {
             let func_name = cap.get(1).unwrap().as_str();
             if let Some(sym) = facts.symbols.iter().find(|s| s.name == func_name) {
                 let edge = RawEdge::new(
-                    EdgeId::generate(
-                        &source_id,
-                        &sym.id,
-                        "registers_callback",
-                        None,
-                        "heuristic",
-                    ),
+                    EdgeId::generate(&source_id, &sym.id, "registers_callback", None, "heuristic"),
                     source_id,
                     sym.id,
                     EdgeKind::RegistersCallback,

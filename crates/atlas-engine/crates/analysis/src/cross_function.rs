@@ -195,8 +195,12 @@ mod tests {
 
     fn insert_test_function(store: &Store, file_id: FileId, name: &str) -> SymbolId {
         let range = TextRange {
-            start_byte: 0, end_byte: 50,
-            start_line: 1, start_column: 1, end_line: 5, end_column: 1,
+            start_byte: 0,
+            end_byte: 50,
+            start_line: 1,
+            start_column: 1,
+            end_line: 5,
+            end_column: 1,
         };
         let sym = types::structs::SymbolDef {
             id: SymbolId::generate(&file_id, "typescript", name, "function", None),
@@ -238,11 +242,24 @@ mod tests {
         let callee_id = insert_test_function(&store, file_id, "callee");
         let _caller_id = insert_test_function(&store, file_id, "caller");
 
-        let param_id = DataNodeId::generate(&file_id, Some(&callee_id), "parameter", Some("x"), None, 0);
+        let param_id =
+            DataNodeId::generate(&file_id, Some(&callee_id), "parameter", Some("x"), None, 0);
 
-        let range = TextRange { start_byte: 0, end_byte: 1, start_line: 1, start_column: 1, end_line: 1, end_column: 2 };
+        let range = TextRange {
+            start_byte: 0,
+            end_byte: 1,
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 2,
+        };
         let dn = types::dataflow::DataNode::parameter(
-            param_id, file_id, Some(callee_id), None, "x", range,
+            param_id,
+            file_id,
+            Some(callee_id),
+            None,
+            "x",
+            range,
         );
         let unit = types::lazy::AnalysisUnit::from_function(file_id, callee_id, range);
         store.replace_dataflow_for_unit(&unit, &[dn], &[], &[], &[], &[], &[])?;
@@ -269,7 +286,14 @@ mod tests {
 
         let cr_id = DataNodeId::generate(&file_id, Some(&caller_id), "call_return", None, None, 50);
 
-        let range = TextRange { start_byte: 0, end_byte: 1, start_line: 1, start_column: 1, end_line: 1, end_column: 2 };
+        let range = TextRange {
+            start_byte: 0,
+            end_byte: 1,
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 2,
+        };
         let dn = types::dataflow::DataNode {
             id: cr_id,
             file_id,
@@ -305,17 +329,36 @@ mod tests {
         let callee_id = insert_test_function(&store, file_id, "callee3");
         let caller_id = insert_test_function(&store, file_id, "caller3");
 
-        let range = TextRange { start_byte: 0, end_byte: 100, start_line: 1, start_column: 1, end_line: 10, end_column: 1 };
+        let range = TextRange {
+            start_byte: 0,
+            end_byte: 100,
+            start_line: 1,
+            start_column: 1,
+            end_line: 10,
+            end_column: 1,
+        };
 
-        let source_node = DataNodeId::generate(&file_id, Some(&caller_id), "parameter", Some("x"), None, 0);
+        let source_node =
+            DataNodeId::generate(&file_id, Some(&caller_id), "parameter", Some("x"), None, 0);
         let arg_node_id = DataNodeId::generate(
-            &file_id, Some(&caller_id), "call_arg", Some("arg0"), None, 20,
+            &file_id,
+            Some(&caller_id),
+            "call_arg",
+            Some("arg0"),
+            None,
+            20,
         );
-        let param_id = DataNodeId::generate(&file_id, Some(&callee_id), "parameter", Some("y"), None, 10);
+        let param_id =
+            DataNodeId::generate(&file_id, Some(&callee_id), "parameter", Some("y"), None, 10);
 
         // Insert DataNodes
         let callee_param_dn = types::dataflow::DataNode::parameter(
-            param_id, file_id, Some(callee_id), None, "y", range,
+            param_id,
+            file_id,
+            Some(callee_id),
+            None,
+            "y",
+            range,
         );
         let caller_arg_dn = types::dataflow::DataNode {
             id: arg_node_id,
@@ -330,19 +373,45 @@ mod tests {
             range,
         };
         let caller_param_dn = types::dataflow::DataNode::parameter(
-            source_node, file_id, Some(caller_id), None, "x", range,
+            source_node,
+            file_id,
+            Some(caller_id),
+            None,
+            "x",
+            range,
         );
 
         {
             let unit_callee = types::lazy::AnalysisUnit::from_function(file_id, callee_id, range);
-            store.replace_dataflow_for_unit(&unit_callee, &[callee_param_dn], &[], &[], &[], &[], &[])?;
+            store.replace_dataflow_for_unit(
+                &unit_callee,
+                &[callee_param_dn],
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+            )?;
             let unit_caller = types::lazy::AnalysisUnit::from_function(file_id, caller_id, range);
-            store.replace_dataflow_for_unit(&unit_caller, &[caller_arg_dn, caller_param_dn], &[], &[], &[], &[], &[])?;
+            store.replace_dataflow_for_unit(
+                &unit_caller,
+                &[caller_arg_dn, caller_param_dn],
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+            )?;
         }
 
         // Create callsite via the public insert_callsites API
         let ref_id = types::ids::ReferenceId::generate(
-            &file_id, Some(&caller_id), 20, 25, "callee3", types::enums::ReferenceKind::Call,
+            &file_id,
+            Some(&caller_id),
+            20,
+            25,
+            "callee3",
+            types::enums::ReferenceKind::Call,
         );
         let cs_id = CallsiteId::generate(&ref_id, Some(&caller_id), 20);
         let callsite = Callsite {
@@ -390,13 +459,14 @@ mod tests {
             }],
             return_sources: vec![],
         };
-        SummaryStore::build_for_function(&store, &caller_id, |_, _fid| {
-            Ok(summary.clone())
-        })?;
+        SummaryStore::build_for_function(&store, &caller_id, |_, _fid| Ok(summary.clone()))?;
 
         // Bridge: param_id (callee's param) → caller arg → source
         let edges = CrossFunctionBridge::incoming_for_param(&param_id, &store)?;
-        assert!(!edges.is_empty(), "should have bridge edges with summary data");
+        assert!(
+            !edges.is_empty(),
+            "should have bridge edges with summary data"
+        );
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].source_id, source_node);
         assert_eq!(edges[0].target_id, param_id);

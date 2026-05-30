@@ -15,8 +15,8 @@
 use std::collections::HashSet;
 
 use rusqlite::Connection;
-use types::cfg::{CfgEdge, CfgNode};
 use types::bindings::{BindingDef, BindingUse};
+use types::cfg::{CfgEdge, CfgNode};
 use types::dataflow::{DataFlowEdge, DataNode};
 use types::ids::{BindingId, CfgNodeId, DataNodeId, ScopeId, SymbolId};
 
@@ -96,8 +96,10 @@ where
         placeholders.join(",")
     );
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::types::ToSql> =
-        ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> = ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::types::ToSql)
+        .collect();
     let rows = stmt.query_map(params.as_slice(), |row| row.get::<_, T>(0))?;
     let existing: Vec<T> = rows.filter_map(|r| r.ok()).collect();
     Ok(existing)
@@ -131,8 +133,7 @@ pub(crate) fn filter_binding_uses(
     uses: &[BindingUse],
     valid_binding_ids: &HashSet<BindingId>,
 ) -> Vec<BindingUse> {
-    uses
-        .iter()
+    uses.iter()
         .filter(|u| {
             u.binding_id
                 .map(|bid| valid_binding_ids.contains(&bid))
@@ -261,17 +262,17 @@ pub(crate) fn validate_dataflow_payload_db(
     };
 
     let safe_data_nodes = filter_data_nodes(data_nodes, &valid_function_ids, &valid_binding_ids);
-    let valid_data_node_ids: HashSet<DataNodeId> =
-        safe_data_nodes.iter().map(|n| n.id).collect();
+    let valid_data_node_ids: HashSet<DataNodeId> = safe_data_nodes.iter().map(|n| n.id).collect();
     let filtered_counts = FilteredCounts {
         data_nodes_removed: data_nodes.len().saturating_sub(safe_data_nodes.len()),
         ..filtered_counts
     };
 
-    let safe_dataflow_edges =
-        filter_dataflow_edges(dataflow_edges, &valid_data_node_ids);
+    let safe_dataflow_edges = filter_dataflow_edges(dataflow_edges, &valid_data_node_ids);
     let filtered_counts = FilteredCounts {
-        dataflow_edges_removed: dataflow_edges.len().saturating_sub(safe_dataflow_edges.len()),
+        dataflow_edges_removed: dataflow_edges
+            .len()
+            .saturating_sub(safe_dataflow_edges.len()),
         ..filtered_counts
     };
 

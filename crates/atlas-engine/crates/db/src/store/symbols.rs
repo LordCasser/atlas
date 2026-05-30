@@ -59,8 +59,10 @@ impl Store {
             placeholders.join(",")
         );
         let mut stmt = conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::types::ToSql> =
-            file_ids.iter().map(|f| f as &dyn rusqlite::types::ToSql).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = file_ids
+            .iter()
+            .map(|f| f as &dyn rusqlite::types::ToSql)
+            .collect();
         let rows = stmt.query_map(params.as_slice(), row_to_symbol)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }

@@ -20,8 +20,8 @@
 //! the Mutex is held only during `start_phase()` / `finish_phase()`, never
 //! during hot-path `increment()` calls.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
@@ -61,9 +61,7 @@ impl ProgressPhase {
     /// Whether this phase has a known total from the start.
     pub fn has_total(self) -> bool {
         match self {
-            Self::Discovery
-            | Self::LanguageInit
-            | Self::Finalizing => false,
+            Self::Discovery | Self::LanguageInit | Self::Finalizing => false,
             Self::HashCheck
             | Self::Cleanup
             | Self::Extraction
@@ -84,7 +82,10 @@ pub enum PhaseState {
     /// Not yet started.
     Pending,
     /// Currently executing. `started_at` is when `start_phase()` was called.
-    Running { started_at: Instant, has_total: bool },
+    Running {
+        started_at: Instant,
+        has_total: bool,
+    },
     /// Finished successfully.
     Completed {
         started_at: Instant,
@@ -300,10 +301,7 @@ impl ProgressState {
             .phases
             .iter()
             .filter_map(|e| {
-                if let PhaseState::Completed {
-                    elapsed, note, ..
-                } = &e.state
-                {
+                if let PhaseState::Completed { elapsed, note, .. } = &e.state {
                     Some(CompletedPhase {
                         phase: e.phase,
                         elapsed: *elapsed,
@@ -343,10 +341,7 @@ impl ProgressState {
             .phases
             .iter()
             .filter_map(|e| {
-                if let PhaseState::Completed {
-                    elapsed, note, ..
-                } = &e.state
-                {
+                if let PhaseState::Completed { elapsed, note, .. } = &e.state {
                     Some(CompletedPhase {
                         phase: e.phase,
                         elapsed: *elapsed,

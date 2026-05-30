@@ -143,8 +143,7 @@ impl FeatureMatrix {
     /// This preserves backward compatibility with code that checks
     /// `level >= DataflowBasic`.
     pub fn derive_capability_level(&self) -> CapabilityLevel {
-        let has_dataflow = self.local_dataflow.is_supported()
-            && self.use_def.is_supported();
+        let has_dataflow = self.local_dataflow.is_supported() && self.use_def.is_supported();
 
         if has_dataflow
             && self.interprocedural_summaries.is_supported()
@@ -774,9 +773,7 @@ mod profiles {
                 "cfg".into(),
                 "interprocedural_dataflow".into(),
             ],
-            unsupported_features: vec![
-                "scope_aware_binding".into(),
-            ],
+            unsupported_features: vec!["scope_aware_binding".into()],
             limitations: vec![
                 "scope-chain-aware binding with shadowing support".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
@@ -808,9 +805,7 @@ mod profiles {
                 cfg: FeatureSupport::supported_with_confidence(0.70),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.60,
-                    vec![
-                        "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
-                    ],
+                    vec!["cross-function bridges via summary tables (ArgToParam, ReturnToCall)"],
                 ),
             }),
         }
@@ -908,9 +903,7 @@ mod profiles {
                 "use_def".into(),
                 "interprocedural_dataflow".into(),
             ],
-            unsupported_features: vec![
-                "cfg".into(),
-            ],
+            unsupported_features: vec!["cfg".into()],
             limitations: vec![
                 "AST-driven local dataflow with basic parameter/local/return/call capture".into(),
                 "method call targets now captured (simple + obj.method() patterns)".into(),
@@ -1107,9 +1100,7 @@ mod profiles {
                 "cfg".into(),
                 "interprocedural_dataflow".into(),
             ],
-            unsupported_features: vec![
-                "scope_aware_binding".into(),
-            ],
+            unsupported_features: vec!["scope_aware_binding".into()],
             limitations: vec![
                 "scope-chain-aware binding with shadowing support".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
@@ -1141,9 +1132,7 @@ mod profiles {
                 cfg: FeatureSupport::supported_with_confidence(0.70),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.60,
-                    vec![
-                        "cross-function bridges via summary tables",
-                    ],
+                    vec!["cross-function bridges via summary tables"],
                 ),
             }),
         }
@@ -1172,14 +1161,12 @@ mod profiles {
                 "return_flow".into(),
                 "interprocedural_dataflow".into(),
             ],
-            unsupported_features: vec![
-                "cfg".into(),
-                "scope_aware_binding".into(),
-            ],
+            unsupported_features: vec!["cfg".into(), "scope_aware_binding".into()],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
-                "dynamic method calls via variable emit low-confidence edges (not yet resolved)".into(),
+                "dynamic method calls via variable emit low-confidence edges (not yet resolved)"
+                    .into(),
                 "namespace aliases resolved at reference resolution layer".into(),
             ],
             confidence_floor: 0.62,
@@ -1207,9 +1194,7 @@ mod profiles {
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for PHP"),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.55,
-                    vec![
-                        "cross-function bridges via summary tables",
-                    ],
+                    vec!["cross-function bridges via summary tables"],
                 ),
             }),
         }
@@ -1238,10 +1223,7 @@ mod profiles {
                 "return_flow".into(),
                 "interprocedural_dataflow".into(),
             ],
-            unsupported_features: vec![
-                "cfg".into(),
-                "scope_aware_binding".into(),
-            ],
+            unsupported_features: vec!["cfg".into(), "scope_aware_binding".into()],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
@@ -1273,9 +1255,7 @@ mod profiles {
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for Ruby"),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.65,
-                    vec![
-                        "cross-function bridges via summary tables",
-                    ],
+                    vec!["cross-function bridges via summary tables"],
                 ),
             }),
         }
@@ -1573,10 +1553,7 @@ mod tests {
             matrix.local_dataflow.is_supported(),
             "Python local_dataflow should be supported"
         );
-        assert!(
-            matrix.cfg.is_supported(),
-            "Python cfg should be supported"
-        );
+        assert!(matrix.cfg.is_supported(), "Python cfg should be supported");
     }
 
     #[test]

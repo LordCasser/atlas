@@ -62,14 +62,12 @@ impl ToolRouter {
         // Skip when a manual full index already exists — all files already have
         // complete structural facts.
         let is_manual_full = self.has_manual_full_index();
-            if !is_manual_full {
+        if !is_manual_full {
             self.send_progress(0.3, "Ensuring structural index...");
             let lazy =
                 LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-            let coordinator = LazyCoordinator::with_project_root(
-                self.store.clone(),
-                self.project_root.clone(),
-            );
+            let coordinator =
+                LazyCoordinator::with_project_root(self.store.clone(), self.project_root.clone());
             match coordinator.ensure_structural_with_closure(&lazy, &file_id) {
                 Ok(result) => {
                     if !result.0.built_file_ids.is_empty() {
@@ -155,10 +153,8 @@ impl ToolRouter {
             self.send_progress(0.2, "Ensuring structural index...");
             let lazy =
                 LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-            let coordinator = LazyCoordinator::with_project_root(
-                self.store.clone(),
-                self.project_root.clone(),
-            );
+            let coordinator =
+                LazyCoordinator::with_project_root(self.store.clone(), self.project_root.clone());
             match coordinator.ensure_structural_with_closure(&lazy, &file_id) {
                 Ok(result) => {
                     if !result.0.built_file_ids.is_empty() {
@@ -262,10 +258,8 @@ impl ToolRouter {
             // Lazy structural: ensure name-based symbols are structurally parsed
             if !self.has_manual_full_index() {
                 self.send_progress(0.3, "Ensuring structural extraction...");
-                let lazy = LazyStructuralService::new(
-                    self.store.clone(),
-                    Some(self.project_root.clone()),
-                );
+                let lazy =
+                    LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
                 let coordinator = LazyCoordinator::with_project_root(
                     self.store.clone(),
                     self.project_root.clone(),
@@ -314,10 +308,8 @@ impl ToolRouter {
             // Lazy structural: ensure name-based symbols are structurally parsed
             if !self.has_manual_full_index() {
                 self.send_progress(0.3, "Ensuring structural extraction...");
-                let lazy = LazyStructuralService::new(
-                    self.store.clone(),
-                    Some(self.project_root.clone()),
-                );
+                let lazy =
+                    LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
                 let coordinator = LazyCoordinator::with_project_root(
                     self.store.clone(),
                     self.project_root.clone(),
@@ -330,7 +322,11 @@ impl ToolRouter {
                             }
                         }
                         Err(e) => {
-                            tracing::warn!("Lazy structural extraction failed for '{}': {}", name, e);
+                            tracing::warn!(
+                                "Lazy structural extraction failed for '{}': {}",
+                                name,
+                                e
+                            );
                         }
                     }
                 }

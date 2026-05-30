@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use atlas_engine::{
-    run_index_pipeline, ExtractionMode, FileLock, IndexPipelineOptions, IndexPipelineStats,
-    IndexProgress, IndexProgressCallback,
+    ExtractionMode, FileLock, IndexPipelineOptions, IndexPipelineStats, IndexProgress,
+    IndexProgressCallback, run_index_pipeline,
 };
 
 use super::ToolRouter;

@@ -16,10 +16,9 @@ use types::ids::SymbolId;
 pub use annotation_graph::materialize_annotations;
 pub use graph_builder::{GraphBuilder, GraphBuilderStats};
 pub use snapshot::{
-    CallGraphView, ForwardFrontier, FrontierNode, GraphPath, GraphSnapshot, NodeIx, NodeSummary,
-    CompositePathScore, RankedPath,
-    PathBreakpoint, PathBreakpointKind, PathEdge, PathEdgeDirection, Subgraph, TraversalConfig,
-    TraversalDirection,
+    CallGraphView, CompositePathScore, ForwardFrontier, FrontierNode, GraphPath, GraphSnapshot,
+    NodeIx, NodeSummary, PathBreakpoint, PathBreakpointKind, PathEdge, PathEdgeDirection,
+    RankedPath, Subgraph, TraversalConfig, TraversalDirection,
 };
 
 use db::Store;
@@ -282,10 +281,7 @@ impl GraphEngine {
             direction: TraversalDirection::Both,
             max_depth: depth,
             limit: 1000,
-            edge_kind_filter: Some(vec![
-                EdgeKind::Calls,
-                EdgeKind::Imports,
-            ]),
+            edge_kind_filter: Some(vec![EdgeKind::Calls, EdgeKind::Imports]),
         };
         let visited = self.snapshot.bfs(&[start], &config);
         Subgraph {
@@ -312,10 +308,7 @@ impl GraphEngine {
             direction: TraversalDirection::Both,
             max_depth: depth,
             limit: 1000,
-            edge_kind_filter: Some(vec![
-                EdgeKind::Calls,
-                EdgeKind::Imports,
-            ]),
+            edge_kind_filter: Some(vec![EdgeKind::Calls, EdgeKind::Imports]),
         };
         let visited = self.snapshot.bfs(&starts, &config);
         Subgraph {
@@ -351,8 +344,14 @@ impl GraphEngine {
     ) -> Option<GraphPath> {
         let from_ix = self.snapshot.id_to_idx.get(from)?;
         let to_ix = self.snapshot.id_to_idx.get(to)?;
-        self.snapshot
-            .shortest_path(*from_ix, *to_ix, max_depth, edge_kind_filter, direction, prefer_production)
+        self.snapshot.shortest_path(
+            *from_ix,
+            *to_ix,
+            max_depth,
+            edge_kind_filter,
+            direction,
+            prefer_production,
+        )
     }
 
     /// Walk forward from `start_symbols` to find the deepest reachable
@@ -369,7 +368,8 @@ impl GraphEngine {
         max_depth: usize,
         edge_kind_filter: Option<&[EdgeKind]>,
     ) -> ForwardFrontier {
-        self.snapshot.forward_frontier(start_symbols, max_depth, edge_kind_filter)
+        self.snapshot
+            .forward_frontier(start_symbols, max_depth, edge_kind_filter)
     }
 
     // ── usages ───────────────────────────────────────────────────────────

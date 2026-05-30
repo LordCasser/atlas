@@ -100,7 +100,11 @@ impl LazyDataflowService {
 ///
 /// Inline here (duplicated from atlas-engine's `dataflow_precision`) to
 /// avoid a dependency on atlas-engine from the lazy crate.
-fn compute_dataflow_precision(built: usize, planned: usize, budget_exceeded: bool) -> PrecisionTier {
+fn compute_dataflow_precision(
+    built: usize,
+    planned: usize,
+    budget_exceeded: bool,
+) -> PrecisionTier {
     if planned == 0 {
         PrecisionTier::Unavailable
     } else if built == 0 {

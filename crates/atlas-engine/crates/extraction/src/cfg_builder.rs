@@ -60,23 +60,31 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_statement"],
             stmt_kinds: &[
-                "expression_statement", "variable_declaration", "lexical_declaration",
-                "continue_statement", "break_statement",
-                "debugger_statement", "empty_statement",
+                "expression_statement",
+                "variable_declaration",
+                "lexical_declaration",
+                "continue_statement",
+                "break_statement",
+                "debugger_statement",
+                "empty_statement",
             ],
         },
         Language::Java => CfgLanguageConfig {
             block_kinds: &["block"],
             if_kinds: &["if_statement"],
             loop_kinds: &[
-                "for_statement", "while_statement", "do_statement",
+                "for_statement",
+                "while_statement",
+                "do_statement",
                 "enhanced_for_statement",
             ],
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_statement"],
             stmt_kinds: &[
-                "expression_statement", "local_variable_declaration",
-                "continue_statement", "break_statement",
+                "expression_statement",
+                "local_variable_declaration",
+                "continue_statement",
+                "break_statement",
             ],
         },
         Language::Go => CfgLanguageConfig {
@@ -86,8 +94,11 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
             return_kinds: &["return_statement"],
             throw_kinds: &[], // Go has no throw
             stmt_kinds: &[
-                "expression_statement", "short_var_declaration", "var_declaration",
-                "continue_statement", "break_statement",
+                "expression_statement",
+                "short_var_declaration",
+                "var_declaration",
+                "continue_statement",
+                "break_statement",
             ],
         },
         Language::Python => CfgLanguageConfig {
@@ -97,8 +108,10 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
             return_kinds: &["return_statement"],
             throw_kinds: &["raise_statement"],
             stmt_kinds: &[
-                "expression_statement", "assignment",
-                "continue_statement", "break_statement",
+                "expression_statement",
+                "assignment",
+                "continue_statement",
+                "break_statement",
             ],
         },
         Language::C | Language::Cpp => CfgLanguageConfig {
@@ -108,8 +121,10 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
             return_kinds: &["return_statement"],
             throw_kinds: &[], // C has no throw; C++ has throw but via exceptions
             stmt_kinds: &[
-                "expression_statement", "declaration",
-                "continue_statement", "break_statement",
+                "expression_statement",
+                "declaration",
+                "continue_statement",
+                "break_statement",
             ],
         },
         Language::Rust => CfgLanguageConfig {
@@ -119,21 +134,19 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
             return_kinds: &["return_expression"],
             throw_kinds: &[], // Rust uses Result, not throw
             stmt_kinds: &[
-                "expression_statement", "let_declaration",
-                "continue_expression", "break_expression",
+                "expression_statement",
+                "let_declaration",
+                "continue_expression",
+                "break_expression",
             ],
         },
         Language::Cangjie => CfgLanguageConfig {
             block_kinds: &["block"],
             if_kinds: &["ifExpression"],
-            loop_kinds: &[
-                "whileExpression", "forInExpression", "doWhileExpression",
-            ],
+            loop_kinds: &["whileExpression", "forInExpression", "doWhileExpression"],
             return_kinds: &["jumpExpression"], // jumpExpression covers return/break/continue
             throw_kinds: &[],
-            stmt_kinds: &[
-                "variableDeclaration", "expressionStatement",
-            ],
+            stmt_kinds: &["variableDeclaration", "expressionStatement"],
         },
         _ => CfgLanguageConfig {
             // Default: TS/JS config (best-effort for unknown languages)
@@ -143,9 +156,13 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_statement"],
             stmt_kinds: &[
-                "expression_statement", "variable_declaration", "lexical_declaration",
-                "continue_statement", "break_statement",
-                "debugger_statement", "empty_statement",
+                "expression_statement",
+                "variable_declaration",
+                "lexical_declaration",
+                "continue_statement",
+                "break_statement",
+                "debugger_statement",
+                "empty_statement",
             ],
         },
     }
@@ -490,8 +507,7 @@ fn find_if_branches<'a>(
             match child.kind() {
                 "else_clause" | "else" => {
                     let mut sub_cursor = child.walk();
-                    let sub_children: Vec<Node> =
-                        child.named_children(&mut sub_cursor).collect();
+                    let sub_children: Vec<Node> = child.named_children(&mut sub_cursor).collect();
                     // Prefer a block_kind body, fall back to first child
                     for sub in &sub_children {
                         if block_kinds.contains(&sub.kind()) {

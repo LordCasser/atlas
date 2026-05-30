@@ -21,10 +21,8 @@ pub const DEFAULT_MAX_DEPTH: usize = 20;
 
 /// Maps a node key (hex-encoded [`SymbolId`]) to its predecessor info:
 /// (predecessor_id, edge_kind, reference_id, location).
-pub type PredecessorMap = HashMap<
-    String,
-    (SymbolId, EdgeKind, Option<ReferenceId>, Option<TextRange>),
->;
+pub type PredecessorMap =
+    HashMap<String, (SymbolId, EdgeKind, Option<ReferenceId>, Option<TextRange>)>;
 
 /// An intermediate representation of a single reconstructed call-chain step.
 /// Both caller-path and forward-path wrappers convert this into their
@@ -109,7 +107,13 @@ pub fn create_boundary_marker(
 
 /// Prefetch all unique symbols referenced by the raw steps into a cache.
 pub fn build_symbol_cache(
-    raw_steps: &[(SymbolId, SymbolId, EdgeKind, Option<ReferenceId>, Option<TextRange>)],
+    raw_steps: &[(
+        SymbolId,
+        SymbolId,
+        EdgeKind,
+        Option<ReferenceId>,
+        Option<TextRange>,
+    )],
     store: &(impl SymbolReader + CallGraphReader),
 ) -> HashMap<SymbolId, types::SymbolDef> {
     let mut cache = HashMap::new();

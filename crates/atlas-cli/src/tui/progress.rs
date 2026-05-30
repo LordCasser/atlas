@@ -45,11 +45,7 @@ impl TuiProgress {
 
     /// Blocking draw loop — renders every 200 ms until done or stopped.
     /// Returns `true` if stopped by Ctrl+C.
-    pub fn draw_loop(
-        &mut self,
-        done_flag: &AtomicBool,
-        stop_flag: &AtomicBool,
-    ) -> bool {
+    pub fn draw_loop(&mut self, done_flag: &AtomicBool, stop_flag: &AtomicBool) -> bool {
         loop {
             if stop_flag.load(Ordering::SeqCst) {
                 return true;
@@ -163,10 +159,7 @@ fn print_interrupted_stdout(state: &ProgressState) {
     let _ = write_interrupted(&mut stdout, state);
 }
 
-fn write_interrupted<W: Write>(
-    writer: &mut W,
-    state: &ProgressState,
-) -> std::io::Result<()> {
+fn write_interrupted<W: Write>(writer: &mut W, state: &ProgressState) -> std::io::Result<()> {
     let snap = state.read_snapshot();
     writeln!(writer, "Interrupted.")?;
 

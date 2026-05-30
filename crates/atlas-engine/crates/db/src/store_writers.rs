@@ -540,10 +540,7 @@ pub(crate) fn write_cfg_edges(conn: &Connection, edges: &[CfgEdge]) -> anyhow::R
 ///
 /// Used by both `insert_file_facts_impl` (batch insert) and
 /// `replace_file_facts` (atomic delete+insert for lazy structural).
-pub(crate) fn write_file_facts(
-    conn: &Connection,
-    facts: &FileFacts,
-) -> anyhow::Result<()> {
+pub(crate) fn write_file_facts(conn: &Connection, facts: &FileFacts) -> anyhow::Result<()> {
     // File info
     conn.execute(
         r#"INSERT OR REPLACE INTO files
@@ -666,9 +663,7 @@ pub(crate) fn write_file_facts(
         let safe_edges: Vec<_> = facts
             .dataflow_edges
             .iter()
-            .filter(|e| {
-                valid_node_ids.contains(&e.source) && valid_node_ids.contains(&e.target)
-            })
+            .filter(|e| valid_node_ids.contains(&e.source) && valid_node_ids.contains(&e.target))
             .cloned()
             .collect();
         if !safe_edges.is_empty() {
@@ -696,9 +691,7 @@ pub(crate) fn write_file_facts(
         let safe_cfg_edges: Vec<_> = facts
             .cfg_edges
             .iter()
-            .filter(|e| {
-                valid_cfg_ids.contains(&e.source) && valid_cfg_ids.contains(&e.target)
-            })
+            .filter(|e| valid_cfg_ids.contains(&e.source) && valid_cfg_ids.contains(&e.target))
             .cloned()
             .collect();
         if !safe_cfg_edges.is_empty() {

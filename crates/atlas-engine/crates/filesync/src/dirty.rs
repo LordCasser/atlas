@@ -24,11 +24,7 @@ pub struct DirtySet {
 ///
 /// `discovered` must contain project-relative paths. Paths that cannot be
 /// normalized as [`SourcePath`] are ignored, matching extraction behavior.
-pub fn build_dirty_set(
-    store: &Store,
-    discovered: &[PathBuf],
-    root: &Path,
-) -> Result<DirtySet> {
+pub fn build_dirty_set(store: &Store, discovered: &[PathBuf], root: &Path) -> Result<DirtySet> {
     let current_hashes: HashMap<String, String> = discovered
         .par_iter()
         .filter_map(|rel_path| {

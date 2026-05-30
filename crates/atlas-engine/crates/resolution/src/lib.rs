@@ -18,8 +18,8 @@ use std::sync::mpsc;
 
 use db::Store;
 use rayon::prelude::*;
-use types::*;
 use types::progress::ProgressPhase;
+use types::*;
 
 use self::builtins::BuiltinFilter;
 use self::context::{GlobalSymbolIndex, ResolutionContext};
@@ -35,7 +35,9 @@ pub mod include_graph;
 pub mod name_matcher;
 pub mod path_alias;
 
-pub use config::{PathAliasConfig, PATH_ALIAS_CONFIG_FILES, commit_config_hashes, detect_config_change};
+pub use config::{
+    PATH_ALIAS_CONFIG_FILES, PathAliasConfig, commit_config_hashes, detect_config_change,
+};
 pub use include_graph::IncludeGraph;
 pub use path_alias::PathAliasResolver;
 
@@ -101,11 +103,9 @@ fn resolve_one_core(
 
     // Strategy 4: Same-file exact match
     let same_file = ctx.find_in_file_by_name(&reference.name);
-    if let Some(matched) = name_matcher.best_match(
-        &same_file,
-        &reference.name,
-        Confidence::certain(),
-    ) {
+    if let Some(matched) =
+        name_matcher.best_match(&same_file, &reference.name, Confidence::certain())
+    {
         return Some(ResolvedTarget {
             symbol_id: matched.symbol_id,
             confidence: matched.confidence,
@@ -126,8 +126,8 @@ fn resolve_one_core(
             let matches_by_alias = !import_local.is_empty() && import_local == reference.name;
 
             if let Ok(candidates) = import_resolver.resolve_import(import) {
-                if let Ok(chain_candidates) = import_resolver
-                    .resolve_through_reexports(import, candidates)
+                if let Ok(chain_candidates) =
+                    import_resolver.resolve_through_reexports(import, candidates)
                 {
                     // Alias match: trust the import relationship directly.
                     if matches_by_alias {
@@ -167,11 +167,9 @@ fn resolve_one_core(
             None => idx.find_by_name(&reference.name),
         };
         if !candidates.is_empty() {
-            if let Some(matched) = name_matcher.best_match(
-                &candidates,
-                &reference.name,
-                Confidence::new(0.6),
-            ) {
+            if let Some(matched) =
+                name_matcher.best_match(&candidates, &reference.name, Confidence::new(0.6))
+            {
                 return Some(ResolvedTarget {
                     symbol_id: matched.symbol_id,
                     confidence: matched.confidence,
@@ -185,11 +183,9 @@ fn resolve_one_core(
         }
         let fuzzy = idx.fuzzy_search(&reference.name, 2);
         if !fuzzy.is_empty() {
-            if let Some(matched) = name_matcher.best_match(
-                &fuzzy,
-                &reference.name,
-                Confidence::new(0.4),
-            ) {
+            if let Some(matched) =
+                name_matcher.best_match(&fuzzy, &reference.name, Confidence::new(0.4))
+            {
                 return Some(ResolvedTarget {
                     symbol_id: matched.symbol_id,
                     confidence: matched.confidence,
@@ -246,10 +242,7 @@ impl ResolutionSession {
     ) -> anyhow::Result<Self> {
         Ok(Self {
             global_index: Arc::new(GlobalSymbolIndex::build(&store)?),
-            import_resolver: Arc::new(ImportResolver::with_path_alias(
-                store.clone(),
-                path_alias,
-            )),
+            import_resolver: Arc::new(ImportResolver::with_path_alias(store.clone(), path_alias)),
             name_matcher: Arc::new(NameMatcher::new()),
         })
     }
@@ -267,7 +260,7 @@ impl ResolutionSession {
     pub fn resolve_file(
         &self,
         store: &Store,
-        refs: &[(FileId, Vec<ReferenceUse>)],  // Single-element batch for this file
+        refs: &[(FileId, Vec<ReferenceUse>)], // Single-element batch for this file
     ) -> anyhow::Result<Vec<(ReferenceUse, ResolvedTarget)>> {
         let mut results = Vec::new();
         for (file_id, references) in refs {
@@ -439,7 +432,10 @@ impl ReferenceResolver {
         _on_progress: Option<&dyn Fn(u64, u64)>,
     ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
         if let Some(mutex) = progress_mutex {
-            mutex.lock().unwrap().start_phase(ProgressPhase::Resolution, None);
+            mutex
+                .lock()
+                .unwrap()
+                .start_phase(ProgressPhase::Resolution, None);
         }
 
         // Build shared session
@@ -471,8 +467,7 @@ impl ReferenceResolver {
         let matched_counter = Arc::new(AtomicU64::new(0));
         let session = &session;
 
-        let progress_atomic = progress_mutex
-            .map(|a| Arc::clone(&a.lock().unwrap().atomic_current));
+        let progress_atomic = progress_mutex.map(|a| Arc::clone(&a.lock().unwrap().atomic_current));
 
         // Step A: build all contexts
         let mut file_groups: Vec<(FileId, Vec<ReferenceUse>, ResolutionContext)> =
@@ -490,39 +485,41 @@ impl ReferenceResolver {
         // Spawn Phase 2 writer thread that also collects all_resolved.
         let writer_store = store.clone();
         let writer_progress = progress_mutex.map(|a| Arc::clone(a));
-        let writer_handle = std::thread::spawn(move || -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
-            let mut stats = ResolutionStats::default();
-            stats.total_refs = total_refs as usize;
-            let mut pending: Vec<(ReferenceId, ResolvedTarget)> = Vec::with_capacity(2000);
-            let mut all: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
-            let batch_size = 2000;
-            let mut processed = 0u64;
+        let writer_handle = std::thread::spawn(
+            move || -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
+                let mut stats = ResolutionStats::default();
+                stats.total_refs = total_refs as usize;
+                let mut pending: Vec<(ReferenceId, ResolvedTarget)> = Vec::with_capacity(2000);
+                let mut all: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
+                let batch_size = 2000;
+                let mut processed = 0u64;
 
-            for (reference, target) in rx {
-                pending.push((reference.id, target.clone()));
-                let strategy = target.strategy.as_str().to_string();
-                all.push((reference, target));
-                processed += 1;
-                stats.resolved += 1;
-                *stats.by_strategy.entry(strategy).or_default() += 1;
+                for (reference, target) in rx {
+                    pending.push((reference.id, target.clone()));
+                    let strategy = target.strategy.as_str().to_string();
+                    all.push((reference, target));
+                    processed += 1;
+                    stats.resolved += 1;
+                    *stats.by_strategy.entry(strategy).or_default() += 1;
 
-                if pending.len() >= batch_size {
+                    if pending.len() >= batch_size {
+                        writer_store.batch_update_resolutions(&pending)?;
+                        pending.clear();
+                        if let Some(ref ps) = writer_progress {
+                            let _ = ps.lock().map(|mut p| p.set_current(processed));
+                        }
+                    }
+                }
+                if !pending.is_empty() {
                     writer_store.batch_update_resolutions(&pending)?;
-                    pending.clear();
                     if let Some(ref ps) = writer_progress {
                         let _ = ps.lock().map(|mut p| p.set_current(processed));
                     }
                 }
-            }
-            if !pending.is_empty() {
-                writer_store.batch_update_resolutions(&pending)?;
-                if let Some(ref ps) = writer_progress {
-                    let _ = ps.lock().map(|mut p| p.set_current(processed));
-                }
-            }
-            stats.unresolved = total_refs as usize - stats.resolved;
-            Ok((all, stats))
-        });
+                stats.unresolved = total_refs as usize - stats.resolved;
+                Ok((all, stats))
+            },
+        );
 
         // Enter Phase 2 progress bar before spawning rayon to show percentage.
         if let Some(ref ps) = progress_mutex {
@@ -539,7 +536,9 @@ impl ReferenceResolver {
                 ac.store(total, Ordering::Relaxed);
             }
             for r in results {
-                if tx.send(r).is_err() { break; }
+                if tx.send(r).is_err() {
+                    break;
+                }
             }
         });
         drop(tx);
@@ -548,7 +547,9 @@ impl ReferenceResolver {
             Ok(Ok((all_resolved, stats))) => Ok((all_resolved, stats)),
             Ok(Err(e)) => Err(e),
             Err(panic) => {
-                let msg = panic.downcast_ref::<&str>().map(|s| s.to_string())
+                let msg = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
                     .or_else(|| panic.downcast_ref::<String>().cloned())
                     .unwrap_or_else(|| "unknown panic".into());
                 Err(anyhow::anyhow!("Phase 2 writer panicked: {}", msg))
@@ -914,7 +915,9 @@ main();
         let store = Arc::new(Store::open_in_memory().unwrap());
         store.init_schema().unwrap();
         store.insert_file_facts(&lib_facts).expect("insert lib.ts");
-        store.insert_file_facts(&main_facts).expect("insert main.ts");
+        store
+            .insert_file_facts(&main_facts)
+            .expect("insert main.ts");
 
         let mut resolver = ReferenceResolver::new(Arc::clone(&store));
         let (resolved, _stats) = resolver.resolve_all().expect("resolution failed");

@@ -1,7 +1,10 @@
 //! Graph traversal tools: neighbors, callers, callees, callgraph, path,
 //! explore, and impact analysis.
 
-use atlas_engine::{EdgeKind, LazyCoordinator, LazyStructuralService, Store, SymbolId, TraversalConfig, TraversalDirection};
+use atlas_engine::{
+    EdgeKind, LazyCoordinator, LazyStructuralService, Store, SymbolId, TraversalConfig,
+    TraversalDirection,
+};
 
 use super::{ToolRouter, get_str, get_str_opt, get_u64};
 
@@ -263,7 +266,9 @@ impl ToolRouter {
             let half = remaining / 2;
             hop_callers.truncate(half);
             hop_callees.truncate(remaining.saturating_sub(half));
-            total_nodes = total_nodes.saturating_add(hop_callers.len()).saturating_add(hop_callees.len());
+            total_nodes = total_nodes
+                .saturating_add(hop_callers.len())
+                .saturating_add(hop_callees.len());
 
             hops.push(json!({
                 "depth": d,
@@ -335,10 +340,8 @@ impl ToolRouter {
                     self.store.clone(),
                     self.project_root.clone(),
                 );
-                let lazy = LazyStructuralService::new(
-                    self.store.clone(),
-                    Some(self.project_root.clone()),
-                );
+                let lazy =
+                    LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
                 let mut total_built: Vec<atlas_engine::FileId> = Vec::new();
                 for file_id in &file_ids {
                     match coordinator.ensure_structural_with_closure(&lazy, file_id) {
@@ -346,10 +349,7 @@ impl ToolRouter {
                             total_built.extend(result.built_file_ids);
                         }
                         Err(e) => {
-                            tracing::warn!(
-                                "Lazy structural failed for path endpoint: {:#}",
-                                e
-                            );
+                            tracing::warn!("Lazy structural failed for path endpoint: {:#}", e);
                         }
                     }
                 }
@@ -384,12 +384,22 @@ impl ToolRouter {
                 }
                 // K=5: find up to 5 alternative paths, ranked by composite score.
                 // Convert SymbolId → NodeIx for the snapshot.
-                let from_ix = match snap.id_to_idx.get(fid) { Some(ix) => *ix, None => continue };
-                let to_ix   = match snap.id_to_idx.get(tid) { Some(ix) => *ix, None => continue };
+                let from_ix = match snap.id_to_idx.get(fid) {
+                    Some(ix) => *ix,
+                    None => continue,
+                };
+                let to_ix = match snap.id_to_idx.get(tid) {
+                    Some(ix) => *ix,
+                    None => continue,
+                };
                 let candidates = snap.k_ranked_paths(
-                    from_ix, to_ix, 5, max_depth.min(10),
+                    from_ix,
+                    to_ix,
+                    5,
+                    max_depth.min(10),
                     edge_kind_filter.as_deref(),
-                    direction, prefer_production,
+                    direction,
+                    prefer_production,
                 );
                 if !candidates.is_empty() {
                     ranked = candidates;
@@ -408,9 +418,16 @@ impl ToolRouter {
                 .ok()
                 .flatten()
                 .map(|s| {
-                    format!("{}:{}", store.get_file(&s.file_id).ok().flatten()
-                        .map(|f| f.path.clone()).unwrap_or_else(|| s.file_id.to_hex()),
-                        s.range.start_line + 1)
+                    format!(
+                        "{}:{}",
+                        store
+                            .get_file(&s.file_id)
+                            .ok()
+                            .flatten()
+                            .map(|f| f.path.clone())
+                            .unwrap_or_else(|| s.file_id.to_hex()),
+                        s.range.start_line + 1
+                    )
                 })
                 .unwrap_or_else(|| id.to_hex())
         }
@@ -422,9 +439,8 @@ impl ToolRouter {
             path: &atlas_engine::GraphPath,
             include_code: bool,
         ) -> Vec<serde_json::Value> {
-            let mut hops: Vec<serde_json::Value> = Vec::with_capacity(
-                path.node_indices.len() + path.edge_indices.len(),
-            );
+            let mut hops: Vec<serde_json::Value> =
+                Vec::with_capacity(path.node_indices.len() + path.edge_indices.len());
             for i in 0..path.node_indices.len() {
                 let mut node_json = tool.node_json(snap, path.node_indices[i]);
                 if include_code {
@@ -476,19 +492,22 @@ impl ToolRouter {
 
             // Alternative paths (ranks 1+) — compact summaries.
             if ranked.len() > 1 {
-                let alternatives: Vec<serde_json::Value> = ranked[1..].iter().map(|r| {
-                    let alt_hops = build_hops(self, &snap, &r.path, false);
-                    json!({
-                        "path": alt_hops,
-                        "total_weight": r.path.total_weight,
-                        "score": {
-                            "overall": r.scores.overall,
-                            "semantic": r.scores.semantic,
-                            "topology": r.scores.topology,
-                            "centrality": r.scores.centrality,
-                        },
+                let alternatives: Vec<serde_json::Value> = ranked[1..]
+                    .iter()
+                    .map(|r| {
+                        let alt_hops = build_hops(self, &snap, &r.path, false);
+                        json!({
+                            "path": alt_hops,
+                            "total_weight": r.path.total_weight,
+                            "score": {
+                                "overall": r.scores.overall,
+                                "semantic": r.scores.semantic,
+                                "topology": r.scores.topology,
+                                "centrality": r.scores.centrality,
+                            },
+                        })
                     })
-                }).collect();
+                    .collect();
                 resp["alternatives"] = json!(alternatives);
             }
 
@@ -547,7 +566,9 @@ impl ToolRouter {
                             }));
                         }
                     }
-                    if fp_sites.len() >= 5 { break; }
+                    if fp_sites.len() >= 5 {
+                        break;
+                    }
                 }
                 if !fp_sites.is_empty() {
                     insight["fp_boundaries"] = json!(fp_sites);
@@ -560,7 +581,9 @@ impl ToolRouter {
                     max_depth.min(10),
                     edge_kind_filter.as_deref(),
                 );
-                let blocked: Vec<serde_json::Value> = frontier.frontier_nodes.iter()
+                let blocked: Vec<serde_json::Value> = frontier
+                    .frontier_nodes
+                    .iter()
                     .take(5)
                     .filter(|n| n.outgoing_call_count == 0)
                     .map(|n| json!({ "qname": n.qname, "depth": n.depth }))
@@ -582,13 +605,17 @@ impl ToolRouter {
 
             resp["path_quality"] = insight;
 
-            (serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()), false)
+            (
+                serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
+                false,
+            )
         } else {
             // No path found — diagnostic frontier.
             let total_pairs = from_ids.len() * to_ids.len();
             let mut message = format!(
                 "No path found within max_depth={} (tried {} SymbolId pair{})",
-                max_depth.min(10), total_pairs,
+                max_depth.min(10),
+                total_pairs,
                 if total_pairs == 1 { "" } else { "s" },
             );
             // ... (same diagnostics as before) ...
@@ -611,29 +638,39 @@ impl ToolRouter {
             }
 
             const MAX_FRONTIER_NODES: usize = 20;
-            let frontier_nodes: Vec<serde_json::Value> =
-                if direction == TraversalDirection::Outgoing {
-                    let frontier = snap.forward_frontier(&from_ids, max_depth.min(10), edge_kind_filter.as_deref());
-                    let total = frontier.frontier_nodes.len();
-                    if total > 0 {
-                        let extra = if total > MAX_FRONTIER_NODES {
-                            " These are likely dynamic-dispatch (function pointer / virtual call) boundaries."
-                        } else { "" };
-                        message.push_str(&format!(
+            let frontier_nodes: Vec<serde_json::Value> = if direction
+                == TraversalDirection::Outgoing
+            {
+                let frontier = snap.forward_frontier(
+                    &from_ids,
+                    max_depth.min(10),
+                    edge_kind_filter.as_deref(),
+                );
+                let total = frontier.frontier_nodes.len();
+                if total > 0 {
+                    let extra = if total > MAX_FRONTIER_NODES {
+                        " These are likely dynamic-dispatch (function pointer / virtual call) boundaries."
+                    } else {
+                        ""
+                    };
+                    message.push_str(&format!(
                             "\nForward frontier reached depth {} — {} node(s) with no further static callees (showing first {}).{}",
                             frontier.depth_reached, total, total.min(MAX_FRONTIER_NODES), extra,
                         ));
-                    }
-                    frontier.frontier_nodes.iter().take(MAX_FRONTIER_NODES).map(|n| {
+                }
+                frontier.frontier_nodes.iter().take(MAX_FRONTIER_NODES).map(|n| {
                         json!({ "qname": n.qname, "depth": n.depth, "outgoing_call_count": n.outgoing_call_count })
                     }).collect()
-                } else { Vec::new() };
+            } else {
+                Vec::new()
+            };
             (
                 serde_json::to_string_pretty(&json!({
                     "from": from_qname, "to": to_qname,
                     "path_length": 0, "path": [], "breakpoints": [],
                     "message": &message, "frontier": frontier_nodes,
-                })).unwrap_or_else(|e| e.to_string()),
+                }))
+                .unwrap_or_else(|e| e.to_string()),
                 false,
             )
         }

@@ -28,8 +28,7 @@ pub fn run(project: &str, analysis: &str) -> Result<()> {
     // P2: path alias config changes are independent of file changes.
     // Even when no files changed, a tsconfig.json update requires
     // invalidation + re-resolution.
-    let path_alias_changed =
-        atlas_engine::PathAliasConfig::has_changed(&ctx.store, &root)?;
+    let path_alias_changed = atlas_engine::PathAliasConfig::has_changed(&ctx.store, &root)?;
     if changed.is_empty() && !path_alias_changed {
         println!("No changes detected.");
         return Ok(());

@@ -24,7 +24,9 @@ pub type EdgeIx = usize;
 struct OrdF64(f64);
 
 impl PartialEq for OrdF64 {
-    fn eq(&self, other: &Self) -> bool { self.0 == other.0 }
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
 }
 impl Eq for OrdF64 {}
 impl PartialOrd for OrdF64 {
@@ -179,7 +181,15 @@ fn is_likely_test_path(path: &str) -> bool {
     let lower = path.to_lowercase();
 
     // Directory-based: files inside test/spec directories
-    let dir_markers = ["/test/", "/tests/", "/spec/", "/__tests__/", "/testing/", "test/", "tests/"];
+    let dir_markers = [
+        "/test/",
+        "/tests/",
+        "/spec/",
+        "/__tests__/",
+        "/testing/",
+        "test/",
+        "tests/",
+    ];
     for marker in &dir_markers {
         if lower.starts_with(marker) || lower.contains(marker) {
             return true;
@@ -403,8 +413,7 @@ impl GraphSnapshot {
         }
 
         // Filter edges: keep only those whose source and target both survived
-        let mut new_edges: Vec<EdgeSummary> =
-            Vec::with_capacity(self.edges.len());
+        let mut new_edges: Vec<EdgeSummary> = Vec::with_capacity(self.edges.len());
         for edge in &self.edges {
             let Some(new_src) = old_to_new[edge.source_ix] else {
                 continue;
@@ -577,7 +586,12 @@ impl GraphSnapshot {
         let new_symbols = store.find_symbols_by_files(changed_file_ids)?;
         let new_edges = store.find_edges_for_files(changed_file_ids)?;
         let mut new_snapshot = old.clone();
-        new_snapshot.merge_delta_in_place(new_symbols, new_edges, confidence_threshold, &file_paths);
+        new_snapshot.merge_delta_in_place(
+            new_symbols,
+            new_edges,
+            confidence_threshold,
+            &file_paths,
+        );
         Ok(new_snapshot)
     }
 
@@ -800,7 +814,13 @@ impl GraphSnapshot {
         }
 
         if prefer_production {
-            return self.shortest_path_weighted_prod(from, to, max_depth, edge_kind_filter, direction);
+            return self.shortest_path_weighted_prod(
+                from,
+                to,
+                max_depth,
+                edge_kind_filter,
+                direction,
+            );
         }
         self.shortest_path_weighted(from, to, max_depth, edge_kind_filter, direction)
     }
@@ -838,7 +858,9 @@ impl GraphSnapshot {
             let edge_lists: Vec<&Vec<EdgeIx>> = match direction {
                 TraversalDirection::Outgoing => vec![&self.nodes[current].outgoing],
                 TraversalDirection::Incoming => vec![&self.nodes[current].incoming],
-                TraversalDirection::Both => vec![&self.nodes[current].outgoing, &self.nodes[current].incoming],
+                TraversalDirection::Both => {
+                    vec![&self.nodes[current].outgoing, &self.nodes[current].incoming]
+                }
             };
 
             for edge_list in &edge_lists {
@@ -899,7 +921,9 @@ impl GraphSnapshot {
 
         loop {
             // Always drain the primary queue first (production paths)
-            let next = primary_queue.pop_front().or_else(|| secondary_queue.pop_front());
+            let next = primary_queue
+                .pop_front()
+                .or_else(|| secondary_queue.pop_front());
             let (current, depth) = match next {
                 Some(x) => x,
                 None => break,
@@ -916,7 +940,9 @@ impl GraphSnapshot {
             let edge_lists: Vec<&Vec<EdgeIx>> = match direction {
                 TraversalDirection::Outgoing => vec![&self.nodes[current].outgoing],
                 TraversalDirection::Incoming => vec![&self.nodes[current].incoming],
-                TraversalDirection::Both => vec![&self.nodes[current].outgoing, &self.nodes[current].incoming],
+                TraversalDirection::Both => {
+                    vec![&self.nodes[current].outgoing, &self.nodes[current].incoming]
+                }
             };
 
             for edge_list in &edge_lists {
@@ -1005,9 +1031,7 @@ impl GraphSnapshot {
                     to_node: self.nodes[next_node].qualified_name.clone(),
                     message: format!(
                         "Low-confidence edge ({:.2}): {} → {}",
-                        conf,
-                        self.nodes[current_node].name,
-                        self.nodes[next_node].name,
+                        conf, self.nodes[current_node].name, self.nodes[next_node].name,
                     ),
                 });
             }
@@ -1020,8 +1044,7 @@ impl GraphSnapshot {
                     to_node: self.nodes[next_node].qualified_name.clone(),
                     message: format!(
                         "Callback registration boundary: {} registers {}",
-                        self.nodes[current_node].name,
-                        self.nodes[next_node].name,
+                        self.nodes[current_node].name, self.nodes[next_node].name,
                     ),
                 });
             }
@@ -1035,8 +1058,7 @@ impl GraphSnapshot {
                     to_node: self.nodes[next_node].qualified_name.clone(),
                     message: format!(
                         "Edge traversed in reverse: {} is called by {} (not the other way)",
-                        self.nodes[current_node].name,
-                        self.nodes[next_node].name,
+                        self.nodes[current_node].name, self.nodes[next_node].name,
                     ),
                 });
             }
@@ -1190,7 +1212,15 @@ impl GraphSnapshot {
         } else {
             0.0
         };
-        self.dijkstra_core(from, to, max_depth, edge_kind_filter, direction, None, start_penalty)
+        self.dijkstra_core(
+            from,
+            to,
+            max_depth,
+            edge_kind_filter,
+            direction,
+            None,
+            start_penalty,
+        )
     }
 
     // ── forward frontier ─────────────────────────────────────────────────
@@ -1222,14 +1252,15 @@ impl GraphSnapshot {
         while depth <= max_depth && !current.is_empty() {
             let mut next = Vec::new();
             for id in current.drain(..) {
-                if !visited.insert(id) { continue; }
+                if !visited.insert(id) {
+                    continue;
+                }
                 let ix = match self.id_to_idx.get(&id) {
                     Some(i) => *i,
                     None => continue,
                 };
-                let outgoing: Vec<(NodeIx, EdgeIx)> = self.neighbors(
-                    ix, TraversalDirection::Outgoing, edge_kind_filter,
-                );
+                let outgoing: Vec<(NodeIx, EdgeIx)> =
+                    self.neighbors(ix, TraversalDirection::Outgoing, edge_kind_filter);
                 let call_count = outgoing.len();
                 if call_count == 0 {
                     frontier.push(FrontierNode {
@@ -1244,7 +1275,9 @@ impl GraphSnapshot {
                     }
                 }
             }
-            if next.is_empty() { break; }
+            if next.is_empty() {
+                break;
+            }
             current = next;
             depth += 1;
         }
@@ -1252,9 +1285,8 @@ impl GraphSnapshot {
             for id in current {
                 if visited.insert(id) {
                     if let Some(ix) = self.id_to_idx.get(&id) {
-                        let outgoing = self.neighbors(
-                            *ix, TraversalDirection::Outgoing, edge_kind_filter,
-                        );
+                        let outgoing =
+                            self.neighbors(*ix, TraversalDirection::Outgoing, edge_kind_filter);
                         frontier.push(FrontierNode {
                             symbol_id: id,
                             qname: self.nodes[*ix].qualified_name.clone(),
@@ -1296,7 +1328,14 @@ impl GraphSnapshot {
     ) -> Vec<RankedPath> {
         let mut candidates: Vec<RankedPath> = Vec::with_capacity(k);
         let primary = if prefer_production {
-            self.shortest_path_weighted_prod_ex(from, to, max_depth, edge_kind_filter, direction, None)
+            self.shortest_path_weighted_prod_ex(
+                from,
+                to,
+                max_depth,
+                edge_kind_filter,
+                direction,
+                None,
+            )
         } else {
             self.shortest_path_weighted_ex(from, to, max_depth, edge_kind_filter, direction, None)
         };
@@ -1304,7 +1343,10 @@ impl GraphSnapshot {
             Some(p) => p,
             None => return Vec::new(),
         };
-        candidates.push(RankedPath { path: primary, scores: CompositePathScore::default() });
+        candidates.push(RankedPath {
+            path: primary,
+            scores: CompositePathScore::default(),
+        });
         if k <= 1 {
             candidates[0].scores = self.score_path(&candidates[0].path);
             return candidates;
@@ -1314,19 +1356,38 @@ impl GraphSnapshot {
         seen_edge_lists.insert(primary_edge_id(&candidates[0].path));
 
         for edge_idx in 0..candidates[0].path.edge_indices.len() {
-            if candidates.len() >= k { break; }
+            if candidates.len() >= k {
+                break;
+            }
             let mut excluded = HashSet::new();
             excluded.insert(candidates[0].path.edge_indices[edge_idx]);
             let alt = if prefer_production {
-                self.shortest_path_weighted_prod_ex(from, to, max_depth, edge_kind_filter, direction, Some(&excluded))
+                self.shortest_path_weighted_prod_ex(
+                    from,
+                    to,
+                    max_depth,
+                    edge_kind_filter,
+                    direction,
+                    Some(&excluded),
+                )
             } else {
-                self.shortest_path_weighted_ex(from, to, max_depth, edge_kind_filter, direction, Some(&excluded))
+                self.shortest_path_weighted_ex(
+                    from,
+                    to,
+                    max_depth,
+                    edge_kind_filter,
+                    direction,
+                    Some(&excluded),
+                )
             };
             if let Some(alt_path) = alt {
                 let eid = primary_edge_id(&alt_path);
                 if !seen_edge_lists.contains(&eid) && alt_path.node_indices.len() > 1 {
                     seen_edge_lists.insert(eid);
-                    candidates.push(RankedPath { path: alt_path, scores: CompositePathScore::default() });
+                    candidates.push(RankedPath {
+                        path: alt_path,
+                        scores: CompositePathScore::default(),
+                    });
                 }
             }
         }
@@ -1335,20 +1396,39 @@ impl GraphSnapshot {
             let n = candidates[0].path.edge_indices.len();
             'outer: for i in 0..n {
                 for j in (i + 1)..n {
-                    if candidates.len() >= k { break 'outer; }
+                    if candidates.len() >= k {
+                        break 'outer;
+                    }
                     let mut excluded = HashSet::new();
                     excluded.insert(candidates[0].path.edge_indices[i]);
                     excluded.insert(candidates[0].path.edge_indices[j]);
                     let alt = if prefer_production {
-                        self.shortest_path_weighted_prod_ex(from, to, max_depth, edge_kind_filter, direction, Some(&excluded))
+                        self.shortest_path_weighted_prod_ex(
+                            from,
+                            to,
+                            max_depth,
+                            edge_kind_filter,
+                            direction,
+                            Some(&excluded),
+                        )
                     } else {
-                        self.shortest_path_weighted_ex(from, to, max_depth, edge_kind_filter, direction, Some(&excluded))
+                        self.shortest_path_weighted_ex(
+                            from,
+                            to,
+                            max_depth,
+                            edge_kind_filter,
+                            direction,
+                            Some(&excluded),
+                        )
                     };
                     if let Some(alt_path) = alt {
                         let eid = primary_edge_id(&alt_path);
                         if !seen_edge_lists.contains(&eid) && alt_path.node_indices.len() > 1 {
                             seen_edge_lists.insert(eid);
-                            candidates.push(RankedPath { path: alt_path, scores: CompositePathScore::default() });
+                            candidates.push(RankedPath {
+                                path: alt_path,
+                                scores: CompositePathScore::default(),
+                            });
                         }
                     }
                 }
@@ -1359,7 +1439,9 @@ impl GraphSnapshot {
             c.scores = self.score_path(&c.path);
         }
         candidates.sort_by(|a, b| {
-            b.scores.overall.total_cmp(&a.scores.overall)
+            b.scores
+                .overall
+                .total_cmp(&a.scores.overall)
                 .then_with(|| a.path.node_indices.len().cmp(&b.path.node_indices.len()))
         });
         candidates
@@ -1368,44 +1450,114 @@ impl GraphSnapshot {
     fn score_path(&self, path: &GraphPath) -> CompositePathScore {
         let n = path.node_indices.len();
         if n <= 1 {
-            return CompositePathScore { overall: 1.0, semantic: 1.0, topology: 1.0, centrality: 1.0 };
+            return CompositePathScore {
+                overall: 1.0,
+                semantic: 1.0,
+                topology: 1.0,
+                centrality: 1.0,
+            };
         }
-        let semantic: f64 = path.node_indices.iter()
-            .map(|&ix| { let n = &self.nodes[ix]; 1.0 - (name_pattern_penalty(n) + location_penalty(n)).min(1.0) })
-            .sum::<f64>() / n as f64;
-        let topology: f64 = if path.edge_indices.is_empty() { 1.0 } else {
-            path.edge_indices.iter()
-                .map(|&eix| { let e = &self.edges[eix]; let b = e.confidence.as_f32() as f64; if is_indirect_edge(&e.kind) { b*0.7 } else { b } })
-                .sum::<f64>() / path.edge_indices.len() as f64
+        let semantic: f64 = path
+            .node_indices
+            .iter()
+            .map(|&ix| {
+                let n = &self.nodes[ix];
+                1.0 - (name_pattern_penalty(n) + location_penalty(n)).min(1.0)
+            })
+            .sum::<f64>()
+            / n as f64;
+        let topology: f64 = if path.edge_indices.is_empty() {
+            1.0
+        } else {
+            path.edge_indices
+                .iter()
+                .map(|&eix| {
+                    let e = &self.edges[eix];
+                    let b = e.confidence.as_f32() as f64;
+                    if is_indirect_edge(&e.kind) {
+                        b * 0.7
+                    } else {
+                        b
+                    }
+                })
+                .sum::<f64>()
+                / path.edge_indices.len() as f64
         };
-        let centrality: f64 = if n <= 2 { 0.7 } else {
-            path.node_indices[1..n-1].iter()
-                .map(|&ix| { let d = (self.nodes[ix].outgoing.len() + self.nodes[ix].incoming.len()) as f64; (d.min(10.0)/10.0).max(0.1) })
-                .sum::<f64>() / (n-2) as f64
+        let centrality: f64 = if n <= 2 {
+            0.7
+        } else {
+            path.node_indices[1..n - 1]
+                .iter()
+                .map(|&ix| {
+                    let d = (self.nodes[ix].outgoing.len() + self.nodes[ix].incoming.len()) as f64;
+                    (d.min(10.0) / 10.0).max(0.1)
+                })
+                .sum::<f64>()
+                / (n - 2) as f64
         };
         CompositePathScore {
             overall: semantic * 0.40 + topology * 0.35 + centrality * 0.25,
-            semantic, topology, centrality,
+            semantic,
+            topology,
+            centrality,
         }
     }
 
-    fn shortest_path_weighted_ex(&self, from: NodeIx, to: NodeIx, max_depth: usize,
-        edge_kind_filter: Option<&[EdgeKind]>, direction: TraversalDirection,
-        excluded_edges: Option<&HashSet<EdgeIx>>) -> Option<GraphPath> {
-        self.dijkstra_core(from, to, max_depth, edge_kind_filter, direction, excluded_edges, 0.0)
+    fn shortest_path_weighted_ex(
+        &self,
+        from: NodeIx,
+        to: NodeIx,
+        max_depth: usize,
+        edge_kind_filter: Option<&[EdgeKind]>,
+        direction: TraversalDirection,
+        excluded_edges: Option<&HashSet<EdgeIx>>,
+    ) -> Option<GraphPath> {
+        self.dijkstra_core(
+            from,
+            to,
+            max_depth,
+            edge_kind_filter,
+            direction,
+            excluded_edges,
+            0.0,
+        )
     }
 
-    fn shortest_path_weighted_prod_ex(&self, from: NodeIx, to: NodeIx, max_depth: usize,
-        edge_kind_filter: Option<&[EdgeKind]>, direction: TraversalDirection,
-        excluded_edges: Option<&HashSet<EdgeIx>>) -> Option<GraphPath> {
+    fn shortest_path_weighted_prod_ex(
+        &self,
+        from: NodeIx,
+        to: NodeIx,
+        max_depth: usize,
+        edge_kind_filter: Option<&[EdgeKind]>,
+        direction: TraversalDirection,
+        excluded_edges: Option<&HashSet<EdgeIx>>,
+    ) -> Option<GraphPath> {
         const PEN: f64 = 5.0;
-        self.dijkstra_core(from, to, max_depth, edge_kind_filter, direction, excluded_edges,
-            if self.nodes[from].is_test_file { PEN } else { 0.0 })
+        self.dijkstra_core(
+            from,
+            to,
+            max_depth,
+            edge_kind_filter,
+            direction,
+            excluded_edges,
+            if self.nodes[from].is_test_file {
+                PEN
+            } else {
+                0.0
+            },
+        )
     }
 
-    fn dijkstra_core(&self, from: NodeIx, to: NodeIx, max_depth: usize,
-        edge_kind_filter: Option<&[EdgeKind]>, direction: TraversalDirection,
-        excluded_edges: Option<&HashSet<EdgeIx>>, start_cost: f64) -> Option<GraphPath> {
+    fn dijkstra_core(
+        &self,
+        from: NodeIx,
+        to: NodeIx,
+        max_depth: usize,
+        edge_kind_filter: Option<&[EdgeKind]>,
+        direction: TraversalDirection,
+        excluded_edges: Option<&HashSet<EdgeIx>>,
+        start_cost: f64,
+    ) -> Option<GraphPath> {
         const PEN: f64 = 5.0;
         let n = self.nodes.len();
         let mut dist = vec![f64::INFINITY; n];
@@ -1415,17 +1567,42 @@ impl GraphSnapshot {
         dist[from] = start_cost;
         heap.push((Reverse(OrdF64(start_cost)), 0, from));
         while let Some((Reverse(cost), depth, cur)) = heap.pop() {
-            if cost.0 > dist[cur] { continue; }
-            if cur == to { return Some(self.reconstruct_path(from, to, &parent_edge, &parent)); }
-            if depth >= max_depth { continue; }
+            if cost.0 > dist[cur] {
+                continue;
+            }
+            if cur == to {
+                return Some(self.reconstruct_path(from, to, &parent_edge, &parent));
+            }
+            if depth >= max_depth {
+                continue;
+            }
             for eix in self.edge_iter(cur, direction) {
-                if let Some(excl) = excluded_edges { if excl.contains(&eix) { continue; } }
+                if let Some(excl) = excluded_edges {
+                    if excl.contains(&eix) {
+                        continue;
+                    }
+                }
                 let edge = &self.edges[eix];
-                if let Some(kinds) = edge_kind_filter { if !kinds.contains(&edge.kind) { continue; } }
-                let nb = if edge.source_ix == cur { edge.target_ix } else { edge.source_ix };
+                if let Some(kinds) = edge_kind_filter {
+                    if !kinds.contains(&edge.kind) {
+                        continue;
+                    }
+                }
+                let nb = if edge.source_ix == cur {
+                    edge.target_ix
+                } else {
+                    edge.source_ix
+                };
                 let mut nc = cost.0 + self.edge_weight(eix, nb);
-                if start_cost > 0.0 && self.nodes[nb].is_test_file { nc += PEN; }
-                if nc < dist[nb] { dist[nb] = nc; parent[nb] = Some(cur); parent_edge[nb] = Some(eix); heap.push((Reverse(OrdF64(nc)), depth+1, nb)); }
+                if start_cost > 0.0 && self.nodes[nb].is_test_file {
+                    nc += PEN;
+                }
+                if nc < dist[nb] {
+                    dist[nb] = nc;
+                    parent[nb] = Some(cur);
+                    parent_edge[nb] = Some(eix);
+                    heap.push((Reverse(OrdF64(nc)), depth + 1, nb));
+                }
             }
         }
         None
@@ -1434,10 +1611,18 @@ impl GraphSnapshot {
     /// Iterate edge indices for a node given a direction.
     fn edge_iter(&self, node: NodeIx, direction: TraversalDirection) -> EdgeIterKind<'_> {
         match direction {
-            TraversalDirection::Outgoing => EdgeIterKind::Single(self.nodes[node].outgoing.iter().copied()),
-            TraversalDirection::Incoming => EdgeIterKind::Single(self.nodes[node].incoming.iter().copied()),
+            TraversalDirection::Outgoing => {
+                EdgeIterKind::Single(self.nodes[node].outgoing.iter().copied())
+            }
+            TraversalDirection::Incoming => {
+                EdgeIterKind::Single(self.nodes[node].incoming.iter().copied())
+            }
             TraversalDirection::Both => EdgeIterKind::Both(
-                self.nodes[node].outgoing.iter().chain(self.nodes[node].incoming.iter()).copied(),
+                self.nodes[node]
+                    .outgoing
+                    .iter()
+                    .chain(self.nodes[node].incoming.iter())
+                    .copied(),
             ),
         }
     }
@@ -1447,7 +1632,11 @@ impl GraphSnapshot {
 /// Eliminates dynamic dispatch in the Dijkstra hot loop.
 enum EdgeIterKind<'a> {
     Single(std::iter::Copied<std::slice::Iter<'a, EdgeIx>>),
-    Both(std::iter::Copied<std::iter::Chain<std::slice::Iter<'a, EdgeIx>, std::slice::Iter<'a, EdgeIx>>>),
+    Both(
+        std::iter::Copied<
+            std::iter::Chain<std::slice::Iter<'a, EdgeIx>, std::slice::Iter<'a, EdgeIx>>,
+        >,
+    ),
 }
 
 impl<'a> Iterator for EdgeIterKind<'a> {
@@ -1519,7 +1708,12 @@ pub struct CompositePathScore {
 
 impl Default for CompositePathScore {
     fn default() -> Self {
-        Self { overall: 1.0, semantic: 1.0, topology: 1.0, centrality: 1.0 }
+        Self {
+            overall: 1.0,
+            semantic: 1.0,
+            topology: 1.0,
+            centrality: 1.0,
+        }
     }
 }
 
@@ -1705,8 +1899,14 @@ fn name_pattern_penalty(node: &NodeSummary) -> f64 {
     // "socks5_proxy.c" appearing in the file-scoped qualified name.
     let lower = node.qualified_name.to_lowercase();
     let patterns = [
-        "proxy", "socks", "fallback", "alternate", "backup", "spare",
-        "alt_", "_alt",
+        "proxy",
+        "socks",
+        "fallback",
+        "alternate",
+        "backup",
+        "spare",
+        "alt_",
+        "_alt",
     ];
     for pat in &patterns {
         if lower.contains(pat) {
@@ -1841,7 +2041,9 @@ mod tests {
 
         let a_ix = snap.id_to_idx[&a.id];
         let c_ix = snap.id_to_idx[&c.id];
-        let path = snap.shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Both, false).unwrap();
+        let path = snap
+            .shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Both, false)
+            .unwrap();
         assert_eq!(path.node_indices.len(), 3);
         assert_eq!(path.edge_indices.len(), 2); // a→b, b→c
         assert!((path.confidence - 1.0).abs() < 0.001);
@@ -1871,11 +2073,23 @@ mod tests {
         let c_ix = snap.id_to_idx[&c.id];
 
         // With calls-only filter: no path (References edge blocked)
-        let result = snap.shortest_path(a_ix, c_ix, 5, Some(&[EdgeKind::Calls]), TraversalDirection::Both, false);
-        assert!(result.is_none(), "calls-only filter should block References edge");
+        let result = snap.shortest_path(
+            a_ix,
+            c_ix,
+            5,
+            Some(&[EdgeKind::Calls]),
+            TraversalDirection::Both,
+            false,
+        );
+        assert!(
+            result.is_none(),
+            "calls-only filter should block References edge"
+        );
 
         // With no filter: path exists through references edge
-        let path = snap.shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Both, false).unwrap();
+        let path = snap
+            .shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Both, false)
+            .unwrap();
         assert_eq!(path.node_indices.len(), 3);
         assert_eq!(path.edge_indices.len(), 2);
     }
@@ -1889,20 +2103,24 @@ mod tests {
         // a calls b — edge direction is a → b
         let e1 = make_edge(a.id, b.id, EdgeKind::Calls);
 
-        let snap =
-            GraphSnapshot::from_parts(vec![a.clone(), b.clone()], vec![e1], 0.0)
-                .unwrap();
+        let snap = GraphSnapshot::from_parts(vec![a.clone(), b.clone()], vec![e1], 0.0).unwrap();
 
         let b_ix = snap.id_to_idx[&b.id];
         let a_ix = snap.id_to_idx[&a.id];
 
         // Path from b → a must traverse edge in reverse
-        let path = snap.shortest_path(b_ix, a_ix, 5, None, TraversalDirection::Both, false).unwrap();
+        let path = snap
+            .shortest_path(b_ix, a_ix, 5, None, TraversalDirection::Both, false)
+            .unwrap();
         assert_eq!(path.node_indices.len(), 2);
         assert_eq!(path.edge_indices.len(), 1);
         assert_eq!(path.edges[0].direction, PathEdgeDirection::Reverse);
         // Should have a ReversedEdge breakpoint
-        assert!(path.breakpoints.iter().any(|bp| bp.kind == PathBreakpointKind::ReversedEdge));
+        assert!(
+            path.breakpoints
+                .iter()
+                .any(|bp| bp.kind == PathBreakpointKind::ReversedEdge)
+        );
     }
 
     #[test]
@@ -1938,11 +2156,15 @@ mod tests {
         // Without prefer_production: BFS may find a→b→c (2 hops) or a↔test_fn→c (bidirectional path through test),
         // but the standard BFS visits from a's outgoing: a→b (production), then b's outgoing: b→c.
         // The path should be the direct production path a→b→c.
-        let path = snap.shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Both, false).unwrap();
+        let path = snap
+            .shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Both, false)
+            .unwrap();
         assert_eq!(path.node_indices.len(), 3);
 
         // With prefer_production: same result expected (production path is also shortest)
-        let path = snap.shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Both, true).unwrap();
+        let path = snap
+            .shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Both, true)
+            .unwrap();
         assert_eq!(path.node_indices.len(), 3);
     }
 
@@ -1965,12 +2187,17 @@ mod tests {
         let c_ix = snap.id_to_idx[&c.id];
 
         // Outgoing direction: a→b→c should be found
-        let path = snap.shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Outgoing, false).unwrap();
+        let path = snap
+            .shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Outgoing, false)
+            .unwrap();
         assert_eq!(path.node_indices.len(), 3);
 
         // Reverse: from c back to a requires incoming edges, so Outgoing should find no path
         let result = snap.shortest_path(c_ix, a_ix, 5, None, TraversalDirection::Outgoing, false);
-        assert!(result.is_none(), "Outgoing-only from c→a should fail (edges go a→b→c)");
+        assert!(
+            result.is_none(),
+            "Outgoing-only from c→a should fail (edges go a→b→c)"
+        );
     }
 
     #[test]
@@ -1990,7 +2217,9 @@ mod tests {
         let c_ix = snap.id_to_idx[&c.id];
 
         // Incoming direction: from c back to a (following callers/called-by edges) should work
-        let path = snap.shortest_path(c_ix, a_ix, 5, None, TraversalDirection::Incoming, false).unwrap();
+        let path = snap
+            .shortest_path(c_ix, a_ix, 5, None, TraversalDirection::Incoming, false)
+            .unwrap();
         assert_eq!(path.node_indices.len(), 3);
 
         // Forward (a→c) via incoming-only should fail
@@ -2040,11 +2269,17 @@ mod tests {
 
         let a_ix = snap.id_to_idx[&a.id];
         let b_ix = snap.id_to_idx[&b.id];
-        let path = snap.shortest_path(a_ix, b_ix, 5, None, TraversalDirection::Both, false).unwrap();
+        let path = snap
+            .shortest_path(a_ix, b_ix, 5, None, TraversalDirection::Both, false)
+            .unwrap();
         assert_eq!(path.node_indices.len(), 2);
         assert!(path.confidence < 0.5, "confidence should be < 0.5");
-        assert!(path.breakpoints.iter().any(|bp| bp.kind == PathBreakpointKind::LowConfidence),
-            "should have LowConfidence breakpoint");
+        assert!(
+            path.breakpoints
+                .iter()
+                .any(|bp| bp.kind == PathBreakpointKind::LowConfidence),
+            "should have LowConfidence breakpoint"
+        );
     }
 
     #[test]
@@ -2066,9 +2301,15 @@ mod tests {
 
         let a_ix = snap.id_to_idx[&a.id];
         let b_ix = snap.id_to_idx[&b.id];
-        let path = snap.shortest_path(a_ix, b_ix, 5, None, TraversalDirection::Both, false).unwrap();
-        assert!(path.breakpoints.iter().any(|bp| bp.kind == PathBreakpointKind::IndirectCall),
-            "should have IndirectCall breakpoint for Implements edge");
+        let path = snap
+            .shortest_path(a_ix, b_ix, 5, None, TraversalDirection::Both, false)
+            .unwrap();
+        assert!(
+            path.breakpoints
+                .iter()
+                .any(|bp| bp.kind == PathBreakpointKind::IndirectCall),
+            "should have IndirectCall breakpoint for Implements edge"
+        );
     }
 
     #[test]
@@ -2077,7 +2318,12 @@ mod tests {
         let test_fid = make_file_id("tests/test.rs");
 
         let prod_fn = make_symbol(prod_fid, "do_work", "do_work", SymbolKind::Function);
-        let test_fn = make_symbol(test_fid, "test_do_work", "test_do_work", SymbolKind::Function);
+        let test_fn = make_symbol(
+            test_fid,
+            "test_do_work",
+            "test_do_work",
+            SymbolKind::Function,
+        );
         // test_fn calls prod_fn (forward edge: test_fn → prod_fn)
         let e = make_edge(test_fn.id, prod_fn.id, EdgeKind::Calls);
 
@@ -2098,10 +2344,16 @@ mod tests {
 
         // Path from prod_fn → test_fn traverses edge in reverse: prod_fn is target of test_fn's call
         // So the edge is traversed in reverse from prod_fn (target) to test_fn (source)
-        let path = snap.shortest_path(prod_ix, test_ix, 5, None, TraversalDirection::Both, false).unwrap();
+        let path = snap
+            .shortest_path(prod_ix, test_ix, 5, None, TraversalDirection::Both, false)
+            .unwrap();
         // Should have TestContamination breakpoint (test_fn is in tests/ directory)
-        assert!(path.breakpoints.iter().any(|bp| bp.kind == PathBreakpointKind::TestContamination),
-            "should have TestContamination breakpoint for test file node");
+        assert!(
+            path.breakpoints
+                .iter()
+                .any(|bp| bp.kind == PathBreakpointKind::TestContamination),
+            "should have TestContamination breakpoint for test file node"
+        );
     }
 
     #[test]
@@ -2139,15 +2391,22 @@ mod tests {
 
         // Without prefer_production: BFS may find a→b→c (3 hops) or a→test_fn→c (2 hops)
         // Standard BFS finds shortest = 2 hops through test
-        let path_no_pref = snap.shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Both, false).unwrap();
+        let path_no_pref = snap
+            .shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Both, false)
+            .unwrap();
         assert_eq!(path_no_pref.node_indices.len(), 3); // 3 nodes = 2 hops (a→test_fn→c)
 
         // With prefer_production: should prefer 3-hop production path (a→b→c)
-        let path_pref = snap.shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Both, true).unwrap();
+        let path_pref = snap
+            .shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Both, true)
+            .unwrap();
         assert_eq!(path_pref.node_indices.len(), 3); // 3 nodes = 2 hops
         // The path should go through b (production), not test_fn
         let middle_node = &snap.nodes[path_pref.node_indices[1]];
-        assert_eq!(middle_node.name, "b", "prefer_production should route through b, not test_fn");
+        assert_eq!(
+            middle_node.name, "b",
+            "prefer_production should route through b, not test_fn"
+        );
     }
 
     #[test]
@@ -2188,9 +2447,9 @@ mod tests {
         heap.push(Reverse(OrdF64(3.0)));
         heap.push(Reverse(OrdF64(1.0)));
         heap.push(Reverse(OrdF64(2.0)));
-        assert_eq!(heap.pop().unwrap().0 .0, 1.0);
-        assert_eq!(heap.pop().unwrap().0 .0, 2.0);
-        assert_eq!(heap.pop().unwrap().0 .0, 3.0);
+        assert_eq!(heap.pop().unwrap().0.0, 1.0);
+        assert_eq!(heap.pop().unwrap().0.0, 2.0);
+        assert_eq!(heap.pop().unwrap().0.0, 3.0);
     }
 
     // ── name/location penalty tests ────────────────────────────────────
@@ -2198,7 +2457,12 @@ mod tests {
     #[test]
     fn test_name_pattern_penalty_proxy() {
         let fid = make_file_id("src/proxy_handler.c");
-        let sym = make_symbol(fid, "socks5_connect", "socks5_connect", SymbolKind::Function);
+        let sym = make_symbol(
+            fid,
+            "socks5_connect",
+            "socks5_connect",
+            SymbolKind::Function,
+        );
         let snap = GraphSnapshot::from_parts(vec![sym.clone()], vec![], 0.0).unwrap();
         let penalty = name_pattern_penalty(&snap.nodes[0]);
         assert!(penalty > 0.0, "socks5 should be penalised");
@@ -2207,7 +2471,12 @@ mod tests {
     #[test]
     fn test_name_pattern_penalty_fallback() {
         let fid = make_file_id("src/fallback.c");
-        let sym = make_symbol(fid, "connect_fallback", "connect_fallback", SymbolKind::Function);
+        let sym = make_symbol(
+            fid,
+            "connect_fallback",
+            "connect_fallback",
+            SymbolKind::Function,
+        );
         let snap = GraphSnapshot::from_parts(vec![sym.clone()], vec![], 0.0).unwrap();
         let penalty = name_pattern_penalty(&snap.nodes[0]);
         assert!(penalty > 0.0, "fallback pattern should be penalised");
@@ -2228,9 +2497,8 @@ mod tests {
         let sym = make_symbol(fid, "test_connect", "test_connect", SymbolKind::Function);
         let mut paths = std::collections::HashMap::new();
         paths.insert(fid, "tests/test_connect.c".to_string());
-        let snap = GraphSnapshot::from_parts_with_paths(
-            vec![sym.clone()], vec![], 0.0, &paths,
-        ).unwrap();
+        let snap =
+            GraphSnapshot::from_parts_with_paths(vec![sym.clone()], vec![], 0.0, &paths).unwrap();
         let penalty = location_penalty(&snap.nodes[0]);
         assert!(penalty > 0.0, "test file should be penalised");
     }
@@ -2248,7 +2516,11 @@ mod tests {
         let snap = GraphSnapshot::from_parts(vec![a, b], vec![e], 0.0).unwrap();
         let b_ix = snap.id_to_idx[&snap.nodes[1].symbol_id];
         let w = snap.edge_weight(0, b_ix);
-        assert!((1.0..=1.2).contains(&w), "baseline weight should be ~1.0, got {}", w);
+        assert!(
+            (1.0..=1.2).contains(&w),
+            "baseline weight should be ~1.0, got {}",
+            w
+        );
     }
 
     #[test]
@@ -2260,14 +2532,23 @@ mod tests {
         let snap = GraphSnapshot::from_parts(vec![a, b], vec![e], 0.0).unwrap();
         let b_ix = snap.id_to_idx[&snap.nodes[1].symbol_id];
         let w = snap.edge_weight(0, b_ix);
-        assert!(w >= 2.0, "Implements edge should add +1.0 penalty, got {}", w);
+        assert!(
+            w >= 2.0,
+            "Implements edge should add +1.0 penalty, got {}",
+            w
+        );
     }
 
     #[test]
     fn test_edge_weight_proxy_name_penalty() {
         let fid = make_file_id("src/socks5.c");
         let a = make_symbol(fid, "connect", "connect", SymbolKind::Function);
-        let b = make_symbol(fid, "socks5_negotiate", "socks5_negotiate", SymbolKind::Function);
+        let b = make_symbol(
+            fid,
+            "socks5_negotiate",
+            "socks5_negotiate",
+            SymbolKind::Function,
+        );
         let e = make_edge(a.id, b.id, EdgeKind::Calls);
         let snap = GraphSnapshot::from_parts(vec![a, b], vec![e], 0.0).unwrap();
         let b_ix = snap.id_to_idx[&snap.nodes[1].symbol_id];
@@ -2283,7 +2564,9 @@ mod tests {
         let a = make_symbol(fid, "main", "main", SymbolKind::Function);
         let snap = GraphSnapshot::from_parts(vec![a], vec![], 0.0).unwrap();
         // Trivial path (single node).
-        let path = snap.shortest_path(0, 0, 5, None, TraversalDirection::Outgoing, false).unwrap();
+        let path = snap
+            .shortest_path(0, 0, 5, None, TraversalDirection::Outgoing, false)
+            .unwrap();
         let score = snap.score_path(&path);
         assert_eq!(score.overall, 1.0);
         assert_eq!(score.semantic, 1.0);
@@ -2293,17 +2576,28 @@ mod tests {
     fn test_score_path_with_proxy_penalty() {
         let fid = make_file_id("src/proxy.c");
         let a = make_symbol(fid, "main", "main", SymbolKind::Function);
-        let b = make_symbol(fid, "socks5_connect", "socks5_connect", SymbolKind::Function);
+        let b = make_symbol(
+            fid,
+            "socks5_connect",
+            "socks5_connect",
+            SymbolKind::Function,
+        );
         let c = make_symbol(fid, "write", "write", SymbolKind::Function);
         let e1 = make_edge(a.id, b.id, EdgeKind::Calls);
         let e2 = make_edge(b.id, c.id, EdgeKind::Calls);
         let snap = GraphSnapshot::from_parts(vec![a, b, c], vec![e1, e2], 0.0).unwrap();
         let a_ix = snap.id_to_idx[&snap.nodes[0].symbol_id];
         let c_ix = snap.id_to_idx[&snap.nodes[2].symbol_id];
-        let path = snap.shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Outgoing, false).unwrap();
+        let path = snap
+            .shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Outgoing, false)
+            .unwrap();
         let score = snap.score_path(&path);
         // With socks5_connect as intermediate, semantic score should be < 1.0
-        assert!(score.semantic < 1.0, "socks5_connect should reduce semantic score, got {}", score.semantic);
+        assert!(
+            score.semantic < 1.0,
+            "socks5_connect should reduce semantic score, got {}",
+            score.semantic
+        );
         assert!(score.overall < 1.0, "overall should reflect penalty");
     }
 
@@ -2318,7 +2612,8 @@ mod tests {
         let snap = GraphSnapshot::from_parts(vec![a, b], vec![e], 0.0).unwrap();
         let a_ix = snap.id_to_idx[&snap.nodes[0].symbol_id];
         let b_ix = snap.id_to_idx[&snap.nodes[1].symbol_id];
-        let ranked = snap.k_ranked_paths(a_ix, b_ix, 5, 5, None, TraversalDirection::Outgoing, false);
+        let ranked =
+            snap.k_ranked_paths(a_ix, b_ix, 5, 5, None, TraversalDirection::Outgoing, false);
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].path.node_indices.len(), 2);
         assert!(ranked[0].scores.overall > 0.0);
@@ -2337,26 +2632,44 @@ mod tests {
         let e2 = make_edge(b.id, d.id, EdgeKind::Calls);
         let e3 = make_edge(a.id, c.id, EdgeKind::Calls);
         let e4 = make_edge(c.id, d.id, EdgeKind::Calls);
-        let snap =
-            GraphSnapshot::from_parts(vec![a, b, c, d], vec![e1, e2, e3, e4], 0.0).unwrap();
+        let snap = GraphSnapshot::from_parts(vec![a, b, c, d], vec![e1, e2, e3, e4], 0.0).unwrap();
         let a_ix = snap.id_to_idx[&snap.nodes[0].symbol_id];
         let d_ix = snap.id_to_idx[&snap.nodes[3].symbol_id];
-        let ranked = snap.k_ranked_paths(a_ix, d_ix, 5, 5, None, TraversalDirection::Outgoing, false);
-        assert!(ranked.len() >= 2, "should find at least 2 alternative paths, got {}", ranked.len());
+        let ranked =
+            snap.k_ranked_paths(a_ix, d_ix, 5, 5, None, TraversalDirection::Outgoing, false);
+        assert!(
+            ranked.len() >= 2,
+            "should find at least 2 alternative paths, got {}",
+            ranked.len()
+        );
         // The proxy_setup path should have lower semantic score than the init path.
         let proxy_path = ranked.iter().find(|r| {
-            r.path.node_indices.iter().any(|&ix| snap.nodes[ix].name == "proxy_setup")
+            r.path
+                .node_indices
+                .iter()
+                .any(|&ix| snap.nodes[ix].name == "proxy_setup")
         });
         let init_path = ranked.iter().find(|r| {
-            r.path.node_indices.iter().any(|&ix| snap.nodes[ix].name == "init")
+            r.path
+                .node_indices
+                .iter()
+                .any(|&ix| snap.nodes[ix].name == "init")
         });
         if let (Some(pp), Some(ip)) = (proxy_path, init_path) {
-            assert!(pp.scores.semantic < ip.scores.semantic,
-                "proxy path should have lower semantic score");
+            assert!(
+                pp.scores.semantic < ip.scores.semantic,
+                "proxy path should have lower semantic score"
+            );
             // The init path should rank higher (lower overall score → better).
-            assert!(ranked[0].scores.overall >= ranked[1].scores.overall
-                || ranked[0].path.node_indices.iter().any(|&ix| snap.nodes[ix].name == "init"),
-                "init path should rank first or at least be present");
+            assert!(
+                ranked[0].scores.overall >= ranked[1].scores.overall
+                    || ranked[0]
+                        .path
+                        .node_indices
+                        .iter()
+                        .any(|&ix| snap.nodes[ix].name == "init"),
+                "init path should rank first or at least be present"
+            );
         }
     }
 
@@ -2368,7 +2681,8 @@ mod tests {
         let snap = GraphSnapshot::from_parts(vec![a, b], vec![], 0.0).unwrap();
         let a_ix = snap.id_to_idx[&snap.nodes[0].symbol_id];
         let b_ix = snap.id_to_idx[&snap.nodes[1].symbol_id];
-        let ranked = snap.k_ranked_paths(a_ix, b_ix, 5, 5, None, TraversalDirection::Outgoing, false);
+        let ranked =
+            snap.k_ranked_paths(a_ix, b_ix, 5, 5, None, TraversalDirection::Outgoing, false);
         assert!(ranked.is_empty());
     }
 
@@ -2392,24 +2706,37 @@ mod tests {
         let e3 = make_edge(a.id, init.id, EdgeKind::Calls);
         let e4 = make_edge(init.id, config.id, EdgeKind::Calls);
         let e5 = make_edge(config.id, d.id, EdgeKind::Calls);
-        let snap =
-            GraphSnapshot::from_parts(vec![a, proxy, init, config, d], vec![e1, e2, e3, e4, e5], 0.0).unwrap();
+        let snap = GraphSnapshot::from_parts(
+            vec![a, proxy, init, config, d],
+            vec![e1, e2, e3, e4, e5],
+            0.0,
+        )
+        .unwrap();
         let a_ix = snap.id_to_idx[&snap.nodes[0].symbol_id];
         let d_ix = snap.id_to_idx[&snap.nodes[4].symbol_id];
 
-        let ranked = snap.k_ranked_paths(a_ix, d_ix, 5, 5, None, TraversalDirection::Outgoing, false);
+        let ranked =
+            snap.k_ranked_paths(a_ix, d_ix, 5, 5, None, TraversalDirection::Outgoing, false);
         assert!(!ranked.is_empty());
         // The first (best) path should go through init/config, not proxy.
         let best = &ranked[0];
-        let has_proxy = best.path.node_indices.iter()
+        let has_proxy = best
+            .path
+            .node_indices
+            .iter()
             .any(|&ix| snap.nodes[ix].name == "proxy_conn");
-        assert!(!has_proxy,
-            "Weighted Dijkstra should prefer the clean 3-hop path over the proxy 2-hop path");
+        assert!(
+            !has_proxy,
+            "Weighted Dijkstra should prefer the clean 3-hop path over the proxy 2-hop path"
+        );
     }
 
     #[test]
     fn test_callback_patterns_ts_js() {
-        let patterns: Vec<&str> = crate::graph_builder::CALLBACK_PATTERNS.iter().map(|(p, _)| *p).collect();
+        let patterns: Vec<&str> = crate::graph_builder::CALLBACK_PATTERNS
+            .iter()
+            .map(|(p, _)| *p)
+            .collect();
         // TS/JS
         assert!(patterns.contains(&"setTimeout"));
         assert!(patterns.contains(&"setInterval"));
@@ -2432,5 +2759,128 @@ mod tests {
         assert!(patterns.contains(&"register"));
         // Total count (no duplicates)
         assert_eq!(patterns.len(), 21, "expected 21 unique callback patterns");
+    }
+
+    #[cfg(test)]
+    mod replace_files_tests {
+        use super::*;
+        use types::ids::{EdgeId, FileId, SymbolId};
+        use types::structs::TextRange;
+        use types::{Confidence, EdgeKind, Language, Provenance, RawEdge, SymbolDef, SymbolKind};
+
+        /// Test: removing a file's nodes correctly removes its edges AND
+        /// preserves edges between unrelated files.
+        #[test]
+        fn remove_files_drops_edges_and_preserves_unrelated() {
+            let file_a = FileId::generate("src/a.c");
+            let file_b = FileId::generate("src/b.c");
+            let sym_a1 = SymbolId::generate(&file_a, "c", "func_a1", "function", None);
+            let sym_a2 = SymbolId::generate(&file_a, "c", "func_a2", "function", None);
+            let sym_b1 = SymbolId::generate(&file_b, "c", "func_b1", "function", None);
+            let sym_b2 = SymbolId::generate(&file_b, "c", "func_b2", "function", None);
+
+            let symbols = vec![
+                symbol_def(sym_a1, file_a, "func_a1", 1),
+                symbol_def(sym_a2, file_a, "func_a2", 2),
+                symbol_def(sym_b1, file_b, "func_b1", 1),
+                symbol_def(sym_b2, file_b, "func_b2", 2),
+            ];
+
+            // Edge A1->B1 (cross-file edge to be pruned), B1->B2 (within B, to be preserved)
+            let edges = vec![
+                RawEdge::new(
+                    EdgeId::generate(&sym_a1, &sym_b1, "calls", None, "tree_sitter"),
+                    sym_a1,
+                    sym_b1,
+                    EdgeKind::Calls,
+                    Confidence::new(1.0),
+                    Provenance::TreeSitter,
+                ),
+                RawEdge::new(
+                    EdgeId::generate(&sym_b1, &sym_b2, "calls", None, "tree_sitter"),
+                    sym_b1,
+                    sym_b2,
+                    EdgeKind::Calls,
+                    Confidence::new(1.0),
+                    Provenance::TreeSitter,
+                ),
+            ];
+
+            let mut snap = GraphSnapshot::from_parts(symbols, edges, 0.0).unwrap();
+            assert_eq!(snap.nodes.len(), 4);
+            assert_eq!(snap.edges.len(), 2);
+
+            // Remove file_a
+            snap.remove_files_in_place(&[file_a]);
+
+            // file_a nodes removed
+            assert_eq!(snap.nodes.len(), 2);
+            assert!(snap.id_to_idx.get(&sym_a1).is_none());
+            assert!(snap.id_to_idx.get(&sym_a2).is_none());
+            // file_b nodes preserved
+            assert!(snap.id_to_idx.get(&sym_b1).is_some());
+            assert!(snap.id_to_idx.get(&sym_b2).is_some());
+
+            // Edge A1->B1 removed (source gone), B1->B2 preserved
+            assert_eq!(snap.edges.len(), 1);
+            assert_eq!(snap.edge_count, 1);
+            // Remaining edge is B1->B2
+            let b1_ix = snap.id_to_idx[&sym_b1];
+            let b2_ix = snap.id_to_idx[&sym_b2];
+            let edge = &snap.edges[0];
+            assert_eq!(edge.source_ix, b1_ix);
+            assert_eq!(edge.target_ix, b2_ix);
+
+            // Adjacency lists rebuilt
+            assert!(!snap.nodes[b1_ix].outgoing.is_empty());
+            assert!(!snap.nodes[b2_ix].incoming.is_empty());
+        }
+
+        /// Test: removing a non-existent file is a no-op.
+        #[test]
+        fn remove_files_nonexistent_is_noop() {
+            let file_a = FileId::generate("src/a.c");
+            let sym = SymbolId::generate(&file_a, "c", "f", "function", None);
+            let symbols = vec![symbol_def(sym, file_a, "f", 1)];
+            let mut snap = GraphSnapshot::from_parts(symbols, vec![], 0.0).unwrap();
+            assert_eq!(snap.nodes.len(), 1);
+
+            let file_b = FileId::generate("src/b.c");
+            snap.remove_files_in_place(&[file_b]); // file_b not in graph
+
+            assert_eq!(snap.nodes.len(), 1);
+            assert!(snap.id_to_idx.get(&sym).is_some());
+        }
+
+        fn symbol_def(id: SymbolId, file_id: FileId, name: &str, line: u32) -> SymbolDef {
+            SymbolDef {
+                id,
+                file_id,
+                name: name.to_string(),
+                qualified_name: name.to_string(),
+                kind: SymbolKind::Function,
+                language: Language::C,
+                range: TextRange {
+                    start_byte: 0,
+                    end_byte: 0,
+                    start_line: line,
+                    start_column: 0,
+                    end_line: line,
+                    end_column: 0,
+                },
+                symbol_path: vec![],
+                name_range: Default::default(),
+                container: None,
+                visibility: None,
+                layer: "structural".into(),
+                exported: false,
+                signature: None,
+                static_: false,
+                async_: false,
+                scope_id: None,
+                package_name: None,
+                namespace_path: vec![],
+            }
+        }
     }
 }

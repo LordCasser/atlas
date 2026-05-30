@@ -111,8 +111,7 @@ impl ForwardPathExplorer {
             return Ok(None);
         }
 
-        let steps =
-            reconstruct_fwd_path(&predecessors, source_id, target_id, store)?;
+        let steps = reconstruct_fwd_path(&predecessors, source_id, target_id, store)?;
 
         Ok(Some(ForwardChain {
             source,
@@ -120,7 +119,10 @@ impl ForwardPathExplorer {
             target,
             nodes_visited,
             max_depth_reached: if found {
-                visited.get(&hex::encode(target_id.as_bytes())).copied().unwrap_or(0)
+                visited
+                    .get(&hex::encode(target_id.as_bytes()))
+                    .copied()
+                    .unwrap_or(0)
             } else {
                 max_depth
             },
@@ -165,10 +167,10 @@ fn reconstruct_fwd_path(
 
 #[cfg(test)]
 mod tests {
+    use super::ForwardPathExplorer;
     use db::Store;
     use std::sync::Arc;
     use types::*;
-    use super::ForwardPathExplorer;
 
     /// Helper: build a minimal test store with a few functions.
     struct TestHarness {
@@ -182,38 +184,63 @@ mod tests {
             store.init_schema().unwrap();
             let fid = FileId::generate("test.c");
             let _ = store.upsert_file(&FileInfo {
-                file_id: fid, path: "test.c".into(), language: Language::C,
-                content_hash: "abc".into(), status: ParseStatus::Success,
+                file_id: fid,
+                path: "test.c".into(),
+                language: Language::C,
+                content_hash: "abc".into(),
+                status: ParseStatus::Success,
             });
-            Self { store, file_id: fid }
+            Self {
+                store,
+                file_id: fid,
+            }
         }
 
         fn make_fun(&self, name: &str) -> SymbolDef {
             let fid = self.file_id;
             SymbolDef {
                 id: SymbolId::generate(&fid, "c", name, "Function", None),
-                file_id: fid, kind: SymbolKind::Function, name: name.into(),
-                qualified_name: name.into(), symbol_path: vec![name.into()],
+                file_id: fid,
+                kind: SymbolKind::Function,
+                name: name.into(),
+                qualified_name: name.into(),
+                symbol_path: vec![name.into()],
                 language: Language::C,
-                range: TextRange::default(), name_range: TextRange::default(),
-                signature: None, visibility: None, exported: false, static_: false,
-                async_: false, container: None, scope_id: None, package_name: None,
-                namespace_path: vec![], layer: "structural".into(),
+                range: TextRange::default(),
+                name_range: TextRange::default(),
+                signature: None,
+                visibility: None,
+                exported: false,
+                static_: false,
+                async_: false,
+                container: None,
+                scope_id: None,
+                package_name: None,
+                namespace_path: vec![],
+                layer: "structural".into(),
             }
         }
 
         fn connect(&self, caller: &SymbolDef, callee: &SymbolDef, kind: EdgeKind) {
-            self.store.batch_insert_edges(&[RawEdge::new(
-                EdgeId::generate(&caller.id, &callee.id, kind.as_str(), None, "test"),
-                caller.id, callee.id, kind, Confidence::certain(), Provenance::TreeSitter,
-            )]).unwrap();
+            self.store
+                .batch_insert_edges(&[RawEdge::new(
+                    EdgeId::generate(&caller.id, &callee.id, kind.as_str(), None, "test"),
+                    caller.id,
+                    callee.id,
+                    kind,
+                    Confidence::certain(),
+                    Provenance::TreeSitter,
+                )])
+                .unwrap();
         }
 
         fn seed(&self, syms: &[SymbolDef]) {
             self.store.insert_symbols(syms).unwrap();
         }
 
-        fn store_ref(&self) -> &Store { &self.store }
+        fn store_ref(&self) -> &Store {
+            &self.store
+        }
     }
 
     #[test]
@@ -233,7 +260,9 @@ mod tests {
     #[test]
     fn test_forward_multi_step() {
         let h = TestHarness::new();
-        let a = h.make_fun("a"); let b = h.make_fun("b"); let c = h.make_fun("c");
+        let a = h.make_fun("a");
+        let b = h.make_fun("b");
+        let c = h.make_fun("c");
         h.seed(&[a.clone(), b.clone(), c.clone()]);
         h.connect(&a, &b, EdgeKind::Calls);
         h.connect(&b, &c, EdgeKind::Calls);
@@ -250,7 +279,8 @@ mod tests {
     #[test]
     fn test_forward_no_path() {
         let h = TestHarness::new();
-        let a = h.make_fun("a"); let b = h.make_fun("b");
+        let a = h.make_fun("a");
+        let b = h.make_fun("b");
         h.seed(&[a.clone(), b.clone()]);
         // No edge → a cannot reach b
         let result = ForwardPathExplorer::explore(h.store_ref(), &a.id, &b.id, 10).unwrap();
@@ -270,7 +300,9 @@ mod tests {
     #[test]
     fn test_forward_max_depth_truncation() {
         let h = TestHarness::new();
-        let a = h.make_fun("a"); let b = h.make_fun("b"); let c = h.make_fun("c");
+        let a = h.make_fun("a");
+        let b = h.make_fun("b");
+        let c = h.make_fun("c");
         h.seed(&[a.clone(), b.clone(), c.clone()]);
         h.connect(&a, &b, EdgeKind::Calls);
         h.connect(&b, &c, EdgeKind::Calls);
@@ -293,18 +325,30 @@ mod tests {
             .expect("should find callback registration");
         assert_eq!(chain.steps.len(), 1);
         let step = &chain.steps[0];
-        assert!(step.boundary.is_some(), "RegistersCallback step must have boundary marker");
+        assert!(
+            step.boundary.is_some(),
+            "RegistersCallback step must have boundary marker"
+        );
         let marker = step.boundary.as_ref().unwrap();
-        assert!(marker.message.contains("callback"), "message should mention callback");
-        assert!(marker.suggestion.contains("explore"), "suggestion should mention explore");
+        assert!(
+            marker.message.contains("callback"),
+            "message should mention callback"
+        );
+        assert!(
+            marker.suggestion.contains("explore"),
+            "suggestion should mention explore"
+        );
         assert!(marker.bridge_target.is_some(), "should have bridge_target");
     }
 
     #[test]
     fn test_forward_branching_picks_shortest() {
         let h = TestHarness::new();
-        let a = h.make_fun("a"); let b = h.make_fun("b"); let c = h.make_fun("c");
-        let d = h.make_fun("d"); let e = h.make_fun("e");
+        let a = h.make_fun("a");
+        let b = h.make_fun("b");
+        let c = h.make_fun("c");
+        let d = h.make_fun("d");
+        let e = h.make_fun("e");
         h.seed(&[a.clone(), b.clone(), c.clone(), d.clone(), e.clone()]);
         // Two paths to e:  a→b→e (2 hops)  and  a→c→d→e (3 hops)
         h.connect(&a, &b, EdgeKind::Calls);

@@ -48,7 +48,10 @@ pub struct SourceExtractor {
 
 impl SourceExtractor {
     pub fn new(store: Arc<Store>, project_root: PathBuf) -> Self {
-        Self { store, project_root }
+        Self {
+            store,
+            project_root,
+        }
     }
 
     /// Extract the exact source code for a symbol.
@@ -95,12 +98,7 @@ impl SourceExtractor {
     // ── Private helpers ─────────────────────────────────────────────────
 
     /// AST-based extraction using tree-sitter.
-    fn extract_via_ast(
-        &self,
-        sym: &SymbolDef,
-        source: &str,
-        lang: Language,
-    ) -> Option<String> {
+    fn extract_via_ast(&self, sym: &SymbolDef, source: &str, lang: Language) -> Option<String> {
         let frontend = create_frontend(lang)?;
         let ts_lang = frontend.parser.tree_sitter_language();
 
@@ -189,9 +187,7 @@ fn enclosing_definition_kinds(kind: SymbolKind, lang: Language) -> &'static [&'s
     match (kind, lang) {
         // ── Functions / Methods / Constructors ──
         (Function | Method | Constructor, C) => &["function_definition"],
-        (Function | Method | Constructor, Cpp) => {
-            &["function_definition", "template_declaration"]
-        }
+        (Function | Method | Constructor, Cpp) => &["function_definition", "template_declaration"],
         (Function | Method | Constructor, Python) => &["function_definition", "lambda"],
         (Function | Method | Constructor, TypeScript | JavaScript | ArkTS) => &[
             "function_declaration",
@@ -207,9 +203,7 @@ fn enclosing_definition_kinds(kind: SymbolKind, lang: Language) -> &'static [&'s
         (Function | Method | Constructor, CSharp) => {
             &["method_declaration", "local_function_statement"]
         }
-        (Function | Method | Constructor, Php) => {
-            &["function_definition", "method_declaration"]
-        }
+        (Function | Method | Constructor, Php) => &["function_definition", "method_declaration"],
         (Function | Method | Constructor, Ruby) => &["method", "singleton_method"],
         (Function | Method | Constructor, Kotlin) => &["function_declaration"],
         (Function | Method | Constructor, Cangjie) => &["functionDefinition"],
@@ -258,7 +252,9 @@ fn enclosing_definition_kinds(kind: SymbolKind, lang: Language) -> &'static [&'s
         (TypeAlias, Kotlin) => &["type_alias"],
 
         // ── Modules / Namespaces / Packages ──
-        (Module | Namespace, TypeScript | JavaScript | ArkTS) => &["module", "namespace_declaration"],
+        (Module | Namespace, TypeScript | JavaScript | ArkTS) => {
+            &["module", "namespace_declaration"]
+        }
         (Package, Java) => &["package_declaration"],
         (Module, Rust) => &["mod_item"],
 

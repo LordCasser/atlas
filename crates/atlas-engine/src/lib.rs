@@ -59,6 +59,8 @@ pub use source_extractor::SourceExtractor;
 
 // ─── Re-exports ────────────────────────────────────────────────────────────
 
+/// Analysis: summary builder.
+pub use analysis::summary::SummaryBuilder;
 /// Analysis layer: trace engine and query responses.
 ///
 /// [`RawTraceEngine`] is the low-level analysis engine — it does NOT
@@ -70,12 +72,10 @@ pub use analysis::trace::TraceEngine as RawTraceEngine;
 pub use analysis::trace::TraceQueryResponse;
 /// Context layer: AI context builder (callers, callees, peers).
 pub use context::ContextBuilder;
-/// Database store and schema version.
-pub use db::{CURRENT_SCHEMA_VERSION, Store};
 /// Summary persistence: build and query function summaries.
 pub use db::summary::{SummaryBuildStats, SummaryStore};
-/// Analysis: summary builder.
-pub use analysis::summary::SummaryBuilder;
+/// Database store and schema version.
+pub use db::{CURRENT_SCHEMA_VERSION, Store};
 /// Extraction layer: language frontends, parser pool, grammar registry.
 pub use extraction::{
     ExtractionMode, LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig,
@@ -84,13 +84,12 @@ pub use extraction::{
 /// Sync layer: incremental sync engine, file lock, file discovery.
 pub use filesync::{
     DirtySet, ExtractedFile, ExtractedFiles, ExtractionPhaseStats, FileLock, GraphResult,
-    IndexPipelineOptions, IndexPipelineStats, IndexProgress, IndexProgressCallback,
-    SyncEngine, SyncStats, WriteBatchStats, build_dirty_set, clean_stale_file_ids,
-    clean_stale_file_paths, discovery, phase_build_summaries, phase_cleanup_file_ids,
-    phase_cleanup_stale, phase_commit_path_alias_config, phase_dirty_check, phase_discover,
-    phase_extract_serial, phase_finalize, phase_init_frontends,
-    phase_materialize_annotations, phase_resolve_and_build, phase_write_batched,
-    phase_write_single, run_index_pipeline, source_file_id,
+    IndexPipelineOptions, IndexPipelineStats, IndexProgress, IndexProgressCallback, SyncEngine,
+    SyncStats, WriteBatchStats, build_dirty_set, clean_stale_file_ids, clean_stale_file_paths,
+    discovery, phase_build_summaries, phase_cleanup_file_ids, phase_cleanup_stale,
+    phase_commit_path_alias_config, phase_dirty_check, phase_discover, phase_extract_serial,
+    phase_finalize, phase_init_frontends, phase_materialize_annotations, phase_resolve_and_build,
+    phase_write_batched, phase_write_single, run_index_pipeline, source_file_id,
 };
 /// Graph layer: graph builder, query engine, snapshots, annotation materialization.
 pub use graph::{
@@ -106,10 +105,10 @@ pub use resolution::{
 };
 /// Search layer: FTS5 + fuzzy search engine.
 pub use search::{SearchEngine, SearchOptions, SearchResult};
-/// All core IR types (SymbolDef, ReferenceUse, FileFacts, etc.).
-pub use types::*;
 /// Progress protocol (for CLI TUI integration).
 pub use types::progress;
+/// All core IR types (SymbolDef, ReferenceUse, FileFacts, etc.).
+pub use types::*;
 /// Workspace abstractions.
 pub use workspace::{ProjectRoot, SourcePath, Workspace};
 

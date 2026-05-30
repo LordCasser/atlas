@@ -76,10 +76,7 @@ pub struct ClosurePlanner {
 }
 
 impl ClosurePlanner {
-    pub fn new(
-        store: Arc<Store>,
-        project_root: Option<std::path::PathBuf>,
-    ) -> Self {
+    pub fn new(store: Arc<Store>, project_root: Option<std::path::PathBuf>) -> Self {
         Self {
             store,
             project_root,
@@ -158,11 +155,7 @@ impl ClosurePlanner {
                 let importing_file_dir = match self.get_file_dir(file_id) {
                     Ok(d) => d,
                     Err(e) => {
-                        tracing::debug!(
-                            "ClosurePlanner: skipping file {:?}: {:#}",
-                            file_id,
-                            e
-                        );
+                        tracing::debug!("ClosurePlanner: skipping file {:?}: {:#}", file_id, e);
                         continue;
                     }
                 };
@@ -248,7 +241,11 @@ impl ClosurePlanner {
         let mut order: Vec<FileId> = Vec::new();
         let mut seen: HashSet<FileId> = HashSet::new();
 
-        for dep in closure.direct_deps.iter().chain(closure.transitive_deps.iter()) {
+        for dep in closure
+            .direct_deps
+            .iter()
+            .chain(closure.transitive_deps.iter())
+        {
             if seen.insert(*dep) {
                 order.push(*dep);
             }
@@ -646,10 +643,7 @@ mod tests {
         let util = imports.iter().find(|i| i.module == "util.h").unwrap();
         assert!(util.is_relative, "#include \"util.h\" must be relative");
 
-        let helper = imports
-            .iter()
-            .find(|i| i.module == "dir/helper.h")
-            .unwrap();
+        let helper = imports.iter().find(|i| i.module == "dir/helper.h").unwrap();
         assert!(
             helper.is_relative,
             "#include \"dir/helper.h\" must be relative"
@@ -657,10 +651,16 @@ mod tests {
 
         // Angle includes are never relative
         let stdio = imports.iter().find(|i| i.module == "stdio.h").unwrap();
-        assert!(!stdio.is_relative, "#include <stdio.h> must NOT be relative");
+        assert!(
+            !stdio.is_relative,
+            "#include <stdio.h> must NOT be relative"
+        );
 
         let stdlib = imports.iter().find(|i| i.module == "stdlib.h").unwrap();
-        assert!(!stdlib.is_relative, "#include <stdlib.h> must NOT be relative");
+        assert!(
+            !stdlib.is_relative,
+            "#include <stdlib.h> must NOT be relative"
+        );
     }
 
     #[test]
@@ -732,11 +732,17 @@ mod tests {
 
         // Resolve angle-bracket includes through include roots
         let fs_h = planner.resolve_angle_include("linux/fs.h").unwrap();
-        assert!(fs_h.is_some(), "linux/fs.h should resolve via include/ root");
+        assert!(
+            fs_h.is_some(),
+            "linux/fs.h should resolve via include/ root"
+        );
         assert_eq!(fs_h.unwrap(), fs_h_id);
 
         let foo_h = planner.resolve_angle_include("asm/foo.h").unwrap();
-        assert!(foo_h.is_some(), "asm/foo.h should resolve via arch/x86/include/ root");
+        assert!(
+            foo_h.is_some(),
+            "asm/foo.h should resolve via arch/x86/include/ root"
+        );
         assert_eq!(foo_h.unwrap(), foo_h_id);
 
         // A non-existent module should return None

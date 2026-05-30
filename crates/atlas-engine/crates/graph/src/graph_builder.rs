@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use db::Store;
 use rayon::prelude::*;
-use types::*;
 use types::enums::{DataFlowKind, DataNodeKind};
+use types::*;
 
 /// Builds symbol-level edges from resolved references.
 ///
@@ -396,9 +396,7 @@ fn try_resolve_function_pointer(
                 // Search for a Function symbol with this name
                 if let Ok(candidates) = store.find_symbols_by_name(name) {
                     for sym in &candidates {
-                        if sym.kind == SymbolKind::Function
-                            && sym.file_id == reference.file_id
-                        {
+                        if sym.kind == SymbolKind::Function && sym.file_id == reference.file_id {
                             // Found a function match in the same file
                             return Ok(Some(sym.id));
                         }
@@ -642,12 +640,8 @@ main();
         };
 
         // Write data nodes + edge via lazy build path
-        store
-            .insert_data_nodes(&[call_target, expr_node])
-            .unwrap();
-        store
-            .insert_dataflow_edges(&[assign_edge])
-            .unwrap();
+        store.insert_data_nodes(&[call_target, expr_node]).unwrap();
+        store.insert_dataflow_edges(&[assign_edge]).unwrap();
 
         // Create a reference at the CallTarget position resolving to `fp`
         let ref_id = ReferenceId::generate(
@@ -698,41 +692,38 @@ main();
 /// Known callback registration patterns: (callee name contains pattern, callback arg index).
 pub(crate) const CALLBACK_PATTERNS: &[(&str, usize)] = &[
     // ── C/C++ patterns ──
-    ("_set_", 1),                 // nghttp2_session_callbacks_set_*
-    ("_callback", 1),             // set_callback(..., handler)
-    ("pthread_create", 2),        // pthread_create(_, _, thread_fn, _)
-    ("signal", 1),                // signal(SIGINT, handler)  [also Python: signal.signal]
-    ("atexit", 0),               // atexit(cleanup)  [also Python: atexit.register]
-    ("qsort", 3),                // qsort(base, n, sz, cmp)
-    ("register", 0),             // register_handler(handler)  [also Python: atexit.register]
+    ("_set_", 1),          // nghttp2_session_callbacks_set_*
+    ("_callback", 1),      // set_callback(..., handler)
+    ("pthread_create", 2), // pthread_create(_, _, thread_fn, _)
+    ("signal", 1),         // signal(SIGINT, handler)  [also Python: signal.signal]
+    ("atexit", 0),         // atexit(cleanup)  [also Python: atexit.register]
+    ("qsort", 3),          // qsort(base, n, sz, cmp)
+    ("register", 0),       // register_handler(handler)  [also Python: atexit.register]
     // ── TypeScript / JavaScript / ArkTS patterns ──
-    ("setTimeout", 0),           // setTimeout(handler, delay)
-    ("setInterval", 0),          // setInterval(handler, interval)
-    ("setImmediate", 0),         // setImmediate(handler)
-    ("addEventListener", 1),     // el.addEventListener('click', handler)
-    ("subscribe", 0),            // observable.subscribe(handler)
+    ("setTimeout", 0),       // setTimeout(handler, delay)
+    ("setInterval", 0),      // setInterval(handler, interval)
+    ("setImmediate", 0),     // setImmediate(handler)
+    ("addEventListener", 1), // el.addEventListener('click', handler)
+    ("subscribe", 0),        // observable.subscribe(handler)
     // ── Python patterns ──
-    ("create_task", 0),          // asyncio.create_task(coro)
-    ("ensure_future", 0),        // asyncio.ensure_future(coro)
-    ("Thread", 0),               // threading.Thread(target=fn)
-    ("add_done_callback", 0),    // future.add_done_callback(fn)
+    ("create_task", 0),       // asyncio.create_task(coro)
+    ("ensure_future", 0),     // asyncio.ensure_future(coro)
+    ("Thread", 0),            // threading.Thread(target=fn)
+    ("add_done_callback", 0), // future.add_done_callback(fn)
     // ── CSharp patterns ──
-    ("add_", 1),                 // event += handler  →  add_EventName(handler)
+    ("add_", 1), // event += handler  →  add_EventName(handler)
     // ── Java patterns ──
-    ("addActionListener", 0),    // btn.addActionListener(handler)
-    ("addChangeListener", 0),    // component.addChangeListener(handler)
+    ("addActionListener", 0), // btn.addActionListener(handler)
+    ("addChangeListener", 0), // component.addChangeListener(handler)
     // ── Generic patterns (all languages) ──
-    ("on_", 0),                  // on_click(handler), on_frame_recv(session, ...)
-    ("add_listener", 1),          // add_listener(event, handler)
+    ("on_", 0),          // on_click(handler), on_frame_recv(session, ...)
+    ("add_listener", 1), // add_listener(event, handler)
 ];
 
 impl GraphBuilder {
     /// After building standard call edges, scan for callback registration
     /// patterns and create `RegistersCallback` edges.
-    fn detect_callback_registrations(
-        edges: &[RawEdge],
-        store: &Arc<Store>,
-    ) -> Vec<RawEdge> {
+    fn detect_callback_registrations(edges: &[RawEdge], store: &Arc<Store>) -> Vec<RawEdge> {
         let mut result = Vec::new();
 
         for edge in edges {
@@ -768,11 +759,7 @@ impl GraphBuilder {
                 None => continue,
             };
 
-            let callsite = match store
-                .find_callsite_by_reference_id(ref_id)
-                .ok()
-                .flatten()
-            {
+            let callsite = match store.find_callsite_by_reference_id(ref_id).ok().flatten() {
                 Some(cs) => cs,
                 None => continue,
             };

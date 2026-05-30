@@ -36,7 +36,10 @@ fn normalize_cangjie_definition(
     // keyword token (TOKENS.MAIN = "main").  Extract text from child(0)
     // rather than the whole node (which would be "main(): Unit { ... }").
     let name = if capture_name == "definition.entry" {
-        node.child(0)?.utf8_text(source.as_bytes()).ok()?.to_string()
+        node.child(0)?
+            .utf8_text(source.as_bytes())
+            .ok()?
+            .to_string()
     } else {
         node_text(node, source)?
     };
@@ -217,7 +220,10 @@ impl LexicalBindingSpec for CangjieAdapter {
         include_str!("../../queries/cangjie/lexical.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::supported_with_limitations(0.60, vec!["basic parameter/local binding extraction"])
+        FeatureSupport::supported_with_limitations(
+            0.60,
+            vec!["basic parameter/local binding extraction"],
+        )
     }
     fn normalize(&self, _ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
         normalize_cangjie_lexical(&capture.name, capture.node, _ctx.source, _ctx.file_id)
@@ -407,10 +413,9 @@ fn is_cangjie_call_expr(node: tree_sitter::Node) -> bool {
             if child.kind() == "callSuffix" {
                 // Also check that we have a callable target (atomicVariable or fieldAccess)
                 let has_target = (0..node.child_count()).any(|j| {
-                    node.child(j as u32)
-                        .map_or(false, |c| {
-                            c.kind() == "atomicVariable" || c.kind() == "fieldAccess"
-                        })
+                    node.child(j as u32).map_or(false, |c| {
+                        c.kind() == "atomicVariable" || c.kind() == "fieldAccess"
+                    })
                 });
                 if has_target {
                     return true;
@@ -489,11 +494,7 @@ fn normalize_cangjie_dataflow(
                 .rev()
                 .find_map(|i| {
                     let c = node.child(i as u32)?;
-                    if c.is_named() {
-                        Some(c)
-                    } else {
-                        None
-                    }
+                    if c.is_named() { Some(c) } else { None }
                 })
                 .unwrap_or(node);
             let text = node_text(expr_node, source).unwrap_or_default();
@@ -524,9 +525,8 @@ fn normalize_cangjie_dataflow(
         "df.call_target" => node_text(node, source)
             .map(|name| {
                 let access_path = name.clone();
-                let callsite_id = find_call_expression_cangjie(node).map(|ce| {
-                    CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
-                });
+                let callsite_id = find_call_expression_cangjie(node)
+                    .map(|ce| CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&SymbolId>,
@@ -559,8 +559,7 @@ fn normalize_cangjie_dataflow(
                 None,
                 range.start_byte,
             );
-            let dn =
-                DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range);
+            let dn = DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range);
             (Some(dn), None)
         }
         "df.field_name" | "df.receiver" => {
@@ -747,9 +746,7 @@ mod tests {
         while let Some((m, idx)) = captures.next() {
             let cap = m.captures[*idx];
             let name = query.capture_names()[cap.index as usize].to_string();
-            if let Some(bd) =
-                normalize_cangjie_lexical(&name, cap.node, source, file_id)
-            {
+            if let Some(bd) = normalize_cangjie_lexical(&name, cap.node, source, file_id) {
                 bindings.push(bd);
             }
         }
@@ -789,17 +786,13 @@ mod tests {
         while let Some((m, idx)) = captures.next() {
             let cap = m.captures[*idx];
             let name = query.capture_names()[cap.index as usize].to_string();
-            let (dn, _de) =
-                normalize_cangjie_dataflow(&name, cap.node, source, file_id);
+            let (dn, _de) = normalize_cangjie_dataflow(&name, cap.node, source, file_id);
             if let Some(dn) = dn {
                 nodes.push(dn);
             }
         }
 
-        assert!(
-            !nodes.is_empty(),
-            "expected dataflow nodes, got none"
-        );
+        assert!(!nodes.is_empty(), "expected dataflow nodes, got none");
         assert!(
             nodes.iter().any(|n| n.kind == DataNodeKind::Parameter),
             "missing parameter node"
@@ -841,8 +834,7 @@ mod tests {
         while let Some((m, idx)) = captures.next() {
             let cap = m.captures[*idx];
             let name = query.capture_names()[cap.index as usize].to_string();
-            let (dn, _de) =
-                normalize_cangjie_dataflow(&name, cap.node, source, file_id);
+            let (dn, _de) = normalize_cangjie_dataflow(&name, cap.node, source, file_id);
             if let Some(dn) = dn {
                 nodes.push(dn);
             }
@@ -883,10 +875,7 @@ mod tests {
             cj_binding_kind("lexical.parameter"),
             Some(BindingKind::Parameter)
         );
-        assert_eq!(
-            cj_binding_kind("lexical.local"),
-            Some(BindingKind::Local)
-        );
+        assert_eq!(cj_binding_kind("lexical.local"), Some(BindingKind::Local));
         assert_eq!(cj_binding_kind("unknown"), None);
     }
 
@@ -895,12 +884,14 @@ mod tests {
         let frontend = cangjie_frontend();
         let cap = &frontend.capability;
         assert!(
-            cap.supported_features.contains(&"lexical_bindings".to_string()),
+            cap.supported_features
+                .contains(&"lexical_bindings".to_string()),
             "should list lexical_bindings as supported, got: {:?}",
             cap.supported_features
         );
         assert!(
-            cap.supported_features.contains(&"local_dataflow".to_string()),
+            cap.supported_features
+                .contains(&"local_dataflow".to_string()),
             "should list local_dataflow as supported, got: {:?}",
             cap.supported_features
         );

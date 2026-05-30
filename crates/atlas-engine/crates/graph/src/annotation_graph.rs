@@ -64,32 +64,32 @@ pub fn materialize_annotations(store: &Store) -> anyhow::Result<usize> {
         edges.push(edge);
 
         // ── Caller bridge edges: for each callsite resolving to the field,
-            //     create calling_function → target (enables BFS path traversal) ──
-            if let Ok(refs) = store.find_references_by_symbol(&ann.source_symbol) {
-                for r in &refs {
-                    let caller = match r.source_symbol {
-                        Some(sid) if sid != ann.source_symbol => sid,
-                        _ => continue,
-                    };
-                    let bridge_id = EdgeId::generate(
-                        &caller,
-                        &ann.target_symbol,
-                        "calls",
-                        None,
-                        "user_annotation",
-                    );
-                    let mut bridge_edge = RawEdge::new(
-                        bridge_id,
-                        caller,
-                        ann.target_symbol,
-                        EdgeKind::Calls,
-                        ann.confidence,
-                        Provenance::UserAnnotation,
-                    );
-                    bridge_edge.metadata = Some(metadata.clone());
-                    edges.push(bridge_edge);
-                }
+        //     create calling_function → target (enables BFS path traversal) ──
+        if let Ok(refs) = store.find_references_by_symbol(&ann.source_symbol) {
+            for r in &refs {
+                let caller = match r.source_symbol {
+                    Some(sid) if sid != ann.source_symbol => sid,
+                    _ => continue,
+                };
+                let bridge_id = EdgeId::generate(
+                    &caller,
+                    &ann.target_symbol,
+                    "calls",
+                    None,
+                    "user_annotation",
+                );
+                let mut bridge_edge = RawEdge::new(
+                    bridge_id,
+                    caller,
+                    ann.target_symbol,
+                    EdgeKind::Calls,
+                    ann.confidence,
+                    Provenance::UserAnnotation,
+                );
+                bridge_edge.metadata = Some(metadata.clone());
+                edges.push(bridge_edge);
             }
+        }
     }
 
     store.batch_insert_edges(&edges)?;
@@ -101,8 +101,7 @@ mod tests {
     use super::*;
     use types::ids::{FileId, ReferenceId};
     use types::{
-        Confidence, FileInfo, Language, ParseStatus, ReferenceUse,
-        SymbolDef, SymbolKind, TextRange,
+        Confidence, FileInfo, Language, ParseStatus, ReferenceUse, SymbolDef, SymbolKind, TextRange,
     };
 
     fn setup_store() -> Store {
@@ -175,15 +174,8 @@ mod tests {
         let fa = FileId::generate("src/field.c");
         let fb = FileId::generate("src/target.c");
 
-        let field = insert_sym(
-            &store,
-            fa,
-            "do_it",
-            "Curl_handler.do_it",
-            SymbolKind::Field,
-        );
-        let target =
-            insert_sym(&store, fb, "Curl_http", "Curl_http", SymbolKind::Function);
+        let field = insert_sym(&store, fa, "do_it", "Curl_handler.do_it", SymbolKind::Field);
+        let target = insert_sym(&store, fb, "Curl_http", "Curl_http", SymbolKind::Function);
 
         let ann = types::FpAnnotation {
             annotation_id: annotation_id(&field, "do_it"),
@@ -267,7 +259,11 @@ mod tests {
 
         // After re-materialization, only the new edge should exist
         let edges = store.find_edges_by_source(&field).unwrap();
-        assert_eq!(edges.len(), 1, "stale edge from fn_a should have been cleaned up");
+        assert_eq!(
+            edges.len(),
+            1,
+            "stale edge from fn_a should have been cleaned up"
+        );
         assert_eq!(edges[0].target, target_b);
     }
 
@@ -285,16 +281,13 @@ mod tests {
         let fb = FileId::generate("src/target.c");
         let fc = FileId::generate("src/caller.c");
 
-        let field =
-            insert_sym(&store, fa, "do_it", "Handler.do_it", SymbolKind::Field);
-        let target =
-            insert_sym(&store, fb, "Curl_http", "Curl_http", SymbolKind::Function);
-        let caller =
-            insert_sym(&store, fc, "do_request", "do_request", SymbolKind::Function);
+        let field = insert_sym(&store, fa, "do_it", "Handler.do_it", SymbolKind::Field);
+        let target = insert_sym(&store, fb, "Curl_http", "Curl_http", SymbolKind::Function);
+        let caller = insert_sym(&store, fc, "do_request", "do_request", SymbolKind::Function);
 
         // Insert a reference that resolves to the field — the calling function
         // (caller) contains a reference that resolves to the field symbol.
-        use types::{ReferenceKind, ResolvedTarget, ResolutionStrategy};
+        use types::{ReferenceKind, ResolutionStrategy, ResolvedTarget};
         let ref_id = ReferenceId::generate(
             &fc,
             Some(&caller),

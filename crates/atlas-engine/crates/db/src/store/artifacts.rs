@@ -336,7 +336,10 @@ impl Store {
     /// (`atlas index --analysis full`) has already built dataflow for
     /// this unit, so it can skip lazy extraction and avoid deleting
     /// pre-built data.
-    pub fn count_data_nodes_for_unit(&self, unit: &types::lazy::AnalysisUnit) -> anyhow::Result<usize> {
+    pub fn count_data_nodes_for_unit(
+        &self,
+        unit: &types::lazy::AnalysisUnit,
+    ) -> anyhow::Result<usize> {
         let conn = self.lock_read();
         let count: i64 = if let Some(ref func_id) = unit.symbol_id {
             conn.query_row(

@@ -70,8 +70,7 @@ impl GlobalSymbolIndex {
         if let Ok(files) = store.list_files() {
             for f in &files {
                 if let Some(parent) = Path::new(&f.path).parent() {
-                    file_parent_dir
-                        .insert(f.file_id, parent.to_string_lossy().to_string());
+                    file_parent_dir.insert(f.file_id, parent.to_string_lossy().to_string());
                 }
             }
         }
@@ -102,11 +101,7 @@ impl GlobalSymbolIndex {
     ///
     /// Tier 0 = same parent directory; tier 1 = same top-level directory;
     /// tier 2 = unrelated.
-    pub fn find_by_name_proximity(
-        &self,
-        name: &str,
-        file_id: FileId,
-    ) -> Vec<SymbolDef> {
+    pub fn find_by_name_proximity(&self, name: &str, file_id: FileId) -> Vec<SymbolDef> {
         // ── Cache check ──
         let lower = name.to_lowercase();
         let cache_key = (lower, file_id);
@@ -259,14 +254,8 @@ fn proximity_tier(ref_parent: Option<&String>, sym_parent: Option<&String>) -> u
             if r == s {
                 return 0;
             }
-            let r_top = Path::new(r)
-                .components()
-                .next()
-                .map(|c| c.as_os_str());
-            let s_top = Path::new(s)
-                .components()
-                .next()
-                .map(|c| c.as_os_str());
+            let r_top = Path::new(r).components().next().map(|c| c.as_os_str());
+            let s_top = Path::new(s).components().next().map(|c| c.as_os_str());
             if r_top.is_some() && r_top == s_top {
                 return 1;
             }
@@ -350,7 +339,10 @@ impl ResolutionContext {
             let arc = Arc::clone(sym);
             // Group by scope
             if let Some(sid) = arc.scope_id {
-                symbols_by_scope.entry(sid).or_default().push(Arc::clone(&arc));
+                symbols_by_scope
+                    .entry(sid)
+                    .or_default()
+                    .push(Arc::clone(&arc));
             }
             // Index by ID
             symbols_by_id.insert(arc.id, Arc::clone(&arc));
@@ -364,7 +356,10 @@ impl ResolutionContext {
         let mut imports_by_name: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, import) in imports.iter().enumerate() {
             if !import.imported_name.is_empty() {
-                imports_by_name.entry(import.imported_name.clone()).or_default().push(i);
+                imports_by_name
+                    .entry(import.imported_name.clone())
+                    .or_default()
+                    .push(i);
             }
             if let Some(ref alias) = import.local_name {
                 imports_by_name.entry(alias.clone()).or_default().push(i);

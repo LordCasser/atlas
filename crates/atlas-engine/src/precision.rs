@@ -44,8 +44,12 @@ pub fn dataflow_precision(built: usize, planned: usize, budget_exceeded: bool) -
 #[allow(dead_code)] // public API, consumed in future phases
 pub fn next_action_structural(tier: PrecisionTier) -> Option<&'static str> {
     match tier {
-        PrecisionTier::Unavailable => Some("no structural data — run 'atlas index --analysis structural'"),
-        PrecisionTier::DegradedStructural => Some("budget exceeded — increase LAZY_STRUCTURAL_BUDGET_MS or reduce scope"),
+        PrecisionTier::Unavailable => {
+            Some("no structural data — run 'atlas index --analysis structural'")
+        }
+        PrecisionTier::DegradedStructural => {
+            Some("budget exceeded — increase LAZY_STRUCTURAL_BUDGET_MS or reduce scope")
+        }
         _ => None,
     }
 }

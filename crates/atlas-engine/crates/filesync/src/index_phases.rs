@@ -26,16 +26,16 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use db::Store;
 use extraction::{
-    create_frontend, ExtractionMode, LanguageFrontend, LanguageRegistry, ParseWorkerPool,
-    WorkerConfig,
+    ExtractionMode, LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig,
+    create_frontend,
 };
 use graph::GraphBuilder;
 use resolution::{PathAliasConfig, ReferenceResolver};
 use types::{FileFacts, FileId, Language};
 
 use crate::cleanup::{clean_stale_file_ids, clean_stale_file_paths, source_file_id};
-use crate::dirty::{build_dirty_set, DirtySet};
-use crate::discovery::{discover_files, DiscoveryConfig};
+use crate::dirty::{DirtySet, build_dirty_set};
+use crate::discovery::{DiscoveryConfig, discover_files};
 
 // ── Public types ───────────────────────────────────────────────────────
 
@@ -97,11 +97,7 @@ pub struct WriteBatchStats {
 /// Discover source files under `root` respecting include/exclude globs.
 ///
 /// Returns project-relative paths.
-pub fn phase_discover(
-    root: &Path,
-    include: &[String],
-    exclude: &[String],
-) -> Result<Vec<PathBuf>> {
+pub fn phase_discover(root: &Path, include: &[String], exclude: &[String]) -> Result<Vec<PathBuf>> {
     let mut config = DiscoveryConfig::default();
     if !include.is_empty() {
         config.include_patterns = include.to_vec();
@@ -146,15 +142,16 @@ pub fn phase_cleanup_file_ids(store: &Arc<Store>, file_ids: &[FileId]) -> Result
 /// Loads tree-sitter grammars via [`LanguageRegistry`] and creates one
 /// [`LanguageFrontend`] per detected language.
 pub fn phase_init_frontends(files: &[PathBuf]) -> Result<HashMap<Language, LanguageFrontend>> {
-    let languages: Vec<Language> = files
-        .iter()
-        .filter_map(|p| Language::from_path(p))
-        .fold(Vec::new(), |mut acc, lang| {
-            if !acc.contains(&lang) {
-                acc.push(lang);
-            }
-            acc
-        });
+    let languages: Vec<Language> =
+        files
+            .iter()
+            .filter_map(|p| Language::from_path(p))
+            .fold(Vec::new(), |mut acc, lang| {
+                if !acc.contains(&lang) {
+                    acc.push(lang);
+                }
+                acc
+            });
 
     let _registry =
         LanguageRegistry::new(&languages).context("Failed to initialize language registry")?;
@@ -249,9 +246,8 @@ fn extract_one_index_file(
         )
     })?;
 
-    let _lang = Language::from_path(&rel_path).ok_or_else(|| {
-        (rel_path.clone(), "No language detected".to_string())
-    })?;
+    let _lang = Language::from_path(&rel_path)
+        .ok_or_else(|| (rel_path.clone(), "No language detected".to_string()))?;
 
     let facts = pool
         .extract_one(
@@ -262,7 +258,12 @@ fn extract_one_index_file(
             &content_hash,
             mode.clone(),
         )
-        .map_err(|e| (rel_path.clone(), format!("Extraction failed: {}", e.message)))?;
+        .map_err(|e| {
+            (
+                rel_path.clone(),
+                format!("Extraction failed: {}", e.message),
+            )
+        })?;
 
     Ok(ExtractedFile {
         rel_path,
@@ -303,11 +304,7 @@ pub fn phase_write_batched(
     mut on_progress: impl FnMut(u64),
     mut interrupted: impl FnMut() -> bool,
 ) -> Result<WriteBatchStats> {
-    anyhow::ensure!(
-        batch_size > 0,
-        "batch_size must be > 0, got {}",
-        batch_size
-    );
+    anyhow::ensure!(batch_size > 0, "batch_size must be > 0, got {}", batch_size);
 
     let mut stats = WriteBatchStats {
         written: 0,
@@ -402,11 +399,7 @@ pub fn phase_commit_path_alias_config(store: &Arc<Store>, root: &Path) -> Result
 /// Finalize the index: write metadata (last_index_time, last_index_root,
 /// indexed_scope).  Does **not** commit path alias config — use
 /// [`phase_commit_path_alias_config`] for that.
-pub fn phase_finalize(
-    store: &Arc<Store>,
-    root: &Path,
-    scope_patterns: &[String],
-) -> Result<()> {
+pub fn phase_finalize(store: &Arc<Store>, root: &Path, scope_patterns: &[String]) -> Result<()> {
     store.set_metadata(
         "last_index_time",
         &std::time::SystemTime::now()

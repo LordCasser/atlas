@@ -33,8 +33,8 @@ use types::*;
 use crate::store_rows::*;
 use crate::store_writers::*;
 
-mod artifacts;
 mod annotations;
+mod artifacts;
 mod cfg;
 mod dataflow;
 mod edges;
@@ -361,7 +361,11 @@ impl Store {
     /// This is the "safe update file row" strategy (as opposed to "reject
     /// stale"): progressive enrichment of a file never silently serves stale
     /// data.
-    pub fn upsert_resolution_symbols(&self, file_id: &FileId, facts: &FileFacts) -> anyhow::Result<()> {
+    pub fn upsert_resolution_symbols(
+        &self,
+        file_id: &FileId,
+        facts: &FileFacts,
+    ) -> anyhow::Result<()> {
         self.with_transaction(|tx| {
             // Sync files.content_hash if it has changed since the manifest
             // index.  The layer hash must match the DB file hash for
@@ -967,13 +971,14 @@ mod tests {
         };
 
         // Insert the symbol + scope so they exist in DB
-        store.insert_file_facts(&FileFacts {
-            file: file_info.clone(),
-            symbols: vec![valid_func.clone()],
-            scopes: vec![valid_scope],
-            ..Default::default()
-        })
-        .unwrap();
+        store
+            .insert_file_facts(&FileFacts {
+                file: file_info.clone(),
+                symbols: vec![valid_func.clone()],
+                scopes: vec![valid_scope],
+                ..Default::default()
+            })
+            .unwrap();
 
         // A non-existent symbol ID (never inserted)
         let missing_func_id = SymbolId::generate(
@@ -985,12 +990,10 @@ mod tests {
         );
 
         // Build test data: one valid binding + one with missing function_id
-        let valid_binding_id = BindingId::generate(
-            &file_id, &valid_scope_id, "parameter", "arg", 0,
-        );
-        let stray_binding_id = BindingId::generate(
-            &file_id, &valid_scope_id, "parameter", "stray", 1,
-        );
+        let valid_binding_id =
+            BindingId::generate(&file_id, &valid_scope_id, "parameter", "arg", 0);
+        let stray_binding_id =
+            BindingId::generate(&file_id, &valid_scope_id, "parameter", "stray", 1);
 
         let bindings = vec![
             // Valid: references existing function and scope
@@ -1055,11 +1058,7 @@ mod tests {
         // Dataflow edge referencing both nodes — should be filtered because
         // one target (ghost) will be removed
         let edge = DataFlowEdge {
-            id: DataFlowEdgeId::generate(
-                &data_nodes[0].id,
-                &data_nodes[1].id,
-                "assign",
-            ),
+            id: DataFlowEdgeId::generate(&data_nodes[0].id, &data_nodes[1].id, "assign"),
             source: data_nodes[0].id,
             target: data_nodes[1].id,
             kind: DataFlowKind::Assign,
@@ -1067,11 +1066,7 @@ mod tests {
             confidence: 1.0,
         };
 
-        let unit = types::lazy::AnalysisUnit::from_function(
-            file_id,
-            valid_func.id,
-            range,
-        );
+        let unit = types::lazy::AnalysisUnit::from_function(file_id, valid_func.id, range);
 
         // This must NOT panic or fail with FK constraint
         store
@@ -1080,15 +1075,19 @@ mod tests {
                 &data_nodes,
                 &[edge],
                 &bindings,
-                &[],   // no binding_uses
-                &[],   // no cfg_nodes
-                &[],   // no cfg_edges
+                &[], // no binding_uses
+                &[], // no cfg_nodes
+                &[], // no cfg_edges
             )
             .unwrap();
 
         // After FK-guarded write, only the valid rows should exist
         let stored_nodes = store.find_data_nodes_by_file(&file_id).unwrap();
-        assert_eq!(stored_nodes.len(), 1, "only the valid data node should be stored");
+        assert_eq!(
+            stored_nodes.len(),
+            1,
+            "only the valid data node should be stored"
+        );
         assert_eq!(stored_nodes[0].name.as_deref(), Some("arg"));
 
         let stored_bindings = store.find_bindings_by_file(&file_id).unwrap();
@@ -1108,7 +1107,10 @@ mod tests {
 
         // Dataflow edges referencing removed nodes should also be dropped
         let all_edges = store.find_dataflow_edges_by_file(&file_id).unwrap();
-        assert!(all_edges.is_empty(), "edge with missing target should be filtered out");
+        assert!(
+            all_edges.is_empty(),
+            "edge with missing target should be filtered out"
+        );
     }
 
     /// `replace_dataflow_for_unit` with fully valid FK references writes
@@ -1187,15 +1189,7 @@ mod tests {
 
         let unit = types::lazy::AnalysisUnit::from_function(file_id, func.id, range);
         store
-            .replace_dataflow_for_unit(
-                &unit,
-                &data_nodes,
-                &[],
-                &bindings,
-                &[],
-                &[],
-                &[],
-            )
+            .replace_dataflow_for_unit(&unit, &data_nodes, &[], &bindings, &[], &[], &[])
             .unwrap();
 
         let got = store.find_data_nodes_by_file(&file_id).unwrap();
@@ -1389,10 +1383,7 @@ mod tests {
             .get_file_index_layer(&file_id, "resolution_symbols")
             .unwrap()
             .expect("resolution_symbols layer should exist");
-        assert_eq!(
-            layer.0, "complete",
-            "layer status should be complete"
-        );
+        assert_eq!(layer.0, "complete", "layer status should be complete");
         assert_eq!(
             layer.1, "new_hash",
             "layer content_hash should match the new hash"

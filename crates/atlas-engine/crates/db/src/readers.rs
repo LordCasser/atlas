@@ -104,11 +104,15 @@ pub trait CallGraphReader {
 /// dataflow bridging without runtime BFS.
 pub trait SummaryReader {
     /// Query `summary_param_reaches` for a given parameter node.
-    fn query_param_reaches(&self, param_id: &DataNodeId)
-        -> Result<Vec<crate::summary::ParamReachRow>>;
+    fn query_param_reaches(
+        &self,
+        param_id: &DataNodeId,
+    ) -> Result<Vec<crate::summary::ParamReachRow>>;
     /// Query `summary_return_sources` for a given return node.
-    fn query_return_sources(&self, return_id: &DataNodeId)
-        -> Result<Vec<crate::summary::ReturnSourceRow>>;
+    fn query_return_sources(
+        &self,
+        return_id: &DataNodeId,
+    ) -> Result<Vec<crate::summary::ReturnSourceRow>>;
     /// Query `summary_call_arg_sources` for a given call-argument node.
     fn query_call_arg_sources(
         &self,

@@ -223,9 +223,9 @@ fn extract_argument_ranges(call_node: &tree_sitter::Node, _source: &str) -> Vec<
         "arguments",
         "argument_list",
         "parenthesized_list",
-        "value_arguments",     // Kotlin (when direct child of call node)
-        "callSuffix",          // Cangjie
-        "call_suffix",         // Kotlin (tree-sitter-kotlin wraps args)
+        "value_arguments", // Kotlin (when direct child of call node)
+        "callSuffix",      // Cangjie
+        "call_suffix",     // Kotlin (tree-sitter-kotlin wraps args)
     ];
 
     // Look for an argument container child
@@ -303,7 +303,6 @@ fn extract_value_arguments(va_node: &tree_sitter::Node, args: &mut Vec<TextRange
         args.push(crate::languages::node_range(expr));
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Language-specific constructors

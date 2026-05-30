@@ -67,7 +67,11 @@ fn has_source_files(root: &std::path::Path) -> bool {
                 } else if path.is_dir() {
                     // Avoid traversing hidden / build directories for performance.
                     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        if name.starts_with('.') || name == "node_modules" || name == "target" || name == "build" {
+                        if name.starts_with('.')
+                            || name == "node_modules"
+                            || name == "target"
+                            || name == "build"
+                        {
                             continue;
                         }
                     }

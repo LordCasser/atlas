@@ -25,16 +25,18 @@
 //!
 //! - (no outstanding Phase 4 items)
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use db::{ClaimResult, Store};
 use types::ids::FileId;
 
-use crate::closure_planner::{ClosurePlanner, IncludeRoot};
-use crate::lazy_structural::{EnsureStructuralResult, LAZY_STRUCTURAL_BUDGET_MS, LazyStructuralService};
 use crate::LazyDataflowService;
+use crate::closure_planner::{ClosurePlanner, IncludeRoot};
+use crate::lazy_structural::{
+    EnsureStructuralResult, LAZY_STRUCTURAL_BUDGET_MS, LazyStructuralService,
+};
 use types::structs::precision::PrecisionTier;
 
 /// Global flag: at most one prewarm thread runs at a time.
@@ -167,10 +169,15 @@ impl LazyCoordinator {
             precision_tier: PrecisionTier::Unavailable,
         };
         let mut last_job_id = String::new();
+        let mut structural_file_ids: Vec<FileId> = Vec::new();
 
         for file_id in &workset.order {
             let is_seed = file_id == seed;
-            let layer_name = if is_seed { "structural" } else { "resolution_symbols" };
+            let layer_name = if is_seed {
+                "structural"
+            } else {
+                "resolution_symbols"
+            };
 
             let claim = self.store.claim_lazy_job(
                 file_id,
@@ -197,9 +204,11 @@ impl LazyCoordinator {
                         Ok(r) => {
                             result.files_built += r.files_built;
                             result.files_cached += r.files_cached;
-                            result.budget_exceeded =
-                                result.budget_exceeded || r.budget_exceeded;
+                            result.budget_exceeded = result.budget_exceeded || r.budget_exceeded;
                             result.built_file_ids.extend(r.built_file_ids);
+                            if is_seed {
+                                structural_file_ids.push(*file_id);
+                            }
                             self.store.complete_lazy_job(&job_id)?;
                             last_job_id = job_id;
                         }
@@ -223,13 +232,14 @@ impl LazyCoordinator {
 
         // Spawn background prewarm: pre-build dataflow for files that
         // just received structural extraction, so subsequent trace
-        // queries are instant.
+        // queries are instant.  Only structural (not resolution_symbols)
+        // files are prewarmed to avoid wasteful dataflow on dep-only files.
         if let Some(ref root) = self.project_root {
-            if !result.built_file_ids.is_empty() {
+            if !structural_file_ids.is_empty() {
                 spawn_background_prewarm(
                     Arc::clone(&self.store),
                     root.clone(),
-                    result.built_file_ids.clone(),
+                    structural_file_ids.clone(),
                 );
             }
         }
@@ -312,10 +322,7 @@ fn spawn_background_prewarm(
         return; // another prewarm already running
     }
 
-    let file_ids: Vec<FileId> = seed_file_ids
-        .into_iter()
-        .take(MAX_PREWARM_FILES)
-        .collect();
+    let file_ids: Vec<FileId> = seed_file_ids.into_iter().take(MAX_PREWARM_FILES).collect();
 
     match std::thread::Builder::new()
         .name("atlas-prewarm".into())
@@ -330,10 +337,11 @@ fn spawn_background_prewarm(
                     Ok(s) => s,
                     Err(_) => continue,
                 };
-                for sym in symbols.iter().take(MAX_FUNCTIONS_PER_FILE) {
-                    if sym.kind != SymbolKind::Function && sym.kind != SymbolKind::Method {
-                        continue;
-                    }
+                for sym in symbols
+                    .iter()
+                    .filter(|s| s.kind == SymbolKind::Function || s.kind == SymbolKind::Method)
+                    .take(MAX_FUNCTIONS_PER_FILE)
+                {
                     attempted += 1;
                     match lazy_dataflow.ensure_for_function(&sym.id) {
                         Ok(w) => {
@@ -353,12 +361,12 @@ fn spawn_background_prewarm(
                 }
             }
             tracing::info!(
-                attempted, built,
+                attempted,
+                built,
                 files = file_ids.len(),
                 "Background prewarm complete"
             );
-        })
-    {
+        }) {
         Ok(_) => {}
         Err(_) => {
             PREWARM_RUNNING.store(false, Ordering::Release);
@@ -379,11 +387,11 @@ mod tests {
     fn lazy_closure_ensures_dependency_resolution_symbols() {
         // Test that ClosurePlanner discovers import dependencies and
         // claim_lazy_job atomic API prevents duplicate builds.
+        use crate::closure_planner::ClosurePlanner;
         use db::Store;
         use types::enums::{ImportKind, Language, ParseStatus};
         use types::ids::{FileId, ImportId};
         use types::structs::{FileInfo, ImportDef, TextRange};
-use crate::closure_planner::ClosurePlanner;
 
         let store = Arc::new({
             let s = Store::open_in_memory().unwrap();
@@ -557,7 +565,10 @@ use crate::closure_planner::ClosurePlanner;
 
         // After completion, job should not be active
         let active = store.find_active_lazy_job(&file_id, "structural").unwrap();
-        assert!(active.is_none(), "job should not be active after completion");
+        assert!(
+            active.is_none(),
+            "job should not be active after completion"
+        );
 
         // Verify job status via get
         let job = store.get_lazy_job(&job_id).unwrap().unwrap();
@@ -568,9 +579,9 @@ use crate::closure_planner::ClosurePlanner;
     fn graph_visibility_after_lazy_structural() {
         // Verify that EnsureStructuralResult tracks built_file_ids
         // and that the field is properly propagated through LazyCoordinator.
+        use crate::lazy_structural::EnsureStructuralResult;
         use types::ids::FileId;
         use types::structs::precision::PrecisionTier;
-        use crate::lazy_structural::EnsureStructuralResult;
 
         // Verify struct construction
         let result = EnsureStructuralResult {
@@ -598,8 +609,8 @@ use crate::closure_planner::ClosurePlanner;
     fn precision_degraded_structural_budget_exceeded() {
         // Structural extraction exceeds budget → DegradedStructural precision.
         // Response includes precision_level, missing_layers, next_action.
-        use types::structs::precision::PrecisionTier;
         use crate::precision;
+        use types::structs::precision::PrecisionTier;
 
         // Test: built > 0, cached = 0, budget_exceeded = true → DegradedStructural
         let tier = precision::structural_precision(2, 0, true);
@@ -625,13 +636,13 @@ use crate::closure_planner::ClosurePlanner;
     fn prebuilt_dataflow_preserved_by_lazy() {
         // E2E: ensure_for_function must detect pre-built dataflow from a
         // full index and skip rebuild, preserving the data intact.
+        use crate::LazyDataflowService;
         use db::Store;
         use types::enums::{BindingKind, Language, ParseStatus, ScopeKind};
         use types::ids::{BindingId, DataNodeId, FileId, ScopeId, SymbolId};
         use types::lazy::AnalysisUnit;
         use types::structs::{FileInfo, ScopeDef, SymbolDef, TextRange};
         use types::{BindingDef, DataNode};
-        use crate::LazyDataflowService;
 
         let store = Arc::new({
             let s = Store::open_in_memory().unwrap();
@@ -719,7 +730,12 @@ use crate::closure_planner::ClosurePlanner;
             10,
         );
         let dn = DataNode::parameter(
-            dn_id, file_id, Some(func_sym_id), Some(binding_id), "x", range,
+            dn_id,
+            file_id,
+            Some(func_sym_id),
+            Some(binding_id),
+            "x",
+            range,
         );
         let binding = BindingDef {
             id: binding_id,
@@ -735,15 +751,7 @@ use crate::closure_planner::ClosurePlanner;
         // Write pre-built dataflow using replace_dataflow_for_unit
         let unit = AnalysisUnit::from_function(file_id, func_sym_id, range);
         store
-            .replace_dataflow_for_unit(
-                &unit,
-                &[dn.clone()],
-                &[],
-                &[binding],
-                &[],
-                &[],
-                &[],
-            )
+            .replace_dataflow_for_unit(&unit, &[dn.clone()], &[], &[binding], &[], &[], &[])
             .unwrap();
 
         // Verify pre-built data exists before lazy service runs
@@ -837,19 +845,23 @@ use crate::closure_planner::ClosurePlanner;
         // → ClosurePlanner bootstrap scanner discovers include
         // → coordinator builds resolution_symbols for dependency
         // → dependency symbols exist in DB.
+        use crate::lazy_coordinator::LazyCoordinator;
+        use crate::lazy_structural::{DefaultCandidateProvider, LazyStructuralService};
         use db::Store;
         use types::enums::{Language, ParseStatus, SymbolKind};
         use types::ids::{FileId, SymbolId};
         use types::structs::{FileFacts, FileInfo, SymbolDef, TextRange};
-        use crate::lazy_coordinator::LazyCoordinator;
-        use crate::lazy_structural::{DefaultCandidateProvider, LazyStructuralService};
 
         // 1. Create temp directory with C source files
         let tmp = tempfile::tempdir().unwrap();
         let main_path = tmp.path().join("main.c");
         let util_path = tmp.path().join("util.h");
         // Use full function definitions (not prototypes) so C definition_query captures them.
-        std::fs::write(&main_path, "#include \"util.h\"\nint main(void) { return helper(); }\n").unwrap();
+        std::fs::write(
+            &main_path,
+            "#include \"util.h\"\nint main(void) { return helper(); }\n",
+        )
+        .unwrap();
         std::fs::write(&util_path, "static int helper(void) { return 42; }\n").unwrap();
 
         // 2. Set up in-memory store
@@ -864,62 +876,102 @@ use crate::closure_planner::ClosurePlanner;
 
         // 3. Register both files at MANIFEST level
         let main_range = TextRange {
-            start_byte: 0, end_byte: 41, start_line: 1, start_column: 1,
-            end_line: 2, end_column: 26,
+            start_byte: 0,
+            end_byte: 41,
+            start_line: 1,
+            start_column: 1,
+            end_line: 2,
+            end_column: 26,
         };
-        store.insert_file_facts(&FileFacts {
-            file: FileInfo {
-                file_id: main_id, path: "main.c".into(), language: Language::C,
-                content_hash: "abc".into(), status: ParseStatus::Success,
-            },
-            symbols: vec![SymbolDef {
-                id: SymbolId::generate(&main_id, "c", "main", "function", None),
-                kind: SymbolKind::Function, name: "main".into(),
-                qualified_name: "main".into(), symbol_path: vec!["main".into()],
-                file_id: main_id, language: Language::C,
-                range: main_range, name_range: main_range,
-                signature: None, visibility: None, exported: false,
-                static_: false, async_: false, container: None,
-                scope_id: None, package_name: None, namespace_path: vec![],
+        store
+            .insert_file_facts(&FileFacts {
+                file: FileInfo {
+                    file_id: main_id,
+                    path: "main.c".into(),
+                    language: Language::C,
+                    content_hash: "abc".into(),
+                    status: ParseStatus::Success,
+                },
+                symbols: vec![SymbolDef {
+                    id: SymbolId::generate(&main_id, "c", "main", "function", None),
+                    kind: SymbolKind::Function,
+                    name: "main".into(),
+                    qualified_name: "main".into(),
+                    symbol_path: vec!["main".into()],
+                    file_id: main_id,
+                    language: Language::C,
+                    range: main_range,
+                    name_range: main_range,
+                    signature: None,
+                    visibility: None,
+                    exported: false,
+                    static_: false,
+                    async_: false,
+                    container: None,
+                    scope_id: None,
+                    package_name: None,
+                    namespace_path: vec![],
+                    layer: "manifest".into(),
+                }],
                 layer: "manifest".into(),
-            }],
-            layer: "manifest".into(),
-            ..Default::default()
-        }).unwrap();
+                ..Default::default()
+            })
+            .unwrap();
 
-        store.insert_file_facts(&FileFacts {
-            file: FileInfo {
-                file_id: util_id, path: "util.h".into(), language: Language::C,
-                content_hash: "def".into(), status: ParseStatus::Success,
-            },
-            symbols: vec![SymbolDef {
-                id: SymbolId::generate(&util_id, "c", "helper", "function", None),
-                kind: SymbolKind::Function, name: "helper".into(),
-                qualified_name: "helper".into(), symbol_path: vec!["helper".into()],
-                file_id: util_id, language: Language::C,
-                range: TextRange::default(), name_range: TextRange::default(),
-                signature: None, visibility: None, exported: false,
-                static_: false, async_: false, container: None,
-                scope_id: None, package_name: None, namespace_path: vec![],
+        store
+            .insert_file_facts(&FileFacts {
+                file: FileInfo {
+                    file_id: util_id,
+                    path: "util.h".into(),
+                    language: Language::C,
+                    content_hash: "def".into(),
+                    status: ParseStatus::Success,
+                },
+                symbols: vec![SymbolDef {
+                    id: SymbolId::generate(&util_id, "c", "helper", "function", None),
+                    kind: SymbolKind::Function,
+                    name: "helper".into(),
+                    qualified_name: "helper".into(),
+                    symbol_path: vec!["helper".into()],
+                    file_id: util_id,
+                    language: Language::C,
+                    range: TextRange::default(),
+                    name_range: TextRange::default(),
+                    signature: None,
+                    visibility: None,
+                    exported: false,
+                    static_: false,
+                    async_: false,
+                    container: None,
+                    scope_id: None,
+                    package_name: None,
+                    namespace_path: vec![],
+                    layer: "manifest".into(),
+                }],
                 layer: "manifest".into(),
-            }],
-            layer: "manifest".into(),
-            ..Default::default()
-        }).unwrap();
+                ..Default::default()
+            })
+            .unwrap();
 
         // Record manifest layer as complete for both files
-        store.upsert_file_index_layer(&main_id, "manifest", "abc", "complete").unwrap();
-        store.upsert_file_index_layer(&util_id, "manifest", "def", "complete").unwrap();
+        store
+            .upsert_file_index_layer(&main_id, "manifest", "abc", "complete")
+            .unwrap();
+        store
+            .upsert_file_index_layer(&util_id, "manifest", "def", "complete")
+            .unwrap();
 
         // 4. Create coordinator + service with temp dir as project root
-        let coordinator = LazyCoordinator::with_project_root(
-            store.clone(), tmp.path().to_path_buf(),
-        );
+        let coordinator =
+            LazyCoordinator::with_project_root(store.clone(), tmp.path().to_path_buf());
         let candidate_provider = Box::new(DefaultCandidateProvider::new(
-            store.clone(), Some(tmp.path().to_path_buf()),
+            store.clone(),
+            Some(tmp.path().to_path_buf()),
         ));
         let lazy_service = LazyStructuralService::with_provider(
-            store.clone(), Some(tmp.path().to_path_buf()), candidate_provider,
+            store.clone(),
+            Some(tmp.path().to_path_buf()),
+            candidate_provider,
         );
 
         // 5. Call ensure_structural_with_closure on the seed
@@ -929,7 +981,9 @@ use crate::closure_planner::ClosurePlanner;
 
         // 6. Verify: util.h got resolution_symbols layer
         assert!(
-            lazy_service.has_resolution_symbols_layer(&util_id).unwrap_or(false),
+            lazy_service
+                .has_resolution_symbols_layer(&util_id)
+                .unwrap_or(false),
             "util.h should have resolution_symbols layer after bootstrap + closure"
         );
 
@@ -957,12 +1011,12 @@ use crate::closure_planner::ClosurePlanner;
     fn c_header_closure_resolution_e2e() {
         // Validate multi-file C project: bar.c includes bar.h which references
         // baz.h. seed gets structural, deps get resolution_symbols.
+        use crate::lazy_coordinator::LazyCoordinator;
+        use crate::lazy_structural::{DefaultCandidateProvider, LazyStructuralService};
         use db::Store;
         use types::enums::{Language, ParseStatus, SymbolKind};
         use types::ids::{FileId, SymbolId};
         use types::structs::{FileFacts, FileInfo, SymbolDef, TextRange};
-        use crate::lazy_coordinator::LazyCoordinator;
-        use crate::lazy_structural::{DefaultCandidateProvider, LazyStructuralService};
 
         // 1. Create temp directory with bar.c, bar.h, baz.h
         // Use full function definitions (not prototypes) so C definition_query captures them.
@@ -970,15 +1024,18 @@ use crate::closure_planner::ClosurePlanner;
         std::fs::write(
             tmp.path().join("bar.c"),
             "#include \"bar.h\"\nint bar_main(void) { return baz_helper(); }\n",
-        ).unwrap();
+        )
+        .unwrap();
         std::fs::write(
             tmp.path().join("bar.h"),
             "#include \"baz.h\"\nstatic int bar_helper(void) { return 0; }\n",
-        ).unwrap();
+        )
+        .unwrap();
         std::fs::write(
             tmp.path().join("baz.h"),
             "static int baz_helper(void) { return 0; }\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         let store = std::sync::Arc::new({
             let s = Store::open_in_memory().unwrap();
@@ -997,26 +1054,43 @@ use crate::closure_planner::ClosurePlanner;
             (&baz_h_id, "baz.h", "ghi", "baz_helper"),
         ] {
             let sym_id = SymbolId::generate(fid, "c", sym_name, "function", None);
-            store.insert_file_facts(&FileFacts {
-                file: FileInfo {
-                    file_id: *fid, path: path.into(), language: Language::C,
-                    content_hash: hash.into(), status: ParseStatus::Success,
-                },
-                symbols: vec![SymbolDef {
-                    id: sym_id, kind: SymbolKind::Function,
-                    name: sym_name.into(), qualified_name: sym_name.into(),
-                    symbol_path: vec![sym_name.into()],
-                    file_id: *fid, language: Language::C,
-                    range: TextRange::default(), name_range: TextRange::default(),
-                    signature: None, visibility: None, exported: false,
-                    static_: false, async_: false, container: None,
-                    scope_id: None, package_name: None, namespace_path: vec![],
+            store
+                .insert_file_facts(&FileFacts {
+                    file: FileInfo {
+                        file_id: *fid,
+                        path: path.into(),
+                        language: Language::C,
+                        content_hash: hash.into(),
+                        status: ParseStatus::Success,
+                    },
+                    symbols: vec![SymbolDef {
+                        id: sym_id,
+                        kind: SymbolKind::Function,
+                        name: sym_name.into(),
+                        qualified_name: sym_name.into(),
+                        symbol_path: vec![sym_name.into()],
+                        file_id: *fid,
+                        language: Language::C,
+                        range: TextRange::default(),
+                        name_range: TextRange::default(),
+                        signature: None,
+                        visibility: None,
+                        exported: false,
+                        static_: false,
+                        async_: false,
+                        container: None,
+                        scope_id: None,
+                        package_name: None,
+                        namespace_path: vec![],
+                        layer: "manifest".into(),
+                    }],
                     layer: "manifest".into(),
-                }],
-                layer: "manifest".into(),
-                ..Default::default()
-            }).unwrap();
-            store.upsert_file_index_layer(fid, "manifest", hash, "complete").unwrap();
+                    ..Default::default()
+                })
+                .unwrap();
+            store
+                .upsert_file_index_layer(fid, "manifest", hash, "complete")
+                .unwrap();
         }
 
         // Pre-populate transitive import: bar.h → baz.h so ClosurePlanner discovers it.
@@ -1041,14 +1115,16 @@ use crate::closure_planner::ClosurePlanner;
         }
 
         // 3. Run coordinator
-        let coordinator = LazyCoordinator::with_project_root(
-            store.clone(), tmp.path().to_path_buf(),
-        );
+        let coordinator =
+            LazyCoordinator::with_project_root(store.clone(), tmp.path().to_path_buf());
         let provider = Box::new(DefaultCandidateProvider::new(
-            store.clone(), Some(tmp.path().to_path_buf()),
+            store.clone(),
+            Some(tmp.path().to_path_buf()),
         ));
         let lazy = LazyStructuralService::with_provider(
-            store.clone(), Some(tmp.path().to_path_buf()), provider,
+            store.clone(),
+            Some(tmp.path().to_path_buf()),
+            provider,
         );
 
         let (_result, _job_id) = coordinator
@@ -1056,8 +1132,14 @@ use crate::closure_planner::ClosurePlanner;
             .unwrap();
 
         // 4. Verify: bar.h and baz.h get resolution_symbols (deps)
-        assert!(lazy.has_resolution_symbols_layer(&bar_h_id).unwrap_or(false));
-        assert!(lazy.has_resolution_symbols_layer(&baz_h_id).unwrap_or(false));
+        assert!(
+            lazy.has_resolution_symbols_layer(&bar_h_id)
+                .unwrap_or(false)
+        );
+        assert!(
+            lazy.has_resolution_symbols_layer(&baz_h_id)
+                .unwrap_or(false)
+        );
 
         // 5. Verify: bar.c gets full structural (seed)
         assert!(lazy.has_structural_layer(&bar_c_id).unwrap_or(false));
@@ -1074,13 +1156,13 @@ use crate::closure_planner::ClosurePlanner;
     fn graph_read_your_writes_after_lazy_structural() {
         // After lazy structural extraction, build a GraphEngine from the store
         // and verify the newly extracted symbol is visible in the graph.
+        use crate::GraphEngine;
+        use crate::lazy_coordinator::LazyCoordinator;
+        use crate::lazy_structural::{DefaultCandidateProvider, LazyStructuralService};
         use db::Store;
         use types::enums::{Language, ParseStatus, SymbolKind};
         use types::ids::{FileId, SymbolId};
         use types::structs::{FileFacts, FileInfo, SymbolDef, TextRange};
-        use crate::lazy_coordinator::LazyCoordinator;
-        use crate::lazy_structural::{DefaultCandidateProvider, LazyStructuralService};
-        use crate::GraphEngine;
 
         // 1. Create temp C file with a function definition
         let tmp = tempfile::tempdir().unwrap();
@@ -1096,40 +1178,64 @@ use crate::closure_planner::ClosurePlanner;
         let file_id = FileId::generate("math.c");
         let sym_id = SymbolId::generate(&file_id, "c", "add_one", "function", None);
         let range = TextRange {
-            start_byte: 0, end_byte: 37, start_line: 1, start_column: 1,
-            end_line: 1, end_column: 38,
+            start_byte: 0,
+            end_byte: 37,
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 38,
         };
 
         // 2. Index at manifest level
-        store.insert_file_facts(&FileFacts {
-            file: FileInfo {
-                file_id, path: "math.c".into(), language: Language::C,
-                content_hash: "abc".into(), status: ParseStatus::Success,
-            },
-            symbols: vec![SymbolDef {
-                id: sym_id, kind: SymbolKind::Function,
-                name: "add_one".into(), qualified_name: "add_one".into(),
-                symbol_path: vec!["add_one".into()],
-                file_id, language: Language::C, range, name_range: range,
-                signature: None, visibility: None, exported: false,
-                static_: false, async_: false, container: None,
-                scope_id: None, package_name: None, namespace_path: vec![],
+        store
+            .insert_file_facts(&FileFacts {
+                file: FileInfo {
+                    file_id,
+                    path: "math.c".into(),
+                    language: Language::C,
+                    content_hash: "abc".into(),
+                    status: ParseStatus::Success,
+                },
+                symbols: vec![SymbolDef {
+                    id: sym_id,
+                    kind: SymbolKind::Function,
+                    name: "add_one".into(),
+                    qualified_name: "add_one".into(),
+                    symbol_path: vec!["add_one".into()],
+                    file_id,
+                    language: Language::C,
+                    range,
+                    name_range: range,
+                    signature: None,
+                    visibility: None,
+                    exported: false,
+                    static_: false,
+                    async_: false,
+                    container: None,
+                    scope_id: None,
+                    package_name: None,
+                    namespace_path: vec![],
+                    layer: "manifest".into(),
+                }],
                 layer: "manifest".into(),
-            }],
-            layer: "manifest".into(),
-            ..Default::default()
-        }).unwrap();
-        store.upsert_file_index_layer(&file_id, "manifest", "abc", "complete").unwrap();
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .upsert_file_index_layer(&file_id, "manifest", "abc", "complete")
+            .unwrap();
 
         // 3. Run lazy structural extraction via coordinator
-        let coordinator = LazyCoordinator::with_project_root(
-            store.clone(), tmp.path().to_path_buf(),
-        );
+        let coordinator =
+            LazyCoordinator::with_project_root(store.clone(), tmp.path().to_path_buf());
         let provider = Box::new(DefaultCandidateProvider::new(
-            store.clone(), Some(tmp.path().to_path_buf()),
+            store.clone(),
+            Some(tmp.path().to_path_buf()),
         ));
         let lazy = LazyStructuralService::with_provider(
-            store.clone(), Some(tmp.path().to_path_buf()), provider,
+            store.clone(),
+            Some(tmp.path().to_path_buf()),
+            provider,
         );
 
         coordinator

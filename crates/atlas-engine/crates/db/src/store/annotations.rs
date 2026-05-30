@@ -130,7 +130,9 @@ impl Store {
 mod tests {
     use super::*;
     use types::ids::{FileId, SymbolId};
-    use types::{FileFacts, FileInfo, Language, ParseStatus, SymbolDef, SymbolKind, TextRange, FpAnnotation};
+    use types::{
+        FileFacts, FileInfo, FpAnnotation, Language, ParseStatus, SymbolDef, SymbolKind, TextRange,
+    };
 
     fn setup_store() -> Store {
         let store = Store::open_in_memory().unwrap();
@@ -138,11 +140,20 @@ mod tests {
         store
     }
 
-    fn insert_symbol(store: &Store, file_id: FileId, name: &str, qname: &str, kind: SymbolKind) -> SymbolId {
+    fn insert_symbol(
+        store: &Store,
+        file_id: FileId,
+        name: &str,
+        qname: &str,
+        kind: SymbolKind,
+    ) -> SymbolId {
         let range = TextRange {
-            start_byte: 0, end_byte: 10,
-            start_line: 1, start_column: 1,
-            end_line: 1, end_column: 11,
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 11,
         };
         let id = SymbolId::generate(&file_id, "c", qname, kind.as_str(), None);
         let sym = SymbolDef {
@@ -192,8 +203,20 @@ mod tests {
         let file_a = FileId::generate("src/field.c");
         let file_b = FileId::generate("src/target.c");
 
-        let source = insert_symbol(&store, file_a, "do_it", "Curl_handler.do_it", SymbolKind::Field);
-        let target = insert_symbol(&store, file_b, "Curl_http", "Curl_http", SymbolKind::Function);
+        let source = insert_symbol(
+            &store,
+            file_a,
+            "do_it",
+            "Curl_handler.do_it",
+            SymbolKind::Field,
+        );
+        let target = insert_symbol(
+            &store,
+            file_b,
+            "Curl_http",
+            "Curl_http",
+            SymbolKind::Function,
+        );
 
         let ann = FpAnnotation {
             annotation_id: test_annotation_id(&source, "do_it"),

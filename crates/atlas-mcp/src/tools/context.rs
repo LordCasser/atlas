@@ -48,8 +48,7 @@ impl ToolRouter {
                     }
                 }
                 (
-                    serde_json::to_string_pretty(&result)
-                        .unwrap_or_else(|e| e.to_string()),
+                    serde_json::to_string_pretty(&result).unwrap_or_else(|e| e.to_string()),
                     false,
                 )
             }
@@ -124,7 +123,8 @@ impl ToolRouter {
                 self.store.clone(),
                 self.project_root.clone(),
             );
-            let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
+            let lazy =
+                LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
             match coordinator.ensure_structural_for_symbol_with_closure(&lazy, qname) {
                 Ok(result) => {
                     if !result.built_file_ids.is_empty() {

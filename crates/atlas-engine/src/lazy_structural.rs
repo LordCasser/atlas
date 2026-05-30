@@ -252,7 +252,10 @@ impl LazyStructuralService {
             Some(fi) => fi,
             None => return Ok(false),
         };
-        match self.store.get_file_index_layer(file_id, layer::RESOLUTION_SYMBOLS) {
+        match self
+            .store
+            .get_file_index_layer(file_id, layer::RESOLUTION_SYMBOLS)
+        {
             Ok(Some((s, hash))) => Ok(s == status::COMPLETE && hash == file_info.content_hash),
             _ => Ok(false),
         }
@@ -296,11 +299,7 @@ impl LazyStructuralService {
                     result.built_file_ids.push(*file_id);
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "Lazy resolution_symbols failed for {:?}: {:#}",
-                        file_id,
-                        e
-                    );
+                    tracing::warn!("Lazy resolution_symbols failed for {:?}: {:#}", file_id, e);
                 }
             }
         }
@@ -333,9 +332,9 @@ impl LazyStructuralService {
             let canonical_root = root.canonicalize().with_context(|| {
                 format!("failed to canonicalize project root {}", root.display())
             })?;
-            let canonical_file = resolved_path.canonicalize().with_context(|| {
-                format!("failed to canonicalize {}", resolved_path.display())
-            })?;
+            let canonical_file = resolved_path
+                .canonicalize()
+                .with_context(|| format!("failed to canonicalize {}", resolved_path.display()))?;
             anyhow::ensure!(
                 canonical_file.starts_with(&canonical_root),
                 "path traversal detected: {} is outside project root {}",
@@ -376,8 +375,7 @@ impl LazyStructuralService {
         // without destroying existing structural data or invalidating
         // cross-file resolved references.  Safe when structural layer
         // already exists on this file.
-        self.store
-            .upsert_resolution_symbols(file_id, &facts)?;
+        self.store.upsert_resolution_symbols(file_id, &facts)?;
 
         tracing::info!(
             "Lazy resolution_symbols: {} ({} symbols)",
@@ -455,9 +453,9 @@ impl LazyStructuralService {
             let canonical_root = root.canonicalize().with_context(|| {
                 format!("failed to canonicalize project root {}", root.display())
             })?;
-            let canonical_file = resolved_path.canonicalize().with_context(|| {
-                format!("failed to canonicalize {}", resolved_path.display())
-            })?;
+            let canonical_file = resolved_path
+                .canonicalize()
+                .with_context(|| format!("failed to canonicalize {}", resolved_path.display()))?;
             anyhow::ensure!(
                 canonical_file.starts_with(&canonical_root),
                 "path traversal detected: {} is outside project root {}",
@@ -495,7 +493,8 @@ impl LazyStructuralService {
         // Invalidate cross-file references, delete outgoing edges, and
         // atomically replace file facts — all in a single transaction so
         // a partial failure cannot leave references in a destroyed state.
-        self.store.replace_file_facts_with_invalidation(file_id, &facts)?;
+        self.store
+            .replace_file_facts_with_invalidation(file_id, &facts)?;
 
         tracing::info!(
             "Lazy structural: {} ({} symbols, {} refs)",

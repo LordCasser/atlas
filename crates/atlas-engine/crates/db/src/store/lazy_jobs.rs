@@ -56,7 +56,14 @@ impl Store {
                 (job_id, file_id, target_layer, status, trigger_query, depends_on,
                  started_at, budget_ms)
              VALUES (?1, ?2, ?3, 'queued', ?4, ?5, datetime('now'), ?6)",
-            params![job_id, file_id, target_layer, trigger_query, depends_on, budget_ms],
+            params![
+                job_id,
+                file_id,
+                target_layer,
+                trigger_query,
+                depends_on,
+                budget_ms
+            ],
         )?;
         Ok(job_id.to_string())
     }
@@ -108,7 +115,14 @@ impl Store {
                     (job_id, file_id, target_layer, status, trigger_query, depends_on,
                      started_at, budget_ms)
                  VALUES (?1, ?2, ?3, 'building', ?4, ?5, datetime('now'), ?6)",
-                params![job_id, file_id, target_layer, trigger_query, depends_on, budget_ms],
+                params![
+                    job_id,
+                    file_id,
+                    target_layer,
+                    trigger_query,
+                    depends_on,
+                    budget_ms
+                ],
             )?;
 
             Ok(ClaimResult::Claimed { job_id })
@@ -192,7 +206,9 @@ impl Store {
                AND status IN ('queued', 'building')
              LIMIT 1",
         )?;
-        let result = stmt.query_row(params![file_id, target_layer], row_to_lazy_job).ok();
+        let result = stmt
+            .query_row(params![file_id, target_layer], row_to_lazy_job)
+            .ok();
         Ok(result)
     }
 
@@ -303,7 +319,9 @@ mod tests {
             .unwrap();
 
         store.start_lazy_job(&file_id, "structural").unwrap();
-        store.fail_lazy_job(&job_id, "parse error: unexpected token").unwrap();
+        store
+            .fail_lazy_job(&job_id, "parse error: unexpected token")
+            .unwrap();
 
         let job = store.get_lazy_job(&job_id).unwrap().unwrap();
         assert_eq!(job.status, "failed");

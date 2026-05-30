@@ -140,7 +140,10 @@ impl ToolRouter {
                                 "Mutex poisoned on pending project activations; task '{}' activation failed",
                                 tid
                             );
-                            task_manager.fail_task(&tid, "Internal server state corrupted (mutex poisoned)");
+                            task_manager.fail_task(
+                                &tid,
+                                "Internal server state corrupted (mutex poisoned)",
+                            );
                         }
                     }
                 }

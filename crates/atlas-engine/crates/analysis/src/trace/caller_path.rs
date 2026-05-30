@@ -133,7 +133,10 @@ impl CallerPathExplorer {
                         // Budget exhausted — check if this caller has unexplored
                         // callers of its own (not just the edge we already followed).
                         let caller_edges = store.find_edges_by_target(caller)?;
-                        if caller_edges.iter().any(|e| call_chain::is_call_graph_edge(&e.kind)) {
+                        if caller_edges
+                            .iter()
+                            .any(|e| call_chain::is_call_graph_edge(&e.kind))
+                        {
                             truncated = true;
                             // Track this frontier node as the farthest known point.
                             if new_depth > farthest_depth {

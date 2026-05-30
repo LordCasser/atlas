@@ -30,7 +30,9 @@ use db::Store;
 use types::caller_path::{CallerChain, ForwardChain};
 use types::capability::{CapabilityLevel, FeatureSupport, LanguageCapabilityProfile};
 use types::ids::{FileId, SymbolId};
-use types::trace::{BoundaryKind, BoundaryMarker, Evidence, TraceDiagnostic, TracePath, TracePoint};
+use types::trace::{
+    BoundaryKind, BoundaryMarker, Evidence, TraceDiagnostic, TracePath, TracePoint,
+};
 
 use super::virtual_edges::SummaryEdgeProvider;
 
@@ -401,7 +403,10 @@ impl TraceEngine {
                     let file_path = self.resolve_file_path(&s.file_id).unwrap_or_default();
                     let in_project = self.is_file_in_project(&file_path);
                     let container_info = s.container.map(|cid| {
-                        self.store.find_symbol_by_id(&cid).ok().flatten()
+                        self.store
+                            .find_symbol_by_id(&cid)
+                            .ok()
+                            .flatten()
                             .map(|cs| cs.qualified_name)
                             .unwrap_or_else(|| cid.to_hex())
                     });
@@ -458,9 +463,13 @@ impl TraceEngine {
                 kind: "trace_callers".to_string(),
                 capability: None,
                 partial_result: true,
-                diagnostics: vec![TraceDiagnostic::warning(&msg)
-                    .with_code("multiple_matches")
-                    .with_detail(serde_json::to_string(&candidates_with_meta).unwrap_or_default())],
+                diagnostics: vec![
+                    TraceDiagnostic::warning(&msg)
+                        .with_code("multiple_matches")
+                        .with_detail(
+                            serde_json::to_string(&candidates_with_meta).unwrap_or_default(),
+                        ),
+                ],
                 result: None,
             };
         }
@@ -496,16 +505,22 @@ impl TraceEngine {
         if source_symbols.is_empty() {
             return TraceQueryResponse::partial(
                 "trace_forward",
-                TraceDiagnostic::warning(&format!("Source symbol '{}' not found in index", source_name))
-                    .with_code("symbol_not_found"),
+                TraceDiagnostic::warning(&format!(
+                    "Source symbol '{}' not found in index",
+                    source_name
+                ))
+                .with_code("symbol_not_found"),
                 None,
             );
         }
         if target_symbols.is_empty() {
             return TraceQueryResponse::partial(
                 "trace_forward",
-                TraceDiagnostic::warning(&format!("Target symbol '{}' not found in index", target_name))
-                    .with_code("symbol_not_found"),
+                TraceDiagnostic::warning(&format!(
+                    "Target symbol '{}' not found in index",
+                    target_name
+                ))
+                .with_code("symbol_not_found"),
                 None,
             );
         }
@@ -514,12 +529,30 @@ impl TraceEngine {
         if source_symbols.len() > 1 || target_symbols.len() > 1 {
             let mut parts: Vec<String> = Vec::new();
             if source_symbols.len() > 1 {
-                let names: Vec<&str> = source_symbols.iter().take(5).map(|s| s.qualified_name.as_str()).collect();
-                parts.push(format!("source '{}' matched {}: [{}]", source_name, source_symbols.len(), names.join(", ")));
+                let names: Vec<&str> = source_symbols
+                    .iter()
+                    .take(5)
+                    .map(|s| s.qualified_name.as_str())
+                    .collect();
+                parts.push(format!(
+                    "source '{}' matched {}: [{}]",
+                    source_name,
+                    source_symbols.len(),
+                    names.join(", ")
+                ));
             }
             if target_symbols.len() > 1 {
-                let names: Vec<&str> = target_symbols.iter().take(5).map(|s| s.qualified_name.as_str()).collect();
-                parts.push(format!("target '{}' matched {}: [{}]", target_name, target_symbols.len(), names.join(", ")));
+                let names: Vec<&str> = target_symbols
+                    .iter()
+                    .take(5)
+                    .map(|s| s.qualified_name.as_str())
+                    .collect();
+                parts.push(format!(
+                    "target '{}' matched {}: [{}]",
+                    target_name,
+                    target_symbols.len(),
+                    names.join(", ")
+                ));
             }
             return TraceQueryResponse::partial(
                 "trace_forward",
@@ -545,11 +578,7 @@ impl TraceEngine {
         target_id: &SymbolId,
         max_depth: usize,
     ) -> TraceQueryResponse<ForwardChain> {
-        let source_sym = self
-            .store
-            .find_symbol_by_id(source_id)
-            .ok()
-            .flatten();
+        let source_sym = self.store.find_symbol_by_id(source_id).ok().flatten();
 
         // Check symbol existence first — a missing symbol is a different class
         // of problem than an unsupported language.
@@ -587,11 +616,7 @@ impl TraceEngine {
 
         // Check that target exists too — the source may be fine but the
         // target was mis-specified or isn't indexed.
-        let target_sym = self
-            .store
-            .find_symbol_by_id(target_id)
-            .ok()
-            .flatten();
+        let target_sym = self.store.find_symbol_by_id(target_id).ok().flatten();
         if target_sym.is_none() {
             return TraceQueryResponse::partial(
                 "trace_forward",
@@ -604,12 +629,7 @@ impl TraceEngine {
             );
         }
 
-        match ForwardPathExplorer::explore(
-            self.store.as_ref(),
-            source_id,
-            target_id,
-            max_depth,
-        ) {
+        match ForwardPathExplorer::explore(self.store.as_ref(), source_id, target_id, max_depth) {
             Ok(Some(mut chain)) => {
                 self.enrich_forward_chain_steps(&mut chain);
 
@@ -686,11 +706,8 @@ impl TraceEngine {
         for step in &mut chain.steps {
             // Evidence: use callsite location for the snippet (not caller's first line).
             let callsite_line = step.range.as_ref().map(|r| r.start_line);
-            step.evidence = self.build_step_evidence_with_context(
-                &step.file_id,
-                &step.caller,
-                callsite_line,
-            );
+            step.evidence =
+                self.build_step_evidence_with_context(&step.file_id, &step.caller, callsite_line);
 
             // Caller snippet: the line where the call is made, with context.
             if let Ok(Some(sym)) = self.store.find_symbol_by_id(&step.caller) {
@@ -793,7 +810,12 @@ impl TraceEngine {
     ///
     /// Returns up to `context_lines` lines before and after the target line,
     /// joined with newlines.  The target line is included.
-    fn extract_context_snippet(&self, file_path: &str, line_0based: u32, context_lines: usize) -> Option<String> {
+    fn extract_context_snippet(
+        &self,
+        file_path: &str,
+        line_0based: u32,
+        context_lines: usize,
+    ) -> Option<String> {
         let root = self.project_root.as_ref()?;
         let canonical_root = self.canonical_root.as_ref()?;
         let full_path = root.join(file_path);
@@ -1097,8 +1119,14 @@ mod tests {
         };
         let diagnostics = build_boundary_diagnostics([&marker]);
         assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].code.as_deref(), Some("callback_registration_boundary"));
-        assert!(diagnostics[0].detail.is_some(), "detail must contain serialized marker");
+        assert_eq!(
+            diagnostics[0].code.as_deref(),
+            Some("callback_registration_boundary")
+        );
+        assert!(
+            diagnostics[0].detail.is_some(),
+            "detail must contain serialized marker"
+        );
         // detail should be valid JSON representing the marker
         let d: BoundaryMarker =
             serde_json::from_str(diagnostics[0].detail.as_ref().unwrap()).unwrap();
@@ -1114,7 +1142,9 @@ mod tests {
     #[test]
     fn boundary_marker_json_roundtrip() {
         let marker = BoundaryMarker {
-            kind: BoundaryKind::FunctionPointer { pointer_name: "fn_ptr".into() },
+            kind: BoundaryKind::FunctionPointer {
+                pointer_name: "fn_ptr".into(),
+            },
             message: "function pointer detected".into(),
             suggestion: "resolve at runtime".into(),
             bridge_target: None,

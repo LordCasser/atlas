@@ -122,16 +122,12 @@ pub fn run_index_pipeline(
         if current > prev {
             processed.set(current);
             if prev % 50 == 0 || current == discovered.len() {
-                let fraction =
-                    0.10 + 0.50 * current as f64 / total_files.max(1.0);
+                let fraction = 0.10 + 0.50 * current as f64 / total_files.max(1.0);
                 emit(
                     &options,
                     fraction.min(0.60),
                     Some(1.0),
-                    format!(
-                        "Extracting files... {}/{}",
-                        current, discovered.len()
-                    ),
+                    format!("Extracting files... {}/{}", current, discovered.len()),
                 );
             }
         }
@@ -155,11 +151,7 @@ pub fn run_index_pipeline(
             Ok(_) => stats.indexed += 1,
             Err(e) => {
                 stats.failed += 1;
-                tracing::warn!(
-                    "Insert failed for {}: {:#}",
-                    file.rel_path.display(),
-                    e
-                );
+                tracing::warn!("Insert failed for {}: {:#}", file.rel_path.display(), e);
             }
         }
     }

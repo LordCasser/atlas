@@ -361,9 +361,7 @@ impl ToolRouter {
             return Ok(());
         }
         self.last_signature_check = std::time::Instant::now();
-        self.rebuild_if_signature_changed(
-            "Force-refreshing graph after lazy structural extraction",
-        )
+        self.rebuild_if_signature_changed("Force-refreshing graph after lazy structural extraction")
     }
 
     /// Refresh graph after lazy structural extraction.
@@ -373,10 +371,7 @@ impl ToolRouter {
     /// via [`remove_files_in_place`], then merges the fresh data from
     /// the store.  For large change sets (> 500 files), falls back to
     /// full rebuild (cloning the snapshot becomes costlier than SQLite scan).
-    pub(crate) fn refresh_graph_for_files(
-        &mut self,
-        file_ids: &[FileId],
-    ) -> anyhow::Result<()> {
+    pub(crate) fn refresh_graph_for_files(&mut self, file_ids: &[FileId]) -> anyhow::Result<()> {
         if !self.graph_initialized || file_ids.is_empty() {
             return Ok(());
         }
@@ -577,10 +572,7 @@ impl ToolRouter {
     /// connect the definition's SymbolId, so a `resolve_qname` that picks
     /// the header symbol will miss edges.  Callers that work with the graph
     /// snapshot should use this method and try each candidate.
-    pub(crate) fn resolve_all_qname_symbols(
-        &self,
-        qname: &str,
-    ) -> Result<Vec<SymbolId>, String> {
+    pub(crate) fn resolve_all_qname_symbols(&self, qname: &str) -> Result<Vec<SymbolId>, String> {
         let symbols = self
             .store
             .find_symbols_by_qname(qname)
@@ -594,7 +586,11 @@ impl ToolRouter {
     }
 
     /// Render a node from the graph snapshot to JSON.
-    pub(crate) fn node_json(&self, snap: &atlas_engine::GraphSnapshot, ix: atlas_engine::NodeIx) -> Value {
+    pub(crate) fn node_json(
+        &self,
+        snap: &atlas_engine::GraphSnapshot,
+        ix: atlas_engine::NodeIx,
+    ) -> Value {
         let n = snap.node(ix);
         json!({
             "name": n.name,

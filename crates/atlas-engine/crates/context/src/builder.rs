@@ -1,7 +1,7 @@
 //! Context builder types: ContextView + ContextSlice.
 
-use types::enums::EdgeKind;
 use types::SymbolDef;
+use types::enums::EdgeKind;
 
 /// Full contextual view of a symbol and its neighborhood.
 #[derive(Debug, Clone)]
@@ -80,9 +80,19 @@ impl ContextView {
         let file_info = self
             .subject_source
             .as_ref()
-            .map(|s| format!(" (line {}-{})", s.start_line + 1, s.start_line + s.lines.len() as u32))
+            .map(|s| {
+                format!(
+                    " (line {}-{})",
+                    s.start_line + 1,
+                    s.start_line + s.lines.len() as u32
+                )
+            })
             .unwrap_or_default();
-        md.push_str(&format!("- File: `{}`{}\n", self.subject.file_id.to_hex(), file_info));
+        md.push_str(&format!(
+            "- File: `{}`{}\n",
+            self.subject.file_id.to_hex(),
+            file_info
+        ));
         md.push('\n');
 
         // Subject source snippet
@@ -172,7 +182,11 @@ impl ContextView {
                 if let Some(ref sig) = c.callee_signature {
                     md.push_str(&format!("   Signature: `{}`\n", sig));
                 }
-                md.push_str(&format!("   @ `{}:{}`\n", c.symbol.file_id.short_hex(), c.callsite_line + 1));
+                md.push_str(&format!(
+                    "   @ `{}:{}`\n",
+                    c.symbol.file_id.short_hex(),
+                    c.callsite_line + 1
+                ));
                 md.push_str("   ```\n");
                 md.push_str(&format!("   {}\n", c.callsite_snippet.trim()));
                 md.push_str("   ```\n\n");
@@ -203,7 +217,12 @@ impl ContextView {
             for p in &self.file_peers {
                 if p.id != self.subject.id {
                     let sig = p.signature.as_deref().unwrap_or("");
-                    md.push_str(&format!("- `{}` `{}` {}\n", p.qualified_name, p.kind.as_str(), sig));
+                    md.push_str(&format!(
+                        "- `{}` `{}` {}\n",
+                        p.qualified_name,
+                        p.kind.as_str(),
+                        sig
+                    ));
                 }
             }
             md.push('\n');
@@ -230,14 +249,23 @@ impl ContextView {
         md.push_str("*Trail — follow these to explore further (no additional lookup needed):*\n");
         if !self.callee_details.is_empty() {
             let first_callee = &self.callee_details[0].symbol.qualified_name;
-            md.push_str(&format!("- **Calls** → `context` with `symbol: \"{}\"`\n", first_callee));
+            md.push_str(&format!(
+                "- **Calls** → `context` with `symbol: \"{}\"`\n",
+                first_callee
+            ));
         }
         if !self.caller_details.is_empty() {
-            md.push_str(&format!("- **Called by** → `trace_caller_path` with `symbol_name: \"{}\"`\n", self.subject.name));
+            md.push_str(&format!(
+                "- **Called by** → `trace_caller_path` with `symbol_name: \"{}\"`\n",
+                self.subject.name
+            ));
         }
         md.push_str(&format!("- **Full source** → `explore` or `codegraph_node(\"{}\")` for the complete function body\n", self.subject.name));
         if self.dependencies.len() > 1 {
-            md.push_str(&format!("- **Dependencies** → {} imported files\n", self.dependencies.len()));
+            md.push_str(&format!(
+                "- **Dependencies** → {} imported files\n",
+                self.dependencies.len()
+            ));
         }
         md.push('\n');
 
@@ -284,10 +312,10 @@ impl ContextSlice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use types::ids::SymbolId;
-    use types::enums::{EdgeKind, SymbolKind, Language, Visibility};
-    use types::structs::TextRange;
     use types::SymbolDef;
+    use types::enums::{EdgeKind, Language, SymbolKind, Visibility};
+    use types::ids::SymbolId;
+    use types::structs::TextRange;
 
     fn make_sym(name: &str) -> SymbolDef {
         let fid = types::ids::FileId::generate("test.c");
@@ -358,8 +386,14 @@ mod tests {
             dependencies: vec![],
         };
         let md = view.to_markdown();
-        assert!(md.contains("⚠"), "must show boundary warning for RegistersCallback");
-        assert!(md.contains("Callback boundary"), "must explain callback boundary");
+        assert!(
+            md.contains("⚠"),
+            "must show boundary warning for RegistersCallback"
+        );
+        assert!(
+            md.contains("Callback boundary"),
+            "must explain callback boundary"
+        );
         assert!(md.contains("on_frame"), "must include callee name");
         assert!(md.contains("registers_callback"), "must show edge kind");
     }
@@ -388,7 +422,10 @@ mod tests {
         };
         let md = view.to_markdown();
         assert!(!md.contains("⚠"), "normal Calls edge must not show warning");
-        assert!(md.contains("calls"), "must show edge kind as section header");
+        assert!(
+            md.contains("calls"),
+            "must show edge kind as section header"
+        );
     }
 
     #[test]

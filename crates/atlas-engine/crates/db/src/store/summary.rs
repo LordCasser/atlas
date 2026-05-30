@@ -295,17 +295,11 @@ impl SummaryStore {
 // ---------------------------------------------------------------------------
 
 impl crate::readers::SummaryReader for Store {
-    fn query_param_reaches(
-        &self,
-        param_id: &DataNodeId,
-    ) -> anyhow::Result<Vec<ParamReachRow>> {
+    fn query_param_reaches(&self, param_id: &DataNodeId) -> anyhow::Result<Vec<ParamReachRow>> {
         SummaryStore::query_param_reaches(self, param_id)
     }
 
-    fn query_return_sources(
-        &self,
-        return_id: &DataNodeId,
-    ) -> anyhow::Result<Vec<ReturnSourceRow>> {
+    fn query_return_sources(&self, return_id: &DataNodeId) -> anyhow::Result<Vec<ReturnSourceRow>> {
         SummaryStore::query_return_sources(self, return_id)
     }
 
@@ -473,11 +467,20 @@ mod tests {
 
     /// Helper: create a minimal FunctionSummary for testing.
     fn test_summary(function_id: &SymbolId, file_id: &types::ids::FileId) -> FunctionSummary {
-        let param_id = DataNodeId::generate(file_id, Some(function_id), "parameter", Some("x"), None, 0);
+        let param_id =
+            DataNodeId::generate(file_id, Some(function_id), "parameter", Some("x"), None, 0);
         let return_id = DataNodeId::generate(file_id, Some(function_id), "return", None, None, 100);
-        let arg_node_id = DataNodeId::generate(file_id, Some(function_id), "call_arg", None, None, 50);
+        let arg_node_id =
+            DataNodeId::generate(file_id, Some(function_id), "call_arg", None, None, 50);
         let callsite_id = CallsiteId::generate(
-            &types::ids::ReferenceId::generate(file_id, None, 30, 35, "call", types::enums::ReferenceKind::Call),
+            &types::ids::ReferenceId::generate(
+                file_id,
+                None,
+                30,
+                35,
+                "call",
+                types::enums::ReferenceKind::Call,
+            ),
             Some(function_id),
             30,
         );
@@ -606,8 +609,12 @@ mod tests {
         })?;
 
         let range = types::structs::TextRange {
-            start_byte: 0, end_byte: 50,
-            start_line: 1, start_column: 1, end_line: 5, end_column: 1,
+            start_byte: 0,
+            end_byte: 50,
+            start_line: 1,
+            start_column: 1,
+            end_line: 5,
+            end_column: 1,
         };
         let func_sym = types::structs::SymbolDef {
             id: SymbolId::generate(&file_id, "typescript", "toInvalidate", "function", None),
@@ -639,21 +646,34 @@ mod tests {
         SummaryStore::build_for_function(&store, &function_id, |_, _fid| Ok(summary.clone()))?;
 
         // Verify rows exist
-        let param_rows = SummaryStore::query_param_reaches(&store, &summary.param_flows[0].param_id)?;
+        let param_rows =
+            SummaryStore::query_param_reaches(&store, &summary.param_flows[0].param_id)?;
         assert!(!param_rows.is_empty());
 
         // Invalidate
         SummaryStore::invalidate_function(&store, &function_id)?;
 
         // Verify rows are gone
-        let param_rows = SummaryStore::query_param_reaches(&store, &summary.param_flows[0].param_id)?;
-        assert!(param_rows.is_empty(), "param_reaches should be empty after invalidate");
+        let param_rows =
+            SummaryStore::query_param_reaches(&store, &summary.param_flows[0].param_id)?;
+        assert!(
+            param_rows.is_empty(),
+            "param_reaches should be empty after invalidate"
+        );
 
-        let return_rows = SummaryStore::query_return_sources(&store, &summary.return_flows[0].return_id)?;
-        assert!(return_rows.is_empty(), "return_sources should be empty after invalidate");
+        let return_rows =
+            SummaryStore::query_return_sources(&store, &summary.return_flows[0].return_id)?;
+        assert!(
+            return_rows.is_empty(),
+            "return_sources should be empty after invalidate"
+        );
 
-        let arg_rows = SummaryStore::query_call_arg_sources(&store, &summary.call_arg_flows[0].arg_node_id)?;
-        assert!(arg_rows.is_empty(), "call_arg_sources should be empty after invalidate");
+        let arg_rows =
+            SummaryStore::query_call_arg_sources(&store, &summary.call_arg_flows[0].arg_node_id)?;
+        assert!(
+            arg_rows.is_empty(),
+            "call_arg_sources should be empty after invalidate"
+        );
 
         Ok(())
     }
@@ -672,8 +692,12 @@ mod tests {
         })?;
 
         let range = types::structs::TextRange {
-            start_byte: 0, end_byte: 50,
-            start_line: 1, start_column: 1, end_line: 5, end_column: 1,
+            start_byte: 0,
+            end_byte: 50,
+            start_line: 1,
+            start_column: 1,
+            end_line: 5,
+            end_column: 1,
         };
 
         let fn_a = types::structs::SymbolDef {
@@ -741,12 +765,13 @@ mod tests {
         };
         store.insert_symbols(&[fn_a.clone(), fn_b.clone(), not_a_fn])?;
 
-        let stats = SummaryStore::build_all(&store, |_s, fid| {
-            Ok(test_summary(fid, &file_id))
-        })?;
+        let stats = SummaryStore::build_all(&store, |_s, fid| Ok(test_summary(fid, &file_id)))?;
 
         // Should process exactly 2 functions, skipping the Class
-        assert_eq!(stats.functions_processed, 2, "should only count Function symbols");
+        assert_eq!(
+            stats.functions_processed, 2,
+            "should only count Function symbols"
+        );
         assert_eq!(stats.functions_summarized, 2);
 
         // Verify rows exist for fnA

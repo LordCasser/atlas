@@ -337,9 +337,7 @@ pub struct BoundaryMarker {
 #[serde(tag = "type")]
 pub enum BoundaryKind {
     /// Function pointer call: `void (*ptr)(int)` — target resolved at runtime.
-    FunctionPointer {
-        pointer_name: String,
-    },
+    FunctionPointer { pointer_name: String },
     /// Callback registration: `set_callback(ctx, on_event)` — invoked dynamically.
     CallbackRegistration {
         registrant: String,
@@ -351,9 +349,7 @@ pub enum BoundaryKind {
         method_name: String,
     },
     /// Dynamic method call: `$obj->$method()` (PHP) or `send(method, ...)` (Ruby).
-    DynamicMethodCall {
-        receiver_type: String,
-    },
+    DynamicMethodCall { receiver_type: String },
     /// Depth limit reached — more callers exist beyond max_depth.
     MaxDepthTruncated {
         depth_reached: usize,

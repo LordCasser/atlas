@@ -15,6 +15,7 @@ use super::{ToolRouter, get_str, get_str_opt, get_u64};
 
 use serde_json::json;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 const SYNC_STRUCTURAL_SCOPE_FILE_LIMIT: usize = 8;
 const LIKE_FALLBACK_SCOPE_FILE_LIMIT: usize = 32;
@@ -134,6 +135,7 @@ impl ToolRouter {
             kind,
             scope,
             is_manual_full,
+            Arc::clone(&self.graph_stale_flag),
             Some(|percent, message: String| self.send_progress(percent, &message)),
         ) {
             Ok(r) => r,
@@ -184,6 +186,7 @@ impl ToolRouter {
                 k.as_deref(),
                 &sc,
                 is_manual_full,
+                Arc::clone(&flag),
                 Some(|percent, message: String| {
                     task_manager.update_progress(&tid, percent * 100.0, &message)
                 }),
@@ -227,10 +230,8 @@ impl ToolRouter {
             return;
         }
         let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-        let coordinator = LazyCoordinator::with_project_root(
-            self.store.clone(),
-            self.project_root.clone(),
-        );
+        let coordinator =
+            LazyCoordinator::with_project_root(self.store.clone(), self.project_root.clone());
         match coordinator.ensure_structural_for_symbol_with_closure(&lazy, query) {
             Ok(result) => {
                 if !result.built_file_ids.is_empty() {
@@ -304,8 +305,7 @@ impl ToolRouter {
         }
 
         (
-            serde_json::to_string_pretty(&result)
-                .unwrap_or_else(|e| e.to_string()),
+            serde_json::to_string_pretty(&result).unwrap_or_else(|e| e.to_string()),
             false,
         )
     }
@@ -319,6 +319,7 @@ fn execute_scoped_search<F>(
     kind: Option<&str>,
     scope: &str,
     is_manual_full: bool,
+    flag: Arc<AtomicBool>,
     progress: Option<F>,
 ) -> anyhow::Result<ScopedSearchResponse>
 where
@@ -375,12 +376,8 @@ where
             );
         }
         let max_files = scope_file_count.max(SYNC_STRUCTURAL_SCOPE_FILE_LIMIT);
-        let file_ids =
-            store.list_file_ids_in_scope(&normalized_scope, max_files)?;
-        let coordinator = LazyCoordinator::with_project_root(
-            store.clone(),
-            project_root.clone(),
-        );
+        let file_ids = store.list_file_ids_in_scope(&normalized_scope, max_files)?;
+        let coordinator = LazyCoordinator::with_project_root(store.clone(), project_root.clone());
         let lazy = LazyStructuralService::new(store.clone(), Some(project_root.clone()));
         let mut total_built: Vec<FileId> = Vec::new();
         let mut total_budget_exceeded = false;
@@ -399,10 +396,8 @@ where
             }
         }
         if total_budget_exceeded {
-            warnings.push(
-                "Structural parsing hit budget; narrow the scope for exact results."
-                    .into(),
-            );
+            warnings
+                .push("Structural parsing hit budget; narrow the scope for exact results.".into());
         }
         // Store built file IDs for the caller to refresh the graph.
         built_file_ids = total_built;
@@ -457,7 +452,7 @@ where
             .take(PREHEAT_FILE_LIMIT)
             .collect();
         if !precise && scope_file_count <= PREHEAT_SCOPE_FILE_LIMIT && !result_file_ids.is_empty() {
-            spawn_preparse(store.clone(), project_root, result_file_ids);
+            spawn_preparse(store.clone(), project_root, result_file_ids, flag.clone());
             background_preparse = Some(format!(
                 "Scheduled structural preparse for up to {} result-adjacent files.",
                 PREHEAT_FILE_LIMIT
@@ -565,7 +560,7 @@ fn symbol_hit(store: &Store, query: &str, sym: SymbolDef) -> anyhow::Result<Sear
         .map(|f| f.path)
         .unwrap_or_default();
     let score = score_symbol(query, &sym);
-        Ok(SearchHit {
+    Ok(SearchHit {
         name: sym.name,
         qualified_name: sym.qualified_name,
         kind: sym.kind.as_str().to_string(),
@@ -620,18 +615,20 @@ fn spawn_preparse(
     store: Arc<Store>,
     project_root: std::path::PathBuf,
     file_ids: Vec<atlas_engine::FileId>,
+    flag: Arc<std::sync::atomic::AtomicBool>,
 ) {
     std::thread::spawn(move || {
         // Use LazyCoordinator for closure-aware lazy structural
         // so preparsed results are consistent with sync search results.
-        let coordinator = atlas_engine::LazyCoordinator::with_project_root(
-            store.clone(),
-            project_root.clone(),
-        );
+        let coordinator =
+            atlas_engine::LazyCoordinator::with_project_root(store.clone(), project_root.clone());
         let lazy = LazyStructuralService::new(store, Some(project_root));
         for file_id in &file_ids {
             let _ = coordinator.ensure_structural_with_closure(&lazy, file_id);
         }
+        // After all lazy structural completes, mark the in-memory graph as
+        // stale so a subsequent maybe_refresh_graph rebuilds affected nodes.
+        flag.store(true, std::sync::atomic::Ordering::Release);
         // Note: graph refresh is not done here — preparse is best-effort.
         // The next sync graph-backed request will trigger maybe_refresh_graph.
     });

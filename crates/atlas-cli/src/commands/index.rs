@@ -12,8 +12,8 @@
 //! - Parallel phases (Extraction, Resolution Phase 1, EdgeBuilding): AtomicU64 counters.
 //! - Serial phases (HashCheck, DB Write, Resolution Phase 2): direct `set_current()`.
 
-use crate::tui::{TextFallback, TuiProgress};
 use crate::runtime::{CommandContext, DbMode};
+use crate::tui::{TextFallback, TuiProgress};
 use anyhow::Context;
 use atlas_engine::ExtractionError;
 use atlas_engine::ExtractionMode;
@@ -21,9 +21,9 @@ use atlas_engine::FailureCategory;
 use atlas_engine::FileLock;
 use atlas_engine::Language;
 use atlas_engine::LanguageFrontend;
+use atlas_engine::PerLanguageStats;
 use atlas_engine::progress::{ProgressPhase, ProgressState};
 use atlas_engine::{self, LanguageRegistry, ParseWorkerPool, WorkerConfig};
-use atlas_engine::PerLanguageStats;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
@@ -70,8 +70,8 @@ pub fn run(
 
     // ── Open store (before spawning worker, in case of immediate error) ──
     let ctx = CommandContext::open(project, DbMode::CreateOrOpenReadWrite)?;
-    let _lock = FileLock::acquire(&ctx.store)
-        .context("Another atlas process is indexing this project.")?;
+    let _lock =
+        FileLock::acquire(&ctx.store).context("Another atlas process is indexing this project.")?;
 
     // ── Shared state ──
     let progress_state = Arc::new(Mutex::new(ProgressState::new()));
@@ -121,20 +121,25 @@ pub fn run(
         let interrupted = || stop_w.load(Ordering::SeqCst);
 
         // ── Discovery ──
-        ps.lock().unwrap().start_phase(ProgressPhase::Discovery, None);
+        ps.lock()
+            .unwrap()
+            .start_phase(ProgressPhase::Discovery, None);
         let discovered = atlas_engine::phase_discover(&root, &include_patterns, &exclude)
             .context("Failed to discover files")?;
         if discovered.is_empty() {
-            ps.lock().unwrap().start_phase(ProgressPhase::Finalizing, None);
+            ps.lock()
+                .unwrap()
+                .start_phase(ProgressPhase::Finalizing, None);
             anyhow::bail!("No recognizable source files found in {}", root.display());
         }
         let total = discovered.len();
-        ps.lock().unwrap().start_phase(
-            ProgressPhase::HashCheck,
-            Some(format!("{} files", total)),
-        );
+        ps.lock()
+            .unwrap()
+            .start_phase(ProgressPhase::HashCheck, Some(format!("{} files", total)));
 
-        if interrupted() { return Ok(()); }
+        if interrupted() {
+            return Ok(());
+        }
 
         // ── Hash check ──
         let hash_result = atlas_engine::phase_dirty_check(&store, &discovered, &root)?;
@@ -145,7 +150,9 @@ pub fn run(
             Some(format!("{} dirty / {} reused", dirty.len(), reused)),
         );
 
-        if interrupted() { return Ok(()); }
+        if interrupted() {
+            return Ok(());
+        }
 
         // ── Delete stale data ──
         if !hash_result.deleted.is_empty() {
@@ -155,37 +162,45 @@ pub fn run(
             ps.lock().unwrap().set_current(deleted_count);
         }
 
-        let languages: Vec<Language> = dirty.iter()
-            .filter_map(|p| Language::from_path(p))
-            .fold(Vec::new(), |mut acc, lang| {
-                if !acc.contains(&lang) { acc.push(lang); }
+        let languages: Vec<Language> = dirty.iter().filter_map(|p| Language::from_path(p)).fold(
+            Vec::new(),
+            |mut acc, lang| {
+                if !acc.contains(&lang) {
+                    acc.push(lang);
+                }
                 acc
-            });
+            },
+        );
 
-        if interrupted() { return Ok(()); }
+        if interrupted() {
+            return Ok(());
+        }
 
         // ── Language init ──
         ps.lock().unwrap().start_phase(
             ProgressPhase::LanguageInit,
             Some(format!("{} languages", languages.len())),
         );
-        let _registry = LanguageRegistry::new(&languages)
-            .or_else(|e| {
-                let available: Vec<Language> = languages.iter()
-                    .filter(|l| LanguageRegistry::new(&[**l]).is_ok())
-                    .copied()
-                    .collect();
-                if available.is_empty() {
-                    Err(e)
-                } else {
-                    LanguageRegistry::new(&available)
-                }
-            })?;
-        let frontend_cache: HashMap<Language, LanguageFrontend> = languages.iter()
+        let _registry = LanguageRegistry::new(&languages).or_else(|e| {
+            let available: Vec<Language> = languages
+                .iter()
+                .filter(|l| LanguageRegistry::new(&[**l]).is_ok())
+                .copied()
+                .collect();
+            if available.is_empty() {
+                Err(e)
+            } else {
+                LanguageRegistry::new(&available)
+            }
+        })?;
+        let frontend_cache: HashMap<Language, LanguageFrontend> = languages
+            .iter()
             .filter_map(|&lang| atlas_engine::create_frontend(lang).map(|fe| (lang, fe)))
             .collect();
 
-        if interrupted() { return Ok(()); }
+        if interrupted() {
+            return Ok(());
+        }
 
         // ── Extraction (parallel) ──
         let dirty_total = dirty.len();
@@ -205,13 +220,20 @@ pub fn run(
         let results: Vec<_> = dirty
             .par_iter()
             .filter_map(|rel_path| {
-                if interrupted() { return None; }
+                if interrupted() {
+                    return None;
+                }
                 let abs_path = root.join(rel_path);
                 let lang = Language::from_path(rel_path)?;
                 let frontend = fc.get(&lang)?;
                 let file_start = Instant::now();
                 let result = extract_one_with_frontend(
-                    &pool, &abs_path, &root, lang, frontend, mode.clone(),
+                    &pool,
+                    &abs_path,
+                    &root,
+                    lang,
+                    frontend,
+                    mode.clone(),
                 );
                 let extract_ms = file_start.elapsed().as_millis() as u64;
 
@@ -223,19 +245,26 @@ pub fn run(
                     Err(ref _e) => (None, true, Some("extraction_error")),
                 };
                 {
-                    per_lang_mutex.lock().unwrap_or_else(|e| e.into_inner())
+                    per_lang_mutex
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
                         .record_file(lang, extract_ms, failed, fail_cat);
                 }
-                facts_opt.map(|facts| atlas_engine::ExtractedFile { rel_path: rel_path.clone(), language: lang, facts })
+                facts_opt.map(|facts| atlas_engine::ExtractedFile {
+                    rel_path: rel_path.clone(),
+                    language: lang,
+                    facts,
+                })
             })
             .collect();
 
-        if interrupted() { return Ok(()); }
+        if interrupted() {
+            return Ok(());
+        }
 
         let extracted = results;
         let extracted_count = extracted.len();
         let _failed_count = dirty_total.saturating_sub(extracted_count);
-
 
         // ── Clean stale facts ──
         ps.lock().unwrap().start_phase(
@@ -246,7 +275,9 @@ pub fn run(
         atlas_engine::phase_cleanup_file_ids(&store, &file_ids)
             .context("Failed to clean stale facts")?;
 
-        if interrupted() { return Ok(()); }
+        if interrupted() {
+            return Ok(());
+        }
 
         // ── DB Write (serial, with progress) ──
         ps.lock().unwrap().start_phase(
@@ -276,7 +307,9 @@ pub fn run(
             || interrupted(),
         )?;
 
-        if interrupted() { return Ok(()); }
+        if interrupted() {
+            return Ok(());
+        }
 
         // ── Resolution (parallel matching + serial write) ──
         let path_alias = atlas_engine::PathAliasConfig::resolver(&root);
@@ -287,19 +320,18 @@ pub fn run(
             store.delete_all_edges()?;
         }
 
-        let mut resolver = atlas_engine::ReferenceResolver::with_path_alias(
-            store.clone(), path_alias,
-        );
-        let (resolved, _stats) = resolver.resolve_all_parallel(
-            store.clone(),
-            Some(&ps),
-            None,
-        )?;
+        let mut resolver =
+            atlas_engine::ReferenceResolver::with_path_alias(store.clone(), path_alias);
+        let (resolved, _stats) = resolver.resolve_all_parallel(store.clone(), Some(&ps), None)?;
 
-        if interrupted() { return Ok(()); }
+        if interrupted() {
+            return Ok(());
+        }
 
         // ── Edge building (already par_iter internally) ──
-        ps.lock().unwrap().start_phase(ProgressPhase::EdgeBuilding, None);
+        ps.lock()
+            .unwrap()
+            .start_phase(ProgressPhase::EdgeBuilding, None);
         let builder = atlas_engine::GraphBuilder::new(store.clone());
         let _build_stats = builder.build_all(&resolved);
         ps.lock().unwrap().set_current(resolved.len() as u64);
@@ -315,10 +347,14 @@ pub fn run(
             Some("Building summaries...".into()),
         );
         let _summary_stats = atlas_engine::phase_build_summaries(&store)?;
-        if interrupted() { return Ok(()); }
+        if interrupted() {
+            return Ok(());
+        }
 
         // ── Finalize ──
-        ps.lock().unwrap().start_phase(ProgressPhase::Finalizing, None);
+        ps.lock()
+            .unwrap()
+            .start_phase(ProgressPhase::Finalizing, None);
         atlas_engine::phase_commit_path_alias_config(&store, &root)?;
         atlas_engine::phase_finalize(&store, &root, &include_patterns)?;
 
@@ -352,9 +388,9 @@ pub fn run(
     if was_interrupted {
         tracing::info!("interrupted: waiting for worker to finish...");
     }
-    let worker_result = worker.join().unwrap_or_else(|e| {
-        Err(anyhow::anyhow!("Worker thread panicked: {:?}", e))
-    });
+    let worker_result = worker
+        .join()
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("Worker thread panicked: {:?}", e)));
 
     // Report worker result (whether it completed or was interrupted).
     if let Err(ref e) = worker_result {
@@ -418,7 +454,9 @@ fn extract_one_with_frontend(
             let msg = format!("Failed to read {}: {}", path.display(), e);
             pool.push_failure(&rel_str, FailureCategory::IoError, msg.clone());
             return Err(ExtractionError {
-                file_path: rel_str, category: FailureCategory::IoError, message: msg,
+                file_path: rel_str,
+                category: FailureCategory::IoError,
+                message: msg,
             });
         }
     };
@@ -436,14 +474,20 @@ fn extract_one_with_frontend(
 // ── Scope helpers ──────────────────────────────────────────────────────────
 
 fn scope_to_glob(scope: &str) -> String {
-    if scope.contains('*') { scope.to_string() }
-    else { format!("{}/**", scope.trim_end_matches('/')) }
+    if scope.contains('*') {
+        scope.to_string()
+    } else {
+        format!("{}/**", scope.trim_end_matches('/'))
+    }
 }
 
 #[allow(dead_code)]
 fn indexed_scope_json(patterns: &[String]) -> String {
-    if patterns.is_empty() { "[]".to_string() }
-    else { serde_json::to_string(patterns).unwrap_or_else(|_| "[]".to_string()) }
+    if patterns.is_empty() {
+        "[]".to_string()
+    } else {
+        serde_json::to_string(patterns).unwrap_or_else(|_| "[]".to_string())
+    }
 }
 
 #[cfg(test)]

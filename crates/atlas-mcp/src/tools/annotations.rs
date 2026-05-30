@@ -107,7 +107,10 @@ impl ToolRouter {
         // ── Target must be a Function or Method ────────────────────
         let target_sym = self.store.find_symbol_by_id(&target_id).ok().flatten();
         if let Some(sym) = &target_sym {
-            if !matches!(sym.kind, atlas_engine::SymbolKind::Function | atlas_engine::SymbolKind::Method) {
+            if !matches!(
+                sym.kind,
+                atlas_engine::SymbolKind::Function | atlas_engine::SymbolKind::Method
+            ) {
                 return (
                     json!({
                         "error": format!(
@@ -199,7 +202,11 @@ impl ToolRouter {
                 let mut symbol_map: std::collections::HashMap<atlas_engine::SymbolId, String> =
                     std::collections::HashMap::new();
                 for id in symbol_ids {
-                    let qname = self.store.find_symbol_by_id(&id).ok().flatten()
+                    let qname = self
+                        .store
+                        .find_symbol_by_id(&id)
+                        .ok()
+                        .flatten()
                         .map(|s| s.qualified_name);
                     if let Some(qn) = qname {
                         symbol_map.insert(id, qn);
@@ -209,10 +216,12 @@ impl ToolRouter {
                 let items: Vec<serde_json::Value> = annotations
                     .iter()
                     .map(|a| {
-                        let source_qname = symbol_map.get(&a.source_symbol)
+                        let source_qname = symbol_map
+                            .get(&a.source_symbol)
                             .cloned()
                             .unwrap_or_else(|| a.field_name.clone());
-                        let target_qname = symbol_map.get(&a.target_symbol)
+                        let target_qname = symbol_map
+                            .get(&a.target_symbol)
                             .cloned()
                             .unwrap_or_else(|| "?".to_string());
 
@@ -243,10 +252,7 @@ impl ToolRouter {
     }
 
     /// Handle `delete_fp_annotation` — delete a dispatch annotation.
-    pub(crate) fn handle_delete_fp_annotation(
-        &self,
-        args: &serde_json::Value,
-    ) -> (String, bool) {
+    pub(crate) fn handle_delete_fp_annotation(&self, args: &serde_json::Value) -> (String, bool) {
         let annotation_id = get_str(args, "annotation_id");
         let field_qname = get_str(args, "field_qname");
 
@@ -298,8 +304,7 @@ impl ToolRouter {
 
         match deleted {
             Ok(true) => (
-                json!({"status": "deleted", "annotation_id": deleted_annotation_id})
-                    .to_string(),
+                json!({"status": "deleted", "annotation_id": deleted_annotation_id}).to_string(),
                 false,
             ),
             Ok(false) => (
