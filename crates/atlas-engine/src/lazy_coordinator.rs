@@ -25,6 +25,7 @@
 //!
 //! - (no outstanding Phase 4 items)
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -33,7 +34,19 @@ use types::ids::FileId;
 
 use crate::closure_planner::{ClosurePlanner, IncludeRoot};
 use crate::lazy_structural::{EnsureStructuralResult, LAZY_STRUCTURAL_BUDGET_MS, LazyStructuralService};
+use crate::LazyDataflowService;
 use types::structs::precision::PrecisionTier;
+
+/// Global flag: at most one prewarm thread runs at a time.
+static PREWARM_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// RAII guard that clears the global prewarm flag on drop.
+struct PrewarmGuard;
+impl Drop for PrewarmGuard {
+    fn drop(&mut self) {
+        PREWARM_RUNNING.store(false, Ordering::Release);
+    }
+}
 
 /// Coordinates lazy extraction with job tracking.
 ///
@@ -208,6 +221,19 @@ impl LazyCoordinator {
             );
         }
 
+        // Spawn background prewarm: pre-build dataflow for files that
+        // just received structural extraction, so subsequent trace
+        // queries are instant.
+        if let Some(ref root) = self.project_root {
+            if !result.built_file_ids.is_empty() {
+                spawn_background_prewarm(
+                    Arc::clone(&self.store),
+                    root.clone(),
+                    result.built_file_ids.clone(),
+                );
+            }
+        }
+
         Ok((result, last_job_id))
     }
 
@@ -252,6 +278,91 @@ impl LazyCoordinator {
             total.budget_exceeded,
         );
         Ok(total)
+    }
+}
+
+/// Spawn a background thread to pre-build dataflow for files that just
+/// received structural or resolution_symbols extraction.
+///
+/// This is a speculative optimisation: after a `context` or `symbol` query
+/// triggers lazy structural extraction on a set of files, subsequent
+/// `trace_variable` calls on those same files will find pre-built dataflow
+/// and skip the lazy dataflow planner entirely, reducing latency.
+///
+/// The background thread creates its own `LazyDataflowService` and operates
+/// independently of the coordinator's job tracking.  Failures are logged
+/// but never propagated — any file that fails to prewarm will simply be
+/// built on-demand when actually queried.
+fn spawn_background_prewarm(
+    store: Arc<Store>,
+    project_root: std::path::PathBuf,
+    seed_file_ids: Vec<FileId>,
+) {
+    if seed_file_ids.is_empty() {
+        return;
+    }
+
+    const MAX_PREWARM_FILES: usize = 8;
+    const MAX_FUNCTIONS_PER_FILE: usize = 16;
+
+    if PREWARM_RUNNING
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        return; // another prewarm already running
+    }
+
+    let file_ids: Vec<FileId> = seed_file_ids
+        .into_iter()
+        .take(MAX_PREWARM_FILES)
+        .collect();
+
+    match std::thread::Builder::new()
+        .name("atlas-prewarm".into())
+        .spawn(move || {
+            let _guard = PrewarmGuard;
+            use types::enums::SymbolKind;
+            let lazy_dataflow = LazyDataflowService::new(Arc::clone(&store), Some(project_root));
+            let mut attempted = 0usize;
+            let mut built = 0usize;
+            for file_id in &file_ids {
+                let symbols = match store.find_symbols_by_file(file_id) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                for sym in symbols.iter().take(MAX_FUNCTIONS_PER_FILE) {
+                    if sym.kind != SymbolKind::Function && sym.kind != SymbolKind::Method {
+                        continue;
+                    }
+                    attempted += 1;
+                    match lazy_dataflow.ensure_for_function(&sym.id) {
+                        Ok(w) => {
+                            if w.units_built > 0 {
+                                built += 1;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                "Prewarm skipped for {} ({}): {:#}",
+                                sym.qualified_name,
+                                sym.file_id.to_hex(),
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+            tracing::info!(
+                attempted, built,
+                files = file_ids.len(),
+                "Background prewarm complete"
+            );
+        })
+    {
+        Ok(_) => {}
+        Err(_) => {
+            PREWARM_RUNNING.store(false, Ordering::Release);
+        }
     }
 }
 
