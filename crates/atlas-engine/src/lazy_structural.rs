@@ -357,6 +357,10 @@ impl LazyStructuralService {
         )?;
 
         // Post-extraction: enrich with kernel-specific semantics
+        // Linux augmentation for resolution_symbols:
+        // EXPORT_SYMBOL → sym.exported=true (persisted via write_symbols) ✅
+        // initcall edges, syscall diagnostics → silently dropped
+        //   (raw_edges table not written by upsert_resolution_symbols)
         let aug = crate::linux_augment::LinuxAugmenter::augment(&mut facts, &source);
         if aug.symbols_exported > 0 || aug.initcall_edges > 0 || aug.syscall_detected > 0 {
             tracing::info!(

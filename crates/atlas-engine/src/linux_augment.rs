@@ -14,6 +14,19 @@
 //! | `EXPORT_SYMBOL(func)` / `EXPORT_SYMBOL_GPL(func)` | Marks function as exported |
 //! | `module_init(func)` / `late_initcall(func)` / etc. | Generates RegistersCallback edge |
 //! | `SYSCALL_DEFINEn(name, ...)` | Adds syscall diagnostic |
+//!
+//! ## Persistence by layer
+//!
+//! | Pattern | Action | Manifest | ResolutionSymbols | Structural |
+//! |---------|--------|----------|--------------------|-------------|
+//! | `EXPORT_SYMBOL(func)` | `sym.exported = true` | ✅ | ✅ | ✅ |
+//! | `module_init` / `__initcall` | `RegistersCallback` edge | ❌ | ❌ | ✅ |
+//! | `SYSCALL_DEFINEn` | INFO diagnostic | ❌ | ❌ | logs only |
+//!
+//! ResolutionSymbols writes only symbols/scopes/imports — no raw_edges
+//! or diagnostics table writes.  Initcall edges and syscall diagnostics
+//! are therefore only persisted when augment runs against the full
+//! `structural` layer.
 
 use regex::Regex;
 

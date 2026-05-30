@@ -372,17 +372,11 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `lazy_jobs` 表�
 
 **P2: Lazy Structural** — 查询时按需触发完整 structural extraction。`LazyStructuralService` + `CandidateProvider` + `StructuralLoader`。
 
-### Content hash consistency
+### 内容哈希一致性
 
-When `upsert_resolution_symbols` detects that the on-disk file content
-has changed since the last `files` row write (different content hash),
-it atomically updates `files.content_hash` in the same transaction.
-All pre-existing richer layers (structural, dataflow) become stale
-because their recorded layer hash no longer matches the updated file
-hash.  On next lazy access they will be rebuilt from current content.
+当 `upsert_resolution_symbols` 检测到磁盘上的文件内容自上次 `files` 行写入以来已经变更（内容哈希不同），它会在同一事务中原子性地更新 `files.content_hash`。所有之前存在的更丰富层（structural、dataflow）变为过期状态，因为它们记录的 layer hash 不再匹配更新后的 file hash。在下次 lazy 访问时它们将从当前内容重建。
 
-This "safe-update" strategy means progressive enrichment never silently
-serves stale data, at the cost of potentially rebuilding stale layers.
+此"安全更新"策略保证渐进式富化永不会悄悄提供过期数据，代价是可能需要重建过期的层。
 
 ### 10.2 共享索引管线
 
@@ -500,3 +494,27 @@ Atlas 不包含污点分析（taint analysis）。产品主线为变量来源追
 2. 新增语言、新增 schema 表、新增 CLI/MCP 工具、新增 analysis 能力时，同步更新能力表和对应章节。
 3. 不再保留独立的架构约束、当前状态、或临时设计文档；所有架构信息统一于此文。
 4. 删除的文档不再保留归档副本。
+
+## 17. 已知限制
+
+### Lazy Indexing
+
+- **构建期间的并发读取**：当请求遇到处于 `AlreadyBuilding` 状态的 lazy job 时，它立即返回而不等待构建完成。同一 MCP 会话中的后续请求可能观察到过期数据。客户端应在短暂延迟后重试。
+
+- **Include 根目录自动检测**：仅 `project_root/include/` 会被自动添加。Linux 内核项目还需额外配置 `arch/<arch>/include/`、`include/generated/` 和编译器 `-I` 标志。Future work: MCP/CLI configuration entry for explicit include roots; currently only `project_root/include/` is auto-detected and the `ClosurePlanner::with_include_roots()` API is available for programmatic configuration.
+
+- **零初始语义**：`open_project` 激活项目但不会索引它。在 search/trace 之前需要显式调用 `index`（manifest extraction）。没有 manifest 索引，lazy extraction 缺乏起点。
+
+### Graph
+
+- **Graph refresh after lazy extraction**: Production code uses
+  `replace_files_in_place` (via `refresh_graph_for_files`) —
+  old nodes/edges for changed files are removed, then fresh data
+  is loaded from the store and merged.  For large change sets
+  (> 500 files), falls back to full `GraphEngine::from_store()`
+  rebuild.  `merge_delta_in_place` is an append-only helper
+  used internally by `replace_files_in_place` for the merge step.
+
+### Linux 增强
+
+- **ResolutionSymbols 层**：仅 `EXPORT_SYMBOL` 标志被持久化。`initcall`/`module_init` 边和 `SYSCALL_DEFINE` diagnostics 仅持久化到完整的 `structural` 层（该层写入 `raw_edges`）。
