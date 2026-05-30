@@ -112,7 +112,8 @@ Notes:
   first index stays responsive on large repositories.
 - `search` requires a `query` string; `scope` is required for manifest-only indexes
   and optional when a manual full structural index exists (built via CLI `atlas index`).
-  Small scopes (<= 120 files) get bounded structural parsing; large scopes return
+  Small scopes (<= 8 files, or full-project when indexed files <= 200)
+  get bounded structural parsing; <= 64 files may schedule background preparse; large scopes return
   manifest-level results with a narrowing warning.
 - Large scoped searches schedule a small background structural preparse around
   returned files to improve follow-up latency without blocking the MCP request.

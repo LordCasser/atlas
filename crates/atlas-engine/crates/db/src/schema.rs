@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS symbols (
     scope_id             BLOB,
     package_name         TEXT,
     namespace_path_json  TEXT NOT NULL DEFAULT '[]',
-    layer                TEXT NOT NULL DEFAULT 'structural'     -- manifest | structural
+    layer                TEXT NOT NULL DEFAULT 'structural'     -- manifest | resolution_symbols | structural
 );
 
 CREATE TABLE IF NOT EXISTS scopes (
@@ -278,11 +278,11 @@ CREATE TABLE IF NOT EXISTS analysis_artifacts (
 CREATE INDEX IF NOT EXISTS idx_artifacts_file
     ON analysis_artifacts(file_id);
 
--- Per-file per-layer index status: tracks manifest/structural/dataflow
+-- Per-file per-layer index status: tracks manifest/resolution_symbols/structural/dataflow
 -- completeness independent of content_hash matching.
 CREATE TABLE IF NOT EXISTS file_index_layers (
     file_id         BLOB NOT NULL,
-    layer           TEXT NOT NULL,      -- 'manifest' | 'structural' | 'dataflow'
+    layer           TEXT NOT NULL,      -- 'manifest' | 'resolution_symbols' | 'structural' | 'dataflow'
     content_hash    TEXT NOT NULL,
     status          TEXT NOT NULL DEFAULT 'complete',  -- complete | partial | failed
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),

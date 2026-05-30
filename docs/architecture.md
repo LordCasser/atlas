@@ -315,7 +315,7 @@ LanguageCapabilityProfile
 | Layer | 说明 |
 |-------|------|
 | `manifest` | 仅顶层符号（type/function/class 声明），无引用、无 scope。通过 `--analysis manifest` 产生。 |
-| `resolution_symbols` | **(Phase 2 新增)** 最小符号层，仅供跨文件引用解析使用。包含函数、typedef、struct、enum 和 exports，但不包含完整引用、scope 或 dataflow。 |
+| `resolution_symbols` | **(Phase 2 新增)** 最小符号层，仅供跨文件引用解析使用。包含 symbols、imports、scopes，不包含 references、callsites、dataflow、raw_edges。 |
 | `structural` | 完整符号、引用、scope、边。通过 `--analysis structural` 或 lazy structural 产生。 |
 | `dataflow` | 所有 structural 事实 + per-function dataflow/CFG。通过 `--analysis full` 或 lazy dataflow 产生。 |
 
@@ -361,7 +361,7 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `lazy_jobs` 表�
 #### 10.1.5 Phase 2 目标
 
 - `ClosurePlanner`: 基于 import/include 图计算依赖闭包，确保被引用文件的 `resolution_symbols` 层先于主文件的 structural 层构建。
-- `resolution_symbols` 层实现: 轻量提取模式，仅产出声明的符号定义（无引用、无 scope），供跨文件引用解析使用。
+- `resolution_symbols` 层实现: 轻量提取模式，产出 symbols + imports + scopes（无 references/callsites/dataflow/raw_edges），供跨文件引用解析使用。
 - Linux 增强边界: 对 C 语言的特定惯用法（syscall 宏、EXPORT_SYMBOL、initcall、static inline）在提取后进行后处理增强，不改动通用提取管道。
 
 #### 10.1.6 已实现的阶段

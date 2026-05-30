@@ -206,7 +206,7 @@ impl LazyCoordinator {
                             result.files_cached += r.files_cached;
                             result.budget_exceeded = result.budget_exceeded || r.budget_exceeded;
                             result.built_file_ids.extend(r.built_file_ids);
-                            if is_seed {
+                            if is_seed && r.files_built > 0 {
                                 structural_file_ids.push(*file_id);
                             }
                             self.store.complete_lazy_job(&job_id)?;
