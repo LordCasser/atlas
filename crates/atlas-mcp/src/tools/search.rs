@@ -5,19 +5,20 @@
 //! extraction on large repositories.
 
 use atlas_engine::FileId;
-use atlas_engine::LazyBudget;
-use atlas_engine::LazyCoordinator;
-use atlas_engine::LazyStructuralService;
+use atlas_engine::LazyOrchestrator;
+use atlas_engine::LazyPolicy;
 use atlas_engine::Store;
 use atlas_engine::SymbolDef;
 use atlas_engine::SymbolKind;
 
+use super::lazy_refresh::LazyRefreshQueue;
 use super::{ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64};
+
+use crate::task_manager::TaskManager;
 
 use serde_json::json;
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 const SYNC_STRUCTURAL_SCOPE_FILE_LIMIT: usize = 8;
 const LIKE_FALLBACK_SCOPE_FILE_LIMIT: usize = 32;
@@ -146,6 +147,7 @@ impl ToolRouter {
         }
 
         let response = match execute_scoped_search(
+            self.task_manager.clone(),
             self.store.clone(),
             self.project_root.clone(),
             query,
@@ -155,7 +157,7 @@ impl ToolRouter {
             is_manual_full,
             include_roots,
             root_warnings,
-            Arc::clone(&self.graph_stale_flag),
+            Arc::clone(&self.lazy_refresh_queue),
             Some(|percent, message: String| self.send_progress(percent, &message)),
         ) {
             Ok(r) => r,
@@ -193,16 +195,18 @@ impl ToolRouter {
         let store = self.store.clone();
         let project_root = self.project_root.clone();
         let task_manager = self.task_manager.clone();
-        let flag = Arc::clone(&self.graph_stale_flag);
+        let lazy_refresh_queue = Arc::clone(&self.lazy_refresh_queue);
         let q = query.to_string();
         let k = kind.map(|s| s.to_string());
         let sc = scope.to_string();
         let roots_for_thread = include_roots.clone();
         let root_warnings_for_thread = root_warnings.clone();
 
+        let bg_task_manager = task_manager.clone();
         std::thread::spawn(move || {
             task_manager.update_progress(&tid, 5.0, "Starting scoped search...");
             let response = match execute_scoped_search(
+                bg_task_manager,
                 store,
                 project_root,
                 &q,
@@ -212,7 +216,7 @@ impl ToolRouter {
                 is_manual_full,
                 roots_for_thread,
                 root_warnings_for_thread,
-                Arc::clone(&flag),
+                Arc::clone(&lazy_refresh_queue),
                 Some(|percent, message: String| {
                     task_manager.update_progress(&tid, percent * 100.0, &message)
                 }),
@@ -224,7 +228,7 @@ impl ToolRouter {
                 }
             };
             if !response.built_file_ids.is_empty() {
-                flag.store(true, std::sync::atomic::Ordering::Release);
+                lazy_refresh_queue.signal_background_writes();
             }
             let json_response = serde_json::to_value(&response)
                 .unwrap_or_else(|e| json!({ "ok": false, "error": e.to_string() }));
@@ -350,6 +354,7 @@ impl ToolRouter {
 }
 
 fn execute_scoped_search<F>(
+    task_manager: Arc<TaskManager>,
     store: Arc<Store>,
     project_root: std::path::PathBuf,
     query: &str,
@@ -359,7 +364,7 @@ fn execute_scoped_search<F>(
     is_manual_full: bool,
     include_roots: Vec<atlas_engine::IncludeRoot>,
     root_warnings: Vec<String>,
-    flag: Arc<AtomicBool>,
+    lazy_refresh_queue: Arc<LazyRefreshQueue>,
     progress: Option<F>,
 ) -> anyhow::Result<ScopedSearchResponse>
 where
@@ -438,49 +443,26 @@ where
                 .list_file_ids_in_scope(&normalized_scope, SYNC_STRUCTURAL_SCOPE_FILE_LIMIT)?;
         }
 
-        let mut budget = LazyBudget::structural();
-        let coordinator = LazyCoordinator::with_project_root(store.clone(), project_root.clone())
-            .with_include_roots(include_roots.clone());
-        let lazy = LazyStructuralService::new(store.clone(), Some(project_root.clone()));
-        let mut total_built: Vec<FileId> = Vec::new();
         let mut total_budget_exceeded = false;
-        let mut total_files_built: usize = 0;
-        let mut total_files_cached: usize = 0;
-        for file_id in &file_ids {
-            if !budget.can_continue() {
-                total_budget_exceeded = true;
-                warnings.push(
-                    "Lazy structural budget exhausted; some files may only have manifest-level symbols."
-                        .into(),
-                );
-                break;
+        let orchestrator = LazyOrchestrator::new(
+            store.clone(),
+            Some(project_root.clone()),
+            include_roots.clone(),
+        );
+        match orchestrator.ensure_structural_for_files(&file_ids, LazyPolicy::ForegroundStructural) {
+            Ok(outcome) => {
+                total_budget_exceeded = outcome.budget_exceeded;
+                built_file_ids = outcome.built_file_ids;
+                precision_tier = Some(outcome.precision_tier);
             }
-            match coordinator.ensure_structural_with_closure(&lazy, file_id, &mut budget) {
-                Ok((result, _job_id)) => {
-                    total_built.extend(result.built_file_ids);
-                    total_budget_exceeded |= result.budget_exceeded;
-                    total_files_built += result.files_built;
-                    total_files_cached += result.files_cached;
-                }
-                Err(err) => {
-                    warnings.push(format!(
-                        "Structural parsing failed for {}: {:#}",
-                        file_id, err
-                    ));
-                }
+            Err(err) => {
+                warnings.push(format!("Structural parsing failed: {:#}", err));
             }
         }
         if total_budget_exceeded {
             warnings
                 .push("Structural parsing hit budget; narrow the scope for exact results.".into());
         }
-        // Store built file IDs for the caller to refresh the graph.
-        built_file_ids = total_built;
-        precision_tier = Some(atlas_engine::precision::structural_precision(
-            total_files_built,
-            total_files_cached,
-            total_budget_exceeded,
-        ));
 
         if let Some(ref progress) = progress {
             progress(
@@ -535,16 +517,17 @@ where
             .take(PREHEAT_FILE_LIMIT)
             .collect();
         if !precise && scope_file_count <= PREHEAT_SCOPE_FILE_LIMIT && !result_file_ids.is_empty() {
-            spawn_preparse(
+            let preparse_task_id = spawn_preparse(
+                task_manager,
                 store.clone(),
                 project_root,
                 result_file_ids,
                 include_roots.clone(),
-                flag.clone(),
+                lazy_refresh_queue.clone(),
             );
             background_preparse = Some(format!(
-                "Scheduled structural preparse for up to {} result-adjacent files.",
-                PREHEAT_FILE_LIMIT
+                "preparse_task_id:{} (up to {} result-adjacent files)",
+                preparse_task_id, PREHEAT_FILE_LIMIT
             ));
         } else if !precise && scope_file_count > PREHEAT_SCOPE_FILE_LIMIT {
             warnings.push(format!(
@@ -702,32 +685,51 @@ fn normalize_scope(scope: &str) -> String {
 }
 
 fn spawn_preparse(
+    task_manager: Arc<TaskManager>,
     store: Arc<Store>,
     project_root: std::path::PathBuf,
     file_ids: Vec<atlas_engine::FileId>,
     include_roots: Vec<atlas_engine::IncludeRoot>,
-    flag: Arc<std::sync::atomic::AtomicBool>,
-) {
+    lazy_refresh_queue: Arc<LazyRefreshQueue>,
+) -> String {
+    let task_id = task_manager.create_task("search", "preparse");
+    let tid = task_id.clone();
+    let tm = Arc::clone(&task_manager);
+
     std::thread::spawn(move || {
-        // Use LazyCoordinator for closure-aware lazy structural
+        // Use LazyOrchestrator for closure-aware lazy structural
         // so preparsed results are consistent with sync search results.
-        let coordinator =
-            atlas_engine::LazyCoordinator::with_project_root(store.clone(), project_root.clone())
-                .with_include_roots(include_roots);
-        let lazy = LazyStructuralService::new(store, Some(project_root));
-        // Shared background budget across all seeds — prevents unbounded
-        // background extraction from competing with foreground MCP requests.
-        let mut bg_budget = LazyBudget::background_preparse();
-        for file_id in &file_ids {
-            if !bg_budget.can_continue() {
-                break;
+        let orchestrator = atlas_engine::LazyOrchestrator::new(
+            store.clone(),
+            Some(project_root.clone()),
+            include_roots,
+        );
+        let outcome = orchestrator.ensure_structural_for_files(
+            &file_ids,
+            atlas_engine::LazyPolicy::BackgroundPreparse,
+        );
+        match outcome {
+            Ok(ref o) => {
+                lazy_refresh_queue.record_lazy_writes(&o.built_file_ids);
+                lazy_refresh_queue.signal_background_writes();
+                let result = json!({
+                    "files_built": o.files_built,
+                    "files_cached": o.files_cached,
+                    "pending_job_ids": o.pending_job_ids,
+                    "budget_exceeded": o.budget_exceeded,
+                    "built_file_ids_count": o.built_file_ids.len(),
+                });
+                tm.complete_task(&tid, result);
             }
-            let _ = coordinator.ensure_structural_with_closure(&lazy, file_id, &mut bg_budget);
+            Err(e) => {
+                // Best-effort: signal background writes even on error.
+                lazy_refresh_queue.signal_background_writes();
+                tm.fail_task(&tid, &format!("Preparse failed: {:#}", e));
+            }
         }
-        // After all lazy structural completes, mark the in-memory graph as
-        // stale so a subsequent maybe_refresh_graph rebuilds affected nodes.
-        flag.store(true, std::sync::atomic::Ordering::Release);
         // Note: graph refresh is not done here — preparse is best-effort.
         // The next sync graph-backed request will trigger maybe_refresh_graph.
     });
+
+    task_id
 }

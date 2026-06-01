@@ -6,27 +6,16 @@
 //! Handler methods are organized by capability category in sub-modules:
 //!   status, search, graph, context, trace, capability.
 
-/// File count after which cumulative lazy per-file replacements trigger
-/// a deferred full graph rebuild on the next graph-backed tool call.
-/// Set at 80% of the 500-file threshold where `refresh_graph_for_files`
-/// switches from per-file replace to full rebuild anyway.
-///
-/// The rebuild is NOT executed synchronously in the current request to
-/// avoid re-introducing MCP timeout risk (full rebuild can take 30s+).
-const CUMULATIVE_LAZY_REBUILD_THRESHOLD: usize = 400;
-
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use atlas_engine::ContextBuilder;
 use atlas_engine::FileId;
-use atlas_engine::LazyBudget;
-use atlas_engine::LazyCoordinator;
 use atlas_engine::LazyDataflowService;
-use atlas_engine::LazyStructuralService;
+use atlas_engine::LazyOrchestrator;
+use atlas_engine::LazyPolicy;
 use atlas_engine::SearchEngine;
 use atlas_engine::SourceExtractor;
 use atlas_engine::Store;
@@ -63,6 +52,7 @@ pub(crate) mod dependencies;
 pub(crate) mod dependents;
 pub(crate) mod graph;
 pub(crate) mod index;
+pub(crate) mod lazy_refresh;
 pub(crate) mod open_project;
 pub(crate) mod search;
 pub(crate) mod status;
@@ -103,9 +93,9 @@ pub struct ToolRouter {
     last_graph_signature: String,
     /// True once the graph has been built at least once.
     graph_initialized: bool,
-    /// Set by background search when lazy structural writes new facts.
-    /// Checked by [`maybe_refresh_graph`] to skip the 5-second cooldown.
-    graph_stale_flag: Arc<AtomicBool>,
+    /// Consolidates lazy graph refresh state: pending file IDs, cumulative
+    /// write counter, and deferred full-rebuild scheduling.
+    pub(crate) lazy_refresh_queue: Arc<lazy_refresh::LazyRefreshQueue>,
     /// Cached signature to avoid per-request COUNT queries.
     cached_signature: String,
     /// When the cached signature was last checked (avoids re-query within cooldown).
@@ -121,14 +111,6 @@ pub struct ToolRouter {
     pub(crate) task_manager: Arc<crate::task_manager::TaskManager>,
     /// Project activations prepared by background `open_project` tasks.
     pub(crate) pending_project_activations: Arc<Mutex<HashMap<String, PendingProjectActivation>>>,
-    /// Counter for cumulative lazy files built via `refresh_graph_for_files`.
-    /// When this exceeds `CUMULATIVE_LAZY_REBUILD_THRESHOLD`, the next
-    /// graph-backed tool call triggers a full rebuild to keep the in-memory
-    /// snapshot clean and avoid accumulated incremental-update overhead.
-    cumulative_lazy_changes: usize,
-    /// Whether the cumulative lazy-changes counter crossed the threshold,
-    /// signaling that the next graph-backed call should do a full rebuild.
-    cumulative_rebuild_needed: bool,
 }
 
 impl ToolRouter {
@@ -156,15 +138,13 @@ impl ToolRouter {
             tools: make_all_tools(),
             last_graph_signature: last_graph_signature.clone(),
             graph_initialized: true,
-            graph_stale_flag: Arc::new(AtomicBool::new(false)),
+            lazy_refresh_queue: lazy_refresh::LazyRefreshQueue::new(),
             cached_signature: last_graph_signature,
             last_signature_check: std::time::Instant::now(),
             progress_sender: None,
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
             pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
             cached_manual_full_index: Cell::new(None),
-            cumulative_lazy_changes: 0,
-            cumulative_rebuild_needed: false,
         }
     }
 
@@ -184,15 +164,13 @@ impl ToolRouter {
             tools,
             last_graph_signature: String::new(),
             graph_initialized: false,
-            graph_stale_flag: Arc::new(AtomicBool::new(false)),
+            lazy_refresh_queue: lazy_refresh::LazyRefreshQueue::new(),
             cached_signature: String::new(),
             last_signature_check: std::time::Instant::now(),
             progress_sender: None,
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
             pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
             cached_manual_full_index: Cell::new(None),
-            cumulative_lazy_changes: 0,
-            cumulative_rebuild_needed: false,
         }
     }
 
@@ -375,28 +353,32 @@ impl ToolRouter {
         if !self.graph_initialized {
             return Ok(());
         }
-        // Cumulative lazy changes crossed the threshold — execute the
-        // deferred full rebuild now, before the next graph-backed query.
-        // This is on the critical path of the NEXT tool call (not the
-        // one that triggered the threshold), giving it its own 30s budget.
-        if self.cumulative_rebuild_needed {
-            self.cumulative_rebuild_needed = false;
-            tracing::info!("Executing deferred cumulative graph rebuild");
-            return self.force_refresh_graph();
+        // 1. Process any pending per-file incremental updates.
+        let batch = self.lazy_refresh_queue.take_incremental_batch(500);
+        if !batch.is_empty() {
+            self.refresh_graph_for_files(&batch)?;
         }
-        // Background task(s) may have triggered lazy structural —
-        // skip cooldown to pick up new facts immediately.
-        if self.graph_stale_flag.swap(false, Ordering::AcqRel) {
+        // 2. Background task(s) may have triggered lazy structural —
+        //    skip cooldown to pick up new facts immediately.
+        if self.lazy_refresh_queue.has_background_writes() {
             self.last_signature_check = self
                 .last_signature_check
                 .checked_sub(std::time::Duration::from_secs(10))
                 .unwrap_or(self.last_signature_check);
         }
-        // Cache signature for 5 seconds
+        // 3. Cache signature for 5 seconds
         if self.last_signature_check.elapsed().as_secs() < 5 {
             return Ok(());
         }
         self.last_signature_check = std::time::Instant::now();
+        // 4. Cumulative lazy changes crossed the threshold — execute the
+        //    deferred full rebuild now, before the next graph-backed query.
+        //    This is on the critical path of the NEXT tool call (not the
+        //    one that triggered the threshold), giving it its own 30s budget.
+        if self.lazy_refresh_queue.needs_full_rebuild() {
+            tracing::warn!("Cumulative lazy threshold reached — performing synchronous full rebuild. Phase 3 will make this async.");
+            return self.force_refresh_graph();
+        }
         self.rebuild_if_signature_changed("Index signature changed, refreshing graph")
     }
 
@@ -459,20 +441,6 @@ impl ToolRouter {
         self.last_graph_signature = self.store.index_signature().unwrap_or_default();
         self.cached_manual_full_index.set(None);
 
-        // Track cumulative lazy changes for progressive graph rebuild.
-        // When enough files have been incrementally updated, defer a full
-        // rebuild to the next graph-backed tool call — never block the
-        // current request (full rebuild can exceed MCP 30s timeout).
-        self.cumulative_lazy_changes += file_ids.len();
-        if self.cumulative_lazy_changes >= CUMULATIVE_LAZY_REBUILD_THRESHOLD {
-            tracing::info!(
-                "Cumulative lazy changes reached {} (threshold {}), deferring full graph rebuild",
-                self.cumulative_lazy_changes,
-                CUMULATIVE_LAZY_REBUILD_THRESHOLD
-            );
-            self.cumulative_rebuild_needed = true;
-            self.cumulative_lazy_changes = 0;
-        }
         Ok(())
     }
 
@@ -711,9 +679,6 @@ impl ToolRouter {
 
         let mut warnings = Vec::new();
         let mut built_file_ids = Vec::new();
-        let mut total_files_built = 0usize;
-        let mut total_files_cached = 0usize;
-        let mut total_budget_exceeded = false;
         if self.has_manual_full_index() {
             return StructuralEnsureOutcome {
                 warnings,
@@ -730,46 +695,37 @@ impl ToolRouter {
                 precision_tier: PrecisionTier::Exact,
             };
         }
-        let coordinator =
-            LazyCoordinator::with_project_root(self.store.clone(), self.project_root.clone())
-                .with_include_roots(include_roots);
-        let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-        let mut budget = LazyBudget::structural();
-        for file_id in &file_set {
-            if !budget.can_continue() {
-                total_budget_exceeded = true;
-                break;
+        let file_vec: Vec<FileId> = file_set.into_iter().collect();
+        let orchestrator = LazyOrchestrator::new(
+            self.store.clone(),
+            Some(self.project_root.clone()),
+            include_roots,
+        );
+        let outcome = match orchestrator
+            .ensure_structural_for_files(&file_vec, LazyPolicy::ForegroundStructural)
+        {
+            Ok(o) => o,
+            Err(e) => {
+                warnings.push(format!("Lazy structural extraction failed: {:#}", e));
+                return StructuralEnsureOutcome {
+                    warnings,
+                    built_file_ids,
+                    precision_tier: PrecisionTier::Unavailable,
+                };
             }
-            match coordinator.ensure_structural_with_closure(&lazy, file_id, &mut budget) {
-                Ok((result, _job_id)) => {
-                    total_files_built += result.files_built;
-                    total_files_cached += result.files_cached;
-                    total_budget_exceeded |= result.budget_exceeded;
-                    built_file_ids.extend(result.built_file_ids);
-                }
-                Err(e) => {
-                    warnings.push(format!(
-                        "Lazy structural extraction failed for {}: {:#}",
-                        file_id.to_hex(),
-                        e
-                    ));
-                }
-            }
-        }
+        };
+        self.lazy_refresh_queue
+            .record_lazy_writes(&outcome.built_file_ids);
+        built_file_ids = outcome.built_file_ids;
         if !built_file_ids.is_empty() {
             if let Err(e) = self.refresh_graph_for_files(&built_file_ids) {
                 warnings.push(format!("Graph refresh failed: {:#}", e));
             }
         }
-        let precision_tier = atlas_engine::precision::structural_precision(
-            total_files_built,
-            total_files_cached,
-            total_budget_exceeded,
-        );
         StructuralEnsureOutcome {
             warnings,
             built_file_ids,
-            precision_tier,
+            precision_tier: outcome.precision_tier,
         }
     }
 
@@ -785,7 +741,6 @@ impl ToolRouter {
 
         let mut warnings = Vec::new();
         let mut built_file_ids = Vec::new();
-        let mut precision_tier = PrecisionTier::Unavailable;
         if self.has_manual_full_index() {
             return StructuralEnsureOutcome {
                 warnings,
@@ -793,23 +748,30 @@ impl ToolRouter {
                 precision_tier: PrecisionTier::Exact,
             };
         }
-        let mut budget = LazyBudget::structural();
-        let coordinator =
-            LazyCoordinator::with_project_root(self.store.clone(), self.project_root.clone())
-                .with_include_roots(include_roots);
-        let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-        match coordinator.ensure_structural_for_symbol_with_closure(&lazy, symbol_name, &mut budget) {
-            Ok(result) => {
-                built_file_ids = result.built_file_ids;
-                precision_tier = result.precision_tier;
-            }
+        let orchestrator = LazyOrchestrator::new(
+            self.store.clone(),
+            Some(self.project_root.clone()),
+            include_roots,
+        );
+        let outcome = match orchestrator
+            .ensure_structural_for_symbol(symbol_name, LazyPolicy::ForegroundStructural)
+        {
+            Ok(o) => o,
             Err(e) => {
                 warnings.push(format!(
                     "Lazy structural extraction failed for '{}': {:#}",
                     symbol_name, e
                 ));
+                return StructuralEnsureOutcome {
+                    warnings,
+                    built_file_ids,
+                    precision_tier: PrecisionTier::Unavailable,
+                };
             }
-        }
+        };
+        self.lazy_refresh_queue
+            .record_lazy_writes(&outcome.built_file_ids);
+        built_file_ids = outcome.built_file_ids;
         if !built_file_ids.is_empty() {
             if let Err(e) = self.refresh_graph_for_files(&built_file_ids) {
                 warnings.push(format!("Graph refresh failed: {:#}", e));
@@ -818,7 +780,7 @@ impl ToolRouter {
         StructuralEnsureOutcome {
             warnings,
             built_file_ids,
-            precision_tier,
+            precision_tier: outcome.precision_tier,
         }
     }
 

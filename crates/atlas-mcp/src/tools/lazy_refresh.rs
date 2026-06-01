@@ -1,0 +1,167 @@
+//! LazyRefreshQueue — consolidates all graph refresh state.
+//!
+//! Manages pending per-file updates, cumulative write counter, and deferred
+//! full-rebuild scheduling.  Uses interior mutability (Mutex, Atomic*) so
+//! methods take `&self`, allowing `&mut self` ToolRouter methods to call
+//! queue methods without borrow conflicts.
+
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
+
+use atlas_engine::FileId;
+
+/// Threshold for cumulative lazy file writes before scheduling a full rebuild.
+const CUMULATIVE_LAZY_REBUILD_THRESHOLD: usize = 400;
+
+/// Consolidates lazy graph refresh state: pending per-file updates, cumulative
+/// write counter, and deferred full-rebuild scheduling.
+pub(crate) struct LazyRefreshQueue {
+    /// File IDs waiting for per-file incremental graph refresh.
+    pending_file_ids: Mutex<HashSet<FileId>>,
+    /// Total file writes accumulated across all lazy extraction calls.
+    cumulative_count: AtomicUsize,
+    /// Set when cumulative count crosses threshold — next graph-backed tool
+    /// call should spawn a background full-rebuild task.
+    full_rebuild_scheduled: AtomicBool,
+    /// Set by background preparse thread to signal new structural data exists.
+    background_writes_pending: AtomicBool,
+}
+
+impl LazyRefreshQueue {
+    /// Create a new queue wrapped in Arc for sharing with background threads.
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            pending_file_ids: Mutex::new(HashSet::new()),
+            cumulative_count: AtomicUsize::new(0),
+            full_rebuild_scheduled: AtomicBool::new(false),
+            background_writes_pending: AtomicBool::new(false),
+        })
+    }
+
+    /// Record file IDs written by lazy extraction.
+    /// Called from both foreground MCP handlers and background preparse thread.
+    pub(crate) fn record_lazy_writes(&self, file_ids: &[FileId]) {
+        // 1. Lock pending_file_ids, insert all file_ids (HashSet deduplicates)
+        if !file_ids.is_empty() {
+            if let Ok(mut pending) = self.pending_file_ids.lock() {
+                for fid in file_ids {
+                    pending.insert(*fid);
+                }
+            }
+        }
+        // 2. fetch_add cumulative_count, if result >= threshold, set full_rebuild_scheduled
+        let new_count = self.cumulative_count.fetch_add(file_ids.len(), Ordering::Relaxed) + file_ids.len();
+        if new_count >= CUMULATIVE_LAZY_REBUILD_THRESHOLD {
+            self.full_rebuild_scheduled.store(true, Ordering::Release);
+        }
+    }
+
+    /// Signal that background preparse wrote new data (called from bg thread).
+    pub(crate) fn signal_background_writes(&self) {
+        self.background_writes_pending.store(true, Ordering::Release);
+    }
+
+    /// Take up to `max_files` file IDs for per-file incremental refresh.
+    /// Returns the batch and removes them from pending. `max_files` should be 500
+    /// (match existing REPLACE_THRESHOLD in refresh_graph_for_files).
+    pub(crate) fn take_incremental_batch(&self, max_files: usize) -> Vec<FileId> {
+        let mut pending = match self.pending_file_ids.lock() {
+            Ok(p) => p,
+            Err(_) => return Vec::new(),
+        };
+        if pending.is_empty() {
+            return Vec::new();
+        }
+        let batch: Vec<FileId> = pending.iter().take(max_files).copied().collect();
+        for fid in &batch {
+            pending.remove(fid);
+        }
+        batch
+    }
+
+    /// Check and reset the deferred full-rebuild flag.
+    /// Returns true if a rebuild was scheduled, false otherwise.
+    /// Called at the start of maybe_refresh_graph to decide whether
+    /// to spawn a background full-rebuild task.
+    pub(crate) fn needs_full_rebuild(&self) -> bool {
+        self.full_rebuild_scheduled.swap(false, Ordering::AcqRel)
+    }
+
+    /// Check and reset the background-writes-pending flag.
+    /// Returns true if background thread wrote data since last check.
+    /// Called in maybe_refresh_graph to bypass the 5s cooldown.
+    pub(crate) fn has_background_writes(&self) -> bool {
+        self.background_writes_pending.swap(false, Ordering::AcqRel)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn new_queue_is_empty() {
+        let q = LazyRefreshQueue::new();
+        assert!(q.take_incremental_batch(500).is_empty());
+        assert!(!q.needs_full_rebuild());
+        assert!(!q.has_background_writes());
+    }
+
+    #[test]
+    fn record_lazy_writes_stores_and_counts() {
+        let q = LazyRefreshQueue::new();
+        let f1 = FileId::generate("a.rs");
+        let f2 = FileId::generate("b.rs");
+
+        q.record_lazy_writes(&[f1, f2]);
+        assert_eq!(q.cumulative_count.load(Ordering::Relaxed), 2);
+
+        let batch = q.take_incremental_batch(500);
+        assert_eq!(batch.len(), 2);
+        assert!(q.take_incremental_batch(500).is_empty());
+    }
+
+    #[test]
+    fn cumulative_threshold_triggers_full_rebuild() {
+        let q = LazyRefreshQueue::new();
+        let fids: Vec<FileId> = (0..400).map(|i| FileId::generate(&format!("{i}.rs"))).collect();
+        // First 399 should NOT trigger
+        q.record_lazy_writes(&fids[..399]);
+        assert!(!q.needs_full_rebuild());
+        // 400th should trigger (cumulative_count reaches 400)
+        q.record_lazy_writes(&fids[399..]);
+        assert!(q.needs_full_rebuild());
+    }
+
+    #[test]
+    fn signal_background_writes_is_observable() {
+        let q = LazyRefreshQueue::new();
+        assert!(!q.has_background_writes());
+        q.signal_background_writes();
+        assert!(q.has_background_writes());
+        assert!(!q.has_background_writes()); // reset on second call
+    }
+
+    #[test]
+    fn take_incremental_batch_respects_max() {
+        let q = LazyRefreshQueue::new();
+        let fids: Vec<FileId> = (0..10).map(|i| FileId::generate(&format!("{i}.rs"))).collect();
+        q.record_lazy_writes(&fids);
+        let batch = q.take_incremental_batch(3);
+        assert_eq!(batch.len(), 3);
+        let remaining = q.take_incremental_batch(500);
+        assert_eq!(remaining.len(), 7);
+    }
+
+    #[test]
+    fn record_lazy_writes_deduplicates() {
+        let q = LazyRefreshQueue::new();
+        let f1 = FileId::generate("a.rs");
+        // Insert same file twice
+        q.record_lazy_writes(&[f1]);
+        q.record_lazy_writes(&[f1]);
+        let batch = q.take_incremental_batch(500);
+        assert_eq!(batch.len(), 1);
+    }
+}
