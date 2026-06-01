@@ -36,10 +36,20 @@ use types::structs::precision::PrecisionTier;
 use types::{layer, status};
 
 /// Maximum candidate files to consider for lazy structural loading.
-const MAX_CANDIDATE_FILES: usize = 20;
+const MAX_CANDIDATE_FILES: usize = 10;
 
-/// Wall-clock budget for a lazy structural invocation (milliseconds).
-pub(crate) const LAZY_STRUCTURAL_BUDGET_MS: u64 = 30_000;
+/// Wall-clock guard for a single lazy structural invocation (milliseconds).
+///
+/// ⚠ Loop-continuation guard only — does NOT interrupt in-flight extraction.
+///    True hard timeout requires extraction worker isolation (future work).
+///    The request-level budget in `LazyBudget` provides the real constraint.
+pub(crate) const LAZY_STRUCTURAL_BUDGET_MS: u64 = 5_000;
+
+/// Maximum file size (bytes) for lazy structural extraction.
+///
+/// Files exceeding this limit are soft-rejected with a diagnostic message
+/// recommending `atlas index` for full indexing instead.
+const LAZY_STRUCTURAL_MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // CandidateProvider trait
@@ -466,6 +476,17 @@ impl LazyStructuralService {
         let source = std::fs::read_to_string(&resolved_path)
             .with_context(|| format!("failed to read {}", resolved_path.display()))?;
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+
+        // Soft-reject oversized files: lazy structural extraction is designed
+        // for typical source files. Files > 2 MB risk OOM or per-file timeout
+        // and should be indexed via `atlas index` instead.
+        if source.len() > LAZY_STRUCTURAL_MAX_FILE_BYTES {
+            return Err(anyhow::anyhow!(
+                "file exceeds lazy structural size limit ({} bytes > {} bytes); use `atlas index` for full indexing",
+                source.len(),
+                LAZY_STRUCTURAL_MAX_FILE_BYTES
+            ));
+        }
 
         // Extract BEFORE any destructive invalidation — if extraction fails,
         // no destructive operations have been performed.

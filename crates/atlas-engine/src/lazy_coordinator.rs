@@ -33,6 +33,7 @@ use anyhow::Result;
 use db::{ClaimResult, Store};
 use types::ids::FileId;
 
+use crate::LazyBudget;
 use crate::LazyDataflowService;
 use crate::closure_planner::{ClosurePlanner, IncludeRoot};
 use crate::lazy_structural::{
@@ -181,6 +182,7 @@ impl LazyCoordinator {
         &self,
         service: &LazyStructuralService,
         seed: &FileId,
+        budget: &mut LazyBudget,
     ) -> Result<(EnsureStructuralResult, String)> {
         let planner_roots = self.effective_include_roots();
         let planner = ClosurePlanner::new(self.store.clone(), self.project_root.clone())
@@ -198,6 +200,11 @@ impl LazyCoordinator {
         let mut structural_file_ids: Vec<FileId> = Vec::new();
 
         for file_id in &workset.order {
+            // Request-level budget check: stop if time or file quota exhausted.
+            if !budget.can_continue() {
+                result.budget_exceeded = true;
+                break;
+            }
             let is_seed = file_id == seed;
             let layer_name = if is_seed {
                 "structural"
@@ -238,6 +245,7 @@ impl LazyCoordinator {
                             }
                             self.store.complete_extraction_job(&job_id)?;
                             last_job_id = job_id;
+                            budget.consume_file();
                         }
                         Err(e) => {
                             self.store
@@ -275,16 +283,18 @@ impl LazyCoordinator {
         Ok((result, last_job_id))
     }
 
-    /// Ensure structural facts for the file(s) containing `name`, with
-    /// dependency closure expansion.
+    /// Builds structural facts for the best-matching candidate file,
+    /// with dependency-closure expansion.
     ///
-    /// Phase 2 capability: for each candidate file, BFS-expands its
-    /// import dependencies via [`ClosurePlanner`] and builds them
-    /// before the seed, ensuring cross-file references can be resolved.
+    /// Only the first (best-ranked) candidate is built to avoid wasting
+    /// the shared [`LazyBudget`] on multiple closures.  FTS5 ranking
+    /// places the most relevant match first.  Users needing broader
+    /// coverage should narrow the scope or run `atlas index`.
     pub fn ensure_structural_for_symbol_with_closure(
         &self,
         service: &LazyStructuralService,
         name: &str,
+        budget: &mut LazyBudget,
     ) -> Result<EnsureStructuralResult> {
         let candidates = service.candidate_provider.candidates_for_symbol(name)?;
         if candidates.is_empty() {
@@ -303,13 +313,16 @@ impl LazyCoordinator {
             built_file_ids: vec![],
             precision_tier: PrecisionTier::Unavailable,
         };
-        for candidate in &candidates {
-            let r = self.ensure_structural_with_closure(service, candidate)?;
-            total.files_built += r.0.files_built;
-            total.files_cached += r.0.files_cached;
-            total.budget_exceeded |= r.0.budget_exceeded;
-            total.built_file_ids.extend(r.0.built_file_ids);
-        }
+        // Build only the best (first) candidate's closure to avoid
+        // wasting budget on multiple candidates. FTS5 ranking places
+        // the most relevant match first. Users who need broader
+        // coverage should narrow scope or run `atlas index`.
+        let best = &candidates[0];
+        let r = self.ensure_structural_with_closure(service, best, budget)?;
+        total.files_built += r.0.files_built;
+        total.files_cached += r.0.files_cached;
+        total.budget_exceeded |= r.0.budget_exceeded;
+        total.built_file_ids.extend(r.0.built_file_ids);
         total.precision_tier = crate::precision::structural_precision(
             total.files_built,
             total.files_cached,
@@ -411,6 +424,8 @@ mod tests {
 
     use std::sync::Arc;
 
+    #[cfg(feature = "c")]
+    use crate::LazyBudget;
     use crate::closure_planner::IncludeRoot;
     use crate::lazy_coordinator::LazyCoordinator;
 
@@ -1029,7 +1044,7 @@ mod tests {
 
         // 5. Call ensure_structural_with_closure on the seed
         let (_result, _job_id) = coordinator
-            .ensure_structural_with_closure(&lazy_service, &main_id)
+            .ensure_structural_with_closure(&lazy_service, &main_id, &mut LazyBudget::new(u64::MAX, usize::MAX))
             .unwrap();
 
         // 6. Verify: util.h got resolution_symbols layer
@@ -1181,7 +1196,7 @@ mod tests {
         );
 
         let (_result, _job_id) = coordinator
-            .ensure_structural_with_closure(&lazy, &bar_c_id)
+            .ensure_structural_with_closure(&lazy, &bar_c_id, &mut LazyBudget::new(u64::MAX, usize::MAX))
             .unwrap();
 
         // 4. Verify: bar.h and baz.h get resolution_symbols (deps)
@@ -1292,7 +1307,7 @@ mod tests {
         );
 
         coordinator
-            .ensure_structural_with_closure(&lazy, &file_id)
+            .ensure_structural_with_closure(&lazy, &file_id, &mut LazyBudget::new(u64::MAX, usize::MAX))
             .unwrap();
 
         // 4. Build GraphEngine from store (this is what MCP handlers do)

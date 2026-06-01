@@ -43,6 +43,7 @@ mod linux_augment;
 /// Precision tier computation for lazy extraction transparency.
 pub mod precision;
 mod source_extractor;
+mod lazy_budget;
 
 /// Closure planner: dependency-closure-aware lazy extraction planning.
 pub use closure_planner::{ClosurePlanner, DependencyClosure, IncludeRoot, PrioritizedWorkset};
@@ -112,6 +113,8 @@ pub use types::progress;
 pub use types::*;
 /// Workspace abstractions.
 pub use workspace::{ProjectRoot, SourcePath, Workspace};
+/// Request-level budget for lazy extraction within a single MCP tool call.
+pub use lazy_budget::LazyBudget;
 
 // ─── Engine ────────────────────────────────────────────────────────────────
 

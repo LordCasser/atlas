@@ -17,7 +17,7 @@
 //!
 //! # Limits
 //!
-//! Defaults: max_depth=2, max_closure_files=64. Override with
+//! Defaults: max_depth=2, max_closure_files=30. Override with
 //! [`ClosurePlanner::with_limits`].
 
 use std::collections::{HashSet, VecDeque};
@@ -82,7 +82,7 @@ impl ClosurePlanner {
             project_root,
             include_roots: Vec::new(),
             max_depth: 2,
-            max_closure_files: 64,
+            max_closure_files: 30,
         }
     }
 
@@ -259,6 +259,48 @@ impl ClosurePlanner {
         PrioritizedWorkset { order }
     }
 
+    /// Tiered prioritization: deps (limited) → seed → remaining deps → transitive.
+    ///
+    /// Ensures the seed file is built before budget exhaustion can prevent
+    /// it. Direct deps before seed ensure cross-file resolution works on
+    /// the symbols that matter most.
+    pub fn prioritize_with_reservation(
+        &self,
+        closure: &DependencyClosure,
+        max_deps_before_seed: usize,
+    ) -> PrioritizedWorkset {
+        let mut order: Vec<FileId> = Vec::new();
+        let mut seen: HashSet<FileId> = HashSet::new();
+
+        // Tier 1: first N direct deps (ensures resolution can find key symbols)
+        for dep in closure.direct_deps.iter().take(max_deps_before_seed) {
+            if seen.insert(*dep) {
+                order.push(*dep);
+            }
+        }
+
+        // Tier 2: seed file — the user's actual query target
+        if seen.insert(closure.seed_file) {
+            order.push(closure.seed_file);
+        }
+
+        // Tier 3: remaining direct deps
+        for dep in closure.direct_deps.iter().skip(max_deps_before_seed) {
+            if seen.insert(*dep) {
+                order.push(*dep);
+            }
+        }
+
+        // Tier 4: transitive deps (lowest priority; may be skipped on budget exhaustion)
+        for dep in &closure.transitive_deps {
+            if seen.insert(*dep) {
+                order.push(*dep);
+            }
+        }
+
+        PrioritizedWorkset { order }
+    }
+
     /// Convenience: plan + prioritize in one call.
     pub fn plan_for_seed(&self, seed: &FileId) -> Result<PrioritizedWorkset> {
         // Bootstrap: if seed is manifest-only and has no imports in DB,
@@ -282,7 +324,7 @@ impl ClosurePlanner {
             }
         }
 
-        Ok(self.prioritize(&closure))
+        Ok(self.prioritize_with_reservation(&closure, 10))
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────
