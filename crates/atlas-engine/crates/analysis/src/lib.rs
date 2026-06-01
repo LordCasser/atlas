@@ -12,3 +12,17 @@
 pub mod cross_function;
 pub mod summary;
 pub mod trace;
+pub mod lifecycle;
+pub mod branch_diff;
+pub mod domain_rules;
+pub mod ownership_rules;
+pub mod lifecycle_proof;
+pub mod rule_learning;
+
+pub use lifecycle::{
+    FieldLifecycleEngine, FieldLifecycleResult, FieldState, FieldTransition, OwnershipRules,
+    SuspiciousKind, SuspiciousPoint,
+};
+pub use branch_diff::{BranchDiff, BranchDiffEngine, BranchPathSummary};
+pub use ownership_rules::{CppOwnershipRules, LoadedDomainRules};
+pub use lifecycle_proof::{EvidenceLevel, LifecycleProof, LifecycleVerdict, PathProof, evaluate_proof};

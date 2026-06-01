@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 types = { path = "../types" }
 db = { path = "../db" }
+domain-rules = { path = "../domain_rules" }
 workspace = { path = "../workspace" }
 anyhow = "1"
 hex = "0.4"
