@@ -73,6 +73,21 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Find files whose path starts with the given prefix.
+    ///
+    /// Uses a SQL `LIKE` query with the prefix escaped for LIKE special chars
+    /// to avoid loading all files into memory for O(n) linear scans.
+    pub fn find_files_by_path_prefix(&self, prefix: &str) -> anyhow::Result<Vec<FileInfo>> {
+        let pattern = format!("{}%", escape_like(prefix));
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT file_id, path, language, content_hash, status
+             FROM files WHERE path LIKE ?1 ESCAPE '\\' ORDER BY path",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![pattern], row_to_file_info)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Count indexed files under a user-facing scope.
     ///
     /// Scope is a project-relative directory or file path. Directory scopes

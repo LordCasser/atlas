@@ -138,6 +138,11 @@ pub trait FileReader {
     fn get_file(&self, file_id: &FileId) -> Result<Option<FileInfo>>;
     fn list_files(&self) -> Result<Vec<FileInfo>>;
 
+    /// Find files whose path starts with the given prefix.
+    ///
+    /// Uses a SQL `LIKE` query to avoid loading all files into memory.
+    fn find_files_by_path_prefix(&self, prefix: &str) -> Result<Vec<FileInfo>>;
+
     /// Resolve a user-facing path (relative or suffix) to a [`FileId`]
     /// using indexed lookups on `files.path`.
     fn resolve_file_id(&self, root: &Path, rel_path: &str) -> Result<Option<FileId>>;

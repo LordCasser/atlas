@@ -205,29 +205,18 @@ impl ImportResolver {
 
     /// Look up a symbol by name in files whose DB path matches `resolved_module`.
     ///
-    /// Matching rule: a file path matches `resolved_module` when:
-    /// - the path equals `resolved_module` exactly, OR
-    /// - the path starts with `resolved_module/` (subdirectory, e.g. `index.ts`), OR
-    /// - the path starts with `resolved_module.` (extension, e.g. `helper.ts`).
+    /// Uses a SQL `LIKE` query directly on the files table instead of loading
+    /// all files and doing O(n) client-side `starts_with` scans.
     fn resolve_by_module_path(&self, resolved_module: &str, target_name: &str) -> Vec<SymbolDef> {
-        let files = match self.store.list_files() {
+        let files = match self.store.find_files_by_path_prefix(resolved_module) {
             Ok(files) => files,
             Err(_) => return Vec::new(),
         };
 
         let mut results = Vec::new();
-
-        let dir_prefix = format!("{}/", resolved_module);
-        let file_prefix = format!("{}.", resolved_module);
-
         for file in &files {
-            if file.path == resolved_module
-                || file.path.starts_with(&dir_prefix)
-                || file.path.starts_with(&file_prefix)
-            {
-                if let Ok(symbols) = self.store.find_symbols_by_file(&file.file_id) {
-                    results.extend(symbols.into_iter().filter(|s| s.name == target_name));
-                }
+            if let Ok(symbols) = self.store.find_symbols_by_file(&file.file_id) {
+                results.extend(symbols.into_iter().filter(|s| s.name == target_name));
             }
         }
 

@@ -599,6 +599,9 @@ impl FileReader for Store {
     fn list_files(&self) -> anyhow::Result<Vec<FileInfo>> {
         Store::list_files(self)
     }
+    fn find_files_by_path_prefix(&self, prefix: &str) -> anyhow::Result<Vec<FileInfo>> {
+        Store::find_files_by_path_prefix(self, prefix)
+    }
     fn resolve_file_id(&self, root: &Path, rel_path: &str) -> anyhow::Result<Option<FileId>> {
         Store::resolve_file_id(self, root, rel_path)
     }

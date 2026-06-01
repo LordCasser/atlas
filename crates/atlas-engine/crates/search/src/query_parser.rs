@@ -58,6 +58,7 @@ pub fn parse_query(input: &str) -> ParsedQuery {
 
     for token in input.split_whitespace() {
         if let Some((prefix, value)) = token.split_once(':') {
+            let value = strip_quotes(value);
             match prefix.to_lowercase().as_str() {
                 "kind" => {
                     result.kind_filter = parse_symbol_kind(value);
@@ -98,6 +99,27 @@ pub fn parse_query(input: &str) -> ParsedQuery {
 
     result.freetext = freetext_parts.join(" ");
     result
+}
+
+// ---------------------------------------------------------------------------
+// Strip quotes from field values
+// ---------------------------------------------------------------------------
+
+/// Strip matching surrounding double or single quotes from a value string.
+///
+/// This handles cases like `path:"src/main"` where the tokenizer splits on
+/// whitespace but the value retains its leading/trailing quote characters.
+fn strip_quotes(s: &str) -> &str {
+    let trimmed = s.trim();
+    if trimmed.len() >= 2 {
+        let bytes = trimmed.as_bytes();
+        let first = bytes[0];
+        let last = bytes[trimmed.len() - 1];
+        if (first == b'"' || first == b'\'') && first == last {
+            return &trimmed[1..trimmed.len() - 1];
+        }
+    }
+    trimmed
 }
 
 // ---------------------------------------------------------------------------
@@ -286,5 +308,26 @@ mod tests {
         assert!(q.kind_filter.is_none());
         assert!(q.path_filter.is_none());
         assert_eq!(q.freetext, "kind: path:");
+    }
+
+    #[test]
+    fn test_parse_quoted_field_values() {
+        // Double-quoted values — quotes are stripped
+        let q = parse_query(r#"path:"src/main""#);
+        assert_eq!(q.path_filter.as_deref(), Some("src/main"));
+
+        // Single-quoted values
+        let q2 = parse_query("kind:'function' lang:'typescript'");
+        assert_eq!(q2.kind_filter, Some(SymbolKind::Function));
+        assert_eq!(q2.language, Some(Language::TypeScript));
+
+        // Mixed quote types (single inside double) — value has no spaces
+        let q3 = parse_query(r#"name:"it's""#);
+        assert_eq!(q3.name_filter.as_deref(), Some("it's"));
+
+        // Unmatched quotes are left as-is (leading or trailing only)
+        let q4 = parse_query(r#"path:"src/main name:hello""#);
+        assert_eq!(q4.path_filter.as_deref(), Some("\"src/main"));
+        assert_eq!(q4.name_filter.as_deref(), Some("hello\""));
     }
 }
