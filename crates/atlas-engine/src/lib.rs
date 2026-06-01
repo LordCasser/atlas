@@ -44,6 +44,7 @@ mod linux_augment;
 pub mod precision;
 mod source_extractor;
 mod lazy_budget;
+mod lazy_orchestrator;
 
 /// Closure planner: dependency-closure-aware lazy extraction planning.
 pub use closure_planner::{ClosurePlanner, DependencyClosure, IncludeRoot, PrioritizedWorkset};
@@ -113,8 +114,8 @@ pub use types::progress;
 pub use types::*;
 /// Workspace abstractions.
 pub use workspace::{ProjectRoot, SourcePath, Workspace};
-/// Request-level budget for lazy extraction within a single MCP tool call.
-pub use lazy_budget::LazyBudget;
+/// Unified lazy extraction orchestration: policy presets, outcomes, orchestrator.
+pub use lazy_orchestrator::{LazyOrchestrator, LazyOutcome, LazyPolicy};
 
 // ─── Engine ────────────────────────────────────────────────────────────────
 

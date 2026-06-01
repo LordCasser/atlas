@@ -33,7 +33,7 @@ use anyhow::Result;
 use db::{ClaimResult, Store};
 use types::ids::FileId;
 
-use crate::LazyBudget;
+use crate::lazy_budget::LazyBudget;
 use crate::LazyDataflowService;
 use crate::closure_planner::{ClosurePlanner, IncludeRoot};
 use crate::lazy_structural::{
@@ -146,6 +146,8 @@ impl LazyCoordinator {
                     budget_exceeded: false,
                     built_file_ids: vec![],
                     precision_tier: PrecisionTier::DegradedStructural,
+                    files_pending: 0,
+                    pending_job_ids: vec![],
                 };
                 return Ok((result, job_id));
             }
@@ -195,6 +197,8 @@ impl LazyCoordinator {
             budget_exceeded: false,
             built_file_ids: vec![],
             precision_tier: PrecisionTier::Unavailable,
+            files_pending: 0,
+            pending_job_ids: vec![],
         };
         let mut last_job_id = String::new();
         let mut structural_file_ids: Vec<FileId> = Vec::new();
@@ -222,9 +226,8 @@ impl LazyCoordinator {
 
             match claim {
                 ClaimResult::AlreadyBuilding { job_id } => {
-                    result.files_cached += 1;
-                    result.budget_exceeded = true;
-                    last_job_id = job_id;
+                    result.files_pending += 1;
+                    result.pending_job_ids.push(job_id);
                     continue;
                 }
                 ClaimResult::Claimed { job_id } => {
@@ -306,6 +309,8 @@ impl LazyCoordinator {
                 budget_exceeded: false,
                 built_file_ids: vec![],
                 precision_tier: PrecisionTier::Unavailable,
+                files_pending: 0,
+                pending_job_ids: vec![],
             });
         }
         let mut total = EnsureStructuralResult {
@@ -314,6 +319,8 @@ impl LazyCoordinator {
             budget_exceeded: false,
             built_file_ids: vec![],
             precision_tier: PrecisionTier::Unavailable,
+            files_pending: 0,
+            pending_job_ids: vec![],
         };
         // Build only the best (first) candidate's closure to avoid
         // wasting budget on multiple candidates. FTS5 ranking places
@@ -427,7 +434,7 @@ mod tests {
     use std::sync::Arc;
 
     #[cfg(feature = "c")]
-    use crate::LazyBudget;
+use crate::lazy_budget::LazyBudget;
     use crate::closure_planner::IncludeRoot;
     use crate::lazy_coordinator::LazyCoordinator;
 
@@ -660,6 +667,8 @@ mod tests {
             budget_exceeded: false,
             built_file_ids: vec![],
             precision_tier: PrecisionTier::Unavailable,
+            files_pending: 0,
+            pending_job_ids: vec![],
         };
         assert!(result.built_file_ids.is_empty());
 
@@ -670,6 +679,8 @@ mod tests {
             budget_exceeded: false,
             built_file_ids: vec![fid.clone()],
             precision_tier: PrecisionTier::Unavailable,
+            files_pending: 0,
+            pending_job_ids: vec![],
         };
         assert_eq!(result_with.built_file_ids.len(), 1);
         assert_eq!(result_with.built_file_ids[0], fid);

@@ -167,6 +167,10 @@ pub struct EnsureStructuralResult {
     pub built_file_ids: Vec<FileId>,
     /// Precision tier reflecting data quality after this lazy operation.
     pub precision_tier: PrecisionTier,
+    /// Files that are being built by another job (ClaimResult::AlreadyBuilding).
+    pub files_pending: usize,
+    /// IDs of extraction jobs that are currently in-flight (AlreadyBuilding).
+    pub pending_job_ids: Vec<String>,
 }
 
 /// Entry point for query-driven lazy structural extraction.
@@ -214,6 +218,8 @@ impl LazyStructuralService {
                 budget_exceeded: false,
                 built_file_ids: vec![],
                 precision_tier: PrecisionTier::Unavailable,
+                files_pending: 0,
+                pending_job_ids: vec![],
             });
         }
         self.ensure_structural_for_files(&candidates)
@@ -292,6 +298,8 @@ impl LazyStructuralService {
             budget_exceeded: false,
             built_file_ids: vec![],
             precision_tier: PrecisionTier::Unavailable,
+            files_pending: 0,
+            pending_job_ids: vec![],
         };
 
         for file_id in file_ids {
@@ -405,6 +413,8 @@ impl LazyStructuralService {
             budget_exceeded: false,
             built_file_ids: vec![],
             precision_tier: PrecisionTier::Unavailable,
+            files_pending: 0,
+            pending_job_ids: vec![],
         };
 
         for file_id in file_ids {
