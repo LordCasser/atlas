@@ -1,7 +1,8 @@
 //! GraphSnapshot: in-memory graph loaded from SQLite for fast traversal.
 //!
 //! Key design: graph queries do NOT hit SQLite; all data is pre-loaded into
-//! HashMaps and adjacency lists. Snapshot is immutable after construction.
+//! HashMaps and adjacency lists. Snapshot supports single-writer in-place
+//! updates via delta merge and file removal, while reads are lock-free through Arc.
 
 use db::Store;
 use std::cmp::Reverse;

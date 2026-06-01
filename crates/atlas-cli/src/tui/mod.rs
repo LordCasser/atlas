@@ -51,16 +51,21 @@ pub fn run_tui(project_root: PathBuf) -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("failed to create terminal")?;
 
-    // ── Run app ─────────────────────────────────────────────────────────
+    // ── Run app (with panic guard to restore terminal on unwind) ────────
     let mut app = app::App::new(store, project_root);
-    let result = app.run(&mut terminal);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        app.run(&mut terminal)
+    }));
 
-    // ── Restore terminal (always) ───────────────────────────────────────
+    // ── Restore terminal (always, even after panic) ─────────────────────
     disable_raw_mode().ok();
     terminal
         .backend_mut()
         .execute(LeaveAlternateScreen)
         .ok();
 
-    result
+    match result {
+        Ok(r) => r,
+        Err(e) => std::panic::resume_unwind(e),
+    }
 }
