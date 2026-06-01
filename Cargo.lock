@@ -132,7 +132,6 @@ dependencies = [
  "atty",
  "blake3",
  "clap",
- "context",
  "ctrlc",
  "hex",
  "indicatif",

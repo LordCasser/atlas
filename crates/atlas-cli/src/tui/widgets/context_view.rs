@@ -3,7 +3,7 @@
 //! Pure rendering — reads pre-computed `ContextView` and tab/scroll state,
 //! never accesses Store or GraphEngine.
 
-use context::{CalleeDetail, CallerDetail, ContextView};
+use atlas_engine::{CalleeDetail, CallerDetail, ContextView};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},

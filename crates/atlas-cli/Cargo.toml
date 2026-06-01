@@ -12,7 +12,6 @@ path = "src/main.rs"
 [dependencies]
 atlas-engine = { path = "../atlas-engine" }
 atlas-mcp = { path = "../atlas-mcp", optional = true }
-context = { path = "../atlas-engine/crates/context" }
 anyhow = "1"
 atty = "0.2"
 clap = { version = "4", features = ["derive"] }

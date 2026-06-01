@@ -7,8 +7,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-use atlas_engine::{CallerChain, RawTraceEngine, SearchResult, Store};
-use context::ContextView;
+use atlas_engine::{CallerChain, ContextView, RawTraceEngine, SearchResult, Store};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
