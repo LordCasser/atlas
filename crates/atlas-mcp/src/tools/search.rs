@@ -5,6 +5,7 @@
 //! extraction on large repositories.
 
 use atlas_engine::FileId;
+use atlas_engine::InvestigationFocus;
 use atlas_engine::LazyOrchestrator;
 use atlas_engine::LazyPolicy;
 use atlas_engine::Store;
@@ -291,6 +292,8 @@ impl ToolRouter {
         for w in &root_warnings {
             tracing::warn!("include_roots: {}", w);
         }
+
+        let query_id = Self::generate_query_id();
         let symbols = match self.store.find_symbols_by_qname(qname) {
             Ok(s) => s,
             Err(e) => {
@@ -305,9 +308,12 @@ impl ToolRouter {
         let mut lazy_diag: Option<LazyDiagnostics> = None;
         match symbols.into_iter().next() {
             Some(s) => {
+                // Update investigation with the known symbol
+                self.update_investigation(InvestigationFocus::Symbol(s.id));
+                let investigation = self.investigation_state.active_investigation.clone();
                 // Ensure structural data so caller/callee results
                 // include fresh edges from lazy extraction.
-                let outcome = self.ensure_structural_for_files([s.file_id], include_roots.clone());
+                let outcome = self.ensure_structural_for_files([s.file_id], include_roots.clone(), investigation.as_ref(), Some(&query_id));
                 lazy_warnings = outcome.warnings;
                 structural_tier = outcome.precision_tier;
                 if let Some(ref lo) = outcome.lazy_outcome {
@@ -324,7 +330,7 @@ impl ToolRouter {
                     .unwrap_or(s);
             }
             None => {
-                let outcome = self.ensure_structural_for_symbol_name(qname, include_roots.clone());
+                let outcome = self.ensure_structural_for_symbol_name(qname, include_roots.clone(), None, Some(&query_id));
                 lazy_warnings = outcome.warnings;
                 structural_tier = outcome.precision_tier;
                 if let Some(ref lo) = outcome.lazy_outcome {
@@ -332,7 +338,10 @@ impl ToolRouter {
                 }
                 let retry = self.store.find_symbols_by_qname(qname).unwrap_or_default();
                 match retry.into_iter().next() {
-                    Some(s) => sym = s,
+                    Some(s) => {
+                        self.update_investigation(InvestigationFocus::Symbol(s.id));
+                        sym = s;
+                    }
                     None => {
                         let mut s = format!("Symbol not found: {}", qname);
                         s.push_str(self.index_not_run_guidance());
@@ -491,7 +500,7 @@ where
             Some(project_root.clone()),
             include_roots.clone(),
         );
-        match orchestrator.ensure_structural_for_files(&file_ids, LazyPolicy::ForegroundStructural) {
+        match orchestrator.ensure_structural_for_files(&file_ids, LazyPolicy::ForegroundStructural, None, None) {
             Ok(outcome) => {
                 total_budget_exceeded = outcome.budget_exceeded;
                 lazy_diagnostics = Some(LazyDiagnostics::from_structural(&outcome));
@@ -752,6 +761,8 @@ fn spawn_preparse(
         let outcome = orchestrator.ensure_structural_for_files(
             &file_ids,
             atlas_engine::LazyPolicy::BackgroundPreparse,
+            None,
+            None,
         );
         match outcome {
             Ok(ref o) => {

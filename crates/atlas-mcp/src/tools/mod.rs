@@ -10,6 +10,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use atlas_engine::ContextBuilder;
 use atlas_engine::FileId;
@@ -25,6 +26,8 @@ use atlas_engine::TraceDiagnostic;
 use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolInputSchema};
 
 use serde_json::{Value, json};
+
+use crate::tools::query_snapshot::{InvestigationState, QuerySnapshot, QUERY_SNAPSHOT_TTL_SECS};
 
 /// Progress report tuple: (progress, total, message)
 pub(crate) type ProgressReport = (f64, Option<f64>, Option<String>);
@@ -59,15 +62,21 @@ pub(crate) const MAX_ANNOTATION_QNAME_LENGTH: usize = 512;
 pub(crate) const MAX_FILE_PATH_LENGTH: usize = 4096;
 
 pub(crate) mod annotations;
+pub(crate) mod atlas_jobs;
+pub(crate) mod branch_diff;
 pub(crate) mod capability;
 pub(crate) mod context;
 pub(crate) mod dependencies;
 pub(crate) mod dependents;
+pub(crate) mod domain_rules;
 pub(crate) mod graph;
 pub(crate) mod index;
 pub(crate) mod lazy_refresh;
 pub(crate) mod lazy_response;
+pub(crate) mod lifecycle;
 pub(crate) mod open_project;
+pub(crate) mod query_snapshot;
+pub(crate) mod resume;
 pub(crate) mod search;
 pub(crate) mod status;
 pub(crate) mod trace;
@@ -130,6 +139,10 @@ pub struct ToolRouter {
     pub(crate) task_manager: Arc<crate::task_manager::TaskManager>,
     /// Project activations prepared by background `open_project` tasks.
     pub(crate) pending_project_activations: Arc<Mutex<HashMap<String, PendingProjectActivation>>>,
+    /// In-memory query snapshots for `atlas_resume`.
+    pub(crate) query_snapshots: HashMap<String, QuerySnapshot>,
+    /// Investigation state (MCP session scoped) for lazy job prioritization.
+    pub(crate) investigation_state: InvestigationState,
 }
 
 impl ToolRouter {
@@ -165,6 +178,8 @@ impl ToolRouter {
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
             pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
             cached_manual_full_index: Cell::new(None),
+            query_snapshots: HashMap::new(),
+            investigation_state: InvestigationState::default(),
         }
     }
 
@@ -192,6 +207,8 @@ impl ToolRouter {
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
             pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
             cached_manual_full_index: Cell::new(None),
+            query_snapshots: HashMap::new(),
+            investigation_state: InvestigationState::default(),
         }
     }
 
@@ -594,6 +611,13 @@ impl ToolRouter {
             "annotate_fp_dispatch" => self.handle_annotate_fp_dispatch(arguments),
             "list_fp_annotations" => self.handle_list_fp_annotations(),
             "delete_fp_annotation" => self.handle_delete_fp_annotation(arguments),
+            "atlas_resume" => self.handle_resume(arguments),
+            "atlas_jobs" => self.handle_atlas_jobs(arguments),
+            "atlas_lifecycle" => self.handle_atlas_lifecycle(arguments),
+            "atlas_branch_diff" => self.handle_atlas_branch_diff(arguments),
+            "atlas_annotate" => self.handle_atlas_annotate(arguments),
+            "atlas_domain_rules" => self.handle_atlas_domain_rules(arguments),
+            "atlas_rule_learn" => self.handle_atlas_rule_learn(arguments),
             _ => (format!("Unknown tool: {}", name), true),
         };
 
@@ -751,10 +775,17 @@ impl ToolRouter {
     /// surface warnings in the MCP response).
     ///
     /// No-op when a manual full index already exists.
+    ///
+    /// When `investigation` is provided, files related to the investigation
+    /// are prioritized before unrelated files.
+    /// When `query_id` is provided, it is threaded into extraction job records
+    /// so `atlas_jobs` can filter by query.
     pub(crate) fn ensure_structural_for_files(
         &mut self,
         file_ids: impl IntoIterator<Item = FileId>,
         include_roots: Vec<atlas_engine::IncludeRoot>,
+        investigation: Option<&atlas_engine::Investigation>,
+        query_id: Option<&str>,
     ) -> StructuralEnsureOutcome {
         use atlas_engine::structs::precision::PrecisionTier;
 
@@ -785,7 +816,7 @@ impl ToolRouter {
             include_roots,
         );
         let outcome = match orchestrator
-            .ensure_structural_for_files(&file_vec, LazyPolicy::ForegroundStructural)
+            .ensure_structural_for_files(&file_vec, LazyPolicy::ForegroundStructural, investigation, query_id)
         {
             Ok(o) => o,
             Err(e) => {
@@ -819,10 +850,13 @@ impl ToolRouter {
     /// Ensure structural data for files containing a symbol name,
     /// with optional include_roots.  Useful for name-based lookups
     /// where the file_id is not yet known.
+    /// When `query_id` is provided, it is threaded into extraction job records.
     pub(crate) fn ensure_structural_for_symbol_name(
         &mut self,
         symbol_name: &str,
         include_roots: Vec<atlas_engine::IncludeRoot>,
+        investigation: Option<&atlas_engine::Investigation>,
+        query_id: Option<&str>,
     ) -> StructuralEnsureOutcome {
         use atlas_engine::structs::precision::PrecisionTier;
 
@@ -842,7 +876,7 @@ impl ToolRouter {
             include_roots,
         );
         let outcome = match orchestrator
-            .ensure_structural_for_symbol(symbol_name, LazyPolicy::ForegroundStructural)
+            .ensure_structural_for_symbol(symbol_name, LazyPolicy::ForegroundStructural, investigation, query_id)
         {
             Ok(o) => o,
             Err(e) => {
@@ -914,7 +948,41 @@ impl ToolRouter {
         Ok(symbols.into_iter().map(|s| s.id).collect())
     }
 
-    /// Render a node from the graph snapshot to JSON.
+    // -------------------------------------------------------------------
+    // Query snapshot + investigation helpers
+    // -------------------------------------------------------------------
+
+    /// Generate a time-sortable query_id in format `q_{hex_ts_ms}_{hex_rand4}`.
+    pub(crate) fn generate_query_id() -> String {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let rand = (ts % 65536) as u16;
+        format!("q_{:x}_{:04x}", ts, rand)
+    }
+
+    /// Store a query snapshot, pruning expired entries first.
+    pub(crate) fn store_snapshot(&mut self, snapshot: QuerySnapshot) {
+        self.prune_expired_snapshots();
+        self.query_snapshots
+            .insert(snapshot.query_id.clone(), snapshot);
+    }
+
+    /// Remove query snapshots older than TTL.
+    pub(crate) fn prune_expired_snapshots(&mut self) {
+        let cutoff = Instant::now() - std::time::Duration::from_secs(QUERY_SNAPSHOT_TTL_SECS);
+        self.query_snapshots.retain(|_, s| s.created_at > cutoff);
+    }
+
+    /// Update or create investigation based on a tool call focus.
+    pub(crate) fn update_investigation(&mut self, focus: atlas_engine::InvestigationFocus) {
+        self.investigation_state.update(focus);
+    }
+
+    // -------------------------------------------------------------------
+    // Render helpers
+    // -------------------------------------------------------------------
     pub(crate) fn node_json(
         &self,
         snap: &atlas_engine::GraphSnapshot,
@@ -1175,6 +1243,7 @@ pub fn make_all_tools() -> Vec<Tool> {
                 properties: Some(json!({
                     "symbol": { "type": "string", "description": "Qualified symbol name" },
                     "depth": { "type": "integer", "description": "Max traversal depth (default 3, max 5)" },
+                    "semantic": { "type": "boolean", "description": "When true, includes semantic impact analysis (lifecycle invariants, branch diffs) for impacted functions. Default false." },
                 })),
                 required: Some(vec!["symbol".into()]),
             },
@@ -1356,6 +1425,90 @@ pub fn make_all_tools() -> Vec<Tool> {
                 properties: Some(json!({
                     "annotation_id": { "type": "string", "description": "Annotation ID (from list_fp_annotations)." },
                     "field_qname": { "type": "string", "description": "Qualified name of the function-pointer field (alternative to annotation_id)." },
+                })),
+                required: None,
+            },
+        },
+        Tool {
+            name: "atlas_resume".into(),
+            description: "Resume a previous query to get enhanced results after lazy background extraction completes. Returns the same format as the original tool with potentially richer data.".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "query_id": { "type": "string", "description": "The query_id from a previous tool call response" },
+                })),
+                required: Some(vec!["query_id".into()]),
+            },
+        },
+        Tool {
+            name: "atlas_jobs".into(),
+            description: "List background extraction jobs with status. Filter by query_id to see jobs for a specific query.".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "query_id": { "type": "string", "description": "Optional query_id to filter jobs" },
+                })),
+                required: None,
+            },
+        },
+        Tool {
+            name: "atlas_lifecycle".into(),
+            description: "Analyze a field's lifecycle within a function using CFG effect annotations (C/C++). Walks the control-flow graph to track a field through allocate → use → free transitions, detecting use-after-free, double-free, and missing-free patterns. Triggers lazy structural extraction if CFG not yet built.".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "symbol": { "type": "string", "description": "Qualified function name to analyze (e.g. 'handle_request')" },
+                    "field": { "type": "string", "description": "Field path to track (e.g. 'data->state.ptr' for C/C++ struct field access)" },
+                    "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional C/C++ include roots" },
+                })),
+                required: Some(vec!["symbol".into(), "field".into()]),
+            },
+        },
+        Tool {
+            name: "atlas_branch_diff".into(),
+            description: "Compare side effects of sibling branches (if/else, switch) within a function. Detects suspicious asymmetries — e.g., one branch frees a field but the other does not. Uses CFG effect annotations (C/C++ only initially).".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "symbol": { "type": "string", "description": "Qualified function name to analyze" },
+                    "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional C/C++ include roots" },
+                })),
+                required: Some(vec!["symbol".into()]),
+            },
+        },
+        Tool {
+            name: "atlas_annotate".into(),
+            description: "Add a domain rule annotation for lifecycle analysis. Define which functions allocate/free/own memory in your project, enabling rule-backed proofs instead of heuristics. rule_kind: free_fn | alloc_fn | owned_pattern | cleanup_fn.".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "rule_kind": { "type": "string", "description": "Rule kind: free_fn, alloc_fn, owned_pattern, or cleanup_fn" },
+                    "pattern": { "type": "string", "description": "Function name or field pattern (e.g., 'Curl_safefree', 'data->state.ptr')" },
+                    "confidence": { "type": "number", "description": "Confidence 0.0-1.0 (default 1.0 for user-declared)" },
+                })),
+                required: Some(vec!["rule_kind".into(), "pattern".into()]),
+            },
+        },
+        Tool {
+            name: "atlas_domain_rules".into(),
+            description: "Manage domain rules: list all rules, filter by source (builtin/learned/user), or delete a rule by id. Default action is 'list'. Use action='delete' with rule_id to remove.".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "action": { "type": "string", "description": "Action: 'list' (default) or 'delete'" },
+                    "rule_id": { "type": "string", "description": "Rule ID (required for delete action)" },
+                    "source": { "type": "string", "description": "Filter by source: builtin, learned, or user (optional)" },
+                })),
+                required: None,
+            },
+        },
+        Tool {
+            name: "atlas_rule_learn".into(),
+            description: "Auto-learn domain rule candidates from project patterns. Scans function names for free/allocation conventions. Returns candidates with confidence scores. Review and approve via atlas_annotate. min_confidence filter (default 0.5).".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "min_confidence": { "type": "number", "description": "Minimum confidence threshold for candidates (default 0.5, range 0.0-1.0)" },
                 })),
                 required: None,
             },

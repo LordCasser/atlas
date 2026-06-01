@@ -1,8 +1,13 @@
 //! Graph traversal tools: neighbors, callers, callees, callgraph, path,
 //! explore, and impact analysis.
 
-use atlas_engine::{EdgeKind, Store, SymbolId, SymbolKind, TraversalConfig, TraversalDirection};
+use std::collections::HashSet;
+use std::time::Instant;
 
+use atlas_engine::{EdgeKind, InvestigationFocus, Store, SymbolId, SymbolKind, TraversalConfig, TraversalDirection};
+use atlas_engine::analysis;
+
+use super::query_snapshot::{QuerySnapshot, QueryStatus};
 use super::{ToolRouter, get_str, get_str_opt, get_u64};
 
 use serde_json::json;
@@ -70,7 +75,7 @@ fn parse_edge_kind(s: &str) -> Result<EdgeKind, String> {
 }
 
 impl ToolRouter {
-    pub(crate) fn handle_neighbors(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_neighbors(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "symbol");
         let direction = get_str_opt(args, "direction").unwrap_or("both");
         let depth = get_u64(args, "depth").unwrap_or(1) as usize;
@@ -80,6 +85,10 @@ impl ToolRouter {
             Ok(id) => id,
             Err(e) => return (e, true),
         };
+
+        self.update_investigation(InvestigationFocus::Symbol(sid));
+        let _investigation = self.investigation_state.active_investigation.clone();
+        let query_id = Self::generate_query_id();
 
         let graph = self.context_builder().graph_snapshot();
         let dir = match direction {
@@ -119,13 +128,23 @@ impl ToolRouter {
             );
         }
 
+        self.store_snapshot(QuerySnapshot {
+            query_id: query_id.clone(),
+            tool_name: "neighbors".into(),
+            tool_args: args.clone(),
+            lazy_window: None,
+            created_at: Instant::now(),
+            status: QueryStatus::Ready,
+        });
+        resp["query_id"] = json!(query_id);
+
         (
             serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
             false,
         )
     }
 
-    pub(crate) fn handle_callers(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_callers(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "symbol");
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
 
@@ -133,6 +152,10 @@ impl ToolRouter {
             Ok(id) => id,
             Err(e) => return (e, true),
         };
+
+        self.update_investigation(InvestigationFocus::Symbol(sid));
+        let _investigation = self.investigation_state.active_investigation.clone();
+        let query_id = Self::generate_query_id();
 
         let graph = self.context_builder().graph_snapshot();
         let cg = graph.callers(&sid);
@@ -152,13 +175,23 @@ impl ToolRouter {
             );
         }
 
+        self.store_snapshot(QuerySnapshot {
+            query_id: query_id.clone(),
+            tool_name: "callers".into(),
+            tool_args: args.clone(),
+            lazy_window: None,
+            created_at: Instant::now(),
+            status: QueryStatus::Ready,
+        });
+        resp["query_id"] = json!(query_id);
+
         (
             serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
             false,
         )
     }
 
-    pub(crate) fn handle_callees(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_callees(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "symbol");
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
 
@@ -166,6 +199,10 @@ impl ToolRouter {
             Ok(id) => id,
             Err(e) => return (e, true),
         };
+
+        self.update_investigation(InvestigationFocus::Symbol(sid));
+        let _investigation = self.investigation_state.active_investigation.clone();
+        let query_id = Self::generate_query_id();
 
         let graph = self.context_builder().graph_snapshot();
         let cg = graph.callees(&sid);
@@ -185,13 +222,23 @@ impl ToolRouter {
             );
         }
 
+        self.store_snapshot(QuerySnapshot {
+            query_id: query_id.clone(),
+            tool_name: "callees".into(),
+            tool_args: args.clone(),
+            lazy_window: None,
+            created_at: Instant::now(),
+            status: QueryStatus::Ready,
+        });
+        resp["query_id"] = json!(query_id);
+
         (
             serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
             false,
         )
     }
 
-    pub(crate) fn handle_callgraph(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_callgraph(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "symbol");
         let depth = get_u64(args, "depth").unwrap_or(3) as usize;
         let limit = get_u64(args, "limit").unwrap_or(100) as usize;
@@ -200,6 +247,10 @@ impl ToolRouter {
             Ok(id) => id,
             Err(e) => return (e, true),
         };
+
+        self.update_investigation(InvestigationFocus::Symbol(sid));
+        let _investigation = self.investigation_state.active_investigation.clone();
+        let query_id = Self::generate_query_id();
 
         let graph = self.context_builder().graph_snapshot();
         let snap = graph.snapshot();
@@ -315,6 +366,16 @@ impl ToolRouter {
             );
         }
 
+        self.store_snapshot(QuerySnapshot {
+            query_id: query_id.clone(),
+            tool_name: "callgraph".into(),
+            tool_args: args.clone(),
+            lazy_window: None,
+            created_at: Instant::now(),
+            status: QueryStatus::Ready,
+        });
+        resp["query_id"] = json!(query_id);
+
         (
             serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
             false,
@@ -349,6 +410,13 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
+        // Update investigation with the first "from" symbol
+        if let Some(&first_from) = from_ids.first() {
+            self.update_investigation(InvestigationFocus::Symbol(first_from));
+        }
+        let investigation = self.investigation_state.active_investigation.clone();
+        let query_id = Self::generate_query_id();
+
         // Transparent lazy structural: ensure both endpoint files have full
         // structural data before path finding.  A manifest-only index (MCP
         // default) may lack the intra-file call edges that BFS needs to
@@ -364,7 +432,7 @@ impl ToolRouter {
                 file_ids_set.insert(sym.file_id);
             }
         }
-        let outcome = self.ensure_structural_for_files(file_ids_set, roots);
+        let outcome = self.ensure_structural_for_files(file_ids_set, roots, investigation.as_ref(), Some(&query_id));
         let lazy_warnings = outcome.warnings;
         // Cache for no-path diagnostics below (used in user-facing messages).
         let is_manual_full = self.has_manual_full_index();
@@ -624,6 +692,17 @@ impl ToolRouter {
                 }
             }
 
+            self.store_snapshot(QuerySnapshot {
+                query_id: query_id.clone(),
+                tool_name: "path".into(),
+                tool_args: args.clone(),
+                lazy_window: None,
+                created_at: Instant::now(),
+                status: if tier == atlas_engine::structs::precision::PrecisionTier::Exact
+                    { QueryStatus::Ready } else { QueryStatus::Partial },
+            });
+            resp["query_id"] = json!(query_id);
+
             (
                 serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
                 false,
@@ -726,6 +805,17 @@ impl ToolRouter {
                 }
             }
 
+            self.store_snapshot(QuerySnapshot {
+                query_id: query_id.clone(),
+                tool_name: "path".into(),
+                tool_args: args.clone(),
+                lazy_window: None,
+                created_at: Instant::now(),
+                status: if tier == atlas_engine::structs::precision::PrecisionTier::Exact
+                    { QueryStatus::Ready } else { QueryStatus::Partial },
+            });
+            resp["query_id"] = json!(query_id);
+
             (
                 serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
                 false,
@@ -778,7 +868,7 @@ impl ToolRouter {
         Ok(Some(kinds))
     }
 
-    pub(crate) fn handle_explore(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_explore(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "symbol");
         let include_code = args
             .get("includeCode")
@@ -801,6 +891,10 @@ impl ToolRouter {
                 return (err, true);
             }
         };
+
+        self.update_investigation(InvestigationFocus::Symbol(sym.id));
+        let _investigation = self.investigation_state.active_investigation.clone();
+        let query_id = Self::generate_query_id();
 
         let source = if include_code {
             self.read_symbol_source(&sym.id)
@@ -869,20 +963,38 @@ impl ToolRouter {
             );
         }
 
+        self.store_snapshot(QuerySnapshot {
+            query_id: query_id.clone(),
+            tool_name: "explore".into(),
+            tool_args: args.clone(),
+            lazy_window: None,
+            created_at: Instant::now(),
+            status: QueryStatus::Ready,
+        });
+        resp["query_id"] = json!(query_id);
+
         (
             serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
             false,
         )
     }
 
-    pub(crate) fn handle_impact(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_impact(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "symbol");
         let depth = get_u64(args, "depth").unwrap_or(3) as usize;
+        let semantic = args
+            .get("semantic")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let sid = match self.resolve_qname(qname) {
             Ok(id) => id,
             Err(e) => return (e, true),
         };
+
+        self.update_investigation(InvestigationFocus::Symbol(sid));
+        let _investigation = self.investigation_state.active_investigation.clone();
+        let query_id = Self::generate_query_id();
 
         let graph = self.context_builder().graph_snapshot();
         let sub = graph.impact(&sid, depth.min(5));
@@ -919,17 +1031,126 @@ impl ToolRouter {
             })
             .collect();
 
+        // ── Semantic impact analysis ────────────────────────────────────
+        let mut invariants: Vec<serde_json::Value> = Vec::new();
+        let mut lifecycle_paths: Vec<serde_json::Value> = Vec::new();
+        let domain_rules = if semantic {
+            match self.store.list_domain_rules(None, None) {
+                Ok(_rows) => Some(analysis::CppOwnershipRules::load_for(&self.store, "c")),
+                Err(e) => {
+                    tracing::warn!("Failed to load domain rules: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if semantic {
+            for &ix in sub.node_indices.iter().take(20) {
+                let node = snap.node(ix);
+                // Only analyze callable symbols
+                if !is_callable_kind(node.kind) {
+                    continue;
+                }
+
+                // Load CFG for this function
+                let cfg_nodes = match self.store.find_cfg_nodes_by_function(&node.symbol_id) {
+                    Ok(nodes) => nodes,
+                    Err(_) => continue,
+                };
+                if cfg_nodes.is_empty() {
+                    continue;
+                }
+
+                // Run branch diff analysis
+                let diffs = analysis::BranchDiffEngine::diff_branches(&cfg_nodes);
+
+                // Collect fields that have effect annotations
+                let mut fields: HashSet<String> = HashSet::new();
+                for n in &cfg_nodes {
+                    if let Some(ref tf) = n.target_field {
+                        if !tf.is_empty() {
+                            fields.insert(tf.clone());
+                        }
+                    }
+                }
+
+                // For each field, run lifecycle analysis
+                for field_path in &fields {
+                    let rules = analysis::OwnershipRules::default();
+                    let mut lifecycle = analysis::FieldLifecycleEngine::analyze_field_lifecycle(
+                        &cfg_nodes,
+                        field_path,
+                        &rules,
+                    );
+                    lifecycle.function_qname = node.qualified_name.clone();
+
+                    if !lifecycle.suspicious_points.is_empty() {
+                        invariants.push(json!({
+                            "function": node.qualified_name,
+                            "field": field_path,
+                            "issue_count": lifecycle.suspicious_points.len(),
+                            "issues": lifecycle.suspicious_points.iter().map(|p| json!({
+                                "line": p.line,
+                                "kind": format!("{:?}", p.kind),
+                                "message": p.message,
+                            })).collect::<Vec<_>>(),
+                        }));
+                    }
+
+                    if lifecycle.transitions.len() >= 2 {
+                        lifecycle_paths.push(json!({
+                            "function": node.qualified_name,
+                            "field": field_path,
+                            "final_state": lifecycle.final_state.as_str(),
+                            "transition_count": lifecycle.transitions.len(),
+                        }));
+                    }
+                }
+
+                // Add branch diffs with asymmetry
+                for diff in &diffs {
+                    if let Some(ref asymmetry) = diff.suspicious_asymmetry {
+                        invariants.push(json!({
+                            "function": node.qualified_name,
+                            "field": diff.common_prefix,
+                            "issue_count": 1,
+                            "issues": [{"kind": "BranchAsymmetry", "message": asymmetry, "line": diff.branch_node_line}],
+                        }));
+                    }
+                }
+            }
+        }
+
         let mut resp = json!({
             "symbol": qname,
             "max_depth": depth,
             "impacted_nodes": total_shown,
             "file_groups": grouped,
         });
+        if semantic {
+            resp["semantic_impact"] = json!({
+                "invariants_affected": invariants,
+                "lifecycle_paths_affected": lifecycle_paths,
+                "domain_rules_applied": domain_rules.is_some(),
+            });
+        }
         if !self.has_manual_full_index() {
             resp["note"] = json!(
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results."
             );
         }
+
+        self.store_snapshot(QuerySnapshot {
+            query_id: query_id.clone(),
+            tool_name: "impact".into(),
+            tool_args: args.clone(),
+            lazy_window: None,
+            created_at: Instant::now(),
+            status: QueryStatus::Ready,
+        });
+        resp["query_id"] = json!(query_id);
 
         (
             serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),

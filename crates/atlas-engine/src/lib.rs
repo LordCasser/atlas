@@ -37,6 +37,8 @@ pub use lazy_crate::LazyDataflowService;
 // ── Internal modules ──────────────────────────────────────────────────────
 
 mod closure_planner;
+/// Investigation context: MCP-session-scoped analysis focus for lazy job prioritization.
+pub mod investigation;
 mod lazy_coordinator;
 mod lazy_structural;
 mod linux_augment;
@@ -62,6 +64,16 @@ pub use source_extractor::SourceExtractor;
 
 // ─── Re-exports ────────────────────────────────────────────────────────────
 
+/// Analysis: lifecycle and branch diff engines.
+pub use analysis;
+/// Analysis: domain rules, lifecycle proof, and rule learning.
+pub use analysis::domain_rules;
+pub use analysis::lifecycle_proof;
+pub use analysis::rule_learning;
+/// Analysis: C/C++ ownership rules consumer.
+pub use analysis::ownership_rules::CppOwnershipRules;
+/// Domain rules: language-agnostic rule engine.
+pub use domain_rules as rule_engine;
 /// Analysis: summary builder.
 pub use analysis::summary::SummaryBuilder;
 /// Analysis layer: trace engine and query responses.
@@ -114,6 +126,8 @@ pub use types::progress;
 pub use types::*;
 /// Workspace abstractions.
 pub use workspace::{ProjectRoot, SourcePath, Workspace};
+/// Investigation context types: focus, related symbols/files, desired capabilities.
+pub use investigation::{Investigation, InvestigationFocus};
 /// Unified lazy extraction orchestration: policy presets, outcomes, orchestrator.
 pub use lazy_orchestrator::{LazyOrchestrator, LazyOutcome, LazyPolicy};
 

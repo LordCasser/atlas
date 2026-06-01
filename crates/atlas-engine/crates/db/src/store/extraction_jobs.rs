@@ -273,6 +273,37 @@ impl Store {
         let rows = stmt.query_map([], row_to_extraction_job)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
+
+    /// List recent extraction jobs (all statuses), optionally filtered by
+    /// trigger_query.  Used by `atlas_jobs` MCP tool for observability.
+    pub fn list_extraction_jobs(
+        &self,
+        query_id_filter: Option<&str>,
+    ) -> anyhow::Result<Vec<ExtractionJob>> {
+        let conn = self.lock_read();
+        if let Some(qid) = query_id_filter {
+            let mut stmt = conn.prepare(
+                "SELECT job_id, file_id, unit_id, layer, status, trigger_query,
+                        depends_on, started_at, completed_at, budget_ms, error_msg
+                 FROM extraction_jobs
+                 WHERE trigger_query = ?1
+                 ORDER BY started_at DESC
+                 LIMIT 50",
+            )?;
+            let rows = stmt.query_map(params![qid], row_to_extraction_job)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT job_id, file_id, unit_id, layer, status, trigger_query,
+                        depends_on, started_at, completed_at, budget_ms, error_msg
+                 FROM extraction_jobs
+                 ORDER BY started_at DESC
+                 LIMIT 50",
+            )?;
+            let rows = stmt.query_map([], row_to_extraction_job)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        }
+    }
 }
 
 // ── Row mapping ─────────────────────────────────────────────────────────────

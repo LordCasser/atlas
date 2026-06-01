@@ -187,6 +187,7 @@ impl LazyCoordinator {
         service: &LazyStructuralService,
         seed: &FileId,
         budget: &mut LazyBudget,
+        query_id: Option<&str>,
     ) -> Result<(EnsureStructuralResult, String)> {
         let planner_roots = self.effective_include_roots();
         let planner = ClosurePlanner::new(self.store.clone(), self.project_root.clone())
@@ -218,10 +219,11 @@ impl LazyCoordinator {
                 "resolution_symbols"
             };
 
+            let trigger = query_id.unwrap_or("lazy_coordinator::ensure_structural_with_closure");
             let claim = self.store.claim_file_extraction_job(
                 file_id,
                 layer_name,
-                Some("lazy_coordinator::ensure_structural_with_closure"),
+                Some(trigger),
                 None,
                 Some(LAZY_STRUCTURAL_BUDGET_MS as i64),
             )?;
@@ -329,7 +331,7 @@ impl LazyCoordinator {
         // the most relevant match first. Users who need broader
         // coverage should narrow scope or run `atlas index`.
         let best = &candidates[0];
-        let r = self.ensure_structural_with_closure(service, best, budget)?;
+        let r = self.ensure_structural_with_closure(service, best, budget, None)?;
         total.files_built += r.0.files_built;
         total.files_cached += r.0.files_cached;
         total.budget_exceeded |= r.0.budget_exceeded;
@@ -1086,7 +1088,7 @@ use crate::lazy_budget::LazyBudget;
 
         // 5. Call ensure_structural_with_closure on the seed
         let (_result, _job_id) = coordinator
-            .ensure_structural_with_closure(&lazy_service, &main_id, &mut LazyBudget::new(u64::MAX, usize::MAX))
+            .ensure_structural_with_closure(&lazy_service, &main_id, &mut LazyBudget::new(u64::MAX, usize::MAX), None)
             .unwrap();
 
         // 6. Verify: util.h got resolution_symbols layer
@@ -1238,7 +1240,7 @@ use crate::lazy_budget::LazyBudget;
         );
 
         let (_result, _job_id) = coordinator
-            .ensure_structural_with_closure(&lazy, &bar_c_id, &mut LazyBudget::new(u64::MAX, usize::MAX))
+            .ensure_structural_with_closure(&lazy, &bar_c_id, &mut LazyBudget::new(u64::MAX, usize::MAX), None)
             .unwrap();
 
         // 4. Verify: bar.h and baz.h get resolution_symbols (deps)
@@ -1349,7 +1351,7 @@ use crate::lazy_budget::LazyBudget;
         );
 
         coordinator
-            .ensure_structural_with_closure(&lazy, &file_id, &mut LazyBudget::new(u64::MAX, usize::MAX))
+            .ensure_structural_with_closure(&lazy, &file_id, &mut LazyBudget::new(u64::MAX, usize::MAX), None)
             .unwrap();
 
         // 4. Build GraphEngine from store (this is what MCP handlers do)

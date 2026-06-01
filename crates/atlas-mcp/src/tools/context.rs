@@ -6,9 +6,13 @@
 //! newly parsed edges — closing the MCP call-flow gap where graph init
 //! happened before the handler's own structural extraction.
 
+use std::time::Instant;
+
 use super::lazy_response::LazyDiagnostics;
+use super::query_snapshot::{QuerySnapshot, QueryStatus};
 use super::{ToolRouter, get_str, MAX_SYMBOL_NAME_LENGTH};
 
+use atlas_engine::InvestigationFocus;
 use atlas_engine::structs::precision::PrecisionTier;
 use serde_json::json;
 
@@ -35,11 +39,24 @@ impl ToolRouter {
             tracing::warn!("include_roots: {}", w);
         }
 
+        let query_id = Self::generate_query_id();
+
+        // Try to find symbol by qname before resolution for initial investigation
+        let initial_sid = self.store.find_symbols_by_qname(qname).ok()
+            .and_then(|syms| syms.first().map(|s| s.id));
+        if let Some(sid) = initial_sid {
+            self.update_investigation(InvestigationFocus::Symbol(sid));
+        }
+        let investigation = self.investigation_state.active_investigation.clone();
+
         let (sid, lazy_warnings, tier, lazy_diag) =
-            match self.resolve_context_symbol(qname, include_roots) {
+            match self.resolve_context_symbol(qname, include_roots, investigation.as_ref()) {
                 Ok(r) => r,
                 Err(err) => return (err, true),
             };
+
+        // Update investigation with the actually resolved symbol
+        self.update_investigation(InvestigationFocus::Symbol(sid));
 
         // Force-refresh the graph to pick up edges written by lazy structural
         // (Tier 3 in resolve_context_symbol). Without this, the context builder
@@ -76,7 +93,21 @@ impl ToolRouter {
                 }
                 if let Some(diag) = &lazy_diag {
                     result["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
+                    result["analysis_contract"] =
+                        serde_json::to_value(&diag.analysis_contract).unwrap_or(json!(null));
                 }
+
+                // Store query snapshot for potential atlas_resume
+                self.store_snapshot(QuerySnapshot {
+                    query_id: query_id.clone(),
+                    tool_name: "context".into(),
+                    tool_args: args.clone(),
+                    lazy_window: None,
+                    created_at: Instant::now(),
+                    status: if tier == PrecisionTier::Exact { QueryStatus::Ready } else { QueryStatus::Partial },
+                });
+                result["query_id"] = json!(query_id);
+
                 (
                     serde_json::to_string_pretty(&result).unwrap_or_else(|e| e.to_string()),
                     false,
@@ -101,6 +132,7 @@ impl ToolRouter {
         &mut self,
         qname: &str,
         include_roots: Vec<atlas_engine::IncludeRoot>,
+        investigation: Option<&atlas_engine::Investigation>,
     ) -> Result<
         (
             atlas_engine::SymbolId,
@@ -124,7 +156,7 @@ impl ToolRouter {
         if let Some(id) = symbols.first().map(|s| s.id) {
             // Ensure structural data for this file (include_roots optional,
             // always relevant) so graph queries see complete edges.
-            let outcome = self.ensure_structural_for_files([symbols[0].file_id], include_roots);
+            let outcome = self.ensure_structural_for_files([symbols[0].file_id], include_roots, investigation, None);
             warnings.extend(outcome.warnings);
             worst_tier = cmp::min(worst_tier, outcome.precision_tier);
             if let Some(ref lo) = outcome.lazy_outcome {
@@ -141,7 +173,7 @@ impl ToolRouter {
         if name_matches.len() == 1 {
             // Unambiguous — use it directly
             let outcome =
-                self.ensure_structural_for_files([name_matches[0].file_id], include_roots);
+                self.ensure_structural_for_files([name_matches[0].file_id], include_roots, investigation, None);
             warnings.extend(outcome.warnings);
             worst_tier = cmp::min(worst_tier, outcome.precision_tier);
             if let Some(ref lo) = outcome.lazy_outcome {
@@ -160,7 +192,7 @@ impl ToolRouter {
                 .collect();
             if matching_qnames.len() == 1 {
                 let outcome =
-                    self.ensure_structural_for_files([matching_qnames[0].file_id], include_roots);
+                    self.ensure_structural_for_files([matching_qnames[0].file_id], include_roots, investigation, None);
                 warnings.extend(outcome.warnings);
                 worst_tier = cmp::min(worst_tier, outcome.precision_tier);
                 if let Some(ref lo) = outcome.lazy_outcome {
@@ -193,7 +225,7 @@ impl ToolRouter {
         let is_manual_full = self.has_manual_full_index();
         if !is_manual_full {
             self.send_progress(0.5, "Extracting structural data...");
-            let outcome = self.ensure_structural_for_symbol_name(qname, include_roots.clone());
+            let outcome = self.ensure_structural_for_symbol_name(qname, include_roots.clone(), investigation, None);
             warnings.extend(outcome.warnings);
             worst_tier = cmp::min(worst_tier, outcome.precision_tier);
             if let Some(ref lo) = outcome.lazy_outcome {
