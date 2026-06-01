@@ -15,7 +15,8 @@
 //! | `summary`   | Function summaries (persistence + query) |
 //! | `stats`     | Metadata, stats, path resolution |
 //! | `annotations` | Function-pointer dispatch annotations |
-//! | `lazy_jobs` | Lazy build job tracking (queued/building/complete/failed) |
+//! | `file_extraction_state` / `unit_extraction_state` | Extraction state tracking |
+//! | `extraction_jobs` | Extraction job tracking (queued/building/complete/failed) |
 //!
 //! ## Reader / Writer trait split
 //!
@@ -34,19 +35,19 @@ use crate::store_rows::*;
 use crate::store_writers::*;
 
 mod annotations;
-mod artifacts;
 mod cfg;
 mod dataflow;
 mod edges;
+pub(crate) mod extraction_jobs;
+mod file_extraction_state;
 mod files;
 mod fk_guards;
-mod index_layers;
-pub(crate) mod lazy_jobs;
 mod lifecycle;
 mod scopes;
 mod stats;
 pub mod summary;
 mod symbols;
+mod unit_extraction_state;
 
 // ---------------------------------------------------------------------------
 // StoreReader — read-only query interface
@@ -352,7 +353,7 @@ impl Store {
     /// This means:
     /// - The new resolution_symbols layer is consistent with the on-disk content.
     /// - Pre-existing layers (manifest, structural) with the old hash become
-    ///   stale: their `file_index_layers` hash no longer matches
+    ///   stale: their file-level extraction state hash no longer matches
     ///   `files.content_hash`, so `has_complete_layer()` returns `false` for
     ///   them.
     /// - On the next lazy access, those stale layers are rebuilt from current
@@ -400,9 +401,14 @@ impl Store {
             }
             // Record the resolution_symbols layer
             tx.execute(
-                "INSERT OR REPLACE INTO file_index_layers
-                    (file_id, layer, content_hash, status, updated_at)
-                 VALUES (?1, 'resolution_symbols', ?2, 'complete', datetime('now'))",
+                "DELETE FROM extraction_state
+                 WHERE file_id = ?1 AND unit_id IS NULL AND layer = 'resolution_symbols'",
+                params![file_id],
+            )?;
+            tx.execute(
+                "INSERT INTO extraction_state
+                    (file_id, unit_id, layer, content_hash, status, updated_at)
+                 VALUES (?1, NULL, 'resolution_symbols', ?2, 'complete', datetime('now'))",
                 params![file_id, facts.file.content_hash],
             )?;
             Ok(())
@@ -1378,9 +1384,9 @@ mod tests {
             "files.content_hash should be synced to the new hash"
         );
 
-        // Assert file_index_layers has the new hash and complete status
+        // Assert file-level extraction state has the new hash and complete status
         let layer = store
-            .get_file_index_layer(&file_id, "resolution_symbols")
+            .get_file_extraction_state(&file_id, "resolution_symbols")
             .unwrap()
             .expect("resolution_symbols layer should exist");
         assert_eq!(layer.0, "complete", "layer status should be complete");

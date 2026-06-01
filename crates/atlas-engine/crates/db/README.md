@@ -46,8 +46,8 @@ Callers are responsible for creating `.atlas/` and any parent directories
 | `cfg_edges` | `cfg_edge_id BLOB(32)` | Function-local CFG edges |
 | `symbols_fts` | (FTS5) | Full-text search over symbol names |
 | `project_metadata` | `key TEXT` | Project-level settings, exclusive lock state |
-| `analysis_artifacts` | `(file_id, unit_id, layer)` | Lazy dataflow build cache |
-| `file_index_layers` | `file_id BLOB(32)` | Per-file index layer tracking |
+| `extraction_state` | `(file_id, unit_id, layer)` | Unified file/unit extraction state |
+| `extraction_jobs` | `job_id TEXT` | Active/completed extraction jobs |
 | `function_pointer_annotations` | `annotation_id BLOB(32)` | User-declared function-pointer dispatch mappings |
 | `function_summaries` | `summary_id BLOB(32)` | Per-function intra-procedural summary |
 | `summary_param_reaches` | `(summary_id, param_index)` | Which params reach which locals |

@@ -706,9 +706,14 @@ pub(crate) fn write_file_facts(conn: &Connection, facts: &FileFacts) -> anyhow::
         "complete"
     };
     conn.execute(
-        "INSERT OR REPLACE INTO file_index_layers
-            (file_id, layer, content_hash, status, updated_at)
-         VALUES (?1, ?2, ?3, ?4, datetime('now'))",
+        "DELETE FROM extraction_state
+         WHERE file_id = ?1 AND unit_id IS NULL AND layer = ?2",
+        params![facts.file.file_id, facts.layer],
+    )?;
+    conn.execute(
+        "INSERT INTO extraction_state
+            (file_id, unit_id, layer, content_hash, status, updated_at)
+         VALUES (?1, NULL, ?2, ?3, ?4, datetime('now'))",
         params![
             facts.file.file_id,
             facts.layer,

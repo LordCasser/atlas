@@ -1,35 +1,38 @@
-//! Lazy dataflow artifact tracking: CRUD for analysis_artifacts table,
+//! Unit-level extraction state tracking: CRUD over unit-level `extraction_state`,
 //! plus `replace_dataflow_for_unit` and `update_callsite_arg_data_nodes`.
 
 use rusqlite::params;
 use types::*;
 
 use super::Store;
-use crate::store_rows::{ArtifactRecord, row_to_artifact};
+use crate::store_rows::{UnitExtractionStateRecord, row_to_unit_extraction_state};
 use crate::store_writers::{
     write_binding_uses, write_bindings, write_cfg_edges, write_cfg_nodes, write_data_nodes,
     write_dataflow_edges,
 };
 
 impl Store {
-    // ── Artifact CRUD ───────────────────────────────────────────────────────
+    // ── Unit Extraction State CRUD ──────────────────────────────────────────
 
-    /// Look up an artifact record for a (file_id, unit_id, layer) triple.
-    pub fn get_artifact(
+    /// Look up extraction state for a (file_id, unit_id, layer) triple.
+    pub fn get_unit_extraction_state(
         &self,
         file_id: &FileId,
         unit_id: &[u8; 16],
         layer: &str,
-    ) -> anyhow::Result<Option<ArtifactRecord>> {
+    ) -> anyhow::Result<Option<UnitExtractionStateRecord>> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT file_id, unit_id, layer, content_hash, status,
-                    node_count, edge_count, budget_exceeded, built_at
-             FROM analysis_artifacts
+                    node_count, edge_count, budget_exceeded, updated_at
+             FROM extraction_state
              WHERE file_id = ?1 AND unit_id = ?2 AND layer = ?3",
         )?;
         let unit_blob: &[u8] = unit_id;
-        let mut rows = stmt.query_map(params![file_id, unit_blob, layer], row_to_artifact)?;
+        let mut rows = stmt.query_map(
+            params![file_id, unit_blob, layer],
+            row_to_unit_extraction_state,
+        )?;
         match rows.next() {
             Some(Ok(a)) => Ok(Some(a)),
             Some(Err(e)) => Err(e.into()),
@@ -37,14 +40,22 @@ impl Store {
         }
     }
 
-    /// Insert or update an artifact record.
-    pub fn upsert_artifact(&self, record: &ArtifactRecord) -> anyhow::Result<()> {
+    /// Insert or update unit-level extraction state.
+    pub fn upsert_unit_extraction_state(
+        &self,
+        record: &UnitExtractionStateRecord,
+    ) -> anyhow::Result<()> {
         let conn = self.lock();
         let unit_blob: &[u8] = &record.unit_id;
         conn.execute(
-            "INSERT OR REPLACE INTO analysis_artifacts
+            "DELETE FROM extraction_state
+             WHERE file_id = ?1 AND unit_id = ?2 AND layer = ?3",
+            params![record.file_id, unit_blob, record.layer],
+        )?;
+        conn.execute(
+            "INSERT INTO extraction_state
              (file_id, unit_id, layer, content_hash, status,
-              node_count, edge_count, budget_exceeded, built_at)
+              node_count, edge_count, budget_exceeded, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
             params![
                 record.file_id,
@@ -60,16 +71,11 @@ impl Store {
         Ok(())
     }
 
-    /// Mark all artifacts for a file as stale (e.g. before reindexing).
-    ///
-    /// In practice, `DELETE FROM files WHERE file_id=?1` cascades to
-    /// `analysis_artifacts` automatically.  This method is provided for
-    /// use cases where the file row must be kept but artifacts need to
-    /// be invalidated.
-    pub fn invalidate_artifacts_for_file(&self, file_id: &FileId) -> anyhow::Result<()> {
+    /// Delete all unit-level extraction state for a file.
+    pub fn delete_unit_extraction_state_for_file(&self, file_id: &FileId) -> anyhow::Result<()> {
         let conn = self.lock();
         conn.execute(
-            "DELETE FROM analysis_artifacts WHERE file_id = ?1",
+            "DELETE FROM extraction_state WHERE file_id = ?1 AND unit_id IS NOT NULL",
             params![file_id],
         )?;
         Ok(())
@@ -358,12 +364,17 @@ impl Store {
     }
 
     /// Get lazy dataflow statistics for status display.
-    pub fn get_lazy_stats(&self) -> anyhow::Result<LazyStats> {
+    pub fn get_lazy_dataflow_stats(&self) -> anyhow::Result<LazyDataflowStats> {
         let conn = self.lock_read();
-        let total_artifacts: i64 =
-            conn.query_row("SELECT COUNT(*) FROM analysis_artifacts", [], |r| r.get(0))?;
-        let partial_artifacts: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM analysis_artifacts WHERE budget_exceeded = 1",
+        let total_unit_states: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM extraction_state
+             WHERE unit_id IS NOT NULL AND layer = 'dataflow'",
+            [],
+            |r| r.get(0),
+        )?;
+        let partial_unit_states: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM extraction_state
+             WHERE unit_id IS NOT NULL AND layer = 'dataflow' AND budget_exceeded = 1",
             [],
             |r| r.get(0),
         )?;
@@ -373,9 +384,9 @@ impl Store {
             })
             .map(|c| c > 0)
             .unwrap_or(false);
-        Ok(LazyStats {
-            total_artifacts,
-            partial_artifacts,
+        Ok(LazyDataflowStats {
+            total_unit_states,
+            partial_unit_states,
             has_dataflow,
         })
     }
@@ -383,8 +394,8 @@ impl Store {
 
 /// Summary of lazy dataflow state for atlas_status.
 #[derive(Debug, Clone)]
-pub struct LazyStats {
-    pub total_artifacts: i64,
-    pub partial_artifacts: i64,
+pub struct LazyDataflowStats {
+    pub total_unit_states: i64,
+    pub partial_unit_states: i64,
     pub has_dataflow: bool,
 }

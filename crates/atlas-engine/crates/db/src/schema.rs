@@ -20,9 +20,8 @@
 //! - `summary_param_reaches`     — parameter → downstream target reachability
 //! - `summary_return_sources`    — return → upstream source mapping
 //! - `summary_call_arg_sources`  — call argument → upstream source mapping
-//! - `analysis_artifacts` — lazy dataflow/CFG artifact tracking
-//! - `file_index_layers` — per-file per-layer index status
-//! - `lazy_jobs`      — lazy build job tracking (queued/building/complete/failed)
+//! - `extraction_state` — unified file/unit extraction completion state
+//! - `extraction_jobs`  — unified extraction job tracking (queued/building/complete/failed)
 //! - `project_metadata` — key-value project configuration
 //! - `function_pointer_annotations` — user-declared function-pointer dispatch annotations
 //! - `symbols_fts`    — FTS5 index on symbol names
@@ -259,47 +258,46 @@ CREATE TABLE IF NOT EXISTS cfg_edges (
     kind                 TEXT NOT NULL
 );
 
--- Lazy dataflow artifact tracking: records which AnalysisUnits
--- have had their dataflow/CFG built and persisted.
-CREATE TABLE IF NOT EXISTS analysis_artifacts (
+-- Unified extraction completion state.
+--
+-- unit_id IS NULL records file-level layers:
+--   manifest | resolution_symbols | structural | dataflow
+-- unit_id IS NOT NULL records AnalysisUnit-level layers:
+--   dataflow | cfg
+CREATE TABLE IF NOT EXISTS extraction_state (
     file_id         BLOB NOT NULL,
-    unit_id         BLOB NOT NULL,
-    layer           TEXT NOT NULL,      -- 'dataflow' | 'cfg'
-    content_hash    TEXT NOT NULL,      -- file content_hash at build time
-    status          TEXT NOT NULL DEFAULT 'complete',
+    unit_id         BLOB,
+    layer           TEXT NOT NULL,
+    content_hash    TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'complete',  -- complete | partial | failed
     node_count      INTEGER,
     edge_count      INTEGER,
     budget_exceeded INTEGER NOT NULL DEFAULT 0,
-    built_at        TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (file_id, unit_id, layer),
-    FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_artifacts_file
-    ON analysis_artifacts(file_id);
-
--- Per-file per-layer index status: tracks manifest/resolution_symbols/structural/dataflow
--- completeness independent of content_hash matching.
-CREATE TABLE IF NOT EXISTS file_index_layers (
-    file_id         BLOB NOT NULL,
-    layer           TEXT NOT NULL,      -- 'manifest' | 'resolution_symbols' | 'structural' | 'dataflow'
-    content_hash    TEXT NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'complete',  -- complete | partial | failed
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (file_id, layer),
     FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_file_index_layers_file
-    ON file_index_layers(file_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_extraction_state_file_layer
+    ON extraction_state(file_id, layer)
+    WHERE unit_id IS NULL;
 
--- Lazy build job tracking: one row per (file_id, target_layer, job_id).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_extraction_state_unit_layer
+    ON extraction_state(file_id, unit_id, layer)
+    WHERE unit_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_extraction_state_file
+    ON extraction_state(file_id);
+
+CREATE INDEX IF NOT EXISTS idx_extraction_state_layer_status
+    ON extraction_state(layer, status);
+
+-- Unified extraction job tracking.
 -- Jobs transition: queued → building → complete/failed.
--- The (file_id, target_layer, status) index enables in-flight dedup queries.
-CREATE TABLE IF NOT EXISTS lazy_jobs (
+CREATE TABLE IF NOT EXISTS extraction_jobs (
     job_id        TEXT PRIMARY KEY NOT NULL,
     file_id       BLOB NOT NULL,
-    target_layer  TEXT NOT NULL,
+    unit_id       BLOB,
+    layer         TEXT NOT NULL,
     status        TEXT NOT NULL DEFAULT 'queued',
     trigger_query TEXT,
     depends_on    TEXT,
@@ -310,15 +308,19 @@ CREATE TABLE IF NOT EXISTS lazy_jobs (
     FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_lazy_jobs_file_layer_status
-    ON lazy_jobs(file_id, target_layer, status);
+CREATE INDEX IF NOT EXISTS idx_extraction_jobs_file_layer_status
+    ON extraction_jobs(file_id, layer, status);
 
-CREATE INDEX IF NOT EXISTS idx_lazy_jobs_status
-    ON lazy_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_extraction_jobs_status
+    ON extraction_jobs(status);
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_lazy_jobs_active_uniq
-    ON lazy_jobs (file_id, target_layer)
-    WHERE status IN ('queued', 'building');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_extraction_jobs_active_file_layer
+    ON extraction_jobs(file_id, layer)
+    WHERE unit_id IS NULL AND status IN ('queued', 'building');
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_extraction_jobs_active_unit_layer
+    ON extraction_jobs(file_id, unit_id, layer)
+    WHERE unit_id IS NOT NULL AND status IN ('queued', 'building');
 
 -- ===== Summary tables (Schema v3) =====
 
@@ -554,8 +556,8 @@ mod tests {
         assert!(tables.contains(&"cfg_edges".to_string()));
         assert!(tables.contains(&"symbols_fts".to_string()));
         assert!(tables.contains(&"project_metadata".to_string()));
-        // Lazy jobs tracking
-        assert!(tables.contains(&"lazy_jobs".to_string()));
+        assert!(tables.contains(&"extraction_state".to_string()));
+        assert!(tables.contains(&"extraction_jobs".to_string()));
         // Function pointer annotations
         assert!(tables.contains(&"function_pointer_annotations".to_string()));
         // Summary tables

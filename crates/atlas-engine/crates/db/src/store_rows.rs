@@ -388,11 +388,11 @@ pub(crate) fn row_to_cfg_edge(row: &Row) -> rusqlite::Result<CfgEdge> {
     })
 }
 
-// ── analysis_artifacts ──────────────────────────────────────────────────────
+// ── unit-level extraction_state ─────────────────────────────────────────────
 
-/// Record tracking lazy dataflow/CFG build status for one AnalysisUnit.
+/// Record tracking unit-level extraction status for one AnalysisUnit.
 #[derive(Debug, Clone)]
-pub struct ArtifactRecord {
+pub struct UnitExtractionStateRecord {
     pub file_id: types::ids::FileId,
     pub unit_id: [u8; 16],
     pub layer: String,
@@ -404,9 +404,11 @@ pub struct ArtifactRecord {
     pub built_at: String,
 }
 
-pub(crate) fn row_to_artifact(row: &Row) -> rusqlite::Result<ArtifactRecord> {
+pub(crate) fn row_to_unit_extraction_state(
+    row: &Row,
+) -> rusqlite::Result<UnitExtractionStateRecord> {
     use types::ids::FileId;
-    Ok(ArtifactRecord {
+    Ok(UnitExtractionStateRecord {
         file_id: row.get::<_, FileId>(0)?,
         unit_id: {
             let blob: Vec<u8> = row.get(1)?;
