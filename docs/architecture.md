@@ -382,6 +382,23 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
 - **MCP 可观测性**：`status` 只根据 fresh layer 分布推导 `manifest`、`partial_structural`、`structural`、`structural+lazy`、`full`，不能把 manifest-only 误报为 structural。`jobs` 暴露 active extraction jobs，供代理在 pending/partial 响应后决定重试时机。
 - **Search 执行模型**：MCP search 先做 store-backed manifest 查询，再对候选文件做定向 lazy structural；只有候选为空且 scope 很小时才同步解析整个 scope。大 scope 不做同步全量 structural，避免把一次搜索变成隐式全项目索引。
 
+#### 10.1.8 CancellationToken 可中断提取
+
+Lazy extraction 的 budget 约束已从"循环守卫"升级为"可中断提取"：
+
+- **`CancelCheck` trait**（`extraction/cancel.rs`）：`fn is_cancelled(&self) -> bool`。`NeverCancel` 作为向后兼容 sentinel。
+- **`extract_file_with_mode_cancellable`**（`extraction/extract.rs`）：在以下检查点插入 token 检查（CP1-CP4）：
+  - CP1: `tl_parse()` 之前 — 进入时预算已耗尽则跳过 parse
+  - CP2: 符号查询之后
+  - CP3: 引用查询之后
+  - CP4: 导入/作用域查询之后
+- **`collect_captures`**（`extraction/query_helpers.rs`）：流式捕获循环中每 ~100 次迭代检查取消
+- **`ReindexOutcome`**（`lazy_structural.rs`）：`Built` / `Cancelled` 枚举，在 DB 写入前（CP5）和 `extract_file` 调用前（CP6）检查。`Cancelled` 设置 `budget_exceeded=true` 但不计入 `files_built`
+- **`LazyBudget`** 实现 `CancelCheck`（`is_cancelled = cancelled || time_exceeded`）。`can_continue()` 超时时自动调用 `cancel()`
+- `extract_file_with_mode` 保留原签名，作为 `_cancellable` + `&NeverCancel` 的包装器
+
+此设计不修改 tree-sitter C FFI，不引入 signal，不增加线程。Cancellation 是正常降级路径，产生 precision 降级而非 MCP tool error。
+
 ### 内容哈希一致性
 
 当 `upsert_resolution_symbols` 检测到磁盘上的文件内容自上次 `files` 行写入以来已经变更（内容哈希不同），它会在同一事务中原子性地更新 `files.content_hash`。所有之前存在的更丰富层（structural、dataflow）变为过期状态，因为它们记录的 layer hash 不再匹配更新后的 file hash。在下次 lazy 访问时它们将从当前内容重建。
