@@ -6,6 +6,7 @@
 //! newly parsed edges — closing the MCP call-flow gap where graph init
 //! happened before the handler's own structural extraction.
 
+use super::lazy_response::LazyDiagnostics;
 use super::{ToolRouter, get_str};
 
 use atlas_engine::structs::precision::PrecisionTier;
@@ -25,10 +26,11 @@ impl ToolRouter {
             tracing::warn!("include_roots: {}", w);
         }
 
-        let (sid, lazy_warnings, tier) = match self.resolve_context_symbol(qname, include_roots) {
-            Ok((id, warnings, tier)) => (id, warnings, tier),
-            Err(err) => return (err, true),
-        };
+        let (sid, lazy_warnings, tier, lazy_diag) =
+            match self.resolve_context_symbol(qname, include_roots) {
+                Ok(r) => r,
+                Err(err) => return (err, true),
+            };
 
         // Force-refresh the graph to pick up edges written by lazy structural
         // (Tier 3 in resolve_context_symbol). Without this, the context builder
@@ -63,6 +65,9 @@ impl ToolRouter {
                 if !all_warnings.is_empty() {
                     result["warnings"] = json!(all_warnings);
                 }
+                if let Some(diag) = &lazy_diag {
+                    result["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
+                }
                 (
                     serde_json::to_string_pretty(&result).unwrap_or_else(|e| e.to_string()),
                     false,
@@ -80,17 +85,27 @@ impl ToolRouter {
     /// Tier 3: lazy structural extraction + re-query
     /// Tier 4: name match with multiple candidates → return suggestions
     ///
-    /// Returns the resolved SymbolId, any lazy-structural warnings, and the
-    /// worst precision tier encountered during structural extraction.
+    /// Returns the resolved SymbolId, any lazy-structural warnings, the
+    /// worst precision tier encountered, and optional lazy diagnostics
+    /// built from the most recent structural extraction.
     fn resolve_context_symbol(
         &mut self,
         qname: &str,
         include_roots: Vec<atlas_engine::IncludeRoot>,
-    ) -> Result<(atlas_engine::SymbolId, Vec<String>, PrecisionTier), String> {
+    ) -> Result<
+        (
+            atlas_engine::SymbolId,
+            Vec<String>,
+            PrecisionTier,
+            Option<LazyDiagnostics>,
+        ),
+        String,
+    > {
         use std::cmp;
 
         let mut warnings = Vec::new();
         let mut worst_tier = PrecisionTier::Exact;
+        let mut lazy_diag: Option<LazyDiagnostics> = None;
 
         // ── Tier 1: exact qualified-name match ──
         let symbols = self.store.find_symbols_by_qname(qname).unwrap_or_else(|e| {
@@ -103,7 +118,10 @@ impl ToolRouter {
             let outcome = self.ensure_structural_for_files([symbols[0].file_id], include_roots);
             warnings.extend(outcome.warnings);
             worst_tier = cmp::min(worst_tier, outcome.precision_tier);
-            return Ok((id, warnings, worst_tier));
+            if let Some(ref lo) = outcome.lazy_outcome {
+                lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+            }
+            return Ok((id, warnings, worst_tier, lazy_diag));
         }
 
         // ── Tier 2: name-based search (look for symbol by simple name) ──
@@ -117,7 +135,10 @@ impl ToolRouter {
                 self.ensure_structural_for_files([name_matches[0].file_id], include_roots);
             warnings.extend(outcome.warnings);
             worst_tier = cmp::min(worst_tier, outcome.precision_tier);
-            return Ok((name_matches[0].id, warnings, worst_tier));
+            if let Some(ref lo) = outcome.lazy_outcome {
+                lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+            }
+            return Ok((name_matches[0].id, warnings, worst_tier, lazy_diag));
         }
         if name_matches.len() > 1 {
             // Multiple matches — try case-insensitive qualified-name substring
@@ -133,7 +154,10 @@ impl ToolRouter {
                     self.ensure_structural_for_files([matching_qnames[0].file_id], include_roots);
                 warnings.extend(outcome.warnings);
                 worst_tier = cmp::min(worst_tier, outcome.precision_tier);
-                return Ok((matching_qnames[0].id, warnings, worst_tier));
+                if let Some(ref lo) = outcome.lazy_outcome {
+                    lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+                }
+                return Ok((matching_qnames[0].id, warnings, worst_tier, lazy_diag));
             }
             if matching_qnames.len() > 1 {
                 let suggestions: Vec<&str> = matching_qnames
@@ -163,6 +187,9 @@ impl ToolRouter {
             let outcome = self.ensure_structural_for_symbol_name(qname, include_roots.clone());
             warnings.extend(outcome.warnings);
             worst_tier = cmp::min(worst_tier, outcome.precision_tier);
+            if let Some(ref lo) = outcome.lazy_outcome {
+                lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+            }
         }
 
         // Re-query after lazy extraction (tier 1 again on freshly-parsed data)
@@ -171,7 +198,7 @@ impl ToolRouter {
             Default::default()
         });
         if let Some(sym) = retry.first() {
-            return Ok((sym.id, warnings, worst_tier));
+            return Ok((sym.id, warnings, worst_tier, lazy_diag));
         }
 
         // Re-check name after lazy extraction
@@ -180,7 +207,7 @@ impl ToolRouter {
             Default::default()
         });
         if fresh_matches.len() == 1 {
-            return Ok((fresh_matches[0].id, warnings, worst_tier));
+            return Ok((fresh_matches[0].id, warnings, worst_tier, lazy_diag));
         }
         if fresh_matches.len() > 1 {
             let suggestions: Vec<&str> = fresh_matches

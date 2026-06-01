@@ -22,7 +22,9 @@ pub(crate) struct LazyRefreshQueue {
     cumulative_count: AtomicUsize,
     /// Set when cumulative count crosses threshold — next graph-backed tool
     /// call should spawn a background full-rebuild task.
-    full_rebuild_scheduled: AtomicBool,
+    rebuild_needed: AtomicBool,
+    /// Set while a background rebuild thread is active (CAS gate).
+    rebuild_in_progress: AtomicBool,
     /// Set by background preparse thread to signal new structural data exists.
     background_writes_pending: AtomicBool,
 }
@@ -33,7 +35,8 @@ impl LazyRefreshQueue {
         Arc::new(Self {
             pending_file_ids: Mutex::new(HashSet::new()),
             cumulative_count: AtomicUsize::new(0),
-            full_rebuild_scheduled: AtomicBool::new(false),
+            rebuild_needed: AtomicBool::new(false),
+            rebuild_in_progress: AtomicBool::new(false),
             background_writes_pending: AtomicBool::new(false),
         })
     }
@@ -52,7 +55,7 @@ impl LazyRefreshQueue {
         // 2. fetch_add cumulative_count, if result >= threshold, set full_rebuild_scheduled
         let new_count = self.cumulative_count.fetch_add(file_ids.len(), Ordering::Relaxed) + file_ids.len();
         if new_count >= CUMULATIVE_LAZY_REBUILD_THRESHOLD {
-            self.full_rebuild_scheduled.store(true, Ordering::Release);
+            self.schedule_full_rebuild();
         }
     }
 
@@ -81,10 +84,33 @@ impl LazyRefreshQueue {
 
     /// Check and reset the deferred full-rebuild flag.
     /// Returns true if a rebuild was scheduled, false otherwise.
-    /// Called at the start of maybe_refresh_graph to decide whether
+    /// Called by try_apply_or_spawn_rebuild to decide whether
     /// to spawn a background full-rebuild task.
     pub(crate) fn needs_full_rebuild(&self) -> bool {
-        self.full_rebuild_scheduled.swap(false, Ordering::AcqRel)
+        self.rebuild_needed.swap(false, Ordering::AcqRel)
+    }
+
+    /// Set the full-rebuild flag (called when cumulative threshold is reached).
+    pub(crate) fn schedule_full_rebuild(&self) {
+        self.rebuild_needed.store(true, Ordering::Release);
+    }
+
+    /// Clear the full-rebuild flag after a pending rebuild graph is applied.
+    pub(crate) fn mark_rebuild_applied(&self) {
+        self.rebuild_needed.store(false, Ordering::Release);
+    }
+
+    /// CAS gate: try to claim the rebuild slot for this thread.
+    /// Returns true if this thread won the race and should begin building.
+    pub(crate) fn try_start_rebuild(&self) -> bool {
+        self.rebuild_in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Release the rebuild slot (called when rebuild completes or fails).
+    pub(crate) fn mark_rebuild_finished(&self) {
+        self.rebuild_in_progress.store(false, Ordering::Release);
     }
 
     /// Check and reset the background-writes-pending flag.
@@ -120,6 +146,35 @@ mod tests {
         let batch = q.take_incremental_batch(500);
         assert_eq!(batch.len(), 2);
         assert!(q.take_incremental_batch(500).is_empty());
+    }
+
+    #[test]
+    fn schedule_full_rebuild_is_observable() {
+        let q = LazyRefreshQueue::new();
+        assert!(!q.needs_full_rebuild());
+        q.schedule_full_rebuild();
+        assert!(q.needs_full_rebuild());
+        assert!(!q.needs_full_rebuild()); // swap resets
+    }
+
+    #[test]
+    fn rebuild_in_progress_is_atomic_gate() {
+        let q = LazyRefreshQueue::new();
+        assert!(!q.rebuild_in_progress.load(Ordering::Acquire));
+        assert!(q.try_start_rebuild());
+        assert!(q.rebuild_in_progress.load(Ordering::Acquire));
+        assert!(!q.try_start_rebuild()); // second caller loses
+        q.mark_rebuild_finished();
+        assert!(!q.rebuild_in_progress.load(Ordering::Acquire));
+        assert!(q.try_start_rebuild()); // gate opens again
+    }
+
+    #[test]
+    fn mark_rebuild_applied_clears_flag() {
+        let q = LazyRefreshQueue::new();
+        q.schedule_full_rebuild();
+        q.mark_rebuild_applied();
+        assert!(!q.needs_full_rebuild());
     }
 
     #[test]

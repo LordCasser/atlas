@@ -5,6 +5,7 @@
 use atlas_engine::SymbolId;
 use atlas_engine::{LazySummary, RawTraceEngine, TraceDiagnostic, TraceQueryResponse};
 
+use super::lazy_response::LazyDiagnostics;
 use super::{ToolRouter, get_str_opt, get_u64, resolve_file_id, warnings_to_trace_diagnostics};
 
 use serde_json::json;
@@ -62,6 +63,11 @@ impl ToolRouter {
 
         // Ensure structural before tracing
         let outcome = self.ensure_structural_for_files([file_id], include_roots);
+        // Capture lazy diagnostics before outcome fields are moved.
+        let lazy_diag: Option<LazyDiagnostics> = outcome
+            .lazy_outcome
+            .as_ref()
+            .map(|lo| LazyDiagnostics::from_structural(lo));
 
         let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
         self.send_progress(0.8, "Running trace point...");
@@ -88,6 +94,9 @@ impl ToolRouter {
             if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
                 resp_value["structural_hint"] = json!(hint);
             }
+        }
+        if let Some(ref diag) = lazy_diag {
+            resp_value["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
         }
 
         (
@@ -150,6 +159,8 @@ impl ToolRouter {
 
         // Ensure structural before tracing
         let outcome = self.ensure_structural_for_files([file_id], include_roots);
+        // Capture structural lazy outcome before fields are moved.
+        let structural_lo = outcome.lazy_outcome.clone();
 
         // Lazy-load dataflow before tracing, so Locator can find data nodes.
         // Always trigger lazy dataflow extraction — the loader internally
@@ -159,6 +170,7 @@ impl ToolRouter {
         let mut partial = false;
         let mut lazy_diags: Vec<TraceDiagnostic> = Vec::new();
         let lazy_summary: Option<LazySummary>;
+        let mut combined_lazy_diag: Option<LazyDiagnostics> = None;
         match self
             .lazy_service
             .ensure_for_position(&file_id, line, column)
@@ -174,6 +186,8 @@ impl ToolRouter {
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
                     precision_tier: window.precision_tier.clone(),
                 });
+                // Build combined diagnostics from both layers.
+                combined_lazy_diag = Some(LazyDiagnostics::from_both(structural_lo.as_ref(), &window));
                 if window.truncated {
                     partial = true;
                     lazy_diags.push(
@@ -204,6 +218,10 @@ impl ToolRouter {
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
                     precision_tier: None,
                 });
+                // Fall back to structural-only diagnostics when dataflow fails.
+                if let Some(ref lo) = structural_lo {
+                    combined_lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+                }
                 lazy_diags.push(
                     TraceDiagnostic::warning(&format!("Lazy dataflow build failed: {e}"))
                         .with_code("lazy_dataflow_build_failed"),
@@ -237,6 +255,9 @@ impl ToolRouter {
                 resp_value["structural_hint"] = json!(hint);
             }
         }
+        if let Some(ref diag) = combined_lazy_diag {
+            resp_value["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
+        }
 
         (
             serde_json::to_string_pretty(&resp_value).unwrap_or_else(|e| e.to_string()),
@@ -254,6 +275,7 @@ impl ToolRouter {
         }
         let mut lazy_warnings = Vec::new();
         let mut structural_tier = atlas_engine::structs::precision::PrecisionTier::Exact;
+        let mut lazy_diag: Option<LazyDiagnostics> = None;
 
         let resp = if let Some(hex) = symbol_hex {
             let target_id: SymbolId = match hex.parse() {
@@ -275,6 +297,9 @@ impl ToolRouter {
                     self.ensure_structural_for_files([sym.file_id], include_roots.clone());
                 lazy_warnings = outcome.warnings;
                 structural_tier = outcome.precision_tier;
+                if let Some(ref lo) = outcome.lazy_outcome {
+                    lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+                }
             }
             let engine =
                 RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
@@ -284,6 +309,9 @@ impl ToolRouter {
             let outcome = self.ensure_structural_for_symbol_name(name, include_roots.clone());
             lazy_warnings = outcome.warnings;
             structural_tier = outcome.precision_tier;
+            if let Some(ref lo) = outcome.lazy_outcome {
+                lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+            }
             let engine =
                 RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
             engine.trace_callers_by_name(name, max_depth)
@@ -320,6 +348,9 @@ impl ToolRouter {
                 resp_value["structural_hint"] = json!(hint);
             }
         }
+        if let Some(ref diag) = lazy_diag {
+            resp_value["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
+        }
 
         (
             serde_json::to_string_pretty(&resp_value).unwrap_or_else(|e| e.to_string()),
@@ -339,6 +370,7 @@ impl ToolRouter {
         }
         let mut lazy_warnings = Vec::new();
         let mut structural_tier = atlas_engine::structs::precision::PrecisionTier::Exact;
+        let mut lazy_diag: Option<LazyDiagnostics> = None;
 
         // Name-based lookup (new path — avoids requiring hex IDs)
         if let (Some(fname), Some(tname)) = (from_name, to_name) {
@@ -347,6 +379,10 @@ impl ToolRouter {
                 let outcome = self.ensure_structural_for_symbol_name(name, include_roots.clone());
                 lazy_warnings.extend(outcome.warnings);
                 structural_tier = std::cmp::min(structural_tier, outcome.precision_tier);
+                if let Some(ref lo) = outcome.lazy_outcome {
+                    // Capture the last extraction's diagnostics (covers both symbols).
+                    lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+                }
             }
             let engine =
                 RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
@@ -372,6 +408,9 @@ impl ToolRouter {
                 {
                     resp_value["structural_hint"] = json!(hint);
                 }
+            }
+            if let Some(ref diag) = lazy_diag {
+                resp_value["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
             }
             return (
                 serde_json::to_string_pretty(&resp_value).unwrap_or_else(|e| e.to_string()),
@@ -433,6 +472,9 @@ impl ToolRouter {
         let outcome = self.ensure_structural_for_files(file_set, include_roots);
         lazy_warnings = outcome.warnings;
         structural_tier = outcome.precision_tier;
+        if let Some(ref lo) = outcome.lazy_outcome {
+            lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+        }
 
         let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
         let mut resp = engine.trace_forward(&from_id, &to_id, max_depth);
@@ -455,6 +497,9 @@ impl ToolRouter {
             if let Some(hint) = atlas_engine::precision::next_action_structural(structural_tier) {
                 resp_value["structural_hint"] = json!(hint);
             }
+        }
+        if let Some(ref diag) = lazy_diag {
+            resp_value["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
         }
         (
             serde_json::to_string_pretty(&resp_value).unwrap_or_else(|e| e.to_string()),

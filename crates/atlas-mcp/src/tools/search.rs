@@ -12,6 +12,7 @@ use atlas_engine::SymbolDef;
 use atlas_engine::SymbolKind;
 
 use super::lazy_refresh::LazyRefreshQueue;
+use super::lazy_response::LazyDiagnostics;
 use super::{ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64};
 
 use crate::task_manager::TaskManager;
@@ -54,6 +55,9 @@ struct ScopedSearchResponse {
     /// The caller should refresh the in-memory graph with these.
     #[serde(skip)]
     built_file_ids: Vec<FileId>,
+    /// Unified lazy extraction diagnostics (None when no lazy extraction ran).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lazy_diagnostics: Option<LazyDiagnostics>,
 }
 
 impl ToolRouter {
@@ -121,9 +125,8 @@ impl ToolRouter {
             include_roots,
             root_warnings,
         );
-        if !built_file_ids.is_empty() {
-            let _ = self.refresh_graph_for_files(&built_file_ids);
-        }
+        self.lazy_refresh_queue.record_lazy_writes(&built_file_ids);
+        let _ = self.maybe_refresh_graph();
         (result_str, is_err)
     }
 
@@ -272,6 +275,7 @@ impl ToolRouter {
         let sym;
         let lazy_warnings;
         let structural_tier;
+        let mut lazy_diag: Option<LazyDiagnostics> = None;
         match symbols.into_iter().next() {
             Some(s) => {
                 // Ensure structural data so caller/callee results
@@ -279,6 +283,9 @@ impl ToolRouter {
                 let outcome = self.ensure_structural_for_files([s.file_id], include_roots.clone());
                 lazy_warnings = outcome.warnings;
                 structural_tier = outcome.precision_tier;
+                if let Some(ref lo) = outcome.lazy_outcome {
+                    lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+                }
                 // Re-query after lazy — structural replace may have
                 // updated symbol metadata or source ranges.
                 sym = self
@@ -293,6 +300,9 @@ impl ToolRouter {
                 let outcome = self.ensure_structural_for_symbol_name(qname, include_roots.clone());
                 lazy_warnings = outcome.warnings;
                 structural_tier = outcome.precision_tier;
+                if let Some(ref lo) = outcome.lazy_outcome {
+                    lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+                }
                 let retry = self.store.find_symbols_by_qname(qname).unwrap_or_default();
                 match retry.into_iter().next() {
                     Some(s) => sym = s,
@@ -345,6 +355,9 @@ impl ToolRouter {
                 result["hint"] = json!(hint);
             }
         }
+        if let Some(ref diag) = lazy_diag {
+            result["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
+        }
 
         (
             serde_json::to_string_pretty(&result).unwrap_or_else(|e| e.to_string()),
@@ -378,6 +391,7 @@ where
     let mut background_preparse = None;
     let mut built_file_ids: Vec<FileId> = Vec::new();
     let mut precision_tier: Option<PrecisionTier> = None;
+    let mut lazy_diagnostics: Option<LazyDiagnostics> = None;
     let kind_filter = kind.and_then(SymbolKind::from_str);
 
     if scope_file_count == 0 {
@@ -396,6 +410,7 @@ where
             background_preparse,
             built_file_ids: Vec::new(),
             precision_tier: None,
+            lazy_diagnostics: None,
         });
     }
 
@@ -452,6 +467,7 @@ where
         match orchestrator.ensure_structural_for_files(&file_ids, LazyPolicy::ForegroundStructural) {
             Ok(outcome) => {
                 total_budget_exceeded = outcome.budget_exceeded;
+                lazy_diagnostics = Some(LazyDiagnostics::from_structural(&outcome));
                 built_file_ids = outcome.built_file_ids;
                 precision_tier = Some(outcome.precision_tier);
             }
@@ -553,6 +569,7 @@ where
         background_preparse,
         built_file_ids,
         precision_tier,
+        lazy_diagnostics,
     })
 }
 

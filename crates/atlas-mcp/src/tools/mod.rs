@@ -53,6 +53,7 @@ pub(crate) mod dependents;
 pub(crate) mod graph;
 pub(crate) mod index;
 pub(crate) mod lazy_refresh;
+pub(crate) mod lazy_response;
 pub(crate) mod open_project;
 pub(crate) mod search;
 pub(crate) mod status;
@@ -71,6 +72,9 @@ pub(crate) struct StructuralEnsureOutcome {
     pub warnings: Vec<String>,
     pub built_file_ids: Vec<atlas_engine::FileId>,
     pub precision_tier: atlas_engine::structs::precision::PrecisionTier,
+    /// Full lazy outcome when extraction actually ran (None if skipped,
+    /// e.g., when a manual full index already exists).
+    pub lazy_outcome: Option<atlas_engine::LazyOutcome>,
 }
 
 // -------------------------------------------------------------------
@@ -96,6 +100,8 @@ pub struct ToolRouter {
     /// Consolidates lazy graph refresh state: pending file IDs, cumulative
     /// write counter, and deferred full-rebuild scheduling.
     pub(crate) lazy_refresh_queue: Arc<lazy_refresh::LazyRefreshQueue>,
+    /// Background-built graph waiting to be atomically swapped in.
+    pending_graph_rebuild: Arc<Mutex<Option<Arc<atlas_engine::GraphEngine>>>>,
     /// Cached signature to avoid per-request COUNT queries.
     cached_signature: String,
     /// When the cached signature was last checked (avoids re-query within cooldown).
@@ -139,6 +145,7 @@ impl ToolRouter {
             last_graph_signature: last_graph_signature.clone(),
             graph_initialized: true,
             lazy_refresh_queue: lazy_refresh::LazyRefreshQueue::new(),
+            pending_graph_rebuild: Arc::new(Mutex::new(None)),
             cached_signature: last_graph_signature,
             last_signature_check: std::time::Instant::now(),
             progress_sender: None,
@@ -165,6 +172,7 @@ impl ToolRouter {
             last_graph_signature: String::new(),
             graph_initialized: false,
             lazy_refresh_queue: lazy_refresh::LazyRefreshQueue::new(),
+            pending_graph_rebuild: Arc::new(Mutex::new(None)),
             cached_signature: String::new(),
             last_signature_check: std::time::Instant::now(),
             progress_sender: None,
@@ -353,32 +361,29 @@ impl ToolRouter {
         if !self.graph_initialized {
             return Ok(());
         }
-        // 1. Process any pending per-file incremental updates.
+
+        // Step 1: Always flush pending incremental writes (no cooldown).
+        // This ensures lazy writes from THIS request are visible before graph queries.
         let batch = self.lazy_refresh_queue.take_incremental_batch(500);
-        if !batch.is_empty() {
-            self.refresh_graph_for_files(&batch)?;
-        }
-        // 2. Background task(s) may have triggered lazy structural —
-        //    skip cooldown to pick up new facts immediately.
+        self.refresh_graph_for_files(&batch)?;
+
+        // Step 2: Deferred full rebuild — try to apply a background-built graph,
+        // or spawn the rebuild thread. NEVER blocks the current request.
+        self.try_apply_or_spawn_rebuild();
+
+        // Step 3: Background preparse wrote to the DB — bypass cooldown.
         if self.lazy_refresh_queue.has_background_writes() {
             self.last_signature_check = self
                 .last_signature_check
                 .checked_sub(std::time::Duration::from_secs(10))
                 .unwrap_or(self.last_signature_check);
         }
-        // 3. Cache signature for 5 seconds
+
+        // Step 4: 5s signature cache cooldown + rebuild if changed.
         if self.last_signature_check.elapsed().as_secs() < 5 {
             return Ok(());
         }
         self.last_signature_check = std::time::Instant::now();
-        // 4. Cumulative lazy changes crossed the threshold — execute the
-        //    deferred full rebuild now, before the next graph-backed query.
-        //    This is on the critical path of the NEXT tool call (not the
-        //    one that triggered the threshold), giving it its own 30s budget.
-        if self.lazy_refresh_queue.needs_full_rebuild() {
-            tracing::warn!("Cumulative lazy threshold reached — performing synchronous full rebuild. Phase 3 will make this async.");
-            return self.force_refresh_graph();
-        }
         self.rebuild_if_signature_changed("Index signature changed, refreshing graph")
     }
 
@@ -394,6 +399,69 @@ impl ToolRouter {
         }
         self.last_signature_check = std::time::Instant::now();
         self.rebuild_if_signature_changed("Force-refreshing graph after lazy structural extraction")
+    }
+
+    /// Atomically swap in a pre-built graph, updating both search and context engines.
+    fn swap_graph(&mut self, graph: Arc<atlas_engine::GraphEngine>) {
+        if let Some(ref mut s) = self.search {
+            s.refresh_graph(Arc::clone(&graph));
+        }
+        if let Some(ref mut c) = self.context {
+            c.refresh_graph(graph);
+        }
+        self.last_graph_signature = self.store.index_signature().unwrap_or_default();
+        self.cached_manual_full_index.set(None);
+    }
+
+    /// Try to apply a background-built graph from the pending slot,
+    /// or spawn a background rebuild thread if one was scheduled.
+    ///
+    /// Step 1: If a pending graph exists (built by a previous background thread),
+    /// swap it in and clear the flags.
+    /// Step 2: If a full rebuild was scheduled (cumulative threshold reached),
+    /// and no rebuild is in progress, spawn a background thread to build the
+    /// graph from the store. The current request continues with the old snapshot.
+    fn try_apply_or_spawn_rebuild(&mut self) {
+        // Step 1: Check for a pre-built graph in the pending slot.
+        if let Some(graph) = self
+            .pending_graph_rebuild
+            .lock()
+            .ok()
+            .and_then(|mut p| p.take())
+        {
+            tracing::info!("Applying background-built graph snapshot");
+            self.swap_graph(graph);
+            self.lazy_refresh_queue.mark_rebuild_applied();
+            self.lazy_refresh_queue.mark_rebuild_finished();
+            return;
+        }
+
+        // Step 2: If a full rebuild is needed and no rebuild is in progress,
+        // spawn a background thread to build the graph.
+        if self.lazy_refresh_queue.needs_full_rebuild()
+            && self.lazy_refresh_queue.try_start_rebuild()
+        {
+            tracing::info!("Spawning background full graph rebuild (non-blocking)");
+            let store = Arc::clone(&self.store);
+            let pending = Arc::clone(&self.pending_graph_rebuild);
+            let queue = Arc::clone(&self.lazy_refresh_queue);
+            std::thread::spawn(move || {
+                match atlas_engine::GraphEngine::from_store(&store, 0.3) {
+                    Ok(graph) => {
+                        if let Ok(mut slot) = pending.lock() {
+                            *slot = Some(Arc::new(graph));
+                        }
+                        // Note: rebuild_in_progress stays true until the pending
+                        // graph is picked up by a subsequent try_apply_or_spawn_rebuild.
+                    }
+                    Err(e) => {
+                        tracing::error!("Background graph rebuild failed: {:#}", e);
+                        queue.mark_rebuild_finished();
+                        queue.schedule_full_rebuild(); // retry on next call
+                    }
+                }
+            });
+        }
     }
 
     /// Refresh graph after lazy structural extraction.
@@ -684,6 +752,7 @@ impl ToolRouter {
                 warnings,
                 built_file_ids,
                 precision_tier: PrecisionTier::Exact,
+                lazy_outcome: None,
             };
         }
         // Deduplicate
@@ -693,6 +762,7 @@ impl ToolRouter {
                 warnings,
                 built_file_ids,
                 precision_tier: PrecisionTier::Exact,
+                lazy_outcome: None,
             };
         }
         let file_vec: Vec<FileId> = file_set.into_iter().collect();
@@ -711,14 +781,17 @@ impl ToolRouter {
                     warnings,
                     built_file_ids,
                     precision_tier: PrecisionTier::Unavailable,
+                    lazy_outcome: None,
                 };
             }
         };
+        // Clone before field moves so we can pass it through to handlers.
+        let lazy_outcome = outcome.clone();
         self.lazy_refresh_queue
             .record_lazy_writes(&outcome.built_file_ids);
         built_file_ids = outcome.built_file_ids;
         if !built_file_ids.is_empty() {
-            if let Err(e) = self.refresh_graph_for_files(&built_file_ids) {
+            if let Err(e) = self.maybe_refresh_graph() {
                 warnings.push(format!("Graph refresh failed: {:#}", e));
             }
         }
@@ -726,6 +799,7 @@ impl ToolRouter {
             warnings,
             built_file_ids,
             precision_tier: outcome.precision_tier,
+            lazy_outcome: Some(lazy_outcome),
         }
     }
 
@@ -746,6 +820,7 @@ impl ToolRouter {
                 warnings,
                 built_file_ids,
                 precision_tier: PrecisionTier::Exact,
+                lazy_outcome: None,
             };
         }
         let orchestrator = LazyOrchestrator::new(
@@ -766,14 +841,17 @@ impl ToolRouter {
                     warnings,
                     built_file_ids,
                     precision_tier: PrecisionTier::Unavailable,
+                    lazy_outcome: None,
                 };
             }
         };
+        // Clone before field moves so we can pass it through to handlers.
+        let lazy_outcome = outcome.clone();
         self.lazy_refresh_queue
             .record_lazy_writes(&outcome.built_file_ids);
         built_file_ids = outcome.built_file_ids;
         if !built_file_ids.is_empty() {
-            if let Err(e) = self.refresh_graph_for_files(&built_file_ids) {
+            if let Err(e) = self.maybe_refresh_graph() {
                 warnings.push(format!("Graph refresh failed: {:#}", e));
             }
         }
@@ -781,6 +859,7 @@ impl ToolRouter {
             warnings,
             built_file_ids,
             precision_tier: outcome.precision_tier,
+            lazy_outcome: Some(lazy_outcome),
         }
     }
 
@@ -1461,6 +1540,7 @@ mod tests {
             warnings: vec![],
             built_file_ids: vec![],
             precision_tier: atlas_engine::structs::precision::PrecisionTier::Unavailable,
+            lazy_outcome: None,
         };
         assert!(outcome.warnings.is_empty());
         assert!(outcome.built_file_ids.is_empty());
