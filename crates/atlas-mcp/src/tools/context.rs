@@ -129,10 +129,8 @@ impl ToolRouter {
                 .filter(|s| s.qualified_name.to_lowercase().contains(&q_lower))
                 .collect();
             if matching_qnames.len() == 1 {
-                let outcome = self.ensure_structural_for_files(
-                    [matching_qnames[0].file_id],
-                    include_roots,
-                );
+                let outcome =
+                    self.ensure_structural_for_files([matching_qnames[0].file_id], include_roots);
                 warnings.extend(outcome.warnings);
                 worst_tier = cmp::min(worst_tier, outcome.precision_tier);
                 return Ok((matching_qnames[0].id, warnings, worst_tier));

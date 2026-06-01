@@ -114,7 +114,9 @@ impl ToolRouter {
             "total_found": sub.node_indices.len(),
         });
         if !self.has_manual_full_index() {
-            resp["note"] = json!("Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results.");
+            resp["note"] = json!(
+                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results."
+            );
         }
 
         (
@@ -145,7 +147,9 @@ impl ToolRouter {
             "callers": nodes,
         });
         if !self.has_manual_full_index() {
-            resp["note"] = json!("Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results.");
+            resp["note"] = json!(
+                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results."
+            );
         }
 
         (
@@ -176,7 +180,9 @@ impl ToolRouter {
             "callees": nodes,
         });
         if !self.has_manual_full_index() {
-            resp["note"] = json!("Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results.");
+            resp["note"] = json!(
+                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results."
+            );
         }
 
         (
@@ -298,13 +304,15 @@ impl ToolRouter {
         }
 
         let mut resp = json!({
-                "symbol": qname,
-                "max_depth": depth,
-                "total_nodes_visited": total_nodes,
-                "hops": hops,
-            });
+            "symbol": qname,
+            "max_depth": depth,
+            "total_nodes_visited": total_nodes,
+            "hops": hops,
+        });
         if !self.has_manual_full_index() {
-            resp["note"] = json!("Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results.");
+            resp["note"] = json!(
+                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results."
+            );
         }
 
         (
@@ -851,12 +859,14 @@ impl ToolRouter {
         }
 
         let mut resp = json!({
-                "symbol": sym_obj,
-                "incoming": incoming,
-                "outgoing": outgoing,
-            });
+            "symbol": sym_obj,
+            "incoming": incoming,
+            "outgoing": outgoing,
+        });
         if !self.has_manual_full_index() {
-            resp["note"] = json!("Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results.");
+            resp["note"] = json!(
+                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results."
+            );
         }
 
         (
@@ -910,13 +920,15 @@ impl ToolRouter {
             .collect();
 
         let mut resp = json!({
-                "symbol": qname,
-                "max_depth": depth,
-                "impacted_nodes": total_shown,
-                "file_groups": grouped,
-            });
+            "symbol": qname,
+            "max_depth": depth,
+            "impacted_nodes": total_shown,
+            "file_groups": grouped,
+        });
         if !self.has_manual_full_index() {
-            resp["note"] = json!("Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results.");
+            resp["note"] = json!(
+                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results."
+            );
         }
 
         (

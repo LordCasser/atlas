@@ -14,6 +14,7 @@ use atlas_engine::SymbolKind;
 use super::{ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64};
 
 use serde_json::json;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -22,11 +23,6 @@ const LIKE_FALLBACK_SCOPE_FILE_LIMIT: usize = 32;
 const PREHEAT_SCOPE_FILE_LIMIT: usize = 64;
 const PREHEAT_FILE_LIMIT: usize = 8;
 const SEARCH_CANDIDATE_MULTIPLIER: usize = 4;
-/// Maximum total indexed files for which scope="." automatically gets full
-/// structural parsing regardless of scope file count.  Applies to fully-indexed
-/// small projects (≤ 200 files total in the index).
-const SMALL_PROJECT_FULL_SCOPE_LIMIT: usize = 200;
-
 #[derive(Debug, Clone, serde::Serialize)]
 struct SearchHit {
     name: String,
@@ -280,7 +276,8 @@ impl ToolRouter {
                 structural_tier = outcome.precision_tier;
                 // Re-query after lazy — structural replace may have
                 // updated symbol metadata or source ranges.
-                sym = self.store
+                sym = self
+                    .store
                     .find_symbols_by_qname(qname)
                     .unwrap_or_default()
                     .into_iter()
@@ -351,7 +348,7 @@ impl ToolRouter {
     }
 }
 
-    fn execute_scoped_search<F>(
+fn execute_scoped_search<F>(
     store: Arc<Store>,
     project_root: std::path::PathBuf,
     query: &str,
@@ -396,13 +393,6 @@ where
         });
     }
 
-    // For fully-indexed small projects (≤ 200 total indexed files), treat the
-    // entire project as "small enough" for structural parsing regardless of the
-    // scope's individual file count.  This avoids the confusing situation where
-    // scope="." on a 99-file project is rejected.
-    let total_indexed = store.count_files().unwrap_or(0);
-    let is_small_project = total_indexed > 0 && total_indexed <= SMALL_PROJECT_FULL_SCOPE_LIMIT;
-
     // When a manual full index exists, all files already have structural data.
     // Skip the file-count-based heuristic entirely — every scope is "precise"
     // because lazy structural has nothing to do.
@@ -410,19 +400,43 @@ where
         true
     } else {
         scope_file_count <= SYNC_STRUCTURAL_SCOPE_FILE_LIMIT
-            || (is_small_project && scope_file_count == total_indexed)
     };
     let parse_level = if precise { "structural" } else { "manifest" };
+
+    let mut symbols = search_symbols_scoped(
+        &store,
+        query,
+        &normalized_scope,
+        limit,
+        kind_filter,
+        scope_file_count,
+    )?;
 
     if precise && !is_manual_full {
         if let Some(ref progress) = progress {
             progress(
                 0.35,
-                "Scope is small enough; ensuring structural index...".to_string(),
+                "Ensuring structural index for search candidates...".to_string(),
             );
         }
-        let max_files = scope_file_count.max(SYNC_STRUCTURAL_SCOPE_FILE_LIMIT);
-        let file_ids = store.list_file_ids_in_scope(&normalized_scope, max_files)?;
+        let mut seen_files = HashSet::new();
+        let mut file_ids: Vec<FileId> = symbols
+            .iter()
+            .filter_map(|sym| {
+                if seen_files.insert(sym.file_id) {
+                    Some(sym.file_id)
+                } else {
+                    None
+                }
+            })
+            .take(SYNC_STRUCTURAL_SCOPE_FILE_LIMIT)
+            .collect();
+
+        if file_ids.is_empty() {
+            file_ids = store
+                .list_file_ids_in_scope(&normalized_scope, SYNC_STRUCTURAL_SCOPE_FILE_LIMIT)?;
+        }
+
         let coordinator = LazyCoordinator::with_project_root(store.clone(), project_root.clone())
             .with_include_roots(include_roots.clone());
         let lazy = LazyStructuralService::new(store.clone(), Some(project_root.clone()));
@@ -457,6 +471,21 @@ where
             total_files_cached,
             total_budget_exceeded,
         ));
+
+        if let Some(ref progress) = progress {
+            progress(
+                0.60,
+                "Re-running scoped symbol query after structural parsing...".to_string(),
+            );
+        }
+        symbols = search_symbols_scoped(
+            &store,
+            query,
+            &normalized_scope,
+            limit,
+            kind_filter,
+            scope_file_count,
+        )?;
     } else if !is_manual_full {
         // Single actionable warning — no contradictory "returning manifest results"
         // when results may actually be empty.
@@ -469,11 +498,7 @@ where
             "Scope has {} files (precise structural parsing: ≤{}{}). Using {}. For best results, narrow scope to a specific directory like 'src/' or 'internal/'.",
             scope_file_count,
             SYNC_STRUCTURAL_SCOPE_FILE_LIMIT,
-            if is_small_project {
-                format!(", full-project: ≤{}", SMALL_PROJECT_FULL_SCOPE_LIMIT)
-            } else {
-                String::new()
-            },
+            String::new(),
             level_desc,
         ));
     }
@@ -481,14 +506,6 @@ where
     if let Some(ref progress) = progress {
         progress(0.70, "Running scoped symbol query...".to_string());
     }
-    let mut symbols = search_symbols_scoped(
-        &store,
-        query,
-        &normalized_scope,
-        limit,
-        kind_filter,
-        scope_file_count,
-    )?;
     symbols.truncate(limit);
 
     // Empty result guidance: when no results and not in precise mode, help the

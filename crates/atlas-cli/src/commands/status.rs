@@ -162,14 +162,14 @@ fn print_indexed_scope(ctx: &crate::runtime::CommandContext) {
     }
 }
 
-/// Show file index layer counts (manifest/structural/dataflow).
+/// Show file extraction state counts (manifest/structural/dataflow).
 fn print_layer_summary(ctx: &crate::runtime::CommandContext) {
-    if let Ok(layers) = ctx.store.count_file_index_layers() {
+    if let Ok(layers) = ctx.store.count_file_extraction_state() {
         if layers.is_empty() {
             return;
         }
         println!();
-        println!("  Index layers:");
+        println!("  Extraction state:");
         for (layer, status, count) in &layers {
             println!("    {:<14} {}={}", layer, status, count);
         }

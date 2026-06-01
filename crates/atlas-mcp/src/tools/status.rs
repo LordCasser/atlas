@@ -1,5 +1,7 @@
 //! Status tools: project overview and file listing.
 
+use std::collections::HashMap;
+
 use atlas_engine::{Language, LanguageCapabilityProfile};
 
 use super::ToolRouter;
@@ -12,21 +14,62 @@ impl ToolRouter {
             Ok(s) => s,
             Err(e) => return (format!("Error getting stats: {}", e), true),
         };
-        let lazy_stats = self.store.get_lazy_stats().ok();
+        let lazy_stats = self.store.get_lazy_dataflow_stats().ok();
+        let layer_counts = self
+            .store
+            .count_fresh_file_extraction_state()
+            .unwrap_or_default();
+        let active_jobs = self.store.list_active_extraction_jobs().unwrap_or_default();
+
+        let mut fresh_layers: HashMap<(String, String), i64> = HashMap::new();
+        for (layer, status, count) in &layer_counts {
+            fresh_layers.insert((layer.clone(), status.clone()), *count);
+        }
+        let complete = |layer: &str| -> i64 {
+            fresh_layers
+                .get(&(layer.to_string(), "complete".to_string()))
+                .copied()
+                .unwrap_or(0)
+        };
+        let manifest_complete = complete("manifest");
+        let structural_complete = complete("structural");
+        let dataflow_file_complete = complete("dataflow");
 
         // Determine index mode:
         //   "none"           — no files indexed
-        //   "structural+lazy"— analysis_artifacts exist (lazy query was triggered)
+        //   "manifest"       — files/basic top-level symbols only
+        //   "partial_structural" — some fresh files have structural facts
+        //   "structural+lazy"— unit-level lazy dataflow state exists
         //   "full"           — dataflow was explicitly built via index --analysis full
-        //                       (data_nodes exist but NO lazy artifacts)
-        //   "structural"     — files indexed, no dataflow, no lazy artifacts
+        //                       (data_nodes exist but NO lazy unit state)
+        //   "structural"     — files indexed, no dataflow, no lazy unit state
         let index_mode = if stats.total_files == 0 {
             "none"
-        } else if lazy_stats.as_ref().map_or(false, |l| l.total_artifacts > 0) {
-            // Lazy artifacts exist — the index was structural, dataflow came from lazy.
+        } else if structural_complete == 0 {
+            if manifest_complete > 0 {
+                "manifest"
+            } else {
+                "unknown"
+            }
+        } else if structural_complete < stats.total_files as i64 {
+            if lazy_stats
+                .as_ref()
+                .map_or(false, |l| l.total_unit_states > 0)
+            {
+                "partial_structural+lazy"
+            } else {
+                "partial_structural"
+            }
+        } else if lazy_stats
+            .as_ref()
+            .map_or(false, |l| l.total_unit_states > 0)
+        {
+            // Lazy unit state exists — the index was structural, dataflow came from lazy.
             "structural+lazy"
-        } else if lazy_stats.as_ref().map_or(false, |l| l.has_dataflow) {
-            // Dataflow exists but no lazy artifacts — explicit full index.
+        } else if dataflow_file_complete >= stats.total_files as i64
+            || lazy_stats.as_ref().map_or(false, |l| l.has_dataflow)
+        {
+            // Dataflow exists but no lazy unit state — explicit full index.
             "full"
         } else {
             "structural"
@@ -62,14 +105,14 @@ impl ToolRouter {
             .map(|l| {
                 json!({
                     "enabled": true,
-                    "artifacts": l.total_artifacts,
-                    "partial_artifacts": l.partial_artifacts,
+                    "unit_states": l.total_unit_states,
+                    "partial_unit_states": l.partial_unit_states,
                 })
             })
             .unwrap_or(json!({
                 "enabled": true,
-                "artifacts": 0,
-                "partial_artifacts": 0,
+                "unit_states": 0,
+                "partial_unit_states": 0,
             }));
 
         // Determine storage mode from db_path
@@ -96,7 +139,13 @@ impl ToolRouter {
                 },
                 "index": {
                     "mode": index_mode,
+                    "fresh_layers": layer_counts.iter().map(|(layer, status, count)| json!({
+                        "layer": layer,
+                        "status": status,
+                        "files": count,
+                    })).collect::<Vec<_>>(),
                     "lazy_dataflow": lazy_dataflow,
+                    "active_extraction_jobs": active_jobs.len(),
                     "hint": index_hint,
                 },
                 "database": {
@@ -112,6 +161,28 @@ impl ToolRouter {
             .unwrap_or_else(|e| e.to_string()),
             false,
         )
+    }
+
+    pub(crate) fn handle_jobs(&self) -> (String, bool) {
+        match self.store.list_active_extraction_jobs() {
+            Ok(jobs) => (
+                serde_json::to_string_pretty(&json!({
+                    "active_jobs": jobs.iter().map(|job| json!({
+                        "job_id": job.job_id,
+                        "file_id": job.file_id.to_hex(),
+                        "unit_id": job.unit_id.map(unit_id_hex),
+                        "layer": job.layer,
+                        "status": job.status,
+                        "trigger_query": job.trigger_query,
+                        "started_at": job.started_at,
+                        "budget_ms": job.budget_ms,
+                    })).collect::<Vec<_>>(),
+                }))
+                .unwrap_or_else(|e| e.to_string()),
+                false,
+            ),
+            Err(e) => (format!("Error listing active extraction jobs: {}", e), true),
+        }
     }
 
     pub(crate) fn handle_files(&self) -> (String, bool) {
@@ -130,6 +201,15 @@ impl ToolRouter {
             Err(e) => (format!("Error listing files: {}", e), true),
         }
     }
+}
+
+fn unit_id_hex(unit_id: [u8; 16]) -> String {
+    let mut out = String::with_capacity(32);
+    for byte in unit_id {
+        use std::fmt::Write;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
 }
 
 fn compiled_features() -> Vec<&'static str> {

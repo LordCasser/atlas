@@ -83,8 +83,7 @@ impl ToolRouter {
 
         let tier = outcome.precision_tier;
         let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
-        resp_value["structural_precision_tier"] =
-            serde_json::to_value(tier).unwrap_or(json!(null));
+        resp_value["structural_precision_tier"] = serde_json::to_value(tier).unwrap_or(json!(null));
         if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
             if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
                 resp_value["structural_hint"] = json!(hint);
@@ -169,6 +168,8 @@ impl ToolRouter {
                     triggered: true,
                     units_built: window.units_built,
                     units_cached: window.units_cached,
+                    units_pending: window.units_pending,
+                    pending_job_ids: window.pending_job_ids.clone(),
                     truncated: window.truncated,
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
                     precision_tier: window.precision_tier.clone(),
@@ -181,6 +182,15 @@ impl ToolRouter {
                         ).with_code("lazy_dataflow_budget_exceeded")
                     );
                 }
+                if window.units_pending > 0 {
+                    partial = true;
+                    lazy_diags.push(
+                        TraceDiagnostic::warning(
+                            "Lazy dataflow is already being built by another request. Result may be partial; retry after the reported pending job completes."
+                        )
+                        .with_code("lazy_dataflow_already_building"),
+                    );
+                }
             }
             Err(e) => {
                 partial = true;
@@ -188,6 +198,8 @@ impl ToolRouter {
                     triggered: true,
                     units_built: 0,
                     units_cached: 0,
+                    units_pending: 0,
+                    pending_job_ids: Vec::new(),
                     truncated: true,
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
                     precision_tier: None,
@@ -219,8 +231,7 @@ impl ToolRouter {
 
         let tier = outcome.precision_tier;
         let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
-        resp_value["structural_precision_tier"] =
-            serde_json::to_value(tier).unwrap_or(json!(null));
+        resp_value["structural_precision_tier"] = serde_json::to_value(tier).unwrap_or(json!(null));
         if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
             if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
                 resp_value["structural_hint"] = json!(hint);
@@ -242,8 +253,7 @@ impl ToolRouter {
             tracing::warn!("include_roots: {}", w);
         }
         let mut lazy_warnings = Vec::new();
-        let mut structural_tier =
-            atlas_engine::structs::precision::PrecisionTier::Exact;
+        let mut structural_tier = atlas_engine::structs::precision::PrecisionTier::Exact;
 
         let resp = if let Some(hex) = symbol_hex {
             let target_id: SymbolId = match hex.parse() {
@@ -305,12 +315,8 @@ impl ToolRouter {
         let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
         resp_value["structural_precision_tier"] =
             serde_json::to_value(structural_tier).unwrap_or(json!(null));
-        if structural_tier
-            != atlas_engine::structs::precision::PrecisionTier::Exact
-        {
-            if let Some(hint) =
-                atlas_engine::precision::next_action_structural(structural_tier)
-            {
+        if structural_tier != atlas_engine::structs::precision::PrecisionTier::Exact {
+            if let Some(hint) = atlas_engine::precision::next_action_structural(structural_tier) {
                 resp_value["structural_hint"] = json!(hint);
             }
         }
@@ -332,8 +338,7 @@ impl ToolRouter {
             tracing::warn!("include_roots: {}", w);
         }
         let mut lazy_warnings = Vec::new();
-        let mut structural_tier =
-            atlas_engine::structs::precision::PrecisionTier::Exact;
+        let mut structural_tier = atlas_engine::structs::precision::PrecisionTier::Exact;
 
         // Name-based lookup (new path — avoids requiring hex IDs)
         if let (Some(fname), Some(tname)) = (from_name, to_name) {
@@ -362,11 +367,8 @@ impl ToolRouter {
             let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
             resp_value["structural_precision_tier"] =
                 serde_json::to_value(structural_tier).unwrap_or(json!(null));
-            if structural_tier
-                != atlas_engine::structs::precision::PrecisionTier::Exact
-            {
-                if let Some(hint) =
-                    atlas_engine::precision::next_action_structural(structural_tier)
+            if structural_tier != atlas_engine::structs::precision::PrecisionTier::Exact {
+                if let Some(hint) = atlas_engine::precision::next_action_structural(structural_tier)
                 {
                     resp_value["structural_hint"] = json!(hint);
                 }
@@ -449,12 +451,8 @@ impl ToolRouter {
         let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
         resp_value["structural_precision_tier"] =
             serde_json::to_value(structural_tier).unwrap_or(json!(null));
-        if structural_tier
-            != atlas_engine::structs::precision::PrecisionTier::Exact
-        {
-            if let Some(hint) =
-                atlas_engine::precision::next_action_structural(structural_tier)
-            {
+        if structural_tier != atlas_engine::structs::precision::PrecisionTier::Exact {
+            if let Some(hint) = atlas_engine::precision::next_action_structural(structural_tier) {
                 resp_value["structural_hint"] = json!(hint);
             }
         }

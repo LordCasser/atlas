@@ -279,7 +279,10 @@ impl ToolRouter {
             self.cached_manual_full_index.set(Some(false));
             return false;
         }
-        let layer_counts = self.store.count_file_index_layers().unwrap_or_default();
+        let layer_counts = self
+            .store
+            .count_fresh_file_extraction_state()
+            .unwrap_or_default();
         let structural_complete: usize = layer_counts
             .iter()
             .filter(|(l, s, _)| l == "structural" && s == "complete")
@@ -471,6 +474,7 @@ impl ToolRouter {
             "index" => self.handle_index(arguments),
             "open_project" => self.handle_open_project(arguments),
             "status" => self.handle_status(),
+            "jobs" => self.handle_jobs(),
             "files" => self.handle_files(),
             "search" => self.handle_search(arguments),
             "symbol" => self.handle_symbol(arguments),
@@ -706,8 +710,11 @@ impl ToolRouter {
                 warnings.push(format!("Graph refresh failed: {:#}", e));
             }
         }
-        let precision_tier =
-            atlas_engine::precision::structural_precision(total_files_built, total_files_cached, total_budget_exceeded);
+        let precision_tier = atlas_engine::precision::structural_precision(
+            total_files_built,
+            total_files_cached,
+            total_budget_exceeded,
+        );
         StructuralEnsureOutcome {
             warnings,
             built_file_ids,
@@ -899,7 +906,16 @@ pub fn make_all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "status".into(),
-            description: "Show project overview: file/symbol/edge counts, DB stats, per-language capability profiles.".into(),
+            description: "Show project overview: file/symbol/edge counts, fresh extraction-state distribution, lazy dataflow stats, active extraction job count, DB stats, and per-language capability profiles.".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({})),
+                required: None,
+            },
+        },
+        Tool {
+            name: "jobs".into(),
+            description: "List active lazy extraction jobs. Use when a response reports pending lazy work or partial precision; retry the original query after the relevant job disappears.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({})),
@@ -1459,6 +1475,39 @@ mod tests {
         assert_eq!(warns.len(), 2);
     }
 
+    #[test]
+    fn status_reports_manifest_mode_from_fresh_layers() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "test.ts");
+        store
+            .upsert_file_extraction_state(&file_id, "manifest", "hash1", "complete")
+            .unwrap();
+
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let (resp_str, is_error) = router.handle_status();
+        assert!(!is_error, "status failed: {}", resp_str);
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        assert_eq!(resp["index"]["mode"].as_str(), Some("manifest"));
+        assert_eq!(resp["index"]["active_extraction_jobs"].as_u64(), Some(0));
+    }
+
+    #[test]
+    fn jobs_lists_active_extraction_jobs() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "test.ts");
+        store
+            .claim_file_extraction_job(&file_id, "structural", Some("test"), None, Some(30_000))
+            .unwrap();
+
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let (resp_str, is_error) = router.handle_jobs();
+        assert!(!is_error, "jobs failed: {}", resp_str);
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let jobs = resp["active_jobs"].as_array().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0]["layer"].as_str(), Some("structural"));
+    }
+
     // ── Regression: include_roots validation produces diagnostics ────
 
     #[test]
@@ -1509,7 +1558,11 @@ mod tests {
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         let diags = resp["diagnostics"].as_array();
         assert!(diags.is_some(), "Expected diagnostics");
-        let codes: Vec<&str> = diags.unwrap().iter().filter_map(|d| d["code"].as_str()).collect();
+        let codes: Vec<&str> = diags
+            .unwrap()
+            .iter()
+            .filter_map(|d| d["code"].as_str())
+            .collect();
         assert!(
             codes.contains(&"include_roots_warning"),
             "Expected include_roots_warning, got: {:?}",
@@ -1538,7 +1591,11 @@ mod tests {
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         let warns = resp["warnings"].as_array();
-        assert!(warns.is_some(), "Expected 'warnings' field in: {}", resp_str);
+        assert!(
+            warns.is_some(),
+            "Expected 'warnings' field in: {}",
+            resp_str
+        );
         assert!(
             !warns.unwrap().is_empty(),
             "Expected non-empty warnings in: {}",
@@ -1565,7 +1622,11 @@ mod tests {
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         let warns = resp["warnings"].as_array();
-        assert!(warns.is_some(), "Expected 'warnings' field in: {}", resp_str);
+        assert!(
+            warns.is_some(),
+            "Expected 'warnings' field in: {}",
+            resp_str
+        );
         assert!(
             !warns.unwrap().is_empty(),
             "Expected non-empty warnings in: {}",
