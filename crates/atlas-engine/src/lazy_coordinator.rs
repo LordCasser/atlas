@@ -2,7 +2,7 @@
 //!
 //! Coordinates between lazy structural and lazy dataflow extraction,
 //! ensuring in-flight deduplication and recording build state via the
-//! `lazy_jobs` table.
+//! `extraction_jobs` table.
 //!
 //! # Phase 1 capabilities
 //!
@@ -128,7 +128,7 @@ impl LazyCoordinator {
         service: &LazyStructuralService,
         file_id: &FileId,
     ) -> Result<(EnsureStructuralResult, String)> {
-        let claim = self.store.claim_lazy_job(
+        let claim = self.store.claim_file_extraction_job(
             file_id,
             "structural",
             Some("lazy_coordinator::ensure_structural"),
@@ -144,7 +144,7 @@ impl LazyCoordinator {
                     files_cached: 1, // treated as cached since another job handles it
                     budget_exceeded: false,
                     built_file_ids: vec![],
-                    precision_tier: PrecisionTier::Exact,
+                    precision_tier: PrecisionTier::DegradedStructural,
                 };
                 return Ok((result, job_id));
             }
@@ -154,11 +154,12 @@ impl LazyCoordinator {
 
                 match result {
                     Ok(r) => {
-                        self.store.complete_lazy_job(&job_id)?;
+                        self.store.complete_extraction_job(&job_id)?;
                         Ok((r, job_id))
                     }
                     Err(e) => {
-                        self.store.fail_lazy_job(&job_id, &format!("{:#}", e))?;
+                        self.store
+                            .fail_extraction_job(&job_id, &format!("{:#}", e))?;
                         Err(e)
                     }
                 }
@@ -171,7 +172,7 @@ impl LazyCoordinator {
     /// Given a seed file, expands to include import dependencies via
     /// [`ClosurePlanner`], builds them in dependency order (deps first),
     /// then builds the seed.  Each file in the closure gets its own
-    /// lazy_job record with in-flight deduplication.
+    /// extraction job record with in-flight deduplication.
     ///
     /// Returns the accumulated [`EnsureStructuralResult`] and the job_id
     /// of the last file built (or the first cached job_id if nothing was
@@ -204,7 +205,7 @@ impl LazyCoordinator {
                 "resolution_symbols"
             };
 
-            let claim = self.store.claim_lazy_job(
+            let claim = self.store.claim_file_extraction_job(
                 file_id,
                 layer_name,
                 Some("lazy_coordinator::ensure_structural_with_closure"),
@@ -215,6 +216,7 @@ impl LazyCoordinator {
             match claim {
                 ClaimResult::AlreadyBuilding { job_id } => {
                     result.files_cached += 1;
+                    result.budget_exceeded = true;
                     last_job_id = job_id;
                     continue;
                 }
@@ -234,11 +236,12 @@ impl LazyCoordinator {
                             if is_seed && r.files_built > 0 {
                                 structural_file_ids.push(*file_id);
                             }
-                            self.store.complete_lazy_job(&job_id)?;
+                            self.store.complete_extraction_job(&job_id)?;
                             last_job_id = job_id;
                         }
                         Err(e) => {
-                            self.store.fail_lazy_job(&job_id, &format!("{:#}", e))?;
+                            self.store
+                                .fail_extraction_job(&job_id, &format!("{:#}", e))?;
                             return Err(e);
                         }
                     }
@@ -432,7 +435,7 @@ mod tests {
     #[test]
     fn lazy_closure_ensures_dependency_resolution_symbols() {
         // Test that ClosurePlanner discovers import dependencies and
-        // claim_lazy_job atomic API prevents duplicate builds.
+        // claim_file_extraction_job atomic API prevents duplicate builds.
         use crate::closure_planner::ClosurePlanner;
         use db::Store;
         use types::enums::{ImportKind, Language, ParseStatus};
@@ -498,19 +501,19 @@ mod tests {
 
         // Test claim API: claiming util.h with resolution_symbols layer
         let claim1 = store
-            .claim_lazy_job(&util_id, "resolution_symbols", None, None, None)
+            .claim_file_extraction_job(&util_id, "resolution_symbols", None, None, None)
             .unwrap();
         assert!(matches!(claim1, db::ClaimResult::Claimed { .. }));
 
         // Second claim for same file+layer should return AlreadyBuilding
         let claim2 = store
-            .claim_lazy_job(&util_id, "resolution_symbols", None, None, None)
+            .claim_file_extraction_job(&util_id, "resolution_symbols", None, None, None)
             .unwrap();
         assert!(matches!(claim2, db::ClaimResult::AlreadyBuilding { .. }));
     }
 
     #[test]
-    fn concurrent_lazy_jobs_dedup_to_single_build() {
+    fn concurrent_extraction_jobs_dedup_to_single_build() {
         // Two threads simultaneously claim the same file+layer.
         // Only one should get Claimed; the other gets AlreadyBuilding.
         use db::Store;
@@ -540,12 +543,12 @@ mod tests {
 
         let t1 = std::thread::spawn(move || {
             store1
-                .claim_lazy_job(&file_id, "structural", None, None, None)
+                .claim_file_extraction_job(&file_id, "structural", None, None, None)
                 .unwrap()
         });
         let t2 = std::thread::spawn(move || {
             store2
-                .claim_lazy_job(&file_id, "structural", None, None, None)
+                .claim_file_extraction_job(&file_id, "structural", None, None, None)
                 .unwrap()
         });
 
@@ -569,8 +572,8 @@ mod tests {
     }
 
     #[test]
-    fn lazy_job_create_and_complete() {
-        // Use claim_lazy_job atomically, then complete. Verify state transitions.
+    fn extraction_job_create_and_complete() {
+        // Use claim_file_extraction_job atomically, then complete. Verify state transitions.
         use db::Store;
         use types::enums::{Language, ParseStatus};
         use types::ids::FileId;
@@ -595,7 +598,7 @@ mod tests {
 
         // Claim the job (atomically checks + inserts)
         let claim = store
-            .claim_lazy_job(&file_id, "structural", Some("test"), None, None)
+            .claim_file_extraction_job(&file_id, "structural", Some("test"), None, None)
             .unwrap();
         let job_id = match claim {
             db::ClaimResult::Claimed { job_id } => job_id,
@@ -603,21 +606,25 @@ mod tests {
         };
 
         // Job should be active (building since claim sets it directly)
-        let active = store.find_active_lazy_job(&file_id, "structural").unwrap();
+        let active = store
+            .find_active_file_extraction_job(&file_id, "structural")
+            .unwrap();
         assert!(active.is_some(), "job should be active after claim");
 
         // Complete the job
-        store.complete_lazy_job(&job_id).unwrap();
+        store.complete_extraction_job(&job_id).unwrap();
 
         // After completion, job should not be active
-        let active = store.find_active_lazy_job(&file_id, "structural").unwrap();
+        let active = store
+            .find_active_file_extraction_job(&file_id, "structural")
+            .unwrap();
         assert!(
             active.is_none(),
             "job should not be active after completion"
         );
 
         // Verify job status via get
-        let job = store.get_lazy_job(&job_id).unwrap().unwrap();
+        let job = store.get_extraction_job(&job_id).unwrap().unwrap();
         assert_eq!(job.status, "complete");
     }
 
@@ -822,14 +829,14 @@ mod tests {
             "pre-built data nodes should be preserved after lazy check"
         );
 
-        // Verify artifact was created with "complete" status
-        let artifact = store
-            .get_artifact(&file_id, &unit.unit_id, "dataflow")
+        // Verify unit extraction state was created with "complete" status.
+        let unit_state = store
+            .get_unit_extraction_state(&file_id, &unit.unit_id, "dataflow")
             .unwrap()
-            .expect("artifact should exist after lazy service run");
+            .expect("unit extraction state should exist after lazy service run");
         assert_eq!(
-            artifact.status, "complete",
-            "artifact status should be complete"
+            unit_state.status, "complete",
+            "unit extraction state should be complete"
         );
     }
 
@@ -1001,10 +1008,10 @@ mod tests {
 
         // Record manifest layer as complete for both files
         store
-            .upsert_file_index_layer(&main_id, "manifest", "abc", "complete")
+            .upsert_file_extraction_state(&main_id, "manifest", "abc", "complete")
             .unwrap();
         store
-            .upsert_file_index_layer(&util_id, "manifest", "def", "complete")
+            .upsert_file_extraction_state(&util_id, "manifest", "def", "complete")
             .unwrap();
 
         // 4. Create coordinator + service with temp dir as project root
@@ -1135,7 +1142,7 @@ mod tests {
                 })
                 .unwrap();
             store
-                .upsert_file_index_layer(fid, "manifest", hash, "complete")
+                .upsert_file_extraction_state(fid, "manifest", hash, "complete")
                 .unwrap();
         }
 
@@ -1268,7 +1275,7 @@ mod tests {
             })
             .unwrap();
         store
-            .upsert_file_index_layer(&file_id, "manifest", "abc", "complete")
+            .upsert_file_extraction_state(&file_id, "manifest", "abc", "complete")
             .unwrap();
 
         // 3. Run lazy structural extraction via coordinator

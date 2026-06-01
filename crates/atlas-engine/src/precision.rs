@@ -25,8 +25,12 @@ pub fn structural_precision(built: usize, cached: usize, budget_exceeded: bool) 
 /// Compute precision tier for lazy dataflow extraction.
 /// Delegates to [`types::structs::precision::dataflow_precision`].
 #[allow(dead_code)] // public API, consumed by MCP/CLI consumers
-pub fn dataflow_precision(built: usize, planned: usize, budget_exceeded: bool) -> PrecisionTier {
-    types::structs::precision::dataflow_precision(built, planned, budget_exceeded)
+pub fn dataflow_precision(
+    available: usize,
+    planned: usize,
+    budget_exceeded: bool,
+) -> PrecisionTier {
+    types::structs::precision::dataflow_precision(available, planned, budget_exceeded)
 }
 
 /// Suggested next action based on structural precision tier.
@@ -39,9 +43,9 @@ pub fn next_action_structural(tier: PrecisionTier) -> Option<&'static str> {
         PrecisionTier::ManifestOnly => {
             Some("manifest-only — run 'atlas index' for full structural data")
         }
-        PrecisionTier::LocalDataflowOnly => {
-            Some("partial — cross-file references not resolved; run 'atlas index' for full structural data")
-        }
+        PrecisionTier::LocalDataflowOnly => Some(
+            "partial — cross-file references not resolved; run 'atlas index' for full structural data",
+        ),
         PrecisionTier::DegradedStructural => {
             Some("budget exceeded — increase LAZY_STRUCTURAL_BUDGET_MS or reduce scope")
         }

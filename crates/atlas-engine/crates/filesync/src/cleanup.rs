@@ -45,7 +45,7 @@ pub fn clean_stale_file_ids(store: &Arc<Store>, file_ids: &[FileId]) -> Result<(
     store.delete_files_batch(file_ids)?;
 
     for fid in file_ids {
-        let _ = store.delete_file_index_layers(fid);
+        let _ = store.delete_file_extraction_state(fid);
     }
 
     Ok(())

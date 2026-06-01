@@ -318,7 +318,7 @@ impl ClosurePlanner {
             _ => return false,
         };
 
-        match self.store.get_file_index_layer(file_id, layer_name) {
+        match self.store.get_file_extraction_state(file_id, layer_name) {
             Ok(Some((s, hash))) => s == status::COMPLETE && hash == file_info.content_hash,
             _ => false,
         }

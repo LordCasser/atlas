@@ -234,13 +234,10 @@ impl RecoverySpec for ArkTsRecovery {
                         if let Some((def_range, name_range)) =
                             find_struct_range(node, struct_name, source_bytes)
                         {
-                            let symbol = build_struct_symbol(
-                                file_id,
-                                struct_name,
-                                def_range,
-                                name_range,
-                            );
-                            let scope = build_struct_scope(file_id, struct_name, def_range, name_range);
+                            let symbol =
+                                build_struct_symbol(file_id, struct_name, def_range, name_range);
+                            let scope =
+                                build_struct_scope(file_id, struct_name, def_range, name_range);
 
                             symbols.push(symbol);
                             scopes.push(scope);
@@ -289,11 +286,7 @@ fn extract_struct_name(error_text: &str) -> Option<&str> {
         .split(|c: char| c == '{' || c == '\n' || c == '\r')
         .next()?
         .trim();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name)
-    }
+    if name.is_empty() { None } else { Some(name) }
 }
 
 /// Find the struct's definition range (from `struct` keyword to closing `}`)
@@ -489,18 +482,12 @@ mod tests {
 
     #[test]
     fn test_extract_struct_name_no_brace() {
-        assert_eq!(
-            extract_struct_name("struct Index "),
-            Some("Index")
-        );
+        assert_eq!(extract_struct_name("struct Index "), Some("Index"));
     }
 
     #[test]
     fn test_extract_struct_name_multiline() {
-        assert_eq!(
-            extract_struct_name("struct\nMyComp\n{\n"),
-            Some("MyComp")
-        );
+        assert_eq!(extract_struct_name("struct\nMyComp\n{\n"), Some("MyComp"));
     }
 
     #[test]

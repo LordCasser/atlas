@@ -6,9 +6,8 @@ use crate::languages::{node_range, node_text};
 use types::*;
 
 use crate::frontend::{
-    Capture, DataflowSpec, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec,
-    NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
-    SymbolExtractorSpec,
+    Capture, DataflowSpec, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, NoOpRecovery,
+    NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec, SymbolExtractorSpec,
 };
 use types::capability::FeatureSupport;
 

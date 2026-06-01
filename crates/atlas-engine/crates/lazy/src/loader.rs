@@ -11,8 +11,8 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use db::Store;
-use db::store_rows::ArtifactRecord;
+use db::store_rows::UnitExtractionStateRecord;
+use db::{ClaimResult, Store};
 use extraction::{ExtractionMode, LanguageFrontend, create_frontend};
 use types::enums::Language;
 use types::ids::{BindingId, CfgNodeId, DataNodeId, FileId};
@@ -51,6 +51,8 @@ impl DataflowPayload {
 pub(crate) struct EnsureResult {
     pub units_built: usize,
     pub units_cached: usize,
+    pub units_pending: usize,
+    pub pending_job_ids: Vec<String>,
     pub budget_exceeded: bool,
 }
 
@@ -65,10 +67,10 @@ impl LazyDataflowLoader {
     ///
     /// Units are grouped by `file_id` to avoid re-reading and re-parsing
     /// the same source file multiple times.  For each file group:
-    /// 1. Check artifact cache per unit (including pre-built data guard)
+    /// 1. Check unit extraction state per unit (including pre-built data guard)
     /// 2. If any unit is uncached, call `build_dataflow_for_file` ONCE
     /// 3. Partition the resulting facts per uncached unit
-    /// 4. Write facts via `replace_dataflow_for_unit` + `upsert_artifact`
+    /// 4. Write facts via `replace_dataflow_for_unit` + `upsert_unit_extraction_state`
     ///
     /// Hard budget protection: if [`LAZY_DATAFLOW_BUDGET_MS`] is exceeded,
     /// remaining units are skipped and `EnsureResult.budget_exceeded` is set.
@@ -119,8 +121,37 @@ impl LazyDataflowLoader {
                 continue;
             }
 
+            let mut claimed: Vec<(&AnalysisUnit, String)> = Vec::new();
+            for unit in uncached {
+                match store.claim_dataflow_extraction_job(
+                    unit,
+                    Some("lazy_dataflow_loader::ensure"),
+                    Some(LAZY_DATAFLOW_BUDGET_MS as i64),
+                )? {
+                    ClaimResult::Claimed { job_id } => claimed.push((unit, job_id)),
+                    ClaimResult::AlreadyBuilding { job_id } => {
+                        result.units_pending += 1;
+                        result.pending_job_ids.push(job_id);
+                    }
+                }
+            }
+
+            if claimed.is_empty() {
+                continue;
+            }
+
             // Step 3: Build dataflow for the file once
-            let payload = build_dataflow_for_file(store, units[0].file_id, window, project_root)?;
+            let payload =
+                match build_dataflow_for_file(store, units[0].file_id, window, project_root) {
+                    Ok(payload) => payload,
+                    Err(err) => {
+                        let msg = format!("{err:#}");
+                        for (_, job_id) in &claimed {
+                            let _ = store.fail_extraction_job(job_id, &msg);
+                        }
+                        return Err(err);
+                    }
+                };
             result.budget_exceeded |= payload.budget_exceeded;
 
             // Step 4: Partition and write per uncached unit
@@ -129,38 +160,47 @@ impl LazyDataflowLoader {
                 .map(|f| f.content_hash)
                 .unwrap_or_default();
 
-            for unit in &uncached {
+            for (unit, job_id) in &claimed {
                 let unit_payload = partition_payload_for_unit(&payload, unit);
 
-                store.replace_dataflow_for_unit(
-                    unit,
-                    &unit_payload.data_nodes,
-                    &unit_payload.dataflow_edges,
-                    &unit_payload.bindings,
-                    &unit_payload.binding_uses,
-                    &unit_payload.cfg_nodes,
-                    &unit_payload.cfg_edges,
-                )?;
+                let write_result = (|| -> Result<()> {
+                    store.replace_dataflow_for_unit(
+                        unit,
+                        &unit_payload.data_nodes,
+                        &unit_payload.dataflow_edges,
+                        &unit_payload.bindings,
+                        &unit_payload.binding_uses,
+                        &unit_payload.cfg_nodes,
+                        &unit_payload.cfg_edges,
+                    )?;
 
-                store.update_callsite_arg_data_nodes(unit, &unit_payload.data_nodes)?;
+                    store.update_callsite_arg_data_nodes(unit, &unit_payload.data_nodes)?;
 
-                let status = if payload.budget_exceeded {
-                    "partial"
-                } else {
-                    "complete"
-                };
-                store.upsert_artifact(&ArtifactRecord {
-                    file_id: unit.file_id,
-                    unit_id: unit.unit_id,
-                    layer: "dataflow".to_string(),
-                    content_hash: current_hash.clone(),
-                    status: status.to_string(),
-                    node_count: Some(unit_payload.data_nodes.len() as i64),
-                    edge_count: Some(unit_payload.dataflow_edges.len() as i64),
-                    budget_exceeded: payload.budget_exceeded,
-                    built_at: String::new(),
-                })?;
+                    let status = if payload.budget_exceeded {
+                        "partial"
+                    } else {
+                        "complete"
+                    };
+                    store.upsert_unit_extraction_state(&UnitExtractionStateRecord {
+                        file_id: unit.file_id,
+                        unit_id: unit.unit_id,
+                        layer: "dataflow".to_string(),
+                        content_hash: current_hash.clone(),
+                        status: status.to_string(),
+                        node_count: Some(unit_payload.data_nodes.len() as i64),
+                        edge_count: Some(unit_payload.dataflow_edges.len() as i64),
+                        budget_exceeded: payload.budget_exceeded,
+                        built_at: String::new(),
+                    })?;
+                    Ok(())
+                })();
 
+                if let Err(err) = write_result {
+                    let _ = store.fail_extraction_job(job_id, &format!("{err:#}"));
+                    return Err(err);
+                }
+
+                store.complete_extraction_job(job_id)?;
                 result.units_built += 1;
             }
         }
@@ -169,21 +209,23 @@ impl LazyDataflowLoader {
     }
 }
 
-/// Check whether a unit's dataflow artifact is already cached (including
+/// Check whether a unit's dataflow state is already cached (including
 /// pre-built data from a full index).  Does NOT build or write anything.
 ///
-/// Returns `(cached, payload)` where `cached` is true if the artifact
+/// Returns `(cached, payload)` where `cached` is true if the unit state
 /// was already up-to-date.
 fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayload)> {
-    // 1. Check artifact cache
-    if let Some(artifact) = store.get_artifact(&unit.file_id, &unit.unit_id, "dataflow")? {
+    // 1. Check unit extraction state.
+    if let Some(unit_state) =
+        store.get_unit_extraction_state(&unit.file_id, &unit.unit_id, "dataflow")?
+    {
         let current_hash = store
             .get_file(&unit.file_id)?
             .map(|f| f.content_hash)
             .unwrap_or_default();
-        if artifact.content_hash == current_hash {
+        if unit_state.content_hash == current_hash {
             let mut payload = DataflowPayload::empty();
-            payload.budget_exceeded = artifact.budget_exceeded;
+            payload.budget_exceeded = unit_state.budget_exceeded;
             return Ok((true, payload));
         }
     }
@@ -196,7 +238,7 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
                 .get_file(&unit.file_id)?
                 .map(|f| f.content_hash)
                 .unwrap_or_default();
-            store.upsert_artifact(&ArtifactRecord {
+            store.upsert_unit_extraction_state(&UnitExtractionStateRecord {
                 file_id: unit.file_id,
                 unit_id: unit.unit_id,
                 layer: "dataflow".to_string(),

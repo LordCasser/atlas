@@ -5,7 +5,7 @@
 //!
 //! # Crate boundaries
 //! - `planner`: reads structural index from `db`, produces [`LazyWindow`]
-//! - `loader`: reads/writes `db`, calls `extraction`, manages artifacts
+//! - `loader`: reads/writes `db`, calls `extraction`, manages unit extraction state
 //! - `constants`: hardcoded budget caps (never exposed to MCP/CLI)
 
 mod constants;
@@ -61,13 +61,15 @@ impl LazyDataflowService {
         window.truncated = window.truncated || result.budget_exceeded;
         window.units_built = result.units_built;
         window.units_cached = result.units_cached;
+        window.units_pending = result.units_pending;
+        window.pending_job_ids = result.pending_job_ids;
 
         // Compute dataflow precision tier
         {
             let planned = window.units.len();
-            let built = result.units_built;
-            let budget_exceeded = result.budget_exceeded;
-            let tier = precision::dataflow_precision(built, planned, budget_exceeded);
+            let available = result.units_built + result.units_cached;
+            let incomplete = result.budget_exceeded || result.units_pending > 0;
+            let tier = precision::dataflow_precision(available, planned, incomplete);
             window.precision_tier = Some(tier);
         }
 
@@ -82,13 +84,15 @@ impl LazyDataflowService {
         window.truncated = window.truncated || result.budget_exceeded;
         window.units_built = result.units_built;
         window.units_cached = result.units_cached;
+        window.units_pending = result.units_pending;
+        window.pending_job_ids = result.pending_job_ids;
 
         // Compute dataflow precision tier
         {
             let planned = window.units.len();
-            let built = result.units_built;
-            let budget_exceeded = result.budget_exceeded;
-            let tier = precision::dataflow_precision(built, planned, budget_exceeded);
+            let available = result.units_built + result.units_cached;
+            let incomplete = result.budget_exceeded || result.units_pending > 0;
+            let tier = precision::dataflow_precision(available, planned, incomplete);
             window.precision_tier = Some(tier);
         }
 

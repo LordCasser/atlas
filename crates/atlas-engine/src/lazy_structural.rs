@@ -20,7 +20,7 @@
 //!
 //! - Does NOT call `resolve_all()` or `GraphBuilder::build_all()` — uses
 //!   incremental `resolve_for_files` / `build_for_files` instead.
-//! - Leverages `file_index_layers` table for cache decisions.
+//! - Leverages file-level extraction state for cache decisions.
 //! - Respects the same `ExtractionMode::Structural` pipeline as `atlas index`.
 //! - [`CandidateProvider`] is a trait — swap implementations for different
 //!   discovery strategies (e.g. compile_commands.json, ctags, custom heuristics).
@@ -236,7 +236,7 @@ impl LazyStructuralService {
         };
         let layer = self
             .store
-            .get_file_index_layer(file_id, layer::STRUCTURAL)?;
+            .get_file_extraction_state(file_id, layer::STRUCTURAL)?;
         Ok(layer.map_or(false, |(s, hash)| {
             s == status::COMPLETE && hash == *current_hash
         }))
@@ -254,7 +254,7 @@ impl LazyStructuralService {
         };
         match self
             .store
-            .get_file_index_layer(file_id, layer::RESOLUTION_SYMBOLS)
+            .get_file_extraction_state(file_id, layer::RESOLUTION_SYMBOLS)
         {
             Ok(Some((s, hash))) => Ok(s == status::COMPLETE && hash == file_info.content_hash),
             _ => Ok(false),
@@ -579,7 +579,7 @@ mod tests {
         };
         store.upsert_file(&file_info).unwrap();
         store
-            .upsert_file_index_layer(&fid, layer::STRUCTURAL, "abc123", status::COMPLETE)
+            .upsert_file_extraction_state(&fid, layer::STRUCTURAL, "abc123", status::COMPLETE)
             .unwrap();
 
         // When structural layer exists, has_resolution_symbols_layer should return true

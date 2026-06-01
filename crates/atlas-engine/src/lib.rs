@@ -336,6 +336,8 @@ impl Engine {
                     triggered: true,
                     units_built: window.units_built,
                     units_cached: window.units_cached,
+                    units_pending: window.units_pending,
+                    pending_job_ids: window.pending_job_ids.clone(),
                     truncated: window.truncated,
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
                     precision_tier: window.precision_tier.clone(),
@@ -348,6 +350,15 @@ impl Engine {
                         ).with_code("lazy_dataflow_budget_exceeded")
                     );
                 }
+                if window.units_pending > 0 {
+                    partial = true;
+                    lazy_diagnostics.push(
+                        TraceDiagnostic::warning(
+                            "Lazy dataflow is already being built by another request. Result may be partial; retry after the reported pending job completes."
+                        )
+                        .with_code("lazy_dataflow_already_building"),
+                    );
+                }
             }
             Err(e) => {
                 partial = true;
@@ -355,6 +366,8 @@ impl Engine {
                     triggered: true,
                     units_built: 0,
                     units_cached: 0,
+                    units_pending: 0,
+                    pending_job_ids: Vec::new(),
                     truncated: true,
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
                     precision_tier: None,

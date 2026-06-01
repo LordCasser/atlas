@@ -5,7 +5,7 @@ Lazy (on-demand) dataflow engine. Builds dataflow analysis only for the function
 ## Crate boundaries
 
 - **`planner`**: reads structural index from `db`, produces a `LazyWindow` of `AnalysisUnit`s
-- **`loader`**: checks `analysis_artifacts` cache, calls `extraction` with `ExtractionMode::LazyDataflow` on cache miss, writes results to `db`
+- **`loader`**: checks unit-level `extraction_state` cache, claims an `extraction_jobs` entry on cache miss, calls `extraction` with `ExtractionMode::LazyDataflow`, and writes results to `db`
 - **`constants`**: hardcoded budget caps (never exposed to MCP/CLI)
 
 ## Public API
@@ -36,4 +36,4 @@ Budget exceedance sets `LazyWindow.truncated = true` and `EnsureResult.budget_ex
 
 ## Cache policy
 
-Each built unit is recorded in `analysis_artifacts` with `(file_id, unit_id, content_hash, budget_exceeded)`. Cache hits skip re-extraction. Stale caches (content_hash mismatch) trigger rebuild.
+Each built unit is recorded in `extraction_state` with `(file_id, unit_id, layer='dataflow', content_hash, budget_exceeded)`. Cache hits skip re-extraction. Stale caches (content_hash mismatch) trigger rebuild. Concurrent misses are deduplicated through `extraction_jobs`.

@@ -216,13 +216,9 @@ pub fn extract_file_with_mode(
     //     This runs before build_scope_tree() so recovered scopes participate in
     //     container assignment.
     scopes.extend(recovery_scopes);
-    frontend.recovery.recover_scopes(
-        source,
-        &tree,
-        file_id,
-        &mut symbols,
-        &mut scopes,
-    );
+    frontend
+        .recovery
+        .recover_scopes(source, &tree, file_id, &mut symbols, &mut scopes);
 
     // 6. Raw edges are now populated downstream by GraphBuilder (new P3 path).
     //    Old normalize_dataflow path was removed in favor of DataFlowBuilder.
@@ -1714,6 +1710,8 @@ int main() {
             truncated: false,
             units_built: 0,
             units_cached: 0,
+            units_pending: 0,
+            pending_job_ids: Vec::new(),
             precision_tier: None,
         };
 
@@ -1786,6 +1784,8 @@ int main() {
             truncated: false,
             units_built: 0,
             units_cached: 0,
+            units_pending: 0,
+            pending_job_ids: Vec::new(),
             precision_tier: None,
         };
 

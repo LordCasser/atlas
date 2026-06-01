@@ -159,6 +159,8 @@ impl LazyDataflowPlanner {
             truncated,
             units_built: 0,
             units_cached: 0,
+            units_pending: 0,
+            pending_job_ids: Vec::new(),
             precision_tier: None,
         })
     }
@@ -235,6 +237,8 @@ impl LazyDataflowPlanner {
             truncated,
             units_built: 0,
             units_cached: 0,
+            units_pending: 0,
+            pending_job_ids: Vec::new(),
             precision_tier: None,
         })
     }
