@@ -29,7 +29,7 @@ impl Store {
                     name_start_byte, name_end_byte, name_start_line, name_start_column,
                     name_end_line, name_end_column,
                     signature, visibility, exported, static_, async_,
-                    container_id, scope_id, package_name, namespace_path_json, layer, layer
+                    container_id, scope_id, package_name, namespace_path_json, layer
              FROM symbols WHERE file_id = ?1 ORDER BY qualified_name",
         )?;
         let rows = stmt.query_map(params![file_id], row_to_symbol)?;
