@@ -1,7 +1,7 @@
 //! Graph traversal tools: neighbors, callers, callees, callgraph, path,
 //! explore, and impact analysis.
 
-use atlas_engine::{EdgeKind, Store, SymbolId, TraversalConfig, TraversalDirection};
+use atlas_engine::{EdgeKind, Store, SymbolId, SymbolKind, TraversalConfig, TraversalDirection};
 
 use super::{ToolRouter, get_str, get_str_opt, get_u64};
 
@@ -15,6 +15,15 @@ fn is_call_edge(kind: &EdgeKind) -> bool {
             | EdgeKind::Instantiates
             | EdgeKind::Implements
             | EdgeKind::RegistersCallback
+    )
+}
+
+/// Check if a SymbolKind represents a callable entity (can appear as the
+/// source or target of a Calls edge).
+fn is_callable_kind(kind: SymbolKind) -> bool {
+    matches!(
+        kind,
+        SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
     )
 }
 
@@ -97,15 +106,19 @@ impl ToolRouter {
             .map(|ix| self.node_json(snap, *ix))
             .collect();
 
+        let mut resp = json!({
+            "symbol": qname,
+            "direction": direction,
+            "depth": depth,
+            "nodes": nodes,
+            "total_found": sub.node_indices.len(),
+        });
+        if !self.has_manual_full_index() {
+            resp["note"] = json!("Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results.");
+        }
+
         (
-            serde_json::to_string_pretty(&json!({
-                "symbol": qname,
-                "direction": direction,
-                "depth": depth,
-                "nodes": nodes,
-                "total_found": sub.node_indices.len(),
-            }))
-            .unwrap_or_else(|e| e.to_string()),
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
             false,
         )
     }
@@ -126,13 +139,17 @@ impl ToolRouter {
 
         let nodes: Vec<_> = shown.map(|ix| self.node_json(snap, *ix)).collect();
 
+        let mut resp = json!({
+            "symbol": qname,
+            "total_callers": cg.callers.len(),
+            "callers": nodes,
+        });
+        if !self.has_manual_full_index() {
+            resp["note"] = json!("Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results.");
+        }
+
         (
-            serde_json::to_string_pretty(&json!({
-                "symbol": qname,
-                "total_callers": cg.callers.len(),
-                "callers": nodes,
-            }))
-            .unwrap_or_else(|e| e.to_string()),
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
             false,
         )
     }
@@ -153,13 +170,17 @@ impl ToolRouter {
 
         let nodes: Vec<_> = shown.map(|ix| self.node_json(snap, *ix)).collect();
 
+        let mut resp = json!({
+            "symbol": qname,
+            "total_callees": cg.callees.len(),
+            "callees": nodes,
+        });
+        if !self.has_manual_full_index() {
+            resp["note"] = json!("Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results.");
+        }
+
         (
-            serde_json::to_string_pretty(&json!({
-                "symbol": qname,
-                "total_callees": cg.callees.len(),
-                "callees": nodes,
-            }))
-            .unwrap_or_else(|e| e.to_string()),
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
             false,
         )
     }
@@ -276,14 +297,18 @@ impl ToolRouter {
             frontier = next_frontier;
         }
 
-        (
-            serde_json::to_string_pretty(&json!({
+        let mut resp = json!({
                 "symbol": qname,
                 "max_depth": depth,
                 "total_nodes_visited": total_nodes,
                 "hops": hops,
-            }))
-            .unwrap_or_else(|e| e.to_string()),
+            });
+        if !self.has_manual_full_index() {
+            resp["note"] = json!("Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results.");
+        }
+
+        (
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
             false,
         )
     }
@@ -583,6 +608,14 @@ impl ToolRouter {
                 resp["warnings"] = json!(all_warnings);
             }
 
+            let tier = outcome.precision_tier;
+            resp["precision_tier"] = serde_json::to_value(tier).unwrap_or(json!(null));
+            if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
+                if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
+                    resp["hint"] = json!(hint);
+                }
+            }
+
             (
                 serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
                 false,
@@ -613,6 +646,29 @@ impl ToolRouter {
                 message.push_str(". Tip: the path may involve function pointers or dynamic dispatch not yet resolved. Try running a full structural index (CLI: 'atlas index').");
             } else {
                 message.push_str(". The symbols may not be connected by call edges, or the path exceeds the depth limit. Try a higher max_depth.");
+            }
+
+            // Resolve endpoint symbol kinds for type-aware diagnostics.
+            // Uses the first SymbolId per qname (most common case).
+            let from_kind = from_ids
+                .first()
+                .and_then(|id| snap.node_by_id(id))
+                .map(|n| n.kind);
+            let to_kind = to_ids
+                .first()
+                .and_then(|id| snap.node_by_id(id))
+                .map(|n| n.kind);
+            if let (Some(fk), Some(tk)) = (from_kind, to_kind) {
+                message.push_str(&format!(
+                    " (from '{}' resolved as {:?}, to '{}' resolved as {:?})",
+                    from_qname, fk, to_qname, tk,
+                ));
+                if !is_callable_kind(tk) {
+                    message.push_str(". Note: target is not a callable — specify a method or function instead (e.g. use the fully-qualified method name).");
+                }
+                if !is_callable_kind(fk) {
+                    message.push_str(". Note: source is not a callable — outgoing call edges originate from functions/methods, not from type definitions.");
+                }
             }
 
             const MAX_FRONTIER_NODES: usize = 20;
@@ -653,6 +709,15 @@ impl ToolRouter {
             if !all_warnings.is_empty() {
                 resp["warnings"] = json!(all_warnings);
             }
+
+            let tier = outcome.precision_tier;
+            resp["precision_tier"] = serde_json::to_value(tier).unwrap_or(json!(null));
+            if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
+                if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
+                    resp["hint"] = json!(hint);
+                }
+            }
+
             (
                 serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
                 false,
@@ -785,13 +850,17 @@ impl ToolRouter {
             sym_obj["source"] = json!(src);
         }
 
-        (
-            serde_json::to_string_pretty(&json!({
+        let mut resp = json!({
                 "symbol": sym_obj,
                 "incoming": incoming,
                 "outgoing": outgoing,
-            }))
-            .unwrap_or_else(|e| e.to_string()),
+            });
+        if !self.has_manual_full_index() {
+            resp["note"] = json!("Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results.");
+        }
+
+        (
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
             false,
         )
     }
@@ -840,14 +909,18 @@ impl ToolRouter {
             })
             .collect();
 
-        (
-            serde_json::to_string_pretty(&json!({
+        let mut resp = json!({
                 "symbol": qname,
                 "max_depth": depth,
                 "impacted_nodes": total_shown,
                 "file_groups": grouped,
-            }))
-            .unwrap_or_else(|e| e.to_string()),
+            });
+        if !self.has_manual_full_index() {
+            resp["note"] = json!("Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results.");
+        }
+
+        (
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
             false,
         )
     }

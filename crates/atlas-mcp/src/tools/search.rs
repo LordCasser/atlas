@@ -49,6 +49,9 @@ struct ScopedSearchResponse {
     results: Vec<SearchHit>,
     warnings: Vec<String>,
     background_preparse: Option<String>,
+    /// Precision tier of the structural extraction (only set for precise searches).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    precision_tier: Option<atlas_engine::structs::precision::PrecisionTier>,
     /// Internal: file IDs built during lazy structural extraction.
     /// The caller should refresh the in-memory graph with these.
     #[serde(skip)]
@@ -265,28 +268,32 @@ impl ToolRouter {
                 return (s, true);
             }
         };
+        let sym;
         let lazy_warnings;
-        let sym = match symbols.into_iter().next() {
+        let structural_tier;
+        match symbols.into_iter().next() {
             Some(s) => {
                 // Ensure structural data so caller/callee results
                 // include fresh edges from lazy extraction.
                 let outcome = self.ensure_structural_for_files([s.file_id], include_roots.clone());
                 lazy_warnings = outcome.warnings;
+                structural_tier = outcome.precision_tier;
                 // Re-query after lazy — structural replace may have
                 // updated symbol metadata or source ranges.
-                self.store
+                sym = self.store
                     .find_symbols_by_qname(qname)
                     .unwrap_or_default()
                     .into_iter()
                     .next()
-                    .unwrap_or(s)
+                    .unwrap_or(s);
             }
             None => {
                 let outcome = self.ensure_structural_for_symbol_name(qname, include_roots.clone());
                 lazy_warnings = outcome.warnings;
+                structural_tier = outcome.precision_tier;
                 let retry = self.store.find_symbols_by_qname(qname).unwrap_or_default();
                 match retry.into_iter().next() {
-                    Some(s) => s,
+                    Some(s) => sym = s,
                     None => {
                         let mut s = format!("Symbol not found: {}", qname);
                         s.push_str(self.index_not_run_guidance());
@@ -329,6 +336,14 @@ impl ToolRouter {
         // Surface include_roots and lazy-structural warnings to the caller.
         add_json_warnings(&mut result, root_warnings, lazy_warnings);
 
+        use atlas_engine::structs::precision::PrecisionTier;
+        result["precision_tier"] = serde_json::to_value(structural_tier).unwrap_or(json!(null));
+        if structural_tier != PrecisionTier::Exact {
+            if let Some(hint) = atlas_engine::precision::next_action_structural(structural_tier) {
+                result["hint"] = json!(hint);
+            }
+        }
+
         (
             serde_json::to_string_pretty(&result).unwrap_or_else(|e| e.to_string()),
             false,
@@ -336,7 +351,7 @@ impl ToolRouter {
     }
 }
 
-fn execute_scoped_search<F>(
+    fn execute_scoped_search<F>(
     store: Arc<Store>,
     project_root: std::path::PathBuf,
     query: &str,
@@ -352,11 +367,14 @@ fn execute_scoped_search<F>(
 where
     F: Fn(f64, String),
 {
+    use atlas_engine::structs::precision::PrecisionTier;
+
     let normalized_scope = normalize_scope(scope);
     let scope_file_count = store.count_files_in_scope(&normalized_scope)?;
     let mut warnings: Vec<String> = root_warnings;
     let mut background_preparse = None;
     let mut built_file_ids: Vec<FileId> = Vec::new();
+    let mut precision_tier: Option<PrecisionTier> = None;
     let kind_filter = kind.and_then(SymbolKind::from_str);
 
     if scope_file_count == 0 {
@@ -374,6 +392,7 @@ where
             warnings,
             background_preparse,
             built_file_ids: Vec::new(),
+            precision_tier: None,
         });
     }
 
@@ -409,11 +428,15 @@ where
         let lazy = LazyStructuralService::new(store.clone(), Some(project_root.clone()));
         let mut total_built: Vec<FileId> = Vec::new();
         let mut total_budget_exceeded = false;
+        let mut total_files_built: usize = 0;
+        let mut total_files_cached: usize = 0;
         for file_id in &file_ids {
             match coordinator.ensure_structural_with_closure(&lazy, file_id) {
                 Ok((result, _job_id)) => {
                     total_built.extend(result.built_file_ids);
                     total_budget_exceeded |= result.budget_exceeded;
+                    total_files_built += result.files_built;
+                    total_files_cached += result.files_cached;
                 }
                 Err(err) => {
                     warnings.push(format!(
@@ -429,6 +452,11 @@ where
         }
         // Store built file IDs for the caller to refresh the graph.
         built_file_ids = total_built;
+        precision_tier = Some(atlas_engine::precision::structural_precision(
+            total_files_built,
+            total_files_cached,
+            total_budget_exceeded,
+        ));
     } else if !is_manual_full {
         // Single actionable warning — no contradictory "returning manifest results"
         // when results may actually be empty.
@@ -514,6 +542,7 @@ where
         warnings,
         background_preparse,
         built_file_ids,
+        precision_tier,
     })
 }
 

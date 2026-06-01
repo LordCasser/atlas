@@ -30,6 +30,7 @@ use super::dataflow::DataNode;
 use super::enums::DataFlowKind;
 use super::ids::{DataNodeId, FileId};
 use super::structs::{Callsite, DiagnosticLevel, ReferenceUse, ScopeDef, SymbolDef, TextRange};
+use super::structs::precision::PrecisionTier;
 
 // ---------------------------------------------------------------------------
 // TraceDiagnostic — a structured hint/warning/error for trace results
@@ -246,7 +247,7 @@ pub struct LazySummary {
     /// Precision tier of the dataflow result (set by lazy dataflow service).
     /// None means no lazy dataflow was triggered or tier is irrelevant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub precision_tier: Option<String>,
+    pub precision_tier: Option<PrecisionTier>,
 }
 
 /// A single step in a trace path — connects two data nodes via a dataflow edge.

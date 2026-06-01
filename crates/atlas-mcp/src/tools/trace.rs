@@ -7,6 +7,8 @@ use atlas_engine::{LazySummary, RawTraceEngine, TraceDiagnostic, TraceQueryRespo
 
 use super::{ToolRouter, get_str_opt, get_u64, resolve_file_id, warnings_to_trace_diagnostics};
 
+use serde_json::json;
+
 impl ToolRouter {
     pub(crate) fn handle_trace_point(&mut self, args: &serde_json::Value) -> (String, bool) {
         let file_hex = get_str_opt(args, "file_id");
@@ -79,8 +81,18 @@ impl ToolRouter {
 
         let is_error = !resp.ok;
 
+        let tier = outcome.precision_tier;
+        let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
+        resp_value["structural_precision_tier"] =
+            serde_json::to_value(tier).unwrap_or(json!(null));
+        if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
+            if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
+                resp_value["structural_hint"] = json!(hint);
+            }
+        }
+
         (
-            serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+            serde_json::to_string_pretty(&resp_value).unwrap_or_else(|e| e.to_string()),
             is_error,
         )
     }
@@ -205,8 +217,18 @@ impl ToolRouter {
         }
         let is_error = !resp.ok;
 
+        let tier = outcome.precision_tier;
+        let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
+        resp_value["structural_precision_tier"] =
+            serde_json::to_value(tier).unwrap_or(json!(null));
+        if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
+            if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
+                resp_value["structural_hint"] = json!(hint);
+            }
+        }
+
         (
-            serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+            serde_json::to_string_pretty(&resp_value).unwrap_or_else(|e| e.to_string()),
             is_error,
         )
     }
@@ -220,6 +242,8 @@ impl ToolRouter {
             tracing::warn!("include_roots: {}", w);
         }
         let mut lazy_warnings = Vec::new();
+        let mut structural_tier =
+            atlas_engine::structs::precision::PrecisionTier::Exact;
 
         let resp = if let Some(hex) = symbol_hex {
             let target_id: SymbolId = match hex.parse() {
@@ -240,6 +264,7 @@ impl ToolRouter {
                 let outcome =
                     self.ensure_structural_for_files([sym.file_id], include_roots.clone());
                 lazy_warnings = outcome.warnings;
+                structural_tier = outcome.precision_tier;
             }
             let engine =
                 RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
@@ -248,6 +273,7 @@ impl ToolRouter {
             // Lazy structural: ensure name-based symbols are structurally parsed
             let outcome = self.ensure_structural_for_symbol_name(name, include_roots.clone());
             lazy_warnings = outcome.warnings;
+            structural_tier = outcome.precision_tier;
             let engine =
                 RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
             engine.trace_callers_by_name(name, max_depth)
@@ -276,8 +302,21 @@ impl ToolRouter {
         ));
         resp.partial_result = resp.partial_result || lazy_partial;
 
+        let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
+        resp_value["structural_precision_tier"] =
+            serde_json::to_value(structural_tier).unwrap_or(json!(null));
+        if structural_tier
+            != atlas_engine::structs::precision::PrecisionTier::Exact
+        {
+            if let Some(hint) =
+                atlas_engine::precision::next_action_structural(structural_tier)
+            {
+                resp_value["structural_hint"] = json!(hint);
+            }
+        }
+
         (
-            serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+            serde_json::to_string_pretty(&resp_value).unwrap_or_else(|e| e.to_string()),
             is_error,
         )
     }
@@ -293,6 +332,8 @@ impl ToolRouter {
             tracing::warn!("include_roots: {}", w);
         }
         let mut lazy_warnings = Vec::new();
+        let mut structural_tier =
+            atlas_engine::structs::precision::PrecisionTier::Exact;
 
         // Name-based lookup (new path — avoids requiring hex IDs)
         if let (Some(fname), Some(tname)) = (from_name, to_name) {
@@ -300,6 +341,7 @@ impl ToolRouter {
             for name in [fname, tname] {
                 let outcome = self.ensure_structural_for_symbol_name(name, include_roots.clone());
                 lazy_warnings.extend(outcome.warnings);
+                structural_tier = std::cmp::min(structural_tier, outcome.precision_tier);
             }
             let engine =
                 RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
@@ -316,8 +358,21 @@ impl ToolRouter {
                 "lazy_structural_warning",
             ));
             resp.partial_result = resp.partial_result || lazy_partial;
+
+            let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
+            resp_value["structural_precision_tier"] =
+                serde_json::to_value(structural_tier).unwrap_or(json!(null));
+            if structural_tier
+                != atlas_engine::structs::precision::PrecisionTier::Exact
+            {
+                if let Some(hint) =
+                    atlas_engine::precision::next_action_structural(structural_tier)
+                {
+                    resp_value["structural_hint"] = json!(hint);
+                }
+            }
             return (
-                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                serde_json::to_string_pretty(&resp_value).unwrap_or_else(|e| e.to_string()),
                 is_error,
             );
         }
@@ -375,6 +430,7 @@ impl ToolRouter {
         }
         let outcome = self.ensure_structural_for_files(file_set, include_roots);
         lazy_warnings = outcome.warnings;
+        structural_tier = outcome.precision_tier;
 
         let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
         let mut resp = engine.trace_forward(&from_id, &to_id, max_depth);
@@ -389,8 +445,21 @@ impl ToolRouter {
             "lazy_structural_warning",
         ));
         resp.partial_result = resp.partial_result || lazy_partial;
+
+        let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
+        resp_value["structural_precision_tier"] =
+            serde_json::to_value(structural_tier).unwrap_or(json!(null));
+        if structural_tier
+            != atlas_engine::structs::precision::PrecisionTier::Exact
+        {
+            if let Some(hint) =
+                atlas_engine::precision::next_action_structural(structural_tier)
+            {
+                resp_value["structural_hint"] = json!(hint);
+            }
+        }
         (
-            serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+            serde_json::to_string_pretty(&resp_value).unwrap_or_else(|e| e.to_string()),
             is_error,
         )
     }

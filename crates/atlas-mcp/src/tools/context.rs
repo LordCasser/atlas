@@ -8,6 +8,7 @@
 
 use super::{ToolRouter, get_str};
 
+use atlas_engine::structs::precision::PrecisionTier;
 use serde_json::json;
 
 impl ToolRouter {
@@ -24,8 +25,8 @@ impl ToolRouter {
             tracing::warn!("include_roots: {}", w);
         }
 
-        let (sid, lazy_warnings) = match self.resolve_context_symbol(qname, include_roots) {
-            Ok((id, warnings)) => (id, warnings),
+        let (sid, lazy_warnings, tier) = match self.resolve_context_symbol(qname, include_roots) {
+            Ok((id, warnings, tier)) => (id, warnings, tier),
             Err(err) => return (err, true),
         };
 
@@ -44,7 +45,13 @@ impl ToolRouter {
                 self.send_progress(1.0, "Context complete");
                 let mut result = json!({
                     "markdown": md,
+                    "precision_tier": serde_json::to_value(tier).unwrap_or(json!(null)),
                 });
+                if tier != PrecisionTier::Exact {
+                    if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
+                        result["hint"] = json!(hint);
+                    }
+                }
                 if include_code {
                     if let Some(src) = self.read_symbol_source(&sid) {
                         result["source"] = json!(src);
@@ -73,13 +80,17 @@ impl ToolRouter {
     /// Tier 3: lazy structural extraction + re-query
     /// Tier 4: name match with multiple candidates → return suggestions
     ///
-    /// Returns the resolved SymbolId and any lazy-structural warnings.
+    /// Returns the resolved SymbolId, any lazy-structural warnings, and the
+    /// worst precision tier encountered during structural extraction.
     fn resolve_context_symbol(
         &mut self,
         qname: &str,
         include_roots: Vec<atlas_engine::IncludeRoot>,
-    ) -> Result<(atlas_engine::SymbolId, Vec<String>), String> {
+    ) -> Result<(atlas_engine::SymbolId, Vec<String>, PrecisionTier), String> {
+        use std::cmp;
+
         let mut warnings = Vec::new();
+        let mut worst_tier = PrecisionTier::Exact;
 
         // ── Tier 1: exact qualified-name match ──
         let symbols = self.store.find_symbols_by_qname(qname).unwrap_or_else(|e| {
@@ -89,11 +100,10 @@ impl ToolRouter {
         if let Some(id) = symbols.first().map(|s| s.id) {
             // Ensure structural data for this file (include_roots optional,
             // always relevant) so graph queries see complete edges.
-            warnings.extend(
-                self.ensure_structural_for_files([symbols[0].file_id], include_roots)
-                    .warnings,
-            );
-            return Ok((id, warnings));
+            let outcome = self.ensure_structural_for_files([symbols[0].file_id], include_roots);
+            warnings.extend(outcome.warnings);
+            worst_tier = cmp::min(worst_tier, outcome.precision_tier);
+            return Ok((id, warnings, worst_tier));
         }
 
         // ── Tier 2: name-based search (look for symbol by simple name) ──
@@ -103,11 +113,11 @@ impl ToolRouter {
         });
         if name_matches.len() == 1 {
             // Unambiguous — use it directly
-            warnings.extend(
-                self.ensure_structural_for_files([name_matches[0].file_id], include_roots)
-                    .warnings,
-            );
-            return Ok((name_matches[0].id, warnings));
+            let outcome =
+                self.ensure_structural_for_files([name_matches[0].file_id], include_roots);
+            warnings.extend(outcome.warnings);
+            worst_tier = cmp::min(worst_tier, outcome.precision_tier);
+            return Ok((name_matches[0].id, warnings, worst_tier));
         }
         if name_matches.len() > 1 {
             // Multiple matches — try case-insensitive qualified-name substring
@@ -119,11 +129,13 @@ impl ToolRouter {
                 .filter(|s| s.qualified_name.to_lowercase().contains(&q_lower))
                 .collect();
             if matching_qnames.len() == 1 {
-                warnings.extend(
-                    self.ensure_structural_for_files([matching_qnames[0].file_id], include_roots)
-                        .warnings,
+                let outcome = self.ensure_structural_for_files(
+                    [matching_qnames[0].file_id],
+                    include_roots,
                 );
-                return Ok((matching_qnames[0].id, warnings));
+                warnings.extend(outcome.warnings);
+                worst_tier = cmp::min(worst_tier, outcome.precision_tier);
+                return Ok((matching_qnames[0].id, warnings, worst_tier));
             }
             if matching_qnames.len() > 1 {
                 let suggestions: Vec<&str> = matching_qnames
@@ -152,6 +164,7 @@ impl ToolRouter {
             self.send_progress(0.5, "Extracting structural data...");
             let outcome = self.ensure_structural_for_symbol_name(qname, include_roots.clone());
             warnings.extend(outcome.warnings);
+            worst_tier = cmp::min(worst_tier, outcome.precision_tier);
         }
 
         // Re-query after lazy extraction (tier 1 again on freshly-parsed data)
@@ -160,7 +173,7 @@ impl ToolRouter {
             Default::default()
         });
         if let Some(sym) = retry.first() {
-            return Ok((sym.id, warnings));
+            return Ok((sym.id, warnings, worst_tier));
         }
 
         // Re-check name after lazy extraction
@@ -169,7 +182,7 @@ impl ToolRouter {
             Default::default()
         });
         if fresh_matches.len() == 1 {
-            return Ok((fresh_matches[0].id, warnings));
+            return Ok((fresh_matches[0].id, warnings, worst_tier));
         }
         if fresh_matches.len() > 1 {
             let suggestions: Vec<&str> = fresh_matches

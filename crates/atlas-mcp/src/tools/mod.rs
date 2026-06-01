@@ -70,6 +70,7 @@ pub(crate) mod wait_for;
 pub(crate) struct StructuralEnsureOutcome {
     pub warnings: Vec<String>,
     pub built_file_ids: Vec<atlas_engine::FileId>,
+    pub precision_tier: atlas_engine::structs::precision::PrecisionTier,
 }
 
 // -------------------------------------------------------------------
@@ -656,12 +657,18 @@ impl ToolRouter {
         file_ids: impl IntoIterator<Item = FileId>,
         include_roots: Vec<atlas_engine::IncludeRoot>,
     ) -> StructuralEnsureOutcome {
+        use atlas_engine::structs::precision::PrecisionTier;
+
         let mut warnings = Vec::new();
         let mut built_file_ids = Vec::new();
+        let mut total_files_built = 0usize;
+        let mut total_files_cached = 0usize;
+        let mut total_budget_exceeded = false;
         if self.has_manual_full_index() {
             return StructuralEnsureOutcome {
                 warnings,
                 built_file_ids,
+                precision_tier: PrecisionTier::Exact,
             };
         }
         // Deduplicate
@@ -670,6 +677,7 @@ impl ToolRouter {
             return StructuralEnsureOutcome {
                 warnings,
                 built_file_ids,
+                precision_tier: PrecisionTier::Exact,
             };
         }
         let coordinator =
@@ -679,6 +687,9 @@ impl ToolRouter {
         for file_id in &file_set {
             match coordinator.ensure_structural_with_closure(&lazy, file_id) {
                 Ok((result, _job_id)) => {
+                    total_files_built += result.files_built;
+                    total_files_cached += result.files_cached;
+                    total_budget_exceeded |= result.budget_exceeded;
                     built_file_ids.extend(result.built_file_ids);
                 }
                 Err(e) => {
@@ -695,9 +706,12 @@ impl ToolRouter {
                 warnings.push(format!("Graph refresh failed: {:#}", e));
             }
         }
+        let precision_tier =
+            atlas_engine::precision::structural_precision(total_files_built, total_files_cached, total_budget_exceeded);
         StructuralEnsureOutcome {
             warnings,
             built_file_ids,
+            precision_tier,
         }
     }
 
@@ -709,12 +723,16 @@ impl ToolRouter {
         symbol_name: &str,
         include_roots: Vec<atlas_engine::IncludeRoot>,
     ) -> StructuralEnsureOutcome {
+        use atlas_engine::structs::precision::PrecisionTier;
+
         let mut warnings = Vec::new();
         let mut built_file_ids = Vec::new();
+        let mut precision_tier = PrecisionTier::Unavailable;
         if self.has_manual_full_index() {
             return StructuralEnsureOutcome {
                 warnings,
                 built_file_ids,
+                precision_tier: PrecisionTier::Exact,
             };
         }
         let coordinator =
@@ -724,6 +742,7 @@ impl ToolRouter {
         match coordinator.ensure_structural_for_symbol_with_closure(&lazy, symbol_name) {
             Ok(result) => {
                 built_file_ids = result.built_file_ids;
+                precision_tier = result.precision_tier;
             }
             Err(e) => {
                 warnings.push(format!(
@@ -740,6 +759,7 @@ impl ToolRouter {
         StructuralEnsureOutcome {
             warnings,
             built_file_ids,
+            precision_tier,
         }
     }
 
@@ -1410,6 +1430,7 @@ mod tests {
         let outcome = StructuralEnsureOutcome {
             warnings: vec![],
             built_file_ids: vec![],
+            precision_tier: atlas_engine::structs::precision::PrecisionTier::Unavailable,
         };
         assert!(outcome.warnings.is_empty());
         assert!(outcome.built_file_ids.is_empty());

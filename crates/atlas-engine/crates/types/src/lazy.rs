@@ -5,6 +5,7 @@
 //! crate (ExtractionMode::LazyDataflow), but NOT by `analysis` or `db`.
 
 use crate::ids::{FileId, ReferenceId, SymbolId};
+use crate::structs::precision::PrecisionTier;
 use crate::structs::TextRange;
 use serde::{Deserialize, Serialize};
 
@@ -90,9 +91,8 @@ pub struct LazyWindow {
     pub units_cached: usize,
     /// Dataflow precision tier (set by LazyDataflowService after loading).
     /// None if dataflow was not loaded via lazy path.
-    /// Stored as a Debug/serde string to avoid cross-crate coupling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub precision_tier: Option<String>,
+    pub precision_tier: Option<PrecisionTier>,
 }
 
 // ---------------------------------------------------------------------------

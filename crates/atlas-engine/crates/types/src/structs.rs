@@ -187,6 +187,27 @@ pub mod precision {
         /// Full structural + dataflow, all resolution complete.
         Exact = 5,
     }
+
+    /// Compute precision tier for lazy dataflow extraction.
+    pub fn dataflow_precision(
+        built: usize,
+        planned: usize,
+        budget_exceeded: bool,
+    ) -> PrecisionTier {
+        if planned == 0 {
+            PrecisionTier::Unavailable
+        } else if built == 0 {
+            if budget_exceeded {
+                PrecisionTier::ManifestOnly
+            } else {
+                PrecisionTier::Unavailable
+            }
+        } else if budget_exceeded && built < planned {
+            PrecisionTier::PartialExact
+        } else {
+            PrecisionTier::Exact
+        }
+    }
 }
 
 impl SymbolDef {

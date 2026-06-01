@@ -40,7 +40,8 @@ mod closure_planner;
 mod lazy_coordinator;
 mod lazy_structural;
 mod linux_augment;
-mod precision;
+/// Precision tier computation for lazy extraction transparency.
+pub mod precision;
 mod source_extractor;
 
 /// Closure planner: dependency-closure-aware lazy extraction planning.
