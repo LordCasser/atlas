@@ -657,6 +657,18 @@ pub struct FileFacts {
     #[serde(default)]
     pub budget_exceeded: bool,
 
+    /// Whether the lexical binder encountered an error during extraction.
+    /// When true, `bindings` / `binding_uses` may be absent or incomplete
+    /// because the builder crashed, not because there are genuinely none.
+    #[serde(default)]
+    pub lexical_failed: bool,
+
+    /// Whether the dataflow builder encountered an error during extraction.
+    /// When true, `data_nodes` / `dataflow_edges` may be absent or incomplete
+    /// because the builder crashed, not because there are genuinely none.
+    #[serde(default)]
+    pub dataflow_failed: bool,
+
     /// Extraction layer: "manifest" (top-level only), "structural" (full symbols+refs),
     /// or "dataflow". Defaults to "structural" for backward compatibility.
     #[serde(default = "default_layer")]

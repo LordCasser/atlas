@@ -140,6 +140,7 @@ pub fn extract_file_with_mode_cancellable(
         &mut diagnostics,
         "symbols",
         |ctx, capture| frontend.symbols.normalize(ctx, capture),
+        Some(token),
     )?;
 
     // CP2: Check cancellation after symbol extraction.
@@ -189,6 +190,8 @@ pub fn extract_file_with_mode_cancellable(
             cfg_edges: vec![],
             diagnostics,
             budget_exceeded: false,
+            lexical_failed: false,
+            dataflow_failed: false,
             layer: "manifest".to_string(),
         });
     }
@@ -201,6 +204,7 @@ pub fn extract_file_with_mode_cancellable(
             &mut diagnostics,
             "references",
             |ctx, capture| frontend.references.normalize(ctx, capture),
+            Some(token),
         )?
     } else {
         vec![]
@@ -218,6 +222,7 @@ pub fn extract_file_with_mode_cancellable(
         &mut diagnostics,
         "imports",
         |ctx, capture| frontend.imports.normalize(ctx, capture),
+        Some(token),
     )?;
 
     // 5. Extract and normalize scopes
@@ -227,6 +232,7 @@ pub fn extract_file_with_mode_cancellable(
         &mut diagnostics,
         "scopes",
         |ctx, capture| frontend.scopes.normalize(ctx, capture),
+        Some(token),
     )?;
 
     // CP4: Check cancellation after imports + scopes extraction.
@@ -309,11 +315,14 @@ pub fn extract_file_with_mode_cancellable(
             cfg_edges: vec![],
             diagnostics,
             budget_exceeded: false,
+            lexical_failed: false,
+            dataflow_failed: false,
             layer: "resolution_symbols".to_string(),
         });
     }
 
     // 7a. Extract lexical bindings (P7: skip if unsupported)
+    let mut lexical_failed = false;
     let (bindings, binding_uses) = if frontend.lexical.capability().is_supported() {
         let lexical_result = super::lexical_binder::LexicalBinder::extract(
             frontend.lexical.as_ref(),
@@ -327,6 +336,7 @@ pub fn extract_file_with_mode_cancellable(
                 message: format!("Lexical binding extraction failed: {e}"),
                 range: None,
             });
+            lexical_failed = true;
             LexicalBindingResult {
                 bindings: vec![],
                 uses: vec![],
@@ -356,6 +366,7 @@ pub fn extract_file_with_mode_cancellable(
         };
     let capture_ranges_ref: Option<&[(u32, u32)]> = capture_ranges.as_deref();
 
+    let mut dataflow_failed = false;
     let (mut data_nodes, dataflow_edges) =
         if mode.produces_dataflow() && frontend.dataflow.capability().is_supported() {
             let dataflow_result = super::dataflow_builder::DataFlowBuilder::extract(
@@ -372,6 +383,7 @@ pub fn extract_file_with_mode_cancellable(
                     message: format!("DataFlow builder failed: {e}"),
                     range: None,
                 });
+                dataflow_failed = true;
                 DataFlowResult::default()
             });
             let nodes = dataflow_result.nodes;
@@ -706,6 +718,8 @@ pub fn extract_file_with_mode_cancellable(
         cfg_nodes,
         cfg_edges,
         budget_exceeded,
+        lexical_failed,
+        dataflow_failed,
         layer: if matches!(mode, ExtractionMode::LazyDataflow { .. }) {
             "dataflow"
         } else {
@@ -903,12 +917,17 @@ fn build_reference_binding_uses(
 }
 
 /// Run a query and normalize each capture through the provided function.
+///
+/// `token` is an optional [`CancelCheck`] — when `Some`, the capture loop
+/// checks cancellation every 100 captures and returns early if cancelled.
+/// Pass `None` for backward-compatible callers that do not support cancellation.
 fn extract_and_normalize<'a, T>(
     ctx: &ExtractionCtx<'a>,
     query_src: &str,
     diagnostics: &mut Vec<ExtractDiagnostic>,
     slot_name: &'static str,
     mut normalize: impl FnMut(NormalizeCtx<'a>, Capture<'a>) -> Option<T>,
+    token: Option<&dyn CancelCheck>,
 ) -> Result<Vec<T>> {
     let captures = super::query_helpers::collect_captures(
         ctx.ts_lang,
@@ -916,7 +935,7 @@ fn extract_and_normalize<'a, T>(
         ctx.root,
         ctx.source_bytes(),
         slot_name,
-        None,
+        token,
     )
     .map_err(|failure| {
         // Fill in file-level context that query_helpers doesn't have.
