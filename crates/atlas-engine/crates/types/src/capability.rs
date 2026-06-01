@@ -1077,11 +1077,10 @@ mod profiles {
     }
 
     // ---- Rust (DataflowFull) -----------------------------------------------
-    // NOTE: ArgToParam bridge fires (fx13 passes), but ReturnToCall bridge
-    //       does not fire (fx14 marked should_panic).  Upgraded to
-    //       DataflowFull with known cross-function gap documented via fixture.
-    //       Confidence raised from 0.62 to 0.70: CFG support added (P7),
-    //       binding description updated to scope-chain-aware.
+    // NOTE: Both ArgToParam (fx13) and ReturnToCall (fx14) cross-function
+    //       bridges verified against golden fixtures.  Upgraded to
+    //       DataflowFull.  Confidence raised from 0.62 to 0.70: CFG support
+    //       added (P7), binding description updated to scope-chain-aware.
     fn rust_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "rust".into(),
