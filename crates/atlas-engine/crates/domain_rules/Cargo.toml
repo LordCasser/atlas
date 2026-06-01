@@ -1,0 +1,13 @@
+[package]
+name = "domain-rules"
+version = "1.1.0"
+edition = "2024"
+description = "Atlas language-agnostic domain rules engine"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+db = { path = "../db" }
+regex = "1"
+anyhow = "1"
