@@ -7,9 +7,12 @@
 //!   status, search, graph, context, trace, capability.
 
 /// File count after which cumulative lazy per-file replacements trigger
-/// a synchronous full graph rebuild. Set at 80% of the 500-file threshold
-/// where `refresh_graph_for_files` switches from per-file replace to
-/// full rebuild anyway.
+/// a deferred full graph rebuild on the next graph-backed tool call.
+/// Set at 80% of the 500-file threshold where `refresh_graph_for_files`
+/// switches from per-file replace to full rebuild anyway.
+///
+/// The rebuild is NOT executed synchronously in the current request to
+/// avoid re-introducing MCP timeout risk (full rebuild can take 30s+).
 const CUMULATIVE_LAZY_REBUILD_THRESHOLD: usize = 400;
 
 use std::cell::Cell;
@@ -120,9 +123,12 @@ pub struct ToolRouter {
     pub(crate) pending_project_activations: Arc<Mutex<HashMap<String, PendingProjectActivation>>>,
     /// Counter for cumulative lazy files built via `refresh_graph_for_files`.
     /// When this exceeds `CUMULATIVE_LAZY_REBUILD_THRESHOLD`, the next
-    /// refresh triggers a full graph rebuild to keep the in-memory snapshot
-    /// clean and avoid accumulated incremental-update overhead.
+    /// graph-backed tool call triggers a full rebuild to keep the in-memory
+    /// snapshot clean and avoid accumulated incremental-update overhead.
     cumulative_lazy_changes: usize,
+    /// Whether the cumulative lazy-changes counter crossed the threshold,
+    /// signaling that the next graph-backed call should do a full rebuild.
+    cumulative_rebuild_needed: bool,
 }
 
 impl ToolRouter {
@@ -158,6 +164,7 @@ impl ToolRouter {
             pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
             cached_manual_full_index: Cell::new(None),
             cumulative_lazy_changes: 0,
+            cumulative_rebuild_needed: false,
         }
     }
 
@@ -185,6 +192,7 @@ impl ToolRouter {
             pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
             cached_manual_full_index: Cell::new(None),
             cumulative_lazy_changes: 0,
+            cumulative_rebuild_needed: false,
         }
     }
 
@@ -367,6 +375,15 @@ impl ToolRouter {
         if !self.graph_initialized {
             return Ok(());
         }
+        // Cumulative lazy changes crossed the threshold — execute the
+        // deferred full rebuild now, before the next graph-backed query.
+        // This is on the critical path of the NEXT tool call (not the
+        // one that triggered the threshold), giving it its own 30s budget.
+        if self.cumulative_rebuild_needed {
+            self.cumulative_rebuild_needed = false;
+            tracing::info!("Executing deferred cumulative graph rebuild");
+            return self.force_refresh_graph();
+        }
         // Background task(s) may have triggered lazy structural —
         // skip cooldown to pick up new facts immediately.
         if self.graph_stale_flag.swap(false, Ordering::AcqRel) {
@@ -443,16 +460,17 @@ impl ToolRouter {
         self.cached_manual_full_index.set(None);
 
         // Track cumulative lazy changes for progressive graph rebuild.
-        // When enough files have been incrementally updated, do a full
-        // synchronous rebuild to keep the in-memory snapshot clean.
+        // When enough files have been incrementally updated, defer a full
+        // rebuild to the next graph-backed tool call — never block the
+        // current request (full rebuild can exceed MCP 30s timeout).
         self.cumulative_lazy_changes += file_ids.len();
         if self.cumulative_lazy_changes >= CUMULATIVE_LAZY_REBUILD_THRESHOLD {
             tracing::info!(
-                "Cumulative lazy changes reached {} (threshold {}), triggering full graph rebuild",
+                "Cumulative lazy changes reached {} (threshold {}), deferring full graph rebuild",
                 self.cumulative_lazy_changes,
                 CUMULATIVE_LAZY_REBUILD_THRESHOLD
             );
-            self.force_refresh_graph()?;
+            self.cumulative_rebuild_needed = true;
             self.cumulative_lazy_changes = 0;
         }
         Ok(())

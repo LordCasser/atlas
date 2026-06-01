@@ -245,7 +245,9 @@ impl LazyCoordinator {
                             }
                             self.store.complete_extraction_job(&job_id)?;
                             last_job_id = job_id;
-                            budget.consume_file();
+                            if r.files_built > 0 {
+                                budget.consume_file();
+                            }
                         }
                         Err(e) => {
                             self.store

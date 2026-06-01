@@ -715,12 +715,14 @@ fn spawn_preparse(
             atlas_engine::LazyCoordinator::with_project_root(store.clone(), project_root.clone())
                 .with_include_roots(include_roots);
         let lazy = LazyStructuralService::new(store, Some(project_root));
+        // Shared background budget across all seeds — prevents unbounded
+        // background extraction from competing with foreground MCP requests.
+        let mut bg_budget = LazyBudget::background_preparse();
         for file_id in &file_ids {
-            let _ = coordinator.ensure_structural_with_closure(
-                &lazy,
-                file_id,
-                &mut LazyBudget::new(u64::MAX, usize::MAX),
-            );
+            if !bg_budget.can_continue() {
+                break;
+            }
+            let _ = coordinator.ensure_structural_with_closure(&lazy, file_id, &mut bg_budget);
         }
         // After all lazy structural completes, mark the in-memory graph as
         // stale so a subsequent maybe_refresh_graph rebuilds affected nodes.

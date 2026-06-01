@@ -42,8 +42,20 @@ impl LazyBudget {
         }
     }
 
-    /// Custom budget (for testing or future tuning).
-    pub fn new(budget_ms: u64, max_files: usize) -> Self {
+    /// Background preparse budget: longer time window but still capped to
+    /// avoid unbounded background work competing with foreground requests.
+    pub fn background_preparse() -> Self {
+        Self {
+            budget_ms: 60_000,
+            max_files: 100,
+            start: std::time::Instant::now(),
+            files_consumed: 0,
+        }
+    }
+
+    /// Custom budget (for testing only — not part of the stable API surface).
+    #[allow(dead_code)]
+    pub(crate) fn new(budget_ms: u64, max_files: usize) -> Self {
         Self {
             budget_ms,
             max_files,
