@@ -12,6 +12,7 @@
 //! Extraction never writes final edges — that's the resolver's job.
 
 pub mod callsite_spec;
+pub mod cancel;
 mod cfg_builder;
 mod dataflow_builder;
 mod engine;
@@ -37,7 +38,8 @@ pub use callsite_spec::{
 pub use cfg_builder::{CfgBuilder, CfgResult};
 pub use dataflow_builder::{DataFlowBuilder, DataFlowResult};
 pub use error::{ExtractionFailure, ExtractionFailureKind};
-pub use extract::{extract_file, extract_file_with_mode};
+pub use cancel::CancelCheck;
+pub use extract::{extract_file, extract_file_with_mode, extract_file_with_mode_cancellable};
 pub use frontend::{
     FrontendParts, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, ParserSpec,
     ReferenceExtractorSpec, ScopeExtractorSpec, SymbolExtractorSpec, UnsupportedSpec,

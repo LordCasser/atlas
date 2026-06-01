@@ -33,6 +33,8 @@ use anyhow::Result;
 use db::{ClaimResult, Store};
 use types::ids::FileId;
 
+use extraction::CancelCheck;
+
 use crate::lazy_budget::LazyBudget;
 use crate::LazyDataflowService;
 use crate::closure_planner::{ClosurePlanner, IncludeRoot};
@@ -153,7 +155,7 @@ impl LazyCoordinator {
             }
             ClaimResult::Claimed { job_id } => {
                 // This caller owns the build — execute extraction
-                let result = service.ensure_structural_for_file(file_id);
+                let result = service.ensure_structural_for_file(file_id, None);
 
                 match result {
                     Ok(r) => {
@@ -233,7 +235,7 @@ impl LazyCoordinator {
                 ClaimResult::Claimed { job_id } => {
                     // This caller owns the build — execute extraction
                     let build_result = if is_seed {
-                        service.ensure_structural_for_file(file_id)
+                        service.ensure_structural_for_file(file_id, Some(budget as &dyn CancelCheck))
                     } else {
                         service.ensure_resolution_symbols_for_file(file_id)
                     };
@@ -332,6 +334,8 @@ impl LazyCoordinator {
         total.files_cached += r.0.files_cached;
         total.budget_exceeded |= r.0.budget_exceeded;
         total.built_file_ids.extend(r.0.built_file_ids);
+        total.files_pending += r.0.files_pending;
+        total.pending_job_ids.extend(r.0.pending_job_ids);
         total.precision_tier = crate::precision::structural_precision(
             total.files_built,
             total.files_cached,
@@ -684,6 +688,31 @@ use crate::lazy_budget::LazyBudget;
         };
         assert_eq!(result_with.built_file_ids.len(), 1);
         assert_eq!(result_with.built_file_ids[0], fid);
+    }
+
+    #[test]
+    fn ensure_structural_result_pending_fields() {
+        // Verify that files_pending and pending_job_ids are properly
+        // populated so that AlreadyBuilding results propagate through
+        // ensure_structural_for_symbol_with_closure to LazyOutcome.
+        use crate::lazy_structural::EnsureStructuralResult;
+        use types::ids::FileId;
+        use types::structs::precision::PrecisionTier;
+
+        let _fid = FileId::generate("pending.c");
+        let result = EnsureStructuralResult {
+            files_built: 0,
+            files_cached: 0,
+            budget_exceeded: false,
+            built_file_ids: vec![],
+            precision_tier: PrecisionTier::DegradedStructural,
+            files_pending: 2,
+            pending_job_ids: vec!["job-aaa".into(), "job-bbb".into()],
+        };
+        assert_eq!(result.files_pending, 2);
+        assert_eq!(result.pending_job_ids.len(), 2);
+        assert_eq!(result.pending_job_ids[0], "job-aaa");
+        assert_eq!(result.pending_job_ids[1], "job-bbb");
     }
 
     #[test]

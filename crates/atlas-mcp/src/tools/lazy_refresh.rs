@@ -18,7 +18,8 @@ const CUMULATIVE_LAZY_REBUILD_THRESHOLD: usize = 400;
 pub(crate) struct LazyRefreshQueue {
     /// File IDs waiting for per-file incremental graph refresh.
     pending_file_ids: Mutex<HashSet<FileId>>,
-    /// Total file writes accumulated across all lazy extraction calls.
+    /// Cumulative count of unique files written (deduplication-aware;
+    /// only counts files not already in pending_file_ids).
     cumulative_count: AtomicUsize,
     /// Set when cumulative count crosses threshold — next graph-backed tool
     /// call should spawn a background full-rebuild task.
@@ -44,16 +45,28 @@ impl LazyRefreshQueue {
     /// Record file IDs written by lazy extraction.
     /// Called from both foreground MCP handlers and background preparse thread.
     pub(crate) fn record_lazy_writes(&self, file_ids: &[FileId]) {
-        // 1. Lock pending_file_ids, insert all file_ids (HashSet deduplicates)
-        if !file_ids.is_empty() {
-            if let Ok(mut pending) = self.pending_file_ids.lock() {
-                for fid in file_ids {
-                    pending.insert(*fid);
-                }
-            }
+        if file_ids.is_empty() {
+            return;
         }
-        // 2. fetch_add cumulative_count, if result >= threshold, set full_rebuild_scheduled
-        let new_count = self.cumulative_count.fetch_add(file_ids.len(), Ordering::Relaxed) + file_ids.len();
+        // Count only files new to the pending set (deduplication-aware).
+        let unique_new: usize;
+        if let Ok(mut pending) = self.pending_file_ids.lock() {
+            let before = pending.len();
+            for fid in file_ids {
+                pending.insert(*fid);
+            }
+            unique_new = pending.len() - before;
+        } else {
+            // Poisoned mutex: fall back to input length.
+            unique_new = file_ids.len();
+        }
+        if unique_new == 0 {
+            return;
+        }
+        let new_count = self
+            .cumulative_count
+            .fetch_add(unique_new, Ordering::Relaxed)
+            + unique_new;
         if new_count >= CUMULATIVE_LAZY_REBUILD_THRESHOLD {
             self.schedule_full_rebuild();
         }
@@ -139,12 +152,22 @@ mod tests {
         let q = LazyRefreshQueue::new();
         let f1 = FileId::generate("a.rs");
         let f2 = FileId::generate("b.rs");
+        let f3 = FileId::generate("c.rs");
 
+        // Write f1, f2 → count = 2
         q.record_lazy_writes(&[f1, f2]);
         assert_eq!(q.cumulative_count.load(Ordering::Relaxed), 2);
 
+        // Write f1 again → count stays 2 (deduped)
+        q.record_lazy_writes(&[f1]);
+        assert_eq!(q.cumulative_count.load(Ordering::Relaxed), 2);
+
+        // Write f1, f3 → count = 3 (only f3 is new)
+        q.record_lazy_writes(&[f1, f3]);
+        assert_eq!(q.cumulative_count.load(Ordering::Relaxed), 3);
+
         let batch = q.take_incremental_batch(500);
-        assert_eq!(batch.len(), 2);
+        assert_eq!(batch.len(), 3);
         assert!(q.take_incremental_batch(500).is_empty());
     }
 

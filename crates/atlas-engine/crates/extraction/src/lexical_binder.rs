@@ -83,6 +83,7 @@ impl LexicalBinder {
             ctx.root,
             ctx.source_bytes(),
             "lexical",
+            None,
         )
         .map_err(|failure| {
             use crate::error::ExtractionFailure;

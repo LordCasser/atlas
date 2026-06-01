@@ -180,7 +180,7 @@ Source files
 
 ### 7.1 Lazy Dataflow
 
-analysis 层按需加载 dataflow facts（而非全量预加载），通过 `LazyWindow` 控制分析范围，budget-capped (25s/64 units)。`ExtractionMode::LazyDataflow` 支持增量按需抽取。
+analysis 层按需加载 dataflow facts（而非全量预加载），通过 `LazyWindow` 控制分析范围，budget-capped (20s/32 units)。结构性 lazy 提取 budget-capped (18s/30 files)。`ExtractionMode::LazyDataflow` 支持增量按需抽取。
 
 ### 7.2 跨函数桥接（DataflowFull）
 

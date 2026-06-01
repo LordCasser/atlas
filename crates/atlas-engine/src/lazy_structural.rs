@@ -30,7 +30,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use db::Store;
-use extraction::{ExtractionMode, create_frontend, extract_file_with_mode};
+use extraction::{
+    CancelCheck, ExtractionMode, create_frontend,
+    extract_file_with_mode, extract_file_with_mode_cancellable,
+};
 use types::ids::FileId;
 use types::structs::precision::PrecisionTier;
 use types::{layer, status};
@@ -156,6 +159,14 @@ impl DefaultCandidateProvider {
 // LazyStructuralService
 // ---------------------------------------------------------------------------
 
+/// Outcome of a single-file structural reindex.
+pub(crate) enum ReindexOutcome {
+    /// Extraction and DB write completed successfully.
+    Built,
+    /// Extraction was cancelled (budget exhausted). No DB write occurred.
+    Cancelled,
+}
+
 /// Outcome of a lazy structural ensure invocation.
 #[derive(Debug, Clone)]
 pub struct EnsureStructuralResult {
@@ -222,12 +233,16 @@ impl LazyStructuralService {
                 pending_job_ids: vec![],
             });
         }
-        self.ensure_structural_for_files(&candidates)
+        self.ensure_structural_for_files(&candidates, None)
     }
 
     /// Ensure a specific file has full structural facts.
-    pub fn ensure_structural_for_file(&self, file_id: &FileId) -> Result<EnsureStructuralResult> {
-        self.ensure_structural_for_files(&[*file_id])
+    pub fn ensure_structural_for_file(
+        &self,
+        file_id: &FileId,
+        token: Option<&dyn CancelCheck>,
+    ) -> Result<EnsureStructuralResult> {
+        self.ensure_structural_for_files(&[*file_id], token)
     }
 
     /// Ensure a bounded set of files has structural facts.
@@ -240,7 +255,7 @@ impl LazyStructuralService {
         &self,
         file_ids: &[FileId],
     ) -> Result<EnsureStructuralResult> {
-        self.ensure_structural_for_files(file_ids)
+        self.ensure_structural_for_files(file_ids, None)
     }
 
     /// Check whether a file already has a complete structural layer.
@@ -405,7 +420,11 @@ impl LazyStructuralService {
 
     // ── Internal ────────────────────────────────────────────────────────
 
-    fn ensure_structural_for_files(&self, file_ids: &[FileId]) -> Result<EnsureStructuralResult> {
+    fn ensure_structural_for_files(
+        &self,
+        file_ids: &[FileId],
+        token: Option<&dyn CancelCheck>,
+    ) -> Result<EnsureStructuralResult> {
         let start = std::time::Instant::now();
         let mut result = EnsureStructuralResult {
             files_built: 0,
@@ -426,10 +445,14 @@ impl LazyStructuralService {
                 result.files_cached += 1;
                 continue;
             }
-            match self.reindex_file_structural(file_id) {
-                Ok(()) => {
+            match self.reindex_file_structural(file_id, token) {
+                Ok(ReindexOutcome::Built) => {
                     result.files_built += 1;
                     result.built_file_ids.push(*file_id);
+                }
+                Ok(ReindexOutcome::Cancelled) => {
+                    result.budget_exceeded = true;
+                    break;
                 }
                 Err(e) => {
                     tracing::warn!("Lazy structural failed for {:?}: {:#}", file_id, e);
@@ -459,7 +482,11 @@ impl LazyStructuralService {
     /// Callers do not need a separate [`FileLock`] for MCP single-threaded
     /// operation; concurrent CLI `atlas index` runs should coordinate
     /// via the store's exclusive lock.
-    fn reindex_file_structural(&self, file_id: &FileId) -> Result<()> {
+    fn reindex_file_structural(
+        &self,
+        file_id: &FileId,
+        token: Option<&dyn CancelCheck>,
+    ) -> Result<ReindexOutcome> {
         let file_info = self
             .store
             .get_file(file_id)?
@@ -498,16 +525,35 @@ impl LazyStructuralService {
             ));
         }
 
+        // CP5: check cancellation before extraction.
+        if let Some(t) = token {
+            if t.is_cancelled() {
+                return Ok(ReindexOutcome::Cancelled);
+            }
+        }
+
         // Extract BEFORE any destructive invalidation — if extraction fails,
         // no destructive operations have been performed.
-        let mut facts = extract_file_with_mode(
-            &frontend,
-            *file_id,
-            std::path::Path::new(&file_info.path),
-            &source,
-            &content_hash,
-            ExtractionMode::Structural,
-        )?;
+        let mut facts = if let Some(t) = token {
+            extract_file_with_mode_cancellable(
+                &frontend,
+                *file_id,
+                std::path::Path::new(&file_info.path),
+                &source,
+                &content_hash,
+                ExtractionMode::Structural,
+                t,
+            )?
+        } else {
+            extract_file_with_mode(
+                &frontend,
+                *file_id,
+                std::path::Path::new(&file_info.path),
+                &source,
+                &content_hash,
+                ExtractionMode::Structural,
+            )?
+        };
 
         // Post-extraction: enrich with kernel-specific semantics
         let aug = crate::linux_augment::LinuxAugmenter::augment(&mut facts, &source);
@@ -519,6 +565,14 @@ impl LazyStructuralService {
                 aug.syscall_detected,
                 file_info.path,
             );
+        }
+
+        // CP6: check cancellation before DB write — most critical checkpoint;
+        // prevents completed extraction from writing to DB when budget exhausted.
+        if let Some(t) = token {
+            if t.is_cancelled() {
+                return Ok(ReindexOutcome::Cancelled);
+            }
         }
 
         // Invalidate cross-file references, delete outgoing edges, and
@@ -533,7 +587,7 @@ impl LazyStructuralService {
             facts.symbol_count(),
             facts.reference_count()
         );
-        Ok(())
+        Ok(ReindexOutcome::Built)
     }
 
     fn incremental_resolve_and_build(&self, file_ids: &[FileId]) -> Result<()> {

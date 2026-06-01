@@ -21,6 +21,8 @@ use types::{
 };
 
 use super::callsite_spec::CallsiteParts;
+use super::cancel;
+use super::cancel::CancelCheck;
 use super::cfg_builder::CfgResult;
 use super::dataflow_builder::{DataFlowBuilder, DataFlowResult};
 use super::error::{ExtractionFailure, ExtractionFailureKind};
@@ -79,21 +81,26 @@ fn tl_parse(
     })
 }
 
-/// Extract a single file's facts using the given language frontend.
+/// Like [`extract_file_with_mode`] but cancellation-aware.
 ///
-/// `mode` controls which extraction phases are executed:
-///   - [`ExtractionMode::Structural`] — default indexing (no dataflow/CFG)
-///   - [`ExtractionMode::LazyDataflow`] — on-demand dataflow for a window of units
-///   - [`ExtractionMode::Full`] — complete analysis, all phases
-pub fn extract_file_with_mode(
+/// Checks `token.is_cancelled()` at strategic checkpoints and returns
+/// `Err` with a "cancelled" error if the budget is exhausted.
+/// The caller must distinguish cancellation from real extraction failure.
+pub fn extract_file_with_mode_cancellable(
     frontend: &LanguageFrontend,
     file_id: FileId,
     file_path: &Path,
     source: &str,
     content_hash: &str,
     mode: ExtractionMode,
+    token: &dyn CancelCheck,
 ) -> Result<FileFacts> {
     let mut diagnostics = Vec::new();
+
+    // CP1: Check cancellation before expensive parse.
+    if token.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
 
     // 1. Parse (P2: uses thread-local parser to avoid per-file alloc)
     let ts_lang = frontend.parser.tree_sitter_language();
@@ -134,6 +141,11 @@ pub fn extract_file_with_mode(
         "symbols",
         |ctx, capture| frontend.symbols.normalize(ctx, capture),
     )?;
+
+    // CP2: Check cancellation after symbol extraction.
+    if token.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
 
     // Recovery hook: recover tree-sitter parse artifacts (e.g., ArkTS struct).
     // MUST run before Manifest early-return so recovered symbols appear in manifest mode.
@@ -194,6 +206,11 @@ pub fn extract_file_with_mode(
         vec![]
     };
 
+    // CP3: Check cancellation after reference extraction.
+    if token.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
+
     // 4. Extract and normalize imports
     let imports = extract_and_normalize(
         &ectx,
@@ -211,6 +228,11 @@ pub fn extract_file_with_mode(
         "scopes",
         |ctx, capture| frontend.scopes.normalize(ctx, capture),
     )?;
+
+    // CP4: Check cancellation after imports + scopes extraction.
+    if token.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
 
     // 5a. Merge recovery scopes (from recover_definitions) and run scope recovery.
     //     This runs before build_scope_tree() so recovered scopes participate in
@@ -693,6 +715,35 @@ pub fn extract_file_with_mode(
     })
 }
 
+/// Extract a single file's facts using the given language frontend.
+///
+/// `mode` controls which extraction phases are executed:
+///   - [`ExtractionMode::Structural`] — default indexing (no dataflow/CFG)
+///   - [`ExtractionMode::LazyDataflow`] — on-demand dataflow for a window of units
+///   - [`ExtractionMode::Full`] — complete analysis, all phases
+///
+/// This is a backward-compatible wrapper around
+/// [`extract_file_with_mode_cancellable`] using a [`NeverCancel`] token.
+#[inline]
+pub fn extract_file_with_mode(
+    frontend: &LanguageFrontend,
+    file_id: FileId,
+    file_path: &Path,
+    source: &str,
+    content_hash: &str,
+    mode: ExtractionMode,
+) -> Result<FileFacts> {
+    extract_file_with_mode_cancellable(
+        frontend,
+        file_id,
+        file_path,
+        source,
+        content_hash,
+        mode,
+        &cancel::NeverCancel,
+    )
+}
+
 /// Extract a single file's facts with full analysis (all phases).
 ///
 /// This is the backward-compatible entry point — existing callers that
@@ -741,6 +792,7 @@ fn build_reference_binding_uses(
         ctx.root,
         ctx.source_bytes(),
         "binding_uses",
+        None,
     )
     .map_err(|failure| {
         let filled = ExtractionFailure {
@@ -864,6 +916,7 @@ fn extract_and_normalize<'a, T>(
         ctx.root,
         ctx.source_bytes(),
         slot_name,
+        None,
     )
     .map_err(|failure| {
         // Fill in file-level context that query_helpers doesn't have.

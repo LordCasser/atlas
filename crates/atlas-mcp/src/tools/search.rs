@@ -47,7 +47,7 @@ struct ScopedSearchResponse {
     precise: bool,
     results: Vec<SearchHit>,
     warnings: Vec<String>,
-    background_preparse: Option<String>,
+    background_preparse: Option<serde_json::Value>,
     /// Precision tier of the structural extraction (only set for precise searches).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     precision_tier: Option<atlas_engine::structs::precision::PrecisionTier>,
@@ -541,10 +541,11 @@ where
                 include_roots.clone(),
                 lazy_refresh_queue.clone(),
             );
-            background_preparse = Some(format!(
-                "preparse_task_id:{} (up to {} result-adjacent files)",
-                preparse_task_id, PREHEAT_FILE_LIMIT
-            ));
+            background_preparse = Some(serde_json::json!({
+                "task_id": preparse_task_id,
+                "status": "pending",
+                "file_limit": PREHEAT_FILE_LIMIT,
+            }));
         } else if !precise && scope_file_count > PREHEAT_SCOPE_FILE_LIMIT {
             warnings.push(format!(
                 "Background structural preparse skipped because scope has more than {} files; narrow scope to enable preparse.",

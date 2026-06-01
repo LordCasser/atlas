@@ -82,7 +82,7 @@ pub use db::{CURRENT_SCHEMA_VERSION, Store};
 /// Extraction layer: language frontends, parser pool, grammar registry.
 pub use extraction::{
     ExtractionMode, LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig,
-    create_frontend, extract_file, extract_file_with_mode,
+    create_frontend, extract_file, extract_file_with_mode, extract_file_with_mode_cancellable,
 };
 /// Sync layer: incremental sync engine, file lock, file discovery.
 pub use filesync::{

@@ -3,7 +3,7 @@
 //! Provides a single API surface for MCP handlers, replacing direct
 //! `LazyBudget` / `LazyCoordinator` construction with intent-based
 //! [`LazyPolicy`] presets.  Callers choose an intent (e.g. foreground
-//! structural, background preparse, dataflow trace) and the orchestrator
+//! structural, background preparse) and the orchestrator
 //! handles budget creation, coordination, and precision reporting.
 //!
 //! # Usage
@@ -40,8 +40,6 @@ pub enum LazyPolicy {
     ForegroundStructural,
     /// Background preparse: 60s / 100 files, shared across seeds.
     BackgroundPreparse,
-    /// Dataflow trace: 20s / 32 units.
-    DataflowTrace,
 }
 
 // ── LazyOutcome ───────────────────────────────────────────────────────────
@@ -103,30 +101,15 @@ impl LazyOrchestrator {
     /// [`ClosurePlanner`]), and the coordinator handles job tracking and
     /// in-flight deduplication.  The `policy` controls the time and file
     /// budget.
-    ///
-    /// Returns an error if `DataflowTrace` policy is passed (this method
-    /// only supports structural policies).
     pub fn ensure_structural_for_files(
         &self,
         file_ids: &[FileId],
         policy: LazyPolicy,
     ) -> Result<LazyOutcome> {
-        // Validate policy
-        match policy {
-            LazyPolicy::ForegroundStructural | LazyPolicy::BackgroundPreparse => {}
-            LazyPolicy::DataflowTrace => {
-                anyhow::bail!(
-                    "LazyPolicy::DataflowTrace is not valid for ensure_structural_for_files; \
-                     use ForegroundStructural or BackgroundPreparse"
-                );
-            }
-        }
-
         // Create budget from policy
         let mut budget = match policy {
             LazyPolicy::ForegroundStructural => LazyBudget::structural(),
             LazyPolicy::BackgroundPreparse => LazyBudget::background_preparse(),
-            _ => unreachable!(),
         };
 
         let mut outcome = LazyOutcome {
@@ -155,10 +138,6 @@ impl LazyOrchestrator {
             outcome.files_pending += result.files_pending;
             outcome.built_file_ids.extend(result.built_file_ids);
             outcome.pending_job_ids.extend(result.pending_job_ids);
-
-            if result.files_built > 0 {
-                budget.consume_file();
-            }
         }
 
         // Compute final precision tier
@@ -175,28 +154,15 @@ impl LazyOrchestrator {
     ///
     /// Uses the candidate provider to find files likely containing the
     /// symbol, then builds the best candidate's dependency closure.
-    /// Returns an error if `DataflowTrace` policy is passed.
     pub fn ensure_structural_for_symbol(
         &self,
         name: &str,
         policy: LazyPolicy,
     ) -> Result<LazyOutcome> {
-        // Validate policy
-        match policy {
-            LazyPolicy::ForegroundStructural | LazyPolicy::BackgroundPreparse => {}
-            LazyPolicy::DataflowTrace => {
-                anyhow::bail!(
-                    "LazyPolicy::DataflowTrace is not valid for ensure_structural_for_symbol; \
-                     use ForegroundStructural or BackgroundPreparse"
-                );
-            }
-        }
-
         // Create budget from policy
         let mut budget = match policy {
             LazyPolicy::ForegroundStructural => LazyBudget::structural(),
             LazyPolicy::BackgroundPreparse => LazyBudget::background_preparse(),
-            _ => unreachable!(),
         };
 
         let result = self.coordinator.ensure_structural_for_symbol_with_closure(
@@ -229,13 +195,6 @@ impl LazyOrchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use types::ids::FileId;
-
-    fn test_store() -> Arc<Store> {
-        let store = Store::open_in_memory().unwrap();
-        store.init_schema().unwrap();
-        Arc::new(store)
-    }
 
     #[test]
     fn lazy_policy_is_copy() {
@@ -260,32 +219,4 @@ mod tests {
         assert!(outcome.pending_job_ids.is_empty());
     }
 
-    #[test]
-    fn ensure_structural_for_files_rejects_dataflow_policy() {
-        let store = test_store();
-        let orchestrator = LazyOrchestrator::new(store, None, vec![]);
-        let fid = FileId::generate("test.rs");
-        let err = orchestrator
-            .ensure_structural_for_files(&[fid], LazyPolicy::DataflowTrace)
-            .unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("DataflowTrace"),
-            "error should mention DataflowTrace, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn ensure_structural_for_symbol_rejects_dataflow_policy() {
-        let store = test_store();
-        let orchestrator = LazyOrchestrator::new(store, None, vec![]);
-        let err = orchestrator
-            .ensure_structural_for_symbol("test_func", LazyPolicy::DataflowTrace)
-            .unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("DataflowTrace"),
-            "error should mention DataflowTrace, got: {msg}"
-        );
-    }
 }

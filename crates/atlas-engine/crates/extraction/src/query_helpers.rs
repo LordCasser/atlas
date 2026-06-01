@@ -9,6 +9,7 @@
 
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator};
 
+use crate::cancel::CancelCheck;
 use crate::error::{ExtractionFailure, ExtractionFailureKind};
 
 /// Collect raw (capture_name, node) pairs from a single query.
@@ -22,6 +23,7 @@ pub(crate) fn collect_captures<'a>(
     root: Node<'a>,
     source_bytes: &[u8],
     slot: &'static str,
+    cancel_token: Option<&dyn CancelCheck>,
 ) -> Result<Vec<(String, Node<'a>)>, ExtractionFailure> {
     let trimmed = query_src.trim();
     if trimmed.is_empty() {
@@ -51,6 +53,7 @@ pub(crate) fn collect_captures<'a>(
     let mut captures_result = Vec::new();
 
     let mut captures = cursor.captures(&query, root, source_bytes);
+    let mut count = 0usize;
     while let Some((m, capture_index)) = captures.next() {
         if let Some(cap) = m.captures.get(*capture_index) {
             let name = capture_names
@@ -58,6 +61,14 @@ pub(crate) fn collect_captures<'a>(
                 .cloned()
                 .unwrap_or_else(|| format!("capture_{}", cap.index));
             captures_result.push((name, cap.node));
+        }
+        count += 1;
+        if count % 100 == 0 {
+            if let Some(t) = cancel_token {
+                if t.is_cancelled() {
+                    break;
+                }
+            }
         }
     }
     Ok(captures_result)

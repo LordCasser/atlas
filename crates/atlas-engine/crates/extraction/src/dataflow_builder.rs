@@ -106,6 +106,7 @@ impl DataFlowBuilder {
             ctx.root,
             ctx.source_bytes(),
             "dataflow",
+            None,
         )
         .map_err(|failure| {
             use crate::error::ExtractionFailure;

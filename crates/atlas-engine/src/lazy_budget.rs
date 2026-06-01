@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 /// Request-level budget for lazy extraction within a single MCP tool call.
 ///
 /// Tracks two independent dimensions:
@@ -11,6 +13,8 @@ pub struct LazyBudget {
     max_files: usize,
     start: std::time::Instant,
     files_consumed: usize,
+    /// Set when budget is exhausted — consumed by CancelCheck impl.
+    cancelled: AtomicBool,
 }
 
 /// Total wall-clock budget for lazy structural extraction per MCP request.
@@ -27,18 +31,7 @@ impl LazyBudget {
             max_files: LAZY_STRUCTURAL_MAX_FILES,
             start: std::time::Instant::now(),
             files_consumed: 0,
-        }
-    }
-
-    /// Create a new dataflow budget with the standard limits.
-    pub fn dataflow() -> Self {
-        // Dataflow uses unit count rather than file count, but we re-use
-        // the same struct. The caller interprets max_files as max_units.
-        Self {
-            budget_ms: 20_000,
-            max_files: 32,
-            start: std::time::Instant::now(),
-            files_consumed: 0,
+            cancelled: AtomicBool::new(false),
         }
     }
 
@@ -50,6 +43,7 @@ impl LazyBudget {
             max_files: 100,
             start: std::time::Instant::now(),
             files_consumed: 0,
+            cancelled: AtomicBool::new(false),
         }
     }
 
@@ -61,12 +55,22 @@ impl LazyBudget {
             max_files,
             start: std::time::Instant::now(),
             files_consumed: 0,
+            cancelled: AtomicBool::new(false),
         }
     }
 
     /// Whether extraction can continue (both time and file quotas remain).
     pub fn can_continue(&self) -> bool {
-        !self.time_exceeded() && !self.files_exhausted()
+        if self.time_exceeded() {
+            self.cancel();
+            return false;
+        }
+        !self.files_exhausted() && !self.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Signal cancellation (called from budget check or externally).
+    pub(crate) fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
     }
 
     /// Record that one file has been extracted.
@@ -92,5 +96,11 @@ impl LazyBudget {
     /// Whether the file quota has been exhausted.
     pub fn files_exhausted(&self) -> bool {
         self.files_consumed >= self.max_files
+    }
+}
+
+impl extraction::CancelCheck for LazyBudget {
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire) || self.time_exceeded()
     }
 }
