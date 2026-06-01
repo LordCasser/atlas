@@ -150,9 +150,15 @@ mod tests {
             LanguageRegistry::detect_language(Path::new("src/main.py")),
             Some(Language::Python)
         );
+        #[cfg(feature = "arkts")]
         assert_eq!(
             LanguageRegistry::detect_language(Path::new("App.ets")),
             Some(Language::ArkTS)
+        );
+        #[cfg(not(feature = "arkts"))]
+        assert_eq!(
+            LanguageRegistry::detect_language(Path::new("App.ets")),
+            None
         );
         #[cfg(feature = "cangjie")]
         assert_eq!(
@@ -174,17 +180,35 @@ mod tests {
             LanguageRegistry::detect_language(Path::new("main.go")),
             None
         );
+        #[cfg(feature = "java")]
         assert_eq!(
             LanguageRegistry::detect_language(Path::new("Main.java")),
             Some(Language::Java)
         );
+        #[cfg(not(feature = "java"))]
+        assert_eq!(
+            LanguageRegistry::detect_language(Path::new("Main.java")),
+            None
+        );
+        #[cfg(feature = "c")]
         assert_eq!(
             LanguageRegistry::detect_language(Path::new("main.c")),
             Some(Language::C)
         );
+        #[cfg(not(feature = "c"))]
+        assert_eq!(
+            LanguageRegistry::detect_language(Path::new("main.c")),
+            None
+        );
+        #[cfg(feature = "cpp")]
         assert_eq!(
             LanguageRegistry::detect_language(Path::new("main.cpp")),
             Some(Language::Cpp)
+        );
+        #[cfg(not(feature = "cpp"))]
+        assert_eq!(
+            LanguageRegistry::detect_language(Path::new("main.cpp")),
+            None
         );
         assert_eq!(
             LanguageRegistry::detect_language(Path::new("unknown.xyz")),

@@ -87,9 +87,13 @@ impl Language {
             "ts" | "mts" | "cts" | "tsx" => Some(Self::TypeScript),
             "js" | "mjs" | "cjs" | "jsx" => Some(Self::JavaScript),
             "py" | "pyi" | "pyx" => Some(Self::Python),
+            #[cfg(feature = "java")]
             "java" => Some(Self::Java),
+            #[cfg(feature = "c")]
             "c" | "h" => Some(Self::C),
+            #[cfg(feature = "cpp")]
             "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" => Some(Self::Cpp),
+            #[cfg(feature = "arkts")]
             "ets" | "sts" => Some(Self::ArkTS),
             #[cfg(feature = "cangjie")]
             "cj" | "cangjie" => Some(Self::Cangjie),
@@ -1080,7 +1084,10 @@ mod tests {
     #[test]
     fn test_language_from_extension() {
         assert_eq!(Language::from_extension("ts"), Some(Language::TypeScript));
+        #[cfg(feature = "arkts")]
         assert_eq!(Language::from_extension("ets"), Some(Language::ArkTS));
+        #[cfg(not(feature = "arkts"))]
+        assert_eq!(Language::from_extension("ets"), None);
         #[cfg(feature = "cangjie")]
         assert_eq!(Language::from_extension("cj"), Some(Language::Cangjie));
         #[cfg(not(feature = "cangjie"))]
@@ -1109,7 +1116,10 @@ mod tests {
         assert_eq!(Language::from_extension("kt"), Some(Language::Kotlin));
         #[cfg(not(feature = "kotlin"))]
         assert_eq!(Language::from_extension("kt"), None);
+        #[cfg(feature = "java")]
         assert_eq!(Language::from_extension("java"), Some(Language::Java));
+        #[cfg(not(feature = "java"))]
+        assert_eq!(Language::from_extension("java"), None);
         assert_eq!(Language::from_extension("unknown"), None);
     }
 

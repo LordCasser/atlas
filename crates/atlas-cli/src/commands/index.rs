@@ -111,7 +111,8 @@ pub fn run(
 
     // ── Spawn worker thread ──
     let worker = std::thread::spawn(move || -> anyhow::Result<()> {
-        let root = root_path;
+        let result = (|| -> anyhow::Result<()> {
+            let root = root_path;
         let store = store_arc;
         let include_patterns = include_clone;
         let exclude = exclude_clone;
@@ -357,9 +358,11 @@ pub fn run(
             .start_phase(ProgressPhase::Finalizing, None);
         atlas_engine::phase_commit_path_alias_config(&store, &root)?;
         atlas_engine::phase_finalize(&store, &root, &include_patterns)?;
-
-        done_w.store(true, Ordering::SeqCst);
         Ok(())
+        })();
+        // Always signal completion, even on error — prevents main thread hang
+        done_w.store(true, Ordering::SeqCst);
+        result
     });
 
     // ── Main thread: render loop ──
