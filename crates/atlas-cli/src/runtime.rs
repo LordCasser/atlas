@@ -16,8 +16,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
-use atlas_engine::Store;
-use atlas_engine::Workspace;
+use atlas_engine::{
+    ExtractionError, ExtractionMode, FailureCategory, FileFacts, Language, LanguageFrontend,
+    ParseWorkerPool, Store, Workspace,
+};
 
 /// Controls DB creation and schema-initialisation behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +137,45 @@ impl CommandContext {
             store,
         })
     }
+}
+
+// ── Shared extraction ──────────────────────────────────────────────────────
+
+/// Read a source file, hash it, and extract facts using the given language frontend.
+///
+/// Shared by `commands::index` and `tui::auto_index` to avoid duplicating the
+/// file-read → hash → `pool.extract_one` pipeline.
+pub fn extract_one(
+    pool: &ParseWorkerPool,
+    path: &Path,
+    root: &Path,
+    _lang: Language,
+    frontend: &LanguageFrontend,
+    mode: ExtractionMode,
+) -> Result<FileFacts, ExtractionError> {
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            let relative = path.strip_prefix(root).unwrap_or(path);
+            let rel_str = relative.to_string_lossy().to_string();
+            let msg = format!("Failed to read {}: {}", path.display(), e);
+            pool.push_failure(&rel_str, FailureCategory::IoError, msg.clone());
+            return Err(ExtractionError {
+                file_path: rel_str,
+                category: FailureCategory::IoError,
+                message: msg,
+            });
+        }
+    };
+    let content_hash = blake3::hash(source.as_bytes()).to_hex();
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    let rel_str = relative.to_string_lossy().to_string();
+    let file_id = atlas_engine::source_file_id(relative).map_err(|_| ExtractionError {
+        file_path: rel_str.clone(),
+        category: FailureCategory::IoError,
+        message: format!("invalid source path: {}", relative.display()),
+    })?;
+    pool.extract_one(frontend, file_id, relative, &source, &content_hash, mode)
 }
 
 #[cfg(test)]

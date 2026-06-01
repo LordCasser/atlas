@@ -15,9 +15,7 @@
 use crate::runtime::{CommandContext, DbMode};
 use crate::tui::{TextFallback, TuiProgress};
 use anyhow::Context;
-use atlas_engine::ExtractionError;
 use atlas_engine::ExtractionMode;
-use atlas_engine::FailureCategory;
 use atlas_engine::FileLock;
 use atlas_engine::Language;
 use atlas_engine::LanguageFrontend;
@@ -26,7 +24,6 @@ use atlas_engine::progress::{ProgressPhase, ProgressState};
 use atlas_engine::{self, LanguageRegistry, ParseWorkerPool, WorkerConfig};
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -228,7 +225,7 @@ pub fn run(
                 let lang = Language::from_path(rel_path)?;
                 let frontend = fc.get(&lang)?;
                 let file_start = Instant::now();
-                let result = extract_one_with_frontend(
+                let result = crate::runtime::extract_one(
                     &pool,
                     &abs_path,
                     &root,
@@ -437,41 +434,6 @@ pub fn run(
     }
 
     Ok(())
-}
-
-// ── Extraction helpers ────────────────────────────────────────────────────
-
-fn extract_one_with_frontend(
-    pool: &ParseWorkerPool,
-    path: &Path,
-    root: &Path,
-    _lang: Language,
-    frontend: &LanguageFrontend,
-    mode: atlas_engine::ExtractionMode,
-) -> Result<atlas_engine::FileFacts, ExtractionError> {
-    let source = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            let relative = path.strip_prefix(root).unwrap_or(path);
-            let rel_str = relative.to_string_lossy().to_string();
-            let msg = format!("Failed to read {}: {}", path.display(), e);
-            pool.push_failure(&rel_str, FailureCategory::IoError, msg.clone());
-            return Err(ExtractionError {
-                file_path: rel_str,
-                category: FailureCategory::IoError,
-                message: msg,
-            });
-        }
-    };
-    let content_hash = blake3::hash(source.as_bytes()).to_hex();
-    let relative = path.strip_prefix(root).unwrap_or(path);
-    let rel_str = relative.to_string_lossy().to_string();
-    let file_id = atlas_engine::source_file_id(relative).map_err(|_| ExtractionError {
-        file_path: rel_str.clone(),
-        category: FailureCategory::IoError,
-        message: format!("invalid source path: {}", relative.display()),
-    })?;
-    pool.extract_one(frontend, file_id, relative, &source, &content_hash, mode)
 }
 
 // ── Scope helpers ──────────────────────────────────────────────────────────
