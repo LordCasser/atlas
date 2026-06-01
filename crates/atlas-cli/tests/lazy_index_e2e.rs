@@ -4,7 +4,8 @@
 //!
 //! Run: `cargo test --test lazy_index_e2e`
 
-use atlas_cli::commands::{index, init};
+use atlas_cli::commands::index;
+use atlas_cli::runtime::{CommandContext, DbMode};
 use atlas_engine::Store;
 use atlas_engine::{layer, status};
 use std::sync::Arc;
@@ -40,7 +41,7 @@ fn p0_scope_index_filters_by_include() {
     ]);
     let project = tmp.path().to_string_lossy().to_string();
 
-    init::run(&project).expect("atlas init");
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
     index::run(&project, &["src/**".to_string()], &[], &[], "structural").expect("atlas index");
 
     let store = open_store(&tmp);
@@ -57,7 +58,7 @@ fn p0_scope_index_records_metadata() {
     let tmp = setup_project(&[("src/index.ts", "const x = 1;")]);
     let project = tmp.path().to_string_lossy().to_string();
 
-    init::run(&project).expect("atlas init");
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
     index::run(&project, &["src/**".to_string()], &[], &[], "structural").expect("atlas index");
 
     let store = open_store(&tmp);
@@ -75,7 +76,7 @@ fn p0_scope_sugar_converts_dir_to_glob() {
     ]);
     let project = tmp.path().to_string_lossy().to_string();
 
-    init::run(&project).expect("atlas init");
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
     let scopes = vec!["a".to_string(), "c".to_string()];
     index::run(&project, &[], &scopes, &[], "structural").expect("atlas index");
 
@@ -107,7 +108,7 @@ fn p1_manifest_produces_top_level_symbols() {
     )]);
     let project = tmp.path().to_string_lossy().to_string();
 
-    init::run(&project).expect("atlas init");
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
     index::run(&project, &[], &[], &[], "manifest").expect("atlas index");
 
     let store = open_store(&tmp);
@@ -143,7 +144,7 @@ fn p1_manifest_writes_file_extraction_state() {
     let tmp = setup_project(&[("lib.ts", "export function hello(): void {}")]);
     let project = tmp.path().to_string_lossy().to_string();
 
-    init::run(&project).expect("atlas init");
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
     index::run(&project, &[], &[], &[], "manifest").expect("atlas index");
 
     let store = open_store(&tmp);
@@ -162,7 +163,7 @@ fn p1_structural_writes_structural_layer() {
     let tmp = setup_project(&[("lib.ts", "export function hello(): void {}")]);
     let project = tmp.path().to_string_lossy().to_string();
 
-    init::run(&project).expect("atlas init");
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
     index::run(&project, &[], &[], &[], "structural").expect("atlas index");
 
     let store = open_store(&tmp);
@@ -185,7 +186,7 @@ fn p2_lazy_detects_missing_structural_layer() {
     let tmp = setup_project(&[("lib.ts", "export function empty(): void {}")]);
     let project = tmp.path().to_string_lossy().to_string();
 
-    init::run(&project).expect("atlas init");
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
     index::run(&project, &[], &[], &[], "manifest").expect("atlas index");
 
     let store = open_store(&tmp);
@@ -214,7 +215,7 @@ fn p2_lazy_builds_structural_on_demand() {
     )]);
     let project = tmp.path().to_string_lossy().to_string();
 
-    init::run(&project).expect("atlas init");
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
     index::run(&project, &[], &[], &[], "manifest").expect("atlas index");
 
     let store = open_store(&tmp);
@@ -247,7 +248,7 @@ fn p2_lazy_cache_hit_skips_rebuild() {
     let tmp = setup_project(&[("lib.ts", "function a(): void {}\nfunction b(): void {}")]);
     let project = tmp.path().to_string_lossy().to_string();
 
-    init::run(&project).expect("atlas init");
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
     index::run(&project, &[], &[], &[], "manifest").expect("atlas index");
 
     let store = open_store(&tmp);
@@ -270,7 +271,7 @@ fn p2_lazy_preserves_existing_structural() {
     let tmp = setup_project(&[("lib.ts", "function a(): void {}\nfunction b(): void {}")]);
     let project = tmp.path().to_string_lossy().to_string();
 
-    init::run(&project).expect("atlas init");
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
     index::run(&project, &[], &[], &[], "structural").expect("atlas index");
 
     let store = open_store(&tmp);
@@ -295,7 +296,7 @@ fn p2_lazy_ensure_for_symbol_by_name() {
     )]);
     let project = tmp.path().to_string_lossy().to_string();
 
-    init::run(&project).expect("atlas init");
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
     index::run(&project, &[], &[], &[], "manifest").expect("atlas index");
 
     let store = open_store(&tmp);
