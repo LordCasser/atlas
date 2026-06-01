@@ -6,7 +6,7 @@ All notable changes to Atlas will be documented in this file.
 
 ### First public release
 
-Atlas is a local-first semantic knowledge graph engine for LLM agents. It parses source code with tree-sitter, stores deterministic code facts in SQLite, and exposes 27 bounded MCP tools plus a CLI for agent-powered codebase navigation.
+Atlas is a local-first semantic knowledge graph engine for LLM agents. It parses source code with tree-sitter, stores deterministic code facts in SQLite, and exposes 28 bounded MCP tools plus a CLI for agent-powered codebase navigation.
 
 ---
 
@@ -20,11 +20,11 @@ Atlas is a local-first semantic knowledge graph engine for LLM agents. It parses
 
 ### MCP server
 
-- 27 stdio MCP tools (short names, no `atlas_` prefix):
+- 28 stdio MCP tools (short names, no `atlas_` prefix):
 
 | Group | Tools |
 |---|---|
-| Project management | `open_project`, `index`, `status`, `files`, `language_capabilities` |
+| Project management | `open_project`, `index`, `status`, `jobs`, `files`, `language_capabilities` |
 | Symbol search/detail | `search`, `symbol`, `usages` |
 | Graph navigation | `neighbors`, `callers`, `callees`, `callgraph`, `path`, `explore`, `impact` |
 | Context | `context` |

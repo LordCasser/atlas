@@ -68,9 +68,9 @@ P0-P7 optimizations completed: PhaseTimings, hash-based dirty-set, thread-local 
 
 ### 2.5 MCP tool consolidation ✅
 
-All tools use short names (no `atlas_` prefix). 27 tools registered.
+All tools use short names (no `atlas_` prefix). 28 tools registered.
 
-> **Next step (post-V1)**: namespace-style merge 27 → 16, see `8.1`. V1 freezes the 27-tool surface.
+> **Next step (post-V1)**: namespace-style merge 28 → 16, see `8.1`. V1 freezes the 28-tool surface.
 
 ## 3. Trace and language capability work
 
@@ -140,9 +140,9 @@ Corpus: git blob + version/tag/path mappings
 
 Deferred from V1; pick up in v1.2 / v2.0 once V1's MCP surface is frozen and downstream clients have anchored on it.
 
-### 8.1 MCP tool surface consolidation (27 → 16)
+### 8.1 MCP tool surface consolidation (28 → 16)
 
-The V1 27-tool surface has 4 clear namespace-style merge opportunities that reduce the description footprint by ~41% and save ~220 LOC of handler boilerplate. Implementation strategy: **Deprecate + Replace** — add 4 new namespace tools, keep the 16 old tool names as deprecated aliases routing to the new handlers, remove aliases by v2.0.
+The V1 28-tool surface has 4 clear namespace-style merge opportunities that reduce the description footprint by ~41% and save ~220 LOC of handler boilerplate. Implementation strategy: **Deprecate + Replace** — add 4 new namespace tools, keep the 16 old tool names as deprecated aliases routing to the new handlers, remove aliases by v2.0.
 
 | Group | Tools merged | New name | Dispatch parameter | Aliases |
 |---|---|---|---|---|
@@ -172,7 +172,7 @@ Three ~5-line helpers (`with_action`, `with_kind`, `with_direction`) inject the 
 - `tools/trace.rs` (397 LOC): `include_roots` resolution + lazy_structural warning injection is repeated in all 4 handlers → extract `resolve_trace_endpoint()` + `finalize_trace_response()` (≈ -150 LOC).
 - `tools/dependencies.rs` (42) and `dependents.rs` (41): near-mirror, only differ in the store call → merge into one new `tools/file_deps.rs` (~50 LOC).
 
-**Not merged (kept as-is)**: `index`, `open_project` (entry semantics + progress state machine), `search` (name lookup ≠ graph traversal), `symbol` (name resolution + lazy structural fallback), `context` (markdown rich response), `status`, `files`, `language_capabilities` (read-only metadata), `usages` (full reference set, not just caller path), `task_status`, `wait_for_task` (poll vs block semantics).
+**Not merged (kept as-is)**: `index`, `open_project` (entry semantics + progress state machine), `search` (name lookup ≠ graph traversal), `symbol` (name resolution + lazy structural fallback), `context` (markdown rich response), `status`, `jobs`, `files`, `language_capabilities` (read-only metadata), `usages` (full reference set, not just caller path), `task_status`, `wait_for_task` (poll vs block semantics).
 
 **File changes**:
 - `tools/mod.rs`: 1554 → ~1450 LOC (remove 16 `make_all_tools` entries).
@@ -189,13 +189,13 @@ Three ~5-line helpers (`with_action`, `with_kind`, `with_direction`) inject the 
 3. Group D `fp_annotations` (30 min).
 4. Group A `graph` (3-4 hr) — heaviest logic; ensure alias parity for `path` / `callgraph` / `explore`.
 5. One equivalence integration test across 16 old names + 4 new names.
-6. `docs/architecture.md:33` (27 → 16) and `CHANGELOG.md` update; v1.2 release notes announce the 4 merges, 16 aliases, and v2.0 removal.
+6. `docs/architecture.md:33` (28 → 16) and `CHANGELOG.md` update; v1.2 release notes announce the 4 merges, 16 aliases, and v2.0 removal.
 
 **Verification**:
 - Each deprecated alias returns **byte-identical** JSON to the original tool.
 - 5 existing regression tests (e.g. `trace_point_invalid_include_roots_returns_diagnostics`) still pass — they call internal handlers directly, not through the MCP protocol.
 - New equivalence integration test: 16 old names + 4 new names produce equal bodies.
-- `docs/architecture.md:33` updated from 27 → 16; `CHANGELOG.md` records the merge, aliases, and removal timeline.
+- `docs/architecture.md:33` updated from 28 → 16; `CHANGELOG.md` records the merge, aliases, and removal timeline.
 
 **Open questions to resolve at v1.2 kickoff**:
 1. Deprecation window length — recommended: until v2.0 (~6-12 months).

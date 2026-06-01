@@ -37,7 +37,7 @@ source code ──parse/extract──▶ .atlas/atlas.db ──query──▶ CL
 - **Local-first**: writes all index data to `<project>/.atlas/atlas.db`; no cloud service required.
 - **Deterministic extraction**: tree-sitter AST queries and stable blake3-based IDs instead of model guesses.
 - **Incremental sync**: content-hash based dirty-file detection with Git-aware file discovery.
-- **Agent-native MCP**: stdio MCP server exposing 27 bounded tools for search, graph, context, dependencies, trace, background tasks, and project management.
+- **Agent-native MCP**: stdio MCP server exposing 28 bounded tools for search, graph, context, dependencies, trace, background tasks, and project management.
 - **Graph + trace queries**: callers, callees, shortest path, impact, source-position lookup, variable origin tracing, and caller-path tracing.
 - **Explicit capability boundaries**: language capability metadata and trace diagnostics report partial results instead of silently overclaiming precision.
 
@@ -192,7 +192,7 @@ enabled = true
 
 | Group | MCP tools |
 | --- | --- |
-| Project management | `open_project`, `index`, `status`, `files`, `language_capabilities` |
+| Project management | `open_project`, `index`, `status`, `jobs`, `files`, `language_capabilities` |
 | Symbol search/detail | `search`, `symbol`, `usages` |
 | Graph navigation | `neighbors`, `callers`, `callees`, `callgraph`, `path`, `explore`, `impact` |
 | Context | `context` |

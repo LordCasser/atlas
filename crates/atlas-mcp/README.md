@@ -1,6 +1,6 @@
 # atlas-mcp
 
-MCP (Model Context Protocol) server for Atlas. Exposes 27 tools over stdio JSON-RPC for AI coding assistants.
+MCP (Model Context Protocol) server for Atlas. Exposes 28 tools over stdio JSON-RPC for AI coding assistants.
 
 ## Architecture
 
@@ -23,6 +23,7 @@ AtlasMcpService (ServerHandler)
 | `open_project` | `open_project.rs` | No — switches active project |
 | `index` | `index.rs` | No — writes to store |
 | `status` | `status.rs` | No — store queries |
+| `jobs` | `status.rs` | No — store queries |
 | `files` | `status.rs` | No — store queries |
 | `search` | `search.rs` | No — scoped store query, optional bounded structural parsing |
 | `symbol` | `search.rs` | Yes |
@@ -59,6 +60,7 @@ names without the old `atlas_` prefix.
 | `index` | — | `include`: string[], `exclude`: string[], `background`: boolean |
 | `open_project` | `project_path`: absolute path | `storage`: `"memory"` \| `"persistent"` (default `"memory"`), `scan_files`: boolean (default `false`), `background`: boolean |
 | `status` | — | — |
+| `jobs` | — | — |
 | `files` | — | — |
 | `search` | `query`: string | `scope`: string, `kind`: string, `limit`: integer (default 20), `background`: boolean |
 | `symbol` | `qualified_name`: string | `includeCode`: boolean (default `false`) |

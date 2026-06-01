@@ -30,7 +30,7 @@ crates/
     crates/context/    Agent context builder (Markdown)
     crates/filesync/   file discovery、change detection、file lock、watcher
     crates/lazy/       Lazy dataflow engine — on-demand analysis with budget caps
-  atlas-mcp/           MCP server (rmcp stdio JSON-RPC)、27 tools
+  atlas-mcp/           MCP server (rmcp stdio JSON-RPC)、28 tools
   atlas-cli/           CLI binary + commands + integration tests
 ```
 
@@ -40,7 +40,7 @@ crates/
 atlas-cli → atlas-engine, atlas-mcp
 atlas-mcp → atlas-engine
 atlas-engine → types, workspace, db, extraction, resolution, graph, analysis, search, context, filesync, lazy
-filesync → graph, resolution, extraction, db, types, workspace
+filesync → graph, resolution, extraction, analysis, db, types, workspace
 search / context → graph, db, types
 analysis → db, types, workspace
 graph → db, types
@@ -441,11 +441,11 @@ discover files
 
 ### 11.3 MCP
 - 基于 `rmcp` 的 stdio JSON-RPC transport。
-- **27 个短名工具**（无 `atlas_` 前缀）：
+- **28 个短名工具**（无 `atlas_` 前缀）：
 
 | 组 | 工具 |
 |----|------|
-| 项目管理 | `open_project`, `index`, `status`, `files`, `language_capabilities` |
+| 项目管理 | `open_project`, `index`, `status`, `jobs`, `files`, `language_capabilities` |
 | 符号搜索 | `search`, `symbol`, `usages` |
 | 图导航 | `neighbors`, `callers`, `callees`, `callgraph`, `path`, `explore`, `impact` |
 | 上下文 | `context` |

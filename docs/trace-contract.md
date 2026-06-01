@@ -244,7 +244,7 @@ Each language has a `LanguageCapabilityProfile` with `FeatureMatrix` for fine-gr
 
 ## 8. MCP Tool Contracts
 
-The 27 MCP tools use short names (no `atlas_` prefix):
+The 28 MCP tools use short names (no `atlas_` prefix):
 
 | Tool | Purpose |
 |------|---------|
