@@ -3,6 +3,7 @@
 use super::Store;
 use rusqlite::params;
 use types::ids::FileId;
+use types::structs::CapabilityMask;
 
 impl Store {
     /// Query the status and content_hash for a file at a given layer.
@@ -93,5 +94,42 @@ impl Store {
         )?;
         let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Query the aggregate capability mask for a file across all layers.
+    /// Returns the bitwise OR of all `capability_mask` values for the file.
+    pub fn get_capability_mask(&self, file_id: &FileId) -> anyhow::Result<CapabilityMask> {
+        let conn = self.lock_read();
+        // Aggregate from both file-level (unit_id IS NULL) and unit-level layers.
+        let mask: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(capability_mask) FROM extraction_state
+                 WHERE file_id = ?1",
+                params![file_id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        Ok(CapabilityMask::new(mask.unwrap_or(0) as u16))
+    }
+
+    /// Query the capability mask for a specific unit within a file.
+    pub fn get_capability_mask_for_unit(
+        &self,
+        file_id: &FileId,
+        unit_id: &[u8; 16],
+    ) -> anyhow::Result<CapabilityMask> {
+        let conn = self.lock_read();
+        let unit_blob: &[u8] = unit_id;
+        let mask: Option<i64> = conn
+            .query_row(
+                "SELECT capability_mask FROM extraction_state
+                 WHERE file_id = ?1 AND unit_id = ?2",
+                params![file_id, unit_blob],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        Ok(CapabilityMask::new(mask.unwrap_or(0) as u16))
     }
 }

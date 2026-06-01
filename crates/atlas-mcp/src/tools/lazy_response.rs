@@ -8,6 +8,7 @@
 
 use atlas_engine::LazyOutcome;
 use atlas_engine::LazyWindow;
+use atlas_engine::structs::CapabilityMask;
 use atlas_engine::structs::precision::PrecisionTier;
 use serde::Serialize;
 
@@ -26,6 +27,8 @@ pub(crate) struct LazyDiagnostics {
     pub(crate) dataflow: Option<LazyLayerDiagnostics>,
     /// Recommended next action for the user/agent.
     pub(crate) next_action: &'static str,
+    /// Analysis contract: what conclusions are safe/unsafe given current extraction state.
+    pub(crate) analysis_contract: AnalysisContract,
 }
 
 /// Per-layer lazy extraction diagnostics.
@@ -44,6 +47,127 @@ pub(crate) struct LazyLayerDiagnostics {
     pub(crate) pending_job_ids: Vec<String>,
     /// Whether the budget was exceeded (results may be incomplete).
     pub(crate) budget_exceeded: bool,
+}
+
+// ── Analysis Contract ───────────────────────────────────────────────────
+
+/// Analysis contract: what conclusions are safe/unsafe given current extraction state.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AnalysisContract {
+    pub safe_conclusions: Vec<String>,
+    pub unsafe_conclusions: Vec<String>,
+    pub capability_summary: CapabilitySummary,
+    pub refinement_jobs: Vec<RefinementJob>,
+}
+
+/// Summary of capability masks available across the project.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct CapabilitySummary {
+    pub mask_bits: u16,
+    pub best_capability: String,
+    pub total_files: usize,
+    pub files_with_dataflow: usize,
+    pub files_with_cfg: usize,
+    pub files_structural_only: usize,
+    pub files_manifest_only: usize,
+}
+
+/// A background job that would improve the analysis contract.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct RefinementJob {
+    pub description: String,
+    pub capability_needed: String,
+}
+
+impl AnalysisContract {
+    /// Build an AnalysisContract from a capability mask and optional LazyOutcome.
+    pub(crate) fn from_capability(
+        mask: CapabilityMask,
+        outcome: Option<&LazyOutcome>,
+    ) -> Self {
+        let mut safe = Vec::new();
+        let mut unsafe_conc = Vec::new();
+
+        if mask.has(CapabilityMask::MANIFEST) {
+            safe.push("can resolve symbol names and top-level declarations".into());
+        } else {
+            unsafe_conc.push(
+                "no symbol index available — cannot confirm any symbol exists".into(),
+            );
+        }
+
+        if mask.has(CapabilityMask::STRUCTURAL) {
+            safe.push("can confirm all AST-level references and scope relationships".into());
+        }
+
+        if mask.has(CapabilityMask::CALL_EDGES) {
+            safe.push("can trace direct caller/callee relationships".into());
+        } else {
+            unsafe_conc.push(
+                "cannot confirm complete call graph — some calls may be missing".into(),
+            );
+        }
+
+        if mask.has(CapabilityMask::CFG) {
+            safe.push("can analyze branch-level control flow".into());
+        } else {
+            unsafe_conc.push(
+                "cannot analyze branch-level control flow — path-sensitive questions are speculative"
+                    .into(),
+            );
+        }
+
+        if mask.has(CapabilityMask::DATAFLOW) {
+            safe.push("can trace intra-procedural dataflow (def-use chains)".into());
+        } else {
+            unsafe_conc.push(
+                "cannot confirm dataflow completeness — variable provenance may be incomplete"
+                    .into(),
+            );
+        }
+
+        if mask.has(CapabilityMask::SUMMARIES) {
+            safe.push("can trace inter-procedural dataflow via function summaries".into());
+        } else {
+            unsafe_conc.push(
+                "cannot trace dataflow across function boundaries — argument/return flows are not verified"
+                    .into(),
+            );
+        }
+
+        let summary = CapabilitySummary {
+            mask_bits: mask.bits(),
+            best_capability: mask.best_capability_name().into(),
+            total_files: outcome
+                .map(|o| o.files_built + o.files_cached + o.files_pending)
+                .unwrap_or(0),
+            files_with_dataflow: 0, // Phase 2 will populate
+            files_with_cfg: 0,
+            files_structural_only: outcome.map(|o| o.files_built).unwrap_or(0),
+            files_manifest_only: 0,
+        };
+
+        let mut jobs = Vec::new();
+        if !mask.has(CapabilityMask::CFG) {
+            jobs.push(RefinementJob {
+                description: "build CFG for functions in scope".into(),
+                capability_needed: "cfg".into(),
+            });
+        }
+        if !mask.has(CapabilityMask::DATAFLOW) {
+            jobs.push(RefinementJob {
+                description: "build intra-procedural dataflow for functions in scope".into(),
+                capability_needed: "dataflow".into(),
+            });
+        }
+
+        Self {
+            safe_conclusions: safe,
+            unsafe_conclusions: unsafe_conc,
+            capability_summary: summary,
+            refinement_jobs: jobs,
+        }
+    }
 }
 
 impl LazyDiagnostics {
@@ -102,10 +226,23 @@ impl LazyDiagnostics {
             "none"
         };
 
+        // Compute analysis_contract from the combined capability mask.
+        let mask = if let Some(ref so) = structural_outcome {
+            so.capability_mask
+        } else if let Some(ref dw) = dataflow_window {
+            dw.capability_mask
+        } else {
+            CapabilityMask::default()
+        };
+
         Some(Self {
             structural,
             dataflow,
             next_action,
+            analysis_contract: AnalysisContract::from_capability(
+                mask,
+                structural_outcome,
+            ),
         })
     }
 
@@ -146,5 +283,73 @@ impl LazyLayerDiagnostics {
         } else {
             PrecisionTier::Exact
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use atlas_engine::structs::CapabilityMask;
+
+    #[test]
+    fn test_analysis_contract_from_manifest_only() {
+        let mask = CapabilityMask::new(CapabilityMask::MANIFEST);
+        let contract = AnalysisContract::from_capability(mask, None);
+
+        // With manifest only, should report limited capabilities
+        assert!(!contract.safe_conclusions.is_empty());
+        // Should have refinement suggestions for structural
+        assert!(!contract.refinement_jobs.is_empty());
+    }
+
+    #[test]
+    fn test_analysis_contract_from_full_dataflow() {
+        let mask = CapabilityMask::new(
+            CapabilityMask::MANIFEST
+            | CapabilityMask::STRUCTURAL
+            | CapabilityMask::CALL_EDGES
+            | CapabilityMask::CFG
+            | CapabilityMask::DATAFLOW,
+        );
+        let contract = AnalysisContract::from_capability(mask, None);
+
+        // Should report full analysis
+        assert!(!contract.safe_conclusions.is_empty());
+        // Should acknowledge dataflow capability
+        let has_dataflow_conclusion = contract
+            .safe_conclusions
+            .iter()
+            .any(|c| c.contains("dataflow") || c.contains("Dataflow"));
+        assert!(
+            has_dataflow_conclusion,
+            "Should mention dataflow in safe conclusions"
+        );
+    }
+
+    #[test]
+    fn test_analysis_contract_serialization() {
+        let mask = CapabilityMask::new(CapabilityMask::STRUCTURAL);
+        let contract = AnalysisContract::from_capability(mask, None);
+        let json = serde_json::to_string(&contract).unwrap();
+        assert!(json.contains("safe_conclusions"));
+        assert!(json.contains("unsafe_conclusions"));
+        assert!(json.contains("refinement_jobs"));
+    }
+
+    #[test]
+    fn test_capability_summary_serialization() {
+        let summary = CapabilitySummary {
+            mask_bits: CapabilityMask::MANIFEST | CapabilityMask::STRUCTURAL,
+            best_capability: "structural".into(),
+            total_files: 10,
+            files_with_dataflow: 0,
+            files_with_cfg: 0,
+            files_structural_only: 8,
+            files_manifest_only: 2,
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(json.contains("structural"));
+        assert!(json.contains("mask_bits"));
+        assert!(json.contains("total_files"));
     }
 }

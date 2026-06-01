@@ -1785,6 +1785,7 @@ int main() {
             units_pending: 0,
             pending_job_ids: Vec::new(),
             precision_tier: None,
+            capability_mask: types::structs::CapabilityMask::default(),
         };
 
         let facts = extract_file_with_mode(
@@ -1859,6 +1860,7 @@ int main() {
             units_pending: 0,
             pending_job_ids: Vec::new(),
             precision_tier: None,
+            capability_mask: types::structs::CapabilityMask::default(),
         };
 
         let facts_lazy = extract_file_with_mode(

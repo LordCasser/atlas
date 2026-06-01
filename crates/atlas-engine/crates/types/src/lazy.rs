@@ -5,6 +5,7 @@
 //! crate (ExtractionMode::LazyDataflow), but NOT by `analysis` or `db`.
 
 use crate::ids::{FileId, ReferenceId, SymbolId};
+use crate::structs::CapabilityMask;
 use crate::structs::TextRange;
 use crate::structs::precision::PrecisionTier;
 use serde::{Deserialize, Serialize};
@@ -99,6 +100,9 @@ pub struct LazyWindow {
     /// None if dataflow was not loaded via lazy path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub precision_tier: Option<PrecisionTier>,
+    /// Capability mask for this window's units (summarized from extraction_state layers).
+    #[serde(default, skip_serializing_if = "CapabilityMask::is_zero")]
+    pub capability_mask: CapabilityMask,
 }
 
 // ---------------------------------------------------------------------------

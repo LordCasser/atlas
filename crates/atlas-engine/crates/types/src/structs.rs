@@ -700,6 +700,85 @@ impl FileFacts {
 }
 
 // ---------------------------------------------------------------------------
+// CapabilityMask — bitmask of extraction capabilities available for a file/unit
+// ---------------------------------------------------------------------------
+
+/// Bitmask of extraction capabilities available for a file/unit.
+/// Only covers extraction-layer capabilities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CapabilityMask(u16);
+
+impl CapabilityMask {
+    pub const MANIFEST: u16 = 1 << 0; // top-level symbols known
+    pub const STRUCTURAL: u16 = 1 << 1; // full symbols, scopes, refs, callsites
+    pub const CALL_EDGES: u16 = 1 << 2; // callsites resolved, call graph edges
+    pub const CFG: u16 = 1 << 3; // per-function CFG built
+    pub const DATAFLOW: u16 = 1 << 4; // intra-procedural dataflow built
+    pub const SUMMARIES: u16 = 1 << 5; // inter-procedural summaries built
+
+    pub fn new(bits: u16) -> Self {
+        Self(bits)
+    }
+    pub fn bits(&self) -> u16 {
+        self.0
+    }
+    pub fn has(&self, bit: u16) -> bool {
+        self.0 & bit != 0
+    }
+    pub fn set(&mut self, bit: u16) {
+        self.0 |= bit;
+    }
+    pub fn has_all(&self, bits: u16) -> bool {
+        self.0 & bits == bits
+    }
+    pub fn is_zero(&self) -> bool {
+        self.0 == 0
+    }
+
+    /// Derive from extraction_state layer strings in the DB
+    pub fn from_layers(layers: &[&str]) -> Self {
+        let mut mask = Self::default();
+        for layer in layers {
+            match *layer {
+                "manifest" => mask.set(Self::MANIFEST),
+                "structural" | "resolution_symbols" => {
+                    mask.set(Self::MANIFEST);
+                    mask.set(Self::STRUCTURAL);
+                }
+                "dataflow" => {
+                    mask.set(Self::MANIFEST);
+                    mask.set(Self::STRUCTURAL);
+                    mask.set(Self::CALL_EDGES);
+                    mask.set(Self::CFG);
+                    mask.set(Self::DATAFLOW);
+                }
+                "cfg" => mask.set(Self::CFG),
+                "summaries" => mask.set(Self::SUMMARIES),
+                _ => {}
+            }
+        }
+        mask
+    }
+
+    /// Human-readable name for the best capability
+    pub fn best_capability_name(&self) -> &'static str {
+        if self.has(Self::DATAFLOW) {
+            "dataflow"
+        } else if self.has(Self::CFG) {
+            "cfg"
+        } else if self.has(Self::CALL_EDGES) {
+            "call_edges"
+        } else if self.has(Self::STRUCTURAL) {
+            "structural"
+        } else if self.has(Self::MANIFEST) {
+            "manifest"
+        } else {
+            "unavailable"
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // IndexReport — post-indexing summary
 // ---------------------------------------------------------------------------
 
@@ -811,6 +890,108 @@ impl IndexReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── CapabilityMask tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_capability_mask_default_is_zero() {
+        let mask = CapabilityMask::default();
+        assert!(mask.is_zero());
+        assert_eq!(mask.bits(), 0);
+        assert_eq!(mask.best_capability_name(), "unavailable");
+    }
+
+    #[test]
+    fn test_capability_mask_single_bit() {
+        let mut mask = CapabilityMask::default();
+        mask.set(CapabilityMask::MANIFEST);
+        assert!(mask.has(CapabilityMask::MANIFEST));
+        assert!(!mask.has(CapabilityMask::STRUCTURAL));
+        assert_eq!(mask.best_capability_name(), "manifest");
+    }
+
+    #[test]
+    fn test_capability_mask_multiple_bits() {
+        let mut mask = CapabilityMask::default();
+        mask.set(CapabilityMask::MANIFEST);
+        mask.set(CapabilityMask::STRUCTURAL);
+        mask.set(CapabilityMask::CALL_EDGES);
+        assert!(mask.has_all(CapabilityMask::MANIFEST | CapabilityMask::STRUCTURAL));
+        assert!(!mask.has_all(CapabilityMask::MANIFEST | CapabilityMask::CFG));
+        assert_eq!(mask.best_capability_name(), "call_edges");
+    }
+
+    #[test]
+    fn test_capability_mask_has_all_exact() {
+        let mask = CapabilityMask::new(CapabilityMask::MANIFEST | CapabilityMask::CFG);
+        assert!(mask.has_all(CapabilityMask::MANIFEST | CapabilityMask::CFG));
+        assert!(!mask.has_all(CapabilityMask::MANIFEST | CapabilityMask::CFG | CapabilityMask::DATAFLOW));
+    }
+
+    #[test]
+    fn test_capability_mask_from_layers_manifest() {
+        let mask = CapabilityMask::from_layers(&["manifest"]);
+        assert!(mask.has(CapabilityMask::MANIFEST));
+        assert!(!mask.has(CapabilityMask::STRUCTURAL));
+    }
+
+    #[test]
+    fn test_capability_mask_from_layers_structural() {
+        let mask = CapabilityMask::from_layers(&["structural"]);
+        assert!(mask.has(CapabilityMask::MANIFEST));
+        assert!(mask.has(CapabilityMask::STRUCTURAL));
+    }
+
+    #[test]
+    fn test_capability_mask_from_layers_dataflow() {
+        let mask = CapabilityMask::from_layers(&["dataflow"]);
+        assert!(mask.has(CapabilityMask::DATAFLOW));
+        assert!(mask.has(CapabilityMask::CFG));
+        assert!(mask.has(CapabilityMask::STRUCTURAL));
+    }
+
+    #[test]
+    fn test_capability_mask_from_layers_multi() {
+        let mask = CapabilityMask::from_layers(&["manifest", "cfg", "summaries"]);
+        assert!(mask.has(CapabilityMask::MANIFEST));
+        assert!(mask.has(CapabilityMask::CFG));
+        assert!(mask.has(CapabilityMask::SUMMARIES));
+        assert!(!mask.has(CapabilityMask::DATAFLOW));
+    }
+
+    #[test]
+    fn test_capability_mask_best_name_priority() {
+        let mut mask = CapabilityMask::default();
+        mask.set(CapabilityMask::MANIFEST);
+        mask.set(CapabilityMask::STRUCTURAL);
+        mask.set(CapabilityMask::CFG);
+        mask.set(CapabilityMask::DATAFLOW);
+        assert_eq!(mask.best_capability_name(), "dataflow");
+
+        let mut mask2 = CapabilityMask::default();
+        mask2.set(CapabilityMask::MANIFEST);
+        mask2.set(CapabilityMask::CFG);
+        assert_eq!(mask2.best_capability_name(), "cfg");
+    }
+
+    #[test]
+    fn test_capability_mask_serde_roundtrip() {
+        let mask = CapabilityMask::new(CapabilityMask::MANIFEST | CapabilityMask::DATAFLOW);
+        let json = serde_json::to_string(&mask).unwrap();
+        let parsed: CapabilityMask = serde_json::from_str(&json).unwrap();
+        assert_eq!(mask.bits(), parsed.bits());
+    }
+
+    #[test]
+    fn test_capability_mask_new_vs_set() {
+        let a = CapabilityMask::new(CapabilityMask::CFG | CapabilityMask::SUMMARIES);
+        let mut b = CapabilityMask::default();
+        b.set(CapabilityMask::CFG);
+        b.set(CapabilityMask::SUMMARIES);
+        assert_eq!(a.bits(), b.bits());
+    }
+
+    // ── existing tests below ────────────────────────────────────────────
 
     fn sample_range() -> TextRange {
         TextRange {

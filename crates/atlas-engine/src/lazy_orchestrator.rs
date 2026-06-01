@@ -23,9 +23,11 @@ use std::sync::Arc;
 use anyhow::Result;
 use db::Store;
 use types::ids::FileId;
+use types::structs::CapabilityMask;
 use types::structs::precision::PrecisionTier;
 
 use crate::closure_planner::IncludeRoot;
+use crate::investigation::Investigation;
 use crate::lazy_budget::LazyBudget;
 use crate::lazy_coordinator::LazyCoordinator;
 use crate::lazy_structural::LazyStructuralService;
@@ -54,6 +56,7 @@ pub struct LazyOutcome {
     pub built_file_ids: Vec<FileId>,
     pub pending_job_ids: Vec<String>,
     pub precision_tier: PrecisionTier,
+    pub capability_mask: CapabilityMask,
 }
 
 // ── LazyOrchestrator ──────────────────────────────────────────────────────
@@ -101,10 +104,15 @@ impl LazyOrchestrator {
     /// [`ClosurePlanner`]), and the coordinator handles job tracking and
     /// in-flight deduplication.  The `policy` controls the time and file
     /// budget.
+    ///
+    /// When `investigation` is provided, files related to the investigation
+    /// are prioritized before unrelated files.
     pub fn ensure_structural_for_files(
         &self,
         file_ids: &[FileId],
         policy: LazyPolicy,
+        investigation: Option<&Investigation>,
+        query_id: Option<&str>,
     ) -> Result<LazyOutcome> {
         // Create budget from policy
         let mut budget = match policy {
@@ -120,9 +128,19 @@ impl LazyOrchestrator {
             built_file_ids: vec![],
             pending_job_ids: vec![],
             precision_tier: PrecisionTier::Unavailable,
+            capability_mask: CapabilityMask::default(),
         };
 
-        for file_id in file_ids {
+        // Prioritize files relevant to the active investigation first.
+        let mut ordered: Vec<FileId> = file_ids.to_vec();
+        if let Some(inv) = investigation {
+            ordered.sort_by_key(|fid| {
+                if inv.related_files.contains(fid) { 0u8 } // highest priority
+                else { 1u8 }
+            });
+        }
+
+        for file_id in &ordered {
             // Request-level budget check
             if !budget.can_continue() {
                 outcome.budget_exceeded = true;
@@ -131,7 +149,7 @@ impl LazyOrchestrator {
 
             let (result, _job_id) =
                 self.coordinator
-                    .ensure_structural_with_closure(&self.structural, file_id, &mut budget)?;
+                    .ensure_structural_with_closure(&self.structural, file_id, &mut budget, query_id)?;
 
             outcome.files_built += result.files_built;
             outcome.files_cached += result.files_cached;
@@ -158,6 +176,8 @@ impl LazyOrchestrator {
         &self,
         name: &str,
         policy: LazyPolicy,
+        _investigation: Option<&Investigation>,
+        _query_id: Option<&str>,
     ) -> Result<LazyOutcome> {
         // Create budget from policy
         let mut budget = match policy {
@@ -186,6 +206,7 @@ impl LazyOrchestrator {
             built_file_ids: result.built_file_ids,
             pending_job_ids: result.pending_job_ids,
             precision_tier,
+            capability_mask: CapabilityMask::default(),
         })
     }
 }
@@ -213,6 +234,7 @@ mod tests {
             built_file_ids: vec![],
             pending_job_ids: vec![],
             precision_tier: PrecisionTier::Unavailable,
+            capability_mask: CapabilityMask::default(),
         };
         assert_eq!(outcome.files_built, 0);
         assert_eq!(outcome.files_pending, 0);

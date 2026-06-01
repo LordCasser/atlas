@@ -162,6 +162,7 @@ impl LazyDataflowPlanner {
             units_pending: 0,
             pending_job_ids: Vec::new(),
             precision_tier: None,
+            capability_mask: types::structs::CapabilityMask::default(),
         })
     }
 
@@ -240,6 +241,7 @@ impl LazyDataflowPlanner {
             units_pending: 0,
             pending_job_ids: Vec::new(),
             precision_tier: None,
+            capability_mask: types::structs::CapabilityMask::default(),
         })
     }
 }
