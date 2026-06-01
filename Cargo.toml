@@ -2,6 +2,7 @@
 members = [
     "crates/atlas-engine",
     "crates/atlas-engine/crates/*",
+    "crates/atlas-engine/crates/domain_rules",
     "crates/atlas-cli",
     "crates/atlas-mcp",
 ]

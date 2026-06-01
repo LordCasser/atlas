@@ -13,6 +13,7 @@ extraction = { path = "crates/extraction" }
 resolution = { path = "crates/resolution" }
 graph = { path = "crates/graph" }
 analysis = { path = "crates/analysis" }
+domain-rules = { path = "crates/domain_rules" }
 search = { path = "crates/search" }
 context = { path = "crates/context" }
 filesync = { path = "crates/filesync" }

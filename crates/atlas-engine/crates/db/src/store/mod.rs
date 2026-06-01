@@ -37,6 +37,7 @@ use crate::store_writers::*;
 mod annotations;
 mod cfg;
 mod dataflow;
+pub(crate) mod domain_rules;
 mod edges;
 pub(crate) mod extraction_jobs;
 mod file_extraction_state;
@@ -413,6 +414,18 @@ impl Store {
             )?;
             Ok(())
         })
+    }
+
+    /// Query distinct function names from the symbol table for rule learning.
+    pub fn query_function_names(&self) -> anyhow::Result<Vec<String>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT name FROM symbols WHERE kind = 'function' LIMIT 5000",
+        )?;
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(names)
     }
 }
 

@@ -7,6 +7,7 @@ license = "MIT"
 
 [dependencies]
 atlas-engine = { path = "../atlas-engine" }
+domain-rules = { path = "../atlas-engine/crates/domain_rules" }
 anyhow = "1"
 blake3 = "1"
 hex = "0.4"
