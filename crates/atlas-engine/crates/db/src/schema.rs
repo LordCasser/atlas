@@ -24,6 +24,7 @@
 //! - `extraction_jobs`  — unified extraction job tracking (queued/building/complete/failed)
 //! - `project_metadata` — key-value project configuration
 //! - `function_pointer_annotations` — user-declared function-pointer dispatch annotations
+//! - `domain_rules`   — user-defined and learned ownership rules for lifecycle analysis
 //! - `symbols_fts`    — FTS5 index on symbol names
 
 /// Current schema version.
@@ -247,7 +248,9 @@ CREATE TABLE IF NOT EXISTS cfg_nodes (
     range_start_line     INTEGER NOT NULL,
     range_start_column   INTEGER NOT NULL,
     range_end_line       INTEGER NOT NULL,
-    range_end_column     INTEGER NOT NULL
+    range_end_column     INTEGER NOT NULL,
+    effect_kind          TEXT,                     -- read/write/allocate/free/call/condition/return/goto/assign
+    target_field         TEXT                      -- e.g. "data->state.aptr" (normalized struct field path)
 );
 
 -- cfg_edges: control-flow edges between CFG nodes
@@ -273,6 +276,7 @@ CREATE TABLE IF NOT EXISTS extraction_state (
     node_count      INTEGER,
     edge_count      INTEGER,
     budget_exceeded INTEGER NOT NULL DEFAULT 0,
+    capability_mask INTEGER NOT NULL DEFAULT 0,
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
 );
@@ -381,6 +385,22 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     qualified_name,
     content='symbols',
     content_rowid='rowid'
+);
+
+-- domain_rules: language-agnostic domain rule storage
+CREATE TABLE IF NOT EXISTS domain_rules (
+    id            TEXT PRIMARY KEY NOT NULL,
+    language      TEXT NOT NULL DEFAULT 'c',         -- "c" / "rust" / "python" / "*"
+    rule_kind     TEXT NOT NULL,                     -- free_fn / react_hook / ... (language-defined)
+    pattern       TEXT NOT NULL,                     -- match target
+    pattern_kind  TEXT NOT NULL DEFAULT 'exact',     -- exact / prefix / suffix / glob / regex
+    meta          TEXT,                              -- JSON, language-specific extension
+    meta_version  INTEGER NOT NULL DEFAULT 1,        -- meta structure version
+    source        TEXT NOT NULL,                     -- builtin / learned / user
+    status        TEXT NOT NULL DEFAULT 'enabled',   -- candidate / enabled / disabled / rejected / deprecated
+    confidence    REAL NOT NULL DEFAULT 1.0,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Project-level metadata (key-value store for configuration, thresholds, timestamps)
@@ -560,6 +580,8 @@ mod tests {
         assert!(tables.contains(&"extraction_jobs".to_string()));
         // Function pointer annotations
         assert!(tables.contains(&"function_pointer_annotations".to_string()));
+        // Domain rules
+        assert!(tables.contains(&"domain_rules".to_string()));
         // Summary tables
         assert!(tables.contains(&"function_summaries".to_string()));
         assert!(tables.contains(&"summary_param_reaches".to_string()));

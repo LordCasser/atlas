@@ -28,7 +28,7 @@
 
 use tree_sitter::Node;
 use types::cfg::{CfgEdge, CfgNode};
-use types::enums::{CfgEdgeKind, CfgNodeKind, Language, SymbolKind};
+use types::enums::{CfgEdgeKind, CfgNodeKind, EffectKind, Language, SymbolKind};
 use types::ids::SymbolId;
 use types::structs::{SymbolDef, TextRange};
 
@@ -268,6 +268,159 @@ impl CfgContext<'_> {
         self.edges.push(CfgEdge::new(source, target, kind));
     }
 
+    fn is_c_or_cpp(&self) -> bool {
+        self.config.stmt_kinds.contains(&"expression_statement")
+            && self.config.if_kinds.contains(&"if_statement")
+    }
+
+    /// Infer the effect of a C/C++ CFG node. Returns (effect_kind, target_field).
+    /// Uses simple tree-sitter node kind matching — NOT full dataflow analysis.
+    fn infer_effect(&self, node: &Node, node_kind: CfgNodeKind) -> (Option<EffectKind>, Option<String>) {
+        let kind = node.kind();
+
+        // Branch conditions
+        if node_kind == CfgNodeKind::Branch {
+            let target = self.extract_field_path(node);
+            return (Some(EffectKind::Condition), target);
+        }
+
+        // Return statements
+        if node_kind == CfgNodeKind::Return || kind == "return_statement" {
+            let target = self.extract_field_path(node);
+            return (Some(EffectKind::Return), target);
+        }
+
+        // Walk children to determine effect
+        let mut cursor = node.walk();
+        let children: Vec<tree_sitter::Node> = node.named_children(&mut cursor).collect();
+
+        for child in &children {
+            let ck = child.kind();
+            match ck {
+                "call_expression" => {
+                    // Function call — check if it's free/delete/malloc
+                    let func_name = self.extract_callee_name(child);
+                    let effect = if matches!(func_name.as_deref(), Some("free") | Some("delete") | Some("operator delete") | Some("std::free")) {
+                        EffectKind::Free
+                    } else if matches!(func_name.as_deref(), Some("malloc") | Some("calloc") | Some("realloc") | Some("new") | Some("operator new")) {
+                        EffectKind::Allocate
+                    } else {
+                        EffectKind::Call
+                    };
+                    return (Some(effect), None);
+                }
+                "assignment_expression" => {
+                    // Check LHS for field write
+                    let target = self.extract_lhs_field(child);
+                    return (Some(EffectKind::Assign), target);
+                }
+                "new_expression" | "delete_expression" => {
+                    let is_delete = ck.starts_with("delete");
+                    return (if is_delete { Some(EffectKind::Free) } else { Some(EffectKind::Allocate) }, None);
+                }
+                "field_expression" | "subscript_expression" => {
+                    let target = self.extract_field_path(child);
+                    // Field access in non-assignment context → Read
+                    return (Some(EffectKind::Read), target);
+                }
+                "goto_statement" => {
+                    return (Some(EffectKind::Goto), None);
+                }
+                _ => {}
+            }
+        }
+
+        // Default: if we can find field access anywhere, treat as Read
+        for child in &children {
+            if child.kind() == "field_expression" || child.kind() == "member_expression" {
+                let target = self.extract_field_path(child);
+                return (Some(EffectKind::Read), target);
+            }
+        }
+
+        (None, None)
+    }
+
+    /// Extract callee function name from a call_expression node.
+    fn extract_callee_name(&self, call_node: &Node) -> Option<String> {
+        let mut cursor = call_node.walk();
+        for child in call_node.named_children(&mut cursor) {
+            if child.kind() == "identifier" || child.kind() == "field_expression" {
+                if let Ok(text) = child.utf8_text(self.source) {
+                    return Some(text.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// Extract the left-hand-side field path from an assignment_expression.
+    fn extract_lhs_field(&self, assign_node: &Node) -> Option<String> {
+        let mut cursor = assign_node.walk();
+        let children: Vec<tree_sitter::Node> = assign_node.named_children(&mut cursor).collect();
+        if let Some(first) = children.first() {
+            return self.extract_field_path(first);
+        }
+        None
+    }
+
+    /// Walk a tree-sitter node to build a dot-separated field access path.
+    /// E.g., for `data->state.aptr.cookiehost` returns "data->state.aptr.cookiehost"
+    fn extract_field_path(&self, node: &Node) -> Option<String> {
+        let kind = node.kind();
+        match kind {
+            "field_expression" | "member_expression" | "pointer_expression" => {
+                let mut cursor = node.walk();
+                let children: Vec<tree_sitter::Node> = node.named_children(&mut cursor).collect();
+                let mut parts = Vec::new();
+                for child in &children {
+                    let ck = child.kind();
+                    match ck {
+                        "field_identifier" | "property_identifier" | "identifier" => {
+                            if let Ok(text) = child.utf8_text(self.source) {
+                                parts.push(text.to_string());
+                            }
+                        }
+                        "field_expression" | "member_expression" | "subscript_expression" => {
+                            if let Some(sub) = self.extract_field_path(child) {
+                                parts.push(sub);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if parts.is_empty() { None } else { Some(parts.join(".")) }
+            }
+            "subscript_expression" => {
+                // array[index] — extract array name
+                let mut cursor = node.walk();
+                if let Some(first) = node.named_children(&mut cursor).next() {
+                    if let Ok(text) = first.utf8_text(self.source) {
+                        return Some(text.to_string());
+                    }
+                }
+                None
+            }
+            "identifier" => {
+                if let Ok(text) = node.utf8_text(self.source) {
+                    Some(text.to_string())
+                } else {
+                    None
+                }
+            }
+            _ => {
+                // Walk children to find field expressions
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    if let Some(path) = self.extract_field_path(&child) {
+                        return Some(path);
+                    }
+                }
+                None
+            }
+        }
+    }
+
     fn walk_block(&mut self, block: Node, _block_start: u32) {
         let mut cursor = block.walk();
         let children: Vec<Node> = block.named_children(&mut cursor).collect();
@@ -284,13 +437,13 @@ impl CfgContext<'_> {
             } else if self.config.loop_kinds.contains(&kind) {
                 i = self.walk_loop(&children, i, stmt_range.start_byte);
             } else if self.config.return_kinds.contains(&kind) {
-                self.emit_stmt(CfgNodeKind::Return, stmt_range.start_byte);
+                self.emit_stmt(CfgNodeKind::Return, stmt_range.start_byte, &stmt);
                 i += 1;
             } else if self.config.throw_kinds.contains(&kind) {
-                self.emit_stmt(CfgNodeKind::Throw, stmt_range.start_byte);
+                self.emit_stmt(CfgNodeKind::Throw, stmt_range.start_byte, &stmt);
                 i += 1;
             } else if self.config.stmt_kinds.contains(&kind) {
-                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte);
+                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
                 i += 1;
             } else if self.config.block_kinds.contains(&kind) {
                 // Nested block
@@ -298,19 +451,19 @@ impl CfgContext<'_> {
                 i += 1;
             } else if kind == "try_statement" || kind == "switch_statement" {
                 // Deferred: treat as single statement
-                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte);
+                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
                 i += 1;
             } else if kind == "preproc_if" || kind == "preproc_def" {
                 // C/C++ preprocessor directives
-                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte);
+                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
                 i += 1;
             } else if kind == "match_expression" {
                 // Rust match — complex control flow, deferred
-                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte);
+                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
                 i += 1;
             } else {
                 // Unknown constructs → treat as statement
-                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte);
+                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
                 i += 1;
             }
         }
@@ -325,6 +478,15 @@ impl CfgContext<'_> {
         let branch_id = self.add_node(CfgNodeKind::Branch, start_byte);
         if let Some(prev) = self.prev_node_id.take() {
             self.add_edge(&prev, &branch_id, CfgEdgeKind::Normal);
+        }
+
+        // Annotate branch node with condition effect (C/C++ only)
+        if self.is_c_or_cpp() {
+            let (effect, target) = self.infer_effect(if_node, CfgNodeKind::Branch);
+            if let Some(ref mut last) = self.nodes.last_mut() {
+                last.effect_kind = effect;
+                last.target_field = target;
+            }
         }
 
         // 2. Find consequence and alternative branches
@@ -399,7 +561,7 @@ impl CfgContext<'_> {
             } else {
                 CfgNodeKind::Statement
             };
-            self.emit_stmt(kind, range.start_byte);
+            self.emit_stmt(kind, range.start_byte, &node);
         }
     }
 
@@ -433,7 +595,7 @@ impl CfgContext<'_> {
                 } else {
                     CfgNodeKind::Statement
                 };
-                self.emit_stmt(kind, body_range.start_byte);
+                self.emit_stmt(kind, body_range.start_byte, &body);
             }
 
             self.prev_node_id.take()
@@ -455,8 +617,19 @@ impl CfgContext<'_> {
     }
 
     /// Emit a statement/return/throw node and connect to previous.
-    fn emit_stmt(&mut self, kind: CfgNodeKind, start_byte: u32) -> types::ids::CfgNodeId {
+    fn emit_stmt(&mut self, kind: CfgNodeKind, start_byte: u32, stmt_node: &Node) -> types::ids::CfgNodeId {
         let node_id = self.add_node(kind, start_byte);
+
+        // Annotate effect for C/C++ (language check via self.config)
+        if self.is_c_or_cpp() {
+            let (effect, target) = self.infer_effect(stmt_node, kind);
+            if let Some(ref mut last) = self.nodes.last_mut() {
+                last.effect_kind = effect;
+                last.target_field = target;
+            }
+        }
+
+        // Link from previous statement
         if let Some(prev) = self.prev_node_id.take() {
             self.add_edge(&prev, &node_id, CfgEdgeKind::Normal);
         }

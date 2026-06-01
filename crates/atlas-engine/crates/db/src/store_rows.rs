@@ -356,10 +356,12 @@ pub(crate) fn row_to_callsite(row: &Row) -> rusqlite::Result<Callsite> {
 }
 
 pub(crate) fn row_to_cfg_node(row: &Row) -> rusqlite::Result<CfgNode> {
-    use types::enums::CfgNodeKind;
+    use types::enums::{CfgNodeKind, EffectKind};
     let kind_str: String = row.get(2)?;
     let kind =
         CfgNodeKind::from_str(&kind_str).ok_or_else(|| parse_err(2, &kind_str, "CfgNodeKind"))?;
+    let effect_kind: Option<String> = row.get(9)?;
+    let target_field: Option<String> = row.get(10)?;
     Ok(CfgNode {
         id: row.get(0)?,
         function_id: row.get(1)?,
@@ -372,6 +374,8 @@ pub(crate) fn row_to_cfg_node(row: &Row) -> rusqlite::Result<CfgNode> {
             end_line: row.get::<_, u32>(7)? as u32,
             end_column: row.get::<_, u32>(8)? as u32,
         },
+        effect_kind: effect_kind.and_then(|k| EffectKind::from_str(&k)),
+        target_field,
     })
 }
 

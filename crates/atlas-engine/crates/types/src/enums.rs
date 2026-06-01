@@ -1008,6 +1008,55 @@ impl CfgNodeKind {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// EffectKind — CFG node side-effect annotation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Effect annotation for CFG nodes — what side effect a statement/branch has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum EffectKind {
+    Read,        // Read access to a field/variable
+    Write,       // Write/modify a field/variable
+    Allocate,    // Memory allocation (malloc, new, calloc, realloc)
+    Free,        // Memory deallocation (free, delete)
+    Call,        // Function/method call
+    Condition,   // Branch condition evaluation
+    Return,      // Return statement
+    Goto,        // Goto statement
+    Assign,      // Assignment statement
+}
+
+impl EffectKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Allocate => "allocate",
+            Self::Free => "free",
+            Self::Call => "call",
+            Self::Condition => "condition",
+            Self::Return => "return",
+            Self::Goto => "goto",
+            Self::Assign => "assign",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "read" => Some(Self::Read),
+            "write" => Some(Self::Write),
+            "allocate" => Some(Self::Allocate),
+            "free" => Some(Self::Free),
+            "call" => Some(Self::Call),
+            "condition" => Some(Self::Condition),
+            "return" => Some(Self::Return),
+            "goto" => Some(Self::Goto),
+            "assign" => Some(Self::Assign),
+            _ => None,
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CfgEdgeKind — CFG edge types
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1237,5 +1286,90 @@ mod tests {
         let a = Confidence::new(0.3);
         let b = Confidence::new(0.4);
         assert!((a + b).as_f32() - 0.7 < f32::EPSILON);
+    }
+
+    // ── EffectKind tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_effect_kind_as_str_roundtrip() {
+        let kinds = [
+            EffectKind::Read,
+            EffectKind::Write,
+            EffectKind::Allocate,
+            EffectKind::Free,
+            EffectKind::Call,
+            EffectKind::Condition,
+            EffectKind::Return,
+            EffectKind::Goto,
+            EffectKind::Assign,
+        ];
+        for kind in &kinds {
+            let s = kind.as_str();
+            let back = EffectKind::from_str(s);
+            assert_eq!(back, Some(*kind), "Roundtrip failed for {:?}", kind);
+        }
+    }
+
+    #[test]
+    fn test_effect_kind_from_str_invalid() {
+        assert_eq!(EffectKind::from_str("invalid"), None);
+        assert_eq!(EffectKind::from_str(""), None);
+        assert_eq!(EffectKind::from_str("READ"), None); // case sensitive
+    }
+
+    #[test]
+    fn test_effect_kind_serde() {
+        let kind = EffectKind::Free;
+        let json = serde_json::to_string(&kind).unwrap();
+        let parsed: EffectKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(kind, parsed);
+    }
+
+    #[test]
+    fn test_effect_kind_all_variants_have_unique_str() {
+        use std::collections::HashSet;
+        let kinds = [
+            EffectKind::Read,
+            EffectKind::Write,
+            EffectKind::Allocate,
+            EffectKind::Free,
+            EffectKind::Call,
+            EffectKind::Condition,
+            EffectKind::Return,
+            EffectKind::Goto,
+            EffectKind::Assign,
+        ];
+        let mut seen = HashSet::new();
+        for k in &kinds {
+            assert!(seen.insert(k.as_str()), "Duplicate as_str: {}", k.as_str());
+        }
+        assert_eq!(seen.len(), 9);
+    }
+
+    // ── CfgNodeKind as_str roundtrip ──────────────────────────────────────
+
+    #[test]
+    fn test_cfg_node_kind_as_str_roundtrip() {
+        let kinds = [
+            CfgNodeKind::Entry,
+            CfgNodeKind::Exit,
+            CfgNodeKind::Statement,
+            CfgNodeKind::Branch,
+            CfgNodeKind::Loop,
+            CfgNodeKind::Return,
+            CfgNodeKind::Throw,
+            CfgNodeKind::Join,
+        ];
+        for kind in &kinds {
+            let s = kind.as_str();
+            let back = CfgNodeKind::from_str(s);
+            assert_eq!(back, Some(*kind));
+        }
+    }
+
+    #[test]
+    fn test_cfg_node_kind_from_str_invalid() {
+        assert_eq!(CfgNodeKind::from_str("invalid"), None);
+        assert_eq!(CfgNodeKind::from_str(""), None);
     }
 }

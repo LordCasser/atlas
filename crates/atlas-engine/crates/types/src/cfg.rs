@@ -16,7 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::enums::{CfgEdgeKind, CfgNodeKind};
+use super::enums::{CfgEdgeKind, CfgNodeKind, EffectKind};
 use super::ids::{CfgEdgeId, CfgNodeId, SymbolId};
 use super::structs::TextRange;
 
@@ -33,6 +33,12 @@ pub struct CfgNode {
     pub function_id: SymbolId,
     pub kind: CfgNodeKind,
     pub stmt_range: TextRange,
+    /// What side effect this node has (C/C++ only initially).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect_kind: Option<EffectKind>,
+    /// Target field/expression path when relevant (e.g., "data->state.ptr").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_field: Option<String>,
 }
 
 impl CfgNode {
@@ -44,6 +50,8 @@ impl CfgNode {
             function_id: function_id.clone(),
             kind,
             stmt_range: range,
+            effect_kind: None,
+            target_field: None,
         }
     }
 
@@ -123,7 +131,9 @@ mod tests {
             end_line: 5,
             end_column: 20,
         };
-        let node = CfgNode::new(&func_id, CfgNodeKind::Statement, range);
+        let mut node = CfgNode::new(&func_id, CfgNodeKind::Statement, range);
+        node.effect_kind = Some(EffectKind::Assign);
+        node.target_field = Some("data->state.ptr".to_string());
         let json = serde_json::to_string(&node).unwrap();
         let parsed: CfgNode = serde_json::from_str(&json).unwrap();
         assert_eq!(node, parsed);
