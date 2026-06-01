@@ -5,6 +5,7 @@
 //! extraction on large repositories.
 
 use atlas_engine::FileId;
+use atlas_engine::LazyBudget;
 use atlas_engine::LazyCoordinator;
 use atlas_engine::LazyStructuralService;
 use atlas_engine::Store;
@@ -437,6 +438,7 @@ where
                 .list_file_ids_in_scope(&normalized_scope, SYNC_STRUCTURAL_SCOPE_FILE_LIMIT)?;
         }
 
+        let mut budget = LazyBudget::structural();
         let coordinator = LazyCoordinator::with_project_root(store.clone(), project_root.clone())
             .with_include_roots(include_roots.clone());
         let lazy = LazyStructuralService::new(store.clone(), Some(project_root.clone()));
@@ -445,7 +447,15 @@ where
         let mut total_files_built: usize = 0;
         let mut total_files_cached: usize = 0;
         for file_id in &file_ids {
-            match coordinator.ensure_structural_with_closure(&lazy, file_id) {
+            if !budget.can_continue() {
+                total_budget_exceeded = true;
+                warnings.push(
+                    "Lazy structural budget exhausted; some files may only have manifest-level symbols."
+                        .into(),
+                );
+                break;
+            }
+            match coordinator.ensure_structural_with_closure(&lazy, file_id, &mut budget) {
                 Ok((result, _job_id)) => {
                     total_built.extend(result.built_file_ids);
                     total_budget_exceeded |= result.budget_exceeded;
@@ -706,7 +716,11 @@ fn spawn_preparse(
                 .with_include_roots(include_roots);
         let lazy = LazyStructuralService::new(store, Some(project_root));
         for file_id in &file_ids {
-            let _ = coordinator.ensure_structural_with_closure(&lazy, file_id);
+            let _ = coordinator.ensure_structural_with_closure(
+                &lazy,
+                file_id,
+                &mut LazyBudget::new(u64::MAX, usize::MAX),
+            );
         }
         // After all lazy structural completes, mark the in-memory graph as
         // stale so a subsequent maybe_refresh_graph rebuilds affected nodes.

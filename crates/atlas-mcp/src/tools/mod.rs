@@ -6,6 +6,12 @@
 //! Handler methods are organized by capability category in sub-modules:
 //!   status, search, graph, context, trace, capability.
 
+/// File count after which cumulative lazy per-file replacements trigger
+/// a synchronous full graph rebuild. Set at 80% of the 500-file threshold
+/// where `refresh_graph_for_files` switches from per-file replace to
+/// full rebuild anyway.
+const CUMULATIVE_LAZY_REBUILD_THRESHOLD: usize = 400;
+
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -14,6 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use atlas_engine::ContextBuilder;
 use atlas_engine::FileId;
+use atlas_engine::LazyBudget;
 use atlas_engine::LazyCoordinator;
 use atlas_engine::LazyDataflowService;
 use atlas_engine::LazyStructuralService;
@@ -111,6 +118,11 @@ pub struct ToolRouter {
     pub(crate) task_manager: Arc<crate::task_manager::TaskManager>,
     /// Project activations prepared by background `open_project` tasks.
     pub(crate) pending_project_activations: Arc<Mutex<HashMap<String, PendingProjectActivation>>>,
+    /// Counter for cumulative lazy files built via `refresh_graph_for_files`.
+    /// When this exceeds `CUMULATIVE_LAZY_REBUILD_THRESHOLD`, the next
+    /// refresh triggers a full graph rebuild to keep the in-memory snapshot
+    /// clean and avoid accumulated incremental-update overhead.
+    cumulative_lazy_changes: usize,
 }
 
 impl ToolRouter {
@@ -145,6 +157,7 @@ impl ToolRouter {
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
             pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
             cached_manual_full_index: Cell::new(None),
+            cumulative_lazy_changes: 0,
         }
     }
 
@@ -171,6 +184,7 @@ impl ToolRouter {
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
             pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
             cached_manual_full_index: Cell::new(None),
+            cumulative_lazy_changes: 0,
         }
     }
 
@@ -427,6 +441,20 @@ impl ToolRouter {
 
         self.last_graph_signature = self.store.index_signature().unwrap_or_default();
         self.cached_manual_full_index.set(None);
+
+        // Track cumulative lazy changes for progressive graph rebuild.
+        // When enough files have been incrementally updated, do a full
+        // synchronous rebuild to keep the in-memory snapshot clean.
+        self.cumulative_lazy_changes += file_ids.len();
+        if self.cumulative_lazy_changes >= CUMULATIVE_LAZY_REBUILD_THRESHOLD {
+            tracing::info!(
+                "Cumulative lazy changes reached {} (threshold {}), triggering full graph rebuild",
+                self.cumulative_lazy_changes,
+                CUMULATIVE_LAZY_REBUILD_THRESHOLD
+            );
+            self.force_refresh_graph()?;
+            self.cumulative_lazy_changes = 0;
+        }
         Ok(())
     }
 
@@ -688,8 +716,13 @@ impl ToolRouter {
             LazyCoordinator::with_project_root(self.store.clone(), self.project_root.clone())
                 .with_include_roots(include_roots);
         let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
+        let mut budget = LazyBudget::structural();
         for file_id in &file_set {
-            match coordinator.ensure_structural_with_closure(&lazy, file_id) {
+            if !budget.can_continue() {
+                total_budget_exceeded = true;
+                break;
+            }
+            match coordinator.ensure_structural_with_closure(&lazy, file_id, &mut budget) {
                 Ok((result, _job_id)) => {
                     total_files_built += result.files_built;
                     total_files_cached += result.files_cached;
@@ -742,11 +775,12 @@ impl ToolRouter {
                 precision_tier: PrecisionTier::Exact,
             };
         }
+        let mut budget = LazyBudget::structural();
         let coordinator =
             LazyCoordinator::with_project_root(self.store.clone(), self.project_root.clone())
                 .with_include_roots(include_roots);
         let lazy = LazyStructuralService::new(self.store.clone(), Some(self.project_root.clone()));
-        match coordinator.ensure_structural_for_symbol_with_closure(&lazy, symbol_name) {
+        match coordinator.ensure_structural_for_symbol_with_closure(&lazy, symbol_name, &mut budget) {
             Ok(result) => {
                 built_file_ids = result.built_file_ids;
                 precision_tier = result.precision_tier;
