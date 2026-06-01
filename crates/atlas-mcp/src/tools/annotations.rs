@@ -10,7 +10,7 @@
 
 use atlas_engine::{FpAnnotation, Language};
 
-use super::{ToolRouter, get_str};
+use super::{ToolRouter, get_str, MAX_ANNOTATION_QNAME_LENGTH};
 
 use serde_json::json;
 
@@ -31,6 +31,27 @@ impl ToolRouter {
             return (
                 r#"{"error":"field_qname and target_qname are required. Example: annotate_fp_dispatch('Curl_handler.do_it', 'Curl_http')"}"#
                     .to_string(),
+                true,
+            );
+        }
+
+        if field_qname.len() > MAX_ANNOTATION_QNAME_LENGTH {
+            return (
+                json!({"error": format!(
+                    "field_qname exceeds maximum length of {} characters",
+                    MAX_ANNOTATION_QNAME_LENGTH
+                )})
+                .to_string(),
+                true,
+            );
+        }
+        if target_qname.len() > MAX_ANNOTATION_QNAME_LENGTH {
+            return (
+                json!({"error": format!(
+                    "target_qname exceeds maximum length of {} characters",
+                    MAX_ANNOTATION_QNAME_LENGTH
+                )})
+                .to_string(),
                 true,
             );
         }

@@ -7,7 +7,7 @@
 //! happened before the handler's own structural extraction.
 
 use super::lazy_response::LazyDiagnostics;
-use super::{ToolRouter, get_str};
+use super::{ToolRouter, get_str, MAX_SYMBOL_NAME_LENGTH};
 
 use atlas_engine::structs::precision::PrecisionTier;
 use serde_json::json;
@@ -15,6 +15,15 @@ use serde_json::json;
 impl ToolRouter {
     pub(crate) fn handle_context(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "symbol");
+        if qname.len() > MAX_SYMBOL_NAME_LENGTH {
+            return (
+                format!(
+                    "Symbol name exceeds maximum length of {} characters",
+                    MAX_SYMBOL_NAME_LENGTH
+                ),
+                true,
+            );
+        }
         let include_code = args
             .get("includeCode")
             .and_then(|v| v.as_bool())

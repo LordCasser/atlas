@@ -6,7 +6,8 @@ use atlas_engine::SymbolId;
 use atlas_engine::{LazySummary, RawTraceEngine, TraceDiagnostic, TraceQueryResponse};
 
 use super::lazy_response::LazyDiagnostics;
-use super::{ToolRouter, get_str_opt, get_u64, resolve_file_id, warnings_to_trace_diagnostics};
+use super::{ToolRouter, get_str_opt, get_u64, resolve_file_id, warnings_to_trace_diagnostics,
+    MAX_FILE_PATH_LENGTH, MAX_SYMBOL_NAME_LENGTH};
 
 use serde_json::json;
 
@@ -16,6 +17,23 @@ impl ToolRouter {
         let file_path = get_str_opt(args, "file_path");
         let line = get_u64(args, "line");
         let column = get_u64(args, "column");
+
+        // Validate file_path length
+        if let Some(fp) = file_path {
+            if fp.len() > MAX_FILE_PATH_LENGTH {
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                    "trace_point",
+                    &format!(
+                        "file_path exceeds maximum length of {} characters",
+                        MAX_FILE_PATH_LENGTH
+                    ),
+                );
+                return (
+                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                    true,
+                );
+            }
+        }
 
         // Parse include_roots
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
@@ -111,6 +129,23 @@ impl ToolRouter {
         let line = get_u64(args, "line");
         let column = get_u64(args, "column");
         let max_depth = get_u64(args, "max_depth").unwrap_or(30) as usize;
+
+        // Validate file_path length
+        if let Some(fp) = file_path {
+            if fp.len() > MAX_FILE_PATH_LENGTH {
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                    "trace_variable",
+                    &format!(
+                        "file_path exceeds maximum length of {} characters",
+                        MAX_FILE_PATH_LENGTH
+                    ),
+                );
+                return (
+                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                    true,
+                );
+            }
+        }
 
         // Parse include_roots
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
@@ -270,6 +305,24 @@ impl ToolRouter {
         let symbol_name = args["symbol_name"].as_str().filter(|s| !s.is_empty());
         let max_depth = args["max_depth"].as_u64().unwrap_or(20) as usize;
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
+
+        // Validate symbol_name length
+        if let Some(name) = symbol_name {
+            if name.len() > MAX_SYMBOL_NAME_LENGTH {
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                    "trace_callers",
+                    &format!(
+                        "symbol_name exceeds maximum length of {} characters",
+                        MAX_SYMBOL_NAME_LENGTH
+                    ),
+                );
+                return (
+                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                    true,
+                );
+            }
+        }
+
         for w in &root_warnings {
             tracing::warn!("include_roots: {}", w);
         }
@@ -365,6 +418,39 @@ impl ToolRouter {
         let to_name = args["to_name"].as_str().filter(|s| !s.is_empty());
         let max_depth = args["max_depth"].as_u64().unwrap_or(10) as usize;
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
+
+        // Validate from_name / to_name length
+        if let Some(name) = from_name {
+            if name.len() > MAX_SYMBOL_NAME_LENGTH {
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                    "trace_forward",
+                    &format!(
+                        "from_name exceeds maximum length of {} characters",
+                        MAX_SYMBOL_NAME_LENGTH
+                    ),
+                );
+                return (
+                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                    true,
+                );
+            }
+        }
+        if let Some(name) = to_name {
+            if name.len() > MAX_SYMBOL_NAME_LENGTH {
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                    "trace_forward",
+                    &format!(
+                        "to_name exceeds maximum length of {} characters",
+                        MAX_SYMBOL_NAME_LENGTH
+                    ),
+                );
+                return (
+                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                    true,
+                );
+            }
+        }
+
         for w in &root_warnings {
             tracing::warn!("include_roots: {}", w);
         }

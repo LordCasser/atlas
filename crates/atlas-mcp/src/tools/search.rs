@@ -13,7 +13,8 @@ use atlas_engine::SymbolKind;
 
 use super::lazy_refresh::LazyRefreshQueue;
 use super::lazy_response::LazyDiagnostics;
-use super::{ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64};
+use super::{ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64,
+    MAX_QUERY_LENGTH, MAX_SYMBOL_NAME_LENGTH};
 
 use crate::task_manager::TaskManager;
 
@@ -69,6 +70,19 @@ impl ToolRouter {
 
     pub(crate) fn handle_search(&mut self, args: &serde_json::Value) -> (String, bool) {
         let query = get_str(args, "query");
+        if query.len() > MAX_QUERY_LENGTH {
+            return (
+                serde_json::to_string_pretty(&json!({
+                    "ok": false,
+                    "error": format!(
+                        "query exceeds maximum length of {} characters",
+                        MAX_QUERY_LENGTH
+                    ),
+                }))
+                .unwrap_or_else(|e| e.to_string()),
+                true,
+            );
+        }
         let limit = (get_u64(args, "limit").unwrap_or(20) as usize).min(200);
         let kind = get_str_opt(args, "kind");
         let scope = get_str_opt(args, "scope")
@@ -256,6 +270,19 @@ impl ToolRouter {
 
     pub(crate) fn handle_symbol(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "qualified_name");
+        if qname.len() > MAX_SYMBOL_NAME_LENGTH {
+            return (
+                serde_json::to_string_pretty(&json!({
+                    "ok": false,
+                    "error": format!(
+                        "qualified_name exceeds maximum length of {} characters",
+                        MAX_SYMBOL_NAME_LENGTH
+                    ),
+                }))
+                .unwrap_or_else(|e| e.to_string()),
+                true,
+            );
+        }
         let include_code = args
             .get("includeCode")
             .and_then(|v| v.as_bool())

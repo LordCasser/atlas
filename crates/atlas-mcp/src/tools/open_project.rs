@@ -15,7 +15,7 @@ use std::sync::Arc;
 use atlas_engine::Store;
 use serde_json::json;
 
-use super::{PendingProjectActivation, ToolRouter};
+use super::{PendingProjectActivation, ToolRouter, MAX_FILE_PATH_LENGTH};
 
 /// Result of an open_project invocation.
 #[derive(serde::Serialize)]
@@ -188,6 +188,21 @@ fn prepare_project(args: &serde_json::Value) -> Result<PreparedProject, OpenProj
             suggestion: None,
             error: Some("Missing required parameter: project_path".into()),
         })?;
+
+    if project_path.len() > MAX_FILE_PATH_LENGTH {
+        return Err(OpenProjectResult {
+            ok: false,
+            active_project: String::new(),
+            db_path: String::new(),
+            storage: String::new(),
+            file_count: None,
+            suggestion: None,
+            error: Some(format!(
+                "project_path exceeds maximum length of {} characters",
+                MAX_FILE_PATH_LENGTH
+            )),
+        });
+    }
 
     if let Some(param) = unsupported_index_param(args) {
         return Err(OpenProjectResult {

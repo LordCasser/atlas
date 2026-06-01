@@ -45,6 +45,19 @@ pub(crate) struct PendingProjectActivation {
 // Sub-modules — one per capability category
 // -------------------------------------------------------------------
 
+// -------------------------------------------------------------------
+// Input length bounds — protect against malicious oversized inputs
+// -------------------------------------------------------------------
+
+/// Maximum length of a search query string.
+pub(crate) const MAX_QUERY_LENGTH: usize = 1024;
+/// Maximum length of a symbol name / qualified name.
+pub(crate) const MAX_SYMBOL_NAME_LENGTH: usize = 512;
+/// Maximum length of an annotation qualified name (field_qname / target_qname).
+pub(crate) const MAX_ANNOTATION_QNAME_LENGTH: usize = 512;
+/// Maximum length of a file path.
+pub(crate) const MAX_FILE_PATH_LENGTH: usize = 4096;
+
 pub(crate) mod annotations;
 pub(crate) mod capability;
 pub(crate) mod context;
