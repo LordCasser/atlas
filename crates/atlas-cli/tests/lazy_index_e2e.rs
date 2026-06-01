@@ -230,7 +230,7 @@ fn p2_lazy_builds_structural_on_demand() {
 
     let svc =
         atlas_engine::LazyStructuralService::new(store.clone(), Some(tmp.path().to_path_buf()));
-    let result = svc.ensure_structural_for_file(&fid).unwrap();
+    let result = svc.ensure_structural_for_file(&fid, None).unwrap();
     assert!(result.files_built >= 1);
 
     let after = store.find_symbols_by_file(&fid).unwrap();
@@ -257,11 +257,11 @@ fn p2_lazy_cache_hit_skips_rebuild() {
 
     let svc =
         atlas_engine::LazyStructuralService::new(store.clone(), Some(tmp.path().to_path_buf()));
-    let r1 = svc.ensure_structural_for_file(&fid).unwrap();
+    let r1 = svc.ensure_structural_for_file(&fid, None).unwrap();
     assert!(r1.files_built >= 1);
     assert_eq!(r1.files_cached, 0);
 
-    let r2 = svc.ensure_structural_for_file(&fid).unwrap();
+    let r2 = svc.ensure_structural_for_file(&fid, None).unwrap();
     assert_eq!(r2.files_built, 0);
     assert!(r2.files_cached >= 1);
 }
@@ -280,7 +280,7 @@ fn p2_lazy_preserves_existing_structural() {
 
     let svc =
         atlas_engine::LazyStructuralService::new(store.clone(), Some(tmp.path().to_path_buf()));
-    let result = svc.ensure_structural_for_file(&fid).unwrap();
+    let result = svc.ensure_structural_for_file(&fid, None).unwrap();
     assert_eq!(result.files_built, 0);
     assert!(result.files_cached >= 1);
 }

@@ -17,7 +17,8 @@
 // The entire test suite is feature-gated on `mcp`.
 #![cfg(feature = "mcp")]
 
-use atlas_cli::commands::{index, init};
+use atlas_cli::commands::index;
+use atlas_cli::runtime::{CommandContext, DbMode};
 use atlas_engine::ContextBuilder;
 use atlas_engine::GraphEngine;
 use atlas_engine::SearchEngine;
@@ -47,7 +48,7 @@ fn build_router(files: &[(&str, &str)]) -> (TempDir, ToolRouter) {
     }
 
     let project = tmp.path().to_string_lossy().to_string();
-    init::run(&project).expect("init");
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
     index::run(&project, &[], &[], &[], "structural").expect("index");
 
     let store = Arc::new(Store::open_db(&tmp.path().join(".atlas/atlas.db")).expect("open store"));

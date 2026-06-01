@@ -8,3 +8,8 @@
 .gitmodules
 examples/
 codegraph/
+
+.env*
+*.log
+credentials.*
+secrets.*
