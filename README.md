@@ -271,7 +271,7 @@ files                    symbols            scopes               references
 imports                  symbol_edges       callsites            bindings
 binding_uses             data_nodes         dataflow_edges       cfg_nodes
 cfg_edges                function_summaries summary_param_reaches summary_return_sources
-summary_call_arg_sources analysis_artifacts file_index_layers    project_metadata
+summary_call_arg_sources extraction_state   extraction_jobs      project_metadata
 symbols_fts              function_pointer_annotations
 ```
 

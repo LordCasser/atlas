@@ -139,7 +139,7 @@ fn p1_manifest_produces_top_level_symbols() {
 }
 
 #[test]
-fn p1_manifest_writes_file_index_layers() {
+fn p1_manifest_writes_file_extraction_state() {
     let tmp = setup_project(&[("lib.ts", "export function hello(): void {}")]);
     let project = tmp.path().to_string_lossy().to_string();
 
@@ -149,7 +149,9 @@ fn p1_manifest_writes_file_index_layers() {
     let store = open_store(&tmp);
     let files = store.list_files().unwrap();
     let fid = files[0].file_id;
-    let layer_rec = store.get_file_index_layer(&fid, layer::MANIFEST).unwrap();
+    let layer_rec = store
+        .get_file_extraction_state(&fid, layer::MANIFEST)
+        .unwrap();
     assert!(layer_rec.is_some(), "manifest layer should be recorded");
     let (s, _hash) = layer_rec.unwrap();
     assert_eq!(s, status::COMPLETE);
@@ -166,7 +168,9 @@ fn p1_structural_writes_structural_layer() {
     let store = open_store(&tmp);
     let files = store.list_files().unwrap();
     let fid = files[0].file_id;
-    let layer = store.get_file_index_layer(&fid, layer::STRUCTURAL).unwrap();
+    let layer = store
+        .get_file_extraction_state(&fid, layer::STRUCTURAL)
+        .unwrap();
     assert!(layer.is_some());
     let (s, _) = layer.unwrap();
     assert_eq!(s, status::COMPLETE);

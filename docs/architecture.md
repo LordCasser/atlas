@@ -145,8 +145,8 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 | `summary_param_reaches` | 参数 → 下游可达目标 |
 | `summary_return_sources` | 返回值 → 上游来源 |
 | `summary_call_arg_sources` | 调用参数 → 上游来源 |
-| `analysis_artifacts` | lazy dataflow/CFG 追踪 |
-| `file_index_layers` | 每文件每层索引状态 |
+| `extraction_state` | 统一提取完成状态（文件级 layer + 单元级 dataflow/CFG） |
+| `extraction_jobs` | 统一 lazy extraction job 去重与状态 |
 | `project_metadata` | 项目级键值配置 |
 | `symbols_fts` | FTS5 符号名索引 |
 | `function_pointer_annotations` | C/C++ 函数指针 dispatch 注解 |
@@ -319,11 +319,11 @@ LanguageCapabilityProfile
 | `structural` | 完整符号、引用、scope、边。通过 `--analysis structural` 或 lazy structural 产生。 |
 | `dataflow` | 所有 structural 事实 + per-function dataflow/CFG。通过 `--analysis full` 或 lazy dataflow 产生。 |
 
-Layer 通过 `SymbolDef.layer` 和 `file_index_layers.layer` 字段标识。
+Layer 通过 `SymbolDef.layer` 和 `extraction_state.layer` 字段标识。
 
-#### 10.1.2 Lazy job 生命周期
+#### 10.1.2 Extraction job 生命周期
 
-所有 lazy extraction 触发均通过 `lazy_jobs` 表追踪，确保可观测性和并发去重：
+所有 lazy extraction 触发均通过 `extraction_jobs` 表追踪，确保可观测性和并发去重：
 
 ```
 queued → building → complete
@@ -335,9 +335,9 @@ queued → building → complete
 - **complete**: 提取成功完成。
 - **failed**: 提取失败（`error_msg` 记录原因）。
 
-Job ID 基于时间戳生成（`lazy_{microsecond_hex}`），同一 `(file_id, target_layer)` 在 `queued`/`building` 状态下有且仅有一条活跃记录。并发请求通过 `find_active_lazy_job` 的 dedup 语义使用同一 job_id。
+Job ID 基于时间戳生成（`extract_{microsecond_hex}`）。同一 `(file_id, unit_id, layer)` 在 `queued`/`building` 状态下有且仅有一条活跃记录；文件级 job 的 `unit_id` 为 `NULL`。并发请求通过 claim API 的 dedup 语义使用同一 job_id。
 
-Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `lazy_jobs` 表。
+Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs` 表。
 
 #### 10.1.3 精度等级
 
@@ -354,7 +354,7 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `lazy_jobs` 表�
 
 #### 10.1.4 In-flight 一致性
 
-- **去重**: `lazy_jobs` 表 + `find_active_lazy_job` 确保同一 file+layer 不会并行构建两次。
+- **去重**: `extraction_jobs` 表确保同一 file+unit+layer 不会并行构建两次。
 - **读写一致性**: 每个 handler 在触发 lazy extraction 后，在自己的写事务中可见刚写的数据；读操作通过 `StoreReader`（独立只读连接）访问。
 - **Delta graph refresh**（Phase 3）: lazy structural 写入后，增加显式 graph snapshot 刷新步骤，确保图查询立即可见新边。
 
@@ -371,6 +371,16 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `lazy_jobs` 表�
 **P1: Manifest Extraction** — `ExtractionMode::Manifest`：仅提取顶层符号，为 lazy structural 提供候选源。通过 `symbols.layer` 字段区分。
 
 **P2: Lazy Structural** — 查询时按需触发完整 structural extraction。`LazyStructuralService` + `CandidateProvider` + `StructuralLoader`。
+
+#### 10.1.7 Lazy 状态与任务边界
+
+文件级状态、单元级 dataflow 状态和进行中任务已经统一为
+`extraction_state` / `extraction_jobs` 两个表：
+
+- **完成状态**：文件级状态以 `extraction_state.unit_id IS NULL` 为准，必须与 `files.content_hash` 匹配；单元级 dataflow cache 以 `extraction_state.unit_id IS NOT NULL` 为准。
+- **进行中状态**：所有 on-demand structural、resolution_symbols 和 dataflow 构建都必须 claim extraction job。dataflow 使用 unit-scoped job key，避免同一函数/顶层单元被前台 trace 和后台 prewarm 重复构建。
+- **MCP 可观测性**：`status` 只根据 fresh layer 分布推导 `manifest`、`partial_structural`、`structural`、`structural+lazy`、`full`，不能把 manifest-only 误报为 structural。`jobs` 暴露 active extraction jobs，供代理在 pending/partial 响应后决定重试时机。
+- **Search 执行模型**：MCP search 先做 store-backed manifest 查询，再对候选文件做定向 lazy structural；只有候选为空且 scope 很小时才同步解析整个 scope。大 scope 不做同步全量 structural，避免把一次搜索变成隐式全项目索引。
 
 ### 内容哈希一致性
 
@@ -499,7 +509,7 @@ Atlas 不包含污点分析（taint analysis）。产品主线为变量来源追
 
 ### Lazy Indexing
 
-- **构建期间的并发读取**：当请求遇到处于 `AlreadyBuilding` 状态的 lazy job 时，它立即返回而不等待构建完成。同一 MCP 会话中的后续请求可能观察到过期数据。客户端应在短暂延迟后重试。
+- **构建期间的并发读取**：当请求遇到处于 `AlreadyBuilding` 状态的 extraction job 时，它立即返回而不等待构建完成。同一 MCP 会话中的后续请求可能观察到过期数据。客户端应在短暂延迟后重试。
 
 - **Include root auto-detection**: `project_root/include/` is auto-detected.
   Additional directories can be passed per-request via the `include_roots`

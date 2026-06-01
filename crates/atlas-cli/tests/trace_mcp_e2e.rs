@@ -1667,10 +1667,11 @@ fn mcp_search_large_scope_stays_manifest_level() {
     );
 
     assert!(!search_error, "search should succeed: {:?}", search_json);
-    // Small projects (≤ 200 files) with full-project scope get structural
-    // parsing, not manifest-level, for better precision.
-    assert_eq!(search_json["parse_level"].as_str(), Some("structural"));
-    assert_eq!(search_json["precise"].as_bool(), Some(true));
+    // Search no longer turns medium/full-project scopes into implicit
+    // structural indexing. It should answer from manifest facts and guide the
+    // caller to narrow scope for deeper parsing.
+    assert_eq!(search_json["parse_level"].as_str(), Some("manifest"));
+    assert_eq!(search_json["precise"].as_bool(), Some(false));
     let results = search_json["results"].as_array().unwrap();
     assert!(
         results
