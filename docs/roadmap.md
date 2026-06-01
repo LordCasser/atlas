@@ -70,6 +70,8 @@ P0-P7 optimizations completed: PhaseTimings, hash-based dirty-set, thread-local 
 
 All tools use short names (no `atlas_` prefix). 27 tools registered.
 
+> **Next step (post-V1)**: namespace-style merge 27 → 16, see `8.1`. V1 freezes the 27-tool surface.
+
 ## 3. Trace and language capability work
 
 ### 3.1 Capability alignment
@@ -133,3 +135,70 @@ Corpus: git blob + version/tag/path mappings
 - Java Maven/Gradle/classpath completeness.
 - Automatic vulnerability scanning, taint rules, finding generation, or SAST product features.
 - Multi-version source corpus indexing.
+
+## 8. Post-V1 simplification backlog
+
+Deferred from V1; pick up in v1.2 / v2.0 once V1's MCP surface is frozen and downstream clients have anchored on it.
+
+### 8.1 MCP tool surface consolidation (27 → 16)
+
+The V1 27-tool surface has 4 clear namespace-style merge opportunities that reduce the description footprint by ~41% and save ~220 LOC of handler boilerplate. Implementation strategy: **Deprecate + Replace** — add 4 new namespace tools, keep the 16 old tool names as deprecated aliases routing to the new handlers, remove aliases by v2.0.
+
+| Group | Tools merged | New name | Dispatch parameter | Aliases |
+|---|---|---|---|---|
+| A: graph (7) | `neighbors`, `callers`, `callees`, `callgraph`, `path`, `explore`, `impact` | `graph` | `action: enum` | 7 |
+| B: trace (4) | `trace_point`, `trace_variable`, `trace_caller_path`, `trace_forward` | `trace` | `kind: enum` | 4 |
+| C: file_deps (2) | `dependencies`, `dependents` | `file_deps` | `direction: enum` | 2 |
+| D: fp_annotations (3) | `annotate_fp_dispatch`, `list_fp_annotations`, `delete_fp_annotation` | `fp_annotations` | `action: enum` | 3 |
+
+**Why not in V1**: V1 freezes MCP tool schemas for downstream client stability. Introducing 4 new tools + 16 aliases in V1 would expand the deprecation surface during the stabilization window.
+
+**Why not pure breaking change (27 → 16 in one release)**: breaks every MCP client already anchoring on the V1 names. Alias-based deprecate+replace keeps V1 contracts valid until v2.0.
+
+**Alias routing** (`crates/atlas-mcp/src/tools/mod.rs::call_tool`):
+```rust
+"neighbors"  => self.handle_graph(&with_action(args, "neighbors")),
+// ... 7 graph alias
+"dependencies" => self.handle_file_deps(&with_direction(args, "outgoing")),
+"dependents"   => self.handle_file_deps(&with_direction(args, "incoming")),
+"trace_point"  => self.handle_trace(&with_kind(args, "point")),
+// ... 3 trace alias
+"annotate_fp_dispatch" => self.handle_fp_annotations(&with_action(args, "add")),
+// ... 2 fp_annotations alias
+```
+Three ~5-line helpers (`with_action`, `with_kind`, `with_direction`) inject the dispatch string into `args` and forward to the new handler.
+
+**Boilerplate savings inside the merged groups**:
+- `tools/trace.rs` (397 LOC): `include_roots` resolution + lazy_structural warning injection is repeated in all 4 handlers → extract `resolve_trace_endpoint()` + `finalize_trace_response()` (≈ -150 LOC).
+- `tools/dependencies.rs` (42) and `dependents.rs` (41): near-mirror, only differ in the store call → merge into one new `tools/file_deps.rs` (~50 LOC).
+
+**Not merged (kept as-is)**: `index`, `open_project` (entry semantics + progress state machine), `search` (name lookup ≠ graph traversal), `symbol` (name resolution + lazy structural fallback), `context` (markdown rich response), `status`, `files`, `language_capabilities` (read-only metadata), `usages` (full reference set, not just caller path), `task_status`, `wait_for_task` (poll vs block semantics).
+
+**File changes**:
+- `tools/mod.rs`: 1554 → ~1450 LOC (remove 16 `make_all_tools` entries).
+- `tools/trace.rs`: 397 → ~250 LOC.
+- `tools/dependencies.rs` + `tools/dependents.rs`: deleted.
+- `tools/graph.rs` (854) / `tools/annotations.rs` (318): keep existing handlers, privatize, add top-level dispatch.
+- **New** `tools/file_deps.rs` (~50 LOC).
+
+**Estimated effort**: 1.5-2 working days.
+
+**Recommended order**:
+1. Group C `file_deps` (30 min) — establish the alias pattern.
+2. Group B `trace` (1-2 hr) — highest ROI; biggest boilerplate elimination.
+3. Group D `fp_annotations` (30 min).
+4. Group A `graph` (3-4 hr) — heaviest logic; ensure alias parity for `path` / `callgraph` / `explore`.
+5. One equivalence integration test across 16 old names + 4 new names.
+6. `docs/architecture.md:33` (27 → 16) and `CHANGELOG.md` update; v1.2 release notes announce the 4 merges, 16 aliases, and v2.0 removal.
+
+**Verification**:
+- Each deprecated alias returns **byte-identical** JSON to the original tool.
+- 5 existing regression tests (e.g. `trace_point_invalid_include_roots_returns_diagnostics`) still pass — they call internal handlers directly, not through the MCP protocol.
+- New equivalence integration test: 16 old names + 4 new names produce equal bodies.
+- `docs/architecture.md:33` updated from 27 → 16; `CHANGELOG.md` records the merge, aliases, and removal timeline.
+
+**Open questions to resolve at v1.2 kickoff**:
+1. Deprecation window length — recommended: until v2.0 (~6-12 months).
+2. Whether to take a one-shot hard cut for `fp_annotations` (internal-only surface, deprecate+replace may be unnecessary).
+3. Whether to split graph into read-only (`neighbors`/`callers`/`callees`) vs. traversal (`callgraph`/`path`/`explore`/`impact`) — current recommendation: keep all 7 actions in one tool (clients handle enum dispatch well).
+4. Whether to refactor `mod.rs::call_tool`'s large match into a `HashMap` dispatch in the same pass — **not recommended** (explicit match is friendlier to IDEs and code review).
