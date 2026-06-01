@@ -126,7 +126,7 @@ fn default_layer() -> String {
     "structural".to_string()
 }
 
-/// Named constants for `SymbolDef.layer` and `file_index_layers.layer` values.
+/// Named constants for `SymbolDef.layer` and `extraction_state.layer` values.
 pub mod layer {
     /// Top-level symbols only (from `--analysis manifest`).
     pub const MANIFEST: &str = "manifest";
@@ -141,13 +141,13 @@ pub mod layer {
     pub const DATAFLOW: &str = "dataflow";
 }
 
-/// Named constants for `file_index_layers.status` and `lazy_jobs.status` values.
+/// Named constants for `extraction_state.status` and `extraction_jobs.status` values.
 pub mod status {
     /// Layer extraction completed successfully.
     pub const COMPLETE: &str = "complete";
-    /// Layer build is queued but not yet started (used by lazy_jobs tracking).
+    /// Layer build is queued but not yet started (used by extraction job tracking).
     pub const QUEUED: &str = "queued";
-    /// Layer build is in progress (used by lazy_jobs tracking).
+    /// Layer build is in progress (used by extraction job tracking).
     pub const BUILDING: &str = "building";
     /// Layer extraction was truncated (budget exceeded).
     pub const PARTIAL: &str = "partial";
@@ -190,19 +190,19 @@ pub mod precision {
 
     /// Compute precision tier for lazy dataflow extraction.
     pub fn dataflow_precision(
-        built: usize,
+        available: usize,
         planned: usize,
         budget_exceeded: bool,
     ) -> PrecisionTier {
         if planned == 0 {
             PrecisionTier::Unavailable
-        } else if built == 0 {
+        } else if available == 0 {
             if budget_exceeded {
                 PrecisionTier::ManifestOnly
             } else {
                 PrecisionTier::Unavailable
             }
-        } else if budget_exceeded && built < planned {
+        } else if budget_exceeded || available < planned {
             PrecisionTier::PartialExact
         } else {
             PrecisionTier::Exact

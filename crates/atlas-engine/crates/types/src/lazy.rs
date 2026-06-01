@@ -5,8 +5,8 @@
 //! crate (ExtractionMode::LazyDataflow), but NOT by `analysis` or `db`.
 
 use crate::ids::{FileId, ReferenceId, SymbolId};
-use crate::structs::precision::PrecisionTier;
 use crate::structs::TextRange;
+use crate::structs::precision::PrecisionTier;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -89,6 +89,12 @@ pub struct LazyWindow {
     /// Units whose dataflow was already cached (populated at runtime).
     #[serde(default)]
     pub units_cached: usize,
+    /// Units skipped because another request is currently building them.
+    #[serde(default)]
+    pub units_pending: usize,
+    /// Active job ids for pending units, useful for MCP retry/status hints.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_job_ids: Vec<String>,
     /// Dataflow precision tier (set by LazyDataflowService after loading).
     /// None if dataflow was not loaded via lazy path.
     #[serde(default, skip_serializing_if = "Option::is_none")]

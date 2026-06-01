@@ -29,8 +29,8 @@ use super::capability::LanguageCapabilityProfile;
 use super::dataflow::DataNode;
 use super::enums::DataFlowKind;
 use super::ids::{DataNodeId, FileId};
-use super::structs::{Callsite, DiagnosticLevel, ReferenceUse, ScopeDef, SymbolDef, TextRange};
 use super::structs::precision::PrecisionTier;
+use super::structs::{Callsite, DiagnosticLevel, ReferenceUse, ScopeDef, SymbolDef, TextRange};
 
 // ---------------------------------------------------------------------------
 // TraceDiagnostic — a structured hint/warning/error for trace results
@@ -240,6 +240,12 @@ pub struct LazySummary {
     pub units_built: usize,
     /// Number of AnalysisUnits whose dataflow was already cached.
     pub units_cached: usize,
+    /// Number of AnalysisUnits currently being built by another request.
+    #[serde(default)]
+    pub units_pending: usize,
+    /// Active lazy job ids for pending units.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_job_ids: Vec<String>,
     /// Whether any unit hit the internal budget limit (partial result).
     pub truncated: bool,
     /// Wall-clock time spent on lazy dataflow loading (milliseconds).
