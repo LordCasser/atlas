@@ -4,6 +4,40 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
+## [1.3.1] — 2026-06-02
+
+### BREAKING: MCP tool refactor (33 → 18 tools)
+
+- **No alias compatibility** — old tool names return "Unknown tool" error
+- All tools use clean names without `atlas_` public prefix
+- See `docs/architecture.md` §11.3 for the full MCP tool specification
+
+### Tool merges
+
+| Old tools | New tool |
+|-----------|----------|
+| `open_project`, `status`, `files`, `language_capabilities` | `project(action="open\|status\|files")` |
+| `symbol`, `context`, `usages` | `symbol(view="detail\|context\|usages")`, `qname` parameter |
+| `callers`, `callees`, `callgraph`, `neighbors` | `calls(direction="incoming\|outgoing\|both", edge_kinds=[...])` |
+| `trace_point`, `trace_variable`, `trace_forward`, `trace_caller_path` | `trace(kind="point\|variable\|forward\|callers")` |
+| `dependencies`, `dependents` | `file_dependencies(direction="incoming\|outgoing\|both")`, `file_path` parameter |
+| `annotate_fp_dispatch`, `list_fp_annotations`, `delete_fp_annotation` | `fp_dispatches(action="add\|list\|delete")` |
+| `atlas_annotate`, `atlas_domain_rules`, `atlas_rule_learn` | `domain_rules(action="add\|list\|delete\|learn")` |
+| `jobs`, `atlas_jobs` | `tasks` |
+| `atlas_resume` | `resume_task` |
+| `atlas_lifecycle` | `lifecycle` |
+| `atlas_branch_diff` | `branch_diff` |
+| `index`, `search`, `explore`, `path`, `impact`, `task_status`, `wait_for_task` | Unchanged (prefix-only removal) |
+
+### Other changes
+
+- `symbol(view="context")` now outputs structured JSON instead of Markdown
+- `file_dependencies` uses `file_path` (no `file_id`)
+- `trace(kind="callers\|forward")` `symbol`/`from`/`to` parameters auto-detect hex IDs vs qualified names
+- `project(action="status")` always includes language capabilities (no `verbose` gate)
+
+---
+
 ## [1.3.0] — 2026-06-02
 
 ### TUI

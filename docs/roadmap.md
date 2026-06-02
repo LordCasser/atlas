@@ -70,9 +70,9 @@ P0-P7 optimizations completed: PhaseTimings, hash-based dirty-set, thread-local 
 
 - `CapabilityMask` centralizes extraction-layer capability state (`manifest`, `structural`, `call_edges`, `cfg`, `dataflow`, `summaries`) in `extraction_state`.
 - Lazy MCP responses expose `analysis_contract` with safe conclusions, unsafe conclusions, capability summary, and refinement jobs.
-- MCP query snapshots support `atlas_resume(query_id)` for in-session recovery; snapshots are intentionally in-memory with a short TTL.
+- MCP query snapshots support `resume_task(query_id)` for in-session recovery; snapshots are intentionally in-memory with a short TTL.
 - Investigation state tracks the active MCP-session focus and desired capabilities for focused lazy refinement.
-- `atlas_jobs` exposes query-related lazy/background job state.
+- `tasks` exposes query-related lazy/background job state.
 
 ### 2.6 Field lifecycle, branch diff, and semantic impact ✅
 
@@ -88,11 +88,9 @@ P0-P7 optimizations completed: PhaseTimings, hash-based dirty-set, thread-local 
 - C/C++ ownership semantics live in `analysis::CppOwnershipRules`; the generic engine does not interpret ownership or lifecycle semantics.
 - Language extension guidance is documented in `docs/domain-rules-language-guide.md`.
 
-### 2.8 MCP tool consolidation ✅
+### 2.8 MCP tool consolidation (33 → 18) ✅
 
-V1 core tools use short names (no `atlas_` prefix). Additional experimental analysis/domain-rules tools use explicit `atlas_` names until their stable surface is decided.
-
-> **Next step (post-V1)**: namespace-style merge the frozen V1 core tools, see `8.1`.
+v1.3.1 完成 MCP 工具全面重构：33 个旧工具合并精简为 18 个。所有工具使用短名（无 `atlas_` 前缀）。Breaking change，不保留别名兼容。详见 `docs/architecture.md` §11.3。
 
 ## 3. Trace and language capability work
 
@@ -166,69 +164,61 @@ Corpus: git blob + version/tag/path mappings
 - Multi-version source corpus indexing.
 - Full compiler-grade C/C++ ownership proof, pointer arithmetic, union aliasing, or complete cross-function dataflow.
 
-## 8. Post-V1 simplification backlog
+## 8. Semantic analysis multi-language extension
 
-Deferred from V1; pick up in v1.2 / v2.0 once V1's MCP surface is frozen and downstream clients have anchored on it.
+### 8.1 branch_diff 架构演进与多语言扩展
 
-### 8.1 MCP tool surface consolidation (28 → 16)
+#### 8.1.1 当前架构限制
 
-The V1 28-tool surface has 4 clear namespace-style merge opportunities that reduce the description footprint by ~41% and save ~220 LOC of handler boilerplate. Implementation strategy: **Deprecate + Replace** — add 4 new namespace tools, keep the 16 old tool names as deprecated aliases routing to the new handlers, remove aliases by v2.0.
+`branch_diff` 和 `lifecycle` 当前存在架构层面的表达能力不足：
 
-| Group | Tools merged | New name | Dispatch parameter | Aliases |
-|---|---|---|---|---|
-| A: graph (7) | `neighbors`, `callers`, `callees`, `callgraph`, `path`, `explore`, `impact` | `graph` | `action: enum` | 7 |
-| B: trace (4) | `trace_point`, `trace_variable`, `trace_caller_path`, `trace_forward` | `trace` | `kind: enum` | 4 |
-| C: file_deps (2) | `dependencies`, `dependents` | `file_deps` | `direction: enum` | 2 |
-| D: fp_annotations (3) | `annotate_fp_dispatch`, `list_fp_annotations`, `delete_fp_annotation` | `fp_annotations` | `action: enum` | 3 |
+- **CFG 节点只挂单个粗粒度 effect**：`effect_kind + target_field` 模型无法表达一条语句包含多个语义 effect（如 alloc return + local assign + field store）
+- **局部变量 ownership 中转不可追踪**：`alloc → local_var → field` 链路在当前模型下无法稳定追踪，导致类似 `ptr = malloc(); data->field = ptr;` 的模式漏报
+- **branch_diff 是副作用集合 diff，不是 ownership/dataflow 分析**：缺少 value-flow IR 层，多层分支、switch/case、goto 存在漏遍历风险
+- **仅 C/C++ 可用**：`analysis::ownership_rules.rs` 和 `domain_rules/engine.rs` 的核心基础设施已是语言无关的，但缺少其他语言的 rule consumer
 
-**Why not in V1**: V1 freezes MCP tool schemas for downstream client stability. Introducing 4 new tools + 16 aliases in V1 would expand the deprecation surface during the stabilization window.
+#### 8.1.2 长期架构目标
 
-**Why not pure breaking change (27 → 16 in one release)**: breaks every MCP client already anchoring on the V1 names. Alias-based deprecate+replace keeps V1 contracts valid until v2.0.
+从当前单层 CFG effect annotation 演进为分层语义分析管线：
 
-**Alias routing** (`crates/atlas-mcp/src/tools/mod.rs::call_tool`):
-```rust
-"neighbors"  => self.handle_graph(&with_action(args, "neighbors")),
-// ... 7 graph alias
-"dependencies" => self.handle_file_deps(&with_direction(args, "outgoing")),
-"dependents"   => self.handle_file_deps(&with_direction(args, "incoming")),
-"trace_point"  => self.handle_trace(&with_kind(args, "point")),
-// ... 3 trace alias
-"annotate_fp_dispatch" => self.handle_fp_annotations(&with_action(args, "add")),
-// ... 2 fp_annotations alias
+```text
+当前:  CFG node 上挂粗粒度 effect_kind + target_field
+          ↓
+目标:  CFG（控制流）→ DataFlow（值流）→ EffectIR（副作用语义）
+       → Ownership Solver（生命周期推理）→ BranchDiff（语义查询视图）
 ```
-Three ~5-line helpers (`with_action`, `with_kind`, `with_direction`) inject the dispatch string into `args` and forward to the new handler.
 
-**Boilerplate savings inside the merged groups**:
-- `tools/trace.rs` (397 LOC): `include_roots` resolution + lazy_structural warning injection is repeated in all 4 handlers → extract `resolve_trace_endpoint()` + `finalize_trace_response()` (≈ -150 LOC).
-- `tools/dependencies.rs` (42) and `dependents.rs` (41): near-mirror, only differ in the store call → merge into one new `tools/file_deps.rs` (~50 LOC).
+五层管线说明：
 
-**Not merged (kept as-is)**: `index`, `open_project` (entry semantics + progress state machine), `search` (name lookup ≠ graph traversal), `symbol` (name resolution + lazy structural fallback), `context` (markdown rich response), `status`, `jobs`, `files`, `language_capabilities` (read-only metadata), `usages` (full reference set, not just caller path), `task_status`, `wait_for_task` (poll vs block semantics).
+| 层 | 职责 | 产出 |
+|----|------|------|
+| CFG | 控制流图（已有） | `cfg_nodes` / `cfg_edges` |
+| DataFlow | 值流追踪（已有 `data_nodes`/`dataflow_edges`，需增强 alloc→local→field 链路） | per-variable use-def chains |
+| EffectIR | 副作用语义建模（新增） | 每条语句的 multi-effect 列表，with provenance |
+| Ownership Solver | 生命周期推理（新增） | field state machine（跨分支、跨函数） |
+| BranchDiff | 基于 EffectIR 的分支语义对比（重构为查询视图） | 结构性不对称报告 |
 
-**File changes**:
-- `tools/mod.rs`: 1554 → ~1450 LOC (remove 16 `make_all_tools` entries).
-- `tools/trace.rs`: 397 → ~250 LOC.
-- `tools/dependencies.rs` + `tools/dependents.rs`: deleted.
-- `tools/graph.rs` (854) / `tools/annotations.rs` (318): keep existing handlers, privatize, add top-level dispatch.
-- **New** `tools/file_deps.rs` (~50 LOC).
+#### 8.1.3 多语言分阶段扩展
 
-**Estimated effort**: 1.5-2 working days.
+**目标**：为以下语言添加 `LanguageOwnershipRules` consumer，使 `branch_diff`/`lifecycle`/`impact(semantic=true)` 能产生有意义的语义分析结果：
 
-**Recommended order**:
-1. Group C `file_deps` (30 min) — establish the alias pattern.
-2. Group B `trace` (1-2 hr) — highest ROI; biggest boilerplate elimination.
-3. Group D `fp_annotations` (30 min).
-4. Group A `graph` (3-4 hr) — heaviest logic; ensure alias parity for `path` / `callgraph` / `explore`.
-5. One equivalence integration test across 16 old names + 4 new names.
-6. `docs/architecture.md:33` (28 → 16) and `CHANGELOG.md` update; v1.2 release notes announce the 4 merges, 16 aliases, and v2.0 removal.
+| 优先级 | 语言 | 关键模式 | 预计工作量 |
+|--------|------|---------|-----------|
+| P1 | Rust | `Box::new`/`Arc::new` 分配，`Drop` 释放，`unsafe` 边界 | 2-3d |
+| P1 | Go | `make`/`new` 分配，`defer` + `Close()` 释放，goroutine ownership | 2-3d |
+| P2 | Python | `open()` → `close()` 对，`with` 语句 RAII，`None` → 赋值 | 2d |
+| P2 | TypeScript | `new` 分配，`Promise`/`async` 异步边界 | 2d |
+| P3 | Java | `try-with-resources`，`close()` 模式 | 1-2d |
+| P3 | C# | `IDisposable`/`using` 模式 | 1-2d |
 
-**Verification**:
-- Each deprecated alias returns **byte-identical** JSON to the original tool.
-- 5 existing regression tests (e.g. `trace_point_invalid_include_roots_returns_diagnostics`) still pass — they call internal handlers directly, not through the MCP protocol.
-- New equivalence integration test: 16 old names + 4 new names produce equal bodies.
-- `docs/architecture.md:33` updated from 28 → 16; `CHANGELOG.md` records the merge, aliases, and removal timeline.
+**依赖项**：
+- 目标语言需要 CFG 覆盖（见 §9.2 能力表）：Rust、Go 已有 CFG；Python/TypeScript 已有 CFG；Java/C# CFG 未实现
+- `domain_rules` 需要每种语言的 builtin rules（alloc/free/owned pattern）
+- `analysis` 层需要每种语言的 `OwnershipRules` trait 实现
 
-**Open questions to resolve at v1.2 kickoff**:
-1. Deprecation window length — recommended: until v2.0 (~6-12 months).
-2. Whether to take a one-shot hard cut for `fp_annotations` (internal-only surface, deprecate+replace may be unnecessary).
-3. Whether to split graph into read-only (`neighbors`/`callers`/`callees`) vs. traversal (`callgraph`/`path`/`explore`/`impact`) — current recommendation: keep all 7 actions in one tool (clients handle enum dispatch well).
-4. Whether to refactor `mod.rs::call_tool`'s large match into a `HashMap` dispatch in the same pass — **not recommended** (explicit match is friendlier to IDEs and code review).
+**阶段划分**：
+1. **Phase 1 (v1.4)**: Rust + Go — 语言已有 CFG，rule 模式明确
+2. **Phase 2 (v1.5)**: Python + TypeScript — 高使用率语言，CFG 已覆盖
+3. **Phase 3 (v2.0)**: 剩余语言随 CFG 实现一同交付
+
+**不纳入范围**：SAST 级别的跨函数污点分析、完整 pointer provenance、编译器级 lifetime 验证。
