@@ -93,7 +93,9 @@ CREATE TABLE IF NOT EXISTS scopes (
 CREATE TABLE IF NOT EXISTS "references" (
     reference_id         BLOB PRIMARY KEY NOT NULL,
     file_id              BLOB NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
+    -- no FK on source_symbol: source may be a file/module-scope symbol or external
     source_symbol        BLOB,
+    -- no FK on scope_id: scope may be implicit or not yet resolved
     scope_id             BLOB,
     kind                 TEXT NOT NULL,
     text                 TEXT NOT NULL,
@@ -137,6 +139,8 @@ CREATE TABLE IF NOT EXISTS imports (
 CREATE TABLE IF NOT EXISTS symbol_edges (
     edge_id      BLOB PRIMARY KEY NOT NULL,
     source       BLOB NOT NULL REFERENCES symbols(symbol_id) ON DELETE CASCADE,
+    -- no FK on target: target may reference an external symbol, a deleted symbol,
+    -- or a symbol that has not yet been indexed
     target       BLOB,
     kind         TEXT NOT NULL,
     confidence   REAL NOT NULL DEFAULT 0.5,
@@ -154,6 +158,7 @@ CREATE TABLE IF NOT EXISTS symbol_edges (
 
 CREATE TABLE IF NOT EXISTS callsites (
     callsite_id          BLOB PRIMARY KEY NOT NULL,
+    -- no FK on reference_id: callsite may be provisional (before reference is finalized)
     reference_id         BLOB,
     caller               BLOB NOT NULL REFERENCES symbols(symbol_id) ON DELETE CASCADE,
     callee               BLOB REFERENCES symbols(symbol_id) ON DELETE SET NULL,
@@ -388,12 +393,16 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     content_rowid='rowid'
 );
 
--- domain_rules: language-agnostic domain rule storage
+-- domain_rules: language-agnostic domain rule storage.
+-- This is NOT a C/C++ ownership subsystem.  It is a generic rule store,
+-- match, and learning infrastructure.  All semantics are interpreted by
+-- per-language consumers (e.g. CppOwnershipRules for C/C++).
+-- **At the core level**: no "ownership", "free", "alloc", "lifecycle".
 CREATE TABLE IF NOT EXISTS domain_rules (
-    id            TEXT PRIMARY KEY NOT NULL,
-    language      TEXT NOT NULL DEFAULT 'c',         -- "c" / "rust" / "python" / "*"
+    id            TEXT PRIMARY KEY NOT NULL,         -- blake3(lang || 0xff || rule_kind || 0xff || pattern_kind || 0xff || pattern)
+    language      TEXT NOT NULL DEFAULT 'c',         -- "c" / "rust" / "python" / "typescript" / "*"
     rule_kind     TEXT NOT NULL,                     -- free_fn / react_hook / ... (language-defined)
-    pattern       TEXT NOT NULL,                     -- match target
+    pattern       TEXT NOT NULL,                     -- match target (function name, field path, decorator name, ...)
     pattern_kind  TEXT NOT NULL DEFAULT 'exact',     -- exact / prefix / suffix / glob / regex
     meta          TEXT,                              -- JSON, language-specific extension
     meta_version  INTEGER NOT NULL DEFAULT 1,        -- meta structure version

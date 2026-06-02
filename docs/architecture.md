@@ -127,7 +127,7 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 
 当前 schema 版本为 V1，所有变更直接在主 DDL 中进行，无需迁移。
 
-主要表（22 张）：
+主要表（23 张）：
 
 | 表 | 用途 |
 |----|------|
@@ -145,6 +145,7 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 | `summary_param_reaches` | 参数 → 下游可达目标 |
 | `summary_return_sources` | 返回值 → 上游来源 |
 | `summary_call_arg_sources` | 调用参数 → 上游来源 |
+| `domain_rules` | 语言无关的领域规则（匹配、学习、存储基础层；语义由 language consumer 解释） |
 | `extraction_state` | 统一提取完成状态（文件级 layer + 单元级 dataflow/CFG） |
 | `extraction_jobs` | 统一 lazy extraction job 去重与状态 |
 | `project_metadata` | 项目级键值配置 |
@@ -202,7 +203,7 @@ trace             = inter-procedural, by composing summaries along call graph
 
 - `ReferenceResolver` 只产生 resolved facts。
 - `GraphBuilder` 从 resolved references、callsites、raw structural facts 生成 symbol-level edges。
-- `GraphSnapshot` 发布后不可变；Sync 只有在写事务成功后刷新 snapshot。
+- `GraphSnapshot` 对消费者不可变；刷新时 writer 在独占可变引用（`&mut self`）下通过 `replace_files_in_place` 做增量更新，或对大变更集重建完整 snapshot。
 - 删除或修改文件时必须失效相关 references 和 edges。
 
 **调用边仅限项目内部符号**：Atlas 只在 caller 和 callee 两端符号都已索引时创建调用边 (`Calls`/`Instantiates`/`Implements`)。外部包的引用（如 `import { useState } from 'react'`、`#include <stdio.h>` 中的 `printf`）因目标符号不在项目的 symbol table 中，不会产生边。具体机制：
