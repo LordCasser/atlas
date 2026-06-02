@@ -92,12 +92,19 @@ pub fn spawn_auto_index(store: Arc<Store>, project_root: PathBuf) -> AutoIndexHa
     let result_w = Arc::clone(&result);
 
     // Configure rayon thread pool (idempotent — same as CLI index).
+    // Must tolerate `GlobalPoolAlreadyInitialized`: when Ctrl+C interrupts
+    // ensure_index_before_tui(), the CLI index path already initialised the
+    // global pool.  The existing pool is fine for manifest indexing.
     static RAYON_INIT: std::sync::Once = std::sync::Once::new();
     RAYON_INIT.call_once(|| {
-        rayon::ThreadPoolBuilder::new()
+        let result = rayon::ThreadPoolBuilder::new()
             .stack_size(4 * 1024 * 1024)
-            .build_global()
-            .expect("failed to initialise rayon thread pool");
+            .build_global();
+        match result {
+            Ok(()) => {}
+            Err(ref e) if is_already_initialized(e) => {}
+            Err(e) => panic!("failed to initialise rayon thread pool: {e}"),
+        }
     });
 
     let handle = std::thread::spawn(move || {
@@ -336,4 +343,14 @@ fn set_phase(
         p.total = total;
         p.message = message.to_string();
     }
+}
+
+/// Check whether a [`rayon::ThreadPoolBuildError`] is caused by the global
+/// pool already being initialised (e.g. by a prior CLI index before TUI).
+///
+/// rayon 1.x does not expose a structured error kind; we match on the
+/// human-readable message text.
+fn is_already_initialized(e: &rayon::ThreadPoolBuildError) -> bool {
+    let msg = e.to_string();
+    msg.contains("already initialized") || msg.contains("already been initialized")
 }
