@@ -2,106 +2,192 @@
 
 All notable changes to Atlas will be documented in this file.
 
+---
+
 ## [1.3.0] — 2026-06-02
 
-### Release preparation
+### TUI
 
-- Bumped Atlas workspace packages, lockfile metadata, and release-facing documentation to 1.3.0.
-- Merged the domain-rules and lazy-experience temporary architecture notes into the main docs, and added a dedicated language extension guide for domain rules.
+- **Interactive TUI**: running `atlas` with no subcommand launches a ratatui-based
+  symbol search and detail browser.  Tabbed detail panels (Overview → Callers →
+  Callees → Peers → Source) with keyboard navigation.
+- TUI auto-indexes on first launch; Ctrl+C during indexing cleanly exits.
+- Progress bar shows accurate per-phase throughput via phase-elapsed averaging.
+
+### Domain rules engine
+
+- Language-agnostic `domain_rules` infrastructure: `GenericRuleEngine` with
+  `LanguageRuleKinds` trait, `CppOwnershipRules` consumer, and auto-learning
+  (`RuleLearningStrategy`).  Rules keyed by deterministic blake3 hash to prevent
+  underscore-separated field collisions.
+
+### Lifecycle & analysis
+
+- `analysis/lifecycle.rs`: intra-procedural field-state tracking (Unknown → Assigned →
+  Freed → Nullified → Escaped) with rule-backed proof mode.
+- `analysis/branch_diff.rs`: sibling-branch side-effect comparison.
+- CFG node effect annotation: `cfg_nodes.effect_kind` / `cfg_nodes.target_field`.
+- `lifecycle_proof.rs`: `Safe` / `Suspicious` / `Incomplete` verdicts.
+
+### MCP tools
+
+- **Lifecycle**: `atlas_lifecycle(symbol, field)`, `atlas_branch_diff(symbol)`.
+- **Domain rules**: `annotate_domain_rule`, `list_domain_rules`, `delete_domain_rule`,
+  `approve_domain_rule`.
+- **Query resume**: `resume(query_id)` continues a previous partial-result query.
+- **AnalysisContract**: `safe_conclusions`, `unsafe_conclusions`, `refinement_jobs`
+  in all MCP responses.
+- `LazyOrchestrator` + `LazyRefreshQueue` for background graph refresh.
+- `CancellationToken` with checkpoints in extraction for interruptible budget enforcement.
+- `LazyBudget` with time + file-count constraints.
+- Input validation: string length bounds, release-profile hardening.
+
+### Engine
+
+- `atlas-engine` facade exports `ContextView`, `CalleeDetail`, `CallerDetail`,
+  `SymbolDef`.
+- `CancellationToken` (`CancelCheck` trait): interruptible `extract_file_with_mode_cancellable`
+  with CP1–CP6 checkpoints.
+- `ClosurePlanner`: import/include-based dependency closure for lazy resolution.
+- `ExtractionMode::Manifest` for CLI `--analysis manifest` early-return.
+- `CapabilityMask` (u16 bitflags) in `extraction_state`.
+- `query_id` atomic counter for resume support.
+
+### Bug fixes
+
+- Fix `domain_rules` ID collision (blake3 + `\xff` delimiter).
+- Fix bare `source[start..end]` slice → `source.get(..).unwrap_or("")`.
+- Fix `BulkWriteGuard` RAII for safety pragma cleanup on drop/panic.
+- Fix `.ok()` silently swallowing DB errors → explicit `QueryReturnedNoRows` match.
+- Fix FK guard row-decode failures silently dropped → `eprintln!` warning.
+- Fix missing `Resolution` progress phase (`start_phase` before `resolve_all_parallel`).
+- Fix `rayon::build_global()` panic when TUI starts after Ctrl+C in CLI index.
+- Fix duplicate `layer` column in `find_symbols_by_file` SELECT.
+- Fix `GraphSnapshot` doc: clarify `&mut self` write-side mutability.
+- Fix broken test compilation and add secret-file patterns to `.atlasignore`.
+- Fix worker hang after lazy budget exhaustion.
+
+### Documentation
+
+- Architecture doc: update table count 22→23, add `domain_rules` with language-agnostic description.
+- Merge `domain-rules-amendment.md` and `task-lazy-experience.md` into architecture docs.
+- Add `domain-rules-language-guide.md`.
+- Update MCP tool count 27→28.
+
+### Internal
+
+- Workspace-wide clippy cleanup (`-D warnings` passes).
+- Crate versions bumped to 1.3.0.
+- MCP skill definition updated.
+
+---
+
+## [1.2.0] — 2026-05-30
+
+### Lazy indexing
+
+- **ResolutionSymbols layer**: lightweight extraction (symbols + imports + scopes, no
+  references/dataflow/callsites) for import dependency resolution.
+- **ClosurePlanner**: import/include dependency closure computation.
+- **Linux augmentation**: `EXPORT_SYMBOL` / `initcall` / `SYSCALL_DEFINE` post-extraction
+  enhancement for C.
+- **LazyCoordinator**: centralised coordination of lazy structural, resolution_symbols,
+  and dataflow extraction jobs with `extraction_jobs` table tracking.
+- **Precision tiers**: `Exact` → `PartialExact` → `DegradedStructural` →
+  `LocalDataflowOnly` → `ManifestOnly` → `Unavailable`.
+- Graph refresh after lazy structural via `replace_files_in_place`.
+- `include_roots` coverage for context and trace MCP tools.
+- Shared `ensure_structural_for_files` helper across MCP handlers.
+
+### Extraction
+
+- **RecoverySpec** trait: post-extraction recovery for ArkTS structs.
+- ArkTS golden fixtures for struct declarations.
+
+### Bug fixes
+
+- Fix doc consistency: `include_roots`, prewarm cache guard, schema comments.
+- Fix `PREWARM_RUNNING` flag leak in background prewarm.
+- Fix lazy dataflow: extract structural facts before invalidation, wrap in atomic transaction.
+- Fix `cfg_nodes` deletion scoped to file; remove broken file-level dataflow guard.
+- Fix filesync: three correctness issues from code review.
+
+### MCP
+
+- `atlas_jobs` tool for active extraction job observability.
+- Delta graph refresh after lazy structural writes.
+- Handler-level regression tests for `include_roots` warnings.
 
 ---
 
 ## [1.1.0] — 2026-05-28
 
-### First public release
+### Performance
 
-Atlas is a local-first semantic knowledge graph engine for LLM agents. It parses source code with tree-sitter, stores deterministic code facts in SQLite, and exposes 28 bounded MCP tools plus a CLI for agent-powered codebase navigation.
+- Resolution: pre-built contexts, lock-free progress via cloned `AtomicU64`, live rate
+  display during Phase 1, `sync_channel` streaming Phase 1→2.
+- Resolution: pre-computed `lower_names`, `O(1)` import index, `Arc<SymbolDef>` indexes
+  (75% fewer heap copies), fuzzy + proximity result caches.
+- Graph: preload symbol table in `build_all` — eliminates 315k DB queries.
+- DB write: batch size increased 100→500; cleanup batch delete.
+- Search: strip quotes in field values, use SQL `LIKE` for non-FTS paths.
 
----
+### Features
 
-### Core engine
+- Multi-language callback detection: `detect_callback_registrations` with generic +
+  per-language patterns (Go package prefix, Python decorators).
+- `atlas_path`: direction, confidence, breakpoints, production-code preference.
+- `atlas_callgraph` with caller/callee summaries.
+- `includeCode` parameter for symbol/callgraph/explore tools.
+- `atlas_explore` for neighbours grouped by edge kind.
+- Function-pointer annotation CRUD: `annotate_fp_dispatch`, `list_fp_annotations`,
+  `delete_fp_annotation`.
+- AST-driven source extraction with weighted Dijkstra pathfinding.
+- Cangjie: `manifest.scm`, CFG support, `@definition.entry` capture.
+- Atomic lazy structural re-index and annotation bridging.
 
-- Deterministic extraction pipeline: tree-sitter parsing → scopes, symbols, references, bindings, dataflow, CFG → SQLite persistence
-- blake3-based deterministic IDs for all code facts (14 ID types, 32 bytes each)
-- 10-stage reference resolution: scope-local → container-local → same-file → import → include → project-wide → fuzzy (Levenshtein) fallback, each with confidence scoring
-- Parallel extraction and resolution via Rayon; thread-local parser pools; batch DB writes
-- Incremental sync with two-tier change detection (Git status primary, DB content-hash fallback)
+### Bug fixes
 
-### MCP server
+- Fix C pointer-typed struct fields not extracted; C struct field handling.
+- Fix `atlas_path` lazy structural extraction with multi-SymbolId retry.
+- Fix `read_symbol_source` return full file content instead of name-only.
+- Fix lazy dataflow destroying pre-built full-index dataflow facts.
+- Fix `rayon::build_global` idempotency via `Once`.
+- Fix resolution: `mutex.lock().unwrap()` → poison-safe.
+- Fix graph tests and callers/callees start-node exclusion.
+- Fix derived capability profile alignment with static profile.
+- Fix TUI: cursor positioning, progress area clearing, completion summary rendering.
 
-- 28 stdio MCP tools (short names, no `atlas_` prefix):
+### Documentation
 
-| Group | Tools |
-|---|---|
-| Project management | `open_project`, `index`, `status`, `jobs`, `files`, `language_capabilities` |
-| Symbol search/detail | `search`, `symbol`, `usages` |
-| Graph navigation | `neighbors`, `callers`, `callees`, `callgraph`, `path`, `explore`, `impact` |
-| Context | `context` |
-| Trace | `trace_point`, `trace_variable`, `trace_caller_path`, `trace_forward` |
-| File dependencies | `dependencies`, `dependents` |
-| Background tasks | `task_status`, `wait_for_task` |
-| C/C++ annotations | `annotate_fp_dispatch`, `list_fp_annotations`, `delete_fp_annotation` |
+- Consolidate architecture docs, align with code.
+- Tool counts, MCP schema, FP dispatch annotation references updated.
+- Project-internal-only call edge visibility documented.
 
-- Lazy graph initialization: graph-backed tools auto-trigger snapshot load; store-backed tools return immediately
-- Background task support: `open_project`, `index`, and `search` support `background=true` with `task_status`/`wait_for_task` polling
-- MCP progress notifications via `notifications/progress`; auto-background for long-running tools without progress token
-- Runtime project switching via `open_project` (memory mode by default, persistent mode available)
+### Cangjie
 
-### CLI
-
-- `atlas init` — initialize `.atlas/` directory and SQLite schema
-- `atlas index` — full index with glob-based include/exclude filtering
-- `atlas sync` — incremental update after file changes
-- `atlas status` — file, symbol, edge, database, and capability statistics
-- `atlas doctor` — schema, SQLite/FTS5, grammar, and capability readiness check
-- `atlas files` — list indexed files with language and parse status
-- `atlas search` — FTS5 + LIKE + fuzzy symbol search with kind/language filters
-- `atlas context` — Markdown context: callers, callees, imports, file peers
-- `atlas trace` — point resolution, variable provenance, caller-path, forward call-chain tracing
-- `atlas mcp` — start stdio MCP server (requires `mcp` feature)
-
-### Graph and trace
-
-- In-memory graph snapshots (Arc'd, immutable after load) with confidence-threshold-filtered edges
-- BFS/DFS traversal: callers, callees, callgraph, shortest path (with production-file preference), impact analysis, forward frontier
-- Location-driven trace engine: `trace_point` (source position → references, symbols, dataflow), `trace_variable` (backward dataflow slicing to value origins), `trace_caller_path` (call chain to farthest caller), `trace_forward` (how A reaches B)
-- Cross-function bridging via persisted function summaries (4 tables) for interprocedural parameter↔return reachability
-- Lazy dataflow: budget-capped on-demand extraction (25s / 64 units) with artifact caching
-
-### Language support
-
-14 languages at **DataflowFull** capability level:
-
-| Feature group | Languages |
-|---|---|
-| Default | TypeScript, JavaScript, Python |
-| `all-languages` | Java, C, C++, ArkTS, Go, C#, Rust, PHP, Ruby, Kotlin, Cangjie |
-
-- Per-language capability profiles with explicit confidence floors and limitation documentation
-- Trace queries return diagnostics rather than silent empty results for unsupported language features
-
-### Architecture
-
-- 14-Cargo-package Rust workspace, edition 2024
-- Clean layered stack: `workspace → types → db → extraction + resolution → graph + analysis + search + context → filesync + lazy → atlas-engine (facade) → atlas-cli / atlas-mcp`
-- SQLite 22-table schema (WAL mode, `IF NOT EXISTS` idempotency), schema version 1
-- Cross-process file locking via `project_metadata` (PID-based with stale-lock stealing)
-
-### Known limitations
-
-- CFG builder has placeholder `walk_if`/`walk_loop` — conditional and loop branches are not traversed
-- C/C++ preprocessing not expanded; templates, overloads, and alias analysis not modeled
-- Java classpath/Maven/Gradle dependencies not modeled
-- Python dynamic/runtime symbol resolution is best-effort
-- TypeScript barrel re-exports have limited resolution
-- External libraries produce no call edges (only project-internal symbols get call edges)
-
-### Not planned for v1
-
-- Full compiler-grade type checking
-- Taint analysis, vulnerability scanning, or SAST product features
-- Multi-version source corpus indexing (separate product line)
+- `manifest.scm` for top-level declarations.
+- CFG support.
+- `@definition.entry` capture for `mainDefinition`.
+- Documentation update.
 
 ---
 
-_Atlas v1.0 ships a stable, deterministic knowledge graph foundation. Future releases will focus on performance, correctness improvements, and expanded MCP tool capabilities._
+## [1.0.0] — 2026-05-25
+
+### First release
+
+Atlas is a local-first semantic knowledge graph engine for LLM agents.  It parses
+source code with tree-sitter, stores deterministic code facts in SQLite, and exposes
+28 bounded MCP tools plus a CLI for agent-powered codebase navigation.
+
+- 14 languages at DataflowFull capability level.
+- 10-stage reference resolution with confidence scoring.
+- In-memory graph snapshots with BFS/DFS traversal.
+- Cross-function bridging via persisted function summaries (4 tables).
+- CLI: `init`, `index`, `sync`, `status`, `doctor`, `files`, `search`, `context`,
+  `trace`, `mcp`.
+- MCP: 28 stdio tools with lazy graph init, background task support, progress
+  notifications.
+- 14-Cargo-package Rust workspace, edition 2024, SQLite 22-table schema V1.
+
