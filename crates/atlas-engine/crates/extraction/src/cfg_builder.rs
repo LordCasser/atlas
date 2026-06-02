@@ -352,7 +352,13 @@ impl CfgContext<'_> {
                     } else if is_alloc_function_name(func_str) {
                         return (Some(EffectKind::Allocate), None);
                     }
-                    return (Some(EffectKind::Call), None);
+                    // Unrecognized call — still extract the first arg field so
+                    // lifecycle can apply domain rules (e.g. atlas_annotate
+                    // free_fn=SuperFree).  Without a target, (EffectKind::Call,
+                    // false) can never match the field and domain rules are
+                    // unreachable.
+                    let target = self.extract_first_arg_field(child);
+                    return (Some(EffectKind::Call), target);
                 }
                 "assignment_expression" => {
                     // Check LHS for field write AND RHS for alloc call

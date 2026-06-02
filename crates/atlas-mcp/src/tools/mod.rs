@@ -953,12 +953,17 @@ impl ToolRouter {
     // -------------------------------------------------------------------
 
     /// Generate a time-sortable query_id in format `q_{hex_ts_ms}_{hex_rand4}`.
+    /// Uses an atomic counter to prevent collisions within the same millisecond.
     pub(crate) fn generate_query_id() -> String {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis();
-        let rand = ((ts >> 10) ^ (ts & 0xFFFF)) as u16;
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        // XOR ts components to spread bits, then mix with the atomic sequence
+        let rand = (((ts >> 10) ^ (ts & 0xFFFF)) as u32 ^ seq ^ (seq.rotate_left(7))) as u16;
         format!("q_{:x}_{:04x}", ts, rand)
     }
 
