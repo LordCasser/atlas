@@ -68,7 +68,7 @@ impl CommandContext {
             let db_exists = ws.db_path().is_file();
             if !db_exists {
                 anyhow::bail!(
-                    "Not an initialized Atlas project. Run `atlas init {project}` first."
+                    "Not an indexed Atlas project. Run `atlas index --project {project}` first."
                 );
             }
         }
@@ -92,8 +92,9 @@ impl CommandContext {
     // ── MCP-style bootstrap with ancestor walk ─────────────────────────────
 
     /// Like `open()` but uses `Workspace::find()` (walks up from cwd looking
-    /// for `.atlas/`) when `project` is `"."`.  Otherwise delegates to standard
-    /// `Workspace::open()`.
+    /// for `.atlas/`) when `project` is `"."`.  Creator modes fall back to the
+    /// current directory when no ancestor index exists.  Otherwise delegates to
+    /// standard `Workspace::open()`.
     ///
     /// This preserves the MCP server's ability to start from a non-project
     /// working directory while still finding the nearest Atlas project root.
@@ -102,14 +103,21 @@ impl CommandContext {
     /// `ensure_atlas_dir()` + `init_schema()`, consumer modes will bail
     /// if the database does not exist.
     pub fn find_and_open(project: &str, mode: DbMode) -> anyhow::Result<Self> {
+        let is_creator = matches!(mode, DbMode::InitOrCreate | DbMode::CreateOrOpenReadWrite);
+
         let ws = if project == "." {
-            Workspace::find().context("No .atlas directory found. Run `atlas init` first.")?
+            match Workspace::find() {
+                Some(ws) => ws,
+                None if is_creator => Workspace::open(Path::new(project))
+                    .with_context(|| format!("Invalid project path: {project}"))?,
+                None => {
+                    anyhow::bail!("No .atlas directory found. Run `atlas index` first.");
+                }
+            }
         } else {
             Workspace::open(Path::new(project))
                 .with_context(|| format!("Invalid project path: {project}"))?
         };
-
-        let is_creator = matches!(mode, DbMode::InitOrCreate | DbMode::CreateOrOpenReadWrite);
 
         if is_creator {
             ws.ensure_atlas_dir()
@@ -117,7 +125,7 @@ impl CommandContext {
         } else {
             let db_exists = ws.db_path().is_file();
             if !db_exists {
-                anyhow::bail!("Not an initialized Atlas project. Run `atlas init` first.");
+                anyhow::bail!("Not an indexed Atlas project. Run `atlas index` first.");
             }
         }
 

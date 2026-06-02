@@ -52,18 +52,12 @@ impl ToolRouter {
                 "unknown"
             }
         } else if structural_complete < stats.total_files as i64 {
-            if lazy_stats
-                .as_ref()
-                .is_some_and(|l| l.total_unit_states > 0)
-            {
+            if lazy_stats.as_ref().is_some_and(|l| l.total_unit_states > 0) {
                 "partial_structural+lazy"
             } else {
                 "partial_structural"
             }
-        } else if lazy_stats
-            .as_ref()
-            .is_some_and(|l| l.total_unit_states > 0)
-        {
+        } else if lazy_stats.as_ref().is_some_and(|l| l.total_unit_states > 0) {
             // Lazy unit state exists — the index was structural, dataflow came from lazy.
             "structural+lazy"
         } else if dataflow_file_complete >= stats.total_files as i64
@@ -75,11 +69,26 @@ impl ToolRouter {
             "structural"
         };
 
-        // Build an index hint when no files are indexed
         let index_hint = if stats.total_files == 0 {
             Some(
-                "The project has not been indexed yet. Run the 'index' tool to populate the code index before querying symbols, searching, or tracing.",
+                "The project has not been indexed yet. For large projects, run the 'index' tool with background=true to build the fast manifest layer; scoped search/context/trace will perform deeper lazy parsing on demand.",
             )
+        } else {
+            None
+        };
+
+        let next_action = if stats.total_files == 0 {
+            Some(json!({
+                "tool": "index",
+                "args": { "background": true },
+                "reason": "Build the fast manifest layer without blocking MCP startup. This does not perform full structural parsing."
+            }))
+        } else if index_mode == "manifest" {
+            Some(json!({
+                "tool": "search",
+                "args": { "scope": "project-relative directory or file", "background": false },
+                "reason": "The project is in lazy mode. Use scoped queries; small scopes are structurally parsed on demand, large scopes remain manifest-level and ask you to narrow."
+            }))
         } else {
             None
         };
@@ -147,6 +156,7 @@ impl ToolRouter {
                     "lazy_dataflow": lazy_dataflow,
                     "active_extraction_jobs": active_jobs.len(),
                     "hint": index_hint,
+                    "next_action": next_action,
                 },
                 "database": {
                     "sqlite_version": stats.sqlite_version,

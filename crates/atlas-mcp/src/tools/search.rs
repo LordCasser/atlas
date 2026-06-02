@@ -15,8 +15,10 @@ use atlas_engine::SymbolKind;
 use super::lazy_refresh::LazyRefreshQueue;
 use super::lazy_response::LazyDiagnostics;
 use super::query_snapshot::{QuerySnapshot, QueryStatus};
-use super::{ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64,
-    MAX_QUERY_LENGTH, MAX_SYMBOL_NAME_LENGTH};
+use super::{
+    add_json_warnings, get_str, get_str_opt, get_u64, ToolRouter, MAX_QUERY_LENGTH,
+    MAX_SYMBOL_NAME_LENGTH,
+};
 
 use crate::task_manager::TaskManager;
 
@@ -160,7 +162,23 @@ impl ToolRouter {
         self.send_progress(0.1, &format!("Searching for '{query}' in {scope}..."));
         if !self.has_indexed_files() {
             return (
-                "No indexed files found — please run 'index' tool first.".into(),
+                serde_json::to_string_pretty(&json!({
+                    "ok": false,
+                    "error": "No indexed files found.",
+                    "query": query,
+                    "scope": scope,
+                    "next_action": {
+                        "tool": "index",
+                        "args": { "background": true },
+                        "reason": "Build the fast manifest layer first. Atlas MCP stays in lazy mode; scoped search/context/trace will do deeper parsing on demand."
+                    },
+                    "ux": {
+                        "mode": "lazy",
+                        "startup_policy": "do_not_full_index_on_connect",
+                        "after_index": "retry search with a project-relative scope such as drivers/net, kernel/sched, include/linux, or a specific file"
+                    }
+                }))
+                .unwrap_or_else(|e| e.to_string()),
                 true,
                 Vec::new(),
             );
@@ -315,7 +333,12 @@ impl ToolRouter {
                 let investigation = self.investigation_state.active_investigation.clone();
                 // Ensure structural data so caller/callee results
                 // include fresh edges from lazy extraction.
-                let outcome = self.ensure_structural_for_files([s.file_id], include_roots.clone(), investigation.as_ref(), Some(&query_id));
+                let outcome = self.ensure_structural_for_files(
+                    [s.file_id],
+                    include_roots.clone(),
+                    investigation.as_ref(),
+                    Some(&query_id),
+                );
                 lazy_warnings = outcome.warnings;
                 structural_tier = outcome.precision_tier;
                 if let Some(ref lo) = outcome.lazy_outcome {
@@ -332,7 +355,12 @@ impl ToolRouter {
                     .unwrap_or(s);
             }
             None => {
-                let outcome = self.ensure_structural_for_symbol_name(qname, include_roots.clone(), None, Some(&query_id));
+                let outcome = self.ensure_structural_for_symbol_name(
+                    qname,
+                    include_roots.clone(),
+                    None,
+                    Some(&query_id),
+                );
                 lazy_warnings = outcome.warnings;
                 structural_tier = outcome.precision_tier;
                 if let Some(ref lo) = outcome.lazy_outcome {
@@ -404,7 +432,11 @@ impl ToolRouter {
             tool_args: args.clone(),
             lazy_window: None,
             created_at: Instant::now(),
-            status: if structural_tier == PrecisionTier::Exact { QueryStatus::Ready } else { QueryStatus::Partial },
+            status: if structural_tier == PrecisionTier::Exact {
+                QueryStatus::Ready
+            } else {
+                QueryStatus::Partial
+            },
         });
 
         (
@@ -511,7 +543,12 @@ where
             Some(project_root.clone()),
             include_roots.clone(),
         );
-        match orchestrator.ensure_structural_for_files(&file_ids, LazyPolicy::ForegroundStructural, None, None) {
+        match orchestrator.ensure_structural_for_files(
+            &file_ids,
+            LazyPolicy::ForegroundStructural,
+            None,
+            None,
+        ) {
             Ok(outcome) => {
                 total_budget_exceeded = outcome.budget_exceeded;
                 lazy_diagnostics = Some(LazyDiagnostics::from_structural(&outcome));

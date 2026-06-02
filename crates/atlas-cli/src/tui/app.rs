@@ -209,7 +209,7 @@ impl App {
     fn handle_search_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => {
-                if !self.search_input.is_empty() {
+                if self.focus == Focus::Results || !self.search_input.is_empty() {
                     self.reset_search_input();
                 } else {
                     self.should_quit = true;
@@ -281,6 +281,7 @@ impl App {
             KeyCode::Esc => {
                 // Back to SymbolDetail.
                 self.screen = Screen::SymbolDetail;
+                self.focus = Focus::Detail;
                 self.trace_chain = None;
                 self.trace_selected = 0;
                 self.trace_scroll = 0;
@@ -325,11 +326,8 @@ impl App {
     fn handle_detail_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => {
-                // Back to SearchHome, ready for a new query.
-                self.reset_search_input();
-                self.detail_context = None;
-                self.detail_selected = 0;
-                self.detail_scroll = 0;
+                // Back to the search results list, preserving the query.
+                self.return_to_results();
             }
             KeyCode::Tab => {
                 self.detail_tab = self.detail_tab.next();
@@ -477,6 +475,14 @@ impl App {
         self.search_cursor = 0;
         self.search_results.clear();
         self.selected_index = 0;
+    }
+
+    fn return_to_results(&mut self) {
+        self.screen = Screen::SearchHome;
+        self.focus = Focus::Results;
+        self.detail_context = None;
+        self.detail_selected = 0;
+        self.detail_scroll = 0;
     }
 
     // ── search ────────────────────────────────────────────────────────────
