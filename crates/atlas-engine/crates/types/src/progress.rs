@@ -148,8 +148,6 @@ pub struct ProgressState {
 
     /// Speed calculation state — updated by `flush()`.
     pub start_time: Instant,
-    pub last_count: u64,
-    pub last_count_at: Instant,
     pub current_rate: Option<f64>, // items per second
 
     /// Whether we've entered Phase 2 (serial-write) of a phase that
@@ -185,8 +183,6 @@ impl ProgressState {
             current_total: None,
             message: None,
             start_time: Instant::now(),
-            last_count: 0,
-            last_count_at: Instant::now(),
             current_rate: None,
             phase2_active: false,
         }
@@ -232,8 +228,6 @@ impl ProgressState {
             None
         };
         self.message = None;
-        self.last_count = 0;
-        self.last_count_at = now;
         self.current_rate = None;
         self.phase2_active = false;
     }
@@ -265,8 +259,6 @@ impl ProgressState {
         self.current_total = Some(total);
         self.phase2_active = true;
         self.atomic_current.store(0, Ordering::Relaxed);
-        self.last_count = 0;
-        self.last_count_at = Instant::now();
         self.current_rate = None;
     }
 
@@ -282,13 +274,23 @@ impl ProgressState {
         let now = Instant::now();
         let current = self.atomic_current.load(Ordering::Relaxed);
 
-        // Calculate rate (items/s)
-        let elapsed = now.duration_since(self.last_count_at).as_secs_f64();
-        if elapsed > 0.1 && current > self.last_count {
-            self.current_rate = Some((current - self.last_count) as f64 / elapsed);
+        // Calculate rate (items/s) using per-phase elapsed time rather
+        // than a sliding window.  Sliding-window rate is misleading for
+        // batch-updating phases like DbWrite/Resolution/EdgeBuilding
+        // where the counter jumps by 500+ items at irregular intervals.
+        // Per-phase rate (items ÷ phase elapsed) accurately reflects
+        // actual throughput by including the invisible time between
+        // batch completions.
+        if current > 0 {
+            if let Some(phase_entry) = self.phases.iter().find(|e| e.state.is_running()) {
+                if let PhaseState::Running { started_at, .. } = &phase_entry.state {
+                    let phase_elapsed = now.duration_since(*started_at).as_secs_f64();
+                    if phase_elapsed > 0.5 {
+                        self.current_rate = Some(current as f64 / phase_elapsed);
+                    }
+                }
+            }
         }
-        self.last_count = current;
-        self.last_count_at = now;
 
         // Find the currently running phase
         let current_phase = self
