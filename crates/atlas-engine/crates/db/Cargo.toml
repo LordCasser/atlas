@@ -8,10 +8,10 @@ license = "MIT"
 [dependencies]
 types = { path = "../types" }
 anyhow = "1"
+blake3 = "1"
 hex = "0.4"
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"
-blake3 = "1"

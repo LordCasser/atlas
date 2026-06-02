@@ -52,7 +52,7 @@ impl CfgNode {
         let id = CfgNodeId::generate(function_id, kind.as_str(), range.start_byte);
         Self {
             id,
-            function_id: function_id.clone(),
+            function_id: *function_id,
             kind,
             stmt_range: range,
             effect_kind: None,
@@ -109,8 +109,8 @@ impl CfgEdge {
         let id = CfgEdgeId::generate(source, target, kind.as_str());
         Self {
             id,
-            source: source.clone(),
-            target: target.clone(),
+            source: *source,
+            target: *target,
             kind,
         }
     }

@@ -7,6 +7,27 @@ use rusqlite::params;
 
 use super::Store;
 
+/// Allowed status values for domain rules.
+const VALID_STATUSES: &[&str] = &["candidate", "enabled", "disabled", "rejected", "deprecated"];
+
+/// Generate a deterministic, collision-free domain rule ID.
+///
+/// Uses blake3 with explicit `\xff` delimiters so that fields containing
+/// underscores or other printable characters cannot collide.
+fn rule_id(language: &str, rule_kind: &str, pattern_kind: &str, pattern: &str) -> String {
+    let mut buf = Vec::with_capacity(
+        language.len() + 1 + rule_kind.len() + 1 + pattern_kind.len() + 1 + pattern.len(),
+    );
+    buf.extend_from_slice(language.as_bytes());
+    buf.push(0xff);
+    buf.extend_from_slice(rule_kind.as_bytes());
+    buf.push(0xff);
+    buf.extend_from_slice(pattern_kind.as_bytes());
+    buf.push(0xff);
+    buf.extend_from_slice(pattern.as_bytes());
+    hex::encode(blake3::hash(&buf).as_bytes())
+}
+
 /// A domain rule row from the database.
 #[derive(Debug, Clone)]
 pub struct DomainRuleRow {
@@ -43,6 +64,10 @@ fn row_to_domain_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<DomainRuleRow
 
 impl Store {
     /// Insert or replace a domain rule.
+    ///
+    /// Panics (in debug via `debug_assert!`) or returns an error if required
+    /// fields are empty or `status` is not a recognised value.
+    #[allow(clippy::too_many_arguments)]
     pub fn upsert_domain_rule(
         &self,
         language: &str,
@@ -54,7 +79,15 @@ impl Store {
         confidence: f64,
         meta: Option<&str>,
     ) -> anyhow::Result<String> {
-        let id = format!("{}_{}_{}", language, rule_kind, pattern);
+        // Input validation
+        anyhow::ensure!(!language.is_empty(), "domain rule language must not be empty");
+        anyhow::ensure!(!rule_kind.is_empty(), "domain rule rule_kind must not be empty");
+        anyhow::ensure!(!pattern.is_empty(), "domain rule pattern must not be empty");
+        anyhow::ensure!(
+            VALID_STATUSES.contains(&status),
+            "domain rule status '{status}' is not valid; allowed: {VALID_STATUSES:?}"
+        );
+        let id = rule_id(language, rule_kind, pattern_kind, pattern);
         let conn = self.lock();
         conn.execute(
             "INSERT OR REPLACE INTO domain_rules (id, language, rule_kind, pattern, pattern_kind, meta, meta_version, source, status, confidence, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9, datetime('now'))",
@@ -85,32 +118,28 @@ impl Store {
         match (language, status) {
             (Some(lang), Some(st)) => {
                 let mut stmt = conn.prepare(&format!(
-                    "{} WHERE language = ?1 AND status = ?2 ORDER BY rule_kind, pattern",
-                    select_sql
+                    "{select_sql} WHERE language = ?1 AND status = ?2 ORDER BY rule_kind, pattern"
                 ))?;
                 let rows = stmt.query_map(params![lang, st], row_to_domain_rule)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
             }
             (Some(lang), None) => {
                 let mut stmt = conn.prepare(&format!(
-                    "{} WHERE language = ?1 ORDER BY rule_kind, pattern",
-                    select_sql
+                    "{select_sql} WHERE language = ?1 ORDER BY rule_kind, pattern"
                 ))?;
                 let rows = stmt.query_map(params![lang], row_to_domain_rule)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
             }
             (None, Some(st)) => {
                 let mut stmt = conn.prepare(&format!(
-                    "{} WHERE status = ?1 ORDER BY language, rule_kind, pattern",
-                    select_sql
+                    "{select_sql} WHERE status = ?1 ORDER BY language, rule_kind, pattern"
                 ))?;
                 let rows = stmt.query_map(params![st], row_to_domain_rule)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
             }
             (None, None) => {
                 let mut stmt = conn.prepare(&format!(
-                    "{} ORDER BY language, source, rule_kind, pattern",
-                    select_sql
+                    "{select_sql} ORDER BY language, source, rule_kind, pattern"
                 ))?;
                 let rows = stmt.query_map([], row_to_domain_rule)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -136,14 +165,13 @@ impl Store {
         match language {
             Some(lang) => {
                 let mut stmt = conn.prepare(&format!(
-                    "{} AND language = ?2 ORDER BY source",
-                    select_sql
+                    "{select_sql} AND language = ?2 ORDER BY source"
                 ))?;
                 let rows = stmt.query_map(params![rule_kind, lang], row_to_domain_rule)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
             }
             None => {
-                let mut stmt = conn.prepare(&format!("{} ORDER BY source", select_sql))?;
+                let mut stmt = conn.prepare(&format!("{select_sql} ORDER BY source"))?;
                 let rows = stmt.query_map(params![rule_kind], row_to_domain_rule)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
             }
@@ -271,5 +299,54 @@ mod tests {
         let rules = store.list_domain_rules(None, None).unwrap();
         assert_eq!(rules.len(), 1, "Upsert should replace, not duplicate");
         assert!((rules[0].confidence - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_rule_id_no_collision_on_ambiguous_delimiter() {
+        // Regression: the old format!("{}_{}_{}", lang, kind, pattern) would
+        // collide when fields themselves contained underscores:
+        //   ("c", "free", "fn_malloc")       → "c_free_fn_malloc"
+        //   ("c", "free_fn", "malloc")       → "c_free_fn_malloc"  (COLLISION)
+        // The blake3-based ID must produce *different* IDs for these inputs.
+        let store = test_store();
+        let id_a = store
+            .upsert_domain_rule("c", "free", "fn_malloc", "exact", "user", "enabled", 1.0, None)
+            .unwrap();
+        let id_b = store
+            .upsert_domain_rule("c", "free_fn", "malloc", "exact", "user", "enabled", 1.0, None)
+            .unwrap();
+        assert_ne!(
+            id_a, id_b,
+            "Collision!  ('c','free','fn_malloc') and ('c','free_fn','malloc') must produce different IDs"
+        );
+        // Both rules must be present (2 rows, not 1 overriding the other).
+        let rules = store.list_domain_rules(None, None).unwrap();
+        assert_eq!(
+            rules.len(),
+            2,
+            "Expected 2 distinct rules, got {} — collision caused silent overwrite",
+            rules.len()
+        );
+    }
+
+    #[test]
+    fn test_upsert_rejects_empty_language() {
+        let store = test_store();
+        let err = store
+            .upsert_domain_rule("", "free_fn", "p", "exact", "user", "enabled", 1.0, None)
+            .unwrap_err();
+        assert!(err.to_string().contains("language"), "should reject empty language");
+    }
+
+    #[test]
+    fn test_upsert_rejects_invalid_status() {
+        let store = test_store();
+        let err = store
+            .upsert_domain_rule("c", "free_fn", "p", "exact", "user", "bogus_status", 1.0, None)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("status"),
+            "should reject invalid status: {err}"
+        );
     }
 }

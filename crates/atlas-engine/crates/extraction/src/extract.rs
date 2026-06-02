@@ -527,7 +527,9 @@ pub fn extract_file_with_mode_cancellable(
                 .into_iter()
                 .enumerate()
                 .map(|(i, arg_range)| {
-                    let value = source[arg_range.start_byte as usize..arg_range.end_byte as usize]
+                    let value = source
+                        .get(arg_range.start_byte as usize..arg_range.end_byte as usize)
+                        .unwrap_or("")
                         .to_string();
                     ArgumentFact {
                         index: i as u32,
@@ -1747,7 +1749,7 @@ int main() {
         let frontend = ts_frontend();
         let mut source = String::from("function big() {\n");
         for i in 0..3000 {
-            source.push_str(&format!("  let v{} = {};\n", i, i));
+            source.push_str(&format!("  let v{i} = {i};\n"));
         }
         source.push_str("  return v0;\n}\n");
         let file_id = FileId::generate("test_7e.ts");

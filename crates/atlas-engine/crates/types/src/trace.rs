@@ -177,12 +177,12 @@ impl TraceDataNodeRef {
     /// Create a `TraceDataNodeRef` from a full [`DataNode`].
     pub fn from_data_node(node: &DataNode) -> Self {
         Self {
-            node_id: node.id.clone(),
+            node_id: node.id,
             name: node.name.clone().unwrap_or_default(),
             kind: node.kind.as_str().to_string(),
             access_path: node.access_path.clone(),
-            file_id: node.file_id.clone(),
-            range: Some(node.range.clone()),
+            file_id: node.file_id,
+            range: Some(node.range),
         }
     }
 }
@@ -390,7 +390,7 @@ mod tests {
             end_line: 1,
             end_column: 2,
         };
-        let node = DataNode::local(node_id, file_id.clone(), None, None, "x", range);
+        let node = DataNode::local(node_id, file_id, None, None, "x", range);
         let ref_ = TraceDataNodeRef::from_data_node(&node);
         assert_eq!(ref_.name, "x");
         assert_eq!(ref_.kind, "local");
@@ -404,8 +404,8 @@ mod tests {
         let to = DataNodeId::generate(&file_id, None, "expr", Some("y"), None, 10);
         let step = TracePathStep::new(
             0,
-            from.clone(),
-            to.clone(),
+            from,
+            to,
             DataFlowKind::Assign,
             "x assigned to y",
             file_id,
