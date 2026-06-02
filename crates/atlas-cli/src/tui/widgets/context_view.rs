@@ -61,22 +61,29 @@ pub fn render(
         .split(area);
 
     // ── Tab bar ─────────────────────────────────────────────────────────
-    let titles: Vec<Line> = [DetailTab::Overview, DetailTab::Callers, DetailTab::Callees, DetailTab::Source]
-        .iter()
-        .map(|t| {
-            let label = if *t == tab {
-                format!(" {} ", t.as_str())
-            } else {
-                format!(" {} ", t.as_str())
-            };
-            let style = if *t == tab {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Gray)
-            };
-            Line::from(Span::styled(label, style))
-        })
-        .collect();
+    let titles: Vec<Line> = [
+        DetailTab::Overview,
+        DetailTab::Callers,
+        DetailTab::Callees,
+        DetailTab::Source,
+    ]
+    .iter()
+    .map(|t| {
+        let label = if *t == tab {
+            format!(" {} ", t.as_str())
+        } else {
+            format!(" {} ", t.as_str())
+        };
+        let style = if *t == tab {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        Line::from(Span::styled(label, style))
+    })
+    .collect();
 
     let tabs = Tabs::new(titles)
         .block(Block::default().borders(Borders::BOTTOM))
@@ -86,19 +93,27 @@ pub fn render(
     // ── Tab content ─────────────────────────────────────────────────────
     match tab {
         DetailTab::Overview => render_overview(frame, v_chunks[1], context),
-        DetailTab::Callers => render_caller_list(frame, v_chunks[1], &context.caller_details, selected, scroll),
-        DetailTab::Callees => render_callee_list(frame, v_chunks[1], &context.callee_details, selected, scroll),
+        DetailTab::Callers => render_caller_list(
+            frame,
+            v_chunks[1],
+            &context.caller_details,
+            selected,
+            scroll,
+        ),
+        DetailTab::Callees => render_callee_list(
+            frame,
+            v_chunks[1],
+            &context.callee_details,
+            selected,
+            scroll,
+        ),
         DetailTab::Source => render_source(frame, v_chunks[1], context),
     }
 }
 
 fn render_overview(frame: &mut ratatui::Frame, area: Rect, ctx: &ContextView) {
     let subject = &ctx.subject;
-    let file_path = ctx
-        .subject_source
-        .as_ref()
-        .map(|_| "from context")
-        .unwrap_or("?");
+    let file_path = ctx.subject_file_path.as_deref().unwrap_or("(unknown)");
 
     let kind_str = format!("{:?}", subject.kind);
     let sig = subject.signature.as_deref().unwrap_or("(no signature)");
@@ -111,7 +126,9 @@ fn render_overview(frame: &mut ratatui::Frame, area: Rect, ctx: &ContextView) {
     let lines = vec![
         Line::from(Span::styled(
             format!("  {}", subject.qualified_name),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(vec![
             Span::styled("  Kind:      ", Style::default().fg(Color::DarkGray)),
@@ -190,23 +207,21 @@ fn render_caller_list(
                 Style::default().fg(Color::White)
             };
 
-            ListItem::new(vec![
-                Line::from(vec![
-                    Span::styled(
-                        if is_sel { "> " } else { "  " },
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                    Span::styled(&c.symbol.name, name_style),
-                    Span::styled(
-                        format!("  ({}:{}", c.symbol.qualified_name, c.callsite_line),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                    Span::styled(
-                        format!(" {:?})", c.edge_kind),
-                        Style::default().fg(Color::Cyan),
-                    ),
-                ]),
-            ])
+            ListItem::new(vec![Line::from(vec![
+                Span::styled(
+                    if is_sel { "> " } else { "  " },
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(&c.symbol.name, name_style),
+                Span::styled(
+                    format!("  ({}:{}", c.symbol.qualified_name, c.callsite_line),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!(" {:?})", c.edge_kind),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ])])
         })
         .collect();
 
@@ -247,23 +262,21 @@ fn render_callee_list(
                 Style::default().fg(Color::White)
             };
 
-            ListItem::new(vec![
-                Line::from(vec![
-                    Span::styled(
-                        if is_sel { "> " } else { "  " },
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                    Span::styled(&c.symbol.name, name_style),
-                    Span::styled(
-                        format!("  → {}:{}", c.symbol.qualified_name, c.callsite_line),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                    Span::styled(
-                        format!(" {:?}", c.edge_kind),
-                        Style::default().fg(Color::Magenta),
-                    ),
-                ]),
-            ])
+            ListItem::new(vec![Line::from(vec![
+                Span::styled(
+                    if is_sel { "> " } else { "  " },
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(&c.symbol.name, name_style),
+                Span::styled(
+                    format!("  → {}:{}", c.symbol.qualified_name, c.callsite_line),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!(" {:?}", c.edge_kind),
+                    Style::default().fg(Color::Magenta),
+                ),
+            ])])
         })
         .collect();
 
@@ -279,8 +292,16 @@ fn render_source(frame: &mut ratatui::Frame, area: Rect, ctx: &ContextView) {
     let source = match &ctx.subject_source {
         Some(s) => s,
         None => {
-            let p = Paragraph::new("Source not available")
-                .style(Style::default().fg(Color::DarkGray));
+            let message = match ctx.subject_file_path.as_deref() {
+                Some(path) => format!(
+                    "Source not available\n\n{path}\n\nThe file may have moved or the index may be stale. Run `atlas sync` to refresh the project index."
+                ),
+                None => "Source not available\n\nNo source file path is recorded for this symbol."
+                    .to_string(),
+            };
+            let p = Paragraph::new(message)
+                .style(Style::default().fg(Color::DarkGray))
+                .wrap(Wrap { trim: false });
             frame.render_widget(p, area);
             return;
         }
@@ -303,11 +324,7 @@ fn render_source(frame: &mut ratatui::Frame, area: Rect, ctx: &ContextView) {
         .collect();
 
     let p = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Source "),
-        )
+        .block(Block::default().borders(Borders::ALL).title(" Source "))
         .wrap(Wrap { trim: false });
     frame.render_widget(p, area);
 }

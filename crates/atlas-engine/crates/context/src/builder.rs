@@ -8,6 +8,8 @@ use types::enums::EdgeKind;
 pub struct ContextView {
     /// The subject symbol.
     pub subject: SymbolDef,
+    /// Project-relative path of the subject's source file.
+    pub subject_file_path: Option<String>,
     /// Source code snippet of the subject (first N lines).
     pub subject_source: Option<SourceSnippet>,
     /// Symbols that call the subject (basic list, backward compatible).
@@ -88,11 +90,11 @@ impl ContextView {
                 )
             })
             .unwrap_or_default();
-        md.push_str(&format!(
-            "- File: `{}`{}\n",
-            self.subject.file_id.to_hex(),
-            file_info
-        ));
+        let file_label = self
+            .subject_file_path
+            .clone()
+            .unwrap_or_else(|| self.subject.file_id.to_hex());
+        md.push_str(&format!("- File: `{file_label}`{file_info}\n"));
         md.push('\n');
 
         // Subject source snippet
@@ -346,6 +348,7 @@ mod tests {
         let subject = make_sym("do_work");
         let view = ContextView {
             subject: subject.clone(),
+            subject_file_path: Some("src/work.rs".into()),
             subject_source: None,
             callers: vec![],
             callees: vec![],
@@ -375,6 +378,7 @@ mod tests {
         };
         let view = ContextView {
             subject,
+            subject_file_path: Some("src/callbacks.c".into()),
             subject_source: None,
             callers: vec![],
             callees: vec![],
@@ -410,6 +414,7 @@ mod tests {
         };
         let view = ContextView {
             subject,
+            subject_file_path: Some("src/main.c".into()),
             subject_source: None,
             callers: vec![],
             callees: vec![],

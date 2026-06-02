@@ -127,10 +127,17 @@ impl ContextBuilder {
         let callee_details =
             self.build_callee_details(symbol_id, &filtered_callees, &callee_syms)?;
 
+        let subject_file_path = self
+            .store
+            .get_file(&sym.file_id)
+            .ok()
+            .flatten()
+            .map(|info| info.path);
         let subject_source = self.read_source_snippet(sym);
 
         let view = ContextView {
             subject: sym.clone(),
+            subject_file_path,
             subject_source,
             callers: caller_syms,
             callees: callee_syms,
@@ -208,9 +215,7 @@ impl ContextBuilder {
                 symbol: caller_sym.clone(),
                 callsite_line: line,
                 callsite_snippet,
-                edge_kind: edge
-                    .map(|e| e.kind)
-                    .unwrap_or(types::EdgeKind::Calls),
+                edge_kind: edge.map(|e| e.kind).unwrap_or(types::EdgeKind::Calls),
             });
         }
         Ok(details)
@@ -242,9 +247,7 @@ impl ContextBuilder {
                 symbol: callee_sym.clone(),
                 callsite_line: line,
                 callsite_snippet,
-                edge_kind: edge
-                    .map(|e| e.kind)
-                    .unwrap_or(types::EdgeKind::Calls),
+                edge_kind: edge.map(|e| e.kind).unwrap_or(types::EdgeKind::Calls),
                 callee_signature: callee_sym.signature.clone(),
             });
         }

@@ -9,18 +9,18 @@ use std::time::Duration;
 
 use atlas_engine::{CallerChain, ContextView, RawTraceEngine, SearchResult, Store};
 use ratatui::{
-    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     widgets::{Gauge, Paragraph},
+    Frame,
 };
 
 use super::auto_index::AutoIndexHandle;
 use super::event::{Event, EventHandler};
 use super::session::GraphSession;
-use super::widgets::{context_view, results_list, search_bar, status_bar, trace_view};
 use super::widgets::context_view::DetailTab;
-use ratatui::crossterm::event::{KeyCode, KeyEventKind};
+use super::widgets::{context_view, results_list, search_bar, status_bar, trace_view};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 /// Which area of the UI currently receives keyboard input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,9 +136,7 @@ impl App {
 
     fn handle_event(&mut self, event: Event) {
         match event {
-            Event::Key(key) if key.kind == KeyEventKind::Press => {
-                self.handle_key_press(key.code)
-            }
+            Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key_press(key),
             Event::Key(_) => {}
             Event::Resize(_, _) => {}
             Event::Tick => self.handle_tick(),
@@ -163,9 +161,7 @@ impl App {
                         // Force-rebuild the graph snapshot so search / context
                         // engines are immediately usable.
                         if let Err(e) = self.session.force_refresh() {
-                            tracing::error!(
-                                "Failed to refresh graph after auto-index: {e}"
-                            );
+                            tracing::error!("Failed to refresh graph after auto-index: {e}");
                         }
                         self.screen = Screen::SearchHome;
                     }
@@ -183,7 +179,20 @@ impl App {
         }
     }
 
-    fn handle_key_press(&mut self, code: KeyCode) {
+    fn handle_key_press(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.should_quit = true;
+            return;
+        }
+
+        if key.code == KeyCode::Char('q')
+            && !(self.screen == Screen::SearchHome && self.focus == Focus::SearchBar)
+        {
+            self.should_quit = true;
+            return;
+        }
+
+        let code = key.code;
         match self.screen {
             Screen::SearchHome => self.handle_search_key(code),
             Screen::SymbolDetail => self.handle_detail_key(code),
@@ -199,13 +208,9 @@ impl App {
 
     fn handle_search_key(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Char('q') if self.search_input.is_empty() => self.should_quit = true,
             KeyCode::Esc => {
                 if !self.search_input.is_empty() {
-                    self.search_input.clear();
-                    self.search_cursor = 0;
-                    self.search_results.clear();
-                    self.selected_index = 0;
+                    self.reset_search_input();
                 } else {
                     self.should_quit = true;
                 }
@@ -227,8 +232,8 @@ impl App {
                 self.search_cursor = self.search_cursor.saturating_sub(1);
             }
             KeyCode::Right if self.focus == Focus::SearchBar => {
-                self.search_cursor = (self.search_cursor + 1)
-                    .min(self.search_input.chars().count());
+                self.search_cursor =
+                    (self.search_cursor + 1).min(self.search_input.chars().count());
             }
             KeyCode::Home if self.focus == Focus::SearchBar => self.search_cursor = 0,
             KeyCode::End if self.focus == Focus::SearchBar => {
@@ -320,9 +325,8 @@ impl App {
     fn handle_detail_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => {
-                // Back to SearchHome, preserving results.
-                self.screen = Screen::SearchHome;
-                self.focus = Focus::Results;
+                // Back to SearchHome, ready for a new query.
+                self.reset_search_input();
                 self.detail_context = None;
                 self.detail_selected = 0;
                 self.detail_scroll = 0;
@@ -335,8 +339,7 @@ impl App {
             KeyCode::Char('t') => {
                 // Phase 5: trigger callers trace.
                 if let Some(ctx) = &self.detail_context {
-                    let trace_engine =
-                        RawTraceEngine::new(Arc::clone(self.session.store()));
+                    let trace_engine = RawTraceEngine::new(Arc::clone(self.session.store()));
                     match trace_engine.trace_callers(&ctx.subject.id, 20) {
                         resp if resp.ok => {
                             if let Some(chain) = resp.result {
@@ -347,10 +350,7 @@ impl App {
                             }
                         }
                         _ => {
-                            tracing::error!(
-                                "Trace callers failed for {}",
-                                ctx.subject.name
-                            );
+                            tracing::error!("Trace callers failed for {}", ctx.subject.name);
                         }
                     }
                 }
@@ -432,16 +432,14 @@ impl App {
         };
 
         let target = match self.detail_tab {
-            DetailTab::Callers => {
-                ctx.caller_details
-                    .get(self.detail_selected)
-                    .map(|c| c.symbol.id)
-            }
-            DetailTab::Callees => {
-                ctx.callee_details
-                    .get(self.detail_selected)
-                    .map(|c| c.symbol.id)
-            }
+            DetailTab::Callers => ctx
+                .caller_details
+                .get(self.detail_selected)
+                .map(|c| c.symbol.id),
+            DetailTab::Callees => ctx
+                .callee_details
+                .get(self.detail_selected)
+                .map(|c| c.symbol.id),
             _ => return,
         };
 
@@ -470,6 +468,15 @@ impl App {
             },
             None => 0,
         }
+    }
+
+    fn reset_search_input(&mut self) {
+        self.screen = Screen::SearchHome;
+        self.focus = Focus::SearchBar;
+        self.search_input.clear();
+        self.search_cursor = 0;
+        self.search_results.clear();
+        self.selected_index = 0;
     }
 
     // ── search ────────────────────────────────────────────────────────────
@@ -509,7 +516,11 @@ impl App {
 
         let v_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(1)])
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
             .split(area);
 
         let search_area = v_chunks[0];
@@ -541,13 +552,7 @@ impl App {
 
         let mut scroll = 0;
         if !self.search_results.is_empty() {
-            results_list::render(
-                frame,
-                body_cols[0],
-                &rows,
-                self.selected_index,
-                &mut scroll,
-            );
+            results_list::render(frame, body_cols[0], &rows, self.selected_index, &mut scroll);
         } else {
             let hint = "Type a query and press Enter to search";
             let p = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
@@ -560,51 +565,50 @@ impl App {
         } else {
             // Right panel.
             match (&self.screen, &self.detail_context, &self.trace_chain) {
-            (Screen::SymbolDetail, Some(ctx), _) => {
-                // Clamp scroll before render so selected stays visible.
-                let available_height = body_cols[1].height.saturating_sub(2) as usize;
-                if self.detail_selected < self.detail_scroll {
-                    self.detail_scroll = self.detail_selected;
-                } else if self.detail_selected >= self.detail_scroll + available_height {
-                    self.detail_scroll =
-                        self.detail_selected.saturating_sub(available_height - 1);
+                (Screen::SymbolDetail, Some(ctx), _) => {
+                    // Clamp scroll before render so selected stays visible.
+                    let available_height = body_cols[1].height.saturating_sub(2) as usize;
+                    if self.detail_selected < self.detail_scroll {
+                        self.detail_scroll = self.detail_selected;
+                    } else if self.detail_selected >= self.detail_scroll + available_height {
+                        self.detail_scroll =
+                            self.detail_selected.saturating_sub(available_height - 1);
+                    }
+                    let active_tab = self.detail_tab;
+                    context_view::render(
+                        frame,
+                        body_cols[1],
+                        ctx,
+                        active_tab,
+                        self.detail_selected,
+                        self.detail_scroll,
+                    );
                 }
-                let active_tab = self.detail_tab;
-                context_view::render(
-                    frame,
-                    body_cols[1],
-                    ctx,
-                    active_tab,
-                    self.detail_selected,
-                    self.detail_scroll,
-                );
-            }
-            (Screen::TraceView, _, Some(chain)) => {
-                // Clamp trace scroll before render.
-                let chain_height = body_cols[1].height.saturating_sub(2) as usize;
-                if self.trace_selected < self.trace_scroll {
-                    self.trace_scroll = self.trace_selected;
-                } else if self.trace_selected >= self.trace_scroll + chain_height {
-                    self.trace_scroll =
-                        self.trace_selected.saturating_sub(chain_height - 1);
+                (Screen::TraceView, _, Some(chain)) => {
+                    // Clamp trace scroll before render.
+                    let chain_height = body_cols[1].height.saturating_sub(2) as usize;
+                    if self.trace_selected < self.trace_scroll {
+                        self.trace_scroll = self.trace_selected;
+                    } else if self.trace_selected >= self.trace_scroll + chain_height {
+                        self.trace_scroll = self.trace_selected.saturating_sub(chain_height - 1);
+                    }
+                    trace_view::render(
+                        frame,
+                        body_cols[1],
+                        chain,
+                        self.trace_selected,
+                        self.trace_scroll,
+                    );
                 }
-                trace_view::render(
-                    frame,
-                    body_cols[1],
-                    chain,
-                    self.trace_selected,
-                    self.trace_scroll,
-                );
-            }
-            _ => {
-                let hint = if self.session.is_initialized() {
-                    "Select a result (Enter) to view details"
-                } else {
-                    "Graph loading..."
-                };
-                let p = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
-                frame.render_widget(p, body_cols[1]);
-            }
+                _ => {
+                    let hint = if self.session.is_initialized() {
+                        "Select a result (Enter) to view details"
+                    } else {
+                        "Graph loading..."
+                    };
+                    let p = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
+                    frame.render_widget(p, body_cols[1]);
+                }
             }
         }
 
@@ -624,14 +628,8 @@ impl App {
 // ── helpers ───────────────────────────────────────────────────────────────
 
 /// Render the auto-index progress screen.
-fn render_auto_index_progress(
-    frame: &mut Frame,
-    area: Rect,
-    handle: &Option<AutoIndexHandle>,
-) {
-    let progress = handle
-        .as_ref()
-        .map(|h| h.progress.lock().unwrap().clone());
+fn render_auto_index_progress(frame: &mut Frame, area: Rect, handle: &Option<AutoIndexHandle>) {
+    let progress = handle.as_ref().map(|h| h.progress.lock().unwrap().clone());
 
     let (phase, current, total, message) = match &progress {
         Some(p) => (p.phase.clone(), p.current, p.total, p.message.clone()),
@@ -648,7 +646,7 @@ fn render_auto_index_progress(
             Constraint::Length(1), // gauge
             Constraint::Length(1), // message
             Constraint::Length(1), // subtitle
-            Constraint::Min(0),   // fill
+            Constraint::Min(0),    // fill
         ])
         .split(centered_in(area, 64, 8));
 
@@ -663,7 +661,11 @@ fn render_auto_index_progress(
         "  {:<14} {}/{}",
         phase,
         current,
-        if total > 0 { total.to_string() } else { "?".to_string() }
+        if total > 0 {
+            total.to_string()
+        } else {
+            "?".to_string()
+        }
     );
     let phase_para = Paragraph::new(phase_text).style(Style::default().fg(Color::White));
     frame.render_widget(phase_para, inner[2]);
@@ -686,10 +688,9 @@ fn render_auto_index_progress(
     }
 
     // Subtitle
-    let subtitle =
-        Paragraph::new("Building initial knowledge graph...")
-            .style(Style::default().fg(Color::DarkGray))
-            .alignment(Alignment::Center);
+    let subtitle = Paragraph::new("Building initial knowledge graph...")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
     frame.render_widget(subtitle, inner[5]);
 }
 
