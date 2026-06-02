@@ -138,28 +138,30 @@ impl ToolRouter {
             let dataflow_edges = if data_nodes.is_empty() {
                 vec![]
             } else {
-                let all_ids: Vec<_> =
-                    data_nodes.iter().map(|n| n.id).collect();
+                let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
                 self.store
                     .find_dataflow_edges_by_sources(&all_ids)
                     .unwrap_or_default()
             };
 
-            let composition = match atlas_engine::analysis::cfg_graph::CfgGraph::build(
-                &cfg_nodes,
-                &cfg_edges,
-            ) {
-                Ok(cfg_graph) => atlas_engine::analysis::compose_effects(
-                    &cfg_graph, &data_nodes, &dataflow_edges, &contract,
-                ),
-                Err(_) => {
-                    // CFG build failed → fall back to minimal composition
-                    atlas_engine::analysis::EffectComposition::default()
-                }
-            };
+            let composition =
+                match atlas_engine::analysis::cfg_graph::CfgGraph::build(&cfg_nodes, &cfg_edges) {
+                    Ok(cfg_graph) => atlas_engine::analysis::compose_effects(
+                        &cfg_graph,
+                        &data_nodes,
+                        &dataflow_edges,
+                        &contract,
+                    ),
+                    Err(_) => {
+                        // CFG build failed → fall back to minimal composition
+                        atlas_engine::analysis::EffectComposition::default()
+                    }
+                };
 
             atlas_engine::analysis::BranchDiffEngine::diff_branches_semantic(
-                &cfg_nodes, &cfg_edges, &composition,
+                &cfg_nodes,
+                &cfg_edges,
+                &composition,
             )
         } else {
             // ── BASIC PATH: CFG-only diff (effect_kind based) ──

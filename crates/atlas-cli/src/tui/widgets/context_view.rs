@@ -111,13 +111,9 @@ pub fn render(
             selected,
             scroll,
         ),
-        DetailTab::Peers => render_peer_list(
-            frame,
-            v_chunks[1],
-            &context.file_peers,
-            selected,
-            scroll,
-        ),
+        DetailTab::Peers => {
+            render_peer_list(frame, v_chunks[1], &context.file_peers, selected, scroll)
+        }
         DetailTab::Source => render_source(frame, v_chunks[1], context),
     }
 }

@@ -85,8 +85,7 @@ impl ToolRouter {
                 // the context builder's preview (first N lines).
                 let subject_source = if include_code {
                     if let Some(src) = self.read_symbol_source(&sid) {
-                        let lines: Vec<String> =
-                            src.lines().map(|l| l.to_string()).collect();
+                        let lines: Vec<String> = src.lines().map(|l| l.to_string()).collect();
                         let total = lines.len() as u32;
                         Some(json!({
                             "lines": lines,

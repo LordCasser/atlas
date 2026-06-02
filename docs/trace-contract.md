@@ -13,10 +13,10 @@
 
 ```
 User Query
-    │
-    ├─ CLI:  atlas trace point/variable/caller-path --json
-    │
-    └─ MCP:  tools/call { "name": "trace_point", ... }
+     │
+     ├─ CLI:  atlas trace --kind {point|variable|caller-path|forward} --json
+     │
+     └─ MCP:  tools/call { "name": "trace", "arguments": { "kind": "point", ... } }
               │
               ▼
          TraceEngine
@@ -53,7 +53,7 @@ so consumers parse one shape regardless of which query was made.
 | Field | Type | Always present? | Semantics |
 |-------|------|:---:|-----------|
 | `ok` | `bool` | ✅ | Transport-level success. `false` only on system errors (I/O, DB corruption). |
-| `kind` | `string` | ✅ | One of `"trace_point"`, `"trace_variable"`, `"trace_caller_path"`, `"trace_forward"`. |
+| `kind` | `string` | ✅ | One of `"trace"` (unified; sub-kind in result). |
 | `capability` | `LanguageCapabilityProfile\|null` | ✅ | The resolved language's capability profile. `null` when `ok=false`. |
 | `partial_result` | `bool` | ✅ | `true` when result is incomplete. Inspect `diagnostics`. |
 | `diagnostics` | `TraceDiagnostic[]` | ✅ | May be empty. Each entry has `level`, `message`, optional `code`. |

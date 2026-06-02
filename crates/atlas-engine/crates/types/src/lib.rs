@@ -43,8 +43,8 @@ pub use effects::{
 
 // --- IDs ---
 pub use ids::{
-    BindingId, BindingUseId, CallsiteId, CfgEdgeId, CfgNodeId, DataFlowEdgeId, DataNodeId,
-    EdgeId, EffectId, FileId, ImportId, ReferenceId, ScopeId, SymbolId,
+    BindingId, BindingUseId, CallsiteId, CfgEdgeId, CfgNodeId, DataFlowEdgeId, DataNodeId, EdgeId,
+    EffectId, FileId, ImportId, ReferenceId, ScopeId, SymbolId,
 };
 
 // --- Enums ---

@@ -144,48 +144,29 @@ fn p0_mcp_tools_list_includes_trace_tools() {
     let tool_names: Vec<&str> = list.tools.iter().map(|t| t.name.as_str()).collect();
 
     assert!(
-        tool_names.contains(&"trace_point"),
-        "tools/list must include atlas_trace_point"
-    );
-    assert!(
-        tool_names.contains(&"trace_variable"),
-        "tools/list must include atlas_trace_variable"
-    );
-    assert!(
-        tool_names.contains(&"trace_caller_path"),
-        "tools/list must include atlas_trace_caller_path"
+        tool_names.contains(&"trace"),
+        "tools/list must include trace (unified trace tool: kind=point/variable/forward/callers)"
     );
 
-    // Verify trace_point schema has the right properties
-    let trace_point = list
+    // Verify trace schema has kind (required for dispatch) and position params
+    let trace_tool = list
         .tools
         .iter()
-        .find(|t| t.name == "trace_point")
-        .expect("trace_point tool");
-    let props = trace_point
+        .find(|t| t.name == "trace")
+        .expect("trace tool");
+    let props = trace_tool
         .input_schema
         .properties
         .as_ref()
-        .expect("trace_point must have inputSchema.properties");
+        .expect("trace must have inputSchema.properties");
+    assert!(props.get("kind").is_some(), "schema must have kind");
     assert!(
         props.get("file_path").is_some(),
         "schema must have file_path"
     );
     assert!(props.get("line").is_some(), "schema must have line");
     assert!(props.get("column").is_some(), "schema must have column");
-
-    // Verify trace_caller_path schema has symbol property
-    let caller_path = list
-        .tools
-        .iter()
-        .find(|t| t.name == "trace_caller_path")
-        .expect("trace_caller_path tool");
-    let cp_props = caller_path
-        .input_schema
-        .properties
-        .as_ref()
-        .expect("trace_caller_path must have inputSchema.properties");
-    assert!(cp_props.get("symbol").is_some(), "schema must have symbol");
+    assert!(props.get("symbol").is_some(), "schema must have symbol");
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -211,11 +192,12 @@ function main(): void {
     let file_id = find_file_id(&store, _tmp.path(), "src/app.ts");
 
     let args = json!({
+        "kind": "point",
         "file_id": file_id.to_hex(),
         "line": 6,
         "column": 20,
     });
-    let (content_json, is_error) = call_tool(&mut router, "trace_point", args);
+    let (content_json, is_error) = call_tool(&mut router, "trace", args);
 
     assert!(!is_error, "valid trace_point call must not set isError");
     assert_envelope_fields(&content_json);
@@ -245,8 +227,8 @@ fn p0_mcp_trace_point_missing_params_returns_error() {
     let files = &[("app.ts", "export const x = 1;\n")];
     let (_tmp, mut router) = build_router(files);
 
-    let args = json!({});
-    let (content_json, is_error) = call_tool(&mut router, "trace_point", args);
+    let args = json!({"kind": "point"});
+    let (content_json, is_error) = call_tool(&mut router, "trace", args);
 
     assert!(is_error, "missing params must set isError=true");
     // Must return a TraceQueryResponse envelope with ok=false
@@ -277,11 +259,12 @@ fn p0_mcp_trace_point_with_file_path_resolves() {
     let (_tmp, mut router) = build_router(files);
 
     let args = json!({
+        "kind": "point",
         "file_path": "src/calc.ts",
         "line": 1,
         "column": 10,
     });
-    let (content_json, is_error) = call_tool(&mut router, "trace_point", args);
+    let (content_json, is_error) = call_tool(&mut router, "trace", args);
 
     assert!(!is_error, "file_path-based trace_point must succeed");
     assert_envelope_fields(&content_json);
@@ -315,12 +298,13 @@ fn p0_mcp_trace_variable_returns_dataflow_result() {
     let file_id = find_file_id(&store, _tmp.path(), "calc.ts");
 
     let args = json!({
+        "kind": "variable",
         "file_id": file_id.to_hex(),
         "line": 4,
         "column": 22,
         "max_depth": 20,
     });
-    let (content_json, is_error) = call_tool(&mut router, "trace_variable", args);
+    let (content_json, is_error) = call_tool(&mut router, "trace", args);
 
     assert!(
         !is_error,
@@ -343,8 +327,8 @@ fn p0_mcp_trace_variable_missing_params_returns_error() {
     let files = &[("app.ts", "export const x = 1;\n")];
     let (_tmp, mut router) = build_router(files);
 
-    let args = json!({});
-    let (content_json, is_error) = call_tool(&mut router, "trace_variable", args);
+    let args = json!({"kind": "variable"});
+    let (content_json, is_error) = call_tool(&mut router, "trace", args);
 
     assert!(is_error, "missing file_id/file_path must set isError");
     // Must return a TraceQueryResponse envelope with ok=false
@@ -387,8 +371,8 @@ function outer(z: number): void {
         .expect("inner symbol not found");
     let symbol_hex = inner.id.to_hex();
 
-    let args = json!({ "symbol": symbol_hex, "max_depth": 10 });
-    let (content_json, is_error) = call_tool(&mut router, "trace_caller_path", args);
+    let args = json!({ "kind": "callers", "symbol": symbol_hex, "max_depth": 10 });
+    let (content_json, is_error) = call_tool(&mut router, "trace", args);
 
     assert!(
         !is_error,
@@ -415,8 +399,8 @@ fn p0_mcp_trace_caller_path_invalid_symbol_returns_error() {
     let files = &[("app.ts", "export const x = 1;\n")];
     let (_tmp, mut router) = build_router(files);
 
-    let args = json!({ "symbol": "not-a-valid-hex-id", "max_depth": 10 });
-    let (content_json, is_error) = call_tool(&mut router, "trace_caller_path", args);
+    let args = json!({ "kind": "callers", "symbol": "not-a-valid-hex-id", "max_depth": 10 });
+    let (content_json, is_error) = call_tool(&mut router, "trace", args);
 
     assert!(is_error, "invalid symbol hex must set isError");
     // Must return a TraceQueryResponse envelope with ok=false
@@ -443,8 +427,8 @@ fn p0_mcp_trace_caller_path_root_function_returns_partial_not_error() {
         .expect("standalone symbol not found");
     let symbol_hex = standalone.id.to_hex();
 
-    let args = json!({ "symbol": symbol_hex, "max_depth": 10 });
-    let (content_json, is_error) = call_tool(&mut router, "trace_caller_path", args);
+    let args = json!({ "kind": "callers", "symbol": symbol_hex, "max_depth": 10 });
+    let (content_json, is_error) = call_tool(&mut router, "trace", args);
 
     assert!(
         !is_error,
@@ -508,16 +492,16 @@ main();
 
     let trace_cases: Vec<(&str, Value)> = vec![
         (
-            "trace_point",
-            json!({ "file_id": file_id.to_hex(), "line": 2, "column": 30 }),
+            "trace",
+            json!({ "kind": "point", "file_id": file_id.to_hex(), "line": 2, "column": 30 }),
         ),
         (
-            "trace_variable",
-            json!({ "file_id": file_id.to_hex(), "line": 2, "column": 30, "max_depth": 10 }),
+            "trace",
+            json!({ "kind": "variable", "file_id": file_id.to_hex(), "line": 2, "column": 30, "max_depth": 10 }),
         ),
         (
-            "trace_caller_path",
-            json!({ "symbol": symbol_hex, "max_depth": 10 }),
+            "trace",
+            json!({ "kind": "callers", "symbol": symbol_hex, "max_depth": 10 }),
         ),
     ];
 
@@ -551,8 +535,8 @@ fn p0_mcp_partial_result_not_is_error() {
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "fn.ts");
 
-    let args = json!({ "file_id": file_id.to_hex(), "line": 1, "column": 10 });
-    let (content_json, is_error) = call_tool(&mut router, "trace_variable", args);
+    let args = json!({ "kind": "variable", "file_id": file_id.to_hex(), "line": 1, "column": 10 });
+    let (content_json, is_error) = call_tool(&mut router, "trace", args);
 
     assert!(!is_error, "partial result must NOT set isError=true");
     assert_envelope_fields(&content_json);
@@ -577,25 +561,32 @@ fn p2_mcp_output_truncation_safety() {
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "app.ts");
 
-    let args = json!({ "file_id": file_id.to_hex(), "line": 1, "column": 10 });
+    let args = json!({ "kind": "point", "file_id": file_id.to_hex(), "line": 1, "column": 10 });
 
-    for tool_name in &["trace_point", "trace_variable", "trace_caller_path"] {
-        let tool_args = if *tool_name == "trace_caller_path" {
-            let syms = store.find_symbols_by_file(&file_id).expect("find symbols");
-            if let Some(sym) = syms.first() {
-                json!({ "symbol": sym.id.to_hex(), "max_depth": 5 })
-            } else {
-                continue;
-            }
-        } else {
-            args.clone()
-        };
+    // trace(point)
+    let result = router.call_tool("trace", &args);
+    assert!(
+        !result.content.is_empty(),
+        "trace(point) must return content"
+    );
 
-        let result = router.call_tool(tool_name, &tool_args);
+    // trace(variable)
+    let var_args =
+        json!({ "kind": "variable", "file_id": file_id.to_hex(), "line": 1, "column": 10 });
+    let result = router.call_tool("trace", &var_args);
+    assert!(
+        !result.content.is_empty(),
+        "trace(variable) must return content"
+    );
+
+    // trace(callers)
+    let syms = store.find_symbols_by_file(&file_id).expect("find symbols");
+    if let Some(sym) = syms.first() {
+        let caller_args = json!({ "kind": "callers", "symbol": sym.id.to_hex(), "max_depth": 5 });
+        let result = router.call_tool("trace", &caller_args);
         assert!(
             !result.content.is_empty(),
-            "{} must return at least one content block",
-            tool_name
+            "trace(callers) must return content"
         );
     }
 }
@@ -622,8 +613,8 @@ fn p1_mcp_java_trace_variable_is_partial() {
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "App.java");
 
-    let args = json!({ "file_id": file_id.to_hex(), "line": 3, "column": 17 });
-    let (content_json, is_error) = call_tool(&mut router, "trace_variable", args);
+    let args = json!({ "kind": "variable", "file_id": file_id.to_hex(), "line": 3, "column": 17 });
+    let (content_json, is_error) = call_tool(&mut router, "trace", args);
 
     assert!(!is_error, "Java variable trace must not be an error");
     let diags = content_json
@@ -682,8 +673,8 @@ func main() {
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
     let file_id = find_file_id(&store, _tmp.path(), "main.go");
 
-    let args = json!({ "file_id": file_id.to_hex(), "line": 6, "column": 8 });
-    let (content_json, is_error) = call_tool(&mut router, "trace_variable", args);
+    let args = json!({ "kind": "variable", "file_id": file_id.to_hex(), "line": 6, "column": 8 });
+    let (content_json, is_error) = call_tool(&mut router, "trace", args);
 
     assert!(!is_error, "Go variable trace must not be an error");
     let diags = content_json
@@ -740,22 +731,24 @@ function caller(): void {
     // Call by hex
     let (json_hex, is_err_hex) = call_tool(
         &mut router,
-        "trace_caller_path",
+        "trace",
         json!({
+            "kind": "callers",
             "symbol": target_id,
         }),
     );
-    assert!(!is_err_hex, "trace_caller_path by hex must succeed");
+    assert!(!is_err_hex, "trace(callers) by hex must succeed");
 
     // Call by name
     let (json_name, is_err_name) = call_tool(
         &mut router,
-        "trace_caller_path",
+        "trace",
         json!({
-            "symbol_name": "target",
+            "kind": "callers",
+            "symbol": "target",
         }),
     );
-    assert!(!is_err_name, "trace_caller_path by name must succeed");
+    assert!(!is_err_name, "trace(callers) by name must succeed");
 
     // Both should produce the same result
     assert_eq!(
@@ -789,21 +782,20 @@ fn p5_mcp_caller_path_by_name_nonexistent() {
 
     let (json, is_error) = call_tool(
         &mut router,
-        "trace_caller_path",
+        "trace",
         json!({
-            "symbol_name": "ghost_function",
+            "kind": "callers",
+            "symbol": "ghost_function",
         }),
     );
 
-    assert!(!is_error, "nonexistent symbol must not be a system error");
-    assert!(
-        json.get("partial_result")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        "should be partial_result=true"
+    assert!(is_error, "nonexistent symbol must produce an error");
+    // Must return a TraceQueryResponse envelope with ok=false
+    assert_eq!(
+        json.get("ok").and_then(|v| v.as_bool()),
+        Some(false),
+        "envelope ok must be false for nonexistent symbol"
     );
-    assert!(json.get("result").is_some(), "result field must be present");
-    assert!(json.get("result").unwrap().is_null(), "result must be null");
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -839,8 +831,9 @@ function outer(v: number): number {
 
     let (json, is_error) = call_tool(
         &mut router,
-        "trace_caller_path",
+        "trace",
         json!({
+            "kind": "callers",
             "symbol": target_id.to_hex(),
         }),
     );
@@ -883,15 +876,16 @@ def transform(x):
 
     let (json, is_error) = call_tool(
         &mut router,
-        "trace_variable",
+        "trace",
         json!({
+            "kind": "variable",
             "file_path": "app.py",
             "line": 2,
             "column": 15,
         }),
     );
 
-    assert!(!is_error, "Python trace_variable should not be error");
+    assert!(!is_error, "Python trace(variable) should not be error");
     // Python should not produce a capability diagnostic
     if let Some(diagnostics) = json.get("diagnostics").and_then(|d| d.as_array()) {
         let has_cap_diag = diagnostics
@@ -924,8 +918,9 @@ function c(): number { return d(); }
 
     let (json, is_error) = call_tool(
         &mut router,
-        "trace_caller_path",
+        "trace",
         json!({
+            "kind": "callers",
             "symbol": target_id.to_hex(),
             "max_depth": 2,
         }),
@@ -962,8 +957,9 @@ fn p12_mcp_trace_point_out_of_bounds() {
 
     let (json, is_error) = call_tool(
         &mut router,
-        "trace_point",
+        "trace",
         json!({
+            "kind": "point",
             "file_path": "small.ts",
             "line": 999,
             "column": 0,
@@ -1014,7 +1010,7 @@ fn p12a_mcp_graph_error_returns_structured_response() {
     // atlas_callgraph with a valid pre-built graph should succeed
     let (json, is_error) = call_tool(
         &mut router,
-        "callgraph",
+        "calls",
         json!({
             "symbol": "f",
             "depth": 2,
@@ -1026,7 +1022,7 @@ fn p12a_mcp_graph_error_returns_structured_response() {
         !is_error,
         "graph operation should succeed with pre-built snapshot"
     );
-    // callgraph response has the standard tool result fields (not error envelope)
+    // calls response has the standard tool result fields (not error envelope)
     assert_eq!(
         json.get("symbol").and_then(|v| v.as_str()),
         Some("f"),
@@ -1063,8 +1059,9 @@ fn p7a_mcp_trace_variable_truncation_diagnostic() {
     // Trace from `c` on the console.log line — BFS will hit max_depth=1 quickly
     let (json, is_error) = call_tool(
         &mut router,
-        "trace_variable",
+        "trace",
         json!({
+            "kind": "variable",
             "file_path": "chain.ts",
             "line": 5,
             "column": 15,
@@ -1116,8 +1113,9 @@ function d(): number { return 42; }
 
     let (json, is_error) = call_tool(
         &mut router,
-        "trace_caller_path",
+        "trace",
         json!({
+            "kind": "callers",
             "symbol": target_id.to_hex(),
             "max_depth": 1,
         }),
@@ -1166,8 +1164,8 @@ greet("World");
 
     let (json, is_error) = call_tool(
         &mut router,
-        "usages",
-        json!({ "symbol": greet_id.to_hex() }),
+        "symbol",
+        json!({ "view": "usages", "qname": greet_id.to_hex() }),
     );
     assert!(!is_error, "usages should succeed");
     assert!(json.get("usages").is_some(), "should have usages array");
@@ -1189,8 +1187,8 @@ fn mcp_dependencies_returns_imports() {
 
     let (json, is_error) = call_tool(
         &mut router,
-        "dependencies",
-        json!({ "file_id": file_id.to_hex() }),
+        "file_dependencies",
+        json!({ "direction": "outgoing", "file_path": "app.ts" }),
     );
     assert!(!is_error, "dependencies should succeed");
     let deps = json.get("dependencies").and_then(|d| d.as_array());
@@ -1210,7 +1208,11 @@ fn mcp_usages_empty_for_unreferenced() {
     let file_id = find_file_id(&store, _tmp.path(), "app.ts");
     let sym_id = find_symbol(&store, &file_id, "unused");
 
-    let (json, is_error) = call_tool(&mut router, "usages", json!({ "symbol": sym_id.to_hex() }));
+    let (json, is_error) = call_tool(
+        &mut router,
+        "symbol",
+        json!({ "view": "usages", "qname": sym_id.to_hex() }),
+    );
     assert!(!is_error, "usages should succeed even for unused symbols");
     let total = json
         .get("total_usages")
@@ -1232,53 +1234,58 @@ fn open_project_in_tools_list() {
     let list = router.list_tools();
     let tool_names: Vec<&str> = list.tools.iter().map(|t| t.name.as_str()).collect();
     assert!(
-        tool_names.contains(&"open_project"),
-        "tools/list must include open_project"
+        tool_names.contains(&"project"),
+        "tools/list must include project (action='open'/'status'/'files')"
     );
 
-    // Verify open_project has required project_path schema
+    // Verify project tool has action parameter and project_path for open
     let tool = list
         .tools
         .iter()
-        .find(|t| t.name == "open_project")
-        .expect("open_project tool");
-    let required = tool
-        .input_schema
-        .required
-        .as_ref()
-        .expect("open_project must have required params");
+        .find(|t| t.name == "project")
+        .expect("project tool");
+    let required = tool.input_schema.required.as_ref();
+    // 'project' has no top-level required params (action determines requirements)
     assert!(
-        required.iter().any(|r| r == "project_path"),
-        "open_project must require project_path"
+        required.is_none() || required.unwrap().is_empty(),
+        "project tool should have no hard-required params at top level"
     );
     let props = tool
         .input_schema
         .properties
         .as_ref()
-        .expect("open_project must have properties");
+        .expect("project must have properties");
+    assert!(
+        props.get("project_path").is_some(),
+        "project schema must expose project_path"
+    );
     assert!(
         props.get("scan_files").is_some(),
-        "open_project schema must expose scan_files"
+        "project schema must expose scan_files"
     );
     assert!(
         props.get("background").is_some(),
-        "open_project schema must expose background"
+        "project schema must expose background"
+    );
+    assert!(
+        props.get("action").is_some(),
+        "project schema must expose action"
     );
     assert!(
         props.get("index").is_none(),
-        "open_project must not expose indexing parameters"
+        "project tool must not expose indexing parameters"
     );
     assert!(
         props.get("analysis").is_none(),
-        "open_project must not expose indexing parameters"
+        "project tool must not expose indexing parameters"
     );
     assert!(
         props.get("include").is_none(),
-        "open_project must not expose indexing parameters"
+        "project tool must not expose indexing parameters"
     );
     assert!(
         props.get("exclude").is_none(),
-        "open_project must not expose indexing parameters"
+        "project tool must not expose indexing parameters"
     );
 }
 
@@ -1349,8 +1356,9 @@ fn open_project_background_activates_on_wait_for_task() {
         .to_string();
 
     let result = router.call_tool(
-        "open_project",
+        "project",
         &json!({
+            "action": "open",
             "project_path": target.path().to_string_lossy(),
             "storage": "memory",
             "background": true
@@ -1380,7 +1388,7 @@ fn open_project_background_activates_on_wait_for_task() {
     assert_eq!(completed["activation"], "activated");
     assert_eq!(completed["activated_project"], expected);
 
-    let status = router.call_tool("status", &json!({}));
+    let status = router.call_tool("project", &json!({"action": "status"}));
     let status_text = match &status.content[0] {
         atlas_mcp::protocol::ContentBlock::Text { text } => text,
     };
@@ -1438,10 +1446,10 @@ fn open_project_missing_project_path_returns_error() {
     let files = &[("app.ts", "export const x = 1;\n")];
     let (_tmp, mut router) = build_router(files);
 
-    let (json, is_error) = call_tool(&mut router, "open_project", json!({}));
+    let (json, is_error) = call_tool(&mut router, "project", json!({"action": "open"}));
     assert!(
         is_error,
-        "open_project without project_path must return is_error=true"
+        "project(action=open) without project_path must return is_error=true"
     );
 
     let err_msg = json.get("error").and_then(|v| v.as_str()).unwrap_or("");
@@ -1459,12 +1467,12 @@ fn open_project_nonexistent_path_returns_error() {
 
     let (json, is_error) = call_tool(
         &mut router,
-        "open_project",
-        json!({ "project_path": "/nonexistent/path/12345" }),
+        "project",
+        json!({ "action": "open", "project_path": "/nonexistent/path/12345" }),
     );
     assert!(
         is_error,
-        "open_project with nonexistent path must return is_error=true"
+        "project(action=open) with nonexistent path must return is_error=true"
     );
     assert!(!json["ok"].as_bool().unwrap_or(true), "ok must be false");
 }
@@ -1490,21 +1498,23 @@ fn open_project_memory_no_index_switches_project() {
     // Open the fresh project without indexing
     let (json, is_error) = call_tool(
         &mut router,
-        "open_project",
+        "project",
         json!({
+            "action": "open",
             "project_path": tmp.path().to_string_lossy(),
             "storage": "memory",
         }),
     );
     assert!(
         !is_error,
-        "open_project (memory) should succeed: {:?}",
+        "project(action=open) (memory) should succeed: {:?}",
         json
     );
     assert!(json["ok"].as_bool().unwrap_or(false), "ok must be true");
 
     // Status should reflect the new project
-    let (status_json, status_error) = call_tool(&mut router, "status", json!({}));
+    let (status_json, status_error) =
+        call_tool(&mut router, "project", json!({"action": "status"}));
     assert!(!status_error, "status should succeed");
     assert_eq!(
         status_json["project"]["storage"].as_str().unwrap_or(""),
@@ -1541,15 +1551,16 @@ fn open_project_then_index_enables_search() {
     // Open the fresh project, then index the active project.
     let (json, is_error) = call_tool(
         &mut router,
-        "open_project",
+        "project",
         json!({
+            "action": "open",
             "project_path": tmp.path().to_string_lossy(),
             "storage": "memory",
         }),
     );
     assert!(
         !is_error,
-        "open_project (memory) should succeed: {:?}",
+        "project(action=open) (memory) should succeed: {:?}",
         json
     );
     assert!(json["ok"].as_bool().unwrap_or(false), "ok must be true");
@@ -1565,7 +1576,8 @@ fn open_project_then_index_enables_search() {
     );
 
     // Status should show indexed files
-    let (status_json, status_error) = call_tool(&mut router, "status", json!({}));
+    let (status_json, status_error) =
+        call_tool(&mut router, "project", json!({"action": "status"}));
     assert!(!status_error, "status should succeed");
     assert!(
         status_json["summary"]["files"].as_i64().unwrap_or(0) >= 1,
@@ -1589,7 +1601,7 @@ fn open_project_then_index_enables_search() {
 
     // trace_variable should work with lazy dataflow
     // First get the file_id from files tool
-    let (files_json, _) = call_tool(&mut router, "files", json!({}));
+    let (files_json, _) = call_tool(&mut router, "project", json!({"action": "files"}));
     let file_list = files_json["files"]
         .as_array()
         .expect("files should be array");
@@ -1601,14 +1613,19 @@ fn open_project_then_index_enables_search() {
     // trace_point should resolve the greet function
     let (trace_json, trace_error) = call_tool(
         &mut router,
-        "trace_point",
+        "trace",
         json!({
+            "kind": "point",
             "file_path": "src/lib.ts",
             "line": 1,
             "column": 17,
         }),
     );
-    assert!(!trace_error, "trace_point should succeed: {:?}", trace_json);
+    assert!(
+        !trace_error,
+        "trace(point) should succeed: {:?}",
+        trace_json
+    );
 }
 
 #[test]
@@ -1651,13 +1668,14 @@ fn mcp_search_large_scope_stays_manifest_level() {
     let (_tmp_initial, mut router) = build_router(files);
     let (_, open_error) = call_tool(
         &mut router,
-        "open_project",
+        "project",
         json!({
+            "action": "open",
             "project_path": tmp.path().to_string_lossy(),
             "storage": "memory",
         }),
     );
-    assert!(!open_error, "open_project should succeed");
+    assert!(!open_error, "project(action=open) should succeed");
     let (_, index_error) = call_tool(&mut router, "index", json!({}));
     assert!(!index_error, "index should succeed");
 
@@ -1693,14 +1711,15 @@ fn open_project_rejects_indexing_parameters() {
 
     let (json, is_error) = call_tool(
         &mut router,
-        "open_project",
+        "project",
         json!({
+            "action": "open",
             "project_path": tmp.path().to_string_lossy(),
             "index": true,
         }),
     );
 
-    assert!(is_error, "open_project must reject index=true");
+    assert!(is_error, "project(action=open) must reject index=true");
     assert!(
         json["error"].as_str().unwrap_or("").contains("index tool"),
         "error should point users to index: {:?}",
@@ -1728,13 +1747,18 @@ fn open_project_persistent_creates_db_and_survives_reopen() {
     // First: open persistent storage, then index the active project.
     let (json1, is_error1) = call_tool(
         &mut router,
-        "open_project",
+        "project",
         json!({
+            "action": "open",
             "project_path": tmp.path().to_string_lossy(),
             "storage": "persistent",
         }),
     );
-    assert!(!is_error1, "first open_project should succeed: {:?}", json1);
+    assert!(
+        !is_error1,
+        "first project(action=open) should succeed: {:?}",
+        json1
+    );
     assert!(json1["ok"].as_bool().unwrap_or(false), "ok must be true");
 
     let (index_json, index_error) = call_tool(&mut router, "index", json!({}));
@@ -1744,11 +1768,11 @@ fn open_project_persistent_creates_db_and_survives_reopen() {
     let db_path = tmp.path().join(".atlas/atlas.db");
     assert!(
         db_path.exists(),
-        ".atlas/atlas.db should exist after persistent open_project"
+        ".atlas/atlas.db should exist after persistent project(action=open)"
     );
 
     // Status should show persistent
-    let (status_json, _) = call_tool(&mut router, "status", json!({}));
+    let (status_json, _) = call_tool(&mut router, "project", json!({"action": "status"}));
     assert_eq!(
         status_json["project"]["storage"].as_str().unwrap_or(""),
         "persistent",
@@ -1771,8 +1795,9 @@ fn open_project_persistent_creates_db_and_survives_reopen() {
     // Re-open the same project — should work from existing DB without re-indexing.
     let (json2, is_error2) = call_tool(
         &mut router,
-        "open_project",
+        "project",
         json!({
+            "action": "open",
             "project_path": tmp.path().to_string_lossy(),
             "storage": "persistent",
         }),

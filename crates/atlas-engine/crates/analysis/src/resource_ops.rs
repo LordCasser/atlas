@@ -111,7 +111,11 @@ impl ResourceOpConfig {
             ResourceOpPattern::new(ResourceOpKind::Produce, Exact("fopen".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Produce, Exact("asprintf".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Produce, Exact("aprintf".into()), 0),
-            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("Curl_copy_header_value".into()), 0),
+            ResourceOpPattern::new(
+                ResourceOpKind::Produce,
+                Exact("Curl_copy_header_value".into()),
+                0,
+            ),
             ResourceOpPattern::new(ResourceOpKind::Produce, Prefix("curl_copy_".into()), 0),
         ];
         // Consumers — functions that take a resource handle as argument
@@ -137,7 +141,11 @@ impl ResourceOpConfig {
         let producers = vec![
             // new X() is implicit; open(), createConnection() etc.
             ResourceOpPattern::new(ResourceOpKind::Produce, Exact("open".into()), 0),
-            ResourceOpPattern::new(ResourceOpKind::Produce, Suffix("createConnection".into()), 0),
+            ResourceOpPattern::new(
+                ResourceOpKind::Produce,
+                Suffix("createConnection".into()),
+                0,
+            ),
             ResourceOpPattern::new(ResourceOpKind::Produce, Suffix("openConnection".into()), 0),
         ];
         let consumers = vec![
@@ -200,12 +208,16 @@ impl ResourceOpConfig {
     fn default_go() -> Self {
         use CalleeMatcher::{Contains, Suffix};
         let language = None;
-        let producers = vec![
-            ResourceOpPattern::new(ResourceOpKind::Produce, Contains("Open".into()), 0),
-        ];
-        let consumers = vec![
-            ResourceOpPattern::new(ResourceOpKind::Consume, Suffix(".Close".into()), 0),
-        ];
+        let producers = vec![ResourceOpPattern::new(
+            ResourceOpKind::Produce,
+            Contains("Open".into()),
+            0,
+        )];
+        let consumers = vec![ResourceOpPattern::new(
+            ResourceOpKind::Consume,
+            Suffix(".Close".into()),
+            0,
+        )];
         Self {
             language,
             producers,
@@ -217,9 +229,11 @@ impl ResourceOpConfig {
     fn default_rust() -> Self {
         use CalleeMatcher::Contains;
         let language = None;
-        let producers = vec![
-            ResourceOpPattern::new(ResourceOpKind::Produce, Contains("::new".into()), 0),
-        ];
+        let producers = vec![ResourceOpPattern::new(
+            ResourceOpKind::Produce,
+            Contains("::new".into()),
+            0,
+        )];
         let consumers = Vec::new(); // Rust's Drop is compiler-generated
         Self {
             language,
@@ -289,9 +303,11 @@ impl ResourceOpConfig {
     fn default_kotlin() -> Self {
         use CalleeMatcher::Suffix;
         let language = None;
-        let producers = vec![
-            ResourceOpPattern::new(ResourceOpKind::Produce, Suffix("openConnection".into()), 0),
-        ];
+        let producers = vec![ResourceOpPattern::new(
+            ResourceOpKind::Produce,
+            Suffix("openConnection".into()),
+            0,
+        )];
         let consumers = vec![
             ResourceOpPattern::new(ResourceOpKind::Consume, Suffix(".close".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Consume, Suffix(".dispose".into()), 0),
@@ -442,7 +458,7 @@ mod tests {
         assert!(m.matches("obj_free"));
         assert!(m.matches("str_free"));
         assert!(!m.matches("free"));
-        assert!(!m.matches("safefree"));   // no underscore before "free"
+        assert!(!m.matches("safefree")); // no underscore before "free"
         assert!(!m.matches("Curl_safefree"));
     }
 

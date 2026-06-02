@@ -211,10 +211,7 @@ impl BranchDiffEngine {
 
     /// Walk a branch path from `start` until the matching Join node (depth=0)
     /// or Exit node, collecting all effects into a BranchPathSummary.
-    fn walk_branch_path(
-        graph: &CfgGraph,
-        start: &CfgNodeId,
-    ) -> BranchPathSummary {
+    fn walk_branch_path(graph: &CfgGraph, start: &CfgNodeId) -> BranchPathSummary {
         let mut summary = BranchPathSummary::default();
         let mut visited = HashSet::new();
         let mut worklist = VecDeque::new();
@@ -324,7 +321,11 @@ mod tests {
         }
     }
 
-    fn make_test_effect(node_id: CfgNodeId, order: u32, kind: SemanticEffectKind) -> SemanticEffect {
+    fn make_test_effect(
+        node_id: CfgNodeId,
+        order: u32,
+        kind: SemanticEffectKind,
+    ) -> SemanticEffect {
         let kind_name = match &kind {
             SemanticEffectKind::Alloc { .. } => "Alloc",
             SemanticEffectKind::Free { .. } => "Free",
@@ -371,11 +372,7 @@ mod tests {
         make_node(fid, CfgNodeKind::Exit, 0, byte, vec![])
     }
 
-    fn make_branch_node(
-        fid: &SymbolId,
-        line: u32,
-        byte: u32,
-    ) -> CfgNode {
+    fn make_branch_node(fid: &SymbolId, line: u32, byte: u32) -> CfgNode {
         make_node(fid, CfgNodeKind::Branch, line, byte, vec![])
     }
 
@@ -398,18 +395,30 @@ mod tests {
 
     /// Create a Free semantic effect for a field.
     fn se_free(node_id: CfgNodeId, order: u32, field: &str) -> SemanticEffect {
-        make_test_effect(node_id, order, SemanticEffectKind::Free {
-            place: PlaceRef::Field { path: field.to_string() },
-            callee: "?".to_string(),
-        })
+        make_test_effect(
+            node_id,
+            order,
+            SemanticEffectKind::Free {
+                place: PlaceRef::Field {
+                    path: field.to_string(),
+                },
+                callee: "?".to_string(),
+            },
+        )
     }
 
     /// Create an Alloc semantic effect for a field.
     fn se_alloc(node_id: CfgNodeId, order: u32, field: &str) -> SemanticEffect {
-        make_test_effect(node_id, order, SemanticEffectKind::Alloc {
-            target: PlaceRef::Field { path: field.to_string() },
-            callee: "?".to_string(),
-        })
+        make_test_effect(
+            node_id,
+            order,
+            SemanticEffectKind::Alloc {
+                target: PlaceRef::Field {
+                    path: field.to_string(),
+                },
+                callee: "?".to_string(),
+            },
+        )
     }
 
     #[test]

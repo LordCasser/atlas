@@ -174,40 +174,38 @@ impl ServerHandler for AtlasMcpService {
 
         async move {
             // ── For long-running tools with progress token, set up progress channel ─
-            let _progress_task =
-                if matches!(tool_name.as_str(), "index" | "project" | "search")
-                    && has_progress_token
+            let _progress_task = if matches!(tool_name.as_str(), "index" | "project" | "search")
+                && has_progress_token
+            {
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<tools::ProgressReport>();
+                let token = progress_token.unwrap();
+                let peer = context.peer.clone();
+
+                // Store the sender on the router so handle_index can use it.
                 {
-                    let (tx, mut rx) =
-                        tokio::sync::mpsc::unbounded_channel::<tools::ProgressReport>();
-                    let token = progress_token.unwrap();
-                    let peer = context.peer.clone();
+                    let mut router = self.router.lock().map_err(|_| {
+                        rmcp::ErrorData::internal_error("Atlas MCP router lock poisoned", None)
+                    })?;
+                    router.progress_sender = Some(tx);
+                }
 
-                    // Store the sender on the router so handle_index can use it.
-                    {
-                        let mut router = self.router.lock().map_err(|_| {
-                            rmcp::ErrorData::internal_error("Atlas MCP router lock poisoned", None)
-                        })?;
-                        router.progress_sender = Some(tx);
-                    }
-
-                    // Spawn a task that forwards progress reports to MCP notifications.
-                    Some(tokio::spawn(async move {
-                        while let Some((progress, total, message)) = rx.recv().await {
-                            let mut params =
-                                rmcp_model::ProgressNotificationParam::new(token.clone(), progress);
-                            if let Some(t) = total {
-                                params = params.with_total(t);
-                            }
-                            if let Some(m) = message {
-                                params = params.with_message(m);
-                            }
-                            let _ = peer.notify_progress(params).await;
+                // Spawn a task that forwards progress reports to MCP notifications.
+                Some(tokio::spawn(async move {
+                    while let Some((progress, total, message)) = rx.recv().await {
+                        let mut params =
+                            rmcp_model::ProgressNotificationParam::new(token.clone(), progress);
+                        if let Some(t) = total {
+                            params = params.with_total(t);
                         }
-                    }))
-                } else {
-                    None
-                };
+                        if let Some(m) = message {
+                            params = params.with_message(m);
+                        }
+                        let _ = peer.notify_progress(params).await;
+                    }
+                }))
+            } else {
+                None
+            };
 
             let mut args = request
                 .arguments

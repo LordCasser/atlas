@@ -1,4 +1,4 @@
-//! `atlas_resume` — resume a previous query to get enhanced results after
+//! `resume_task` — resume a previous query to get enhanced results after
 //! lazy background extraction completes.
 //!
 //! Re-dispatches to the original handler after re-running lazy extraction on
@@ -9,7 +9,7 @@ use super::query_snapshot::QueryStatus;
 use serde_json::{Value, json};
 
 impl ToolRouter {
-    /// Handle `atlas_resume` — re-run lazy extraction then re-execute the
+    /// Handle `resume_task` — re-run lazy extraction then re-execute the
     /// original tool handler with the same arguments.
     pub(crate) fn handle_resume_task(&mut self, args: &Value) -> (String, bool) {
         let query_id = crate::tools::get_str(args, "query_id");
@@ -75,10 +75,17 @@ impl ToolRouter {
         // Copy query_id before snapshot moves
         let original_query_id = query_id.to_string();
 
-        // Re-dispatch to original handler (new public tool names)
+        // Re-dispatch to original handler using unified parameter names.
+        // NOTE: Old snapshots with 'symbol_name'/'from_name'/'to_name' fields
+        // are NOT auto-mapped — those snapshots must be recreated by the client
+        // using the new unified 'symbol'/'from'/'to' parameters.
         let (resp_str, is_error) = match snapshot.tool_name.as_str() {
             "trace" => {
-                let kind = snapshot.tool_args.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                let kind = snapshot
+                    .tool_args
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 match kind {
                     "point" => self.handle_trace_point(&snapshot.tool_args),
                     "variable" => self.handle_trace_variable(&snapshot.tool_args),
@@ -93,19 +100,44 @@ impl ToolRouter {
                 }
             }
             "calls" => {
-                let direction = snapshot.tool_args.get("direction").and_then(|v| v.as_str()).unwrap_or("");
-                let depth = snapshot.tool_args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1);
-                let edge_kinds_is_custom = snapshot.tool_args.get("edge_kinds")
+                let direction = snapshot
+                    .tool_args
+                    .get("direction")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let depth = snapshot
+                    .tool_args
+                    .get("depth")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1);
+                let edge_kinds_is_custom = snapshot
+                    .tool_args
+                    .get("edge_kinds")
                     .and_then(|v| v.as_array())
                     .map(|arr| {
                         let kinds: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
                         !kinds.is_empty() && kinds != ["calls", "instantiates", "implements"]
                     })
                     .unwrap_or(false);
-                if depth > 1 || direction == "both" || direction.is_empty() {
-                    self.handle_callgraph(&snapshot.tool_args)
-                } else if edge_kinds_is_custom {
-                    self.handle_neighbors(&snapshot.tool_args)
+                // Custom edge_kinds, multi-hop, or bidirectional → callgraph (P0-2 fix)
+                if edge_kinds_is_custom || depth > 1 || direction == "both" || direction.is_empty()
+                {
+                    // handle_callgraph internally defaults depth to 3, but our
+                    // schema default is 1. Inject depth when not user-specified.
+                    let call_args = if snapshot.tool_args.get("depth").is_none() {
+                        let mut m = serde_json::Map::new();
+                        if let Some(obj) = snapshot.tool_args.as_object() {
+                            m.clone_from(obj);
+                        }
+                        m.insert(
+                            "depth".into(),
+                            serde_json::Value::Number(serde_json::Number::from(depth)),
+                        );
+                        serde_json::Value::Object(m)
+                    } else {
+                        snapshot.tool_args.clone()
+                    };
+                    self.handle_callgraph(&call_args)
                 } else {
                     match direction {
                         "incoming" => self.handle_callers(&snapshot.tool_args),
@@ -120,7 +152,11 @@ impl ToolRouter {
                 }
             }
             "symbol" => {
-                let view = snapshot.tool_args.get("view").and_then(|v| v.as_str()).unwrap_or("");
+                let view = snapshot
+                    .tool_args
+                    .get("view")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 match view {
                     "detail" | "" => self.handle_symbol_detail(&snapshot.tool_args),
                     "context" => self.handle_context(&snapshot.tool_args),

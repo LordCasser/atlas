@@ -74,12 +74,18 @@ impl TransferGraph {
 
     /// Get all writes to a specific field.
     pub fn writes_to(&self, field: &str) -> &[FieldWriteRecord] {
-        self.field_writes.get(field).map(|v| v.as_slice()).unwrap_or(&[])
+        self.field_writes
+            .get(field)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Get all frees of a specific field.
     pub fn frees_of(&self, field: &str) -> &[FieldFreeRecord] {
-        self.field_frees.get(field).map(|v| v.as_slice()).unwrap_or(&[])
+        self.field_frees
+            .get(field)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Are there both writes and frees for this field? (high-interest pattern)
@@ -105,13 +111,10 @@ struct DfIndex<'a> {
 
 impl<'a> DfIndex<'a> {
     fn build(data_nodes: &'a [DataNode], edges: &'a [DataFlowEdge]) -> Self {
-        let nodes: HashMap<DataNodeId, &DataNode> =
-            data_nodes.iter().map(|n| (n.id, n)).collect();
+        let nodes: HashMap<DataNodeId, &DataNode> = data_nodes.iter().map(|n| (n.id, n)).collect();
 
-        let mut source_edges: HashMap<DataNodeId, Vec<(DataFlowKind, DataNodeId)>> =
-            HashMap::new();
-        let mut target_edges: HashMap<DataNodeId, Vec<(DataFlowKind, DataNodeId)>> =
-            HashMap::new();
+        let mut source_edges: HashMap<DataNodeId, Vec<(DataFlowKind, DataNodeId)>> = HashMap::new();
+        let mut target_edges: HashMap<DataNodeId, Vec<(DataFlowKind, DataNodeId)>> = HashMap::new();
         for e in edges {
             source_edges
                 .entry(e.source)
@@ -385,9 +388,7 @@ fn resolve_store_effect(
                                     cfg_node_id,
                                     effects.len() as u32,
                                     SemanticEffectKind::Alloc {
-                                        target: PlaceRef::Local {
-                                            name: local_name,
-                                        },
+                                        target: PlaceRef::Local { name: local_name },
                                         callee: callee.clone(),
                                     },
                                     confidence,
@@ -428,21 +429,27 @@ fn build_transfer_graph(
                     src,
                     ..
                 } => {
-                    field_writes.entry(path.clone()).or_default().push(FieldWriteRecord {
-                        value_source: src.clone(),
-                        confidence: effect.confidence,
-                        node_line,
-                    });
+                    field_writes
+                        .entry(path.clone())
+                        .or_default()
+                        .push(FieldWriteRecord {
+                            value_source: src.clone(),
+                            confidence: effect.confidence,
+                            node_line,
+                        });
                 }
                 SemanticEffectKind::Free {
                     place: PlaceRef::Field { path },
                     callee,
                     ..
                 } => {
-                    field_frees.entry(path.clone()).or_default().push(FieldFreeRecord {
-                        callee: callee.clone(),
-                        node_line,
-                    });
+                    field_frees
+                        .entry(path.clone())
+                        .or_default()
+                        .push(FieldFreeRecord {
+                            callee: callee.clone(),
+                            node_line,
+                        });
                 }
                 _ => {}
             }
@@ -484,11 +491,7 @@ fn find_overlapping_data_nodes<'a>(
 ///
 /// Common pattern: `free(ptr)` where ptr traces back through
 /// Assign ← FieldLoad ← Field.
-fn trace_back_to_place(
-    start: DataNodeId,
-    dfi: &DfIndex,
-    max_depth: usize,
-) -> Option<PlaceRef> {
+fn trace_back_to_place(start: DataNodeId, dfi: &DfIndex, max_depth: usize) -> Option<PlaceRef> {
     let mut current = start;
     let mut visited = HashSet::new();
 
@@ -635,9 +638,8 @@ fn find_intermediate_local_name(source_id: DataNodeId, dfi: &DfIndex) -> String 
 
     // Try one more step
     if let Some(edges) = dfi.target_edges.get(&source_id) {
-        if let Some((DataFlowKind::Assign, prev)) = edges
-            .iter()
-            .find(|(k, _)| *k == DataFlowKind::Assign)
+        if let Some((DataFlowKind::Assign, prev)) =
+            edges.iter().find(|(k, _)| *k == DataFlowKind::Assign)
         {
             if let Some(prev_dn) = dfi.nodes.get(prev) {
                 if matches!(

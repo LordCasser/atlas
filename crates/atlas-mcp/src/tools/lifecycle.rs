@@ -1,4 +1,4 @@
-//! atlas_lifecycle — field lifecycle analysis using CFG effect annotations.
+//! lifecycle — field lifecycle analysis using CFG effect annotations.
 //!
 //! Given a function symbol and a field path, walks the function's CFG nodes
 //! with effect annotations to produce a state-machine view of the field's
@@ -29,7 +29,7 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        // Generate query_id for atlas_resume / atlas_jobs
+        // Generate query_id for resume / tasks
         let query_id = Self::generate_query_id();
 
         // Ensure structural data is available (may trigger lazy extraction)

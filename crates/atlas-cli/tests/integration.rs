@@ -1189,32 +1189,30 @@ fn mcp_tools_are_registered() {
     let tools = atlas_mcp::make_all_tools();
     let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
 
-    // Core tools must be present
-    assert!(
-        tool_names.contains(&"status"),
-        "status tool missing from MCP"
+    assert_eq!(
+        tool_names.len(),
+        18,
+        "expected exactly 18 MCP tools, got {}",
+        tool_names.len()
     );
-    assert!(
-        tool_names.contains(&"search"),
-        "search tool missing from MCP"
-    );
-    assert!(
-        tool_names.contains(&"symbol"),
-        "symbol tool missing from MCP"
-    );
-    assert!(
-        tool_names.contains(&"callgraph"),
-        "callgraph tool missing from MCP"
-    );
-    assert!(tool_names.contains(&"path"), "path tool missing from MCP");
-    assert!(
-        tool_names.contains(&"explore"),
-        "explore tool missing from MCP"
-    );
-    assert!(
-        tool_names.contains(&"context"),
-        "context tool missing from MCP"
-    );
+    assert!(tool_names.contains(&"project"));
+    assert!(tool_names.contains(&"index"));
+    assert!(tool_names.contains(&"search"));
+    assert!(tool_names.contains(&"symbol"));
+    assert!(tool_names.contains(&"calls"));
+    assert!(tool_names.contains(&"explore"));
+    assert!(tool_names.contains(&"path"));
+    assert!(tool_names.contains(&"impact"));
+    assert!(tool_names.contains(&"file_dependencies"));
+    assert!(tool_names.contains(&"trace"));
+    assert!(tool_names.contains(&"lifecycle"));
+    assert!(tool_names.contains(&"branch_diff"));
+    assert!(tool_names.contains(&"fp_dispatches"));
+    assert!(tool_names.contains(&"domain_rules"));
+    assert!(tool_names.contains(&"tasks"));
+    assert!(tool_names.contains(&"task_status"));
+    assert!(tool_names.contains(&"wait_for_task"));
+    assert!(tool_names.contains(&"resume_task"));
 }
 
 /// Verify that DataNodes and dataflow_edges are cascade-deleted

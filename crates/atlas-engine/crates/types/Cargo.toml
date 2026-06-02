@@ -1,6 +1,6 @@
 [package]
 name = "types"
-version = "1.3.0"
+version = "1.3.1"
 edition = "2024"
 description = "Atlas core type system: IDs, enums, and the Intermediate Representation (IR)"
 license = "MIT"

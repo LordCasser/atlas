@@ -1,4 +1,4 @@
-//! `atlas_jobs` — list background extraction jobs with status.
+//! Background extraction job listing — used by the `tasks` tool.
 //!
 //! Provides observability into lazy extraction progress. Can filter by
 //! query_id to see jobs triggered by a specific query.

@@ -195,19 +195,39 @@ impl ToolRouter {
         }
     }
 
-    pub(crate) fn handle_files(&self) -> (String, bool) {
+    pub(crate) fn handle_files(&self, args: &serde_json::Value) -> (String, bool) {
+        let limit = super::get_u64(args, "limit").map(|v| v as usize);
+        let language = super::get_str(args, "language");
+        let path_prefix = super::get_str(args, "path_prefix");
         match self.store.list_files() {
-            Ok(files) => (
-                serde_json::to_string_pretty(&json!({
-                    "files": files.iter().map(|f| json!({
-                        "path": f.path,
-                        "language": f.language.as_str(),
-                        "status": f.status.as_str(),
-                    })).collect::<Vec<_>>(),
-                }))
-                .unwrap_or_else(|e| e.to_string()),
-                false,
-            ),
+            Ok(files) => {
+                let mut filtered: Vec<_> = files
+                    .iter()
+                    .filter(|f| {
+                        if !path_prefix.is_empty() && !f.path.starts_with(path_prefix) {
+                            return false;
+                        }
+                        if !language.is_empty() && f.language.as_str() != language {
+                            return false;
+                        }
+                        true
+                    })
+                    .collect();
+                if let Some(n) = limit {
+                    filtered.truncate(n);
+                }
+                (
+                    serde_json::to_string_pretty(&json!({
+                        "files": filtered.iter().map(|f| json!({
+                            "path": f.path,
+                            "language": f.language.as_str(),
+                            "status": f.status.as_str(),
+                        })).collect::<Vec<_>>(),
+                    }))
+                    .unwrap_or_else(|e| e.to_string()),
+                    false,
+                )
+            }
             Err(e) => (format!("Error listing files: {e}"), true),
         }
     }

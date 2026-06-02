@@ -139,13 +139,11 @@ pub fn analyze_branch_semantic(
 
     // Sort: severity desc → confidence desc
     issues.sort_by(|a, b| {
-        b.severity
-            .cmp(&a.severity)
-            .then_with(|| {
-                b.confidence
-                    .partial_cmp(&a.confidence)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+        b.severity.cmp(&a.severity).then_with(|| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     });
 
     issues
@@ -360,104 +358,148 @@ fn diff_field(
     let has_write_false = false_summary.has_write;
 
     // 1. AsymmetricPair: one side does free+write (alloc pattern), other side does nothing
-    if has_free_true && (has_alloc_true || has_write_true) && !has_free_false && !has_alloc_false && !has_write_false
+    if has_free_true
+        && (has_alloc_true || has_write_true)
+        && !has_free_false
+        && !has_alloc_false
+        && !has_write_false
     {
         return Some(make_issue(
-            field, branch_node_id, BranchAsymmetryKind::AsymmetricPair,
-            IssueSeverity::High, 0.85,
+            field,
+            branch_node_id,
+            BranchAsymmetryKind::AsymmetricPair,
+            IssueSeverity::High,
+            0.85,
             format!(
                 "field '{}' freed and reallocated in true branch, untouched in false branch",
                 field
             ),
-            true_summary, false_summary,
+            true_summary,
+            false_summary,
         ));
     }
-    if has_free_false && (has_alloc_false || has_write_false) && !has_free_true && !has_alloc_true && !has_write_true
+    if has_free_false
+        && (has_alloc_false || has_write_false)
+        && !has_free_true
+        && !has_alloc_true
+        && !has_write_true
     {
         return Some(make_issue(
-            field, branch_node_id, BranchAsymmetryKind::AsymmetricPair,
-            IssueSeverity::High, 0.85,
+            field,
+            branch_node_id,
+            BranchAsymmetryKind::AsymmetricPair,
+            IssueSeverity::High,
+            0.85,
             format!(
                 "field '{}' freed and reallocated in false branch, untouched in true branch",
                 field
             ),
-            true_summary, false_summary,
+            true_summary,
+            false_summary,
         ));
     }
 
     // 2. AsymmetricFree: one side frees, the other doesn't
     if has_free_true && !has_free_false {
         return Some(make_issue(
-            field, branch_node_id, BranchAsymmetryKind::AsymmetricFree,
-            IssueSeverity::Medium, 0.70,
+            field,
+            branch_node_id,
+            BranchAsymmetryKind::AsymmetricFree,
+            IssueSeverity::Medium,
+            0.70,
             format!(
                 "field '{}' freed in true branch but not in false branch",
                 field
             ),
-            true_summary, false_summary,
+            true_summary,
+            false_summary,
         ));
     }
     if has_free_false && !has_free_true {
         return Some(make_issue(
-            field, branch_node_id, BranchAsymmetryKind::AsymmetricFree,
-            IssueSeverity::Medium, 0.70,
+            field,
+            branch_node_id,
+            BranchAsymmetryKind::AsymmetricFree,
+            IssueSeverity::Medium,
+            0.70,
             format!(
                 "field '{}' freed in false branch but not in true branch",
                 field
             ),
-            true_summary, false_summary,
+            true_summary,
+            false_summary,
         ));
     }
 
     // 3. AsymmetricAlloc: one side allocates, the other doesn't
     if has_alloc_true && !has_alloc_false {
         return Some(make_issue(
-            field, branch_node_id, BranchAsymmetryKind::AsymmetricAlloc,
-            IssueSeverity::Medium, 0.65,
+            field,
+            branch_node_id,
+            BranchAsymmetryKind::AsymmetricAlloc,
+            IssueSeverity::Medium,
+            0.65,
             format!(
                 "field '{}' allocated in true branch but not in false branch",
                 field
             ),
-            true_summary, false_summary,
+            true_summary,
+            false_summary,
         ));
     }
     if has_alloc_false && !has_alloc_true {
         return Some(make_issue(
-            field, branch_node_id, BranchAsymmetryKind::AsymmetricAlloc,
-            IssueSeverity::Medium, 0.65,
+            field,
+            branch_node_id,
+            BranchAsymmetryKind::AsymmetricAlloc,
+            IssueSeverity::Medium,
+            0.65,
             format!(
                 "field '{}' allocated in false branch but not in true branch",
                 field
             ),
-            true_summary, false_summary,
+            true_summary,
+            false_summary,
         ));
     }
 
     // 4. AsymmetricWrite: one side writes, the other doesn't
     if has_write_true && !has_write_false {
         let confidence = 0.50;
-        let severity = if confidence < 0.55 { IssueSeverity::Low } else { IssueSeverity::Info };
+        let severity = if confidence < 0.55 {
+            IssueSeverity::Low
+        } else {
+            IssueSeverity::Info
+        };
         return Some(make_issue(
-            field, branch_node_id, BranchAsymmetryKind::AsymmetricWrite,
-            severity, confidence,
+            field,
+            branch_node_id,
+            BranchAsymmetryKind::AsymmetricWrite,
+            severity,
+            confidence,
             format!(
                 "field '{}' written in true branch but not in false branch",
                 field
             ),
-            true_summary, false_summary,
+            true_summary,
+            false_summary,
         ));
     }
     if has_write_false && !has_write_true {
         let confidence = 0.50;
         let severity = IssueSeverity::Low;
         return Some(make_issue(
-            field, branch_node_id, BranchAsymmetryKind::AsymmetricWrite,
-            severity, confidence,
+            field,
+            branch_node_id,
+            BranchAsymmetryKind::AsymmetricWrite,
+            severity,
+            confidence,
             format!(
                 "field '{}' written in false branch but not in true branch",
                 field
             ),
-            true_summary, false_summary,
+            true_summary,
+            false_summary,
         ));
     }
 
@@ -467,13 +509,17 @@ fn diff_field(
         let fv = false_summary.stored_value.as_deref().unwrap_or("");
         if !tv.is_empty() && !fv.is_empty() && tv != fv {
             return Some(make_issue(
-                field, branch_node_id, BranchAsymmetryKind::AsymmetricValue,
-                IssueSeverity::Low, 0.40,
+                field,
+                branch_node_id,
+                BranchAsymmetryKind::AsymmetricValue,
+                IssueSeverity::Low,
+                0.40,
                 format!(
                     "field '{}' written to '{}' in true branch and '{}' in false branch",
                     field, tv, fv
                 ),
-                true_summary, false_summary,
+                true_summary,
+                false_summary,
             ));
         }
     }
@@ -509,7 +555,9 @@ fn make_issue(
 mod tests {
     use super::*;
     use crate::cfg_graph::CfgGraph;
-    use crate::effect_composer::{EffectComposition, FieldFreeRecord, FieldWriteRecord, TransferGraph};
+    use crate::effect_composer::{
+        EffectComposition, FieldFreeRecord, FieldWriteRecord, TransferGraph,
+    };
     use types::cfg::{CfgEdge, CfgNode};
     use types::enums::{CfgEdgeKind, CfgNodeKind};
     use types::ids::CfgNodeId;
@@ -520,11 +568,7 @@ mod tests {
         types::ids::SymbolId::default()
     }
 
-    fn make_stmt_node(
-        line: u32,
-        seq: u32,
-        effects: Vec<SemanticEffect>,
-    ) -> CfgNode {
+    fn make_stmt_node(line: u32, seq: u32, effects: Vec<SemanticEffect>) -> CfgNode {
         let fid = test_fid();
         let nid = CfgNodeId::generate(&fid, "test_stmt", seq);
         CfgNode {
@@ -581,11 +625,7 @@ mod tests {
         }
     }
 
-    fn make_se_effect(
-        node_id: CfgNodeId,
-        order: u32,
-        kind: SemanticEffectKind,
-    ) -> SemanticEffect {
+    fn make_se_effect(node_id: CfgNodeId, order: u32, kind: SemanticEffectKind) -> SemanticEffect {
         let kind_name = match &kind {
             SemanticEffectKind::Alloc { .. } => "Alloc",
             SemanticEffectKind::Free { .. } => "Free",
@@ -632,18 +672,52 @@ mod tests {
         let exit_nid = CfgNodeId::generate(&fid, "exit", 7);
 
         let entry = CfgNode {
-            id: entry_nid, function_id: fid,
+            id: entry_nid,
+            function_id: fid,
             kind: CfgNodeKind::Entry,
-            stmt_range: TextRange { start_byte: 0, end_byte: 0, start_line: 0, start_column: 0, end_line: 0, end_column: 0 },
+            stmt_range: TextRange {
+                start_byte: 0,
+                end_byte: 0,
+                start_line: 0,
+                start_column: 0,
+                end_line: 0,
+                end_column: 0,
+            },
             semantic_effects: vec![],
         };
 
-        let true_free_se = make_se_effect(true_free_nid, 0,
-            SemanticEffectKind::Free { place: PlaceRef::Field { path: field.to_string() }, callee: "Curl_safefree".to_string() });
-        let true_alloc_se = make_se_effect(true_alloc_nid, 0,
-            SemanticEffectKind::Alloc { target: PlaceRef::Local { name: "c".to_string() }, callee: "Curl_copy_header_value".to_string() });
-        let true_store_se = make_se_effect(true_store_nid, 0,
-            SemanticEffectKind::Store { dst: PlaceRef::Field { path: field.to_string() }, src: ValueSource::Local { name: "c".to_string() } });
+        let true_free_se = make_se_effect(
+            true_free_nid,
+            0,
+            SemanticEffectKind::Free {
+                place: PlaceRef::Field {
+                    path: field.to_string(),
+                },
+                callee: "Curl_safefree".to_string(),
+            },
+        );
+        let true_alloc_se = make_se_effect(
+            true_alloc_nid,
+            0,
+            SemanticEffectKind::Alloc {
+                target: PlaceRef::Local {
+                    name: "c".to_string(),
+                },
+                callee: "Curl_copy_header_value".to_string(),
+            },
+        );
+        let true_store_se = make_se_effect(
+            true_store_nid,
+            0,
+            SemanticEffectKind::Store {
+                dst: PlaceRef::Field {
+                    path: field.to_string(),
+                },
+                src: ValueSource::Local {
+                    name: "c".to_string(),
+                },
+            },
+        );
 
         // Clone for composition (node construction below moves originals)
         let tf_clone = true_free_se.clone();
@@ -652,24 +726,155 @@ mod tests {
 
         let nodes = vec![
             entry,
-            CfgNode { id: branch_nid, function_id: fid, kind: CfgNodeKind::Branch, stmt_range: TextRange { start_byte: 1, end_byte: 2, start_line: 1, start_column: 0, end_line: 1, end_column: 0 }, semantic_effects: vec![] },
-            CfgNode { id: true_free_nid, function_id: fid, kind: CfgNodeKind::Statement, stmt_range: TextRange { start_byte: 2, end_byte: 3, start_line: 2, start_column: 0, end_line: 2, end_column: 0 }, semantic_effects: vec![true_free_se] },
-            CfgNode { id: true_alloc_nid, function_id: fid, kind: CfgNodeKind::Statement, stmt_range: TextRange { start_byte: 3, end_byte: 4, start_line: 3, start_column: 0, end_line: 3, end_column: 0 }, semantic_effects: vec![true_alloc_se] },
-            CfgNode { id: true_store_nid, function_id: fid, kind: CfgNodeKind::Statement, stmt_range: TextRange { start_byte: 4, end_byte: 5, start_line: 4, start_column: 0, end_line: 4, end_column: 0 }, semantic_effects: vec![true_store_se] },
-            CfgNode { id: false_nop_nid, function_id: fid, kind: CfgNodeKind::Statement, stmt_range: TextRange { start_byte: 5, end_byte: 6, start_line: 5, start_column: 0, end_line: 5, end_column: 0 }, semantic_effects: vec![] },
-            CfgNode { id: join_nid, function_id: fid, kind: CfgNodeKind::Join, stmt_range: TextRange { start_byte: 6, end_byte: 7, start_line: 6, start_column: 0, end_line: 6, end_column: 0 }, semantic_effects: vec![] },
-            CfgNode { id: exit_nid, function_id: fid, kind: CfgNodeKind::Exit, stmt_range: TextRange { start_byte: 7, end_byte: 7, start_line: 7, start_column: 0, end_line: 7, end_column: 0 }, semantic_effects: vec![] },
+            CfgNode {
+                id: branch_nid,
+                function_id: fid,
+                kind: CfgNodeKind::Branch,
+                stmt_range: TextRange {
+                    start_byte: 1,
+                    end_byte: 2,
+                    start_line: 1,
+                    start_column: 0,
+                    end_line: 1,
+                    end_column: 0,
+                },
+                semantic_effects: vec![],
+            },
+            CfgNode {
+                id: true_free_nid,
+                function_id: fid,
+                kind: CfgNodeKind::Statement,
+                stmt_range: TextRange {
+                    start_byte: 2,
+                    end_byte: 3,
+                    start_line: 2,
+                    start_column: 0,
+                    end_line: 2,
+                    end_column: 0,
+                },
+                semantic_effects: vec![true_free_se],
+            },
+            CfgNode {
+                id: true_alloc_nid,
+                function_id: fid,
+                kind: CfgNodeKind::Statement,
+                stmt_range: TextRange {
+                    start_byte: 3,
+                    end_byte: 4,
+                    start_line: 3,
+                    start_column: 0,
+                    end_line: 3,
+                    end_column: 0,
+                },
+                semantic_effects: vec![true_alloc_se],
+            },
+            CfgNode {
+                id: true_store_nid,
+                function_id: fid,
+                kind: CfgNodeKind::Statement,
+                stmt_range: TextRange {
+                    start_byte: 4,
+                    end_byte: 5,
+                    start_line: 4,
+                    start_column: 0,
+                    end_line: 4,
+                    end_column: 0,
+                },
+                semantic_effects: vec![true_store_se],
+            },
+            CfgNode {
+                id: false_nop_nid,
+                function_id: fid,
+                kind: CfgNodeKind::Statement,
+                stmt_range: TextRange {
+                    start_byte: 5,
+                    end_byte: 6,
+                    start_line: 5,
+                    start_column: 0,
+                    end_line: 5,
+                    end_column: 0,
+                },
+                semantic_effects: vec![],
+            },
+            CfgNode {
+                id: join_nid,
+                function_id: fid,
+                kind: CfgNodeKind::Join,
+                stmt_range: TextRange {
+                    start_byte: 6,
+                    end_byte: 7,
+                    start_line: 6,
+                    start_column: 0,
+                    end_line: 6,
+                    end_column: 0,
+                },
+                semantic_effects: vec![],
+            },
+            CfgNode {
+                id: exit_nid,
+                function_id: fid,
+                kind: CfgNodeKind::Exit,
+                stmt_range: TextRange {
+                    start_byte: 7,
+                    end_byte: 7,
+                    start_line: 7,
+                    start_column: 0,
+                    end_line: 7,
+                    end_column: 0,
+                },
+                semantic_effects: vec![],
+            },
         ];
 
         let edges = vec![
-            CfgEdge { id: types::ids::CfgEdgeId::default(), source: entry_nid, target: branch_nid, kind: CfgEdgeKind::Normal },
-            CfgEdge { id: types::ids::CfgEdgeId::default(), source: branch_nid, target: true_free_nid, kind: CfgEdgeKind::TrueBranch },
-            CfgEdge { id: types::ids::CfgEdgeId::default(), source: branch_nid, target: false_nop_nid, kind: CfgEdgeKind::FalseBranch },
-            CfgEdge { id: types::ids::CfgEdgeId::default(), source: true_free_nid, target: true_alloc_nid, kind: CfgEdgeKind::Normal },
-            CfgEdge { id: types::ids::CfgEdgeId::default(), source: true_alloc_nid, target: true_store_nid, kind: CfgEdgeKind::Normal },
-            CfgEdge { id: types::ids::CfgEdgeId::default(), source: true_store_nid, target: join_nid, kind: CfgEdgeKind::Normal },
-            CfgEdge { id: types::ids::CfgEdgeId::default(), source: false_nop_nid, target: join_nid, kind: CfgEdgeKind::Normal },
-            CfgEdge { id: types::ids::CfgEdgeId::default(), source: join_nid, target: exit_nid, kind: CfgEdgeKind::Normal },
+            CfgEdge {
+                id: types::ids::CfgEdgeId::default(),
+                source: entry_nid,
+                target: branch_nid,
+                kind: CfgEdgeKind::Normal,
+            },
+            CfgEdge {
+                id: types::ids::CfgEdgeId::default(),
+                source: branch_nid,
+                target: true_free_nid,
+                kind: CfgEdgeKind::TrueBranch,
+            },
+            CfgEdge {
+                id: types::ids::CfgEdgeId::default(),
+                source: branch_nid,
+                target: false_nop_nid,
+                kind: CfgEdgeKind::FalseBranch,
+            },
+            CfgEdge {
+                id: types::ids::CfgEdgeId::default(),
+                source: true_free_nid,
+                target: true_alloc_nid,
+                kind: CfgEdgeKind::Normal,
+            },
+            CfgEdge {
+                id: types::ids::CfgEdgeId::default(),
+                source: true_alloc_nid,
+                target: true_store_nid,
+                kind: CfgEdgeKind::Normal,
+            },
+            CfgEdge {
+                id: types::ids::CfgEdgeId::default(),
+                source: true_store_nid,
+                target: join_nid,
+                kind: CfgEdgeKind::Normal,
+            },
+            CfgEdge {
+                id: types::ids::CfgEdgeId::default(),
+                source: false_nop_nid,
+                target: join_nid,
+                kind: CfgEdgeKind::Normal,
+            },
+            CfgEdge {
+                id: types::ids::CfgEdgeId::default(),
+                source: join_nid,
+                target: exit_nid,
+                kind: CfgEdgeKind::Normal,
+            },
         ];
 
         let graph = CfgGraph::build(&nodes, &edges).expect("CFG build should succeed");
@@ -686,16 +891,27 @@ mod tests {
                 TransferGraph {
                     field_writes: {
                         let mut m = HashMap::new();
-                        m.insert(field.to_string(), vec![
-                            FieldWriteRecord { value_source: ValueSource::CallReturn { callee: "Curl_copy_header_value".to_string() }, confidence: 0.85, node_line: 4 },
-                        ]);
+                        m.insert(
+                            field.to_string(),
+                            vec![FieldWriteRecord {
+                                value_source: ValueSource::CallReturn {
+                                    callee: "Curl_copy_header_value".to_string(),
+                                },
+                                confidence: 0.85,
+                                node_line: 4,
+                            }],
+                        );
                         m
                     },
                     field_frees: {
                         let mut m = HashMap::new();
-                        m.insert(field.to_string(), vec![
-                            FieldFreeRecord { callee: "Curl_safefree".to_string(), node_line: 2 },
-                        ]);
+                        m.insert(
+                            field.to_string(),
+                            vec![FieldFreeRecord {
+                                callee: "Curl_safefree".to_string(),
+                                node_line: 2,
+                            }],
+                        );
                         m
                     },
                 }
@@ -704,18 +920,41 @@ mod tests {
 
         let issues = analyze_branch_semantic(&graph, &composition);
 
-        assert!(!issues.is_empty(), "Expected at least one issue for the cookiehost pattern");
+        assert!(
+            !issues.is_empty(),
+            "Expected at least one issue for the cookiehost pattern"
+        );
         let cookiehost_issue = issues.iter().find(|i| i.field == field);
-        assert!(cookiehost_issue.is_some(), "Expected an issue for field '{field}'");
+        assert!(
+            cookiehost_issue.is_some(),
+            "Expected an issue for field '{field}'"
+        );
         let issue = cookiehost_issue.unwrap();
 
-        assert_eq!(issue.kind, BranchAsymmetryKind::AsymmetricPair,
-            "Expected AsymmetricPair, got {:?}", issue.kind);
-        assert!(issue.confidence >= 0.8, "Expected confidence >= 0.8, got {}", issue.confidence);
+        assert_eq!(
+            issue.kind,
+            BranchAsymmetryKind::AsymmetricPair,
+            "Expected AsymmetricPair, got {:?}",
+            issue.kind
+        );
+        assert!(
+            issue.confidence >= 0.8,
+            "Expected confidence >= 0.8, got {}",
+            issue.confidence
+        );
         assert!(issue.true_side.has_free, "True side should have free");
-        assert!(!issue.false_side.has_free, "False side should not have free");
-        assert!(issue.true_side.has_write, "True side should have write (re-assign)");
-        assert!(!issue.false_side.has_write, "False side should not have write");
+        assert!(
+            !issue.false_side.has_free,
+            "False side should not have free"
+        );
+        assert!(
+            issue.true_side.has_write,
+            "True side should have write (re-assign)"
+        );
+        assert!(
+            !issue.false_side.has_write,
+            "False side should not have write"
+        );
     }
 
     /// When both branches have identical effects, no asymmetry issue.
@@ -730,25 +969,141 @@ mod tests {
         let exit_nid = CfgNodeId::generate(&fid, "exit", 5);
 
         let field = "data.x";
-        let free_effect = make_se_effect(true_stmt_nid, 0,
-            SemanticEffectKind::Free { place: PlaceRef::Field { path: field.to_string() }, callee: "free".to_string() });
+        let free_effect = make_se_effect(
+            true_stmt_nid,
+            0,
+            SemanticEffectKind::Free {
+                place: PlaceRef::Field {
+                    path: field.to_string(),
+                },
+                callee: "free".to_string(),
+            },
+        );
 
         let nodes = vec![
-            CfgNode { id: entry_nid, function_id: fid, kind: CfgNodeKind::Entry, stmt_range: TextRange { start_byte: 0, end_byte: 0, start_line: 0, start_column: 0, end_line: 0, end_column: 0 }, semantic_effects: vec![] },
-            CfgNode { id: branch_nid, function_id: fid, kind: CfgNodeKind::Branch, stmt_range: TextRange { start_byte: 1, end_byte: 2, start_line: 1, start_column: 0, end_line: 1, end_column: 0 }, semantic_effects: vec![] },
-            CfgNode { id: true_stmt_nid, function_id: fid, kind: CfgNodeKind::Statement, stmt_range: TextRange { start_byte: 2, end_byte: 3, start_line: 2, start_column: 0, end_line: 2, end_column: 0 }, semantic_effects: vec![free_effect.clone()] },
-            CfgNode { id: false_stmt_nid, function_id: fid, kind: CfgNodeKind::Statement, stmt_range: TextRange { start_byte: 3, end_byte: 4, start_line: 3, start_column: 0, end_line: 3, end_column: 0 }, semantic_effects: vec![free_effect.clone()] },
-            CfgNode { id: join_nid, function_id: fid, kind: CfgNodeKind::Join, stmt_range: TextRange { start_byte: 4, end_byte: 5, start_line: 4, start_column: 0, end_line: 4, end_column: 0 }, semantic_effects: vec![] },
-            CfgNode { id: exit_nid, function_id: fid, kind: CfgNodeKind::Exit, stmt_range: TextRange { start_byte: 5, end_byte: 5, start_line: 5, start_column: 0, end_line: 5, end_column: 0 }, semantic_effects: vec![] },
+            CfgNode {
+                id: entry_nid,
+                function_id: fid,
+                kind: CfgNodeKind::Entry,
+                stmt_range: TextRange {
+                    start_byte: 0,
+                    end_byte: 0,
+                    start_line: 0,
+                    start_column: 0,
+                    end_line: 0,
+                    end_column: 0,
+                },
+                semantic_effects: vec![],
+            },
+            CfgNode {
+                id: branch_nid,
+                function_id: fid,
+                kind: CfgNodeKind::Branch,
+                stmt_range: TextRange {
+                    start_byte: 1,
+                    end_byte: 2,
+                    start_line: 1,
+                    start_column: 0,
+                    end_line: 1,
+                    end_column: 0,
+                },
+                semantic_effects: vec![],
+            },
+            CfgNode {
+                id: true_stmt_nid,
+                function_id: fid,
+                kind: CfgNodeKind::Statement,
+                stmt_range: TextRange {
+                    start_byte: 2,
+                    end_byte: 3,
+                    start_line: 2,
+                    start_column: 0,
+                    end_line: 2,
+                    end_column: 0,
+                },
+                semantic_effects: vec![free_effect.clone()],
+            },
+            CfgNode {
+                id: false_stmt_nid,
+                function_id: fid,
+                kind: CfgNodeKind::Statement,
+                stmt_range: TextRange {
+                    start_byte: 3,
+                    end_byte: 4,
+                    start_line: 3,
+                    start_column: 0,
+                    end_line: 3,
+                    end_column: 0,
+                },
+                semantic_effects: vec![free_effect.clone()],
+            },
+            CfgNode {
+                id: join_nid,
+                function_id: fid,
+                kind: CfgNodeKind::Join,
+                stmt_range: TextRange {
+                    start_byte: 4,
+                    end_byte: 5,
+                    start_line: 4,
+                    start_column: 0,
+                    end_line: 4,
+                    end_column: 0,
+                },
+                semantic_effects: vec![],
+            },
+            CfgNode {
+                id: exit_nid,
+                function_id: fid,
+                kind: CfgNodeKind::Exit,
+                stmt_range: TextRange {
+                    start_byte: 5,
+                    end_byte: 5,
+                    start_line: 5,
+                    start_column: 0,
+                    end_line: 5,
+                    end_column: 0,
+                },
+                semantic_effects: vec![],
+            },
         ];
 
         let edges = vec![
-            CfgEdge { id: types::ids::CfgEdgeId::default(), source: entry_nid, target: branch_nid, kind: CfgEdgeKind::Normal },
-            CfgEdge { id: types::ids::CfgEdgeId::default(), source: branch_nid, target: true_stmt_nid, kind: CfgEdgeKind::TrueBranch },
-            CfgEdge { id: types::ids::CfgEdgeId::default(), source: branch_nid, target: false_stmt_nid, kind: CfgEdgeKind::FalseBranch },
-            CfgEdge { id: types::ids::CfgEdgeId::default(), source: true_stmt_nid, target: join_nid, kind: CfgEdgeKind::Normal },
-            CfgEdge { id: types::ids::CfgEdgeId::default(), source: false_stmt_nid, target: join_nid, kind: CfgEdgeKind::Normal },
-            CfgEdge { id: types::ids::CfgEdgeId::default(), source: join_nid, target: exit_nid, kind: CfgEdgeKind::Normal },
+            CfgEdge {
+                id: types::ids::CfgEdgeId::default(),
+                source: entry_nid,
+                target: branch_nid,
+                kind: CfgEdgeKind::Normal,
+            },
+            CfgEdge {
+                id: types::ids::CfgEdgeId::default(),
+                source: branch_nid,
+                target: true_stmt_nid,
+                kind: CfgEdgeKind::TrueBranch,
+            },
+            CfgEdge {
+                id: types::ids::CfgEdgeId::default(),
+                source: branch_nid,
+                target: false_stmt_nid,
+                kind: CfgEdgeKind::FalseBranch,
+            },
+            CfgEdge {
+                id: types::ids::CfgEdgeId::default(),
+                source: true_stmt_nid,
+                target: join_nid,
+                kind: CfgEdgeKind::Normal,
+            },
+            CfgEdge {
+                id: types::ids::CfgEdgeId::default(),
+                source: false_stmt_nid,
+                target: join_nid,
+                kind: CfgEdgeKind::Normal,
+            },
+            CfgEdge {
+                id: types::ids::CfgEdgeId::default(),
+                source: join_nid,
+                target: exit_nid,
+                kind: CfgEdgeKind::Normal,
+            },
         ];
 
         let graph = CfgGraph::build(&nodes, &edges).expect("CFG build should succeed");
@@ -767,7 +1122,10 @@ mod tests {
         };
 
         let issues = analyze_branch_semantic(&graph, &composition);
-        assert!(issues.is_empty(), "Symmetric branches should produce no issues, got: {:?}", issues);
+        assert!(
+            issues.is_empty(),
+            "Symmetric branches should produce no issues, got: {:?}",
+            issues
+        );
     }
 }
-

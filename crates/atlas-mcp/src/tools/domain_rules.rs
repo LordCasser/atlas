@@ -56,7 +56,7 @@ impl ToolRouter {
     pub(crate) fn handle_atlas_domain_rules(&mut self, args: &serde_json::Value) -> (String, bool) {
         let action = get_str(args, "action");
         let rule_id = get_str(args, "rule_id");
-        let _source = get_str(args, "source"); // unused now but kept for API compat
+        let source = get_str(args, "source");
         let language = get_str(args, "language");
         let status = get_str(args, "status");
 
@@ -93,6 +93,7 @@ impl ToolRouter {
                     Ok(rules) => {
                         let items: Vec<_> = rules
                             .iter()
+                            .filter(|r| source.is_empty() || r.source == source)
                             .map(|r| {
                                 json!({
                                     "id": r.id,
@@ -152,7 +153,7 @@ impl ToolRouter {
                 let resp = json!({
                     "ok": true,
                     "candidates": filtered,
-                    "hint": "Review candidates and use 'atlas_annotate' to approve. Learned rules are not automatically applied.",
+                    "hint": "Review candidates and use 'domain_rules' (action='add') to approve. Learned rules are not automatically applied.",
                 });
                 (
                     serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),

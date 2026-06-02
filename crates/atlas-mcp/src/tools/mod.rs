@@ -1247,9 +1247,9 @@ fn make_trace_tools() -> Vec<Tool> {
                     "file_path": { "type": "string", "description": "File path relative to project root (e.g. 'src/foo.ts'). Alternative to file_id." },
                     "line": { "type": "integer", "description": "1-based line number (required for kind='point'/'variable')." },
                     "column": { "type": "integer", "description": "1-based column number (required for kind='point'/'variable')." },
-                    "symbol": { "type": "string", "description": "Qualified symbol name (required for kind='callers')." },
-                    "from": { "type": "string", "description": "Source symbol qualified name or hex SymbolId (required for kind='forward')." },
-                    "to": { "type": "string", "description": "Target symbol qualified name or hex SymbolId (required for kind='forward')." },
+                    "symbol": { "type": "string", "description": "Qualified symbol name OR hex SymbolId (required for kind='callers'). Auto-detects format." },
+                    "from": { "type": "string", "description": "Source qualified symbol name OR hex SymbolId (required for kind='forward'). Auto-detects format." },
+                    "to": { "type": "string", "description": "Target qualified symbol name OR hex SymbolId (required for kind='forward'). Auto-detects format." },
                     "max_depth": { "type": "integer", "description": "Maximum traversal depth (kind='variable'/'forward'/'callers')." },
                     "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
@@ -1421,16 +1421,14 @@ impl ToolRouter {
         match action {
             "open" => self.handle_open_project(args),
             "status" => self.handle_status(),
-            "files" => self.handle_files(),
+            "files" => self.handle_files(args),
             "" => (
                 "Missing required 'action' parameter. Must be one of: open, status, files"
                     .to_string(),
                 true,
             ),
             other => (
-                format!(
-                    "Unknown action: '{other}'. Must be one of: open, status, files"
-                ),
+                format!("Unknown action: '{other}'. Must be one of: open, status, files"),
                 true,
             ),
         }
@@ -1451,10 +1449,7 @@ impl ToolRouter {
             "detail" | "" => {
                 // Remap: qname → qualified_name for the legacy detail handler
                 let mut mapped = serde_json::Map::new();
-                mapped.insert(
-                    "qualified_name".into(),
-                    Value::String(qname.to_string()),
-                );
+                mapped.insert("qualified_name".into(), Value::String(qname.to_string()));
                 if let Some(v) = args.get("includeCode") {
                     mapped.insert("includeCode".into(), v.clone());
                 }
@@ -1485,9 +1480,7 @@ impl ToolRouter {
                 self.handle_usages(&Value::Object(mapped))
             }
             other => (
-                format!(
-                    "Unknown view: '{other}'. Must be one of: detail, context, usages"
-                ),
+                format!("Unknown view: '{other}'. Must be one of: detail, context, usages"),
                 true,
             ),
         }
@@ -1500,32 +1493,49 @@ impl ToolRouter {
         let direction = get_str(args, "direction");
         let depth = get_u64(args, "depth").unwrap_or(1);
 
-        // Multi-hop or bidirectional → callgraph (handles edge_kinds internally)
-        if depth > 1 || direction == "both" || direction.is_empty() {
-            return self.handle_callgraph(args);
-        }
-
-        // Depth=1, specific direction → check edge_kinds for neighbor fallback
+        // Check if edge_kinds is non-default
         let edge_kinds: Vec<&str> = args
             .get("edge_kinds")
             .and_then(|v| v.as_array())
             .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
             .unwrap_or_default();
-        let is_custom_edges = !edge_kinds.is_empty()
-            && edge_kinds != ["calls", "instantiates", "implements"];
+        // Treat empty edge_kinds as "all edges" (wildcard) per schema contract.
+        // Only the explicit default set triggers the simple caller/callee fast path.
+        let is_default_edges =
+            !edge_kinds.is_empty() && edge_kinds == ["calls", "instantiates", "implements"];
+        let is_custom_edges = !edge_kinds.is_empty() && !is_default_edges;
 
-        // Non-default edge_kinds → neighbor query (all edge types)
-        if is_custom_edges {
-            return self.handle_neighbors(args);
+        // Custom edge_kinds, wildcard (empty), multi-hop, or bidirectional
+        // → callgraph (handles all properly)
+        if is_custom_edges
+            || edge_kinds.is_empty()
+            || depth > 1
+            || direction == "both"
+            || direction.is_empty()
+        {
+            // handle_callgraph internally defaults depth to 3, but our schema
+            // default is 1. Inject depth when not user-specified.
+            let call_args = if args.get("depth").is_none() {
+                let mut m = serde_json::Map::new();
+                if let Some(obj) = args.as_object() {
+                    m.clone_from(obj);
+                }
+                m.insert(
+                    "depth".into(),
+                    serde_json::Value::Number(serde_json::Number::from(depth)),
+                );
+                serde_json::Value::Object(m)
+            } else {
+                args.clone()
+            };
+            return self.handle_callgraph(&call_args);
         }
 
         match direction {
             "incoming" => self.handle_callers(args),
             "outgoing" => self.handle_callees(args),
             other => (
-                format!(
-                    "Unknown direction: '{other}'. Must be one of: incoming, outgoing, both"
-                ),
+                format!("Unknown direction: '{other}'. Must be one of: incoming, outgoing, both"),
                 true,
             ),
         }
@@ -1574,9 +1584,7 @@ impl ToolRouter {
                 )
             }
             other => (
-                format!(
-                    "Unknown direction: '{other}'. Must be one of: incoming, outgoing, both"
-                ),
+                format!("Unknown direction: '{other}'. Must be one of: incoming, outgoing, both"),
                 true,
             ),
         }
@@ -1633,9 +1641,7 @@ impl ToolRouter {
             "delete" => self.handle_atlas_domain_rules(args),
             "learn" => self.handle_atlas_rule_learn(args),
             other => (
-                format!(
-                    "Unknown action: '{other}'. Must be one of: add, list, delete, learn"
-                ),
+                format!("Unknown action: '{other}'. Must be one of: add, list, delete, learn"),
                 true,
             ),
         }

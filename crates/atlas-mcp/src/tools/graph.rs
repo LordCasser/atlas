@@ -24,7 +24,11 @@ fn is_allowed_edge(kind: &EdgeKind, allowed: &[EdgeKind]) -> bool {
 }
 
 /// Default edge kinds for call-graph traversal (call relationships).
-const DEFAULT_CALL_EDGES: &[EdgeKind] = &[EdgeKind::Calls, EdgeKind::Instantiates, EdgeKind::Implements];
+const DEFAULT_CALL_EDGES: &[EdgeKind] = &[
+    EdgeKind::Calls,
+    EdgeKind::Instantiates,
+    EdgeKind::Implements,
+];
 
 /// Parse the `edge_kinds` argument for call-graph tools.
 /// Returns the list of allowed edge kinds; an empty vec means "all edges" (wildcard).
@@ -329,12 +333,10 @@ impl ToolRouter {
 
             // Respect direction filter: skip incoming/outgoing when direction
             // is explicitly set to the opposite.
-            let want_incoming = direction.is_empty()
-                || direction == "both"
-                || direction == "incoming";
-            let want_outgoing = direction.is_empty()
-                || direction == "both"
-                || direction == "outgoing";
+            let want_incoming =
+                direction.is_empty() || direction == "both" || direction == "incoming";
+            let want_outgoing =
+                direction.is_empty() || direction == "both" || direction == "outgoing";
 
             for fid in &frontier {
                 if want_incoming {
@@ -1151,13 +1153,13 @@ impl ToolRouter {
                                     fields.insert(path.clone());
                                 }
                             }
-                        _ => {}
+                            _ => {}
+                        }
                     }
                 }
-            }
 
-            // For each field, run lifecycle analysis
-            for field_path in &fields {
+                // For each field, run lifecycle analysis
+                for field_path in &fields {
                     let rules = analysis::OwnershipRules::default();
                     let mut lifecycle = analysis::FieldLifecycleEngine::analyze_field_lifecycle(
                         &cfg_nodes, &cfg_edges, field_path, &rules,

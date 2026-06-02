@@ -449,10 +449,7 @@ impl App {
                 .callee_details
                 .get(self.detail_selected)
                 .map(|c| c.symbol.id),
-            DetailTab::Peers => ctx
-                .file_peers
-                .get(self.detail_selected)
-                .map(|p| p.id),
+            DetailTab::Peers => ctx.file_peers.get(self.detail_selected).map(|p| p.id),
             _ => return,
         };
 

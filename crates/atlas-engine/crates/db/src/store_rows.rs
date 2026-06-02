@@ -363,9 +363,7 @@ pub(crate) fn row_to_cfg_node(row: &Row) -> rusqlite::Result<CfgNode> {
     let semantic_effects: Vec<SemanticEffect> = {
         let json_str: Option<String> = row.get(11)?;
         match json_str {
-            Some(s) if !s.is_empty() && s != "[]" => {
-                serde_json::from_str(&s).unwrap_or_default()
-            }
+            Some(s) if !s.is_empty() && s != "[]" => serde_json::from_str(&s).unwrap_or_default(),
             _ => Vec::new(),
         }
     };

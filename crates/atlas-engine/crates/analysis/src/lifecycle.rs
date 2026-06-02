@@ -426,7 +426,11 @@ fn transfer_state(
     node: &CfgNode,
     canonical_target: &str,
     _rules: &CppOwnershipRules,
-) -> (FieldState, Vec<SuspiciousPoint>, Vec<(FieldState, FieldState, Option<EffectKind>)>) {
+) -> (
+    FieldState,
+    Vec<SuspiciousPoint>,
+    Vec<(FieldState, FieldState, Option<EffectKind>)>,
+) {
     // ── Semantic-effects path ─────────────────────────────────────────────
     if !node.semantic_effects.is_empty() {
         let mut current = state;
@@ -434,8 +438,7 @@ fn transfer_state(
         let mut transitions: Vec<(FieldState, FieldState, Option<EffectKind>)> = Vec::new();
 
         for eff in &node.semantic_effects {
-            let (next, mapped_eff) =
-                apply_semantic_effect(current, eff, canonical_target);
+            let (next, mapped_eff) = apply_semantic_effect(current, eff, canonical_target);
             // Always check for suspicious patterns (e.g., double-free stays Freed)
             let sus = check_transition_suspicious(current, next, node, canonical_target);
             suspicious.extend(sus);
@@ -570,7 +573,8 @@ fn check_transition_suspicious(
     }
 
     // Use-after-free: Escaped → but only if previously freed
-    if next == FieldState::Escaped && (prev == FieldState::Freed || prev == FieldState::MaybeFreed) {
+    if next == FieldState::Escaped && (prev == FieldState::Freed || prev == FieldState::MaybeFreed)
+    {
         return vec![SuspiciousPoint {
             line,
             kind: SuspiciousKind::UseAfterFree,
@@ -605,11 +609,7 @@ mod tests {
     }
 
     /// Create a semantic effect for test use.
-    fn test_effect(
-        node_id: CfgNodeId,
-        order: u32,
-        kind: SemanticEffectKind,
-    ) -> SemanticEffect {
+    fn test_effect(node_id: CfgNodeId, order: u32, kind: SemanticEffectKind) -> SemanticEffect {
         let kind_name = match &kind {
             SemanticEffectKind::Alloc { .. } => "Alloc",
             SemanticEffectKind::Free { .. } => "Free",
@@ -630,12 +630,7 @@ mod tests {
         }
     }
 
-    fn make_node(
-        effects: Vec<SemanticEffect>,
-        line: u32,
-        kind: CfgNodeKind,
-        seq: u32,
-    ) -> CfgNode {
+    fn make_node(effects: Vec<SemanticEffect>, line: u32, kind: CfgNodeKind, seq: u32) -> CfgNode {
         let fid = test_fid();
         let id = CfgNodeId::generate(&fid, "test", seq);
         CfgNode {
@@ -654,43 +649,61 @@ mod tests {
         }
     }
 
-    fn make_stmt_node(
-        effects: Vec<SemanticEffect>,
-        line: u32,
-        seq: u32,
-    ) -> CfgNode {
+    fn make_stmt_node(effects: Vec<SemanticEffect>, line: u32, seq: u32) -> CfgNode {
         make_node(effects, line, CfgNodeKind::Statement, seq)
     }
 
     /// Create a "Free field" semantic effect.
     fn se_free(node_id: CfgNodeId, order: u32, field: &str) -> SemanticEffect {
-        test_effect(node_id, order, SemanticEffectKind::Free {
-            place: PlaceRef::Field { path: field.to_string() },
-            callee: "?".to_string(),
-        })
+        test_effect(
+            node_id,
+            order,
+            SemanticEffectKind::Free {
+                place: PlaceRef::Field {
+                    path: field.to_string(),
+                },
+                callee: "?".to_string(),
+            },
+        )
     }
 
     /// Create an "Alloc field" semantic effect.
     fn se_alloc(node_id: CfgNodeId, order: u32, field: &str) -> SemanticEffect {
-        test_effect(node_id, order, SemanticEffectKind::Alloc {
-            target: PlaceRef::Field { path: field.to_string() },
-            callee: "?".to_string(),
-        })
+        test_effect(
+            node_id,
+            order,
+            SemanticEffectKind::Alloc {
+                target: PlaceRef::Field {
+                    path: field.to_string(),
+                },
+                callee: "?".to_string(),
+            },
+        )
     }
 
     /// Create a "Store to field" semantic effect.
     fn se_store(node_id: CfgNodeId, order: u32, field: &str) -> SemanticEffect {
-        test_effect(node_id, order, SemanticEffectKind::Store {
-            dst: PlaceRef::Field { path: field.to_string() },
-            src: ValueSource::Unknown,
-        })
+        test_effect(
+            node_id,
+            order,
+            SemanticEffectKind::Store {
+                dst: PlaceRef::Field {
+                    path: field.to_string(),
+                },
+                src: ValueSource::Unknown,
+            },
+        )
     }
 
     /// Create a "Return" semantic effect.
     fn se_return(node_id: CfgNodeId, order: u32) -> SemanticEffect {
-        test_effect(node_id, order, SemanticEffectKind::Return {
-            value: ValueSource::Unknown,
-        })
+        test_effect(
+            node_id,
+            order,
+            SemanticEffectKind::Return {
+                value: ValueSource::Unknown,
+            },
+        )
     }
 
     fn make_entry_exit_graph(nodes: &[CfgNode]) -> (Vec<CfgNode>, Vec<CfgEdge>) {

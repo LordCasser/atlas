@@ -70,7 +70,10 @@ pub enum SemanticEffectKind {
     Return { value: ValueSource },
     /// A value escapes the local scope (e.g., stored in a global, passed
     /// by pointer to an external function, or moved to another thread).
-    Escape { value: ValueSource, to: EscapeTarget },
+    Escape {
+        value: ValueSource,
+        to: EscapeTarget,
+    },
 }
 
 // ==================== PlaceRef ====================

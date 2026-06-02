@@ -26,11 +26,11 @@ pub mod trace;
 
 pub use branch_diff::{BranchDiff, BranchDiffEngine, BranchPathSummary};
 pub use branch_diff_semantic::{
-    analyze_branch_semantic, BranchAsymmetryKind, BranchDiffIssue, FieldEffectSummary,
-    IssueSeverity,
+    BranchAsymmetryKind, BranchDiffIssue, FieldEffectSummary, IssueSeverity,
+    analyze_branch_semantic,
 };
-pub use resource_ops::{
-    CalleeMatcher, ResourceOpConfig, ResourceOpKind, ResourceOpPattern,
+pub use effect_composer::{
+    EffectComposition, FieldFreeRecord, FieldWriteRecord, TransferGraph, compose_effects,
 };
 pub use lifecycle::{
     FieldLifecycleEngine, FieldLifecycleResult, FieldState, FieldTransition, OwnershipRules,
@@ -40,6 +40,4 @@ pub use lifecycle_proof::{
     EvidenceLevel, LifecycleProof, LifecycleVerdict, PathProof, evaluate_proof,
 };
 pub use ownership_rules::CppOwnershipRules;
-pub use effect_composer::{
-    compose_effects, EffectComposition, FieldFreeRecord, FieldWriteRecord, TransferGraph,
-};
+pub use resource_ops::{CalleeMatcher, ResourceOpConfig, ResourceOpKind, ResourceOpPattern};

@@ -95,12 +95,17 @@ impl AliasTable {
             changed = false;
             iterations += 1;
 
-            let snapshot: Vec<(String, AliasTarget)> =
-                table.mapping.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            let snapshot: Vec<(String, AliasTarget)> = table
+                .mapping
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
 
             for (local, target) in &snapshot {
                 match target {
-                    AliasTarget::Local { name: aliased_local } => {
+                    AliasTarget::Local {
+                        name: aliased_local,
+                    } => {
                         if let Some(next) = table.mapping.get(aliased_local) {
                             if next != target {
                                 table.mapping.insert(local.clone(), next.clone());
@@ -120,11 +125,7 @@ impl AliasTable {
     ///
     /// `edge_source_name(id)` returns the variable/field name for a `DataNodeId`.
     /// `edge_target_name(id)` returns the variable name for the target node.
-    pub fn build_with_names<F, G>(
-        edges: &[DataFlowEdge],
-        source_name: F,
-        target_name: G,
-    ) -> Self
+    pub fn build_with_names<F, G>(edges: &[DataFlowEdge], source_name: F, target_name: G) -> Self
     where
         F: Fn(types::ids::DataNodeId) -> Option<String>,
         G: Fn(types::ids::DataNodeId) -> Option<String>,
@@ -186,7 +187,10 @@ impl AliasTable {
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             for (local, target) in &snapshot {
-                if let AliasTarget::Local { name: aliased_local } = target {
+                if let AliasTarget::Local {
+                    name: aliased_local,
+                } = target
+                {
                     if let Some(next) = table.mapping.get(aliased_local) {
                         if next != target {
                             table.mapping.insert(local.clone(), next.clone());
@@ -226,7 +230,9 @@ impl AliasTable {
             return resolved.unwrap_or_else(|| path.to_string());
         };
 
-        let resolved_first = self.resolve_local(first).unwrap_or_else(|| first.to_string());
+        let resolved_first = self
+            .resolve_local(first)
+            .unwrap_or_else(|| first.to_string());
         format!("{resolved_first}{rest}")
     }
 
@@ -263,12 +269,20 @@ mod tests {
         let file_id = types::ids::FileId::default();
         let fid = SymbolId::default();
         let src_id = DataNodeId::generate(
-            &file_id, Some(&fid), "test",
-            Some(&source.to_string()), None, source as u32,
+            &file_id,
+            Some(&fid),
+            "test",
+            Some(&source.to_string()),
+            None,
+            source as u32,
         );
         let tgt_id = DataNodeId::generate(
-            &file_id, Some(&fid), "test",
-            Some(&target.to_string()), None, target as u32,
+            &file_id,
+            Some(&fid),
+            "test",
+            Some(&target.to_string()),
+            None,
+            target as u32,
         );
         DataFlowEdge {
             id: types::ids::DataFlowEdgeId::default(),
@@ -276,9 +290,12 @@ mod tests {
             target: tgt_id,
             kind,
             location: types::structs::TextRange {
-                start_byte: 0, end_byte: 0,
-                start_line: 0, start_column: 0,
-                end_line: 0, end_column: 0,
+                start_byte: 0,
+                end_byte: 0,
+                start_line: 0,
+                start_column: 0,
+                end_line: 0,
+                end_column: 0,
             },
             confidence: 0.9,
         }
@@ -289,8 +306,12 @@ mod tests {
         let file_id = types::ids::FileId::default();
         let fid = SymbolId::default();
         DataNodeId::generate(
-            &file_id, Some(&fid), "test",
-            Some(&seq.to_string()), None, seq as u32,
+            &file_id,
+            Some(&fid),
+            "test",
+            Some(&seq.to_string()),
+            None,
+            seq as u32,
         )
     }
 
@@ -361,9 +382,6 @@ mod tests {
         );
 
         // a should resolve transitively to c
-        assert_eq!(
-            table.resolve_field_path("a->field"),
-            "c->field"
-        );
+        assert_eq!(table.resolve_field_path("a->field"), "c->field");
     }
 }

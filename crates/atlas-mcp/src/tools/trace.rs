@@ -12,7 +12,7 @@ use atlas_engine::{
 use super::lazy_response::LazyDiagnostics;
 use super::query_snapshot::{QuerySnapshot, QueryStatus};
 use super::{
-    MAX_FILE_PATH_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str_opt, get_u64,
+    MAX_FILE_PATH_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str, get_str_opt, get_u64,
     resolve_file_id, warnings_to_trace_diagnostics,
 };
 
@@ -374,25 +374,31 @@ impl ToolRouter {
     }
 
     pub(crate) fn handle_trace_caller_path(&mut self, args: &serde_json::Value) -> (String, bool) {
-        let symbol_hex = args["symbol"].as_str().filter(|s| !s.is_empty());
-        let symbol_name = args["symbol_name"].as_str().filter(|s| !s.is_empty());
+        let symbol = get_str(args, "symbol");
         let max_depth = args["max_depth"].as_u64().unwrap_or(20) as usize;
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
-        // Validate symbol_name length
-        if let Some(name) = symbol_name {
-            if name.len() > MAX_SYMBOL_NAME_LENGTH {
-                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                    "trace_callers",
-                    &format!(
-                        "symbol_name exceeds maximum length of {MAX_SYMBOL_NAME_LENGTH} characters"
-                    ),
-                );
-                return (
-                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                    true,
-                );
-            }
+        // Validate symbol length
+        if symbol.len() > MAX_SYMBOL_NAME_LENGTH {
+            let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                "trace_callers",
+                &format!("symbol exceeds maximum length of {MAX_SYMBOL_NAME_LENGTH} characters"),
+            );
+            return (
+                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                true,
+            );
+        }
+
+        if symbol.is_empty() {
+            let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                "trace_callers",
+                "Missing required 'symbol' parameter. Accepts qualified name or hex SymbolId. Auto-detects format.",
+            );
+            return (
+                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                true,
+            );
         }
 
         for w in &root_warnings {
@@ -403,48 +409,73 @@ impl ToolRouter {
         let mut lazy_diag: Option<LazyDiagnostics> = None;
 
         let query_id = Self::generate_query_id();
-        let investigation: Option<atlas_engine::Investigation>;
 
-        let resp = if let Some(hex) = symbol_hex {
-            let target_id: SymbolId = match hex.parse() {
+        // Auto-detect symbol: try hex parse first, then qname resolution.
+        let is_hex = symbol.len() >= 8 && symbol.chars().all(|c| c.is_ascii_hexdigit());
+        let target_id: SymbolId = if is_hex {
+            match symbol.parse() {
                 Ok(id) => id,
-                Err(e) => {
-                    let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                        "trace_callers",
-                        &format!("Invalid symbol hex ID: {e}"),
+                Err(_) => match self.store.find_symbols_by_qname(symbol) {
+                    Ok(refs) if !refs.is_empty() => refs[0].id,
+                    _ => {
+                        let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                            "trace_callers",
+                            &format!(
+                                "Symbol not found by qname: '{symbol}'. Tip: the 'symbol' parameter accepts both hex SymbolIds and qualified names. Auto-detects format."
+                            ),
+                        );
+                        return (
+                            serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                            true,
+                        );
+                    }
+                },
+            }
+        } else {
+            match self.store.find_symbols_by_qname(symbol) {
+                Ok(refs) if !refs.is_empty() => refs[0].id,
+                _ => {
+                    // Lazy structural fallback: try name-based lookup with structural extraction
+                    let outcome = self.ensure_structural_for_symbol_name(
+                        symbol,
+                        include_roots.clone(),
+                        None,
+                        Some(&query_id),
                     );
-                    return (
-                        serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                        true,
-                    );
-                }
-            };
-            // Update investigation with the target symbol
-            self.update_investigation(InvestigationFocus::Symbol(target_id));
-            investigation = self.investigation_state.active_investigation.clone();
-            // Ensure structural data for this symbol's file
-            if let Ok(Some(sym)) = self.store.find_symbol_by_id(&target_id) {
-                let outcome = self.ensure_structural_for_files(
-                    [sym.file_id],
-                    include_roots.clone(),
-                    investigation.as_ref(),
-                    Some(&query_id),
-                );
-                lazy_warnings = outcome.warnings;
-                structural_tier = outcome.precision_tier;
-                if let Some(ref lo) = outcome.lazy_outcome {
-                    lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+                    lazy_warnings.extend(outcome.warnings);
+                    structural_tier = std::cmp::min(structural_tier, outcome.precision_tier);
+                    if let Some(ref lo) = outcome.lazy_outcome {
+                        lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+                    }
+                    // Re-query after lazy extraction
+                    match self.store.find_symbols_by_qname(symbol) {
+                        Ok(refs) if !refs.is_empty() => refs[0].id,
+                        _ => {
+                            let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                                "trace_callers",
+                                &format!(
+                                    "Symbol not found: '{symbol}'. Tip: the 'symbol' parameter accepts both hex SymbolIds and qualified names. Try 'search' first to discover the correct qualified name."
+                                ),
+                            );
+                            return (
+                                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                                true,
+                            );
+                        }
+                    }
                 }
             }
-            let engine =
-                RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
-            engine.trace_callers(&target_id, max_depth)
-        } else if let Some(name) = symbol_name {
-            // Lazy structural: ensure name-based symbols are structurally parsed
-            let outcome = self.ensure_structural_for_symbol_name(
-                name,
+        };
+
+        // Update investigation with the target symbol
+        self.update_investigation(InvestigationFocus::Symbol(target_id));
+        let investigation = self.investigation_state.active_investigation.clone();
+        // Ensure structural data for this symbol's file
+        if let Ok(Some(sym)) = self.store.find_symbol_by_id(&target_id) {
+            let outcome = self.ensure_structural_for_files(
+                [sym.file_id],
                 include_roots.clone(),
-                None,
+                investigation.as_ref(),
                 Some(&query_id),
             );
             lazy_warnings = outcome.warnings;
@@ -452,27 +483,9 @@ impl ToolRouter {
             if let Some(ref lo) = outcome.lazy_outcome {
                 lazy_diag = Some(LazyDiagnostics::from_structural(lo));
             }
-            let engine =
-                RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
-            let result = engine.trace_callers_by_name(name, max_depth);
-            // After resolution, try to find the symbol and update investigation
-            if let Ok(symbols) = self.store.find_symbols_by_qname(name) {
-                if let Some(sym) = symbols.first() {
-                    self.update_investigation(InvestigationFocus::Symbol(sym.id));
-                }
-            }
-            let _investigation = self.investigation_state.active_investigation.clone();
-            result
-        } else {
-            let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                "trace_callers",
-                "Must provide either 'symbol' (hex) or 'symbol_name'",
-            );
-            return (
-                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                true,
-            );
-        };
+        }
+        let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
+        let resp = engine.trace_callers(&target_id, max_depth);
         let mut resp = resp;
         let is_error = !resp.ok;
 
@@ -526,41 +539,42 @@ impl ToolRouter {
     }
 
     pub(crate) fn handle_trace_forward(&mut self, args: &serde_json::Value) -> (String, bool) {
-        let from_hex = args["from"].as_str().filter(|s| !s.is_empty());
-        let to_hex = args["to"].as_str().filter(|s| !s.is_empty());
-        let from_name = args["from_name"].as_str().filter(|s| !s.is_empty());
-        let to_name = args["to_name"].as_str().filter(|s| !s.is_empty());
+        let from = get_str(args, "from");
+        let to = get_str(args, "to");
         let max_depth = args["max_depth"].as_u64().unwrap_or(10) as usize;
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
-        // Validate from_name / to_name length
-        if let Some(name) = from_name {
-            if name.len() > MAX_SYMBOL_NAME_LENGTH {
-                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                    "trace_forward",
-                    &format!(
-                        "from_name exceeds maximum length of {MAX_SYMBOL_NAME_LENGTH} characters"
-                    ),
-                );
-                return (
-                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                    true,
-                );
-            }
+        // Validate from / to length
+        if from.len() > MAX_SYMBOL_NAME_LENGTH {
+            let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                "trace_forward",
+                &format!("from exceeds maximum length of {MAX_SYMBOL_NAME_LENGTH} characters"),
+            );
+            return (
+                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                true,
+            );
         }
-        if let Some(name) = to_name {
-            if name.len() > MAX_SYMBOL_NAME_LENGTH {
-                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                    "trace_forward",
-                    &format!(
-                        "to_name exceeds maximum length of {MAX_SYMBOL_NAME_LENGTH} characters"
-                    ),
-                );
-                return (
-                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                    true,
-                );
-            }
+        if to.len() > MAX_SYMBOL_NAME_LENGTH {
+            let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                "trace_forward",
+                &format!("to exceeds maximum length of {MAX_SYMBOL_NAME_LENGTH} characters"),
+            );
+            return (
+                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                true,
+            );
+        }
+
+        if from.is_empty() || to.is_empty() {
+            let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                "trace_forward",
+                "Must provide both 'from' and 'to' parameters. Accepts qualified names or hex SymbolIds. Auto-detects format.",
+            );
+            return (
+                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                true,
+            );
         }
 
         for w in &root_warnings {
@@ -572,119 +586,57 @@ impl ToolRouter {
 
         let query_id = Self::generate_query_id();
 
-        // Name-based lookup (new path — avoids requiring hex IDs)
-        if let (Some(fname), Some(tname)) = (from_name, to_name) {
-            // Lazy structural: ensure name-based symbols are structurally parsed
-            for name in [fname, tname] {
-                let outcome = self.ensure_structural_for_symbol_name(
-                    name,
-                    include_roots.clone(),
-                    None,
-                    Some(&query_id),
-                );
-                lazy_warnings.extend(outcome.warnings);
-                structural_tier = std::cmp::min(structural_tier, outcome.precision_tier);
-                if let Some(ref lo) = outcome.lazy_outcome {
-                    // Capture the last extraction's diagnostics (covers both symbols).
-                    lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+        // Auto-detect from/to: try hex parse first, then qname resolution.
+        let mut resolve_to_id = |input: &str, field: &str| -> Result<SymbolId, String> {
+            let is_hex = input.len() >= 8 && input.chars().all(|c| c.is_ascii_hexdigit());
+            if is_hex {
+                if let Ok(id) = input.parse::<SymbolId>() {
+                    return Ok(id);
                 }
+                // Fall through to qname resolution
             }
-            let engine =
-                RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
-            let mut resp = engine.trace_forward_by_name(fname, tname, max_depth);
-            // After resolution, try to find the from_name symbol and update investigation
-            if let Ok(symbols) = self.store.find_symbols_by_qname(fname) {
-                if let Some(sym) = symbols.first() {
-                    self.update_investigation(InvestigationFocus::Symbol(sym.id));
-                }
-            }
-            let is_error = !resp.ok;
-            // Inject warnings into diagnostics
-            resp.diagnostics.extend(warnings_to_trace_diagnostics(
-                root_warnings,
-                "include_roots_warning",
-            ));
-            let lazy_partial = !lazy_warnings.is_empty();
-            resp.diagnostics.extend(warnings_to_trace_diagnostics(
-                lazy_warnings,
-                "lazy_structural_warning",
-            ));
-            resp.partial_result = resp.partial_result || lazy_partial;
-
-            let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
-            resp_value["structural_precision_tier"] =
-                serde_json::to_value(structural_tier).unwrap_or(json!(null));
-            if structural_tier != atlas_engine::structs::precision::PrecisionTier::Exact {
-                if let Some(hint) = atlas_engine::precision::next_action_structural(structural_tier)
-                {
-                    resp_value["structural_hint"] = json!(hint);
-                }
-            }
-            if let Some(ref diag) = lazy_diag {
-                resp_value["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
-                resp_value["analysis_contract"] =
-                    serde_json::to_value(&diag.analysis_contract).unwrap_or(json!(null));
-            }
-
-            // Store query snapshot for potential atlas_resume
-            let all_complete =
-                structural_tier == atlas_engine::structs::precision::PrecisionTier::Exact;
-            self.store_snapshot(QuerySnapshot {
-                query_id: query_id.clone(),
-                tool_name: "trace".into(),
-                tool_args: args.clone(),
-                lazy_window: None,
-                created_at: Instant::now(),
-                status: if all_complete {
-                    QueryStatus::Ready
-                } else {
-                    QueryStatus::Partial
-                },
-            });
-            resp_value["query_id"] = json!(query_id);
-
-            return (
-                serde_json::to_string_pretty(&resp_value).unwrap_or_else(|e| e.to_string()),
-                is_error,
-            );
-        }
-
-        // Hex ID path (existing behavior)
-        let (from_id, to_id) = match (from_hex, to_hex) {
-            (Some(f), Some(t)) => {
-                let fid: SymbolId = match f.parse() {
-                    Ok(id) => id,
-                    Err(e) => {
-                        let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                            "trace_forward",
-                            &format!("Invalid 'from' symbol ID: {e}"),
-                        );
-                        return (
-                            serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                            true,
-                        );
+            match self.store.find_symbols_by_qname(input) {
+                Ok(refs) if !refs.is_empty() => Ok(refs[0].id),
+                _ => {
+                    // Lazy structural fallback: try name-based lookup with structural extraction
+                    let outcome = self.ensure_structural_for_symbol_name(
+                        input,
+                        include_roots.clone(),
+                        None,
+                        Some(&query_id),
+                    );
+                    lazy_warnings.extend(outcome.warnings);
+                    if outcome.precision_tier < structural_tier {
+                        structural_tier = outcome.precision_tier;
                     }
-                };
-                let tid: SymbolId = match t.parse() {
-                    Ok(id) => id,
-                    Err(e) => {
-                        let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                            "trace_forward",
-                            &format!("Invalid 'to' symbol ID: {e}"),
-                        );
-                        return (
-                            serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                            true,
-                        );
+                    if let Some(ref lo) = outcome.lazy_outcome {
+                        lazy_diag = Some(LazyDiagnostics::from_structural(lo));
                     }
-                };
-                (fid, tid)
+                    // Re-query after lazy extraction
+                    match self.store.find_symbols_by_qname(input) {
+                        Ok(refs) if !refs.is_empty() => Ok(refs[0].id),
+                        _ => Err(format!(
+                            "Symbol not found: '{input}'. The '{field}' parameter accepts both hex SymbolIds and qualified names. Try 'search' first to discover the correct qualified name."
+                        )),
+                    }
+                }
             }
-            _ => {
-                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                    "trace_forward",
-                    "Provide either (`from` + `to` hex IDs) or (`from_name` + `to_name` symbol names). Mixed hex/name mode is not supported.",
+        };
+
+        let from_id: SymbolId = match resolve_to_id(from, "from") {
+            Ok(id) => id,
+            Err(e) => {
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_forward", &e);
+                return (
+                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                    true,
                 );
+            }
+        };
+        let to_id: SymbolId = match resolve_to_id(to, "to") {
+            Ok(id) => id,
+            Err(e) => {
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_forward", &e);
                 return (
                     serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
                     true,
