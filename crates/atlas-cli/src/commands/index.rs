@@ -110,266 +110,276 @@ pub fn run(
     let worker = std::thread::spawn(move || -> anyhow::Result<()> {
         let result = (|| -> anyhow::Result<()> {
             let root = root_path;
-        let store = store_arc;
-        let include_patterns = include_clone;
-        let exclude = exclude_clone;
-        let ps = ps_worker;
+            let store = store_arc;
+            let include_patterns = include_clone;
+            let exclude = exclude_clone;
+            let ps = ps_worker;
 
-        // Helper: check stop flag
-        let interrupted = || stop_w.load(Ordering::SeqCst);
+            // Helper: check stop flag
+            let interrupted = || stop_w.load(Ordering::SeqCst);
 
-        // ── Discovery ──
-        ps.lock()
-            .unwrap()
-            .start_phase(ProgressPhase::Discovery, None);
-        let discovered = atlas_engine::phase_discover(&root, &include_patterns, &exclude)
-            .context("Failed to discover files")?;
-        if discovered.is_empty() {
+            // ── Discovery ──
+            ps.lock()
+                .unwrap()
+                .start_phase(ProgressPhase::Discovery, None);
+            let discovered = atlas_engine::phase_discover(&root, &include_patterns, &exclude)
+                .context("Failed to discover files")?;
+            if discovered.is_empty() {
+                ps.lock()
+                    .unwrap()
+                    .start_phase(ProgressPhase::Finalizing, None);
+                anyhow::bail!("No recognizable source files found in {}", root.display());
+            }
+            let total = discovered.len();
+            ps.lock()
+                .unwrap()
+                .start_phase(ProgressPhase::HashCheck, Some(format!("{total} files")));
+
+            if interrupted() {
+                return Ok(());
+            }
+
+            // ── Hash check ──
+            let hash_result = atlas_engine::phase_dirty_check(&store, &discovered, &root)?;
+            let dirty = &hash_result.dirty;
+            let reused = hash_result.clean_count;
+            ps.lock().unwrap().start_phase(
+                ProgressPhase::Cleanup,
+                Some(format!("{} dirty / {} reused", dirty.len(), reused)),
+            );
+
+            if interrupted() {
+                return Ok(());
+            }
+
+            // ── Delete stale data ──
+            if !hash_result.deleted.is_empty() {
+                let deleted_count = hash_result.deleted.len() as u64;
+                ps.lock().unwrap().set_total(deleted_count);
+                atlas_engine::phase_cleanup_stale(&store, &hash_result.deleted)?;
+                ps.lock().unwrap().set_current(deleted_count);
+            }
+
+            let languages: Vec<Language> = dirty
+                .iter()
+                .filter_map(|p| Language::from_path(p))
+                .fold(Vec::new(), |mut acc, lang| {
+                    if !acc.contains(&lang) {
+                        acc.push(lang);
+                    }
+                    acc
+                });
+
+            if interrupted() {
+                return Ok(());
+            }
+
+            // ── Language init ──
+            ps.lock().unwrap().start_phase(
+                ProgressPhase::LanguageInit,
+                Some(format!("{} languages", languages.len())),
+            );
+            let _registry = LanguageRegistry::new(&languages).or_else(|e| {
+                let available: Vec<Language> = languages
+                    .iter()
+                    .filter(|l| LanguageRegistry::new(&[**l]).is_ok())
+                    .copied()
+                    .collect();
+                if available.is_empty() {
+                    Err(e)
+                } else {
+                    LanguageRegistry::new(&available)
+                }
+            })?;
+            let frontend_cache: HashMap<Language, LanguageFrontend> = languages
+                .iter()
+                .filter_map(|&lang| atlas_engine::create_frontend(lang).map(|fe| (lang, fe)))
+                .collect();
+
+            if interrupted() {
+                return Ok(());
+            }
+
+            // ── Extraction (parallel) ──
+            let dirty_total = dirty.len();
+            ps.lock().unwrap().start_phase(
+                ProgressPhase::Extraction,
+                Some(format!("{dirty_total} files")),
+            );
+            ps.lock().unwrap().set_total(dirty_total as u64);
+
+            let pool = ParseWorkerPool::new(WorkerConfig::default());
+            let extracted_count = AtomicUsize::new(0);
+            let per_lang_mutex = Mutex::new(PerLanguageStats::new());
+            let fc = &frontend_cache;
+            let extract_counter = ps.lock().unwrap().atomic_current.clone();
+            let count_atomic = &extracted_count;
+
+            let results: Vec<_> = dirty
+                .par_iter()
+                .filter_map(|rel_path| {
+                    if interrupted() {
+                        return None;
+                    }
+                    let abs_path = root.join(rel_path);
+                    let lang = Language::from_path(rel_path)?;
+                    let frontend = fc.get(&lang)?;
+                    let file_start = Instant::now();
+                    let result = crate::runtime::extract_one(
+                        &pool,
+                        &abs_path,
+                        &root,
+                        lang,
+                        frontend,
+                        mode.clone(),
+                    );
+                    let extract_ms = file_start.elapsed().as_millis() as u64;
+
+                    let _count = count_atomic.fetch_add(1, Ordering::Relaxed);
+                    extract_counter.fetch_add(1, Ordering::Relaxed);
+
+                    let (facts_opt, failed, fail_cat) = match result {
+                        Ok(facts) => (Some(facts), false, None),
+                        Err(ref _e) => (None, true, Some("extraction_error")),
+                    };
+                    {
+                        per_lang_mutex
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .record_file(lang, extract_ms, failed, fail_cat);
+                    }
+                    facts_opt.map(|facts| atlas_engine::ExtractedFile {
+                        rel_path: rel_path.clone(),
+                        language: lang,
+                        facts,
+                    })
+                })
+                .collect();
+
+            if interrupted() {
+                return Ok(());
+            }
+
+            let extracted = results;
+            let extracted_count = extracted.len();
+            let _failed_count = dirty_total.saturating_sub(extracted_count);
+
+            // ── Clean stale facts ──
+            ps.lock().unwrap().start_phase(
+                ProgressPhase::Cleanup,
+                Some(format!("{extracted_count} re-indexed")),
+            );
+            let file_ids: Vec<_> = extracted.iter().map(|ef| ef.facts.file.file_id).collect();
+            atlas_engine::phase_cleanup_file_ids(&store, &file_ids)
+                .context("Failed to clean stale facts")?;
+
+            if interrupted() {
+                return Ok(());
+            }
+
+            // ── DB Write (serial, with progress) ──
+            ps.lock().unwrap().start_phase(
+                ProgressPhase::DbWrite,
+                Some(format!("{extracted_count} files")),
+            );
+            ps.lock().unwrap().set_total(extracted_count as u64);
+
+            let extracted_files = atlas_engine::ExtractedFiles {
+                items: extracted,
+                stats: atlas_engine::ExtractionPhaseStats {
+                    attempted: dirty_total,
+                    succeeded: extracted_count,
+                    failed: dirty_total.saturating_sub(extracted_count),
+                    symbols: 0,
+                },
+            };
+
+            let _write_stats = atlas_engine::phase_write_batched(
+                &store,
+                &extracted_files,
+                500,
+                500,
+                |written| {
+                    ps.lock().unwrap().set_current(written);
+                },
+                &interrupted,
+            )?;
+
+            if interrupted() {
+                return Ok(());
+            }
+
+            // ── Manifest-only early return ──
+            // Manifest mode only extracts symbols; skip resolution, edge building,
+            // annotation materialization, and summary building.
+            if matches!(mode, ExtractionMode::Manifest) {
+                // Still commit path alias config and finalize metadata.
+                atlas_engine::phase_commit_path_alias_config(&store, &root)?;
+                atlas_engine::phase_finalize(&store, &root, &include_patterns)?;
+                // Signal progress complete so TUI doesn't wait indefinitely.
+                ps.lock().unwrap().start_phase(
+                    ProgressPhase::Finalizing,
+                    Some("manifest index complete".into()),
+                );
+                return Ok(());
+            }
+
+        // ── Resolution (parallel matching + serial write) ──
+        let unresolved = store.get_stats()?.unresolved_references;
+        ps.lock().unwrap().start_phase(
+            ProgressPhase::Resolution,
+            Some(format!("{unresolved} references")),
+        );
+        ps.lock().unwrap().set_total(unresolved as u64);
+
+        let path_alias = atlas_engine::PathAliasConfig::resolver(&root);
+
+            let path_alias_config_changed =
+                atlas_engine::PathAliasConfig::has_changed(&store, &root)?;
+            if path_alias_config_changed {
+                store.invalidate_all_references()?;
+                store.delete_all_edges()?;
+            }
+
+            let mut resolver =
+                atlas_engine::ReferenceResolver::with_path_alias(store.clone(), path_alias);
+            let (resolved, _stats) =
+                resolver.resolve_all_parallel(store.clone(), Some(&ps), None)?;
+
+            if interrupted() {
+                return Ok(());
+            }
+
+            // ── Edge building (already par_iter internally) ──
+            ps.lock()
+                .unwrap()
+                .start_phase(ProgressPhase::EdgeBuilding, None);
+            let builder = atlas_engine::GraphBuilder::new(store.clone());
+            let _build_stats = builder.build_all(&resolved);
+            ps.lock().unwrap().set_current(resolved.len() as u64);
+
+            // ── Materialize user annotations as edges ──
+            if let Err(e) = atlas_engine::phase_materialize_annotations(&store) {
+                eprintln!("Warning: failed to materialize annotations: {e}");
+            }
+
+            // ── Summary build (Schema v3: persist function summaries) ──
+            ps.lock().unwrap().start_phase(
+                ProgressPhase::Finalizing,
+                Some("Building summaries...".into()),
+            );
+            let _summary_stats = atlas_engine::phase_build_summaries(&store)?;
+            if interrupted() {
+                return Ok(());
+            }
+
+            // ── Finalize ──
             ps.lock()
                 .unwrap()
                 .start_phase(ProgressPhase::Finalizing, None);
-            anyhow::bail!("No recognizable source files found in {}", root.display());
-        }
-        let total = discovered.len();
-        ps.lock()
-            .unwrap()
-            .start_phase(ProgressPhase::HashCheck, Some(format!("{total} files")));
-
-        if interrupted() {
-            return Ok(());
-        }
-
-        // ── Hash check ──
-        let hash_result = atlas_engine::phase_dirty_check(&store, &discovered, &root)?;
-        let dirty = &hash_result.dirty;
-        let reused = hash_result.clean_count;
-        ps.lock().unwrap().start_phase(
-            ProgressPhase::Cleanup,
-            Some(format!("{} dirty / {} reused", dirty.len(), reused)),
-        );
-
-        if interrupted() {
-            return Ok(());
-        }
-
-        // ── Delete stale data ──
-        if !hash_result.deleted.is_empty() {
-            let deleted_count = hash_result.deleted.len() as u64;
-            ps.lock().unwrap().set_total(deleted_count);
-            atlas_engine::phase_cleanup_stale(&store, &hash_result.deleted)?;
-            ps.lock().unwrap().set_current(deleted_count);
-        }
-
-        let languages: Vec<Language> = dirty.iter().filter_map(|p| Language::from_path(p)).fold(
-            Vec::new(),
-            |mut acc, lang| {
-                if !acc.contains(&lang) {
-                    acc.push(lang);
-                }
-                acc
-            },
-        );
-
-        if interrupted() {
-            return Ok(());
-        }
-
-        // ── Language init ──
-        ps.lock().unwrap().start_phase(
-            ProgressPhase::LanguageInit,
-            Some(format!("{} languages", languages.len())),
-        );
-        let _registry = LanguageRegistry::new(&languages).or_else(|e| {
-            let available: Vec<Language> = languages
-                .iter()
-                .filter(|l| LanguageRegistry::new(&[**l]).is_ok())
-                .copied()
-                .collect();
-            if available.is_empty() {
-                Err(e)
-            } else {
-                LanguageRegistry::new(&available)
-            }
-        })?;
-        let frontend_cache: HashMap<Language, LanguageFrontend> = languages
-            .iter()
-            .filter_map(|&lang| atlas_engine::create_frontend(lang).map(|fe| (lang, fe)))
-            .collect();
-
-        if interrupted() {
-            return Ok(());
-        }
-
-        // ── Extraction (parallel) ──
-        let dirty_total = dirty.len();
-        ps.lock().unwrap().start_phase(
-            ProgressPhase::Extraction,
-            Some(format!("{dirty_total} files")),
-        );
-        ps.lock().unwrap().set_total(dirty_total as u64);
-
-        let pool = ParseWorkerPool::new(WorkerConfig::default());
-        let extracted_count = AtomicUsize::new(0);
-        let per_lang_mutex = Mutex::new(PerLanguageStats::new());
-        let fc = &frontend_cache;
-        let extract_counter = ps.lock().unwrap().atomic_current.clone();
-        let count_atomic = &extracted_count;
-
-        let results: Vec<_> = dirty
-            .par_iter()
-            .filter_map(|rel_path| {
-                if interrupted() {
-                    return None;
-                }
-                let abs_path = root.join(rel_path);
-                let lang = Language::from_path(rel_path)?;
-                let frontend = fc.get(&lang)?;
-                let file_start = Instant::now();
-                let result = crate::runtime::extract_one(
-                    &pool,
-                    &abs_path,
-                    &root,
-                    lang,
-                    frontend,
-                    mode.clone(),
-                );
-                let extract_ms = file_start.elapsed().as_millis() as u64;
-
-                let _count = count_atomic.fetch_add(1, Ordering::Relaxed);
-                extract_counter.fetch_add(1, Ordering::Relaxed);
-
-                let (facts_opt, failed, fail_cat) = match result {
-                    Ok(facts) => (Some(facts), false, None),
-                    Err(ref _e) => (None, true, Some("extraction_error")),
-                };
-                {
-                    per_lang_mutex
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .record_file(lang, extract_ms, failed, fail_cat);
-                }
-                facts_opt.map(|facts| atlas_engine::ExtractedFile {
-                    rel_path: rel_path.clone(),
-                    language: lang,
-                    facts,
-                })
-            })
-            .collect();
-
-        if interrupted() {
-            return Ok(());
-        }
-
-        let extracted = results;
-        let extracted_count = extracted.len();
-        let _failed_count = dirty_total.saturating_sub(extracted_count);
-
-        // ── Clean stale facts ──
-        ps.lock().unwrap().start_phase(
-            ProgressPhase::Cleanup,
-            Some(format!("{extracted_count} re-indexed")),
-        );
-        let file_ids: Vec<_> = extracted.iter().map(|ef| ef.facts.file.file_id).collect();
-        atlas_engine::phase_cleanup_file_ids(&store, &file_ids)
-            .context("Failed to clean stale facts")?;
-
-        if interrupted() {
-            return Ok(());
-        }
-
-        // ── DB Write (serial, with progress) ──
-        ps.lock().unwrap().start_phase(
-            ProgressPhase::DbWrite,
-            Some(format!("{extracted_count} files")),
-        );
-        ps.lock().unwrap().set_total(extracted_count as u64);
-
-        let extracted_files = atlas_engine::ExtractedFiles {
-            items: extracted,
-            stats: atlas_engine::ExtractionPhaseStats {
-                attempted: dirty_total,
-                succeeded: extracted_count,
-                failed: dirty_total.saturating_sub(extracted_count),
-                symbols: 0,
-            },
-        };
-
-        let _write_stats = atlas_engine::phase_write_batched(
-            &store,
-            &extracted_files,
-            500,
-            500,
-            |written| {
-                ps.lock().unwrap().set_current(written);
-            },
-            &interrupted,
-        )?;
-
-        if interrupted() {
-            return Ok(());
-        }
-
-        // ── Manifest-only early return ──
-        // Manifest mode only extracts symbols; skip resolution, edge building,
-        // annotation materialization, and summary building.
-        if matches!(mode, ExtractionMode::Manifest) {
-            // Still commit path alias config and finalize metadata.
             atlas_engine::phase_commit_path_alias_config(&store, &root)?;
             atlas_engine::phase_finalize(&store, &root, &include_patterns)?;
-            // Signal progress complete so TUI doesn't wait indefinitely.
-            ps.lock()
-                .unwrap()
-                .start_phase(ProgressPhase::Finalizing, Some("manifest index complete".into()));
-            return Ok(());
-        }
-
-        // ── Resolution (parallel matching + serial write) ──
-        let path_alias = atlas_engine::PathAliasConfig::resolver(&root);
-
-        let path_alias_config_changed = atlas_engine::PathAliasConfig::has_changed(&store, &root)?;
-        if path_alias_config_changed {
-            store.invalidate_all_references()?;
-            store.delete_all_edges()?;
-        }
-
-        let mut resolver =
-            atlas_engine::ReferenceResolver::with_path_alias(store.clone(), path_alias);
-        let (resolved, _stats) = resolver.resolve_all_parallel(store.clone(), Some(&ps), None)?;
-
-        if interrupted() {
-            return Ok(());
-        }
-
-        // ── Edge building (already par_iter internally) ──
-        ps.lock()
-            .unwrap()
-            .start_phase(ProgressPhase::EdgeBuilding, None);
-        let builder = atlas_engine::GraphBuilder::new(store.clone());
-        let _build_stats = builder.build_all(&resolved);
-        ps.lock().unwrap().set_current(resolved.len() as u64);
-
-        // ── Materialize user annotations as edges ──
-        if let Err(e) = atlas_engine::phase_materialize_annotations(&store) {
-            eprintln!("Warning: failed to materialize annotations: {e}");
-        }
-
-        // ── Summary build (Schema v3: persist function summaries) ──
-        ps.lock().unwrap().start_phase(
-            ProgressPhase::Finalizing,
-            Some("Building summaries...".into()),
-        );
-        let _summary_stats = atlas_engine::phase_build_summaries(&store)?;
-        if interrupted() {
-            return Ok(());
-        }
-
-        // ── Finalize ──
-        ps.lock()
-            .unwrap()
-            .start_phase(ProgressPhase::Finalizing, None);
-        atlas_engine::phase_commit_path_alias_config(&store, &root)?;
-        atlas_engine::phase_finalize(&store, &root, &include_patterns)?;
-        Ok(())
+            Ok(())
         })();
         // Always signal completion, even on error — prevents main thread hang
         done_w.store(true, Ordering::SeqCst);
