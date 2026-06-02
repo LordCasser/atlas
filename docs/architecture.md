@@ -31,7 +31,7 @@ crates/
     crates/context/    Agent context builder (Markdown)
     crates/filesync/   file discovery、change detection、file lock、watcher
     crates/lazy/       Lazy dataflow engine — on-demand analysis with budget caps
-  atlas-mcp/           MCP server (rmcp stdio JSON-RPC)、35 tools
+  atlas-mcp/           MCP server (rmcp stdio JSON-RPC)、18 tools
   atlas-cli/           CLI binary + commands + integration tests
 ```
 
@@ -446,7 +446,7 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
 
 **P2: Lazy Structural** — 查询时按需触发完整 structural extraction。`LazyStructuralService` + `CandidateProvider` + `StructuralLoader`。
 
-**Lazy UX** — `CapabilityMask`、`AnalysisContract`、`QuerySnapshot`、`atlas_resume`、`atlas_jobs` 和 session-scoped `Investigation` 已接入 MCP 查询路径。
+**Lazy UX** — `CapabilityMask`、`AnalysisContract`、`QuerySnapshot`、`resume_task`、`tasks` 和 session-scoped `Investigation` 已接入 MCP 查询路径。
 
 #### 10.1.7 Lazy 状态与任务边界
 
@@ -455,7 +455,7 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
 
 - **完成状态**：文件级状态以 `extraction_state.unit_id IS NULL` 为准，必须与 `files.content_hash` 匹配；单元级 dataflow cache 以 `extraction_state.unit_id IS NOT NULL` 为准。
 - **进行中状态**：所有 on-demand structural、resolution_symbols 和 dataflow 构建都必须 claim extraction job。dataflow 使用 unit-scoped job key，避免同一函数/顶层单元被前台 trace 和后台 prewarm 重复构建。
-- **MCP 可观测性**：`status` 只根据 fresh layer 分布推导 `manifest`、`partial_structural`、`structural`、`structural+lazy`、`full`，不能把 manifest-only 误报为 structural。`jobs` 暴露 active extraction jobs，供代理在 pending/partial 响应后决定重试时机。
+- **MCP 可观测性**：`status` 只根据 fresh layer 分布推导 `manifest`、`partial_structural`、`structural`、`structural+lazy`、`full`，不能把 manifest-only 误报为 structural。`tasks` 暴露 active extraction jobs，供代理在 pending/partial 响应后决定重试时机。
 - **Search 执行模型**：MCP search 先做 store-backed manifest 查询，再对候选文件做定向 lazy structural；只有候选为空且 scope 很小时才同步解析整个 scope。大 scope 不做同步全量 structural，避免把一次搜索变成隐式全项目索引。
 
 #### 10.1.8 CancellationToken 可中断提取
@@ -487,7 +487,7 @@ analysis_contract
   refinement_jobs        可提升结果质量的后台/后续构建建议
 ```
 
-`query_id` 是 MCP 层概念，不复用 extraction job id。查询快照保存在 MCP session 内存中，默认 TTL 5 分钟；`atlas_resume(query_id)` 使用原 tool 参数和 `LazyWindow` 重新执行查询，返回完整增强结果而不是 diff。MCP server 重启后 query snapshot 丢失。
+`query_id` 是 MCP 层概念，不复用 extraction job id。查询快照保存在 MCP session 内存中，默认 TTL 5 分钟；`resume_task(query_id)` 使用原 tool 参数和 `LazyWindow` 重新执行查询，返回完整增强结果而不是 diff。MCP server 重启后 query snapshot 丢失。
 
 `Investigation` 是 MCP session 级隐式调查上下文，不提供用户可见的 create/close API。分析类工具会根据 symbol、position 或 field focus 更新 active investigation，并把相关文件/符号和期望能力传给 lazy 调度器。TTL 同样为 5 分钟。
 
@@ -528,26 +528,23 @@ discover files
 
 ### 11.2 Context
 - 基于 symbol、callers/callees、file peers、importers/dependencies 构建 Agent context (Markdown)。
-- 当符号未被索引时，`context` 工具内置 lazy structural extraction（查询时按需触发完整 structural 解析）。
+- 当符号未被索引时，`symbol(view="context")` 工具内置 lazy structural extraction（查询时按需触发完整 structural 解析）。
 - **图刷新决策**：lazy structural 写新 facts 到 DB 后，`context` handler 会在调用 context builder 前执行 `force_refresh_graph()`，确保内存图快照包含刚解析的边。这关闭了 graph init 早于 handler 自身 structural extraction 的调用流缺口。
 
 ### 11.3 MCP
 - 基于 `rmcp` 的 stdio JSON-RPC transport。
-- **35 个工具**：V1 核心工具使用短名（无 `atlas_` 前缀）；新增实验性 analysis/domain-rules 工具保留 `atlas_` 前缀，避免和冻结的 V1 surface 混淆。
+- **18 个工具**：v1.3.1 将 33 个旧工具合并精简为 18 个。所有工具使用短名（无 `atlas_` 前缀）。Breaking change，不保留别名兼容。
 
 | 组 | 工具 |
 |----|------|
-| 项目管理 | `open_project`, `index`, `status`, `jobs`, `files`, `language_capabilities` |
-| 符号搜索 | `search`, `symbol`, `usages` |
-| 图导航 | `neighbors`, `callers`, `callees`, `callgraph`, `path`, `explore`, `impact` |
-| 上下文 | `context` |
-| Trace | `trace_point`, `trace_variable`, `trace_caller_path`, `trace_forward` |
-| 文件依赖 | `dependencies`, `dependents` |
-| 后台任务 | `task_status`, `wait_for_task` |
-| FP 分派注解 | `annotate_fp_dispatch`, `list_fp_annotations`, `delete_fp_annotation` |
-| Lazy UX | `atlas_resume`, `atlas_jobs` |
-| Lifecycle / Branch | `atlas_lifecycle`, `atlas_branch_diff` |
-| Domain Rules | `atlas_annotate`, `atlas_domain_rules`, `atlas_rule_learn` |
+| Project | `project(action="open\|status\|files")`, `index` |
+| Symbol | `search`, `symbol(view="detail\|context\|usages")` — 主参数 `qname` |
+| Graph / Impact | `calls(direction="incoming\|outgoing\|both", edge_kinds=[...])`, `explore`, `path`, `impact` |
+| File Graph | `file_dependencies(file_path, direction="incoming\|outgoing\|both")` |
+| Source Trace | `trace(kind="point\|variable\|forward\|callers")` |
+| Semantic Analysis | `lifecycle`, `branch_diff` |
+| Annotations / Rules | `fp_dispatches(action="add\|list\|delete")`, `domain_rules(action="add\|list\|delete\|learn")` |
+| Tasks | `tasks`, `task_status`, `wait_for_task`, `resume_task` |
 
 - Graph 惰性初始化：首次 graph-backed tool 调用时构建 snapshot。
 - 后续请求通过 `maybe_refresh_graph()`（5 秒缓存签名检查）检测外部索引变化。
@@ -575,10 +572,10 @@ Atlas 不包含污点分析（taint analysis）。产品主线为变量来源追
 
 ### 12.1 Trace 查询入口
 
-- `trace_point` — 解析源码位置到 full context。
-- `trace_variable` — backward dataflow walk 获取变量来源。
-- `trace_caller_path` — backward call edge walk 获取调用者链路（单链）。
-- `trace_forward` — forward call edge walk 回答"how does A reach B"。
+- `trace(kind="point")` — 解析源码位置到 full context。
+- `trace(kind="variable")` — backward dataflow walk 获取变量来源。
+- `trace(kind="callers")` — backward call edge walk 获取调用者链路（单链）。
+- `trace(kind="forward")` — forward call edge walk 回答"how does A reach B"。
 
 ### 12.2 输出契约
 
@@ -590,10 +587,40 @@ Atlas 不包含污点分析（taint analysis）。产品主线为变量来源追
 
 Atlas 的 lifecycle/branch 分析是 analysis 层能力，直接消费 `cfg_nodes`、`cfg_edges`、`data_nodes`、`dataflow_edges` 和 domain-rule consumer，不建立独立 Function IR。
 
-当前约束：
+#### 12.3.1 核心架构
+
+```
+CFG Builder + DataFlow Builder (extraction)
+           │
+           v
+     EffectComposer (&dyn OwnershipContract)
+           │
+           v
+     CfgNode.semantic_effects: Vec<SemanticEffect>
+           │
+    ┌──────┴──────┐
+    v             v
+branch_diff    lifecycle
+(semantic)     (semantic)
+```
+
+**SemanticEffect**（`types::effects`）：语言无关的多效应表示，每个 CfgNode 可携带多个效应。`OwnershipContract` trait 定义 `classify_return` / `classify_consumption`，由各语言实现。
+
+**EffectComposer**（`analysis::effect_composer`）：消费 CFG + DataFlow + `&dyn OwnershipContract`，通过 range-overlap 匹配 + DFS 反向追踪 DataFlow 边，将单语句分解为多条 `SemanticEffect`（Alloc/Free/Store/Nullify 等），并构建函数级 `TransferGraph`（field→value 映射）。
+
+**branch_diff_semantic**：基于 `EffectComposition` 比较分支路径的语义效应差异，输出结构化 `BranchDiffIssue`（含 asymmetry kind、confidence、evidence）。MCP `branch_diff` tool 默认使用 semantic 路径（`semantic=true`）。
+
+**lifecycle**：`transfer_state` 优先读取 `semantic_effects`（多效应按序处理），legacy 路径已移除。`FieldTransition` 按效应记录，DoubleFree/UseAfterFree 检测基于每次状态转换。
+
+#### 12.3.2 多语言支持
+
+`OwnershipContract` trait + `ConsumptionStyle` 区分 5 种消费模式（ExplicitCall/MethodCall/Implicit/Deferred/ContextManaged），`ResourceOpConfig::default_for(Language)` 通过 `producers`/`consumers` CalleeMatcher 覆盖 11+ 语言。每种语言混合使用多种消费风格（如 C 同时使用 `free()` 和 impliclit scope exit）。
+
+#### 12.3.3 当前约束
+
 - CFG effect annotation、field lifecycle 和 branch diff 先以 C/C++ 为主要适用语言。
 - `FieldLifecycleEngine` 对字段状态做路径敏感分析，状态包括 `Unknown`、`MaybeLive`、`Assigned`、`Freed`、`Nullified`、`Escaped`、`Returned`、`Invalidated`。
-- `BranchDiffEngine` 比较 sibling branch 的 read/write/free/allocate/call/condition/return/goto/assign 等 effect 差异。
+- `BranchDiffEngine` 比较 sibling branch 的语义效应差异。
 - `LifecycleProof` 在 domain rules 覆盖相关 free/alloc/owned pattern 后，将 pattern observation 升级为 rule-backed proof。
 - `impact` 可在 semantic 模式中组合 graph impact、domain rules 和 lifecycle 分析，输出 semantic impact 摘要。
 
@@ -626,6 +653,8 @@ Atlas 的 lifecycle/branch 分析是 analysis 层能力，直接消费 `cfg_node
 - Trace 契约：[`trace-contract.md`](./trace-contract.md)
 - Domain Rules 语言扩展指南：[`domain-rules-language-guide.md`](./domain-rules-language-guide.md)
 - 性能基线：[`performance.md`](./performance.md)
+- BranchDiff 语义重构设计：[`branch_diff_architecture_improvement_plan.tmp.md`](../branch_diff_architecture_improvement_plan.tmp.md)
+- BranchDiff 最终锁定架构：[`.tmp/branch_diff_architecture_final.md`](../.tmp/branch_diff_architecture_final.md)
 
 ## 16. 维护规则
 
