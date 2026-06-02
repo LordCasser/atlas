@@ -10,6 +10,7 @@ This directory keeps the release-facing documentation that should remain current
 4. [Testing](./testing.md) — test layers, phase requirements, feature matrix.
 5. [Performance](./performance.md) — measured baselines and recommendations.
 6. [Trace contract](./trace-contract.md) — frozen V1 trace JSON contract and MCP tool schemas.
+7. [Domain Rules Language Guide](./domain-rules-language-guide.md) — language registry, rule_kind, pattern, status, and extension guidance.
 
 ## Maintenance rules
 
@@ -18,4 +19,5 @@ This directory keeps the release-facing documentation that should remain current
 3. Update `roadmap.md` for current and future work only.
 4. Update `testing.md` when release checks or fixture expectations change.
 5. Update `trace-contract.md` when trace JSON fields, diagnostics, or capability output change.
-6. Delete obsolete content; do not accumulate archive directories.
+6. Update `domain-rules-language-guide.md` when adding a language registry, rule_kind, pattern policy, metadata shape, or learning behavior.
+7. Delete obsolete content; do not accumulate archive directories.

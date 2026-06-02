@@ -1,6 +1,6 @@
 # Atlas 架构文档
 
-本文是 Atlas 的**单一权威架构文档**，合并了架构约束、当前实现状态、已落地的设计决策（Lazy Index、DataflowFull 摘要层）。本文对代码实现有约束力；当代码与本文冲突时，以本文为准并同步修正代码。
+本文是 Atlas 的**单一权威架构文档**，合并了架构约束、当前实现状态、已落地的设计决策（Lazy Index、Lazy UX、DataflowFull 摘要层、Domain Rules 通用化）。本文对代码实现有约束力；当代码与本文冲突时，以本文为准并同步修正代码。
 
 ## 1. 总体原则
 
@@ -14,7 +14,7 @@
 
 ### 2.1 Crate 结构
 
-项目是 14 个 Cargo package 的 workspace：
+项目是 15 个 Cargo package 的 workspace：
 
 ```text
 crates/
@@ -26,11 +26,12 @@ crates/
     crates/resolution/ builtin filter、scope/container/import/include/name matching、PathAliasResolver
     crates/graph/      GraphBuilder、GraphSnapshot、GraphEngine
     crates/analysis/   变量来源追踪与调用路径查询、SummaryBuilder、CrossFunctionBridge
+    crates/domain_rules/ 语言无关 domain rule store/match/learning 核心
     crates/search/     FTS5、LIKE/fuzzy、query parser、scoring
     crates/context/    Agent context builder (Markdown)
     crates/filesync/   file discovery、change detection、file lock、watcher
     crates/lazy/       Lazy dataflow engine — on-demand analysis with budget caps
-  atlas-mcp/           MCP server (rmcp stdio JSON-RPC)、28 tools
+  atlas-mcp/           MCP server (rmcp stdio JSON-RPC)、35 tools
   atlas-cli/           CLI binary + commands + integration tests
 ```
 
@@ -39,10 +40,11 @@ crates/
 ```text
 atlas-cli → atlas-engine, atlas-mcp
 atlas-mcp → atlas-engine
-atlas-engine → types, workspace, db, extraction, resolution, graph, analysis, search, context, filesync, lazy
+atlas-engine → types, workspace, db, extraction, resolution, graph, analysis, search, context, filesync, lazy, domain-rules
 filesync → graph, resolution, extraction, analysis, db, types, workspace
 search / context → graph, db, types
-analysis → db, types, workspace
+analysis → db, types, workspace, domain-rules
+domain-rules → db
 graph → db, types
 resolution → db, types, workspace
 extraction → types
@@ -62,6 +64,7 @@ types → (anyhow, blake3, hex, rusqlite, serde)
 | `resolution` | 更新 resolved facts | 不直接承担展示格式 |
 | `graph` | 从 resolved facts 构建 symbol graph | 不混入 dataflow/CFG |
 | `analysis` | 消费 dataflow、CFG 和 call graph；trace/slicing | 不破坏底层 facts |
+| `domain_rules` | 语言无关 rule 存储、匹配、学习候选、registry 校验 | 不解释 C/C++ ownership、Rust safety 等语言语义 |
 | `lazy` | 按需 dataflow 加载，budget-capped | 不改变 extraction 语义 |
 | `cli` / `mcp` | 只编排能力 | 不内嵌解析、resolution 或分析算法 |
 
@@ -159,6 +162,64 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 - symbol graph 与 dataflow graph 必须分表。
 - `dataflow_edges` 保持纯 intra-procedural；跨函数事实仅存在于摘要表。
 
+### 6.2 Domain Rules 通用化
+
+`domain_rules` 不是 C/C++ ownership 子系统，而是语言无关的规则存储、匹配、学习候选和审计基础设施。所有语言语义都由 language registry 和 analysis consumer 解释。
+
+核心原则：
+- `domain_rules` crate 核心只处理 `DomainRule`、`PatternKind`、`RuleSource`、`RuleStatus`、`RuleMatch`、`LanguageRuleKinds`、`RuleLearningStrategy`。
+- 核心 engine 不出现 ownership/free/alloc/cleanup/lifecycle 等 C/C++ 语义；这些语义只存在于 `analysis::ownership_rules::CppOwnershipRules` 等 consumer 中。
+- 每种语言通过 `LanguageRuleKinds` 注册自己的 `rule_kind`、允许的 `pattern_kind`、builtin rules 和校验逻辑。
+- `GenericRuleEngine` 只返回 `RuleMatch`；consumer 决定匹配结果意味着释放、分配、React hook、unsafe boundary 还是其他语义。
+- learned rules 默认写入 `status='candidate'`，不参与匹配；用户 approve 后才变为 `enabled`。
+- `language='*'` 只用于极少数通用规则，不做复杂跨语言继承。
+
+`domain_rules` schema：
+
+```sql
+CREATE TABLE domain_rules (
+  id            TEXT PRIMARY KEY NOT NULL,
+  language      TEXT NOT NULL DEFAULT 'c',
+  rule_kind     TEXT NOT NULL,
+  pattern       TEXT NOT NULL,
+  pattern_kind  TEXT NOT NULL DEFAULT 'exact',
+  meta          TEXT,
+  meta_version  INTEGER NOT NULL DEFAULT 1,
+  source        TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'enabled',
+  confidence    REAL NOT NULL DEFAULT 1.0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+状态机：
+
+```text
+candidate → enabled    用户批准 learned rule
+candidate → rejected   用户拒绝 learned rule
+enabled   → disabled   用户临时停用
+enabled   → deprecated 规则过时但保留审计记录
+```
+
+匹配策略：
+- `exact`: 精确字符串匹配。
+- `prefix`: 前缀匹配。
+- `suffix`: 后缀匹配。
+- `glob`: glob 模式。
+- `regex`: 高级正则模式，必须受缓存和上限约束。
+
+当前 C/C++ 接入路径：
+
+```text
+domain_rules::GenericRuleEngine
+  → CRegistry 注册 free_fn / alloc_fn / owned_pattern / cleanup_fn
+  → analysis::CppOwnershipRules 解释 RuleMatch
+  → lifecycle / lifecycle_proof / semantic impact 消费 ownership 视图
+```
+
+各语言接入和扩展规则见 [`domain-rules-language-guide.md`](./domain-rules-language-guide.md)。
+
 ## 7. 数据流
 
 ```text
@@ -181,7 +242,20 @@ Source files
 
 ### 7.1 Lazy Dataflow
 
-analysis 层按需加载 dataflow facts（而非全量预加载），通过 `LazyWindow` 控制分析范围，budget-capped (20s/32 units)。结构性 lazy 提取 budget-capped (18s/30 files)。`ExtractionMode::LazyDataflow` 支持增量按需抽取。
+analysis 层按需加载 dataflow facts（而非全量预加载），通过 `LazyWindow` 控制分析范围。结构性 lazy 提取 budget-capped (18s/30 files)；后台 preparse 使用更宽预算 (60s/100 files)。`ExtractionMode::LazyDataflow` 支持增量按需抽取。
+
+提取层能力集中通过 `extraction_state.capability_mask` 表达，不把 precision 字段扩散到每个 symbol/reference/edge：
+
+| Bit | Capability | 含义 |
+|-----|------------|------|
+| 0 | `manifest` | 顶层符号可用 |
+| 1 | `structural` | 完整 symbols/scopes/references/callsites 可用 |
+| 2 | `call_edges` | callsites 已解析并构建调用边 |
+| 3 | `cfg` | 函数级 CFG 可用 |
+| 4 | `dataflow` | intra-procedural dataflow 可用 |
+| 5 | `summaries` | inter-procedural function summaries 可用 |
+
+`field_lifecycle`、`branch_diff`、`ownership_proof` 属于 analysis 结果能力，不进入 extraction mask。
 
 ### 7.2 跨函数桥接（DataflowFull）
 
@@ -304,10 +378,9 @@ LanguageCapabilityProfile
 - Java/C/C++/ArkTS/Go/C#/Rust/PHP/Ruby/Kotlin/Cangjie 的 CFG 未实现或部分实现（见能力表）。
 - per-file timeout 尚未完全强制。
 
-### 10.1 查询时 lazy index 架构（多阶段演进）
+### 10.1 查询时 lazy index 架构
 
-当前系统实现了三阶段 lazy index 结构，并在 Phase 1
-（当前阶段）建立 foundation 基础设施。后续阶段将逐步接入。
+当前系统实现了 manifest、resolution_symbols、structural、dataflow 多层 lazy index 结构，并通过 extraction state、job tracking、analysis contract、query resume 和 investigation state 提供可观测的查询时渐进分析体验。
 
 #### 10.1.1 Layer 层次结构
 
@@ -316,7 +389,7 @@ LanguageCapabilityProfile
 | Layer | 说明 |
 |-------|------|
 | `manifest` | 仅顶层符号（type/function/class 声明），无引用、无 scope。通过 `--analysis manifest` 产生。 |
-| `resolution_symbols` | **(Phase 2 新增)** 最小符号层，仅供跨文件引用解析使用。包含 symbols、imports、scopes，不包含 references、callsites、dataflow、raw_edges。 |
+| `resolution_symbols` | 最小符号层，仅供跨文件引用解析使用。包含 symbols、imports、scopes，不包含 references、callsites、dataflow、raw_edges。 |
 | `structural` | 完整符号、引用、scope、边。通过 `--analysis structural` 或 lazy structural 产生。 |
 | `dataflow` | 所有 structural 事实 + per-function dataflow/CFG。通过 `--analysis full` 或 lazy dataflow 产生。 |
 
@@ -357,21 +430,23 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
 
 - **去重**: `extraction_jobs` 表确保同一 file+unit+layer 不会并行构建两次。
 - **读写一致性**: 每个 handler 在触发 lazy extraction 后，在自己的写事务中可见刚写的数据；读操作通过 `StoreReader`（独立只读连接）访问。
-- **Delta graph refresh**（Phase 3）: lazy structural 写入后，增加显式 graph snapshot 刷新步骤，确保图查询立即可见新边。
+- **Delta graph refresh**: lazy structural 写入后，通过 incremental refresh 或必要时完整 snapshot rebuild，确保图查询能看到新边。
 
-#### 10.1.5 Phase 2 目标
+#### 10.1.5 Closure 与 Linux 增强边界
 
 - `ClosurePlanner`: 基于 import/include 图计算依赖闭包，确保被引用文件的 `resolution_symbols` 层先于主文件的 structural 层构建。
 - `resolution_symbols` 层实现: 轻量提取模式，产出 symbols + imports + scopes（无 references/callsites/dataflow/raw_edges），供跨文件引用解析使用。
 - Linux 增强边界: 对 C 语言的特定惯用法（syscall 宏、EXPORT_SYMBOL、initcall、static inline）在提取后进行后处理增强，不改动通用提取管道。
 
-#### 10.1.6 已实现的阶段
+#### 10.1.6 已实现的基础阶段
 
 **P0: Scope Index** — 允许 `--include`/`--scope`/`--exclude` 限制索引范围，降低大型项目 index 时间和 DB 体积。
 
 **P1: Manifest Extraction** — `ExtractionMode::Manifest`：仅提取顶层符号，为 lazy structural 提供候选源。通过 `symbols.layer` 字段区分。
 
 **P2: Lazy Structural** — 查询时按需触发完整 structural extraction。`LazyStructuralService` + `CandidateProvider` + `StructuralLoader`。
+
+**Lazy UX** — `CapabilityMask`、`AnalysisContract`、`QuerySnapshot`、`atlas_resume`、`atlas_jobs` 和 session-scoped `Investigation` 已接入 MCP 查询路径。
 
 #### 10.1.7 Lazy 状态与任务边界
 
@@ -399,6 +474,22 @@ Lazy extraction 的 budget 约束已从"循环守卫"升级为"可中断提取"�
 - `extract_file_with_mode` 保留原签名，作为 `_cancellable` + `&NeverCancel` 的包装器
 
 此设计不修改 tree-sitter C FFI，不引入 signal，不增加线程。Cancellation 是正常降级路径，产生 precision 降级而非 MCP tool error。
+
+#### 10.1.9 Analysis Contract、Query Resume 与 Investigation
+
+所有触发 lazy extraction 的 MCP 响应必须暴露 `analysis_contract`，明确当前数据能支持和不能支持的结论：
+
+```text
+analysis_contract
+  safe_conclusions       当前 capability mask 支持的结论
+  unsafe_conclusions     缺失能力导致不能证明的结论
+  capability_summary     mask bits、best capability、文件能力分布
+  refinement_jobs        可提升结果质量的后台/后续构建建议
+```
+
+`query_id` 是 MCP 层概念，不复用 extraction job id。查询快照保存在 MCP session 内存中，默认 TTL 5 分钟；`atlas_resume(query_id)` 使用原 tool 参数和 `LazyWindow` 重新执行查询，返回完整增强结果而不是 diff。MCP server 重启后 query snapshot 丢失。
+
+`Investigation` 是 MCP session 级隐式调查上下文，不提供用户可见的 create/close API。分析类工具会根据 symbol、position 或 field focus 更新 active investigation，并把相关文件/符号和期望能力传给 lazy 调度器。TTL 同样为 5 分钟。
 
 ### 内容哈希一致性
 
@@ -442,7 +533,7 @@ discover files
 
 ### 11.3 MCP
 - 基于 `rmcp` 的 stdio JSON-RPC transport。
-- **28 个短名工具**（无 `atlas_` 前缀）：
+- **35 个工具**：V1 核心工具使用短名（无 `atlas_` 前缀）；新增实验性 analysis/domain-rules 工具保留 `atlas_` 前缀，避免和冻结的 V1 surface 混淆。
 
 | 组 | 工具 |
 |----|------|
@@ -454,6 +545,9 @@ discover files
 | 文件依赖 | `dependencies`, `dependents` |
 | 后台任务 | `task_status`, `wait_for_task` |
 | FP 分派注解 | `annotate_fp_dispatch`, `list_fp_annotations`, `delete_fp_annotation` |
+| Lazy UX | `atlas_resume`, `atlas_jobs` |
+| Lifecycle / Branch | `atlas_lifecycle`, `atlas_branch_diff` |
+| Domain Rules | `atlas_annotate`, `atlas_domain_rules`, `atlas_rule_learn` |
 
 - Graph 惰性初始化：首次 graph-backed tool 调用时构建 snapshot。
 - 后续请求通过 `maybe_refresh_graph()`（5 秒缓存签名检查）检测外部索引变化。
@@ -492,6 +586,22 @@ Atlas 不包含污点分析（taint analysis）。产品主线为变量来源追
 - `ok`, `kind`, `capability`, `partial_result`, `diagnostics`, `result`。
 - 详见 [`trace-contract.md`](./trace-contract.md)。
 
+### 12.3 Lifecycle、Branch Diff 与 Semantic Impact
+
+Atlas 的 lifecycle/branch 分析是 analysis 层能力，直接消费 `cfg_nodes`、`cfg_edges`、`data_nodes`、`dataflow_edges` 和 domain-rule consumer，不建立独立 Function IR。
+
+当前约束：
+- CFG effect annotation、field lifecycle 和 branch diff 先以 C/C++ 为主要适用语言。
+- `FieldLifecycleEngine` 对字段状态做路径敏感分析，状态包括 `Unknown`、`MaybeLive`、`Assigned`、`Freed`、`Nullified`、`Escaped`、`Returned`、`Invalidated`。
+- `BranchDiffEngine` 比较 sibling branch 的 read/write/free/allocate/call/condition/return/goto/assign 等 effect 差异。
+- `LifecycleProof` 在 domain rules 覆盖相关 free/alloc/owned pattern 后，将 pattern observation 升级为 rule-backed proof。
+- `impact` 可在 semantic 模式中组合 graph impact、domain rules 和 lifecycle 分析，输出 semantic impact 摘要。
+
+禁止事项：
+- 不建完整跨函数 dataflow 全量分析来支撑 C/C++ lifecycle。
+- 不建独立 Function IR；如需要新增表达能力，优先扩展 CFG/dataflow facts 或 analysis 输出。
+- 不让 `domain_rules` 核心解释 C/C++ 语义。
+
 ## 13. Cargo Features
 
 | 层级 | Features |
@@ -514,6 +624,7 @@ Atlas 不包含污点分析（taint analysis）。产品主线为变量来源追
 - 路线图：[`roadmap.md`](./roadmap.md)
 - 测试规范：[`testing.md`](./testing.md)
 - Trace 契约：[`trace-contract.md`](./trace-contract.md)
+- Domain Rules 语言扩展指南：[`domain-rules-language-guide.md`](./domain-rules-language-guide.md)
 - 性能基线：[`performance.md`](./performance.md)
 
 ## 16. 维护规则

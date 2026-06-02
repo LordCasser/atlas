@@ -100,6 +100,25 @@
 - MCP crate 有 tool schema、routing、bounded output 测试。
 - 原有 default、all-languages、mcp 组合测试继续通过。
 
+### Lazy UX / Analysis Contract ✅
+
+要求：
+- 触发 lazy extraction 的 MCP 工具必须断言 `analysis_contract` 存在。
+- `safe_conclusions` 和 `unsafe_conclusions` 不能是泛泛提示，必须能对应到具体缺失或存在的 `CapabilityMask` bit。
+- `atlas_resume(query_id)` 必须覆盖：query snapshot 存储、TTL 内恢复、未知/过期 query_id 错误、恢复后返回完整结果。
+- `atlas_jobs(query_id)` 必须覆盖按查询过滤和 pending/complete/failed 状态展示。
+- Investigation state 必须测试 symbol、position、field focus 对 related files/symbols 和 desired capabilities 的更新。
+
+### Domain Rules / Lifecycle ✅
+
+要求：
+- `domain_rules` schema 测试必须覆盖新增列：`language`、`pattern_kind`、`meta`、`meta_version`、`status`、`updated_at`。
+- `GenericRuleEngine` 测试必须证明 disabled/candidate/rejected/deprecated 规则不参与匹配。
+- 每个 language registry 必须测试 unknown `rule_kind` 和不允许的 `pattern_kind` 会被拒绝。
+- C/C++ `CppOwnershipRules` 必须测试 user/builtin/learned 规则解释、free/alloc/owned_pattern/cleanup 匹配和旧别名兼容。
+- `FieldLifecycleEngine` 和 `BranchDiffEngine` 必须使用 CFG/dataflow facts 作为输入；不得用手写最终 verdict 宣称端到端能力。
+- lifecycle proof 必须覆盖 rule-backed 和 incomplete 两类结果。
+
 ## 4. Feature 测试矩阵
 
 每次合并前至少运行：
@@ -119,3 +138,5 @@ cargo test -p atlas-cli --features "all-languages,mcp"
 4. 禁止新增 schema 表但不测试 insert/query/delete/cascade。
 5. 禁止修改 golden expected 而不说明语义原因。
 6. 禁止在稳定 `atlas-engine` public API 前跳过当前阶段端到端和语义精度门禁。
+7. 禁止 learned domain rules 在未 approve 时影响分析结果。
+8. 禁止用独立 Function IR mock 替代 CFG/dataflow facts 来证明 lifecycle 或 branch diff 能力。

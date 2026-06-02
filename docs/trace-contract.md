@@ -244,7 +244,7 @@ Each language has a `LanguageCapabilityProfile` with `FeatureMatrix` for fine-gr
 
 ## 8. MCP Tool Contracts
 
-The 28 MCP tools use short names (no `atlas_` prefix):
+The V1 core MCP tools use short names (no `atlas_` prefix). This trace contract covers the four trace tools; newer `atlas_`-prefixed lazy/lifecycle/domain-rules tools are documented in [`architecture.md`](./architecture.md) until their stable contract is frozen.
 
 | Tool | Purpose |
 |------|---------|

@@ -227,7 +227,7 @@ CLI、MCP 和 context 输出都必须包含语言能力信息。最小字段：
 
 ### MCP
 
-MCP 使用 JSON-RPC over stdio。当前公开工具名使用无 `atlas_` 前缀的短名。核心工具：
+MCP 使用 JSON-RPC over stdio。V1 核心公开工具名使用无 `atlas_` 前缀的短名。核心工具：
 
 - project/index/status: `open_project`, `index`, `status`, `files`, `language_capabilities`
 - symbol/search: `search`, `symbol`, `usages`
@@ -236,6 +236,8 @@ MCP 使用 JSON-RPC over stdio。当前公开工具名使用无 `atlas_` 前缀�
 - file dependencies: `dependencies`, `dependents`
 - background tasks: `task_status`, `wait_for_task`
 - FP dispatch annotations: `annotate_fp_dispatch`, `list_fp_annotations`, `delete_fp_annotation`
+
+新增 lazy recovery、lifecycle、branch diff 和 domain-rules 工具当前使用显式 `atlas_` 前缀：`atlas_resume`、`atlas_jobs`、`atlas_lifecycle`、`atlas_branch_diff`、`atlas_annotate`、`atlas_domain_rules`、`atlas_rule_learn`。这些工具在稳定前不得改变 V1 核心短名工具的语义。
 
 耗时工具必须能避免 MCP 客户端普通 tool-call 超时：`search`、`index`、`open_project` 支持 `background=true` 时应立即返回 `task_id`；客户端随后用 `task_status` 轮询或 `wait_for_task` 阻塞等待。`open_project(background=true)` 完成后由 `task_status`/`wait_for_task` 激活准备好的项目。
 

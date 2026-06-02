@@ -66,11 +66,33 @@ Project split into `atlas-engine` facade, engine internal crates, `atlas-mcp`, a
 
 P0-P7 optimizations completed: PhaseTimings, hash-based dirty-set, thread-local parsers, batch DB writes, GlobalSymbolIndex, Rayon parallel edges, on-demand dataflow/CFG, language-capability-driven skip.
 
-### 2.5 MCP tool consolidation ✅
+### 2.5 Lazy UX and query recovery ✅
 
-All tools use short names (no `atlas_` prefix). 28 tools registered.
+- `CapabilityMask` centralizes extraction-layer capability state (`manifest`, `structural`, `call_edges`, `cfg`, `dataflow`, `summaries`) in `extraction_state`.
+- Lazy MCP responses expose `analysis_contract` with safe conclusions, unsafe conclusions, capability summary, and refinement jobs.
+- MCP query snapshots support `atlas_resume(query_id)` for in-session recovery; snapshots are intentionally in-memory with a short TTL.
+- Investigation state tracks the active MCP-session focus and desired capabilities for focused lazy refinement.
+- `atlas_jobs` exposes query-related lazy/background job state.
 
-> **Next step (post-V1)**: namespace-style merge 28 → 16, see `8.1`. V1 freezes the 28-tool surface.
+### 2.6 Field lifecycle, branch diff, and semantic impact ✅
+
+- C/C++-oriented `FieldLifecycleEngine` analyzes field state transitions from CFG/dataflow facts.
+- `BranchDiffEngine` compares sibling branch side effects without introducing a separate Function IR.
+- Lifecycle proof mode can use domain rules to raise evidence to rule-backed proof.
+- `impact` can include semantic impact summaries based on lifecycle paths and domain rules.
+
+### 2.7 Domain Rules generic layer ✅
+
+- `domain_rules` crate provides language-agnostic rule storage, matching, registry validation, and learning candidate infrastructure.
+- The `domain_rules` table includes `language`, `pattern_kind`, `meta`, `meta_version`, `status`, and timestamps.
+- C/C++ ownership semantics live in `analysis::CppOwnershipRules`; the generic engine does not interpret ownership or lifecycle semantics.
+- Language extension guidance is documented in `docs/domain-rules-language-guide.md`.
+
+### 2.8 MCP tool consolidation ✅
+
+V1 core tools use short names (no `atlas_` prefix). Additional experimental analysis/domain-rules tools use explicit `atlas_` names until their stable surface is decided.
+
+> **Next step (post-V1)**: namespace-style merge the frozen V1 core tools, see `8.1`.
 
 ## 3. Trace and language capability work
 
@@ -83,6 +105,12 @@ All tools use short names (no `atlas_` prefix). 28 tools registered.
 ### 3.2 Path-level validation
 
 Continue expanding end-to-end smoke tests for all languages.
+
+### 3.3 Analysis contract consistency
+
+- Keep all lazy-triggering MCP tools aligned on `analysis_contract`.
+- Ensure `safe_conclusions` and `unsafe_conclusions` map directly to `CapabilityMask`.
+- Keep `query_id`, `atlas_resume`, and `atlas_jobs` behavior documented and covered by tests.
 
 ## 4. Graph and performance evolution
 
@@ -107,6 +135,7 @@ Continue expanding end-to-end smoke tests for all languages.
 - Document feature flags and language availability.
 - Keep CLI/MCP as consumers of the same engine behavior.
 - Lock trace response contracts before promising downstream compatibility.
+- Decide which `atlas_`-prefixed analysis/domain-rules tools graduate into the stable short-name MCP surface.
 
 ## 6. Future product lines
 
@@ -135,6 +164,7 @@ Corpus: git blob + version/tag/path mappings
 - Java Maven/Gradle/classpath completeness.
 - Automatic vulnerability scanning, taint rules, finding generation, or SAST product features.
 - Multi-version source corpus indexing.
+- Full compiler-grade C/C++ ownership proof, pointer arithmetic, union aliasing, or complete cross-function dataflow.
 
 ## 8. Post-V1 simplification backlog
 
