@@ -25,6 +25,7 @@ pub mod caller_path;
 pub mod capability;
 pub mod cfg;
 pub mod dataflow;
+pub mod effects;
 pub mod enums;
 pub mod ids;
 pub mod lazy;
@@ -34,10 +35,16 @@ pub mod summary;
 pub mod timing;
 pub mod trace;
 
+// --- Effects ---
+pub use effects::{
+    ConsumptionContract, ConsumptionStyle, EscapeTarget, OwnershipContract, PlaceRef,
+    ResourceLocator, ReturnContract, SemanticEffect, SemanticEffectKind, ValueSource,
+};
+
 // --- IDs ---
 pub use ids::{
-    BindingId, BindingUseId, CallsiteId, CfgEdgeId, CfgNodeId, DataFlowEdgeId, DataNodeId, EdgeId,
-    FileId, ImportId, ReferenceId, ScopeId, SymbolId,
+    BindingId, BindingUseId, CallsiteId, CfgEdgeId, CfgNodeId, DataFlowEdgeId, DataNodeId,
+    EdgeId, EffectId, FileId, ImportId, ReferenceId, ScopeId, SymbolId,
 };
 
 // --- Enums ---

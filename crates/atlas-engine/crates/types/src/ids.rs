@@ -537,6 +537,30 @@ impl CfgEdgeId {
     }
 }
 
+// ── EffectId ─────────────────────────────────────────────────────────────────
+
+define_id!(
+    /// Deterministic semantic-effect identifier: blake3(cfg_node_id + order + kind_name).
+    ///
+    /// Each SemanticEffect produced by a CFG node gets a unique,
+    /// deterministically reproducible ID based on the producing node,
+    /// its order within that node, and the effect kind name.
+    EffectId
+);
+
+impl EffectId {
+    /// Generate an EffectId from its constituent parts.
+    ///
+    /// - `cfg_node_id`: the CFG node that produced this effect
+    /// - `order`: ordering within the node (for multi-effect statements)
+    /// - `kind`: effect kind name (e.g., "Alloc", "Store", "Free")
+    pub fn generate(cfg_node_id: &CfgNodeId, order: u32, kind: &str) -> Self {
+        let order_bytes = order.to_le_bytes();
+        let parts: Vec<&[u8]> = vec![cfg_node_id.as_bytes(), &order_bytes, kind.as_bytes()];
+        Self::from_parts(&parts)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
