@@ -14,6 +14,7 @@ use atlas_engine::SymbolKind;
 
 use super::lazy_refresh::LazyRefreshQueue;
 use super::lazy_response::LazyDiagnostics;
+use super::query_snapshot::{QuerySnapshot, QueryStatus};
 use super::{ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64,
     MAX_QUERY_LENGTH, MAX_SYMBOL_NAME_LENGTH};
 
@@ -22,6 +23,7 @@ use crate::task_manager::TaskManager;
 use serde_json::json;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
 
 const SYNC_STRUCTURAL_SCOPE_FILE_LIMIT: usize = 8;
 const LIKE_FALLBACK_SCOPE_FILE_LIMIT: usize = 32;
@@ -394,6 +396,15 @@ impl ToolRouter {
         if let Some(ref diag) = lazy_diag {
             result["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
         }
+
+        self.store_snapshot(QuerySnapshot {
+            query_id: query_id.clone(),
+            tool_name: "symbol".into(),
+            tool_args: args.clone(),
+            lazy_window: None,
+            created_at: Instant::now(),
+            status: if structural_tier == PrecisionTier::Exact { QueryStatus::Ready } else { QueryStatus::Partial },
+        });
 
         (
             serde_json::to_string_pretty(&result).unwrap_or_else(|e| e.to_string()),

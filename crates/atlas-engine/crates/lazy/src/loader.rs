@@ -191,7 +191,13 @@ impl LazyDataflowLoader {
                         node_count: Some(unit_payload.data_nodes.len() as i64),
                         edge_count: Some(unit_payload.dataflow_edges.len() as i64),
                         budget_exceeded: payload.budget_exceeded,
-                        capability_mask: CapabilityMask::default(),
+                        capability_mask: CapabilityMask::from_bits(
+                            CapabilityMask::MANIFEST_BIT
+                                | CapabilityMask::STRUCTURAL_BIT
+                                | CapabilityMask::CALL_EDGES
+                                | CapabilityMask::CFG
+                                | CapabilityMask::DATAFLOW,
+                        ),
                         built_at: String::new(),
                     })?;
                     Ok(())
@@ -249,7 +255,13 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
                 node_count: Some(prebuilt as i64),
                 edge_count: None,
                 budget_exceeded: false,
-                capability_mask: CapabilityMask::default(),
+                capability_mask: CapabilityMask::from_bits(
+                    CapabilityMask::MANIFEST_BIT
+                        | CapabilityMask::STRUCTURAL_BIT
+                        | CapabilityMask::CALL_EDGES
+                        | CapabilityMask::CFG
+                        | CapabilityMask::DATAFLOW,
+                ),
                 built_at: String::new(),
             })?;
             return Ok((true, DataflowPayload::empty()));

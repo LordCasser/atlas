@@ -408,9 +408,9 @@ impl Store {
             )?;
             tx.execute(
                 "INSERT INTO extraction_state
-                    (file_id, unit_id, layer, content_hash, status, updated_at)
-                 VALUES (?1, NULL, 'resolution_symbols', ?2, 'complete', datetime('now'))",
-                params![file_id, facts.file.content_hash],
+                    (file_id, unit_id, layer, content_hash, status, capability_mask, updated_at)
+                 VALUES (?1, NULL, 'resolution_symbols', ?2, 'complete', ?3, datetime('now'))",
+                params![file_id, facts.file.content_hash, CapabilityMask::MANIFEST_BIT as i64],
             )?;
             Ok(())
         })

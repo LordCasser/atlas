@@ -50,7 +50,7 @@ impl ToolRouter {
         let investigation = self.investigation_state.active_investigation.clone();
 
         let (sid, lazy_warnings, tier, lazy_diag) =
-            match self.resolve_context_symbol(qname, include_roots, investigation.as_ref()) {
+            match self.resolve_context_symbol(qname, include_roots, investigation.as_ref(), Some(&query_id)) {
                 Ok(r) => r,
                 Err(err) => return (err, true),
             };
@@ -133,6 +133,7 @@ impl ToolRouter {
         qname: &str,
         include_roots: Vec<atlas_engine::IncludeRoot>,
         investigation: Option<&atlas_engine::Investigation>,
+        query_id: Option<&str>,
     ) -> Result<
         (
             atlas_engine::SymbolId,
@@ -156,7 +157,7 @@ impl ToolRouter {
         if let Some(id) = symbols.first().map(|s| s.id) {
             // Ensure structural data for this file (include_roots optional,
             // always relevant) so graph queries see complete edges.
-            let outcome = self.ensure_structural_for_files([symbols[0].file_id], include_roots, investigation, None);
+            let outcome = self.ensure_structural_for_files([symbols[0].file_id], include_roots, investigation, query_id);
             warnings.extend(outcome.warnings);
             worst_tier = cmp::min(worst_tier, outcome.precision_tier);
             if let Some(ref lo) = outcome.lazy_outcome {
@@ -173,7 +174,7 @@ impl ToolRouter {
         if name_matches.len() == 1 {
             // Unambiguous — use it directly
             let outcome =
-                self.ensure_structural_for_files([name_matches[0].file_id], include_roots, investigation, None);
+                self.ensure_structural_for_files([name_matches[0].file_id], include_roots, investigation, query_id);
             warnings.extend(outcome.warnings);
             worst_tier = cmp::min(worst_tier, outcome.precision_tier);
             if let Some(ref lo) = outcome.lazy_outcome {
@@ -192,7 +193,7 @@ impl ToolRouter {
                 .collect();
             if matching_qnames.len() == 1 {
                 let outcome =
-                    self.ensure_structural_for_files([matching_qnames[0].file_id], include_roots, investigation, None);
+                    self.ensure_structural_for_files([matching_qnames[0].file_id], include_roots, investigation, query_id);
                 warnings.extend(outcome.warnings);
                 worst_tier = cmp::min(worst_tier, outcome.precision_tier);
                 if let Some(ref lo) = outcome.lazy_outcome {
@@ -225,7 +226,7 @@ impl ToolRouter {
         let is_manual_full = self.has_manual_full_index();
         if !is_manual_full {
             self.send_progress(0.5, "Extracting structural data...");
-            let outcome = self.ensure_structural_for_symbol_name(qname, include_roots.clone(), investigation, None);
+            let outcome = self.ensure_structural_for_symbol_name(qname, include_roots.clone(), investigation, query_id);
             warnings.extend(outcome.warnings);
             worst_tier = cmp::min(worst_tier, outcome.precision_tier);
             if let Some(ref lo) = outcome.lazy_outcome {

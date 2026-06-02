@@ -177,7 +177,7 @@ impl LazyOrchestrator {
         &self,
         name: &str,
         policy: LazyPolicy,
-        investigation: Option<&Investigation>,
+        _investigation: Option<&Investigation>,
         query_id: Option<&str>,
     ) -> Result<LazyOutcome> {
         // Create budget from policy
@@ -193,15 +193,8 @@ impl LazyOrchestrator {
             query_id,
         )?;
 
-        // Build capability mask — include investigation's desired capabilities
-        // when an active investigation is present.
         let cap_mask = if result.files_built > 0 || result.files_cached > 0 {
-            let base = CapabilityMask::MANIFEST_BIT | CapabilityMask::STRUCTURAL_BIT;
-            if let Some(inv) = investigation {
-                CapabilityMask::from_bits(base | inv.desired_capabilities.bits())
-            } else {
-                CapabilityMask::from_bits(base)
-            }
+            CapabilityMask::from_bits(CapabilityMask::MANIFEST_BIT | CapabilityMask::STRUCTURAL_BIT)
         } else {
             CapabilityMask::default()
         };

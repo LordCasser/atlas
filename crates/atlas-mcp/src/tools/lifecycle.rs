@@ -5,8 +5,10 @@
 //! lifecycle: allocation, use, escape, free, and suspicious patterns (use-after-free, double-free).
 
 use super::lazy_response::LazyDiagnostics;
+use super::query_snapshot::{QuerySnapshot, QueryStatus};
 use super::{ToolRouter, get_str};
 use serde_json::json;
+use std::time::Instant;
 
 impl ToolRouter {
     pub(crate) fn handle_atlas_lifecycle(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -23,11 +25,23 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
+        // Generate query_id for atlas_resume / atlas_jobs
+        let query_id = Self::generate_query_id();
+
         // Ensure structural data is available (may trigger lazy extraction)
         if let Ok(Some(sym)) = self.store.find_symbol_by_id(&sid) {
             let (roots, _warnings) = self.include_roots_from_args(args);
-            let _ = self.ensure_structural_for_files([sym.file_id], roots, None, None);
+            let _ = self.ensure_structural_for_files([sym.file_id], roots, None, Some(&query_id));
         }
+
+        self.store_snapshot(QuerySnapshot {
+            query_id: query_id.clone(),
+            tool_name: "atlas_lifecycle".into(),
+            tool_args: args.clone(),
+            lazy_window: None,
+            created_at: Instant::now(),
+            status: QueryStatus::Partial,
+        });
 
         // Load CFG nodes for this function, with lazy CFG fallback
         let mut cfg_nodes = match self.store.find_cfg_nodes_by_function(&sid) {
@@ -89,21 +103,39 @@ impl ToolRouter {
 
         // --- CFG is available — run lifecycle analysis ---
 
-        // Get symbol info (language + qname) in one fetch
-        let (qname, lang_str) = self
+        // Lifecycle analysis only supports C/C++ — gate on language
+        let sym_info = self
             .store
             .find_symbol_by_id(&sid)
             .ok()
             .flatten()
             .map(|s| {
                 let lang = match s.language {
-                    atlas_engine::Language::C => "c",
-                    atlas_engine::Language::Cpp => "cpp",
-                    _ => "c", // default for languages without C ownership rules
+                    atlas_engine::Language::C => Some("c"),
+                    atlas_engine::Language::Cpp => Some("cpp"),
+                    _ => None,
                 };
-                (s.qualified_name, lang)
+                lang.map(|l| (s.qualified_name, l))
             })
-            .unwrap_or_else(|| (symbol.to_string(), "c"));
+            .flatten();
+
+        let (qname, lang_str) = match sym_info {
+            Some((qname, lang)) => (qname, lang),
+            None => {
+                let resp = json!({
+                    "ok": false,
+                    "function": symbol,
+                    "field_path": field,
+                    "error": "unsupported_language",
+                    "message": "Lifecycle analysis only supports C/C++. The requested symbol is not C/C++ or could not be resolved.",
+                    "verdict": "incomplete",
+                });
+                return (
+                    serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
+                    false,
+                );
+            }
+        };
 
         // Load domain rules from DB for this symbol's language
         let cpp_rules =

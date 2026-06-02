@@ -5,8 +5,10 @@
 //! a field while the other does not.
 
 use super::lazy_response::LazyDiagnostics;
+use super::query_snapshot::{QuerySnapshot, QueryStatus};
 use super::{ToolRouter, get_str};
 use serde_json::json;
+use std::time::Instant;
 
 impl ToolRouter {
     pub(crate) fn handle_atlas_branch_diff(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -22,11 +24,23 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
+        // Generate query_id for atlas_resume / atlas_jobs
+        let query_id = Self::generate_query_id();
+
         // Ensure structural data is available
         if let Ok(Some(sym)) = self.store.find_symbol_by_id(&sid) {
             let (roots, _warnings) = self.include_roots_from_args(args);
-            let _ = self.ensure_structural_for_files([sym.file_id], roots, None, None);
+            let _ = self.ensure_structural_for_files([sym.file_id], roots, None, Some(&query_id));
         }
+
+        self.store_snapshot(QuerySnapshot {
+            query_id: query_id.clone(),
+            tool_name: "atlas_branch_diff".into(),
+            tool_args: args.clone(),
+            lazy_window: None,
+            created_at: Instant::now(),
+            status: QueryStatus::Partial,
+        });
 
         // Load CFG nodes for this function, with lazy CFG fallback
         let mut cfg_nodes = match self.store.find_cfg_nodes_by_function(&sid) {
@@ -85,6 +99,28 @@ impl ToolRouter {
         }
 
         // --- CFG is available — run branch diff analysis ---
+
+        // Branch diff only supports C/C++ — gate on language
+        let is_c_or_cpp = self
+            .store
+            .find_symbol_by_id(&sid)
+            .ok()
+            .flatten()
+            .map(|s| matches!(s.language, atlas_engine::Language::C | atlas_engine::Language::Cpp))
+            .unwrap_or(false);
+
+        if !is_c_or_cpp {
+            let resp = json!({
+                "ok": false,
+                "function": symbol,
+                "error": "unsupported_language",
+                "message": "Branch diff analysis only supports C/C++",
+            });
+            return (
+                serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
+                false,
+            );
+        }
 
         let qname = self
             .store

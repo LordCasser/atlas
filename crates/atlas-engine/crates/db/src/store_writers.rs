@@ -712,15 +712,17 @@ pub(crate) fn write_file_facts(conn: &Connection, facts: &FileFacts) -> anyhow::
          WHERE file_id = ?1 AND unit_id IS NULL AND layer = ?2",
         params![facts.file.file_id, facts.layer],
     )?;
+    let capability_mask = CapabilityMask::from_layers(&[&facts.layer]);
     conn.execute(
         "INSERT INTO extraction_state
-            (file_id, unit_id, layer, content_hash, status, updated_at)
-         VALUES (?1, NULL, ?2, ?3, ?4, datetime('now'))",
+            (file_id, unit_id, layer, content_hash, status, capability_mask, updated_at)
+         VALUES (?1, NULL, ?2, ?3, ?4, ?5, datetime('now'))",
         params![
             facts.file.file_id,
             facts.layer,
             facts.file.content_hash,
-            status
+            status,
+            capability_mask.bits() as i64,
         ],
     )?;
 
