@@ -4,10 +4,12 @@
 //! Detects patterns like: one branch frees a field but the other doesn't.
 
 use crate::cfg_graph::CfgGraph;
-use std::collections::HashMap;
+use std::collections::{HashSet, VecDeque};
 use types::cfg::{CfgEdge, CfgNode};
-use types::enums::{CfgEdgeKind, CfgNodeKind, EffectKind};
+use types::enums::{CfgEdgeKind, CfgNodeKind};
 use types::ids::CfgNodeId;
+
+use super::effect_composer::EffectComposition;
 
 /// Summary of effects on one side of a branch.
 #[derive(Debug, Clone, Default)]
@@ -17,6 +19,37 @@ pub struct BranchPathSummary {
     pub writes: Vec<String>,
     pub reads: Vec<String>,
     pub calls: Vec<String>,
+}
+
+impl BranchPathSummary {
+    /// Merge another summary's effects into this one, deduplicating entries.
+    pub fn merge_from(&mut self, other: &Self) {
+        for f in &other.frees {
+            if !self.frees.contains(f) {
+                self.frees.push(f.clone());
+            }
+        }
+        for a in &other.allocates {
+            if !self.allocates.contains(a) {
+                self.allocates.push(a.clone());
+            }
+        }
+        for w in &other.writes {
+            if !self.writes.contains(w) {
+                self.writes.push(w.clone());
+            }
+        }
+        for r in &other.reads {
+            if !self.reads.contains(r) {
+                self.reads.push(r.clone());
+            }
+        }
+        for c in &other.calls {
+            if !self.calls.contains(c) {
+                self.calls.push(c.clone());
+            }
+        }
+    }
 }
 
 /// Diff between two branch paths.
@@ -43,35 +76,38 @@ impl BranchDiffEngine {
 
         let mut diffs = Vec::new();
 
-        // Find all Branch nodes
         for (nid, node) in &graph.nodes {
             if node.kind != CfgNodeKind::Branch {
                 continue;
             }
 
-            // Get true/false successor targets
             let true_targets = graph.successors_by_kind(nid, CfgEdgeKind::TrueBranch);
             let false_targets = graph.successors_by_kind(nid, CfgEdgeKind::FalseBranch);
 
             if true_targets.is_empty() && false_targets.is_empty() {
-                continue; // Degenerate branch with no outgoing edges
+                continue;
             }
 
-            let true_path = if let Some(true_edge) = true_targets.first() {
-                Self::walk_branch_path(&graph, &true_edge.target, nid)
-            } else {
-                BranchPathSummary::default()
+            let true_path = {
+                let mut merged = BranchPathSummary::default();
+                for edge in true_targets {
+                    let path = Self::walk_branch_path(&graph, &edge.target);
+                    merged.merge_from(&path);
+                }
+                merged
             };
 
-            let false_path = if let Some(false_edge) = false_targets.first() {
-                Self::walk_branch_path(&graph, &false_edge.target, nid)
-            } else {
-                BranchPathSummary::default()
+            let false_path = {
+                let mut merged = BranchPathSummary::default();
+                for edge in false_targets {
+                    let path = Self::walk_branch_path(&graph, &edge.target);
+                    merged.merge_from(&path);
+                }
+                merged
             };
 
-            let common_prefix = node.target_field.clone().unwrap_or_default();
+            let common_prefix = String::new();
 
-            // Detect asymmetry
             let suspicious = if !true_path.frees.is_empty() && false_path.frees.is_empty() {
                 Some(format!(
                     "Branch asymmetry: field(s) freed in true path ({}) but not in false path",
@@ -81,6 +117,16 @@ impl BranchDiffEngine {
                 Some(format!(
                     "Branch asymmetry: field(s) freed in false path ({}) but not in true path",
                     false_path.frees.join(", ")
+                ))
+            } else if !true_path.allocates.is_empty() && false_path.allocates.is_empty() {
+                Some(format!(
+                    "Branch asymmetry: field(s) allocated in true path ({}) but not in false path",
+                    true_path.allocates.join(", ")
+                ))
+            } else if true_path.allocates.is_empty() && !false_path.allocates.is_empty() {
+                Some(format!(
+                    "Branch asymmetry: field(s) allocated in false path ({}) but not in true path",
+                    false_path.allocates.join(", ")
                 ))
             } else {
                 None
@@ -102,10 +148,65 @@ impl BranchDiffEngine {
         diffs
     }
 
-    /// Kept for API compatibility; the public `diff_branches` now uses edge-based traversal.
-    #[allow(dead_code)]
-    fn diff_single_branch(_cfg_nodes: &[CfgNode], _branch_idx: usize) -> Option<BranchDiff> {
-        None
+    /// Phase 2: Diff branches using semantic effects from EffectComposer.
+    ///
+    /// Converts structured `BranchDiffIssue` results into legacy `BranchDiff` format
+    /// for backward-compatible consumption by MCP tools and CLI.
+    pub fn diff_branches_semantic(
+        cfg_nodes: &[CfgNode],
+        cfg_edges: &[CfgEdge],
+        composition: &EffectComposition,
+    ) -> Vec<BranchDiff> {
+        let graph = match CfgGraph::build(cfg_nodes, cfg_edges) {
+            Ok(g) => g,
+            Err(_) => return vec![],
+        };
+
+        let issues = super::branch_diff_semantic::analyze_branch_semantic(&graph, composition);
+
+        // Convert structured issues → legacy BranchDiff format
+        issues
+            .into_iter()
+            .map(|issue| {
+                // Determine node line from the branch node in the graph
+                let node_line = graph
+                    .nodes
+                    .get(&issue.branch_node_id)
+                    .map(|n| n.stmt_range.start_line)
+                    .unwrap_or(0);
+
+                let mut path_true = BranchPathSummary::default();
+                let mut path_false = BranchPathSummary::default();
+
+                // Map field effects to summary
+                if issue.true_side.has_free {
+                    path_true.frees.push(issue.field.clone());
+                }
+                if issue.true_side.has_alloc {
+                    path_true.allocates.push(issue.field.clone());
+                }
+                if issue.true_side.has_write {
+                    path_true.writes.push(issue.field.clone());
+                }
+                if issue.false_side.has_free {
+                    path_false.frees.push(issue.field.clone());
+                }
+                if issue.false_side.has_alloc {
+                    path_false.allocates.push(issue.field.clone());
+                }
+                if issue.false_side.has_write {
+                    path_false.writes.push(issue.field.clone());
+                }
+
+                BranchDiff {
+                    branch_node_line: node_line,
+                    common_prefix: issue.field.clone(),
+                    path_true,
+                    path_false,
+                    suspicious_asymmetry: Some(issue.description),
+                }
+            })
+            .collect()
     }
 
     /// Walk a branch path from `start` until the matching Join node (depth=0)
@@ -113,79 +214,85 @@ impl BranchDiffEngine {
     fn walk_branch_path(
         graph: &CfgGraph,
         start: &CfgNodeId,
-        _branch_node_id: &CfgNodeId,
     ) -> BranchPathSummary {
         let mut summary = BranchPathSummary::default();
-        let mut current = *start;
-        let mut depth: u32 = 1; // We start inside the branch
-        let mut visited: HashMap<CfgNodeId, bool> = HashMap::new();
-        let max_nodes = 200;
+        let mut visited = HashSet::new();
+        let mut worklist = VecDeque::new();
+        worklist.push_back((*start, 1u32)); // (node_id, depth), start inside branch
 
-        for _ in 0..max_nodes {
-            if visited.contains_key(&current) {
-                break; // Cycle detected
+        while let Some((node_id, depth)) = worklist.pop_front() {
+            if !visited.insert(node_id) {
+                continue;
             }
-            visited.insert(current, true);
 
-            let node = match graph.nodes.get(&current) {
+            let node = match graph.nodes.get(&node_id) {
                 Some(n) => n,
-                None => break,
+                None => continue,
             };
 
-            // Collect effects
-            let target = node.target_field.as_deref().unwrap_or("");
-            match node.effect_kind {
-                Some(EffectKind::Free) => {
-                    if !target.is_empty() && !summary.frees.contains(&target.to_string()) {
-                        summary.frees.push(target.to_string());
+            // Collect effects from semantic_effects annotations
+            use types::effects::{PlaceRef, SemanticEffectKind};
+            for eff in &node.semantic_effects {
+                match &eff.kind {
+                    SemanticEffectKind::Free {
+                        place: PlaceRef::Field { path },
+                        ..
+                    } => {
+                        if !summary.frees.contains(path) {
+                            summary.frees.push(path.clone());
+                        }
                     }
-                }
-                Some(EffectKind::Allocate) => {
-                    if !target.is_empty() && !summary.allocates.contains(&target.to_string()) {
-                        summary.allocates.push(target.to_string());
+                    SemanticEffectKind::Alloc {
+                        target: PlaceRef::Field { path },
+                        ..
+                    } => {
+                        if !summary.allocates.contains(path) {
+                            summary.allocates.push(path.clone());
+                        }
                     }
-                }
-                Some(EffectKind::Assign) | Some(EffectKind::Write) => {
-                    if !target.is_empty() && !summary.writes.contains(&target.to_string()) {
-                        summary.writes.push(target.to_string());
+                    SemanticEffectKind::Store {
+                        dst: PlaceRef::Field { path },
+                        ..
                     }
-                }
-                Some(EffectKind::Read) => {
-                    if !target.is_empty() && !summary.reads.contains(&target.to_string()) {
-                        summary.reads.push(target.to_string());
+                    | SemanticEffectKind::Nullify {
+                        place: PlaceRef::Field { path },
+                        ..
                     }
-                }
-                Some(EffectKind::Call) => {
-                    let callee = node.callee_name.as_deref().unwrap_or("");
-                    if !callee.is_empty() && !summary.calls.contains(&callee.to_string()) {
-                        summary.calls.push(callee.to_string());
+                    | SemanticEffectKind::Assign {
+                        dst: PlaceRef::Field { path },
+                        ..
+                    } => {
+                        if !summary.writes.contains(path) {
+                            summary.writes.push(path.clone());
+                        }
                     }
+                    SemanticEffectKind::Call { callee } => {
+                        if !summary.calls.contains(callee) {
+                            summary.calls.push(callee.clone());
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
 
-            // Track branch nesting
-            match node.kind {
-                CfgNodeKind::Branch => depth += 1,
+            let child_depth = match node.kind {
+                CfgNodeKind::Branch => depth + 1,
                 CfgNodeKind::Join => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0 {
-                        break; // Reached matching join
+                    let d = depth.saturating_sub(1);
+                    if d == 0 {
+                        continue;
                     }
+                    d
                 }
-                CfgNodeKind::Exit => break,
-                _ => {}
-            }
+                CfgNodeKind::Exit => continue,
+                _ => depth,
+            };
 
-            // Move to next node via Normal edge (first successor)
-            let succs = graph.successors.get(&current);
-            if let Some(edges) = succs {
-                if let Some(edge) = edges.first() {
-                    current = edge.target;
-                    continue;
+            if let Some(edges) = graph.successors.get(&node_id) {
+                for edge in edges {
+                    worklist.push_back((edge.target, child_depth));
                 }
             }
-            break;
         }
 
         summary
@@ -196,9 +303,9 @@ impl BranchDiffEngine {
 mod tests {
     use super::*;
     use types::cfg::CfgEdge;
+    use types::effects::{PlaceRef, SemanticEffect, SemanticEffectKind, ValueSource};
     use types::enums::{CfgEdgeKind, CfgNodeKind};
-    use types::ids::CfgNodeId;
-    use types::ids::SymbolId;
+    use types::ids::{CfgNodeId, EffectId, SymbolId};
     use types::structs::TextRange;
 
     fn test_function_id() -> SymbolId {
@@ -217,14 +324,33 @@ mod tests {
         }
     }
 
+    fn make_test_effect(node_id: CfgNodeId, order: u32, kind: SemanticEffectKind) -> SemanticEffect {
+        let kind_name = match &kind {
+            SemanticEffectKind::Alloc { .. } => "Alloc",
+            SemanticEffectKind::Free { .. } => "Free",
+            SemanticEffectKind::Store { .. } => "Store",
+            SemanticEffectKind::Assign { .. } => "Assign",
+            SemanticEffectKind::Call { .. } => "Call",
+            SemanticEffectKind::Nullify { .. } => "Nullify",
+            SemanticEffectKind::Return { .. } => "Return",
+            SemanticEffectKind::Escape { .. } => "Escape",
+        };
+        let id = EffectId::generate(&node_id, order, kind_name);
+        SemanticEffect {
+            id,
+            cfg_node_id: node_id,
+            order,
+            kind,
+            confidence: 0.8,
+        }
+    }
+
     fn make_node(
         fid: &SymbolId,
         kind: CfgNodeKind,
         line: u32,
         byte: u32,
-        effect: Option<EffectKind>,
-        target: Option<&str>,
-        callee: Option<&str>,
+        effects: Vec<SemanticEffect>,
     ) -> CfgNode {
         let range = text_range(line, byte);
         let id = CfgNodeId::generate(fid, kind.as_str(), byte);
@@ -233,54 +359,57 @@ mod tests {
             function_id: *fid,
             kind,
             stmt_range: range,
-            effect_kind: effect,
-            target_field: target.map(String::from),
-            callee_name: callee.map(String::from),
+            semantic_effects: effects,
         }
     }
 
     fn make_entry_node(fid: &SymbolId, byte: u32) -> CfgNode {
-        make_node(fid, CfgNodeKind::Entry, 0, byte, None, None, None)
+        make_node(fid, CfgNodeKind::Entry, 0, byte, vec![])
     }
 
     fn make_exit_node(fid: &SymbolId, byte: u32) -> CfgNode {
-        make_node(fid, CfgNodeKind::Exit, 0, byte, None, None, None)
+        make_node(fid, CfgNodeKind::Exit, 0, byte, vec![])
     }
 
     fn make_branch_node(
         fid: &SymbolId,
-        effect: Option<EffectKind>,
-        target: Option<&str>,
         line: u32,
         byte: u32,
     ) -> CfgNode {
-        make_node(fid, CfgNodeKind::Branch, line, byte, effect, target, None)
+        make_node(fid, CfgNodeKind::Branch, line, byte, vec![])
     }
 
     fn make_stmt_node(
         fid: &SymbolId,
-        effect: Option<EffectKind>,
-        target: Option<&str>,
+        effects: Vec<SemanticEffect>,
         line: u32,
         byte: u32,
     ) -> CfgNode {
-        make_node(
-            fid,
-            CfgNodeKind::Statement,
-            line,
-            byte,
-            effect,
-            target,
-            None,
-        )
+        make_node(fid, CfgNodeKind::Statement, line, byte, effects)
     }
 
     fn make_join_node(fid: &SymbolId, line: u32, byte: u32) -> CfgNode {
-        make_node(fid, CfgNodeKind::Join, line, byte, None, None, None)
+        make_node(fid, CfgNodeKind::Join, line, byte, vec![])
     }
 
     fn make_edge(source: &CfgNodeId, target: &CfgNodeId, kind: CfgEdgeKind) -> CfgEdge {
         CfgEdge::new(source, target, kind)
+    }
+
+    /// Create a Free semantic effect for a field.
+    fn se_free(node_id: CfgNodeId, order: u32, field: &str) -> SemanticEffect {
+        make_test_effect(node_id, order, SemanticEffectKind::Free {
+            place: PlaceRef::Field { path: field.to_string() },
+            callee: "?".to_string(),
+        })
+    }
+
+    /// Create an Alloc semantic effect for a field.
+    fn se_alloc(node_id: CfgNodeId, order: u32, field: &str) -> SemanticEffect {
+        make_test_effect(node_id, order, SemanticEffectKind::Alloc {
+            target: PlaceRef::Field { path: field.to_string() },
+            callee: "?".to_string(),
+        })
     }
 
     #[test]
@@ -293,7 +422,7 @@ mod tests {
     fn test_no_branches() {
         let fid = test_function_id();
         let entry = make_entry_node(&fid, 0);
-        let stmt = make_stmt_node(&fid, None, None, 1, 1);
+        let stmt = make_stmt_node(&fid, vec![], 1, 1);
         let exit = make_exit_node(&fid, 2);
         let nodes = vec![entry.clone(), stmt.clone(), exit.clone()];
         let edges = vec![
@@ -308,7 +437,7 @@ mod tests {
     fn test_branch_without_join() {
         let fid = test_function_id();
         let entry = make_entry_node(&fid, 0);
-        let branch = make_branch_node(&fid, Some(EffectKind::Condition), Some("ptr"), 10, 1);
+        let branch = make_branch_node(&fid, 10, 1);
         let exit = make_exit_node(&fid, 2);
         let nodes = vec![entry.clone(), branch.clone(), exit.clone()];
         let edges = vec![
@@ -325,8 +454,9 @@ mod tests {
     fn test_branch_with_asymmetric_free() {
         let fid = test_function_id();
         let entry = make_entry_node(&fid, 0);
-        let branch = make_branch_node(&fid, Some(EffectKind::Condition), Some("ptr"), 10, 1);
-        let stmt = make_stmt_node(&fid, Some(EffectKind::Free), Some("ptr"), 11, 2);
+        let branch = make_branch_node(&fid, 10, 1);
+        let stmt_id = CfgNodeId::generate(&fid, CfgNodeKind::Statement.as_str(), 2);
+        let stmt = make_stmt_node(&fid, vec![se_free(stmt_id, 0, "ptr")], 11, 2);
         let join = make_join_node(&fid, 20, 3);
         let exit = make_exit_node(&fid, 4);
         let nodes = vec![
@@ -353,9 +483,10 @@ mod tests {
         // Branch1 -> (Branch2 -> Free -> Join1) -> Join2
         let fid = test_function_id();
         let entry = make_entry_node(&fid, 0);
-        let branch1 = make_branch_node(&fid, Some(EffectKind::Condition), Some("field_a"), 1, 1);
-        let branch2 = make_branch_node(&fid, Some(EffectKind::Condition), Some("field_b"), 2, 2);
-        let stmt = make_stmt_node(&fid, Some(EffectKind::Free), Some("field_a"), 3, 3);
+        let branch1 = make_branch_node(&fid, 1, 1);
+        let branch2 = make_branch_node(&fid, 2, 2);
+        let stmt_id = CfgNodeId::generate(&fid, CfgNodeKind::Statement.as_str(), 3);
+        let stmt = make_stmt_node(&fid, vec![se_free(stmt_id, 0, "field_a")], 3, 3);
         let join1 = make_join_node(&fid, 4, 4);
         let join2 = make_join_node(&fid, 5, 5);
         let exit = make_exit_node(&fid, 6);
@@ -387,8 +518,9 @@ mod tests {
         // Branch -> Alloc -> Join (only in true path)
         let fid = test_function_id();
         let entry = make_entry_node(&fid, 0);
-        let branch = make_branch_node(&fid, Some(EffectKind::Condition), Some("ctx->buf"), 1, 1);
-        let alloc = make_stmt_node(&fid, Some(EffectKind::Allocate), Some("ctx->buf"), 2, 2);
+        let branch = make_branch_node(&fid, 1, 1);
+        let alloc_id = CfgNodeId::generate(&fid, CfgNodeKind::Statement.as_str(), 2);
+        let alloc = make_stmt_node(&fid, vec![se_alloc(alloc_id, 0, "ctx->buf")], 2, 2);
         let join = make_join_node(&fid, 3, 3);
         let exit = make_exit_node(&fid, 4);
         let nodes = vec![
@@ -406,19 +538,30 @@ mod tests {
             make_edge(&join.id, &exit.id, CfgEdgeKind::Normal),
         ];
         let result = BranchDiffEngine::diff_branches(&nodes, &edges);
-        assert!(!result.is_empty());
         assert!(!result.is_empty(), "Should detect at least one branch");
+        assert!(
+            result[0].suspicious_asymmetry.is_some(),
+            "Should detect allocate asymmetry"
+        );
+        if let Some(ref msg) = result[0].suspicious_asymmetry {
+            assert!(
+                msg.contains("allocated"),
+                "Asymmetry message should mention 'allocated': {msg}"
+            );
+        }
     }
 
     #[test]
     fn test_multiple_branches_in_function() {
         let fid = test_function_id();
         let entry = make_entry_node(&fid, 0);
-        let br1 = make_branch_node(&fid, Some(EffectKind::Condition), Some("x"), 1, 1);
-        let free1 = make_stmt_node(&fid, Some(EffectKind::Free), Some("x"), 2, 2);
+        let br1 = make_branch_node(&fid, 1, 1);
+        let free1_id = CfgNodeId::generate(&fid, CfgNodeKind::Statement.as_str(), 2);
+        let free1 = make_stmt_node(&fid, vec![se_free(free1_id, 0, "x")], 2, 2);
         let join1 = make_join_node(&fid, 3, 3);
-        let br2 = make_branch_node(&fid, Some(EffectKind::Condition), Some("y"), 4, 4);
-        let free2 = make_stmt_node(&fid, Some(EffectKind::Free), Some("y"), 5, 5);
+        let br2 = make_branch_node(&fid, 4, 4);
+        let free2_id = CfgNodeId::generate(&fid, CfgNodeKind::Statement.as_str(), 5);
+        let free2 = make_stmt_node(&fid, vec![se_free(free2_id, 0, "y")], 5, 5);
         let join2 = make_join_node(&fid, 6, 6);
         let exit = make_exit_node(&fid, 7);
         let nodes = vec![

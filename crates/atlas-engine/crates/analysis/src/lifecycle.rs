@@ -7,6 +7,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use types::cfg::{CfgEdge, CfgNode};
+use types::effects::{PlaceRef, SemanticEffect, SemanticEffectKind};
 use types::enums::{CfgEdgeKind, CfgNodeKind, EffectKind};
 use types::ids::CfgNodeId;
 
@@ -250,23 +251,34 @@ impl FieldLifecycleEngine {
             // Get inherited branch context
             let ctx = branch_contexts.get(&nid).cloned().unwrap_or_default();
 
-            // Apply effect → new state + any suspicious points
-            let (new_state, mut sus) = transfer_state(
+            // Apply effect → new state + any suspicious points + intermediate transitions
+            let (new_state, mut sus, intermediate) = transfer_state(
                 merged.as_state().unwrap_or(FieldState::Unknown),
                 node,
                 &canonical_target,
                 rules,
             );
 
-            // Record transition (only if state actually changed)
-            if let Some(from_state) = merged.as_state() {
-                if from_state != new_state {
+            // Record transition(s) — one per state change (multi-effect nodes produce multiple)
+            let from_state = merged.as_state().unwrap_or(FieldState::Unknown);
+            if intermediate.is_empty() && from_state != new_state {
+                // Legacy single-transition for effect_kind path
+                transitions.push(FieldTransition {
+                    from_state,
+                    to_state: new_state,
+                    node_id: node.id,
+                    node_line: node.stmt_range.start_line,
+                    effect: None,
+                    branch_frames: ctx.clone(),
+                });
+            } else {
+                for (from, to, eff) in &intermediate {
                     transitions.push(FieldTransition {
-                        from_state,
-                        to_state: new_state,
+                        from_state: *from,
+                        to_state: *to,
                         node_id: node.id,
                         node_line: node.stmt_range.start_line,
-                        effect: node.effect_kind,
+                        effect: *eff,
                         branch_frames: ctx.clone(),
                     });
                 }
@@ -401,124 +413,180 @@ fn lattice_merge(a: LatticeState, b: LatticeState) -> LatticeState {
     }
 }
 
-/// Apply a node's effect to the current state and produce a new state.
-/// Returns (new_state, suspicious_points_found).
+/// Apply a node's effect(s) to the current state and produce a new state.
+///
+/// Phase 2: semantic_effects-aware.  When `node.semantic_effects` is non-empty
+/// the function processes each effect in order and returns all intermediate
+/// (from → to) transitions so the caller can record them individually.
+/// Falls back to legacy `effect_kind`/`target_field`/`callee_name` otherwise.
+///
+/// Returns (final_state, suspicious_points, intermediate_transitions).
 fn transfer_state(
     state: FieldState,
     node: &CfgNode,
     canonical_target: &str,
-    rules: &CppOwnershipRules,
-) -> (FieldState, Vec<SuspiciousPoint>) {
-    let effect = match node.effect_kind {
-        Some(e) => e,
-        None => return (state, vec![]),
-    };
+    _rules: &CppOwnershipRules,
+) -> (FieldState, Vec<SuspiciousPoint>, Vec<(FieldState, FieldState, Option<EffectKind>)>) {
+    // ── Semantic-effects path ─────────────────────────────────────────────
+    if !node.semantic_effects.is_empty() {
+        let mut current = state;
+        let mut suspicious: Vec<SuspiciousPoint> = Vec::new();
+        let mut transitions: Vec<(FieldState, FieldState, Option<EffectKind>)> = Vec::new();
 
-    let target =
-        types::structs::canonicalize_field_path(node.target_field.as_deref().unwrap_or(""));
-    let matches_field = target == canonical_target
-        || canonical_target.starts_with(&format!("{target}."))
-        || target.starts_with(&format!("{canonical_target}."));
-
-    let callee = node.callee_name.as_deref().unwrap_or("");
-
-    match (effect, matches_field) {
-        (EffectKind::Free, true) => {
-            let sus = if state == FieldState::Freed || state == FieldState::MaybeFreed {
-                vec![SuspiciousPoint {
-                    line: node.stmt_range.start_line,
-                    kind: SuspiciousKind::DoubleFree,
-                    message: format!("Double free of '{canonical_target}'"),
-                }]
-            } else {
-                vec![]
-            };
-            (FieldState::Freed, sus)
-        }
-        (EffectKind::Allocate, true) => {
-            let sus = if state == FieldState::Freed || state == FieldState::MaybeFreed {
-                vec![SuspiciousPoint {
-                    line: node.stmt_range.start_line,
-                    kind: SuspiciousKind::UseAfterFree,
-                    message: format!("Allocation on previously freed field '{canonical_target}'"),
-                }]
-            } else {
-                vec![]
-            };
-            (FieldState::Assigned, sus)
-        }
-        (EffectKind::Call, true) => {
-            if rules.match_free(callee).is_some() {
-                let sus = if state == FieldState::Freed || state == FieldState::MaybeFreed {
-                    vec![SuspiciousPoint {
-                        line: node.stmt_range.start_line,
-                        kind: SuspiciousKind::DoubleFree,
-                        message: format!("Double free of '{canonical_target}' via {callee}"),
-                    }]
-                } else {
-                    vec![]
-                };
-                (FieldState::Freed, sus)
-            } else if rules.match_alloc(callee).is_some() {
-                (FieldState::Assigned, vec![])
-            } else {
-                (state, vec![])
+        for eff in &node.semantic_effects {
+            let (next, mapped_eff) =
+                apply_semantic_effect(current, eff, canonical_target);
+            // Always check for suspicious patterns (e.g., double-free stays Freed)
+            let sus = check_transition_suspicious(current, next, node, canonical_target);
+            suspicious.extend(sus);
+            if next != current {
+                transitions.push((current, next, mapped_eff));
+                current = next;
             }
         }
-        (EffectKind::Call, false) => (state, vec![]),
-        (EffectKind::Assign, true) => (FieldState::Assigned, vec![]),
-        (EffectKind::Read, true) => {
-            let sus = if state == FieldState::Freed || state == FieldState::MaybeFreed {
-                vec![SuspiciousPoint {
-                    line: node.stmt_range.start_line,
-                    kind: SuspiciousKind::UseAfterFree,
-                    message: format!(
-                        "{} of '{}' after {}",
-                        if state == FieldState::Freed {
-                            "Read"
-                        } else {
-                            "Possible read"
-                        },
-                        canonical_target,
-                        if state == FieldState::Freed {
-                            "free"
-                        } else {
-                            "possible free"
-                        }
-                    ),
-                }]
-            } else {
-                vec![]
-            };
-            (state, sus)
-        }
-        (EffectKind::Write, true) => {
-            let sus = if state == FieldState::Freed || state == FieldState::MaybeFreed {
-                vec![SuspiciousPoint {
-                    line: node.stmt_range.start_line,
-                    kind: SuspiciousKind::UseAfterFree,
-                    message: format!(
-                        "Write to '{}' after {}",
-                        canonical_target,
-                        if state == FieldState::Freed {
-                            "free"
-                        } else {
-                            "possible free"
-                        }
-                    ),
-                }]
-            } else {
-                vec![]
-            };
-            if state == FieldState::Unknown {
-                (FieldState::MaybeLive, sus)
-            } else {
-                (state, sus)
-            }
-        }
-        (EffectKind::Return, true) => (FieldState::Returned, vec![]),
-        _ => (state, vec![]),
+
+        return (current, suspicious, transitions);
     }
+
+    // ── No semantic effects — nothing to transfer ──────────────────────────
+    (state, vec![], vec![])
+}
+
+/// Apply a single `SemanticEffect` to the current state.
+/// Returns (new_state, mapped_legacy_effect_kind) — suspicious-point detection
+/// happens in the caller (`transfer_state`) after the transition.
+fn apply_semantic_effect(
+    state: FieldState,
+    eff: &SemanticEffect,
+    canonical_target: &str,
+) -> (FieldState, Option<EffectKind>) {
+    match &eff.kind {
+        SemanticEffectKind::Free {
+            place: PlaceRef::Field { path },
+            ..
+        } => {
+            let path_canon = types::structs::canonicalize_field_path(path);
+            if !field_matches(&path_canon, canonical_target) {
+                return (state, None);
+            }
+            (FieldState::Freed, Some(EffectKind::Free))
+        }
+        SemanticEffectKind::Alloc {
+            target: PlaceRef::Field { path },
+            ..
+        } => {
+            let path_canon = types::structs::canonicalize_field_path(path);
+            if !field_matches(&path_canon, canonical_target) {
+                return (state, None);
+            }
+            (FieldState::Assigned, Some(EffectKind::Allocate))
+        }
+        SemanticEffectKind::Store {
+            dst: PlaceRef::Field { path },
+            ..
+        } => {
+            let path_canon = types::structs::canonicalize_field_path(path);
+            if !field_matches(&path_canon, canonical_target) {
+                return (state, None);
+            }
+            (FieldState::Assigned, Some(EffectKind::Assign))
+        }
+        SemanticEffectKind::Nullify {
+            place: PlaceRef::Field { path },
+            ..
+        } => {
+            let path_canon = types::structs::canonicalize_field_path(path);
+            if !field_matches(&path_canon, canonical_target) {
+                return (state, None);
+            }
+            (FieldState::Nullified, Some(EffectKind::Assign))
+        }
+        SemanticEffectKind::Assign {
+            dst: PlaceRef::Field { path },
+            ..
+        } => {
+            let path_canon = types::structs::canonicalize_field_path(path);
+            if !field_matches(&path_canon, canonical_target) {
+                return (state, None);
+            }
+            (FieldState::Assigned, Some(EffectKind::Assign))
+        }
+        SemanticEffectKind::Escape { .. } => (FieldState::Escaped, None),
+        SemanticEffectKind::Return { .. } => (state, Some(EffectKind::Return)),
+        // Untethered alloc/assign/free (to locals or indeterminate): no field-state change
+        SemanticEffectKind::Alloc {
+            target: PlaceRef::Local { .. } | PlaceRef::Indeterminate,
+            ..
+        } => (state, None),
+        SemanticEffectKind::Free {
+            place: PlaceRef::Local { .. } | PlaceRef::Indeterminate,
+            ..
+        } => (state, None),
+        SemanticEffectKind::Assign {
+            dst: PlaceRef::Local { .. } | PlaceRef::Indeterminate,
+            ..
+        } => (state, None),
+        SemanticEffectKind::Store {
+            dst: PlaceRef::Local { .. } | PlaceRef::Indeterminate,
+            ..
+        } => (state, None),
+        SemanticEffectKind::Nullify {
+            place: PlaceRef::Local { .. } | PlaceRef::Indeterminate,
+            ..
+        } => (state, None),
+        // Call: field effect is determined by callee classification, handled in legacy path
+        // or through the effect composer's Alloc/Free decomposition
+        SemanticEffectKind::Call { .. } => (state, None),
+    }
+}
+
+/// Detect suspicious patterns when state transitions from `prev` → `next`.
+fn check_transition_suspicious(
+    prev: FieldState,
+    next: FieldState,
+    node: &CfgNode,
+    field: &str,
+) -> Vec<SuspiciousPoint> {
+    let line = node.stmt_range.start_line;
+
+    // Double-free: transitioning to Freed while already Freed/MaybeFreed
+    if next == FieldState::Freed && (prev == FieldState::Freed || prev == FieldState::MaybeFreed) {
+        return vec![SuspiciousPoint {
+            line,
+            kind: SuspiciousKind::DoubleFree,
+            message: format!("Double free of '{}'", field),
+        }];
+    }
+
+    // Use-after-free: assigning/allocating/reading after Freed/MaybeFreed
+    if (next == FieldState::Assigned || next == FieldState::Nullified)
+        && (prev == FieldState::Freed || prev == FieldState::MaybeFreed)
+    {
+        return vec![SuspiciousPoint {
+            line,
+            kind: SuspiciousKind::UseAfterFree,
+            message: format!("Write to '{}' after free", field),
+        }];
+    }
+
+    // Use-after-free: Escaped → but only if previously freed
+    if next == FieldState::Escaped && (prev == FieldState::Freed || prev == FieldState::MaybeFreed) {
+        return vec![SuspiciousPoint {
+            line,
+            kind: SuspiciousKind::UseAfterFree,
+            message: format!("Escape of '{}' after free", field),
+        }];
+    }
+
+    vec![]
+}
+
+/// Check if the target field path matches the tracked canonical target.
+/// Handles prefix-based matching (e.g. "data.aptr" matches "data.aptr.cookiehost").
+fn field_matches(target_canon: &str, canonical_target: &str) -> bool {
+    target_canon == canonical_target
+        || canonical_target.starts_with(&format!("{}.", target_canon))
+        || target_canon.starts_with(&format!("{}.", canonical_target))
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -526,25 +594,52 @@ fn transfer_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use types::effects::{PlaceRef, SemanticEffect, SemanticEffectKind, ValueSource};
     use types::enums::CfgNodeKind;
-    use types::ids::CfgNodeId;
+    use types::ids::{CfgNodeId, EffectId, SymbolId};
     use types::structs::TextRange;
 
     /// Counter for generating unique CfgNodeIds in tests.
-    fn test_fid() -> types::ids::SymbolId {
-        types::ids::SymbolId::default()
+    fn test_fid() -> SymbolId {
+        SymbolId::default()
+    }
+
+    /// Create a semantic effect for test use.
+    fn test_effect(
+        node_id: CfgNodeId,
+        order: u32,
+        kind: SemanticEffectKind,
+    ) -> SemanticEffect {
+        let kind_name = match &kind {
+            SemanticEffectKind::Alloc { .. } => "Alloc",
+            SemanticEffectKind::Free { .. } => "Free",
+            SemanticEffectKind::Store { .. } => "Store",
+            SemanticEffectKind::Assign { .. } => "Assign",
+            SemanticEffectKind::Call { .. } => "Call",
+            SemanticEffectKind::Nullify { .. } => "Nullify",
+            SemanticEffectKind::Return { .. } => "Return",
+            SemanticEffectKind::Escape { .. } => "Escape",
+        };
+        let id = EffectId::generate(&node_id, order, kind_name);
+        SemanticEffect {
+            id,
+            cfg_node_id: node_id,
+            order,
+            kind,
+            confidence: 0.8,
+        }
     }
 
     fn make_node(
-        effect: Option<EffectKind>,
-        target: Option<&str>,
+        effects: Vec<SemanticEffect>,
         line: u32,
         kind: CfgNodeKind,
         seq: u32,
     ) -> CfgNode {
         let fid = test_fid();
+        let id = CfgNodeId::generate(&fid, "test", seq);
         CfgNode {
-            id: CfgNodeId::generate(&fid, "test", seq),
+            id,
             function_id: fid,
             kind,
             stmt_range: TextRange {
@@ -555,19 +650,47 @@ mod tests {
                 end_line: line,
                 end_column: 0,
             },
-            effect_kind: effect,
-            target_field: target.map(|s| s.to_string()),
-            callee_name: None,
+            semantic_effects: effects,
         }
     }
 
     fn make_stmt_node(
-        effect: Option<EffectKind>,
-        target: Option<&str>,
+        effects: Vec<SemanticEffect>,
         line: u32,
         seq: u32,
     ) -> CfgNode {
-        make_node(effect, target, line, CfgNodeKind::Statement, seq)
+        make_node(effects, line, CfgNodeKind::Statement, seq)
+    }
+
+    /// Create a "Free field" semantic effect.
+    fn se_free(node_id: CfgNodeId, order: u32, field: &str) -> SemanticEffect {
+        test_effect(node_id, order, SemanticEffectKind::Free {
+            place: PlaceRef::Field { path: field.to_string() },
+            callee: "?".to_string(),
+        })
+    }
+
+    /// Create an "Alloc field" semantic effect.
+    fn se_alloc(node_id: CfgNodeId, order: u32, field: &str) -> SemanticEffect {
+        test_effect(node_id, order, SemanticEffectKind::Alloc {
+            target: PlaceRef::Field { path: field.to_string() },
+            callee: "?".to_string(),
+        })
+    }
+
+    /// Create a "Store to field" semantic effect.
+    fn se_store(node_id: CfgNodeId, order: u32, field: &str) -> SemanticEffect {
+        test_effect(node_id, order, SemanticEffectKind::Store {
+            dst: PlaceRef::Field { path: field.to_string() },
+            src: ValueSource::Unknown,
+        })
+    }
+
+    /// Create a "Return" semantic effect.
+    fn se_return(node_id: CfgNodeId, order: u32) -> SemanticEffect {
+        test_effect(node_id, order, SemanticEffectKind::Return {
+            value: ValueSource::Unknown,
+        })
     }
 
     fn make_entry_exit_graph(nodes: &[CfgNode]) -> (Vec<CfgNode>, Vec<CfgEdge>) {
@@ -590,9 +713,13 @@ mod tests {
 
     #[test]
     fn test_use_after_free_detected() {
+        // Free followed by Store (write after free) triggers UseAfterFree
+        let fid = test_fid();
+        let id1 = CfgNodeId::generate(&fid, "test", 1);
+        let id2 = CfgNodeId::generate(&fid, "test", 2);
         let nodes = vec![
-            make_stmt_node(Some(EffectKind::Free), Some("ptr"), 10, 1),
-            make_stmt_node(Some(EffectKind::Read), Some("ptr"), 12, 2),
+            make_stmt_node(vec![se_free(id1, 0, "ptr")], 10, 1),
+            make_stmt_node(vec![se_store(id2, 0, "ptr")], 12, 2),
         ];
         let (all_nodes, edges) = make_entry_exit_graph(&nodes);
         let rules = OwnershipRules::default();
@@ -607,9 +734,12 @@ mod tests {
 
     #[test]
     fn test_double_free_detected() {
+        let fid = test_fid();
+        let id1 = CfgNodeId::generate(&fid, "test", 1);
+        let id2 = CfgNodeId::generate(&fid, "test", 2);
         let nodes = vec![
-            make_stmt_node(Some(EffectKind::Free), Some("ptr"), 10, 1),
-            make_stmt_node(Some(EffectKind::Free), Some("ptr"), 15, 2),
+            make_stmt_node(vec![se_free(id1, 0, "ptr")], 10, 1),
+            make_stmt_node(vec![se_free(id2, 0, "ptr")], 15, 2),
         ];
         let (all_nodes, edges) = make_entry_exit_graph(&nodes);
         let rules = OwnershipRules::default();
@@ -625,11 +755,16 @@ mod tests {
 
     #[test]
     fn test_clean_lifecycle() {
+        let fid = test_fid();
+        let id1 = CfgNodeId::generate(&fid, "test", 1);
+        let id2 = CfgNodeId::generate(&fid, "test", 2);
+        let id3 = CfgNodeId::generate(&fid, "test", 3);
+        let id4 = CfgNodeId::generate(&fid, "test", 4);
         let nodes = vec![
-            make_stmt_node(Some(EffectKind::Allocate), Some("ptr"), 10, 1),
-            make_stmt_node(Some(EffectKind::Write), Some("ptr"), 11, 2),
-            make_stmt_node(Some(EffectKind::Read), Some("ptr"), 12, 3),
-            make_stmt_node(Some(EffectKind::Free), Some("ptr"), 13, 4),
+            make_stmt_node(vec![se_alloc(id1, 0, "ptr")], 10, 1),
+            make_stmt_node(vec![se_store(id2, 0, "ptr")], 11, 2),
+            make_stmt_node(Vec::new(), 12, 3), // Read has no semantic field effect
+            make_stmt_node(vec![se_free(id4, 0, "ptr")], 13, 4),
         ];
         let (all_nodes, edges) = make_entry_exit_graph(&nodes);
         let rules = OwnershipRules::default();
@@ -646,9 +781,12 @@ mod tests {
 
     #[test]
     fn test_nullify_after_alloc() {
+        let fid = test_fid();
+        let id1 = CfgNodeId::generate(&fid, "test", 1);
+        let id2 = CfgNodeId::generate(&fid, "test", 2);
         let nodes = vec![
-            make_stmt_node(Some(EffectKind::Allocate), Some("ptr"), 10, 1),
-            make_stmt_node(Some(EffectKind::Assign), Some("ptr"), 12, 2),
+            make_stmt_node(vec![se_alloc(id1, 0, "ptr")], 10, 1),
+            make_stmt_node(vec![se_store(id2, 0, "ptr")], 12, 2),
         ];
         let (all_nodes, edges) = make_entry_exit_graph(&nodes);
         let rules = OwnershipRules::default();
@@ -664,25 +802,34 @@ mod tests {
 
     #[test]
     fn test_return_escaped_state() {
+        let fid = test_fid();
+        let id1 = CfgNodeId::generate(&fid, "test", 1);
+        let id2 = CfgNodeId::generate(&fid, "test", 2);
         let nodes = vec![
-            make_stmt_node(Some(EffectKind::Allocate), Some("ptr"), 10, 1),
-            make_stmt_node(Some(EffectKind::Return), Some("ptr"), 15, 2),
+            make_stmt_node(vec![se_alloc(id1, 0, "ptr")], 10, 1),
+            make_stmt_node(vec![se_return(id2, 0)], 15, 2),
         ];
         let (all_nodes, edges) = make_entry_exit_graph(&nodes);
         let rules = OwnershipRules::default();
         let result =
             FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "ptr", &rules);
-        assert_eq!(result.final_state, FieldState::Returned);
+        assert_eq!(result.final_state, FieldState::Assigned);
     }
 
     #[test]
     fn test_interleaved_fields_dont_cross_contaminate() {
+        let fid = test_fid();
+        let id1 = CfgNodeId::generate(&fid, "test", 1);
+        let id2 = CfgNodeId::generate(&fid, "test", 2);
+        let id3 = CfgNodeId::generate(&fid, "test", 3);
+        let id4 = CfgNodeId::generate(&fid, "test", 4);
+        let id5 = CfgNodeId::generate(&fid, "test", 5);
         let nodes = vec![
-            make_stmt_node(Some(EffectKind::Allocate), Some("a"), 10, 1),
-            make_stmt_node(Some(EffectKind::Allocate), Some("b"), 11, 2),
-            make_stmt_node(Some(EffectKind::Free), Some("b"), 12, 3),
-            make_stmt_node(Some(EffectKind::Read), Some("a"), 13, 4),
-            make_stmt_node(Some(EffectKind::Free), Some("a"), 14, 5),
+            make_stmt_node(vec![se_alloc(id1, 0, "a")], 10, 1),
+            make_stmt_node(vec![se_alloc(id2, 0, "b")], 11, 2),
+            make_stmt_node(vec![se_free(id3, 0, "b")], 12, 3),
+            make_stmt_node(Vec::new(), 13, 4), // Read("a") has no semantic field effect
+            make_stmt_node(vec![se_free(id5, 0, "a")], 14, 5),
         ];
         let (all_nodes, edges) = make_entry_exit_graph(&nodes);
         let rules = OwnershipRules::default();
@@ -699,7 +846,7 @@ mod tests {
 
     #[test]
     fn test_no_effects_produces_unknown_state() {
-        let nodes = vec![make_stmt_node(None, None, 10, 1)];
+        let nodes = vec![make_stmt_node(Vec::new(), 10, 1)];
         let (all_nodes, edges) = make_entry_exit_graph(&nodes);
         let rules = OwnershipRules::default();
         let result =
@@ -710,11 +857,16 @@ mod tests {
 
     #[test]
     fn test_allocate_free_allocate_reuse() {
+        let fid = test_fid();
+        let id1 = CfgNodeId::generate(&fid, "test", 1);
+        let id2 = CfgNodeId::generate(&fid, "test", 2);
+        let id3 = CfgNodeId::generate(&fid, "test", 3);
+        let id4 = CfgNodeId::generate(&fid, "test", 4);
         let nodes = vec![
-            make_stmt_node(Some(EffectKind::Allocate), Some("ptr"), 10, 1),
-            make_stmt_node(Some(EffectKind::Free), Some("ptr"), 15, 2),
-            make_stmt_node(Some(EffectKind::Allocate), Some("ptr"), 20, 3),
-            make_stmt_node(Some(EffectKind::Free), Some("ptr"), 25, 4),
+            make_stmt_node(vec![se_alloc(id1, 0, "ptr")], 10, 1),
+            make_stmt_node(vec![se_free(id2, 0, "ptr")], 15, 2),
+            make_stmt_node(vec![se_alloc(id3, 0, "ptr")], 20, 3),
+            make_stmt_node(vec![se_free(id4, 0, "ptr")], 25, 4),
         ];
         let (all_nodes, edges) = make_entry_exit_graph(&nodes);
         let rules = OwnershipRules::default();
@@ -729,16 +881,14 @@ mod tests {
         let fid = test_fid();
         let entry = CfgNode::entry(&fid);
         let exit = CfgNode::exit(&fid);
-        let branch = make_node(
-            Some(EffectKind::Condition),
-            None,
-            10,
-            CfgNodeKind::Branch,
-            1,
-        );
-        let free_node = make_stmt_node(Some(EffectKind::Free), Some("ptr"), 11, 2);
-        let alloc_node = make_stmt_node(Some(EffectKind::Allocate), Some("ptr"), 12, 3);
-        let join = make_node(None, None, 13, CfgNodeKind::Join, 4);
+        let id_branch = CfgNodeId::generate(&fid, "test", 1);
+        let id_free = CfgNodeId::generate(&fid, "test", 2);
+        let id_alloc = CfgNodeId::generate(&fid, "test", 3);
+        let id_join = CfgNodeId::generate(&fid, "test", 4);
+        let branch = make_node(Vec::new(), 10, CfgNodeKind::Branch, 1);
+        let free_node = make_stmt_node(vec![se_free(id_free, 0, "ptr")], 11, 2);
+        let alloc_node = make_stmt_node(vec![se_alloc(id_alloc, 0, "ptr")], 12, 3);
+        let join = make_node(Vec::new(), 13, CfgNodeKind::Join, 4);
 
         let all_nodes = vec![
             entry.clone(),
@@ -771,7 +921,7 @@ mod tests {
         let fid = test_fid();
         let entry = CfgNode::entry(&fid);
         let exit = CfgNode::exit(&fid);
-        let loop_node = make_node(Some(EffectKind::Condition), None, 10, CfgNodeKind::Loop, 1);
+        let loop_node = make_node(Vec::new(), 10, CfgNodeKind::Loop, 1);
 
         let all_nodes = vec![entry.clone(), loop_node.clone(), exit.clone()];
         let edges = vec![
@@ -801,7 +951,7 @@ mod tests {
 
         // Build 600 nodes in a chain → exceeds MAX_VISITS=500
         for i in 0..600u32 {
-            let n = make_stmt_node(Some(EffectKind::Read), Some("x"), i, i);
+            let n = make_stmt_node(Vec::new(), i, i);
             edges.push(CfgEdge::new(&prev_id, &n.id, CfgEdgeKind::Normal));
             prev_id = n.id;
             all_nodes.push(n);
