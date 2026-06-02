@@ -159,6 +159,73 @@ impl CppOwnershipRules {
 #[deprecated(note = "use CppOwnershipRules instead")]
 pub type LoadedDomainRules = CppOwnershipRules;
 
+// ── OwnershipContract impl ─────────────────────────────────────────────────
+
+use types::effects::{
+    ConsumptionContract, ConsumptionStyle, OwnershipContract, ResourceLocator, ReturnContract,
+};
+
+impl OwnershipContract for CppOwnershipRules {
+    fn classify_return(&self, callee: &str) -> Option<ReturnContract> {
+        // 1. 查询 DB 加载的 alloc_fn 规则
+        for (pattern, _source) in &self.allocation_functions {
+            if pattern == callee {
+                return Some(ReturnContract::NewOwned);
+            }
+        }
+        // 2. 内置默认
+        if matches!(
+            callee,
+            "malloc"
+                | "calloc"
+                | "strdup"
+                | "strndup"
+                | "fopen"
+                | "operator new"
+                | "operator new[]"
+        ) {
+            return Some(ReturnContract::NewOwned);
+        }
+        if callee == "realloc" {
+            return Some(ReturnContract::MaybeOwned);
+        }
+        None
+    }
+
+    fn classify_consumption(&self, callee: &str) -> Option<ConsumptionContract> {
+        // 1. 查询 DB 加载的 free_fn 规则
+        for (pattern, _source) in &self.free_functions {
+            if pattern == callee {
+                return Some(ConsumptionContract {
+                    resource: ResourceLocator::Argument { index: 0 },
+                    style: ConsumptionStyle::ExplicitCall,
+                    confidence: 0.9,
+                });
+            }
+        }
+        // 2. 内置默认
+        if matches!(
+            callee,
+            "free" | "operator delete" | "operator delete[]" | "std::free"
+        ) {
+            return Some(ConsumptionContract {
+                resource: ResourceLocator::Argument { index: 0 },
+                style: ConsumptionStyle::ExplicitCall,
+                confidence: 0.9,
+            });
+        }
+        // 3. C++ destructor (implicit scope exit)
+        if callee.starts_with('~') {
+            return Some(ConsumptionContract {
+                resource: ResourceLocator::ImplicitScopeExit,
+                style: ConsumptionStyle::Implicit,
+                confidence: 0.7,
+            });
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
