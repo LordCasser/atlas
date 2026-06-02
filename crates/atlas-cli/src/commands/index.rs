@@ -432,7 +432,7 @@ pub fn run(
             eprintln!();
             crate::tui::progress::print_interrupted(&progress_state.lock().unwrap());
         }
-        return Ok(());
+        return Err(anyhow::anyhow!("Interrupted"));
     }
 
     // Normal completion: propagate worker errors.
