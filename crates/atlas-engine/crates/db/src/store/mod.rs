@@ -182,16 +182,31 @@ impl Store {
         Ok(())
     }
 
-    /// Disable safety checks for maximum bulk-write throughput.
+    /// Enter bulk-write mode for maximum throughput during rebuilds.
     ///
-    /// Sets `synchronous = OFF` (skip fsync per transaction) and
-    /// `foreign_keys = OFF` (skip FK enforcement — caller must pre-validate).
-    /// Also boosts cache and mmap for the write phase.
-    /// Call `end_bulk_write()` after the write phase to restore defaults.
+    /// Returns a [`BulkWriteGuard`] that restores safety defaults on drop,
+    /// even on panic.  Prefer this over manually calling `begin_bulk_write` /
+    /// `end_bulk_write`.
     ///
     /// **The database may be corrupted on power loss or crash while
     /// bulk-write mode is active.**  Only use during index rebuilds where
     /// the data can be regenerated.
+    pub fn enter_bulk_write(&self) -> anyhow::Result<BulkWriteGuard<'_>> {
+        let conn = self.lock();
+        conn.execute_batch(
+            "PRAGMA synchronous = OFF;
+             PRAGMA foreign_keys = OFF;
+             PRAGMA cache_size = -524288;   -- 512 MB
+             PRAGMA mmap_size = 1073741824; -- 1 GB",
+        )?;
+        Ok(BulkWriteGuard { store: self })
+    }
+
+    /// Disable safety checks for maximum bulk-write throughput.
+    ///
+    /// Prefer [`Self::enter_bulk_write`] for RAII-guaranteed cleanup.
+    /// Only use this if the guard pattern is infeasible.
+    #[deprecated(note = "use enter_bulk_write() for RAII-guaranteed cleanup")]
     pub fn begin_bulk_write(&self) -> anyhow::Result<()> {
         let conn = self.lock();
         conn.execute_batch(
@@ -204,6 +219,7 @@ impl Store {
     }
 
     /// Restore safety defaults after a bulk-write phase.
+    #[deprecated(note = "use enter_bulk_write() for RAII-guaranteed cleanup")]
     pub fn end_bulk_write(&self) -> anyhow::Result<()> {
         let conn = self.lock();
         conn.execute_batch(
@@ -213,6 +229,28 @@ impl Store {
              PRAGMA mmap_size = 268435456;   -- 256 MB",
         )?;
         Ok(())
+    }
+}
+
+/// RAII guard that restores safety defaults on drop.
+///
+/// Acquired via [`Store::enter_bulk_write`].  On `Drop` (including
+/// unwinding panics) the guard restores `synchronous = NORMAL`,
+/// `foreign_keys = ON`, and normal cache/mmap sizes.
+pub struct BulkWriteGuard<'s> {
+    store: &'s Store,
+}
+
+impl Drop for BulkWriteGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(conn) = self.store.reader.conn.lock() {
+            let _ = conn.execute_batch(
+                "PRAGMA synchronous = NORMAL;
+                 PRAGMA foreign_keys = ON;
+                 PRAGMA cache_size = -65536;     -- 64 MB
+                 PRAGMA mmap_size = 268435456;   -- 256 MB",
+            );
+        }
     }
 }
 
@@ -244,6 +282,14 @@ impl Store {
     }
 
     /// Run a closure inside a transaction.
+    ///
+    /// **The closure MUST NOT call any other `Store` method that acquires
+    /// the write lock**, such as `upsert_domain_rule`, `insert_file_facts`,
+    /// or any `pub fn` that internally calls `self.lock()`.  Doing so will
+    /// deadlock on the non-reentrant `std::sync::Mutex`.
+    ///
+    /// Prefer passing the `&Transaction` to domain helper functions
+    /// (e.g. `write_symbols(tx, …)`) instead of calling `Store` methods.
     pub fn with_transaction<F, T>(&self, f: F) -> anyhow::Result<T>
     where
         F: FnOnce(&Transaction) -> anyhow::Result<T>,
@@ -372,13 +418,15 @@ impl Store {
             // Sync files.content_hash if it has changed since the manifest
             // index.  The layer hash must match the DB file hash for
             // `has_complete_layer()` to recognise the layer as complete.
-            let db_hash: Option<String> = tx
-                .query_row(
-                    "SELECT content_hash FROM files WHERE file_id = ?1",
-                    params![file_id],
-                    |row| row.get(0),
-                )
-                .ok();
+            let db_hash: Option<String> = match tx.query_row(
+                "SELECT content_hash FROM files WHERE file_id = ?1",
+                params![file_id],
+                |row| row.get(0),
+            ) {
+                Ok(hash) => Some(hash),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(e) => return Err(e.into()),
+            };
             if let Some(ref db_hash) = db_hash {
                 if db_hash != &facts.file.content_hash {
                     tx.execute(
@@ -661,7 +709,7 @@ mod tests {
             id,
             kind,
             name: name.to_string(),
-            qualified_name: format!("{}.{}", name, name),
+            qualified_name: format!("{name}.{name}"),
             symbol_path: vec![name.to_string()],
             file_id,
             language: Language::TypeScript,
@@ -738,7 +786,7 @@ mod tests {
             ReferenceKind::Call,
         );
         let r = ReferenceUse {
-            id: ref_id.clone(),
+            id: ref_id,
             file_id: file.file_id,
             source_symbol: Some(sym.id),
             scope_id: None,
@@ -785,7 +833,7 @@ mod tests {
             ReferenceKind::Call,
         );
         let r = ReferenceUse {
-            id: ref_id.clone(),
+            id: ref_id,
             file_id: file.file_id,
             source_symbol: Some(src.id),
             scope_id: None,
@@ -948,7 +996,7 @@ mod tests {
         store.init_schema().unwrap();
         let stats = store.get_stats().unwrap();
         assert_eq!(stats.total_files, 0);
-        assert_eq!(stats.sqlite_version.len() > 0, true);
+        assert!(!stats.sqlite_version.is_empty());
     }
 
     // ── FK guard tests for replace_dataflow_for_unit ────────────────────
@@ -1290,8 +1338,7 @@ mod tests {
         );
         assert!(
             dependents.iter().any(|(path, _mod)| path == "src/main.c"),
-            "expected src/main.c in dependents, got: {:?}",
-            dependents
+            "expected src/main.c in dependents, got: {dependents:?}"
         );
     }
 
@@ -1355,8 +1402,7 @@ mod tests {
         let dependents = store.find_dependents_by_file(&helper_id).unwrap();
         assert!(
             dependents.iter().any(|(path, _mod)| path == "src/app.c"),
-            "expected src/app.c in dependents of src/dir/helper.h, got: {:?}",
-            dependents
+            "expected src/app.c in dependents of src/dir/helper.h, got: {dependents:?}"
         );
     }
 

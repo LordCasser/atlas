@@ -97,6 +97,7 @@ impl Store {
     ///
     /// For function units, the unit is identified by `function_id`.
     /// For top-level units, identified by `file_id + function_id IS NULL`.
+    #[allow(clippy::too_many_arguments)]
     pub fn replace_dataflow_for_unit(
         &self,
         unit: &types::lazy::AnalysisUnit,

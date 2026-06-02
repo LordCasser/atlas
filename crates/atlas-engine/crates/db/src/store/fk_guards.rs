@@ -101,7 +101,21 @@ where
         .map(|id| id as &dyn rusqlite::types::ToSql)
         .collect();
     let rows = stmt.query_map(params.as_slice(), |row| row.get::<_, T>(0))?;
-    let existing: Vec<T> = rows.filter_map(|r| r.ok()).collect();
+    let existing: Vec<T> = rows
+        .filter_map(|r| match r {
+            Ok(id) => Some(id),
+            Err(e) => {
+                // Row decode failure — skip this row rather than losing the
+                // entire allowlist.  A malformed BLOB in the DB (e.g. wrong
+                // length for the ID type) is a data-integrity concern that
+                // callers should address separately.
+                eprintln!(
+                    "WARNING [fk_guards] Failed to decode existing ID from {table}.{column}: {e}"
+                );
+                None
+            }
+        })
+        .collect();
     Ok(existing)
 }
 
@@ -117,10 +131,10 @@ pub(crate) fn filter_bindings(
         .iter()
         .filter(|b| {
             b.function_id
-                .map_or(true, |fid| valid_function_ids.contains(&fid))
+                .is_none_or(|fid| valid_function_ids.contains(&fid))
                 && valid_scope_ids.contains(&b.scope_id)
                 && b.symbol_id
-                    .map_or(true, |sid| valid_function_ids.contains(&sid))
+                    .is_none_or(|sid| valid_function_ids.contains(&sid))
             // NOTE: symbol_id FK is ON DELETE SET NULL, so NULL is always valid.
             // A non-NULL symbol_id must pass the same check as function_id.
         })
@@ -154,7 +168,7 @@ pub(crate) fn filter_data_nodes(
         .iter()
         .filter(|n| {
             n.function_id
-                .map_or(true, |fid| valid_function_ids.contains(&fid))
+                .is_none_or(|fid| valid_function_ids.contains(&fid))
                 && n.binding_id
                     .map(|bid| valid_binding_ids.contains(&bid))
                     .unwrap_or(true)

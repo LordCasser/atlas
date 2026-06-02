@@ -304,7 +304,7 @@ pub fn phase_write_batched(
     mut on_progress: impl FnMut(u64),
     mut interrupted: impl FnMut() -> bool,
 ) -> Result<WriteBatchStats> {
-    anyhow::ensure!(batch_size > 0, "batch_size must be > 0, got {}", batch_size);
+    anyhow::ensure!(batch_size > 0, "batch_size must be > 0, got {batch_size}");
 
     let mut stats = WriteBatchStats {
         written: 0,
@@ -312,12 +312,11 @@ pub fn phase_write_batched(
         single_failures: 0,
     };
 
-    store.begin_bulk_write()?;
+    store.enter_bulk_write()?;
     let mut next_checkpoint = checkpoint_interval;
 
     for chunk in extracted.items.chunks(batch_size) {
         if interrupted() {
-            store.end_bulk_write()?;
             return Ok(stats);
         }
         let facts: Vec<_> = chunk.iter().map(|ef| ef.facts.clone()).collect();
@@ -345,7 +344,6 @@ pub fn phase_write_batched(
         on_progress(stats.written as u64);
     }
 
-    store.end_bulk_write()?;
     let _ = store.checkpoint_wal_truncate();
     Ok(stats)
 }
