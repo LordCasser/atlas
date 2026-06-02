@@ -637,7 +637,7 @@ impl App {
                         "Graph loading..."
                     };
                     let p = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
-                    frame.render_widget(p, body_cols[1]);
+                    frame.render_widget(p, centered_in(body_cols[1], hint.len() as u16, 1));
                 }
             }
         }
