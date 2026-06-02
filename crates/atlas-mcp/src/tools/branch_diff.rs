@@ -1,4 +1,4 @@
-//! atlas_branch_diff — branch side-effect comparison using CFG effect annotations.
+//! branch_diff — branch side-effect comparison using CFG effect annotations.
 //!
 //! Compares the side effects of sibling branch paths (if/else, switch cases)
 //! within a function. Detects suspicious asymmetries like one branch freeing
@@ -24,7 +24,7 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        // Generate query_id for atlas_resume / atlas_jobs
+        // Generate query_id for resume / tasks
         let query_id = Self::generate_query_id();
 
         // Ensure structural data is available
@@ -113,30 +113,58 @@ impl ToolRouter {
             .find_cfg_edges_by_function(&sid)
             .unwrap_or_default();
 
-        // Try to enrich with DataFlow-based effects (language-agnostic)
-        let enriched = {
+        // Check for semantic analysis mode (default: true)
+        let use_semantic = args
+            .get("semantic")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let diffs = if use_semantic {
+            // ── SEMANTIC PATH: compose_effects + diff_branches_semantic ──
             let lang = self
                 .store
                 .find_symbol_by_id(&sid)
                 .ok()
                 .flatten()
-                .map(|s| s.language);
-            if let Some(lang) = lang {
-                let config = atlas_engine::analysis::ResourceOpConfig::default_for(lang);
-                match atlas_engine::analysis::DataFlowEffectEnricher::enrich(
-                    self.store.as_ref(), &cfg_nodes, &sid, &config,
-                ) {
-                    Ok(effects) => Some(effects),
-                    Err(_) => None, // Graceful fallback — branch_diff still works with CFG effect_kind
-                }
-            } else {
-                None
-            }
-        };
+                .map(|s| s.language)
+                .unwrap_or(atlas_engine::Language::C);
+            let contract = atlas_engine::analysis::ResourceOpConfig::default_for(lang);
 
-        let diffs = atlas_engine::analysis::BranchDiffEngine::diff_branches_with_enrichment(
-            &cfg_nodes, &cfg_edges, enriched.as_ref(),
-        );
+            // Load DataFlow nodes and edges
+            let data_nodes = self
+                .store
+                .find_data_nodes_by_function(&sid)
+                .unwrap_or_default();
+            let dataflow_edges = if data_nodes.is_empty() {
+                vec![]
+            } else {
+                let all_ids: Vec<_> =
+                    data_nodes.iter().map(|n| n.id).collect();
+                self.store
+                    .find_dataflow_edges_by_sources(&all_ids)
+                    .unwrap_or_default()
+            };
+
+            let composition = match atlas_engine::analysis::cfg_graph::CfgGraph::build(
+                &cfg_nodes,
+                &cfg_edges,
+            ) {
+                Ok(cfg_graph) => atlas_engine::analysis::compose_effects(
+                    &cfg_graph, &data_nodes, &dataflow_edges, &contract,
+                ),
+                Err(_) => {
+                    // CFG build failed → fall back to minimal composition
+                    atlas_engine::analysis::EffectComposition::default()
+                }
+            };
+
+            atlas_engine::analysis::BranchDiffEngine::diff_branches_semantic(
+                &cfg_nodes, &cfg_edges, &composition,
+            )
+        } else {
+            // ── BASIC PATH: CFG-only diff (effect_kind based) ──
+            atlas_engine::analysis::BranchDiffEngine::diff_branches(&cfg_nodes, &cfg_edges)
+        };
 
         let mut resp = json!({
             "ok": true,

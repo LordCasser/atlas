@@ -153,7 +153,7 @@ impl ToolRouter {
         });
         if !self.has_manual_full_index() {
             resp["note"] = json!(
-                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results."
+                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
         }
 
@@ -200,7 +200,7 @@ impl ToolRouter {
         });
         if !self.has_manual_full_index() {
             resp["note"] = json!(
-                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results."
+                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
         }
 
@@ -247,7 +247,7 @@ impl ToolRouter {
         });
         if !self.has_manual_full_index() {
             resp["note"] = json!(
-                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results."
+                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
         }
 
@@ -272,6 +272,7 @@ impl ToolRouter {
         let depth = get_u64(args, "depth").unwrap_or(3) as usize;
         let limit = get_u64(args, "limit").unwrap_or(100) as usize;
 
+        let direction = get_str(args, "direction");
         let edge_kinds = match resolve_call_edge_kinds(args) {
             Ok(k) => k,
             Err(e) => return (e, true),
@@ -326,47 +327,60 @@ impl ToolRouter {
             let mut hop_callers: Vec<serde_json::Value> = Vec::new();
             let mut hop_callees: Vec<serde_json::Value> = Vec::new();
 
+            // Respect direction filter: skip incoming/outgoing when direction
+            // is explicitly set to the opposite.
+            let want_incoming = direction.is_empty()
+                || direction == "both"
+                || direction == "incoming";
+            let want_outgoing = direction.is_empty()
+                || direction == "both"
+                || direction == "outgoing";
+
             for fid in &frontier {
-                // Incoming edges → callers
-                for (neighbor_ix, edge_kind) in snap.incoming_neighbors_with_kinds(fid) {
-                    let neighbor_id = snap.node(neighbor_ix).symbol_id;
-                    if visited.contains(&neighbor_id) {
-                        continue;
+                if want_incoming {
+                    // Incoming edges → callers
+                    for (neighbor_ix, edge_kind) in snap.incoming_neighbors_with_kinds(fid) {
+                        let neighbor_id = snap.node(neighbor_ix).symbol_id;
+                        if visited.contains(&neighbor_id) {
+                            continue;
+                        }
+                        // Only include edges matching the configured edge_kinds filter
+                        if !is_allowed_edge(&edge_kind, &edge_kinds) {
+                            continue;
+                        }
+                        visited.insert(neighbor_id);
+                        next_frontier.push(neighbor_id);
+                        hop_callers.push(json!({
+                            "name": snap.node(neighbor_ix).name,
+                            "qualified_name": snap.node(neighbor_ix).qualified_name,
+                            "kind": snap.node(neighbor_ix).kind.as_str(),
+                            "edge": edge_kind.as_str(),
+                            "file": self.resolve_file_path(&snap.node(neighbor_ix).file_id),
+                            "line": snap.node(neighbor_ix).start_line,
+                        }));
                     }
-                    // Only include edges matching the configured edge_kinds filter
-                    if !is_allowed_edge(&edge_kind, &edge_kinds) {
-                        continue;
-                    }
-                    visited.insert(neighbor_id);
-                    next_frontier.push(neighbor_id);
-                    hop_callers.push(json!({
-                        "name": snap.node(neighbor_ix).name,
-                        "qualified_name": snap.node(neighbor_ix).qualified_name,
-                        "kind": snap.node(neighbor_ix).kind.as_str(),
-                        "edge": edge_kind.as_str(),
-                        "file": self.resolve_file_path(&snap.node(neighbor_ix).file_id),
-                        "line": snap.node(neighbor_ix).start_line,
-                    }));
                 }
-                // Outgoing edges → callees
-                for (neighbor_ix, edge_kind) in snap.outgoing_neighbors_with_kinds(fid) {
-                    let neighbor_id = snap.node(neighbor_ix).symbol_id;
-                    if visited.contains(&neighbor_id) {
-                        continue;
+                if want_outgoing {
+                    // Outgoing edges → callees
+                    for (neighbor_ix, edge_kind) in snap.outgoing_neighbors_with_kinds(fid) {
+                        let neighbor_id = snap.node(neighbor_ix).symbol_id;
+                        if visited.contains(&neighbor_id) {
+                            continue;
+                        }
+                        if !is_allowed_edge(&edge_kind, &edge_kinds) {
+                            continue;
+                        }
+                        visited.insert(neighbor_id);
+                        next_frontier.push(neighbor_id);
+                        hop_callees.push(json!({
+                            "name": snap.node(neighbor_ix).name,
+                            "qualified_name": snap.node(neighbor_ix).qualified_name,
+                            "kind": snap.node(neighbor_ix).kind.as_str(),
+                            "edge": edge_kind.as_str(),
+                            "file": self.resolve_file_path(&snap.node(neighbor_ix).file_id),
+                            "line": snap.node(neighbor_ix).start_line,
+                        }));
                     }
-                    if !is_allowed_edge(&edge_kind, &edge_kinds) {
-                        continue;
-                    }
-                    visited.insert(neighbor_id);
-                    next_frontier.push(neighbor_id);
-                    hop_callees.push(json!({
-                        "name": snap.node(neighbor_ix).name,
-                        "qualified_name": snap.node(neighbor_ix).qualified_name,
-                        "kind": snap.node(neighbor_ix).kind.as_str(),
-                        "edge": edge_kind.as_str(),
-                        "file": self.resolve_file_path(&snap.node(neighbor_ix).file_id),
-                        "line": snap.node(neighbor_ix).start_line,
-                    }));
                 }
             }
 
@@ -396,7 +410,7 @@ impl ToolRouter {
         });
         if !self.has_manual_full_index() {
             resp["note"] = json!(
-                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results."
+                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
         }
 
@@ -671,7 +685,7 @@ impl ToolRouter {
                                 "at": reg_node.qualified_name,
                                 "registers": snap.node(nix).qualified_name,
                                 "guidance": format!(
-                                    "atlas_annotate_fp_dispatch(field_qname='{}...', target_qname='{}')",
+                                    "fp_dispatches(action=\"add\", field_qname='{}...', target_qname='{}')",
                                     reg_node.qualified_name, snap.node(nix).qualified_name
                                 ),
                             }));
@@ -710,7 +724,7 @@ impl ToolRouter {
                 }
 
                 insight["action"] = json!(
-                    "The primary path is likely blocked by unresolved function pointers. Use 'atlas_annotate_fp_dispatch' to declare known dispatches (e.g., curl handler tables, vtable assignments), then re-run the path query after annotation materialization."
+                    "The primary path is likely blocked by unresolved function pointers. Use 'fp_dispatches' (action='add') to declare known dispatches (e.g., curl handler tables, vtable assignments), then re-run the path query after annotation materialization."
                 );
             }
 
@@ -1003,7 +1017,7 @@ impl ToolRouter {
         });
         if !self.has_manual_full_index() {
             resp["note"] = json!(
-                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results."
+                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
         }
 
@@ -1114,18 +1128,36 @@ impl ToolRouter {
                     .unwrap_or_default();
                 let diffs = analysis::BranchDiffEngine::diff_branches(&cfg_nodes, &cfg_edges);
 
-                // Collect fields that have effect annotations
+                // Collect fields that have effect annotations (both legacy and semantic)
                 let mut fields: HashSet<String> = HashSet::new();
                 for n in &cfg_nodes {
-                    if let Some(ref tf) = n.target_field {
-                        if !tf.is_empty() {
-                            fields.insert(tf.clone());
-                        }
+                    // Semantic effects (preferred)
+                    for eff in &n.semantic_effects {
+                        use atlas_engine::effects::PlaceRef;
+                        match &eff.kind {
+                            atlas_engine::effects::SemanticEffectKind::Free {
+                                place: PlaceRef::Field { path },
+                                ..
+                            }
+                            | atlas_engine::effects::SemanticEffectKind::Alloc {
+                                target: PlaceRef::Field { path },
+                                ..
+                            }
+                            | atlas_engine::effects::SemanticEffectKind::Store {
+                                dst: PlaceRef::Field { path },
+                                ..
+                            } => {
+                                if !path.is_empty() {
+                                    fields.insert(path.clone());
+                                }
+                            }
+                        _ => {}
                     }
                 }
+            }
 
-                // For each field, run lifecycle analysis
-                for field_path in &fields {
+            // For each field, run lifecycle analysis
+            for field_path in &fields {
                     let rules = analysis::OwnershipRules::default();
                     let mut lifecycle = analysis::FieldLifecycleEngine::analyze_field_lifecycle(
                         &cfg_nodes, &cfg_edges, field_path, &rules,
@@ -1184,7 +1216,7 @@ impl ToolRouter {
         }
         if !self.has_manual_full_index() {
             resp["note"] = json!(
-                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'context' first for full results."
+                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
         }
 

@@ -424,41 +424,6 @@ impl CfgContext<'_> {
         None
     }
 
-    /// Extract the callee function name from a statement node.
-    /// Returns the name if the statement is a function call, None otherwise.
-    fn extract_callee_name_from_node(&self, node: &Node) -> Option<String> {
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if child.kind() == "call_expression" || child.kind() == "expression_statement" {
-                return self.extract_callee_name_from_expr(&child);
-            }
-            if child.kind() == "call_expression" {
-                break;
-            }
-        }
-        None
-    }
-
-    /// Recursively find the callee name inside a call/expression node.
-    fn extract_callee_name_from_expr(&self, node: &Node) -> Option<String> {
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            match child.kind() {
-                "identifier" => {
-                    return Some(child.utf8_text(self.source).ok()?.to_string());
-                }
-                "call_expression" | "member_expression" | "field_expression" => {
-                    return self.extract_callee_name_from_expr(&child);
-                }
-                "expression_statement" => {
-                    return self.extract_callee_name_from_expr(&child);
-                }
-                _ => {}
-            }
-        }
-        None
-    }
-
     /// Extract the left-hand-side field path from an assignment_expression.
     fn extract_lhs_field(&self, assign_node: &Node) -> Option<String> {
         let mut cursor = assign_node.walk();
@@ -629,11 +594,7 @@ impl CfgContext<'_> {
 
         // Annotate branch node with condition effect (C/C++ only)
         if self.is_c_or_cpp() {
-            let (effect, target) = self.infer_effect(if_node, CfgNodeKind::Branch);
-            if let Some(ref mut last) = self.nodes.last_mut() {
-                last.effect_kind = effect;
-                last.target_field = target;
-            }
+            let (_effect, _target) = self.infer_effect(if_node, CfgNodeKind::Branch);
         }
 
         // 2. Find consequence and alternative branches
@@ -772,26 +733,9 @@ impl CfgContext<'_> {
     ) -> types::ids::CfgNodeId {
         let node_id = self.add_node(kind, start_byte, Some(stmt_node));
 
-        // Extract callee_name for domain rule matching
-        if kind == CfgNodeKind::Statement
-            || kind == CfgNodeKind::Return
-            || kind == CfgNodeKind::Branch
-            || kind == CfgNodeKind::Loop
-        {
-            let callee = self.extract_callee_name_from_node(stmt_node);
-            if let Some(node) = self.nodes.iter_mut().find(|n| n.id == node_id) {
-                node.callee_name = callee;
-            }
-        }
+        // (callee_name extraction removed — superseded by DataFlow-based analysis)
 
-        // Annotate effect for C/C++ (language check via self.config)
-        if self.is_c_or_cpp() {
-            let (effect, target) = self.infer_effect(stmt_node, kind);
-            if let Some(ref mut last) = self.nodes.last_mut() {
-                last.effect_kind = effect;
-                last.target_field = target;
-            }
-        }
+        // (effect annotation removed — superseded by EffectComposer DataFlow analysis)
 
         // Link from previous statement
         if let Some(prev) = self.prev_node_id.take() {
