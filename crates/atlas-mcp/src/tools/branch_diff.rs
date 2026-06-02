@@ -4,6 +4,7 @@
 //! within a function. Detects suspicious asymmetries like one branch freeing
 //! a field while the other does not.
 
+use super::lazy_response::LazyDiagnostics;
 use super::{ToolRouter, get_str};
 use serde_json::json;
 
@@ -27,18 +28,63 @@ impl ToolRouter {
             let _ = self.ensure_structural_for_files([sym.file_id], roots, None, None);
         }
 
-        // Load CFG nodes for this function
-        let cfg_nodes = match self.store.find_cfg_nodes_by_function(&sid) {
+        // Load CFG nodes for this function, with lazy CFG fallback
+        let mut cfg_nodes = match self.store.find_cfg_nodes_by_function(&sid) {
             Ok(nodes) => nodes,
             Err(e) => return (format!("Failed to load CFG nodes: {e}"), true),
         };
 
+        let mut lazy_window: Option<atlas_engine::LazyWindow> = None;
+
         if cfg_nodes.is_empty() {
+            // Trigger lazy CFG extraction via the dataflow service
+            match self.lazy_service.ensure_for_function(&sid) {
+                Ok(window) => {
+                    lazy_window = Some(window);
+                    // Re-query CFG after lazy extraction
+                    cfg_nodes = match self.store.find_cfg_nodes_by_function(&sid) {
+                        Ok(nodes) => nodes,
+                        Err(e) => {
+                            return (
+                                format!("Failed to load CFG nodes after lazy extraction: {e}"),
+                                true,
+                            );
+                        }
+                    };
+                }
+                Err(e) => {
+                    // Lazy extraction itself failed — return graceful diagnostics
+                    let diagnostics = LazyDiagnostics::from_layers(None, None, None);
+                    let resp = json!({
+                        "ok": false,
+                        "function": symbol,
+                        "error": format!("CFG not available for branch diff analysis: {:#}", e),
+                        "lazy_diagnostics": diagnostics,
+                    });
+                    return (
+                        serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
+                        false,
+                    );
+                }
+            }
+        }
+
+        // After all attempts, if CFG is still unavailable, return graceful diagnostics
+        if cfg_nodes.is_empty() {
+            let diagnostics = LazyDiagnostics::from_layers(None, lazy_window.as_ref(), None);
+            let resp = json!({
+                "ok": false,
+                "function": symbol,
+                "message": "CFG not available for branch diff analysis. The function may be in a language that does not yet support CFG extraction, or the source file could not be read. Consider running 'index' with full structural analysis first.",
+                "lazy_diagnostics": diagnostics,
+            });
             return (
-                format!("No CFG nodes found for symbol '{}'. CFG is required for branch analysis. Try re-indexing with --analysis full or trigger a trace query first.", symbol),
-                true,
+                serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
+                false,
             );
         }
+
+        // --- CFG is available — run branch diff analysis ---
 
         let qname = self
             .store
@@ -50,7 +96,7 @@ impl ToolRouter {
 
         let diffs = atlas_engine::analysis::BranchDiffEngine::diff_branches(&cfg_nodes);
 
-        let resp = json!({
+        let mut resp = json!({
             "ok": true,
             "function": qname,
             "branch_count": diffs.len(),
@@ -72,6 +118,14 @@ impl ToolRouter {
                 "asymmetry": d.suspicious_asymmetry,
             })).collect::<Vec<_>>(),
         });
+
+        // Attach lazy diagnostics if dataflow was triggered
+        if let Some(ref window) = lazy_window {
+            let diagnostics = LazyDiagnostics::from_layers(None, Some(window), None);
+            if let Some(diag) = diagnostics {
+                resp["lazy_diagnostics"] = json!(diag);
+            }
+        }
 
         (
             serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),

@@ -2,4 +2,4 @@
 //! C/C++ ownership rules are in `ownership_rules`.
 
 pub use domain_rules::*;
-pub use super::ownership_rules::{CppOwnershipRules, LoadedDomainRules};
+pub use super::ownership_rules::CppOwnershipRules;

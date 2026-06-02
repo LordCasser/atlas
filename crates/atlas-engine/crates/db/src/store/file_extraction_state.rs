@@ -31,12 +31,15 @@ impl Store {
     ///
     /// Layers: "manifest", "structural", "dataflow".
     /// Status: "complete", "partial", "failed".
+    /// `capability_mask` is written to the DB so `get_capability_mask`
+    /// can compute the aggregate mask via bitwise OR across all layers.
     pub fn upsert_file_extraction_state(
         &self,
         file_id: &FileId,
         layer: &str,
         content_hash: &str,
         status: &str,
+        capability_mask: CapabilityMask,
     ) -> anyhow::Result<()> {
         let conn = self.lock();
         conn.execute(
@@ -46,9 +49,15 @@ impl Store {
         )?;
         conn.execute(
             "INSERT INTO extraction_state
-                (file_id, unit_id, layer, content_hash, status, updated_at)
-             VALUES (?1, NULL, ?2, ?3, ?4, datetime('now'))",
-            params![file_id, layer, content_hash, status],
+                (file_id, unit_id, layer, content_hash, status, capability_mask, updated_at)
+             VALUES (?1, NULL, ?2, ?3, ?4, ?5, datetime('now'))",
+            params![
+                file_id,
+                layer,
+                content_hash,
+                status,
+                capability_mask.bits() as i64,
+            ],
         )?;
         Ok(())
     }
@@ -100,17 +109,14 @@ impl Store {
     /// Returns the bitwise OR of all `capability_mask` values for the file.
     pub fn get_capability_mask(&self, file_id: &FileId) -> anyhow::Result<CapabilityMask> {
         let conn = self.lock_read();
-        // Aggregate from both file-level (unit_id IS NULL) and unit-level layers.
-        let mask: Option<i64> = conn
-            .query_row(
-                "SELECT MAX(capability_mask) FROM extraction_state
-                 WHERE file_id = ?1",
-                params![file_id],
-                |row| row.get(0),
-            )
-            .ok()
-            .flatten();
-        Ok(CapabilityMask::new(mask.unwrap_or(0) as u16))
+        let mut stmt = conn
+            .prepare("SELECT capability_mask FROM extraction_state WHERE file_id = ?1")?;
+        let rows: Vec<i64> = stmt
+            .query_map(params![file_id], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        let mask = rows.iter().fold(0u16, |acc, &m| acc | (m as u16));
+        Ok(CapabilityMask::new(mask))
     }
 
     /// Query the capability mask for a specific unit within a file.
@@ -131,5 +137,82 @@ impl Store {
             .ok()
             .flatten();
         Ok(CapabilityMask::new(mask.unwrap_or(0) as u16))
+    }
+
+    /// Return project-wide counts for capability analytics.
+    ///
+    /// Counts only fresh layers (content_hash still matches `files`):
+    /// - `files_with_dataflow`: files with a fresh complete dataflow layer
+    /// - `files_structural_only`: files with fresh structural but no dataflow
+    /// - `files_manifest_only`: files with fresh manifest but no structural
+    /// - `files_with_cfg`: count distinct files where fresh capability_mask has CFG bit
+    pub fn get_capability_counts(&self) -> anyhow::Result<(usize, usize, usize, usize)> {
+        let conn = self.lock_read();
+
+        // Files with a fresh complete dataflow layer (file-level).
+        let mut stmt = conn.prepare(
+            "SELECT COUNT(DISTINCT l.file_id)
+             FROM extraction_state l
+             JOIN files f ON f.file_id = l.file_id
+             WHERE l.unit_id IS NULL AND l.layer = 'dataflow'
+               AND l.status = 'complete' AND l.content_hash = f.content_hash",
+        )?;
+        let files_with_dataflow: usize =
+            stmt.query_row([], |row| row.get::<_, i64>(0))?.max(0) as usize;
+
+        // Files with fresh structural but no dataflow layer.
+        let mut stmt = conn.prepare(
+            "SELECT COUNT(DISTINCT l.file_id)
+             FROM extraction_state l
+             JOIN files f ON f.file_id = l.file_id
+             WHERE l.unit_id IS NULL AND l.layer = 'structural'
+               AND l.content_hash = f.content_hash
+               AND l.file_id NOT IN (
+                 SELECT d.file_id FROM extraction_state d
+                 JOIN files fd ON fd.file_id = d.file_id
+                 WHERE d.unit_id IS NULL AND d.layer = 'dataflow'
+                   AND d.status = 'complete' AND d.content_hash = fd.content_hash
+               )",
+        )?;
+        let files_structural_only: usize =
+            stmt.query_row([], |row| row.get::<_, i64>(0))?.max(0) as usize;
+
+        // Files with fresh manifest but no structural layer.
+        let mut stmt = conn.prepare(
+            "SELECT COUNT(DISTINCT l.file_id)
+             FROM extraction_state l
+             JOIN files f ON f.file_id = l.file_id
+             WHERE l.unit_id IS NULL AND l.layer = 'manifest'
+               AND l.content_hash = f.content_hash
+               AND l.file_id NOT IN (
+                 SELECT d.file_id FROM extraction_state d
+                 JOIN files fd ON fd.file_id = d.file_id
+                 WHERE d.unit_id IS NULL AND d.layer = 'structural'
+                   AND d.content_hash = fd.content_hash
+               )",
+        )?;
+        let files_manifest_only: usize =
+            stmt.query_row([], |row| row.get::<_, i64>(0))?.max(0) as usize;
+
+        // Files where the aggregated capability_mask has CFG bit set.
+        // Uses MAX(capability_mask) as a rough heuristic; a true answer
+        // requires reading and OR-ing each file's rows (O(files) work).
+        let mut stmt = conn.prepare(
+            "SELECT COUNT(DISTINCT l.file_id)
+             FROM extraction_state l
+             JOIN files f ON f.file_id = l.file_id
+             WHERE l.content_hash = f.content_hash
+               AND (l.capability_mask & ?1) != 0",
+        )?;
+        let cfg_bit = CapabilityMask::CFG as i64;
+        let files_with_cfg: usize =
+            stmt.query_row(params![cfg_bit], |row| row.get::<_, i64>(0))?.max(0) as usize;
+
+        Ok((
+            files_with_dataflow,
+            files_structural_only,
+            files_manifest_only,
+            files_with_cfg,
+        ))
     }
 }

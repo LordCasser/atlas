@@ -405,6 +405,7 @@ pub struct UnitExtractionStateRecord {
     pub node_count: Option<i64>,
     pub edge_count: Option<i64>,
     pub budget_exceeded: bool,
+    pub capability_mask: types::structs::CapabilityMask,
     pub built_at: String,
 }
 
@@ -412,6 +413,7 @@ pub(crate) fn row_to_unit_extraction_state(
     row: &Row,
 ) -> rusqlite::Result<UnitExtractionStateRecord> {
     use types::ids::FileId;
+    use types::structs::CapabilityMask;
     Ok(UnitExtractionStateRecord {
         file_id: row.get::<_, FileId>(0)?,
         unit_id: {
@@ -426,6 +428,10 @@ pub(crate) fn row_to_unit_extraction_state(
         node_count: row.get(5)?,
         edge_count: row.get(6)?,
         budget_exceeded: row.get::<_, i32>(7)? != 0,
+        capability_mask: {
+            let bits: i32 = row.get(9)?;
+            CapabilityMask::new(bits as u16)
+        },
         built_at: row.get(8)?,
     })
 }

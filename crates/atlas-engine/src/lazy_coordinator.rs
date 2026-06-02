@@ -304,6 +304,7 @@ impl LazyCoordinator {
         service: &LazyStructuralService,
         name: &str,
         budget: &mut LazyBudget,
+        query_id: Option<&str>,
     ) -> Result<EnsureStructuralResult> {
         let candidates = service.candidate_provider.candidates_for_symbol(name)?;
         if candidates.is_empty() {
@@ -331,7 +332,7 @@ impl LazyCoordinator {
         // the most relevant match first. Users who need broader
         // coverage should narrow scope or run `atlas index`.
         let best = &candidates[0];
-        let r = self.ensure_structural_with_closure(service, best, budget, None)?;
+        let r = self.ensure_structural_with_closure(service, best, budget, query_id)?;
         total.files_built += r.0.files_built;
         total.files_cached += r.0.files_cached;
         total.budget_exceeded |= r.0.budget_exceeded;
@@ -438,6 +439,8 @@ mod tests {
     // Implementations will be filled in as the coordinator evolves.
 
     use std::sync::Arc;
+
+    use types::structs::CapabilityMask;
 
     #[cfg(feature = "c")]
 use crate::lazy_budget::LazyBudget;
@@ -1067,10 +1070,10 @@ use crate::lazy_budget::LazyBudget;
 
         // Record manifest layer as complete for both files
         store
-            .upsert_file_extraction_state(&main_id, "manifest", "abc", "complete")
+            .upsert_file_extraction_state(&main_id, "manifest", "abc", "complete", CapabilityMask::default())
             .unwrap();
         store
-            .upsert_file_extraction_state(&util_id, "manifest", "def", "complete")
+            .upsert_file_extraction_state(&util_id, "manifest", "def", "complete", CapabilityMask::default())
             .unwrap();
 
         // 4. Create coordinator + service with temp dir as project root
@@ -1201,7 +1204,7 @@ use crate::lazy_budget::LazyBudget;
                 })
                 .unwrap();
             store
-                .upsert_file_extraction_state(fid, "manifest", hash, "complete")
+                .upsert_file_extraction_state(fid, "manifest", hash, "complete", CapabilityMask::default())
                 .unwrap();
         }
 
@@ -1334,7 +1337,7 @@ use crate::lazy_budget::LazyBudget;
             })
             .unwrap();
         store
-            .upsert_file_extraction_state(&file_id, "manifest", "abc", "complete")
+            .upsert_file_extraction_state(&file_id, "manifest", "abc", "complete", CapabilityMask::default())
             .unwrap();
 
         // 3. Run lazy structural extraction via coordinator

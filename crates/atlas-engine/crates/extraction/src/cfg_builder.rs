@@ -187,6 +187,7 @@ struct CfgContext<'a> {
     edges: Vec<CfgEdge>,
     source: &'a [u8],
     prev_node_id: Option<types::ids::CfgNodeId>,
+    language: Language,
     config: CfgLanguageConfig,
 }
 
@@ -207,6 +208,7 @@ impl CfgBuilder {
             edges: Vec::new(),
             source: source_bytes,
             prev_node_id: None,
+            language,
             config,
         };
 
@@ -243,6 +245,38 @@ impl CfgBuilder {
     }
 }
 
+/// Check whether a function name (case-insensitive) is a heap-free function.
+fn is_free_function_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    matches!(
+        lower.as_str(),
+        "free"
+            | "delete"
+            | "operator delete"
+            | "operator delete[]"
+            | "std::free"
+            | "safefree"
+            | "curl_safefree"
+    )
+}
+
+/// Check whether a function name (case-insensitive) is a heap-allocator function.
+fn is_alloc_function_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    matches!(
+        lower.as_str(),
+        "malloc"
+            | "calloc"
+            | "realloc"
+            | "new"
+            | "operator new"
+            | "aprintf"
+            | "asprintf"
+            | "strdup"
+            | "strndup"
+    )
+}
+
 impl CfgContext<'_> {
     fn add_node(&mut self, kind: CfgNodeKind, start_byte: u32) -> types::ids::CfgNodeId {
         let range = TextRange {
@@ -269,8 +303,7 @@ impl CfgContext<'_> {
     }
 
     fn is_c_or_cpp(&self) -> bool {
-        self.config.stmt_kinds.contains(&"expression_statement")
-            && self.config.if_kinds.contains(&"if_statement")
+        matches!(self.language, Language::C | Language::Cpp)
     }
 
     /// Infer the effect of a C/C++ CFG node. Returns (effect_kind, target_field).
@@ -298,20 +331,23 @@ impl CfgContext<'_> {
             let ck = child.kind();
             match ck {
                 "call_expression" => {
-                    // Function call — check if it's free/delete/malloc
+                    // Function call — check if it's free/alloc
                     let func_name = self.extract_callee_name(child);
-                    let effect = if matches!(func_name.as_deref(), Some("free") | Some("delete") | Some("operator delete") | Some("std::free")) {
-                        EffectKind::Free
-                    } else if matches!(func_name.as_deref(), Some("malloc") | Some("calloc") | Some("realloc") | Some("new") | Some("operator new")) {
-                        EffectKind::Allocate
-                    } else {
-                        EffectKind::Call
-                    };
-                    return (Some(effect), None);
+                    let func_str = func_name.as_deref().unwrap_or("");
+                    if is_free_function_name(func_str) {
+                        let target = self.extract_first_arg_field(child);
+                        return (Some(EffectKind::Free), target);
+                    } else if is_alloc_function_name(func_str) {
+                        return (Some(EffectKind::Allocate), None);
+                    }
+                    return (Some(EffectKind::Call), None);
                 }
                 "assignment_expression" => {
-                    // Check LHS for field write
+                    // Check LHS for field write AND RHS for alloc call
                     let target = self.extract_lhs_field(child);
+                    if self.has_alloc_call(child) {
+                        return (Some(EffectKind::Allocate), target);
+                    }
                     return (Some(EffectKind::Assign), target);
                 }
                 "new_expression" | "delete_expression" => {
@@ -364,8 +400,51 @@ impl CfgContext<'_> {
         None
     }
 
+    /// Extract the field path of the first argument of a call expression.
+    ///
+    /// For `free(data->state.aptr)`, returns `"data.state.aptr"`.
+    fn extract_first_arg_field(&self, call_node: &Node) -> Option<String> {
+        let mut cursor = call_node.walk();
+        let children: Vec<tree_sitter::Node> = call_node.named_children(&mut cursor).collect();
+        // Skip the callee (function name), find the argument_list/arguments node
+        for child in &children {
+            if child.kind() == "argument_list" || child.kind() == "arguments" {
+                let mut ac = child.walk();
+                let args: Vec<tree_sitter::Node> = child.named_children(&mut ac).collect();
+                if let Some(first) = args.first() {
+                    return self.extract_field_path(first);
+                }
+            }
+        }
+        None
+    }
+
+    /// Recursively check whether any descendant of `node` is a call_expression
+    /// whose callee name is a known allocator function.
+    fn has_alloc_call(&self, node: &Node) -> bool {
+        if node.kind() == "call_expression" {
+            if let Some(name) = self.extract_callee_name(node) {
+                if is_alloc_function_name(&name) {
+                    return true;
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if self.has_alloc_call(&child) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Canonicalize a field path by replacing `->` with `.` for consistency.
+    fn canonicalize_field_path(path: &str) -> String {
+        path.replace("->", ".")
+    }
+
     /// Walk a tree-sitter node to build a dot-separated field access path.
-    /// E.g., for `data->state.aptr.cookiehost` returns "data->state.aptr.cookiehost"
+    /// E.g., for `data->state.aptr.cookiehost` returns "data.state.aptr.cookiehost"
     fn extract_field_path(&self, node: &Node) -> Option<String> {
         let kind = node.kind();
         match kind {
@@ -389,21 +468,21 @@ impl CfgContext<'_> {
                         _ => {}
                     }
                 }
-                if parts.is_empty() { None } else { Some(parts.join(".")) }
+                if parts.is_empty() { None } else { Some(Self::canonicalize_field_path(&parts.join("."))) }
             }
             "subscript_expression" => {
                 // array[index] — extract array name
                 let mut cursor = node.walk();
                 if let Some(first) = node.named_children(&mut cursor).next() {
                     if let Ok(text) = first.utf8_text(self.source) {
-                        return Some(text.to_string());
+                        return Some(Self::canonicalize_field_path(&text.to_string()));
                     }
                 }
                 None
             }
             "identifier" => {
                 if let Ok(text) = node.utf8_text(self.source) {
-                    Some(text.to_string())
+                    Some(Self::canonicalize_field_path(&text.to_string()))
                 } else {
                     None
                 }
@@ -413,7 +492,7 @@ impl CfgContext<'_> {
                 let mut cursor = node.walk();
                 for child in node.named_children(&mut cursor) {
                     if let Some(path) = self.extract_field_path(&child) {
-                        return Some(path);
+                        return Some(Self::canonicalize_field_path(&path));
                     }
                 }
                 None

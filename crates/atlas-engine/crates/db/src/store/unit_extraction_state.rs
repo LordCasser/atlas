@@ -24,7 +24,7 @@ impl Store {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT file_id, unit_id, layer, content_hash, status,
-                    node_count, edge_count, budget_exceeded, updated_at
+                    node_count, edge_count, budget_exceeded, updated_at, capability_mask
              FROM extraction_state
              WHERE file_id = ?1 AND unit_id = ?2 AND layer = ?3",
         )?;
@@ -55,8 +55,8 @@ impl Store {
         conn.execute(
             "INSERT INTO extraction_state
              (file_id, unit_id, layer, content_hash, status,
-              node_count, edge_count, budget_exceeded, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
+              node_count, edge_count, budget_exceeded, capability_mask, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))",
             params![
                 record.file_id,
                 unit_blob,
@@ -66,6 +66,7 @@ impl Store {
                 record.node_count,
                 record.edge_count,
                 record.budget_exceeded as i32,
+                record.capability_mask.bits() as i64,
             ],
         )?;
         Ok(())

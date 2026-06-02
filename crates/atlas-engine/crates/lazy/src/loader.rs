@@ -17,6 +17,7 @@ use extraction::{ExtractionMode, LanguageFrontend, create_frontend};
 use types::enums::Language;
 use types::ids::{BindingId, CfgNodeId, DataNodeId, FileId};
 use types::lazy::{AnalysisUnit, LazyWindow};
+use types::structs::CapabilityMask;
 
 use crate::constants::LAZY_DATAFLOW_BUDGET_MS;
 use crate::planner::estimate_unit_cost;
@@ -190,6 +191,7 @@ impl LazyDataflowLoader {
                         node_count: Some(unit_payload.data_nodes.len() as i64),
                         edge_count: Some(unit_payload.dataflow_edges.len() as i64),
                         budget_exceeded: payload.budget_exceeded,
+                        capability_mask: CapabilityMask::default(),
                         built_at: String::new(),
                     })?;
                     Ok(())
@@ -247,6 +249,7 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
                 node_count: Some(prebuilt as i64),
                 edge_count: None,
                 budget_exceeded: false,
+                capability_mask: CapabilityMask::default(),
                 built_at: String::new(),
             })?;
             return Ok((true, DataflowPayload::empty()));

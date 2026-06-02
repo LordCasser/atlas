@@ -125,6 +125,31 @@ impl CppOwnershipRules {
         }
         false
     }
+
+    /// Whether any rules have been loaded from the database
+    /// (beyond the builtin defaults).
+    pub fn has_any_rules(&self) -> bool {
+        !self.free_functions.is_empty()
+            || !self.allocation_functions.is_empty()
+            || !self.owned_field_patterns.is_empty()
+            || !self.cleanup_functions.is_empty()
+    }
+
+    /// Whether any loaded rules were annotated by the user
+    /// (source = "user").
+    pub fn has_user_rules(&self) -> bool {
+        self.free_functions
+            .iter()
+            .any(|(_, s)| matches!(s, RuleSource::User))
+            || self
+                .allocation_functions
+                .iter()
+                .any(|(_, s)| matches!(s, RuleSource::User))
+            || self
+                .cleanup_functions
+                .iter()
+                .any(|(_, s)| matches!(s, RuleSource::User))
+    }
 }
 
 // Backward compatibility alias.

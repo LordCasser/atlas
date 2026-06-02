@@ -735,6 +735,13 @@ impl CapabilityMask {
         self.0 == 0
     }
 
+    // Semantic bit aliases used during lazy extraction.
+    pub const MANIFEST_BIT: u16 = Self::MANIFEST;
+    pub const STRUCTURAL_BIT: u16 = Self::STRUCTURAL;
+    pub fn from_bits(bits: u16) -> Self {
+        Self(bits)
+    }
+
     /// Derive from extraction_state layer strings in the DB
     pub fn from_layers(layers: &[&str]) -> Self {
         let mut mask = Self::default();

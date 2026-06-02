@@ -67,11 +67,8 @@ pub struct LazyOutcome {
 /// [`ensure_structural_for_symbol`] with a [`LazyPolicy`] — no direct
 /// `LazyBudget` or `LazyCoordinator` construction.
 pub struct LazyOrchestrator {
-    store: Arc<Store>,
-    project_root: Option<PathBuf>,
     structural: LazyStructuralService,
     coordinator: LazyCoordinator,
-    include_roots: Vec<IncludeRoot>,
 }
 
 impl LazyOrchestrator {
@@ -90,11 +87,8 @@ impl LazyOrchestrator {
             LazyCoordinator::new(store.clone()).with_include_roots(include_roots.clone())
         };
         Self {
-            store,
-            project_root,
             structural,
             coordinator,
-            include_roots,
         }
     }
 
@@ -158,6 +152,13 @@ impl LazyOrchestrator {
             outcome.pending_job_ids.extend(result.pending_job_ids);
         }
 
+        // After structural+manifest extraction, update capability_mask.
+        if outcome.files_built > 0 || outcome.files_cached > 0 {
+            outcome.capability_mask = CapabilityMask::from_bits(
+                CapabilityMask::MANIFEST_BIT | CapabilityMask::STRUCTURAL_BIT,
+            );
+        }
+
         // Compute final precision tier
         outcome.precision_tier = crate::precision::structural_precision(
             outcome.files_built,
@@ -176,8 +177,8 @@ impl LazyOrchestrator {
         &self,
         name: &str,
         policy: LazyPolicy,
-        _investigation: Option<&Investigation>,
-        _query_id: Option<&str>,
+        investigation: Option<&Investigation>,
+        query_id: Option<&str>,
     ) -> Result<LazyOutcome> {
         // Create budget from policy
         let mut budget = match policy {
@@ -189,7 +190,21 @@ impl LazyOrchestrator {
             &self.structural,
             name,
             &mut budget,
+            query_id,
         )?;
+
+        // Build capability mask — include investigation's desired capabilities
+        // when an active investigation is present.
+        let cap_mask = if result.files_built > 0 || result.files_cached > 0 {
+            let base = CapabilityMask::MANIFEST_BIT | CapabilityMask::STRUCTURAL_BIT;
+            if let Some(inv) = investigation {
+                CapabilityMask::from_bits(base | inv.desired_capabilities.bits())
+            } else {
+                CapabilityMask::from_bits(base)
+            }
+        } else {
+            CapabilityMask::default()
+        };
 
         // Map EnsureStructuralResult → LazyOutcome
         let precision_tier = crate::precision::structural_precision(
@@ -206,7 +221,7 @@ impl LazyOrchestrator {
             built_file_ids: result.built_file_ids,
             pending_job_ids: result.pending_job_ids,
             precision_tier,
-            capability_mask: CapabilityMask::default(),
+            capability_mask: cap_mask,
         })
     }
 }

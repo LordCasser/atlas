@@ -72,6 +72,16 @@ pub(crate) struct CapabilitySummary {
     pub files_manifest_only: usize,
 }
 
+/// Optional project-wide capability statistics populated from the DB.
+/// When `None`, all counts default to 0 (the caller hasn't queried yet).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct CapabilityStats {
+    pub files_with_dataflow: usize,
+    pub files_structural_only: usize,
+    pub files_manifest_only: usize,
+    pub files_with_cfg: usize,
+}
+
 /// A background job that would improve the analysis contract.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct RefinementJob {
@@ -81,9 +91,11 @@ pub(crate) struct RefinementJob {
 
 impl AnalysisContract {
     /// Build an AnalysisContract from a capability mask and optional LazyOutcome.
+    /// `capability_stats` populates file-count breakdowns; pass `None` for zero defaults.
     pub(crate) fn from_capability(
         mask: CapabilityMask,
         outcome: Option<&LazyOutcome>,
+        capability_stats: Option<CapabilityStats>,
     ) -> Self {
         let mut safe = Vec::new();
         let mut unsafe_conc = Vec::new();
@@ -135,16 +147,17 @@ impl AnalysisContract {
             );
         }
 
+        let stats = capability_stats.unwrap_or_default();
         let summary = CapabilitySummary {
             mask_bits: mask.bits(),
             best_capability: mask.best_capability_name().into(),
             total_files: outcome
                 .map(|o| o.files_built + o.files_cached + o.files_pending)
                 .unwrap_or(0),
-            files_with_dataflow: 0, // Phase 2 will populate
-            files_with_cfg: 0,
-            files_structural_only: outcome.map(|o| o.files_built).unwrap_or(0),
-            files_manifest_only: 0,
+            files_with_dataflow: stats.files_with_dataflow,
+            files_with_cfg: stats.files_with_cfg,
+            files_structural_only: stats.files_structural_only,
+            files_manifest_only: stats.files_manifest_only,
         };
 
         let mut jobs = Vec::new();
@@ -173,9 +186,11 @@ impl AnalysisContract {
 impl LazyDiagnostics {
     /// Unified constructor accepting optional structural and dataflow outcomes.
     /// When both are None, returns None (caller should omit the diagnostics field).
+    /// `capability_stats` is optional DB-sourced file counts; `None` defaults to zero.
     pub(crate) fn from_layers(
         structural_outcome: Option<&LazyOutcome>,
         dataflow_window: Option<&LazyWindow>,
+        capability_stats: Option<CapabilityStats>,
     ) -> Option<Self> {
         if structural_outcome.is_none() && dataflow_window.is_none() {
             return None;
@@ -227,13 +242,15 @@ impl LazyDiagnostics {
         };
 
         // Compute analysis_contract from the combined capability mask.
-        let mask = if let Some(ref so) = structural_outcome {
-            so.capability_mask
-        } else if let Some(ref dw) = dataflow_window {
-            dw.capability_mask
-        } else {
-            CapabilityMask::default()
-        };
+        // Merge both structural and dataflow masks via bitwise OR so
+        // the contract accurately reflects all built layers.
+        let mut mask = CapabilityMask::default();
+        if let Some(ref so) = structural_outcome {
+            mask = CapabilityMask::new(mask.bits() | so.capability_mask.bits());
+        }
+        if let Some(ref dw) = dataflow_window {
+            mask = CapabilityMask::new(mask.bits() | dw.capability_mask.bits());
+        }
 
         Some(Self {
             structural,
@@ -242,6 +259,7 @@ impl LazyDiagnostics {
             analysis_contract: AnalysisContract::from_capability(
                 mask,
                 structural_outcome,
+                capability_stats,
             ),
         })
     }
@@ -250,7 +268,7 @@ impl LazyDiagnostics {
     ///
     /// Thin wrapper around [`from_layers`].
     pub(crate) fn from_structural(outcome: &LazyOutcome) -> Self {
-        Self::from_layers(Some(outcome), None)
+        Self::from_layers(Some(outcome), None, None)
             .expect("from_structural always has a structural outcome")
     }
 
@@ -264,7 +282,7 @@ impl LazyDiagnostics {
         structural_outcome: Option<&LazyOutcome>,
         window: &LazyWindow,
     ) -> Self {
-        Self::from_layers(structural_outcome, Some(window))
+        Self::from_layers(structural_outcome, Some(window), None)
             .expect("from_both always has at least a dataflow window")
     }
 }
@@ -294,7 +312,7 @@ mod tests {
     #[test]
     fn test_analysis_contract_from_manifest_only() {
         let mask = CapabilityMask::new(CapabilityMask::MANIFEST);
-        let contract = AnalysisContract::from_capability(mask, None);
+        let contract = AnalysisContract::from_capability(mask, None, None);
 
         // With manifest only, should report limited capabilities
         assert!(!contract.safe_conclusions.is_empty());
@@ -311,7 +329,7 @@ mod tests {
             | CapabilityMask::CFG
             | CapabilityMask::DATAFLOW,
         );
-        let contract = AnalysisContract::from_capability(mask, None);
+        let contract = AnalysisContract::from_capability(mask, None, None);
 
         // Should report full analysis
         assert!(!contract.safe_conclusions.is_empty());
@@ -329,7 +347,7 @@ mod tests {
     #[test]
     fn test_analysis_contract_serialization() {
         let mask = CapabilityMask::new(CapabilityMask::STRUCTURAL);
-        let contract = AnalysisContract::from_capability(mask, None);
+        let contract = AnalysisContract::from_capability(mask, None, None);
         let json = serde_json::to_string(&contract).unwrap();
         assert!(json.contains("safe_conclusions"));
         assert!(json.contains("unsafe_conclusions"));

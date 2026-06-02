@@ -1740,7 +1740,7 @@ mod tests {
         let store = test_store();
         let file_id = register_test_file(&store, "test.ts");
         store
-            .upsert_file_extraction_state(&file_id, "manifest", "hash1", "complete")
+            .upsert_file_extraction_state(&file_id, "manifest", "hash1", "complete", atlas_engine::structs::CapabilityMask::default())
             .unwrap();
 
         let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));

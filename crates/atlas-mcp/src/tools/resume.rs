@@ -56,13 +56,27 @@ impl ToolRouter {
                     None,
                 );
             }
+
+            // Re-trigger dataflow extraction for each function-scoped unit
+            // in the lazy window, so re-dispatched handlers see fresh
+            // dataflow results. Top-level units (symbol_id is None) are
+            // skipped because LazyDataflowService only supports
+            // function-level dataflow via `ensure_for_function`.
+            for unit in &window.units {
+                if let Some(ref sid) = unit.symbol_id {
+                    let _ = self.lazy_service.ensure_for_function(sid);
+                }
+            }
         }
 
         // Trigger graph refresh so re-dispatched handler sees fresh data.
         let _ = self.maybe_refresh_graph();
 
+        // Copy query_id before snapshot moves
+        let original_query_id = query_id.to_string();
+
         // Re-dispatch to original handler
-        let result = match snapshot.tool_name.as_str() {
+        let (resp_str, is_error) = match snapshot.tool_name.as_str() {
             "trace_variable" => self.handle_trace_variable(&snapshot.tool_args),
             "trace_point" => self.handle_trace_point(&snapshot.tool_args),
             "trace_caller_path" => self.handle_trace_caller_path(&snapshot.tool_args),
@@ -86,11 +100,27 @@ impl ToolRouter {
             }
         };
 
+        // Patch response: keep original query_id so the client can correlate,
+        // and add a `resumed_from` field to indicate this is a resume.
+        let patched = Self::patch_resume_response(
+            &resp_str,
+            &original_query_id,
+        ).unwrap_or(resp_str);
+
         // Mark as Ready if the re-run completed successfully
-        if let Some(s) = self.query_snapshots.get_mut(query_id) {
+        if let Some(s) = self.query_snapshots.get_mut(&original_query_id) {
             s.status = QueryStatus::Ready;
         }
 
-        result
+        (patched, is_error)
+    }
+
+    /// Patch a handler response to return the original query_id (not the
+    /// one the handler generated internally) and add a `resumed_from` field.
+    fn patch_resume_response(resp_str: &str, original_query_id: &str) -> Option<String> {
+        let mut resp: Value = serde_json::from_str(resp_str).ok()?;
+        resp["query_id"] = json!(original_query_id);
+        resp["resumed_from"] = json!(original_query_id);
+        serde_json::to_string_pretty(&resp).ok()
     }
 }

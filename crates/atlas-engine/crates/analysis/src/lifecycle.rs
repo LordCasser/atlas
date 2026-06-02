@@ -6,7 +6,7 @@
 use types::cfg::CfgNode;
 use types::enums::EffectKind;
 
-use super::domain_rules::LoadedDomainRules;
+use super::ownership_rules::CppOwnershipRules;
 
 /// States a field can be in during its lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,7 +217,7 @@ impl FieldLifecycleEngine {
         cfg_nodes: &[CfgNode],
         field_path: &str,
         _ownership_rules: &OwnershipRules,
-        rules: &LoadedDomainRules,
+        rules: &CppOwnershipRules,
     ) -> FieldLifecycleResult {
         let mut state = FieldState::Unknown;
         let mut transitions = Vec::new();

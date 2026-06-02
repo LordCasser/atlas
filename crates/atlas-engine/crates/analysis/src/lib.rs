@@ -24,5 +24,5 @@ pub use lifecycle::{
     SuspiciousKind, SuspiciousPoint,
 };
 pub use branch_diff::{BranchDiff, BranchDiffEngine, BranchPathSummary};
-pub use ownership_rules::{CppOwnershipRules, LoadedDomainRules};
+pub use ownership_rules::CppOwnershipRules;
 pub use lifecycle_proof::{EvidenceLevel, LifecycleProof, LifecycleVerdict, PathProof, evaluate_proof};

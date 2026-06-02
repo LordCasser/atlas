@@ -483,7 +483,7 @@ impl ToolRouter {
         let all_complete = structural_tier == atlas_engine::structs::precision::PrecisionTier::Exact;
         self.store_snapshot(QuerySnapshot {
             query_id: query_id.clone(),
-            tool_name: "trace_callers".into(),
+            tool_name: "trace_caller_path".into(),
             tool_args: args.clone(),
             lazy_window: None,
             created_at: Instant::now(),

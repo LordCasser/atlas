@@ -614,6 +614,7 @@ impl LazyStructuralService {
 mod tests {
     use super::*;
     use db::Store;
+    use types::structs::CapabilityMask;
 
     fn test_store() -> Arc<Store> {
         let store = Store::open_in_memory().unwrap();
@@ -664,7 +665,7 @@ mod tests {
         };
         store.upsert_file(&file_info).unwrap();
         store
-            .upsert_file_extraction_state(&fid, layer::STRUCTURAL, "abc123", status::COMPLETE)
+            .upsert_file_extraction_state(&fid, layer::STRUCTURAL, "abc123", status::COMPLETE, CapabilityMask::default())
             .unwrap();
 
         // When structural layer exists, has_resolution_symbols_layer should return true
