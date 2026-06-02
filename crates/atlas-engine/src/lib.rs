@@ -159,6 +159,12 @@ impl Engine {
     ///
     /// The database must have been created by `atlas init` or a prior run.
     /// The schema is NOT initialized here — that is the CLI's responsibility.
+    ///
+    /// **Limitation**: Opens without a project root.  Lazy dataflow/CFG
+    /// extraction that reads source files from disk requires the DB to be
+    /// opened from the project root directory (sources are stored as relative
+    /// paths).  Use [`Engine::open_with_root`] when the caller is not running
+    /// from the project root or when sources are stored as absolute paths.
     pub fn open(db_path: &Path) -> anyhow::Result<Self> {
         let store = Store::open_db(db_path)?;
         let store = Arc::new(store);
@@ -348,7 +354,7 @@ impl Engine {
         let mut partial = false;
         let mut lazy_diagnostics: Vec<TraceDiagnostic> = Vec::new();
         let lazy_summary: Option<LazySummary>;
-        match self.lazy_service.ensure_for_position(file_id, line, column) {
+        match self.lazy_service.ensure_for_position(file_id, line, column, None) {
             Ok(window) => {
                 lazy_summary = Some(LazySummary {
                     triggered: true,

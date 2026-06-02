@@ -958,7 +958,7 @@ impl ToolRouter {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis();
-        let rand = (ts % 65536) as u16;
+        let rand = ((ts >> 10) ^ (ts & 0xFFFF)) as u16;
         format!("q_{:x}_{:04x}", ts, rand)
     }
 

@@ -396,6 +396,7 @@ impl ToolRouter {
         if let Some(ref diag) = lazy_diag {
             result["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
         }
+        result["query_id"] = json!(query_id);
 
         self.store_snapshot(QuerySnapshot {
             query_id: query_id.clone(),

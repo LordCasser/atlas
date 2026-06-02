@@ -64,7 +64,7 @@ impl ToolRouter {
             // function-level dataflow via `ensure_for_function`.
             for unit in &window.units {
                 if let Some(ref sid) = unit.symbol_id {
-                    let _ = self.lazy_service.ensure_for_function(sid);
+                    let _ = self.lazy_service.ensure_for_function(sid, None);
                 }
             }
         }
@@ -89,6 +89,8 @@ impl ToolRouter {
             "context" => self.handle_context(&snapshot.tool_args),
             "search" => self.handle_search(&snapshot.tool_args),
             "symbol" => self.handle_symbol(&snapshot.tool_args),
+            "atlas_lifecycle" => self.handle_atlas_lifecycle(&snapshot.tool_args),
+            "atlas_branch_diff" => self.handle_atlas_branch_diff(&snapshot.tool_args),
             _ => {
                 return (
                     serde_json::to_string(

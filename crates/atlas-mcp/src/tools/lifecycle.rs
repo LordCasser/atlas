@@ -53,7 +53,7 @@ impl ToolRouter {
 
         if cfg_nodes.is_empty() {
             // Trigger lazy CFG extraction via the dataflow service
-            match self.lazy_service.ensure_for_function(&sid) {
+            match self.lazy_service.ensure_for_function(&sid, Some(&query_id)) {
                 Ok(window) => {
                     lazy_window = Some(window);
                     // Re-query CFG after lazy extraction
@@ -174,6 +174,7 @@ impl ToolRouter {
 
         let mut resp = json!({
             "ok": true,
+            "query_id": query_id,
             "field_path": result.field_path,
             "function": result.function_qname,
             "final_state": result.final_state.as_str(),

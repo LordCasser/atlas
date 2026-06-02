@@ -748,9 +748,12 @@ impl CapabilityMask {
         for layer in layers {
             match *layer {
                 "manifest" => mask.set(Self::MANIFEST),
-                "structural" | "resolution_symbols" => {
+                "structural" => {
                     mask.set(Self::MANIFEST);
                     mask.set(Self::STRUCTURAL);
+                }
+                "resolution_symbols" => {
+                    mask.set(Self::MANIFEST);
                 }
                 "dataflow" => {
                     mask.set(Self::MANIFEST);

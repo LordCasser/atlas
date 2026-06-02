@@ -400,7 +400,7 @@ fn spawn_background_prewarm(
                     .take(MAX_FUNCTIONS_PER_FILE)
                 {
                     attempted += 1;
-                    match lazy_dataflow.ensure_for_function(&sym.id) {
+                    match lazy_dataflow.ensure_for_function(&sym.id, None) {
                         Ok(w) => {
                             if w.units_built > 0 {
                                 built += 1;
@@ -877,7 +877,7 @@ use crate::lazy_budget::LazyBudget;
         // data via check_cache step 1.5 and skip extraction entirely.
         let lazy_service = LazyDataflowService::new(store.clone(), None);
         let window = lazy_service
-            .ensure_for_function(&func_sym_id)
+            .ensure_for_function(&func_sym_id, None)
             .expect("lazy dataflow should succeed");
 
         // Should be cached, not rebuilt

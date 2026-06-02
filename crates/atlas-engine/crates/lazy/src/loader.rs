@@ -79,6 +79,7 @@ impl LazyDataflowLoader {
         store: &Store,
         window: &LazyWindow,
         project_root: Option<&std::path::Path>,
+        trigger_query: Option<&str>,
     ) -> Result<EnsureResult> {
         let start = Instant::now();
         let mut result = EnsureResult::default();
@@ -126,7 +127,7 @@ impl LazyDataflowLoader {
             for unit in uncached {
                 match store.claim_dataflow_extraction_job(
                     unit,
-                    Some("lazy_dataflow_loader::ensure"),
+                    trigger_query,
                     Some(LAZY_DATAFLOW_BUDGET_MS as i64),
                 )? {
                     ClaimResult::Claimed { job_id } => claimed.push((unit, job_id)),

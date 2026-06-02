@@ -213,7 +213,7 @@ impl CfgBuilder {
         };
 
         // 1. Create Entry node
-        let entry_id = ctx.add_node(CfgNodeKind::Entry, 0);
+        let entry_id = ctx.add_node(CfgNodeKind::Entry, 0, None);
         ctx.prev_node_id = Some(entry_id);
 
         // 2. Find the statement block
@@ -228,12 +228,12 @@ impl CfgBuilder {
         // 4. If no body found, create a single Statement node
         if ctx.prev_node_id.is_some() && ctx.nodes.len() == 1 {
             let fn_range = node_text_range(&function_node, source_bytes);
-            ctx.add_node(CfgNodeKind::Statement, fn_range.start_byte);
+            ctx.add_node(CfgNodeKind::Statement, fn_range.start_byte, None);
         }
 
         // 5. Create Exit node and connect last node to exit
         let last = ctx.prev_node_id;
-        let exit_id = ctx.add_node(CfgNodeKind::Exit, 0);
+        let exit_id = ctx.add_node(CfgNodeKind::Exit, 0, None);
         if let Some(last_id) = last {
             ctx.add_edge(&last_id, &exit_id, CfgEdgeKind::Normal);
         }
@@ -278,14 +278,26 @@ fn is_alloc_function_name(name: &str) -> bool {
 }
 
 impl CfgContext<'_> {
-    fn add_node(&mut self, kind: CfgNodeKind, start_byte: u32) -> types::ids::CfgNodeId {
-        let range = TextRange {
-            start_byte,
-            end_byte: start_byte,
-            start_line: 0,
-            start_column: 0,
-            end_line: 0,
-            end_column: 0,
+    fn add_node(&mut self, kind: CfgNodeKind, start_byte: u32, stmt_node: Option<&Node>) -> types::ids::CfgNodeId {
+        let range = if let Some(node) = stmt_node {
+            let r = node.range();
+            TextRange {
+                start_byte: r.start_byte as u32,
+                end_byte: r.end_byte as u32,
+                start_line: r.start_point.row as u32,
+                start_column: r.start_point.column as u32,
+                end_line: r.end_point.row as u32,
+                end_column: r.end_point.column as u32,
+            }
+        } else {
+            TextRange {
+                start_byte,
+                end_byte: start_byte,
+                start_line: 0,
+                start_column: 0,
+                end_line: 0,
+                end_column: 0,
+            }
         };
         let node = CfgNode::new(&self.function_id, kind, range);
         let id = node.id;
@@ -554,7 +566,7 @@ impl CfgContext<'_> {
         let if_node = &children[idx];
 
         // 1. Create Branch node, connect from previous
-        let branch_id = self.add_node(CfgNodeKind::Branch, start_byte);
+        let branch_id = self.add_node(CfgNodeKind::Branch, start_byte, None);
         if let Some(prev) = self.prev_node_id.take() {
             self.add_edge(&prev, &branch_id, CfgEdgeKind::Normal);
         }
@@ -600,7 +612,7 @@ impl CfgContext<'_> {
         };
 
         // 5. Create Join node and connect tails
-        let join_id = self.add_node(CfgNodeKind::Join, start_byte + 1);
+        let join_id = self.add_node(CfgNodeKind::Join, start_byte + 1, None);
 
         // Connect consequence tail → Join (if branch didn't end with return/throw)
         if let Some(ref last) = cons_end {
@@ -649,7 +661,7 @@ impl CfgContext<'_> {
         let loop_node = &children[idx];
 
         // 1. Create Loop node, connect from previous
-        let loop_id = self.add_node(CfgNodeKind::Loop, start_byte);
+        let loop_id = self.add_node(CfgNodeKind::Loop, start_byte, None);
         if let Some(prev) = self.prev_node_id.take() {
             self.add_edge(&prev, &loop_id, CfgEdgeKind::Normal);
         }
@@ -688,7 +700,7 @@ impl CfgContext<'_> {
         }
 
         // 4. Exit edge: Loop → Join (post-loop)
-        let join_id = self.add_node(CfgNodeKind::Join, start_byte + 1);
+        let join_id = self.add_node(CfgNodeKind::Join, start_byte + 1, None);
         self.add_edge(&loop_id, &join_id, CfgEdgeKind::Normal);
 
         self.prev_node_id = Some(join_id);
@@ -697,7 +709,7 @@ impl CfgContext<'_> {
 
     /// Emit a statement/return/throw node and connect to previous.
     fn emit_stmt(&mut self, kind: CfgNodeKind, start_byte: u32, stmt_node: &Node) -> types::ids::CfgNodeId {
-        let node_id = self.add_node(kind, start_byte);
+        let node_id = self.add_node(kind, start_byte, Some(stmt_node));
 
         // Annotate effect for C/C++ (language check via self.config)
         if self.is_c_or_cpp() {

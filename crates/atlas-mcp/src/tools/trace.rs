@@ -250,7 +250,7 @@ impl ToolRouter {
         let mut lazy_window: Option<atlas_engine::LazyWindow> = None;
         match self
             .lazy_service
-            .ensure_for_position(&file_id, line, column)
+            .ensure_for_position(&file_id, line, column, Some(&query_id))
         {
             Ok(window) => {
                 lazy_window = Some(window.clone());
