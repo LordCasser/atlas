@@ -653,15 +653,6 @@ branch_diff    lifecycle
 - Trace 契约：[`trace-contract.md`](./trace-contract.md)
 - Domain Rules 语言扩展指南：[`domain-rules-language-guide.md`](./domain-rules-language-guide.md)
 - 性能基线：[`performance.md`](./performance.md)
-- BranchDiff 语义重构设计：[`branch_diff_architecture_improvement_plan.tmp.md`](../branch_diff_architecture_improvement_plan.tmp.md)
-- BranchDiff 最终锁定架构：[`.tmp/branch_diff_architecture_final.md`](../.tmp/branch_diff_architecture_final.md)
-
-## 16. 维护规则
-
-1. 本文是架构的单一权威来源。当模块边界、persistence 规则、ID 规则、capability profiles 或 schema 版本变化时，同步更新本文。
-2. 新增语言、新增 schema 表、新增 CLI/MCP 工具、新增 analysis 能力时，同步更新能力表和对应章节。
-3. 不再保留独立的架构约束、当前状态、或临时设计文档；所有架构信息统一于此文。
-4. 删除的文档不再保留归档副本。
 
 ## 17. 已知限制
 
