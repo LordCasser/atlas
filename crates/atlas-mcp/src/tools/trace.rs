@@ -27,8 +27,7 @@ impl ToolRouter {
                 let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                     "trace_point",
                     &format!(
-                        "file_path exceeds maximum length of {} characters",
-                        MAX_FILE_PATH_LENGTH
+                        "file_path exceeds maximum length of {MAX_FILE_PATH_LENGTH} characters"
                     ),
                 );
                 return (
@@ -60,7 +59,7 @@ impl ToolRouter {
                 );
             }
             Err(e) => {
-                let mut err_msg = format!("Error resolving file: {}", e);
+                let mut err_msg = format!("Error resolving file: {e}");
                 err_msg.push_str(self.index_not_run_guidance());
                 let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_point", &err_msg);
                 return (
@@ -102,7 +101,7 @@ impl ToolRouter {
         let lazy_diag: Option<LazyDiagnostics> = outcome
             .lazy_outcome
             .as_ref()
-            .map(|lo| LazyDiagnostics::from_structural(lo));
+            .map(LazyDiagnostics::from_structural);
 
         let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
         self.send_progress(0.8, "Running trace point...");
@@ -167,8 +166,7 @@ impl ToolRouter {
                 let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                     "trace_variable",
                     &format!(
-                        "file_path exceeds maximum length of {} characters",
-                        MAX_FILE_PATH_LENGTH
+                        "file_path exceeds maximum length of {MAX_FILE_PATH_LENGTH} characters"
                     ),
                 );
                 return (
@@ -200,7 +198,7 @@ impl ToolRouter {
                 );
             }
             Err(e) => {
-                let mut err_msg = format!("Error resolving file: {}", e);
+                let mut err_msg = format!("Error resolving file: {e}");
                 err_msg.push_str(self.index_not_run_guidance());
                 let resp: TraceQueryResponse<()> =
                     TraceQueryResponse::err("trace_variable", &err_msg);
@@ -262,7 +260,7 @@ impl ToolRouter {
                     pending_job_ids: window.pending_job_ids.clone(),
                     truncated: window.truncated,
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
-                    precision_tier: window.precision_tier.clone(),
+                    precision_tier: window.precision_tier,
                 });
                 // Build combined diagnostics from both layers.
                 combined_lazy_diag = Some(LazyDiagnostics::from_both(structural_lo.as_ref(), &window));
@@ -370,8 +368,7 @@ impl ToolRouter {
                 let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                     "trace_callers",
                     &format!(
-                        "symbol_name exceeds maximum length of {} characters",
-                        MAX_SYMBOL_NAME_LENGTH
+                        "symbol_name exceeds maximum length of {MAX_SYMBOL_NAME_LENGTH} characters"
                     ),
                 );
                 return (
@@ -397,7 +394,7 @@ impl ToolRouter {
                 Err(e) => {
                     let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                         "trace_callers",
-                        &format!("Invalid symbol hex ID: {}", e),
+                        &format!("Invalid symbol hex ID: {e}"),
                     );
                     return (
                         serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
@@ -511,8 +508,7 @@ impl ToolRouter {
                 let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                     "trace_forward",
                     &format!(
-                        "from_name exceeds maximum length of {} characters",
-                        MAX_SYMBOL_NAME_LENGTH
+                        "from_name exceeds maximum length of {MAX_SYMBOL_NAME_LENGTH} characters"
                     ),
                 );
                 return (
@@ -526,8 +522,7 @@ impl ToolRouter {
                 let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                     "trace_forward",
                     &format!(
-                        "to_name exceeds maximum length of {} characters",
-                        MAX_SYMBOL_NAME_LENGTH
+                        "to_name exceeds maximum length of {MAX_SYMBOL_NAME_LENGTH} characters"
                     ),
                 );
                 return (
@@ -621,7 +616,7 @@ impl ToolRouter {
                     Err(e) => {
                         let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                             "trace_forward",
-                            &format!("Invalid 'from' symbol ID: {}", e),
+                            &format!("Invalid 'from' symbol ID: {e}"),
                         );
                         return (
                             serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
@@ -634,7 +629,7 @@ impl ToolRouter {
                     Err(e) => {
                         let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                             "trace_forward",
-                            &format!("Invalid 'to' symbol ID: {}", e),
+                            &format!("Invalid 'to' symbol ID: {e}"),
                         );
                         return (
                             serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),

@@ -588,12 +588,12 @@ mod tests {
         // "getUser" should match "get_user"
         let query_norm = normalize_name_for_search("getUser");
         let sim = compute_name_similarity("getUser", "get_user", &query_norm);
-        assert!(sim > 0.8, "Expected high similarity, got {}", sim);
+        assert!(sim > 0.8, "Expected high similarity, got {sim}");
 
         // "UserManager" should match "user_manager"
         let query_norm = normalize_name_for_search("UserManager");
         let sim = compute_name_similarity("UserManager", "user_manager", &query_norm);
-        assert!(sim > 0.8, "Expected high similarity, got {}", sim);
+        assert!(sim > 0.8, "Expected high similarity, got {sim}");
     }
 
     #[test]

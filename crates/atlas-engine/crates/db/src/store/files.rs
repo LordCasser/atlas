@@ -120,8 +120,7 @@ impl Store {
             "SELECT file_id FROM files
              WHERE path = ?1 OR (path >= ?2 AND path < ?3)
              ORDER BY path
-             LIMIT {}",
-            limit
+             LIMIT {limit}"
         ))?;
         let rows = stmt.query_map(params![normalized, lower, upper], |row| row.get(0))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -192,7 +191,7 @@ pub(crate) fn escape_like(value: &str) -> String {
 }
 
 pub(crate) fn scope_child_bounds(scope: &str) -> (String, String) {
-    let lower = format!("{}/", scope);
+    let lower = format!("{scope}/");
     let mut upper = lower.clone();
     upper.push(char::MAX);
     (lower, upper)

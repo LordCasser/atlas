@@ -206,7 +206,7 @@ fn matches_any_glob(path: &Path, patterns: &[String]) -> bool {
 fn glob_match(path: &str, pattern: &str) -> bool {
     // No wildcards: exact match or directory prefix
     if !pattern.contains('*') {
-        return path == pattern || path.starts_with(&format!("{}/", pattern));
+        return path == pattern || path.starts_with(&format!("{pattern}/"));
     }
 
     // "**.ext" — match any-depth file extension

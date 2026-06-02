@@ -138,7 +138,7 @@ fn bar_style() -> ProgressStyle {
 fn progress_message(snap: &ProgressSnapshot) -> String {
     let mut parts = Vec::new();
     if let Some(rate) = snap.rate {
-        parts.push(format!("{:.0}/s", rate));
+        parts.push(format!("{rate:.0}/s"));
     }
     parts.push(format!("elapsed {:.1}s", snap.elapsed.as_secs_f64()));
     if let Some(msg) = &snap.message {
@@ -149,9 +149,9 @@ fn progress_message(snap: &ProgressSnapshot) -> String {
 
 fn print_summary(files: u64, symbols: u64, edges: u64) {
     println!(" ◆ Index complete");
-    println!("   Files:   {}", files);
-    println!("   Symbols: {}", symbols);
-    println!("   Edges:   {}", edges);
+    println!("   Files:   {files}");
+    println!("   Symbols: {symbols}");
+    println!("   Edges:   {edges}");
 }
 
 fn print_interrupted_stdout(state: &ProgressState) {

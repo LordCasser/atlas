@@ -157,7 +157,7 @@ impl ToolRouter {
         include_roots: Vec<atlas_engine::IncludeRoot>,
         root_warnings: Vec<String>,
     ) -> (String, bool, Vec<FileId>) {
-        self.send_progress(0.1, &format!("Searching for '{}' in {}...", query, scope));
+        self.send_progress(0.1, &format!("Searching for '{query}' in {scope}..."));
         if !self.has_indexed_files() {
             return (
                 "No indexed files found — please run 'index' tool first.".into(),
@@ -182,7 +182,7 @@ impl ToolRouter {
         ) {
             Ok(r) => r,
             Err(err) => {
-                let mut s = format!("Search error: {}", err);
+                let mut s = format!("Search error: {err}");
                 s.push_str(self.index_not_run_guidance());
                 return (s, true, Vec::new());
             }
@@ -243,7 +243,7 @@ impl ToolRouter {
             ) {
                 Ok(r) => r,
                 Err(err) => {
-                    task_manager.fail_task(&tid, &format!("Search error: {}", err));
+                    task_manager.fail_task(&tid, &format!("Search error: {err}"));
                     return;
                 }
             };
@@ -299,7 +299,7 @@ impl ToolRouter {
         let symbols = match self.store.find_symbols_by_qname(qname) {
             Ok(s) => s,
             Err(e) => {
-                let mut s = format!("Lookup error: {}", e);
+                let mut s = format!("Lookup error: {e}");
                 s.push_str(self.index_not_run_guidance());
                 return (s, true);
             }
@@ -345,7 +345,7 @@ impl ToolRouter {
                         sym = s;
                     }
                     None => {
-                        let mut s = format!("Symbol not found: {}", qname);
+                        let mut s = format!("Symbol not found: {qname}");
                         s.push_str(self.index_not_run_guidance());
                         return (s, true);
                     }
@@ -444,8 +444,7 @@ where
 
     if scope_file_count == 0 {
         warnings.push(format!(
-            "Scope '{}' has no indexed files. Run index first or choose a different project-relative scope.",
-            normalized_scope
+            "Scope '{normalized_scope}' has no indexed files. Run index first or choose a different project-relative scope."
         ));
         return Ok(ScopedSearchResponse {
             query: query.to_string(),
@@ -520,7 +519,7 @@ where
                 precision_tier = Some(outcome.precision_tier);
             }
             Err(err) => {
-                warnings.push(format!("Structural parsing failed: {:#}", err));
+                warnings.push(format!("Structural parsing failed: {err:#}"));
             }
         }
         if total_budget_exceeded {
@@ -568,8 +567,7 @@ where
     // agent understand why and what to try next.
     if symbols.is_empty() && !precise {
         warnings.push(format!(
-            "Search for '{}' returned no results in scope '{}'. Possible causes: (1) symbol not yet structurally parsed — narrow scope to the file; (2) no exact match — try a broader query or use 'status' to confirm indexing coverage.",
-            query, normalized_scope
+            "Search for '{query}' returned no results in scope '{normalized_scope}'. Possible causes: (1) symbol not yet structurally parsed — narrow scope to the file; (2) no exact match — try a broader query or use 'status' to confirm indexing coverage."
         ));
     }
 
@@ -596,8 +594,7 @@ where
             }));
         } else if !precise && scope_file_count > PREHEAT_SCOPE_FILE_LIMIT {
             warnings.push(format!(
-                "Background structural preparse skipped because scope has more than {} files; narrow scope to enable preparse.",
-                PREHEAT_SCOPE_FILE_LIMIT
+                "Background structural preparse skipped because scope has more than {PREHEAT_SCOPE_FILE_LIMIT} files; narrow scope to enable preparse."
             ));
         }
     }
@@ -792,7 +789,7 @@ fn spawn_preparse(
             Err(e) => {
                 // Best-effort: signal background writes even on error.
                 lazy_refresh_queue.signal_background_writes();
-                tm.fail_task(&tid, &format!("Preparse failed: {:#}", e));
+                tm.fail_task(&tid, &format!("Preparse failed: {e:#}"));
             }
         }
         // Note: graph refresh is not done here — preparse is best-effort.

@@ -82,7 +82,7 @@ pub fn evaluate_proof(
     let path = PathProof {
         conditions: Vec::new(),
         states: Vec::new(), // filled by caller
-        exit_state: final_state.clone(),
+        exit_state: final_state,
     };
 
     if !suspicious.is_empty() {
@@ -104,8 +104,7 @@ pub fn evaluate_proof(
             paths: vec![path],
             verdict: LifecycleVerdict::Safe,
             reasoning: format!(
-                "Field lifecycle terminates in {:?} state — no leaks detected",
-                final_state
+                "Field lifecycle terminates in {final_state:?} state — no leaks detected"
             ),
             evidence_level,
         },

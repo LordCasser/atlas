@@ -19,7 +19,7 @@ fn parse_err(idx: usize, value: &str, target: &str) -> rusqlite::Error {
         rusqlite::types::Type::Text,
         Box::new(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("cannot parse '{}' as {}", value, target),
+            format!("cannot parse '{value}' as {target}"),
         )),
     )
 }
@@ -368,12 +368,12 @@ pub(crate) fn row_to_cfg_node(row: &Row) -> rusqlite::Result<CfgNode> {
         function_id: row.get(1)?,
         kind,
         stmt_range: TextRange {
-            start_byte: row.get::<_, u32>(3)? as u32,
-            end_byte: row.get::<_, u32>(4)? as u32,
-            start_line: row.get::<_, u32>(5)? as u32,
-            start_column: row.get::<_, u32>(6)? as u32,
-            end_line: row.get::<_, u32>(7)? as u32,
-            end_column: row.get::<_, u32>(8)? as u32,
+            start_byte: row.get::<_, u32>(3)?,
+            end_byte: row.get::<_, u32>(4)?,
+            start_line: row.get::<_, u32>(5)?,
+            start_column: row.get::<_, u32>(6)?,
+            end_line: row.get::<_, u32>(7)?,
+            end_column: row.get::<_, u32>(8)?,
         },
         effect_kind: effect_kind.and_then(|k| EffectKind::from_str(&k)),
         target_field,

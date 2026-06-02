@@ -81,7 +81,7 @@ impl LanguageRuleKinds for CRegistry {
         rules
             .iter()
             .map(|(kind, pattern, pkind)| DomainRule {
-                id: format!("c_{}_{}", kind, pattern),
+                id: format!("c_{kind}_{pattern}"),
                 language: "c".into(),
                 rule_kind: kind.to_string(),
                 pattern: pattern.to_string(),

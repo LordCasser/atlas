@@ -94,7 +94,7 @@ impl Locator {
             binding_use,
             scope,
             callsite,
-            file_id: file_id.clone(),
+            file_id: *file_id,
             line,
             column,
             capability: None,
@@ -152,11 +152,11 @@ fn data_node_priority(kind: DataNodeKind) -> u8 {
 /// Find the best DataNode at a position using semantic priority then byte span.
 /// When multiple nodes (e.g., CallArg and VariableUse) share overlapping ranges,
 /// the one with lower priority number wins.
-fn find_best_data_node_at_position<'a>(
-    items: &'a [DataNode],
+fn find_best_data_node_at_position(
+    items: &[DataNode],
     line: u32,
     column: u32,
-) -> Option<&'a DataNode> {
+) -> Option<&DataNode> {
     let mut best: Option<&DataNode> = None;
     let mut best_priority: u8 = u8::MAX;
     let mut best_span: u32 = u32::MAX;
@@ -217,7 +217,7 @@ where
             .filter_map(|edge| {
                 nodes
                     .get(id_fn(edge))
-                    .map(|n| TraceDataNodeRef::from_data_node(n))
+                    .map(TraceDataNodeRef::from_data_node)
             })
             .collect();
     }

@@ -373,7 +373,7 @@ impl ClosurePlanner {
         let file_info = self
             .store
             .get_file(file_id)?
-            .ok_or_else(|| anyhow::anyhow!("file not found for id {:?}", file_id))?;
+            .ok_or_else(|| anyhow::anyhow!("file not found for id {file_id:?}"))?;
 
         let dir = std::path::Path::new(&file_info.path)
             .parent()
@@ -476,7 +476,7 @@ impl ClosurePlanner {
         };
 
         // Check if companion file exists in DB
-        let companion_path = parent.join(format!("{}.{}", stem, companion_ext));
+        let companion_path = parent.join(format!("{stem}.{companion_ext}"));
         let normalized = normalize_path(&companion_path);
         let companion_id = FileId::generate(&normalized);
         match self.store.get_file(&companion_id)? {
@@ -504,7 +504,7 @@ impl ClosurePlanner {
         let file_info = self
             .store
             .get_file(file_id)?
-            .ok_or_else(|| anyhow::anyhow!("file not found: {:?}", file_id))?;
+            .ok_or_else(|| anyhow::anyhow!("file not found: {file_id:?}"))?;
 
         let resolved_path = self.resolve_source_path(&file_info.path);
         let source = match std::fs::read_to_string(&resolved_path) {

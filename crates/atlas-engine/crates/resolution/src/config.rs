@@ -90,7 +90,7 @@ impl PathAliasConfig {
 pub fn detect_config_change(store: &Store, root: &Path, names: &[&str]) -> Result<bool> {
     for name in names {
         let config_path = root.join(name);
-        let meta_key = format!("{}_hash", name);
+        let meta_key = format!("{name}_hash");
 
         let prev_hash = store
             .get_metadata(&meta_key)
@@ -128,7 +128,7 @@ pub fn detect_config_change(store: &Store, root: &Path, names: &[&str]) -> Resul
 pub fn commit_config_hashes(store: &Store, root: &Path, names: &[&str]) -> Result<()> {
     for name in names {
         let config_path = root.join(name);
-        let meta_key = format!("{}_hash", name);
+        let meta_key = format!("{name}_hash");
 
         match std::fs::read(&config_path) {
             Ok(bytes) => {

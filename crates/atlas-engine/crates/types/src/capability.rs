@@ -310,6 +310,7 @@ impl CapabilityLevel {
     }
 
     /// Parse from a lower-case string.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "none" => Some(Self::None),
@@ -1344,7 +1345,7 @@ mod tests {
         ] {
             let s = level.as_str();
             let parsed = CapabilityLevel::from_str(s);
-            assert_eq!(parsed, Some(*level), "roundtrip failed for {:?}", level);
+            assert_eq!(parsed, Some(*level), "roundtrip failed for {level:?}");
         }
     }
 
@@ -1611,8 +1612,7 @@ mod tests {
         let min = matrix.min_confidence_floor();
         assert!(
             (0.0..=1.0).contains(&min),
-            "min_confidence_floor should be in [0,1], got {}",
-            min
+            "min_confidence_floor should be in [0,1], got {min}"
         );
     }
 }

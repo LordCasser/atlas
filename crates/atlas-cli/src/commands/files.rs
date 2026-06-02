@@ -19,7 +19,7 @@ pub fn run(project: &str) -> anyhow::Result<()> {
 
     println!("Indexed Files ({})", files.len());
     println!("{:-<80}", "");
-    println!("{:<5} {:<12} {}", "No.", "Language", "Path");
+    println!("{:<5} {:<12} Path", "No.", "Language");
     println!("{:-<80}", "");
 
     for (i, f) in files.iter().enumerate() {

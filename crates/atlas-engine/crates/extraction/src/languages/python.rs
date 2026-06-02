@@ -166,12 +166,12 @@ fn is_py_identifier_declaration(node: tree_sitter::Node) -> bool {
             // Check if this node is the "name" field of the parent
             parent
                 .child_by_field_name("name")
-                .map_or(false, |n| n.id() == node.id())
+                .is_some_and(|n| n.id() == node.id())
         }
         // Attribute access: obj.attr — don't capture property name as use
         "attribute" => parent
             .child_by_field_name("attribute")
-            .map_or(false, |n| n.id() == node.id()),
+            .is_some_and(|n| n.id() == node.id()),
         _ => false,
     }
 }

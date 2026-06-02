@@ -82,7 +82,7 @@ impl IncludeGraph {
 
             // Try .c, .cpp, .cc companions
             for ext in &["c", "cpp", "cc", "cxx"] {
-                let companion = format!("{}.{}", stem_str, ext);
+                let companion = format!("{stem_str}.{ext}");
                 let companion_id = FileId::generate(&companion);
                 if self.store.get_file(&companion_id).ok().flatten().is_some() {
                     return Some(companion_id);

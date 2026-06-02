@@ -378,7 +378,7 @@ impl ReferenceResolver {
             let ctx = match ResolutionContext::build(&self.store, *file_id) {
                 Ok(c) => c,
                 Err(e) => {
-                    stats.add_warning(format!("failed to build context: {}", e));
+                    stats.add_warning(format!("failed to build context: {e}"));
                     continue;
                 }
             };
@@ -484,7 +484,7 @@ impl ReferenceResolver {
 
         // Spawn Phase 2 writer thread that also collects all_resolved.
         let writer_store = store.clone();
-        let writer_progress = progress_mutex.map(|a| Arc::clone(a));
+        let writer_progress = progress_mutex.map(Arc::clone);
         let writer_handle = std::thread::spawn(
             move || -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
                 let mut stats = ResolutionStats::default();
@@ -522,7 +522,7 @@ impl ReferenceResolver {
         );
 
         // Enter Phase 2 progress bar before spawning rayon to show percentage.
-        if let Some(ref ps) = progress_mutex {
+        if let Some(ps) = progress_mutex {
             let _ = ps.lock().map(|mut p| p.enter_phase2(total_refs));
         }
 
@@ -552,7 +552,7 @@ impl ReferenceResolver {
                     .map(|s| s.to_string())
                     .or_else(|| panic.downcast_ref::<String>().cloned())
                     .unwrap_or_else(|| "unknown panic".into());
-                Err(anyhow::anyhow!("Phase 2 writer panicked: {}", msg))
+                Err(anyhow::anyhow!("Phase 2 writer panicked: {msg}"))
             }
         }
     }
@@ -602,7 +602,7 @@ impl ReferenceResolver {
             let ctx = match ResolutionContext::build(&self.store, *file_id) {
                 Ok(c) => c,
                 Err(e) => {
-                    stats.add_warning(format!("failed to build context: {}", e));
+                    stats.add_warning(format!("failed to build context: {e}"));
                     continue;
                 }
             };
@@ -643,7 +643,7 @@ impl ReferenceResolver {
             return;
         }
         if let Err(e) = self.store.batch_update_resolutions(pending_resolutions) {
-            stats.add_warning(format!("batch resolution update failed: {}", e));
+            stats.add_warning(format!("batch resolution update failed: {e}"));
         }
         pending_resolutions.clear();
     }
@@ -855,8 +855,7 @@ shutdown();
             .collect();
         assert!(
             caller_names.contains(&"main"),
-            "expected main to be caller of greet, got: {:?}",
-            caller_names
+            "expected main to be caller of greet, got: {caller_names:?}"
         );
 
         // Verify callees: main → greet
@@ -868,8 +867,7 @@ shutdown();
             .collect();
         assert!(
             callee_names.contains(&"greet"),
-            "expected greet to be callee of main, got: {:?}",
-            callee_names
+            "expected greet to be callee of main, got: {callee_names:?}"
         );
     }
 
@@ -952,8 +950,7 @@ main();
             .collect();
         assert!(
             callee_names.contains(&"greet"),
-            "expected greet to be callee of main (via aliased import 'hello'), got: {:?}",
-            callee_names
+            "expected greet to be callee of main (via aliased import 'hello'), got: {callee_names:?}"
         );
 
         // Verify callers: greet is called by main
@@ -965,8 +962,7 @@ main();
             .collect();
         assert!(
             caller_names.contains(&"main"),
-            "expected main to be caller of greet (via aliased import 'hello'), got: {:?}",
-            caller_names
+            "expected main to be caller of greet (via aliased import 'hello'), got: {caller_names:?}"
         );
     }
 }

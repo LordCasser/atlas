@@ -90,7 +90,7 @@ impl Store {
             return Ok(Vec::new());
         }
         // Append * for prefix matching (matches "User" → "UserManager")
-        let match_query = format!("{}*", safe_query);
+        let match_query = format!("{safe_query}*");
         let sql = if kind_filter.is_some() {
             format!(
                 r#"SELECT s.symbol_id, s.file_id, s.kind, s.name, s.qualified_name,
@@ -105,8 +105,7 @@ impl Store {
                    JOIN symbols_fts fts ON s.rowid = fts.rowid
                    WHERE symbols_fts MATCH ?1 AND s.kind = ?2
                    ORDER BY rank
-                   LIMIT {}"#,
-                limit
+                   LIMIT {limit}"#
             )
         } else {
             format!(
@@ -122,8 +121,7 @@ impl Store {
                    JOIN symbols_fts fts ON s.rowid = fts.rowid
                    WHERE symbols_fts MATCH ?1
                    ORDER BY rank
-                   LIMIT {}"#,
-                limit
+                   LIMIT {limit}"#
             )
         };
         let mut stmt = conn.prepare(&sql)?;
@@ -152,7 +150,7 @@ impl Store {
         if safe_query.is_empty() {
             return Ok(Vec::new());
         }
-        let match_query = format!("{}*", safe_query);
+        let match_query = format!("{safe_query}*");
         let (scope_lower, scope_upper) = scope_child_bounds(&scope);
         let conn = self.lock_read();
         let sql = if kind_filter.is_some() {
@@ -172,8 +170,7 @@ impl Store {
                      AND (f.path = ?2 OR (f.path >= ?3 AND f.path < ?4))
                      AND s.kind = ?5
                    ORDER BY rank
-                   LIMIT {}"#,
-                limit
+                   LIMIT {limit}"#
             )
         } else {
             format!(
@@ -191,8 +188,7 @@ impl Store {
                    WHERE symbols_fts MATCH ?1
                      AND (f.path = ?2 OR (f.path >= ?3 AND f.path < ?4))
                    ORDER BY rank
-                   LIMIT {}"#,
-                limit
+                   LIMIT {limit}"#
             )
         };
         let mut stmt = conn.prepare(&sql)?;
@@ -244,8 +240,7 @@ impl Store {
                      AND (f.path = ?2 OR (f.path >= ?3 AND f.path < ?4))
                      AND s.kind = ?5
                    ORDER BY s.qualified_name
-                   LIMIT {}"#,
-                limit
+                   LIMIT {limit}"#
             )
         } else {
             format!(
@@ -262,8 +257,7 @@ impl Store {
                    WHERE s.name = ?1
                      AND (f.path = ?2 OR (f.path >= ?3 AND f.path < ?4))
                    ORDER BY s.qualified_name
-                   LIMIT {}"#,
-                limit
+                   LIMIT {limit}"#
             )
         };
         let mut stmt = conn.prepare(&sql)?;
@@ -293,7 +287,7 @@ impl Store {
         kind_filter: Option<&SymbolKind>,
     ) -> anyhow::Result<Vec<SymbolDef>> {
         let conn = self.lock_read();
-        let like_pattern = format!("%{}%", pattern.replace('%', "").replace('_', ""));
+        let like_pattern = format!("%{}%", pattern.replace(['%', '_'], ""));
         if like_pattern.len() <= 2 {
             // Just "%%"
             return Ok(Vec::new());
@@ -304,11 +298,11 @@ impl Store {
         let mut param_idx = 3; // ?1 and ?2 are LIKE patterns
 
         if language.is_some() {
-            where_clauses.push(format!("s.language = ?{}", param_idx));
+            where_clauses.push(format!("s.language = ?{param_idx}"));
             param_idx += 1;
         }
         if kind_filter.is_some() {
-            where_clauses.push(format!("s.kind = ?{}", param_idx));
+            where_clauses.push(format!("s.kind = ?{param_idx}"));
         }
 
         let where_sql = where_clauses.join(" AND ");
@@ -323,9 +317,8 @@ impl Store {
                       s.signature, s.visibility, s.exported, s.static_, s.async_,
                       s.container_id, s.scope_id, s.package_name, s.namespace_path_json, s.layer
                FROM symbols s
-               WHERE {}
-               LIMIT {}"#,
-            where_sql, limit
+               WHERE {where_sql}
+               LIMIT {limit}"#
         );
 
         let mut stmt = conn.prepare(&sql)?;
@@ -365,7 +358,7 @@ impl Store {
         if scope.is_empty() {
             return Ok(Vec::new());
         }
-        let like_pattern = format!("%{}%", pattern.replace('%', "").replace('_', ""));
+        let like_pattern = format!("%{}%", pattern.replace(['%', '_'], ""));
         if like_pattern.len() <= 2 {
             return Ok(Vec::new());
         }
@@ -378,11 +371,11 @@ impl Store {
         let mut param_idx = 6;
 
         if language.is_some() {
-            where_clauses.push(format!("s.language = ?{}", param_idx));
+            where_clauses.push(format!("s.language = ?{param_idx}"));
             param_idx += 1;
         }
         if kind_filter.is_some() {
-            where_clauses.push(format!("s.kind = ?{}", param_idx));
+            where_clauses.push(format!("s.kind = ?{param_idx}"));
         }
 
         let sql = format!(

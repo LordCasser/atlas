@@ -29,7 +29,7 @@ impl CfgGraph {
     pub fn build(nodes: &[CfgNode], edges: &[CfgEdge]) -> anyhow::Result<Self> {
         let node_map: HashMap<CfgNodeId, CfgNode> = nodes
             .iter()
-            .map(|n| (n.id.clone(), n.clone()))
+            .map(|n| (n.id, n.clone()))
             .collect();
 
         // Validate edge endpoints
@@ -52,12 +52,12 @@ impl CfgGraph {
         let mut succ: HashMap<CfgNodeId, Vec<CfgEdge>> = HashMap::new();
         let mut pred: HashMap<CfgNodeId, Vec<CfgEdge>> = HashMap::new();
         for n in nodes {
-            succ.entry(n.id.clone()).or_default();
-            pred.entry(n.id.clone()).or_default();
+            succ.entry(n.id).or_default();
+            pred.entry(n.id).or_default();
         }
         for e in edges {
-            succ.entry(e.source.clone()).or_default().push(e.clone());
-            pred.entry(e.target.clone()).or_default().push(e.clone());
+            succ.entry(e.source).or_default().push(e.clone());
+            pred.entry(e.target).or_default().push(e.clone());
         }
 
         // Find Entry and Exit
@@ -74,8 +74,8 @@ impl CfgGraph {
             nodes: node_map,
             successors: succ,
             predecessors: pred,
-            entry: entry.id.clone(),
-            exit: exit.id.clone(),
+            entry: entry.id,
+            exit: exit.id,
         })
     }
 

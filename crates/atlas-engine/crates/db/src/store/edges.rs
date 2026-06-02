@@ -33,8 +33,7 @@ impl Store {
     pub fn find_unresolved_references(&self) -> anyhow::Result<Vec<ReferenceUse>> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(&format!(
-            "{} WHERE resolved_symbol_id IS NULL",
-            REFERENCE_SELECT_NO_WHERE
+            "{REFERENCE_SELECT_NO_WHERE} WHERE resolved_symbol_id IS NULL"
         ))?;
         let rows = stmt.query_map([], row_to_reference)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -411,8 +410,7 @@ impl Store {
     ) -> anyhow::Result<Vec<ReferenceUse>> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(&format!(
-            "{} WHERE resolved_symbol_id = ?1",
-            REFERENCE_SELECT_NO_WHERE
+            "{REFERENCE_SELECT_NO_WHERE} WHERE resolved_symbol_id = ?1"
         ))?;
         let rows = stmt.query_map(params![symbol_id], row_to_reference)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)

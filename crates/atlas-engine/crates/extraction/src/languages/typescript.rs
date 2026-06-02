@@ -339,12 +339,12 @@ fn is_ts_identifier_declaration_or_property(node: tree_sitter::Node) -> bool {
             // Check if this node is the "name" field of the parent
             parent
                 .child_by_field_name("name")
-                .map_or(false, |n| n.id() == node.id())
+                .is_some_and(|n| n.id() == node.id())
         }
         // Property names in member expressions (obj.property)
         "member_expression" => parent
             .child_by_field_name("property")
-            .map_or(false, |n| n.id() == node.id()),
+            .is_some_and(|n| n.id() == node.id()),
         // Type references (like `string`, `number` in type annotations)
         "type_annotation" | "type_arguments" | "type_parameters" => true,
         _ => false,

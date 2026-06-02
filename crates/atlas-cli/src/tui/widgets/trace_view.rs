@@ -81,7 +81,7 @@ pub fn render(
 
         // Main step line: "> description  [EdgeKind]"
         lines.push(Line::from(vec![
-            Span::styled(format!("{}", marker), marker_style),
+            Span::styled(marker.to_string(), marker_style),
             Span::styled(&step.description, name_style),
             Span::styled(
                 format!("  [{:?}]", step.edge_kind),
@@ -108,7 +108,7 @@ pub fn render(
         if let Some(ref snippet) = step.caller_snippet {
             for snip_line in snippet.lines() {
                 lines.push(Line::from(Span::styled(
-                    format!("    {}", snip_line),
+                    format!("    {snip_line}"),
                     Style::default().fg(Color::Gray),
                 )));
             }
@@ -118,7 +118,7 @@ pub fn render(
         if let Some(ref snippet) = step.callee_snippet {
             for snip_line in snippet.lines() {
                 lines.push(Line::from(Span::styled(
-                    format!("    ▶ {}", snip_line),
+                    format!("    ▶ {snip_line}"),
                     Style::default().fg(Color::Green),
                 )));
             }

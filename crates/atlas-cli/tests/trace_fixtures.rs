@@ -33,15 +33,15 @@ fn index_files(files: &[(&str, &str)]) -> Arc<Store> {
     for (rel_path, content) in files {
         let path = Path::new(rel_path);
         let lang = Language::from_path(path)
-            .unwrap_or_else(|| panic!("no language detected for {}", rel_path));
+            .unwrap_or_else(|| panic!("no language detected for {rel_path}"));
         let frontend = atlas_engine::create_frontend(lang)
-            .unwrap_or_else(|| panic!("no frontend for {} (lang={:?})", rel_path, lang));
+            .unwrap_or_else(|| panic!("no frontend for {rel_path} (lang={lang:?})"));
         let file_id = FileId::generate(rel_path);
         let facts = extract_file(&frontend, file_id, &PathBuf::from(rel_path), content, "abc")
-            .unwrap_or_else(|e| panic!("extract {} failed: {:?}", rel_path, e));
+            .unwrap_or_else(|e| panic!("extract {rel_path} failed: {e:?}"));
         store
             .insert_file_facts(&facts)
-            .unwrap_or_else(|e| panic!("insert {} failed: {:?}", rel_path, e));
+            .unwrap_or_else(|e| panic!("insert {rel_path} failed: {e:?}"));
     }
 
     let mut resolver = ReferenceResolver::new(store.clone());
@@ -62,8 +62,8 @@ fn find_node<'a>(
     nodes
         .iter()
         .filter(|n| n.name.as_deref() == Some(name))
-        .last()
-        .unwrap_or_else(|| panic!("data node '{}' not found", name))
+        .next_back()
+        .unwrap_or_else(|| panic!("data node '{name}' not found"))
 }
 
 /// Assert that a trace path contains at least one step of the given edge kind.
@@ -149,9 +149,7 @@ fn assert_source_name(path: &atlas_engine::TracePath, expected: &str) {
         .unwrap_or("<none>");
     assert!(
         name.contains(expected),
-        "source data node name '{}' should contain '{}'",
-        name,
-        expected
+        "source data node name '{name}' should contain '{expected}'"
     );
 }
 
@@ -172,8 +170,7 @@ fn assert_path_completeness(path: &atlas_engine::TracePath, min_steps: usize, si
         .unwrap_or("<none>");
     assert_ne!(
         source_name, sink_name,
-        "source data node '{}' should differ from sink '{}'",
-        source_name, sink_name
+        "source data node '{source_name}' should differ from sink '{sink_name}'"
     );
 }
 
@@ -310,8 +307,7 @@ fn fx2_multi_assignment_chain_complete() {
         .count();
     assert!(
         assign_count >= 3,
-        "expected >= 3 Assign edges (1→x, +2→x, +3→x), got {}",
-        assign_count
+        "expected >= 3 Assign edges (1→x, +2→x, +3→x), got {assign_count}"
     );
 }
 
@@ -686,15 +682,14 @@ export function b(x: number): void { c(x); }
         .count();
     assert!(
         arg_to_param_count >= 1,
-        "expected >= 1 ArgToParam edge in indirect chain, got {}",
-        arg_to_param_count
+        "expected >= 1 ArgToParam edge in indirect chain, got {arg_to_param_count}"
     );
 
     // Should have evidence from file a.ts (the indirect caller)
     let has_a_evidence = path.steps.iter().any(|s| {
         s.evidence
             .as_ref()
-            .map_or(false, |e| e.file_path.contains("a.ts"))
+            .is_some_and(|e| e.file_path.contains("a.ts"))
     });
     assert!(
         has_a_evidence,
@@ -1798,8 +1793,7 @@ fn fx_py_destructure() {
         .count();
     assert!(
         assign_count >= 1,
-        "expected >=1 Assign edge from destructured vars, got {}",
-        assign_count
+        "expected >=1 Assign edge from destructured vars, got {assign_count}"
     );
 }
 

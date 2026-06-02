@@ -22,8 +22,7 @@ impl ToolRouter {
         if qname.len() > MAX_SYMBOL_NAME_LENGTH {
             return (
                 format!(
-                    "Symbol name exceeds maximum length of {} characters",
-                    MAX_SYMBOL_NAME_LENGTH
+                    "Symbol name exceeds maximum length of {MAX_SYMBOL_NAME_LENGTH} characters"
                 ),
                 true,
             );
@@ -32,7 +31,7 @@ impl ToolRouter {
             .get("includeCode")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        self.send_progress(0.2, &format!("Building context for '{}'...", qname));
+        self.send_progress(0.2, &format!("Building context for '{qname}'..."));
 
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
         for w in &root_warnings {
@@ -63,7 +62,7 @@ impl ToolRouter {
         // operates on a stale snapshot loaded before the handler's own
         // structural extraction.
         if let Err(e) = self.force_refresh_graph() {
-            return (format!("Graph refresh error: {:#}", e), true);
+            return (format!("Graph refresh error: {e:#}"), true);
         }
 
         self.send_progress(0.7, "Building context view...");
@@ -113,7 +112,7 @@ impl ToolRouter {
                     false,
                 )
             }
-            Err(e) => (format!("Context build error: {}", e), true),
+            Err(e) => (format!("Context build error: {e}"), true),
         }
     }
 
@@ -269,8 +268,7 @@ impl ToolRouter {
 
         // ── Tier 4: nothing found ──
         let mut err = format!(
-            "Symbol '{}' not found by qualified name or simple name. Try 'search' first to discover the correct qualified_name for this symbol.",
-            qname
+            "Symbol '{qname}' not found by qualified name or simple name. Try 'search' first to discover the correct qualified_name for this symbol."
         );
         err.push_str(self.index_not_run_guidance());
         Err(err)

@@ -185,7 +185,7 @@ impl TraceEngine {
                 point.capability = cap.clone();
                 TraceQueryResponse::ok("trace_point", point, cap)
             }
-            Err(e) => TraceQueryResponse::err("trace_point", &format!("{}", e)),
+            Err(e) => TraceQueryResponse::err("trace_point", &format!("{e}")),
         }
     }
 
@@ -235,8 +235,7 @@ impl TraceEngine {
             return TraceQueryResponse::partial(
                 "trace_variable",
                 TraceDiagnostic::warning(&format!(
-                    "Dataflow not supported for this language ({})",
-                    reason
+                    "Dataflow not supported for this language ({reason})"
                 ))
                 .with_code("unsupported_language"),
                 cap,
@@ -245,7 +244,7 @@ impl TraceEngine {
 
         let sink = match Locator::locate(self.store.as_ref(), file_id, line, column) {
             Ok(p) => p,
-            Err(e) => return TraceQueryResponse::err("trace_variable", &format!("{}", e)),
+            Err(e) => return TraceQueryResponse::err("trace_variable", &format!("{e}")),
         };
 
         if sink.data_node.is_none() {
@@ -273,7 +272,7 @@ impl TraceEngine {
                     .with_code("no_trace_path"),
                 cap,
             ),
-            Err(e) => TraceQueryResponse::err("trace_variable", &format!("{}", e)),
+            Err(e) => TraceQueryResponse::err("trace_variable", &format!("{e}")),
         }
     }
 
@@ -341,7 +340,7 @@ impl TraceEngine {
                     .with_code("no_callers"),
                 cap,
             ),
-            Err(e) => TraceQueryResponse::err("trace_callers", &format!("{}", e)),
+            Err(e) => TraceQueryResponse::err("trace_callers", &format!("{e}")),
         }
     }
 
@@ -381,7 +380,7 @@ impl TraceEngine {
         if symbols.is_empty() {
             return TraceQueryResponse::partial(
                 "trace_callers",
-                TraceDiagnostic::warning(&format!("Symbol '{}' not found in index", name))
+                TraceDiagnostic::warning(&format!("Symbol '{name}' not found in index"))
                     .with_code("symbol_not_found"),
                 None,
             );
@@ -506,8 +505,7 @@ impl TraceEngine {
             return TraceQueryResponse::partial(
                 "trace_forward",
                 TraceDiagnostic::warning(&format!(
-                    "Source symbol '{}' not found in index",
-                    source_name
+                    "Source symbol '{source_name}' not found in index"
                 ))
                 .with_code("symbol_not_found"),
                 None,
@@ -517,8 +515,7 @@ impl TraceEngine {
             return TraceQueryResponse::partial(
                 "trace_forward",
                 TraceDiagnostic::warning(&format!(
-                    "Target symbol '{}' not found in index",
-                    target_name
+                    "Target symbol '{target_name}' not found in index"
                 ))
                 .with_code("symbol_not_found"),
                 None,
@@ -603,8 +600,7 @@ impl TraceEngine {
             return TraceQueryResponse::partial(
                 "trace_forward",
                 TraceDiagnostic::warning(&format!(
-                    "Forward call-graph tracing is not available for {}. Consider using 'trace_caller_path' (reverse trace from target) or 'callgraph' for neighborhood exploration. If you believe call-graph edges should exist, verify that the '{lang_name}' feature is compiled into the Atlas binary (--features {lang_name}).",
-                    lang_name,
+                    "Forward call-graph tracing is not available for {lang_name}. Consider using 'trace_caller_path' (reverse trace from target) or 'callgraph' for neighborhood exploration. If you believe call-graph edges should exist, verify that the '{lang_name}' feature is compiled into the Atlas binary (--features {lang_name}).",
                 ))
                 .with_code("unsupported_language")
                 .with_detail(format!(
@@ -665,7 +661,7 @@ impl TraceEngine {
                     .with_code("no_path_found"),
                 cap,
             ),
-            Err(e) => TraceQueryResponse::err("trace_forward", &format!("{}", e)),
+            Err(e) => TraceQueryResponse::err("trace_forward", &format!("{e}")),
         }
     }
 
@@ -847,7 +843,7 @@ impl TraceEngine {
             .map(|(i, l)| {
                 let actual_line = start + i;
                 let marker = if actual_line == center { ">" } else { " " };
-                format!("{} {}", marker, l)
+                format!("{marker} {l}")
             })
             .collect();
         Some(lines.join("\n"))

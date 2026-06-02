@@ -223,10 +223,10 @@ pub(crate) fn is_identifier_decl_or_property(
         // C/C++ uses "declarator" for identifiers in init_declarator nodes.
         if parent
             .child_by_field_name("name")
-            .map_or(false, |n| n.id() == node.id())
+            .is_some_and(|n| n.id() == node.id())
             || parent
                 .child_by_field_name("declarator")
-                .map_or(false, |n| n.id() == node.id())
+                .is_some_and(|n| n.id() == node.id())
         {
             return true;
         }
@@ -247,7 +247,7 @@ pub(crate) fn is_identifier_decl_or_property(
         for field in &["property", "field", "attribute"] {
             if parent
                 .child_by_field_name(field)
-                .map_or(false, |n| n.id() == node.id())
+                .is_some_and(|n| n.id() == node.id())
             {
                 return true;
             }

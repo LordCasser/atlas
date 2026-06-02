@@ -95,8 +95,7 @@ impl ToolRouter {
                 Ok(g) => Some(g),
                 Err(e) => {
                     result.errors.push(format!(
-                        "Cannot acquire exclusive lock (another atlas process may be indexing): {:#}",
-                        e
+                        "Cannot acquire exclusive lock (another atlas process may be indexing): {e:#}"
                     ));
                     let json = serde_json::to_string(&result).unwrap_or_else(|e| e.to_string());
                     return (json, true);
@@ -129,7 +128,7 @@ impl ToolRouter {
                 self.invalidate_manual_full_index_cache();
             }
             Err(e) => {
-                result.errors.push(format!("Index failed: {:#}", e));
+                result.errors.push(format!("Index failed: {e:#}"));
             }
         }
 
@@ -195,8 +194,7 @@ impl ToolRouter {
                         task_manager.fail_task(
                             &tid,
                             &format!(
-                                "Cannot acquire exclusive lock (another atlas process may be indexing): {:#}",
-                                e
+                                "Cannot acquire exclusive lock (another atlas process may be indexing): {e:#}"
                             ),
                         );
                         return;
@@ -253,7 +251,7 @@ impl ToolRouter {
                     );
                 }
                 Err(e) => {
-                    task_manager.fail_task(&tid, &format!("Index failed: {:#}", e));
+                    task_manager.fail_task(&tid, &format!("Index failed: {e:#}"));
                 }
             }
         });

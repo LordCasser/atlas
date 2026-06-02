@@ -108,7 +108,7 @@ impl SourceExtractor {
         let mut parser = TL_PARSER.with(|cell| {
             cell.borrow_mut()
                 .take()
-                .unwrap_or_else(tree_sitter::Parser::new)
+                .unwrap_or_default()
         });
 
         // Run extraction; the parser is returned to cache on every path.

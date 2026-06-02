@@ -435,12 +435,12 @@ impl App {
             DetailTab::Callers => {
                 ctx.caller_details
                     .get(self.detail_selected)
-                    .map(|c| c.symbol.id.clone())
+                    .map(|c| c.symbol.id)
             }
             DetailTab::Callees => {
                 ctx.callee_details
                     .get(self.detail_selected)
-                    .map(|c| c.symbol.id.clone())
+                    .map(|c| c.symbol.id)
             }
             _ => return,
         };

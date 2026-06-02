@@ -58,7 +58,7 @@ impl PathAliasResolver {
         let base_url = compiler_options
             .get("baseUrl")
             .and_then(|v| v.as_str())
-            .map(|s| PathBuf::from(s));
+            .map(PathBuf::from);
 
         let paths = compiler_options
             .get("paths")

@@ -147,7 +147,7 @@ impl Store {
         }
 
         // 2. Suffix match (e.g. "helper.ts" matches "src/lib/helper.ts").
-        let pattern = format!("%/{}", rel_path);
+        let pattern = format!("%/{rel_path}");
         let mut stmt = conn.prepare(
             "SELECT file_id, path FROM files WHERE path LIKE ?1 ORDER BY path ASC LIMIT 5",
         )?;

@@ -266,7 +266,7 @@ impl SummaryBuilder {
         let return_sources: Vec<DataNodeId> = all_return_contributors.into_iter().collect();
 
         Ok(FunctionSummary {
-            function_id: function_id.clone(),
+            function_id: *function_id,
             node_count: nodes.len(),
             edge_count,
             param_flows,
@@ -281,7 +281,7 @@ impl SummaryBuilder {
 #[allow(deprecated)]
 fn empty_summary(function_id: &SymbolId) -> FunctionSummary {
     FunctionSummary {
-        function_id: function_id.clone(),
+        function_id: *function_id,
         node_count: 0,
         edge_count: 0,
         param_flows: vec![],
@@ -328,7 +328,7 @@ mod tests {
                 let mut child_cursor = child.walk();
                 for gc in child.named_children(&mut child_cursor) {
                     if gc.kind() == "identifier" {
-                        let gc_text = &source[gc.start_byte() as usize..gc.end_byte() as usize];
+                        let gc_text = &source[gc.start_byte()..gc.end_byte()];
                         if gc_text == name {
                             return (child.start_byte() as u32, child.end_byte() as u32);
                         }
@@ -336,7 +336,7 @@ mod tests {
                 }
             }
         }
-        panic!("function '{}' not found in source", name);
+        panic!("function '{name}' not found in source");
     }
 
     #[cfg(feature = "typescript")]

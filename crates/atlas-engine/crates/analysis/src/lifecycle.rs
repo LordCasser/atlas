@@ -193,18 +193,18 @@ impl FieldLifecycleEngine {
         // Lattice state per node (out_state), initialized to BOTTOM everywhere
         let mut out_state: HashMap<CfgNodeId, LatticeState> = HashMap::new();
         for nid in graph.nodes.keys() {
-            out_state.insert(nid.clone(), LatticeState::Bottom);
+            out_state.insert(*nid, LatticeState::Bottom);
         }
         // Entry starts as Unknown
-        out_state.insert(graph.entry.clone(), LatticeState::State(FieldState::Unknown));
+        out_state.insert(graph.entry, LatticeState::State(FieldState::Unknown));
 
         // Branch context stack (inherited through edges)
         let mut branch_contexts: HashMap<CfgNodeId, Vec<BranchFrame>> = HashMap::new();
-        branch_contexts.insert(graph.entry.clone(), vec![]);
+        branch_contexts.insert(graph.entry, vec![]);
 
         // Worklist and visit tracking
         let mut worklist: VecDeque<CfgNodeId> = VecDeque::new();
-        worklist.push_back(graph.entry.clone());
+        worklist.push_back(graph.entry);
         let mut visit_count: HashMap<CfgNodeId, u32> = HashMap::new();
         let mut total_visits: usize = 0;
         let mut partial = false;
@@ -220,10 +220,10 @@ impl FieldLifecycleEngine {
                 break;
             }
 
-            let vc = visit_count.entry(nid.clone()).or_insert(0);
+            let vc = visit_count.entry(nid).or_insert(0);
             *vc += 1;
             if *vc > MAX_VISITS_PER_NODE {
-                out_state.insert(nid.clone(), LatticeState::Top);
+                out_state.insert(nid, LatticeState::Top);
                 partial = true;
                 continue;
             }
@@ -264,7 +264,7 @@ impl FieldLifecycleEngine {
                     transitions.push(FieldTransition {
                         from_state,
                         to_state: new_state,
-                        node_id: node.id.clone(),
+                        node_id: node.id,
                         node_line: node.stmt_range.start_line,
                         effect: node.effect_kind,
                         branch_frames: ctx.clone(),
@@ -277,7 +277,7 @@ impl FieldLifecycleEngine {
 
             // Only propagate if state changed (Entry always propagates)
             if old_out != Some(new_lattice) || nid == graph.entry {
-                out_state.insert(nid.clone(), new_lattice);
+                out_state.insert(nid, new_lattice);
 
                 // Propagate to successors
                 if let Some(succ_edges) = graph.successors.get(&nid) {
@@ -304,15 +304,13 @@ impl FieldLifecycleEngine {
                                     .get(&edge.target)
                                     .map(|n| n.kind == CfgNodeKind::Join)
                                     .unwrap_or(false)
-                                {
-                                    if !next_ctx.is_empty() {
+                                    && !next_ctx.is_empty() {
                                         next_ctx.pop();
                                     }
-                                }
                             }
                         }
-                        branch_contexts.insert(edge.target.clone(), next_ctx);
-                        worklist.push_back(edge.target.clone());
+                        branch_contexts.insert(edge.target, next_ctx);
+                        worklist.push_back(edge.target);
                     }
                 }
             }
@@ -423,8 +421,8 @@ fn transfer_state(
         node.target_field.as_deref().unwrap_or(""),
     );
     let matches_field = target == canonical_target
-        || canonical_target.starts_with(&format!("{}.", target))
-        || target.starts_with(&format!("{}.", canonical_target));
+        || canonical_target.starts_with(&format!("{target}."))
+        || target.starts_with(&format!("{canonical_target}."));
 
     let callee = node.callee_name.as_deref().unwrap_or("");
 
@@ -434,7 +432,7 @@ fn transfer_state(
                 vec![SuspiciousPoint {
                     line: node.stmt_range.start_line,
                     kind: SuspiciousKind::DoubleFree,
-                    message: format!("Double free of '{}'", canonical_target),
+                    message: format!("Double free of '{canonical_target}'"),
                 }]
             } else {
                 vec![]
@@ -447,8 +445,7 @@ fn transfer_state(
                     line: node.stmt_range.start_line,
                     kind: SuspiciousKind::UseAfterFree,
                     message: format!(
-                        "Allocation on previously freed field '{}'",
-                        canonical_target
+                        "Allocation on previously freed field '{canonical_target}'"
                     ),
                 }]
             } else {
@@ -463,8 +460,7 @@ fn transfer_state(
                         line: node.stmt_range.start_line,
                         kind: SuspiciousKind::DoubleFree,
                         message: format!(
-                            "Double free of '{}' via {}",
-                            canonical_target, callee
+                            "Double free of '{canonical_target}' via {callee}"
                         ),
                     }]
                 } else {
@@ -587,10 +583,10 @@ mod tests {
         all_nodes.extend_from_slice(nodes);
 
         let mut edges = Vec::new();
-        let mut prev_id = entry.id.clone();
+        let mut prev_id = entry.id;
         for n in nodes {
             edges.push(CfgEdge::new(&prev_id, &n.id, CfgEdgeKind::Normal));
-            prev_id = n.id.clone();
+            prev_id = n.id;
         }
         edges.push(CfgEdge::new(&prev_id, &exit.id, CfgEdgeKind::Normal));
 
@@ -809,13 +805,13 @@ mod tests {
 
         let mut all_nodes = vec![entry.clone()];
         let mut edges = Vec::new();
-        let mut prev_id = entry.id.clone();
+        let mut prev_id = entry.id;
 
         // Build 600 nodes in a chain → exceeds MAX_VISITS=500
         for i in 0..600u32 {
             let n = make_stmt_node(Some(EffectKind::Read), Some("x"), i, i);
             edges.push(CfgEdge::new(&prev_id, &n.id, CfgEdgeKind::Normal));
-            prev_id = n.id.clone();
+            prev_id = n.id;
             all_nodes.push(n);
         }
         all_nodes.push(exit.clone());

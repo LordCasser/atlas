@@ -30,7 +30,7 @@ pub fn run(project: &str) -> anyhow::Result<()> {
         println!();
         println!("  By Language:");
         for (lang, count) in &stats.files_by_language {
-            println!("    {:<14} {} files", lang, count);
+            println!("    {lang:<14} {count} files");
         }
     }
 
@@ -39,7 +39,7 @@ pub fn run(project: &str) -> anyhow::Result<()> {
         println!();
         println!("  By Symbol Kind:");
         for (kind, count) in &stats.symbols_by_kind {
-            println!("    {:<14} {}", kind, count);
+            println!("    {kind:<14} {count}");
         }
     }
 
@@ -87,8 +87,8 @@ fn print_capability_summary(files_by_language: &[(String, i64)]) {
     println!();
     println!("  Capability Summary:");
     println!(
-        "  {:<14} {:<20} {}",
-        "Language", "Level", "Confidence Floor"
+        "  {:<14} {:<20} Confidence Floor",
+        "Language", "Level"
     );
     println!("  {:-<14} {:-<20} {:-<16}", "", "", "");
 
@@ -137,10 +137,10 @@ fn print_feature(name: &str, fs: &FeatureSupport) {
             }
         }
         FeatureSupport::Unsupported { reason } => {
-            format!(" ({})", reason)
+            format!(" ({reason})")
         }
     };
-    println!("      {:<20} {}{}", name, status, detail);
+    println!("      {name:<20} {status}{detail}");
 }
 
 /// Show the indexed scope when set in project metadata.
@@ -155,7 +155,7 @@ fn print_indexed_scope(ctx: &crate::runtime::CommandContext) {
                 println!();
                 println!("  Index scope:");
                 for p in &patterns {
-                    println!("    - {}", p);
+                    println!("    - {p}");
                 }
             }
         }
@@ -171,7 +171,7 @@ fn print_layer_summary(ctx: &crate::runtime::CommandContext) {
         println!();
         println!("  Extraction state:");
         for (layer, status, count) in &layers {
-            println!("    {:<14} {}={}", layer, status, count);
+            println!("    {layer:<14} {status}={count}");
         }
     }
 }

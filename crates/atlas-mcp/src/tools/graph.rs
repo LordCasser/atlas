@@ -68,8 +68,7 @@ fn parse_edge_kind(s: &str) -> Result<EdgeKind, String> {
         "field_read" => Ok(EdgeKind::FieldRead),
         "field_write" => Ok(EdgeKind::FieldWrite),
         _ => Err(format!(
-            "Unknown edge kind: '{}'. Valid kinds: calls, instantiates, implements, registers_callback, references, contains, imports, includes, exports, extends, typeof, returns, overrides, decorates, defines, argument, parameter, assigns, reads, writes, field_read, field_write",
-            s
+            "Unknown edge kind: '{s}'. Valid kinds: calls, instantiates, implements, registers_callback, references, contains, imports, includes, exports, extends, typeof, returns, overrides, decorates, defines, argument, parameter, assigns, reads, writes, field_read, field_write"
         )),
     }
 }
@@ -266,7 +265,7 @@ impl ToolRouter {
             Some(ix) => ix,
             None => {
                 return (
-                    format!("symbol '{}' not found in graph snapshot", qname),
+                    format!("symbol '{qname}' not found in graph snapshot"),
                     true,
                 );
             }
@@ -539,7 +538,7 @@ impl ToolRouter {
 
             // Primary path (rank 0) gets the full treatment.
             let primary = &ranked[0];
-            let hops = build_hops(self, &snap, &primary.path, include_code);
+            let hops = build_hops(self, snap, &primary.path, include_code);
             let breakpoints: Vec<serde_json::Value> = primary.path.breakpoints.iter().map(|bp| {
                 json!({ "kind": bp.kind.as_str(), "edge_index": bp.edge_index, "message": bp.message })
             }).collect();
@@ -567,7 +566,7 @@ impl ToolRouter {
                 let alternatives: Vec<serde_json::Value> = ranked[1..]
                     .iter()
                     .map(|r| {
-                        let alt_hops = build_hops(self, &snap, &r.path, false);
+                        let alt_hops = build_hops(self, snap, &r.path, false);
                         json!({
                             "path": alt_hops,
                             "total_weight": r.path.total_weight,
@@ -747,8 +746,7 @@ impl ToolRouter {
                 .map(|n| n.kind);
             if let (Some(fk), Some(tk)) = (from_kind, to_kind) {
                 message.push_str(&format!(
-                    " (from '{}' resolved as {:?}, to '{}' resolved as {:?})",
-                    from_qname, fk, to_qname, tk,
+                    " (from '{from_qname}' resolved as {fk:?}, to '{to_qname}' resolved as {tk:?})",
                 ));
                 if !is_callable_kind(tk) {
                     message.push_str(". Note: target is not a callable — specify a method or function instead (e.g. use the fully-qualified method name).");
@@ -878,7 +876,7 @@ impl ToolRouter {
         let symbols = match self.store.find_symbols_by_qname(qname) {
             Ok(s) => s,
             Err(e) => {
-                let mut err = format!("Lookup error: {}", e);
+                let mut err = format!("Lookup error: {e}");
                 err.push_str(self.index_not_run_guidance());
                 return (err, true);
             }
@@ -886,7 +884,7 @@ impl ToolRouter {
         let sym = match symbols.first() {
             Some(s) => s,
             None => {
-                let mut err = format!("Symbol not found: {}", qname);
+                let mut err = format!("Symbol not found: {qname}");
                 err.push_str(self.index_not_run_guidance());
                 return (err, true);
             }

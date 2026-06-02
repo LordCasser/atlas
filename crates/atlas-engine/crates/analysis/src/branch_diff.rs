@@ -116,7 +116,7 @@ impl BranchDiffEngine {
         _branch_node_id: &CfgNodeId,
     ) -> BranchPathSummary {
         let mut summary = BranchPathSummary::default();
-        let mut current = start.clone();
+        let mut current = *start;
         let mut depth: u32 = 1; // We start inside the branch
         let mut visited: HashMap<CfgNodeId, bool> = HashMap::new();
         let max_nodes = 200;
@@ -125,7 +125,7 @@ impl BranchDiffEngine {
             if visited.contains_key(&current) {
                 break; // Cycle detected
             }
-            visited.insert(current.clone(), true);
+            visited.insert(current, true);
 
             let node = match graph.nodes.get(&current) {
                 Some(n) => n,
@@ -181,7 +181,7 @@ impl BranchDiffEngine {
             let succs = graph.successors.get(&current);
             if let Some(edges) = succs {
                 if let Some(edge) = edges.first() {
-                    current = edge.target.clone();
+                    current = edge.target;
                     continue;
                 }
             }
@@ -230,7 +230,7 @@ mod tests {
         let id = CfgNodeId::generate(fid, kind.as_str(), byte);
         CfgNode {
             id,
-            function_id: fid.clone(),
+            function_id: *fid,
             kind,
             stmt_range: range,
             effect_kind: effect,
@@ -386,7 +386,7 @@ mod tests {
         ];
         let result = BranchDiffEngine::diff_branches(&nodes, &edges);
         assert!(!result.is_empty());
-        assert!(result.len() >= 1, "Should detect at least one branch");
+        assert!(!result.is_empty(), "Should detect at least one branch");
     }
 
     #[test]

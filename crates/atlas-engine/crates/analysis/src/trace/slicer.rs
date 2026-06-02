@@ -66,9 +66,9 @@ impl Slicer {
 
         let sink_key = hex::encode(sink_node.id.as_bytes());
         visited.insert(sink_key.clone(), 0);
-        queue.push_back((sink_node.id.clone(), 0));
+        queue.push_back((sink_node.id, 0));
 
-        let mut farthest_node_id = sink_node.id.clone();
+        let mut farthest_node_id = sink_node.id;
         let mut farthest_depth: usize = 0;
         let mut truncated = false;
 
@@ -168,7 +168,7 @@ impl Slicer {
                     if !visited.contains_key(&source_key) {
                         predecessors.insert(
                             current_key.clone(),
-                            (edge.source.clone(), edge.kind.clone()),
+                            (edge.source, edge.kind),
                         );
                     }
                 }
@@ -196,15 +196,15 @@ impl Slicer {
                             truncated = true;
                             if new_depth > farthest_depth {
                                 farthest_depth = new_depth;
-                                farthest_node_id = source_id.clone();
+                                farthest_node_id = *source_id;
                             }
                         }
                     } else {
                         visited.insert(source_key.clone(), new_depth);
-                        queue.push_back((source_id.clone(), new_depth));
+                        queue.push_back((*source_id, new_depth));
                         if new_depth > farthest_depth {
                             farthest_depth = new_depth;
-                            farthest_node_id = source_id.clone();
+                            farthest_node_id = *source_id;
                         }
                     }
                 }
@@ -227,12 +227,12 @@ impl Slicer {
         let source_node = store.get_data_node(&farthest_node_id)?.unwrap_or_else(|| {
             // Fallback: create a minimal data node for display
             DataNode::parameter(
-                farthest_node_id.clone(),
-                sink_node.file_id.clone(),
+                farthest_node_id,
+                sink_node.file_id,
                 None,
                 None,
                 "unknown",
-                sink_node.range.clone(),
+                sink_node.range,
             )
         });
         let source_point = TracePoint {
@@ -245,7 +245,7 @@ impl Slicer {
             binding_use: None,
             scope: None,
             callsite: None,
-            file_id: source_node.file_id.clone(),
+            file_id: source_node.file_id,
             line: source_node.range.start_line + 1,
             column: source_node.range.start_column + 1,
             capability: sink_point.capability.clone(),
@@ -258,8 +258,7 @@ impl Slicer {
         if truncated {
             diagnostics.push(
                 TraceDiagnostic::warning(&format!(
-                    "Backward trace truncated at max_depth={} (reached depth {})",
-                    max_depth, farthest_depth
+                    "Backward trace truncated at max_depth={max_depth} (reached depth {farthest_depth})"
                 ))
                 .with_code("max_depth_truncated"),
             );
@@ -314,14 +313,14 @@ fn reconstruct_path(
 ) -> anyhow::Result<Vec<TracePathStep>> {
     // Walk from sink backward to farthest, collecting steps in reverse
     let mut raw_steps: Vec<(DataNodeId, DataNodeId, DataFlowKind)> = Vec::new();
-    let mut current = sink_node_id.clone();
+    let mut current = *sink_node_id;
 
     while &current != farthest_node_id {
         let key = hex::encode(current.as_bytes());
         match predecessors.get(&key) {
             Some((pred_id, kind)) => {
-                raw_steps.push((pred_id.clone(), current.clone(), kind.clone()));
-                current = pred_id.clone();
+                raw_steps.push((*pred_id, current, *kind));
+                current = *pred_id;
             }
             None => break,
         }
@@ -350,8 +349,8 @@ fn reconstruct_path(
             idx as u32,
             from,
             to,
-            kind.clone(),
-            &format!("{}", kind_description(&kind)),
+            kind,
+            kind_description(&kind),
             file_id,
             range,
         ));

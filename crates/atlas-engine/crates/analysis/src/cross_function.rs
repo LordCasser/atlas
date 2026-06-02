@@ -54,7 +54,7 @@ impl CrossFunctionBridge {
         }
 
         let function_id = match &target_node.function_id {
-            Some(fid) => fid.clone(),
+            Some(fid) => *fid,
             None => return Ok(vec![]),
         };
 
@@ -85,13 +85,13 @@ impl CrossFunctionBridge {
                         let all_rows = store.query_call_arg_sources(arg_dn_id)?;
                         let arg_sources: Vec<_> = all_rows
                             .into_iter()
-                            .filter(|r| &r.function_id == &caller_function_id)
+                            .filter(|r| r.function_id == caller_function_id)
                             .collect();
 
                         for row in &arg_sources {
                             edges.push(TraceEdge {
                                 source_id: row.source_node_id,
-                                target_id: param_id.clone(),
+                                target_id: *param_id,
                                 kind: DataFlowKind::ArgToParam,
                                 confidence: row.confidence * 0.92,
                                 provenance: format!(
@@ -137,7 +137,7 @@ impl CrossFunctionBridge {
             Err(_) => return Ok(vec![]),
         };
         let callee_sym_id = match callsites.first().and_then(|cs| cs.callee.as_ref()) {
-            Some(sid) => sid.clone(),
+            Some(sid) => *sid,
             None => return Ok(vec![]),
         };
 
@@ -157,7 +157,7 @@ impl CrossFunctionBridge {
             for row in &return_sources {
                 edges.push(TraceEdge {
                     source_id: row.source_node_id,
-                    target_id: call_result_id.clone(),
+                    target_id: *call_result_id,
                     kind: DataFlowKind::ReturnToCall,
                     confidence: row.confidence * 0.92,
                     provenance: format!(

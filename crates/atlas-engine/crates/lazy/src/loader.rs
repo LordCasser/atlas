@@ -285,7 +285,7 @@ fn build_dataflow_for_file(
     // 1. Get file info
     let file_info = store
         .get_file(&file_id)?
-        .ok_or_else(|| anyhow::anyhow!("file not found in DB: {:?}", file_id))?;
+        .ok_or_else(|| anyhow::anyhow!("file not found in DB: {file_id:?}"))?;
 
     // 2. Get cached frontend
     let frontend = get_cached_frontend(file_info.language)
@@ -367,7 +367,7 @@ fn partition_payload_for_unit(payload: &DataflowPayload, unit: &AnalysisUnit) ->
     let cfg_nodes: Vec<types::CfgNode> = payload
         .cfg_nodes
         .iter()
-        .filter(|cn| unit.symbol_id.map_or(false, |sid| cn.function_id == sid))
+        .filter(|cn| unit.symbol_id == Some(cn.function_id))
         .cloned()
         .collect();
     let cfg_node_ids: HashSet<CfgNodeId> = cfg_nodes.iter().map(|cn| cn.id).collect();
@@ -387,7 +387,7 @@ fn partition_payload_for_unit(payload: &DataflowPayload, unit: &AnalysisUnit) ->
         .iter()
         .filter(|bu| {
             bu.binding_id
-                .map_or(false, |bid| binding_ids.contains(&bid))
+                .is_some_and(|bid| binding_ids.contains(&bid))
         })
         .cloned()
         .collect();

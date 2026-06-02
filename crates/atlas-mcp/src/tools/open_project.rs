@@ -198,8 +198,7 @@ fn prepare_project(args: &serde_json::Value) -> Result<PreparedProject, OpenProj
             file_count: None,
             suggestion: None,
             error: Some(format!(
-                "project_path exceeds maximum length of {} characters",
-                MAX_FILE_PATH_LENGTH
+                "project_path exceeds maximum length of {MAX_FILE_PATH_LENGTH} characters"
             )),
         });
     }
@@ -216,8 +215,7 @@ fn prepare_project(args: &serde_json::Value) -> Result<PreparedProject, OpenProj
                     .into(),
             ),
             error: Some(format!(
-                "Unsupported open_project parameter '{}'. Project indexing is handled only by the index tool.",
-                param
+                "Unsupported open_project parameter '{param}'. Project indexing is handled only by the index tool."
             )),
         });
     }
@@ -232,8 +230,7 @@ fn prepare_project(args: &serde_json::Value) -> Result<PreparedProject, OpenProj
             file_count: None,
             suggestion: None,
             error: Some(format!(
-                "Project path not found or not accessible: {} ({})",
-                project_path, e
+                "Project path not found or not accessible: {project_path} ({e})"
             )),
         })?;
 
@@ -259,8 +256,7 @@ fn prepare_project(args: &serde_json::Value) -> Result<PreparedProject, OpenProj
             file_count: None,
             suggestion: None,
             error: Some(format!(
-                "Unknown storage mode '{}'. Valid choices: 'memory', 'persistent'.",
-                storage
+                "Unknown storage mode '{storage}'. Valid choices: 'memory', 'persistent'."
             )),
         });
     }
@@ -291,7 +287,7 @@ fn prepare_project(args: &serde_json::Value) -> Result<PreparedProject, OpenProj
                 storage: "persistent".to_string(),
                 file_count: None,
                 suggestion: None,
-                error: Some(format!("Failed to open database: {:#}", e)),
+                error: Some(format!("Failed to open database: {e:#}")),
             })?)
         }
         "memory" => Arc::new(Store::open_in_memory().map_err(|e| OpenProjectResult {
@@ -301,7 +297,7 @@ fn prepare_project(args: &serde_json::Value) -> Result<PreparedProject, OpenProj
             storage: "memory".to_string(),
             file_count: None,
             suggestion: None,
-            error: Some(format!("Failed to open in-memory store: {:#}", e)),
+            error: Some(format!("Failed to open in-memory store: {e:#}")),
         })?),
         _ => unreachable!("storage validated above"),
     };
@@ -313,7 +309,7 @@ fn prepare_project(args: &serde_json::Value) -> Result<PreparedProject, OpenProj
         storage: storage.clone(),
         file_count: None,
         suggestion: None,
-        error: Some(format!("Schema init failed: {:#}", e)),
+        error: Some(format!("Schema init failed: {e:#}")),
     })?;
 
     let mut file_count: Option<usize> = None;

@@ -151,7 +151,7 @@ impl LazyCoordinator {
                     files_pending: 0,
                     pending_job_ids: vec![],
                 };
-                return Ok((result, job_id));
+                Ok((result, job_id))
             }
             ClaimResult::Claimed { job_id } => {
                 // This caller owns the build — execute extraction
@@ -164,7 +164,7 @@ impl LazyCoordinator {
                     }
                     Err(e) => {
                         self.store
-                            .fail_extraction_job(&job_id, &format!("{:#}", e))?;
+                            .fail_extraction_job(&job_id, &format!("{e:#}"))?;
                         Err(e)
                     }
                 }
@@ -258,7 +258,7 @@ impl LazyCoordinator {
                         }
                         Err(e) => {
                             self.store
-                                .fail_extraction_job(&job_id, &format!("{:#}", e))?;
+                                .fail_extraction_job(&job_id, &format!("{e:#}"))?;
                             return Err(e);
                         }
                     }
@@ -440,7 +440,7 @@ mod tests {
 
     use std::sync::Arc;
 
-    use types::structs::CapabilityMask;
+    
 
     #[cfg(feature = "c")]
 use crate::lazy_budget::LazyBudget;
@@ -686,7 +686,7 @@ use crate::lazy_budget::LazyBudget;
             files_built: 1,
             files_cached: 0,
             budget_exceeded: false,
-            built_file_ids: vec![fid.clone()],
+            built_file_ids: vec![fid],
             precision_tier: PrecisionTier::Unavailable,
             files_pending: 0,
             pending_job_ids: vec![],

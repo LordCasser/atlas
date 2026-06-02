@@ -91,13 +91,11 @@ pub fn create_boundary_marker(
             callback: callee_name.to_string(),
         },
         message: format!(
-            "'{}' is registered as a callback by '{}'. It will be invoked dynamically. \
-             Static call-graph tracing stops here.",
-            callee_name, caller_name
+            "'{callee_name}' is registered as a callback by '{caller_name}'. It will be invoked dynamically. \
+             Static call-graph tracing stops here."
         ),
         suggestion: format!(
-            "Use explore on '{}' to find its own callers and understand the invocation context.",
-            callee_name
+            "Use explore on '{callee_name}' to find its own callers and understand the invocation context."
         ),
         bridge_target: Some(callee_id.to_hex()),
     }
@@ -119,12 +117,12 @@ pub fn build_symbol_cache(
     let mut cache = HashMap::new();
     let mut unique_ids = HashSet::new();
     for (caller, callee, _, _, _) in raw_steps {
-        unique_ids.insert(caller.clone());
-        unique_ids.insert(callee.clone());
+        unique_ids.insert(*caller);
+        unique_ids.insert(*callee);
     }
     for id in &unique_ids {
         if let Ok(Some(sym)) = store.find_symbol_by_id(id) {
-            cache.insert(id.clone(), sym);
+            cache.insert(*id, sym);
         }
     }
     cache
@@ -151,20 +149,20 @@ pub fn reconstruct_path(
         Option<ReferenceId>,
         Option<TextRange>,
     )> = Vec::new();
-    let mut current = start_id.clone();
+    let mut current = *start_id;
 
     while &current != stop_id {
         let key = hex::encode(current.as_bytes());
         match predecessors.get(&key) {
             Some((pred_id, kind, ref_id, location)) => {
                 raw_steps.push((
-                    pred_id.clone(),
-                    current.clone(),
-                    kind.clone(),
-                    ref_id.clone(),
-                    location.clone(),
+                    *pred_id,
+                    current,
+                    *kind,
+                    *ref_id,
+                    *location,
                 ));
-                current = pred_id.clone();
+                current = *pred_id;
             }
             None => break,
         }
@@ -198,7 +196,6 @@ pub fn reconstruct_path(
             Some(cs.range)
         } else {
             edge_location
-                .clone()
                 .or_else(|| caller_sym.map(|s| s.range))
         };
 
@@ -206,8 +203,8 @@ pub fn reconstruct_path(
         let callee_name = callee_sym.map(|s| s.name.clone()).unwrap_or_default();
 
         let description = match &kind {
-            EdgeKind::RegistersCallback => format!("{} registers {}", caller_name, callee_name),
-            _ => format!("{} → {}", caller_name, callee_name),
+            EdgeKind::RegistersCallback => format!("{caller_name} registers {callee_name}"),
+            _ => format!("{caller_name} → {callee_name}"),
         };
 
         let boundary = if kind == EdgeKind::RegistersCallback {

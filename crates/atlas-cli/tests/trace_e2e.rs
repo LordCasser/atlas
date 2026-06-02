@@ -21,7 +21,6 @@ use atlas_engine::ids::FileId;
 use atlas_engine::trace::virtual_edges::TraceEdgeProvider;
 use atlas_engine::trace::{CallerPathExplorer, Locator, Slicer, TraceEngine};
 use atlas_engine::{ReferenceResolver, ResolutionStats};
-use serde_json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -47,15 +46,15 @@ fn index_files(files: &[(&str, &str)]) -> (Arc<Store>, PipelineStats) {
     for (rel_path, content) in files {
         let path = Path::new(rel_path);
         let lang = Language::from_path(path)
-            .unwrap_or_else(|| panic!("no language detected for {}", rel_path));
+            .unwrap_or_else(|| panic!("no language detected for {rel_path}"));
         let frontend = atlas_engine::create_frontend(lang)
-            .unwrap_or_else(|| panic!("no frontend for {} (lang={:?})", rel_path, lang));
+            .unwrap_or_else(|| panic!("no frontend for {rel_path} (lang={lang:?})"));
         let file_id = FileId::generate(rel_path);
         let facts = extract_file(&frontend, file_id, &PathBuf::from(rel_path), content, "abc")
-            .unwrap_or_else(|e| panic!("extract {} failed: {:?}", rel_path, e));
+            .unwrap_or_else(|e| panic!("extract {rel_path} failed: {e:?}"));
         store
             .insert_file_facts(&facts)
-            .unwrap_or_else(|e| panic!("insert {} failed: {:?}", rel_path, e));
+            .unwrap_or_else(|e| panic!("insert {rel_path} failed: {e:?}"));
     }
 
     // Resolve references, then build structural edges.
@@ -295,7 +294,7 @@ fn ts_slicer_traces_backward_dataflow_from_variable() {
     // The sink should match our trace point.
     assert_eq!(
         path.sink.data_node.as_ref().map(|n| n.id),
-        Some(result_node.id.clone()),
+        Some(result_node.id),
         "path.sink should be the result node"
     );
 
@@ -942,9 +941,7 @@ function check(v: number): void {
         .saturating_sub(call_ref.range.start_byte);
     assert!(
         cs_char_span >= ref_char_span,
-        "callsite range ({} bytes) should cover at least the call reference ({} bytes)",
-        cs_char_span,
-        ref_char_span
+        "callsite range ({cs_char_span} bytes) should cover at least the call reference ({ref_char_span} bytes)"
     );
 }
 
@@ -1589,8 +1586,7 @@ fn p5_ts_param_slice_caller_evidence_combined() {
     for field in &required {
         assert!(
             ts_json.get(field).is_some(),
-            "trace_variable response missing envelope field '{}'",
-            field
+            "trace_variable response missing envelope field '{field}'"
         );
     }
     assert_eq!(ts_json["kind"].as_str(), Some("trace_variable"));
@@ -1607,13 +1603,11 @@ fn p5_ts_param_slice_caller_evidence_combined() {
     for (i, step) in path.steps.iter().enumerate() {
         assert!(
             !step.file_id.as_bytes().is_empty(),
-            "step {}: file_id should be populated",
-            i
+            "step {i}: file_id should be populated"
         );
         assert!(
             !step.description.is_empty(),
-            "step {}: description must not be empty",
-            i
+            "step {i}: description must not be empty"
         );
         // Edge kind must be a known DataFlowKind variant.
         assert!(
@@ -1637,19 +1631,17 @@ fn p5_ts_param_slice_caller_evidence_combined() {
         let ev = step
             .evidence
             .as_ref()
-            .unwrap_or_else(|| panic!("step {}: evidence must exist", i));
+            .unwrap_or_else(|| panic!("step {i}: evidence must exist"));
         assert!(
             !ev.file_path.is_empty(),
-            "step {}: evidence.file_path must be set",
-            i
+            "step {i}: evidence.file_path must be set"
         );
         // snippet requires a workspace root (TraceEngine::new_with_root).
         // In-memory store tests cannot provide it; CLI e2e tests verify snippet.
         if ev.snippet.is_some() {
             assert!(
                 !ev.snippet.as_ref().unwrap().is_empty(),
-                "step {}: evidence.snippet must not be empty when present",
-                i
+                "step {i}: evidence.snippet must not be empty when present"
             );
         }
     }
@@ -1681,8 +1673,7 @@ fn p5_ts_param_slice_caller_evidence_combined() {
             || source_name == "3"
             || source_name.contains("base")
             || source_name.contains("factor"),
-        "source should relate to base or factor, got '{}'",
-        source_name
+        "source should relate to base or factor, got '{source_name}'"
     );
 
     // ── trace_callers from 'compute' ──
@@ -1797,29 +1788,25 @@ fn p5_js_param_slice_caller_evidence_combined() {
     for (i, step) in path.steps.iter().enumerate() {
         assert!(
             !step.file_id.as_bytes().is_empty(),
-            "JS step {}: file_id should be populated",
-            i
+            "JS step {i}: file_id should be populated"
         );
         assert!(
             !step.description.is_empty(),
-            "JS step {}: description must not be empty",
-            i
+            "JS step {i}: description must not be empty"
         );
         let ev = step
             .evidence
             .as_ref()
-            .unwrap_or_else(|| panic!("JS step {}: evidence must exist", i));
+            .unwrap_or_else(|| panic!("JS step {i}: evidence must exist"));
         assert!(
             !ev.file_path.is_empty(),
-            "JS step {}: evidence.file_path must be set",
-            i
+            "JS step {i}: evidence.file_path must be set"
         );
         // snippet requires workspace root; CLI e2e tests verify it.
         if ev.snippet.is_some() {
             assert!(
                 !ev.snippet.as_ref().unwrap().is_empty(),
-                "JS step {}: snippet must not be empty when present",
-                i
+                "JS step {i}: snippet must not be empty when present"
             );
         }
     }
@@ -1928,29 +1915,25 @@ fn p5_py_param_slice_caller_evidence_combined() {
         for (i, step) in path.steps.iter().enumerate() {
             assert!(
                 !step.file_id.as_bytes().is_empty(),
-                "Python step {}: file_id should be populated",
-                i
+                "Python step {i}: file_id should be populated"
             );
             assert!(
                 !step.description.is_empty(),
-                "Python step {}: description must not be empty",
-                i
+                "Python step {i}: description must not be empty"
             );
             let ev = step
                 .evidence
                 .as_ref()
-                .unwrap_or_else(|| panic!("Python step {}: evidence must exist", i));
+                .unwrap_or_else(|| panic!("Python step {i}: evidence must exist"));
             assert!(
                 !ev.file_path.is_empty(),
-                "Python step {}: evidence.file_path must be set",
-                i
+                "Python step {i}: evidence.file_path must be set"
             );
             // snippet requires workspace root; CLI e2e tests verify it.
             if ev.snippet.is_some() {
                 assert!(
                     !ev.snippet.as_ref().unwrap().is_empty(),
-                    "Python step {}: snippet must not be empty when present",
-                    i
+                    "Python step {i}: snippet must not be empty when present"
                 );
             }
         }
@@ -1991,16 +1974,14 @@ fn p5_py_param_slice_caller_evidence_combined() {
                 let ev = step
                     .evidence
                     .as_ref()
-                    .unwrap_or_else(|| panic!("Python caller step {}: evidence must exist", i));
+                    .unwrap_or_else(|| panic!("Python caller step {i}: evidence must exist"));
                 assert!(
                     !ev.file_path.is_empty(),
-                    "Python caller step {}: file_path must be set",
-                    i
+                    "Python caller step {i}: file_path must be set"
                 );
                 assert!(
                     ev.symbol_name.is_some(),
-                    "Python caller step {}: symbol_name must be set (provenance)",
-                    i
+                    "Python caller step {i}: symbol_name must be set (provenance)"
                 );
             }
         }
@@ -3281,23 +3262,20 @@ function process(req: { body: { name: string } }): string {
     // Must have FieldLoad for req.body.name access
     assert!(
         kinds.contains(&DataFlowKind::FieldLoad),
-        "canonical path should contain FieldLoad for field access, got: {:?}",
-        kinds
+        "canonical path should contain FieldLoad for field access, got: {kinds:?}"
     );
 
     // Must have call edge (ArgToCall intra-proc or ArgToParam inter-proc)
     // for helper(name) call bridging
     assert!(
         kinds.contains(&DataFlowKind::ArgToCall) || kinds.contains(&DataFlowKind::ArgToParam),
-        "canonical path should contain ArgToCall or ArgToParam for function call, got: {:?}",
-        kinds
+        "canonical path should contain ArgToCall or ArgToParam for function call, got: {kinds:?}"
     );
 
     // Must have Assign for local variable assignments
     assert!(
         kinds.contains(&DataFlowKind::Assign),
-        "canonical path should contain Assign for local assignments, got: {:?}",
-        kinds
+        "canonical path should contain Assign for local assignments, got: {kinds:?}"
     );
 
     // Every step should have evidence
@@ -3379,8 +3357,7 @@ def process(req):
     // Must have Assign for local variable assignments
     assert!(
         kinds.contains(&DataFlowKind::Assign),
-        "Python canonical path should contain Assign, got: {:?}",
-        kinds
+        "Python canonical path should contain Assign, got: {kinds:?}"
     );
 
     // FieldLoad may not appear in the backward trace if the trace traverses
@@ -3390,8 +3367,7 @@ def process(req):
     let has_read = kinds.contains(&DataFlowKind::Read);
     assert!(
         has_fieldload || has_read,
-        "Python canonical path should contain FieldLoad or Read, got: {:?}",
-        kinds
+        "Python canonical path should contain FieldLoad or Read, got: {kinds:?}"
     );
 
     for step in &path.steps {
@@ -3778,9 +3754,8 @@ fn vfy_python_destructuring_produces_assign_to_locals() {
         .expect("edges");
     let kinds: Vec<_> = edges.iter().map(|e| e.kind).collect();
     assert!(
-        kinds.iter().any(|k| *k == DataFlowKind::Assign),
-        "Python destructuring should produce Assign edges, got: {:?}",
-        kinds
+        kinds.contains(&DataFlowKind::Assign),
+        "Python destructuring should produce Assign edges, got: {kinds:?}"
     );
 }
 

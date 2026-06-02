@@ -150,8 +150,8 @@ mod tests {
 
         let step = CallerChainStep::new(
             0,
-            caller.clone(),
-            callee.clone(),
+            caller,
+            callee,
             EdgeKind::Calls,
             file_id,
             None,

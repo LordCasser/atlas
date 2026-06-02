@@ -369,6 +369,7 @@ fn closest_binding_by_range<'a>(
 ///
 /// This replaces the former position‑based heuristic (sort‑by‑start_byte
 /// then gap‑fill).
+#[allow(clippy::only_used_in_recursion, clippy::too_many_arguments)]
 fn walk_for_assign_edges(
     node: tree_sitter::Node,
     source: &str,
@@ -398,7 +399,7 @@ fn walk_for_assign_edges(
                     .rev()
                     .filter_map(|i| node.child(i as u32))
                     .find(|c| c.is_named())
-                    .filter(|c| name_node_opt.map_or(true, |n| c.id() != n.id()))
+                    .filter(|c| name_node_opt.is_none_or(|n| c.id() != n.id()))
             });
         // C#: equals_value_clause (if present in older grammars) wraps `=
         // expr` — unwrap it to the actual expression so byte-range lookup

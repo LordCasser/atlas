@@ -83,8 +83,7 @@ impl GraphBuilder {
                 Ok(()) => edge_count,
                 Err(e) => {
                     warnings.push(format!(
-                        "batch edge insert failed ({} edges): {}",
-                        edge_count, e
+                        "batch edge insert failed ({edge_count} edges): {e}"
                     ));
                     0 // actual written is 0 on failure
                 }
@@ -162,8 +161,7 @@ impl GraphBuilder {
                 Ok(()) => edge_count,
                 Err(e) => {
                     warnings.push(format!(
-                        "batch edge insert failed ({} edges): {}",
-                        edge_count, e
+                        "batch edge insert failed ({edge_count} edges): {e}"
                     ));
                     0
                 }
@@ -821,7 +819,7 @@ impl GraphBuilder {
                     Some(ref_id),
                     "callback_pattern",
                 ),
-                edge.source.clone(),
+                edge.source,
                 callback_sym.id,
                 EdgeKind::RegistersCallback,
                 types::Confidence::new(0.65),

@@ -1191,7 +1191,7 @@ mod tests {
         let b = sample_symbol(fid, "run", "A.run", SymbolKind::Method);
         let edge_id1 = EdgeId::generate(&a.id, &b.id, "contains", None, "tree_sitter");
         let e1 = RawEdge::new(
-            edge_id1.clone(),
+            edge_id1,
             a.id,
             b.id,
             EdgeKind::Contains,

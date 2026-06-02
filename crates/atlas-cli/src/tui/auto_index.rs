@@ -162,7 +162,7 @@ fn run_manifest_pipeline(
             "Cleanup",
             0,
             deleted_count as u64,
-            &format!("Removing {} stale files", deleted_count),
+            &format!("Removing {deleted_count} stale files"),
         );
         atlas_engine::phase_cleanup_stale(store, &hash_result.deleted)?;
     }
@@ -277,7 +277,7 @@ fn run_manifest_pipeline(
         "Cleanup",
         0,
         0,
-        &format!("{} re-indexed", extracted_count),
+        &format!("{extracted_count} re-indexed"),
     );
     let file_ids: Vec<_> = extracted.iter().map(|ef| ef.facts.file.file_id).collect();
     atlas_engine::phase_cleanup_file_ids(store, &file_ids)
@@ -290,7 +290,7 @@ fn run_manifest_pipeline(
         "DbWrite",
         0,
         extracted_count as u64,
-        &format!("Storing {} files", extracted_count),
+        &format!("Storing {extracted_count} files"),
     );
 
     let extracted_files = ExtractedFiles {

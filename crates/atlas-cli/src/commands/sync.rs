@@ -95,7 +95,7 @@ pub fn run(project: &str, analysis: &str) -> Result<()> {
                 .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".into());
-            return Err(anyhow::anyhow!("Sync worker panicked: {}", msg));
+            return Err(anyhow::anyhow!("Sync worker panicked: {msg}"));
         }
     };
 
@@ -143,8 +143,7 @@ pub fn run(project: &str, analysis: &str) -> Result<()> {
         }
     }
     println!(
-        "  Summaries:       {} updated ({} skipped / empty)",
-        summary_count, summary_skip
+        "  Summaries:       {summary_count} updated ({summary_skip} skipped / empty)"
     );
 
     if !stats.phase_timings.is_empty() {
@@ -157,14 +156,14 @@ pub fn run(project: &str, analysis: &str) -> Result<()> {
 fn print_phase_timings(timings: &atlas_engine::PhaseTimings) {
     println!();
     println!("Phase timings:");
-    println!("  {:<20} {:>8}  {}", "Phase", "Time", "Details");
+    println!("  {:<20} {:>8}  Details", "Phase", "Time");
     println!("  {:-<20} {:-<8}  {:-<20}", "", "", "");
 
     for t in &timings.phases {
         let time_str = format_duration(t.duration_ms);
         let mut parts = Vec::new();
         if let Some(items) = t.items {
-            parts.push(format!("{} items", items));
+            parts.push(format!("{items} items"));
         }
         if let Some(ref note) = t.note {
             parts.push(note.clone());
@@ -181,6 +180,6 @@ fn format_duration(ms: u64) -> String {
     } else if ms >= 10_000 {
         format!("{:.1}s", ms as f64 / 1000.0)
     } else {
-        format!("{}ms", ms)
+        format!("{ms}ms")
     }
 }

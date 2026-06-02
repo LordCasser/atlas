@@ -31,7 +31,7 @@ impl TextFallback {
 
         if self.last_phase != snap.current_phase {
             if self.last_phase.is_some() {
-                eprint!("\n");
+                eprintln!();
             }
             if let Some(phase) = snap.current_phase {
                 eprintln!(
@@ -52,16 +52,16 @@ impl TextFallback {
         if let Some(total) = snap.total {
             if total > 0 {
                 let pct = ((snap.current as f64 / total as f64) * 100.0) as u32;
-                let should_print = self.last_percent.map_or(true, |last| pct > last);
+                let should_print = self.last_percent.is_none_or(|last| pct > last);
                 if should_print {
-                    let rate_str = snap.rate.map_or(String::new(), |r| format!("  {:.0}/s", r));
+                    let rate_str = snap.rate.map_or(String::new(), |r| format!("  {r:.0}/s"));
                     eprint!("\r  {}/{} ({}%){}", snap.current, total, pct, rate_str);
                     self.last_percent = Some(pct);
                     self.last_print = now;
                 }
             }
         } else if snap.current > 0 {
-            let rate_str = snap.rate.map_or(String::new(), |r| format!("  {:.0}/s", r));
+            let rate_str = snap.rate.map_or(String::new(), |r| format!("  {r:.0}/s"));
             eprint!("\r  {} matched{}", snap.current, rate_str);
             self.last_print = now;
         }
@@ -69,7 +69,7 @@ impl TextFallback {
 
     /// Flush and print completion.
     pub fn finish(&mut self) {
-        eprint!("\n");
+        eprintln!();
         let guard = self.state.lock().unwrap();
         let snap = guard.read_snapshot();
 

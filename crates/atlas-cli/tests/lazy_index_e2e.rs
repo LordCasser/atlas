@@ -119,13 +119,11 @@ fn p1_manifest_produces_top_level_symbols() {
     let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(
         names.contains(&"topLevel"),
-        "topLevel fn should be in manifest, got {:?}",
-        names
+        "topLevel fn should be in manifest, got {names:?}"
     );
     assert!(
         names.contains(&"MyClass"),
-        "MyClass should be in manifest, got {:?}",
-        names
+        "MyClass should be in manifest, got {names:?}"
     );
 
     // All manifest symbols should have layer=manifest

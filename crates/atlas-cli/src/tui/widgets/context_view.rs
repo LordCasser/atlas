@@ -105,7 +105,7 @@ fn render_overview(frame: &mut ratatui::Frame, area: Rect, ctx: &ContextView) {
     let vis = subject
         .visibility
         .as_ref()
-        .map(|v| format!("{:?}", v))
+        .map(|v| format!("{v:?}"))
         .unwrap_or_else(|| "default".to_string());
 
     let lines = vec![

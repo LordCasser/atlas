@@ -44,7 +44,7 @@ impl ToolRouter {
                 Ok(prog) => {
                     let pending = prog.queued + prog.building;
                     let msg = if pending > 0 {
-                        format!("{} jobs pending", pending)
+                        format!("{pending} jobs pending")
                     } else {
                         "all jobs complete".to_string()
                     };

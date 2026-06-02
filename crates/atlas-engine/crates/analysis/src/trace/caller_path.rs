@@ -68,16 +68,16 @@ impl CallerPathExplorer {
 
         let root_key = hex::encode(target_id.as_bytes());
         visited.insert(root_key.clone(), 0);
-        queue.push_back((target_id.clone(), 0));
+        queue.push_back((*target_id, 0));
 
-        let mut farthest_id = target_id.clone();
+        let mut farthest_id = *target_id;
         let mut farthest_depth: usize = 0;
         let mut truncated = false;
 
         // Path quality scoring: prefer production callers over test/Benchmark
         // functions.  Uses a scoring heuristic rather than pure depth so that
         // `ServeHTTP → handleHTTPRequest → Next` wins over deeper test chains.
-        let mut best_candidate_id = target_id.clone();
+        let mut best_candidate_id = *target_id;
         let mut best_score: f64 = 0.0;
 
         while let Some((current_id, depth)) = queue.pop_front() {
@@ -104,7 +104,7 @@ impl CallerPathExplorer {
                     // Track best candidate by score (not pure depth)
                     if caller_score > best_score {
                         best_score = caller_score;
-                        best_candidate_id = caller.clone();
+                        best_candidate_id = *caller;
                     }
 
                     // If this is a callback boundary, enqueue the caller but
@@ -115,16 +115,16 @@ impl CallerPathExplorer {
                         predecessors.insert(
                             current_key,
                             (
-                                caller.clone(),
-                                edge.kind.clone(),
-                                edge.ref_id.clone(),
-                                edge.location.clone(),
+                                *caller,
+                                edge.kind,
+                                edge.ref_id,
+                                edge.location,
                             ),
                         );
                         // Record this as farthest, but do NOT push to queue
                         if new_depth > farthest_depth {
                             farthest_depth = new_depth;
-                            farthest_id = caller.clone();
+                            farthest_id = *caller;
                         }
                         continue;
                     }
@@ -141,7 +141,7 @@ impl CallerPathExplorer {
                             // Track this frontier node as the farthest known point.
                             if new_depth > farthest_depth {
                                 farthest_depth = new_depth;
-                                farthest_id = caller.clone();
+                                farthest_id = *caller;
                             }
                         }
                         continue;
@@ -155,17 +155,17 @@ impl CallerPathExplorer {
                     predecessors.insert(
                         current_key,
                         (
-                            caller.clone(),
-                            edge.kind.clone(),
-                            edge.ref_id.clone(),
-                            edge.location.clone(),
+                            *caller,
+                            edge.kind,
+                            edge.ref_id,
+                            edge.location,
                         ),
                     );
-                    queue.push_back((caller.clone(), new_depth));
+                    queue.push_back((*caller, new_depth));
 
                     if new_depth > farthest_depth {
                         farthest_depth = new_depth;
-                        farthest_id = caller.clone();
+                        farthest_id = *caller;
                     }
                 }
             }

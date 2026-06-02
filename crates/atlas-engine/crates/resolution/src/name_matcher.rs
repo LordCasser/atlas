@@ -15,6 +15,12 @@ pub struct NameMatch {
     pub provenance: Provenance,
 }
 
+impl Default for NameMatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NameMatcher {
     pub fn new() -> Self {
         Self

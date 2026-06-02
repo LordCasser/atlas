@@ -281,7 +281,7 @@ impl ToolRouter {
             (
                 self.store
                     .delete_fp_annotation(annotation_id)
-                    .map_err(|e| format!("Failed to delete annotation: {}", e)),
+                    .map_err(|e| format!("Failed to delete annotation: {e}")),
                 annotation_id.to_string(),
             )
         } else if !field_qname.is_empty() {
@@ -298,7 +298,7 @@ impl ToolRouter {
             let annotation_id = self
                 .store
                 .find_fp_annotation_by_field(&field_id, field_name)
-                .map_err(|e| format!("Lookup error: {}", e));
+                .map_err(|e| format!("Lookup error: {e}"));
             let ann_id = match annotation_id {
                 Ok(Some(ref a)) => a.annotation_id.clone(),
                 Ok(None) => {
@@ -313,7 +313,7 @@ impl ToolRouter {
             (
                 self.store
                     .delete_fp_annotation(&ann_id)
-                    .map_err(|e| format!("Failed to delete annotation: {}", e)),
+                    .map_err(|e| format!("Failed to delete annotation: {e}")),
                 ann_id,
             )
         } else {

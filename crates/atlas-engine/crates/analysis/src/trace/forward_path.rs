@@ -56,7 +56,7 @@ impl ForwardPathExplorer {
 
         let source_key = hex::encode(source_id.as_bytes());
         visited.insert(source_key, 0);
-        queue.push_back((source_id.clone(), 0));
+        queue.push_back((*source_id, 0));
 
         let mut found = false;
         let mut truncated = false;
@@ -97,13 +97,13 @@ impl ForwardPathExplorer {
                 predecessors.insert(
                     callee_key,
                     (
-                        current_id.clone(),
-                        edge.kind.clone(),
-                        edge.ref_id.clone(),
-                        edge.location.clone(),
+                        current_id,
+                        edge.kind,
+                        edge.ref_id,
+                        edge.location,
                     ),
                 );
-                queue.push_back((callee.clone(), new_depth));
+                queue.push_back((*callee, new_depth));
             }
         }
 

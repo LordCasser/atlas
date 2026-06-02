@@ -180,7 +180,7 @@ mod tests {
         let facts = FileFacts {
             file: FileInfo {
                 file_id,
-                path: format!("src/{}.c", name),
+                path: format!("src/{name}.c"),
                 language: Language::C,
                 content_hash: "abc".into(),
                 status: ParseStatus::Success,

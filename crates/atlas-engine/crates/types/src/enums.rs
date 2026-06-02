@@ -61,6 +61,7 @@ impl Language {
     }
 
     /// Parse from the same lowercase string returned by [`as_str`].
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "typescript" => Some(Self::TypeScript),
@@ -225,6 +226,7 @@ impl SymbolKind {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "file" => Some(Self::File),
@@ -315,6 +317,7 @@ impl EdgeKind {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "contains" => Some(Self::Contains),
@@ -384,6 +387,7 @@ impl ReferenceKind {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "usage" => Some(Self::Usage),
@@ -433,6 +437,7 @@ impl ImportKind {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "include" => Some(Self::Include),
@@ -489,6 +494,7 @@ impl ScopeKind {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "file" => Some(Self::File),
@@ -535,6 +541,7 @@ impl Visibility {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "public" => Some(Self::Public),
@@ -578,6 +585,7 @@ impl ResolutionStrategy {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "exact_match" => Some(Self::ExactMatch),
@@ -621,6 +629,7 @@ impl Provenance {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "tree_sitter" => Some(Self::TreeSitter),
@@ -656,6 +665,7 @@ impl ResolutionStatus {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "unresolved" => Some(Self::Unresolved),
@@ -691,6 +701,7 @@ impl ParseStatus {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "success" => Some(Self::Success),
@@ -797,6 +808,7 @@ impl BindingKind {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "parameter" => Some(Self::Parameter),
@@ -866,6 +878,7 @@ impl DataNodeKind {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "parameter" => Some(Self::Parameter),
@@ -935,6 +948,7 @@ impl DataFlowKind {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "assign" => Some(Self::Assign),
@@ -992,6 +1006,7 @@ impl CfgNodeKind {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "entry" => Some(Self::Entry),
@@ -1040,6 +1055,7 @@ impl EffectKind {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "read" => Some(Self::Read),
@@ -1086,6 +1102,7 @@ impl CfgEdgeKind {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "normal" => Some(Self::Normal),
@@ -1306,7 +1323,7 @@ mod tests {
         for kind in &kinds {
             let s = kind.as_str();
             let back = EffectKind::from_str(s);
-            assert_eq!(back, Some(*kind), "Roundtrip failed for {:?}", kind);
+            assert_eq!(back, Some(*kind), "Roundtrip failed for {kind:?}");
         }
     }
 

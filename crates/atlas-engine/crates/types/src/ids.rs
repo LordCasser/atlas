@@ -678,13 +678,13 @@ mod tests {
         let sql_output = id.to_sql().unwrap();
         // Verify it produces a BLOB (Borrowed or Owned)
         match sql_output {
-            rusqlite::types::ToSqlOutput::Borrowed(rusqlite::types::ValueRef::Blob(ref blob)) => {
+            rusqlite::types::ToSqlOutput::Borrowed(rusqlite::types::ValueRef::Blob(blob)) => {
                 assert_eq!(blob.len(), 32);
             }
             rusqlite::types::ToSqlOutput::Owned(rusqlite::types::Value::Blob(ref blob)) => {
                 assert_eq!(blob.len(), 32);
             }
-            other => panic!("Expected BLOB output, got {:?}", other),
+            other => panic!("Expected BLOB output, got {other:?}"),
         }
     }
 

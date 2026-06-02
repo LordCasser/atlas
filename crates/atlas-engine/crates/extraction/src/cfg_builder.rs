@@ -523,14 +523,14 @@ impl CfgContext<'_> {
                 let mut cursor = node.walk();
                 if let Some(first) = node.named_children(&mut cursor).next() {
                     if let Ok(text) = first.utf8_text(self.source) {
-                        return Some(types::structs::canonicalize_field_path(&text.to_string()));
+                        return Some(types::structs::canonicalize_field_path(text));
                     }
                 }
                 None
             }
             "identifier" => {
                 if let Ok(text) = node.utf8_text(self.source) {
-                    Some(types::structs::canonicalize_field_path(&text.to_string()))
+                    Some(types::structs::canonicalize_field_path(text))
                 } else {
                     None
                 }
@@ -796,7 +796,7 @@ fn find_if_branches<'a>(
         .copied()
         .collect();
 
-    let cons = if blocks.len() >= 1 {
+    let cons = if !blocks.is_empty() {
         Some(blocks[0])
     } else if children.len() >= 2 {
         // Fallback: index-based (children[0]=condition, children[1]=consequence)

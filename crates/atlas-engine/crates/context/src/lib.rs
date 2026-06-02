@@ -86,7 +86,7 @@ impl ContextBuilder {
     pub fn build_context_for_symbol(&self, symbol_id: &SymbolId) -> anyhow::Result<ContextView> {
         let sym = self.store.find_symbol_by_id(symbol_id)?;
         let Some(ref sym) = sym else {
-            anyhow::bail!("symbol not found: {}", symbol_id);
+            anyhow::bail!("symbol not found: {symbol_id}");
         };
 
         // Single graph lock for consistent snapshot across all queries
@@ -148,7 +148,7 @@ impl ContextBuilder {
     pub fn build_context_slice(&self, symbol_id: &SymbolId) -> anyhow::Result<ContextSlice> {
         let sym = self.store.find_symbol_by_id(symbol_id)?;
         let Some(sym) = sym else {
-            anyhow::bail!("symbol not found: {}", symbol_id);
+            anyhow::bail!("symbol not found: {symbol_id}");
         };
 
         // Single graph lock for consistent snapshot
@@ -209,7 +209,7 @@ impl ContextBuilder {
                 callsite_line: line,
                 callsite_snippet,
                 edge_kind: edge
-                    .map(|e| e.kind.clone())
+                    .map(|e| e.kind)
                     .unwrap_or(types::EdgeKind::Calls),
             });
         }
@@ -243,7 +243,7 @@ impl ContextBuilder {
                 callsite_line: line,
                 callsite_snippet,
                 edge_kind: edge
-                    .map(|e| e.kind.clone())
+                    .map(|e| e.kind)
                     .unwrap_or(types::EdgeKind::Calls),
                 callee_signature: callee_sym.signature.clone(),
             });

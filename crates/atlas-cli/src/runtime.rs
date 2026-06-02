@@ -57,7 +57,7 @@ impl CommandContext {
     /// database exists.
     pub fn open(project: &str, mode: DbMode) -> anyhow::Result<Self> {
         let ws = Workspace::open(Path::new(project))
-            .with_context(|| format!("Invalid project path: {}", project))?;
+            .with_context(|| format!("Invalid project path: {project}"))?;
 
         let is_creator = matches!(mode, DbMode::InitOrCreate | DbMode::CreateOrOpenReadWrite);
 
@@ -68,8 +68,7 @@ impl CommandContext {
             let db_exists = ws.db_path().is_file();
             if !db_exists {
                 anyhow::bail!(
-                    "Not an initialized Atlas project. Run `atlas init {}` first.",
-                    project
+                    "Not an initialized Atlas project. Run `atlas init {project}` first."
                 );
             }
         }
@@ -107,7 +106,7 @@ impl CommandContext {
             Workspace::find().context("No .atlas directory found. Run `atlas init` first.")?
         } else {
             Workspace::open(Path::new(project))
-                .with_context(|| format!("Invalid project path: {}", project))?
+                .with_context(|| format!("Invalid project path: {project}"))?
         };
 
         let is_creator = matches!(mode, DbMode::InitOrCreate | DbMode::CreateOrOpenReadWrite);

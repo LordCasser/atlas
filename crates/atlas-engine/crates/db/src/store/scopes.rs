@@ -133,7 +133,7 @@ impl Store {
                  WHERE i.module LIKE ?1
                  ORDER BY f.path",
             )?;
-            let pattern = format!("%{}%", target_path);
+            let pattern = format!("%{target_path}%");
             stmt.query_map(params![pattern], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?

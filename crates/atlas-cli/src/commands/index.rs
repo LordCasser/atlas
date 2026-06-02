@@ -89,7 +89,7 @@ pub fn run(
             std::process::exit(1);
         }
     }) {
-        eprintln!("warning: could not install Ctrl+C handler: {}", e);
+        eprintln!("warning: could not install Ctrl+C handler: {e}");
     }
 
     // ── Start TUI (or text fallback if non-TTY) ──
@@ -133,7 +133,7 @@ pub fn run(
         let total = discovered.len();
         ps.lock()
             .unwrap()
-            .start_phase(ProgressPhase::HashCheck, Some(format!("{} files", total)));
+            .start_phase(ProgressPhase::HashCheck, Some(format!("{total} files")));
 
         if interrupted() {
             return Ok(());
@@ -204,7 +204,7 @@ pub fn run(
         let dirty_total = dirty.len();
         ps.lock().unwrap().start_phase(
             ProgressPhase::Extraction,
-            Some(format!("{} files", dirty_total)),
+            Some(format!("{dirty_total} files")),
         );
         ps.lock().unwrap().set_total(dirty_total as u64);
 
@@ -267,7 +267,7 @@ pub fn run(
         // ── Clean stale facts ──
         ps.lock().unwrap().start_phase(
             ProgressPhase::Cleanup,
-            Some(format!("{} re-indexed", extracted_count)),
+            Some(format!("{extracted_count} re-indexed")),
         );
         let file_ids: Vec<_> = extracted.iter().map(|ef| ef.facts.file.file_id).collect();
         atlas_engine::phase_cleanup_file_ids(&store, &file_ids)
@@ -280,7 +280,7 @@ pub fn run(
         // ── DB Write (serial, with progress) ──
         ps.lock().unwrap().start_phase(
             ProgressPhase::DbWrite,
-            Some(format!("{} files", extracted_count)),
+            Some(format!("{extracted_count} files")),
         );
         ps.lock().unwrap().set_total(extracted_count as u64);
 
@@ -302,7 +302,7 @@ pub fn run(
             |written| {
                 ps.lock().unwrap().set_current(written);
             },
-            || interrupted(),
+            &interrupted,
         )?;
 
         if interrupted() {
@@ -350,7 +350,7 @@ pub fn run(
 
         // ── Materialize user annotations as edges ──
         if let Err(e) = atlas_engine::phase_materialize_annotations(&store) {
-            eprintln!("Warning: failed to materialize annotations: {}", e);
+            eprintln!("Warning: failed to materialize annotations: {e}");
         }
 
         // ── Summary build (Schema v3: persist function summaries) ──
@@ -404,7 +404,7 @@ pub fn run(
     }
     let worker_result = worker
         .join()
-        .unwrap_or_else(|e| Err(anyhow::anyhow!("Worker thread panicked: {:?}", e)));
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("Worker thread panicked: {e:?}")));
 
     // Report worker result (whether it completed or was interrupted).
     if let Err(ref e) = worker_result {

@@ -136,8 +136,7 @@ impl Store {
         if let Some((existing_pid, _ts)) = existing {
             if existing_pid != pid as i64 && is_process_alive(existing_pid) {
                 anyhow::bail!(
-                    "Another atlas process (PID {}) already holds the lock",
-                    existing_pid
+                    "Another atlas process (PID {existing_pid}) already holds the lock"
                 );
             }
             // Stale lock — steal it: replace old entry
@@ -147,7 +146,7 @@ impl Store {
             )?;
         }
 
-        let lock_value = format!("{}:{}", pid, now);
+        let lock_value = format!("{pid}:{now}");
         tx.execute(
             "INSERT INTO project_metadata (key, value) VALUES ('exclusive_lock_pid', ?1)",
             params![lock_value],
@@ -168,7 +167,7 @@ impl Store {
                 [],
                 |row| {
                     let v: String = row.get(0)?;
-                    Ok(v.splitn(2, ':').next().and_then(|s| s.parse().ok()))
+                    Ok(v.split(':').next().and_then(|s| s.parse().ok()))
                 },
             )
             .ok()

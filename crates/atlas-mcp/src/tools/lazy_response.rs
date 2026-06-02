@@ -217,20 +217,20 @@ impl LazyDiagnostics {
         // Derive next_action from the combined state.
         let structural_pending = structural
             .as_ref()
-            .map_or(false, |s| s.files_pending > 0 && !s.pending_job_ids.is_empty());
+            .is_some_and(|s| s.files_pending > 0 && !s.pending_job_ids.is_empty());
         let dataflow_pending = dataflow
             .as_ref()
-            .map_or(false, |d| d.files_pending > 0 && !d.pending_job_ids.is_empty());
+            .is_some_and(|d| d.files_pending > 0 && !d.pending_job_ids.is_empty());
 
         let next_action = if structural_pending || dataflow_pending {
             "poll_jobs"
-        } else if structural.as_ref().map_or(false, |s| s.budget_exceeded)
-            || dataflow.as_ref().map_or(false, |d| d.budget_exceeded)
+        } else if structural.as_ref().is_some_and(|s| s.budget_exceeded)
+            || dataflow.as_ref().is_some_and(|d| d.budget_exceeded)
         {
             "narrow_scope"
         } else if structural
             .as_ref()
-            .map_or(false, |s| {
+            .is_some_and(|s| {
                 s.files_built == 0
                     && s.files_cached == 0
                     && s.precision_tier() == PrecisionTier::Unavailable
@@ -245,10 +245,10 @@ impl LazyDiagnostics {
         // Merge both structural and dataflow masks via bitwise OR so
         // the contract accurately reflects all built layers.
         let mut mask = CapabilityMask::default();
-        if let Some(ref so) = structural_outcome {
+        if let Some(so) = structural_outcome {
             mask = CapabilityMask::new(mask.bits() | so.capability_mask.bits());
         }
-        if let Some(ref dw) = dataflow_window {
+        if let Some(dw) = dataflow_window {
             mask = CapabilityMask::new(mask.bits() | dw.capability_mask.bits());
         }
 

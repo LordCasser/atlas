@@ -255,7 +255,7 @@ impl Engine {
         mode: extraction::ExtractionMode,
     ) -> anyhow::Result<FileFacts> {
         let frontend = extraction::create_frontend(language)
-            .ok_or_else(|| anyhow::anyhow!("Language frontend not available for {:?}", language))?;
+            .ok_or_else(|| anyhow::anyhow!("Language frontend not available for {language:?}"))?;
         let file_id = FileId::generate(path.to_string_lossy().as_ref());
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
         let facts = extraction::extract_file_with_mode(
@@ -364,7 +364,7 @@ impl Engine {
                     pending_job_ids: window.pending_job_ids.clone(),
                     truncated: window.truncated,
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
-                    precision_tier: window.precision_tier.clone(),
+                    precision_tier: window.precision_tier,
                 });
                 if window.truncated {
                     partial = true;

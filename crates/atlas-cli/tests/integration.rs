@@ -33,15 +33,15 @@ fn index_files(files: &[(&str, &str)]) -> (Arc<Store>, PipelineStats) {
     for (rel_path, content) in files {
         let path = Path::new(rel_path);
         let lang = Language::from_path(path)
-            .unwrap_or_else(|| panic!("no language detected for {}", rel_path));
+            .unwrap_or_else(|| panic!("no language detected for {rel_path}"));
         let frontend = atlas_engine::create_frontend(lang)
-            .unwrap_or_else(|| panic!("no frontend for {} (lang={:?})", rel_path, lang));
+            .unwrap_or_else(|| panic!("no frontend for {rel_path} (lang={lang:?})"));
         let file_id = FileId::generate(rel_path);
         let facts = extract_file(&frontend, file_id, &PathBuf::from(rel_path), content, "abc")
-            .unwrap_or_else(|e| panic!("extract {} failed: {:?}", rel_path, e));
+            .unwrap_or_else(|e| panic!("extract {rel_path} failed: {e:?}"));
         store
             .insert_file_facts(&facts)
-            .unwrap_or_else(|e| panic!("insert {} failed: {:?}", rel_path, e));
+            .unwrap_or_else(|e| panic!("insert {rel_path} failed: {e:?}"));
     }
 
     // P2: two-step pipeline — resolve then build edges
@@ -181,8 +181,7 @@ export function process(n: number): number {
     let caller_names: Vec<_> = caller_syms.iter().map(|s| s.name.as_str()).collect();
     assert!(
         caller_names.contains(&"process"),
-        "expected 'process' in callers of 'helper', got {:?}",
-        caller_names
+        "expected 'process' in callers of 'helper', got {caller_names:?}"
     );
 }
 
@@ -292,13 +291,11 @@ if __name__ == '__main__':
     let names: Vec<_> = lib_syms.iter().map(|s| s.name.clone()).collect();
     assert!(
         names.contains(&"Calculator".to_string()),
-        "Calculator not found in lib symbols: {:?}",
-        names
+        "Calculator not found in lib symbols: {names:?}"
     );
     assert!(
         names.contains(&"create_calculator".to_string()),
-        "create_calculator not found in lib symbols: {:?}",
-        names
+        "create_calculator not found in lib symbols: {names:?}"
     );
 }
 
@@ -490,8 +487,7 @@ main();
         all_edges.iter().map(|e| e.kind.as_str()).collect();
     assert!(
         all_edge_kinds.len() >= 2,
-        "expected at least 2 different edge kinds, got {:?}",
-        all_edge_kinds
+        "expected at least 2 different edge kinds, got {all_edge_kinds:?}"
     );
 
     // Should have References edges
@@ -678,11 +674,10 @@ fn ts_dataflow_edges_complete_textrange() {
     for node in &nodes {
         if let Ok(edges) = store.find_dataflow_edges_by_source(&node.id) {
             for edge in &edges {
-                if edge.location.start_byte > 0 && edge.location.end_byte > 0 {
-                    if edge.location.start_column > 0 || edge.location.end_column > 0 {
+                if edge.location.start_byte > 0 && edge.location.end_byte > 0
+                    && (edge.location.start_column > 0 || edge.location.end_column > 0) {
                         edges_with_column = true;
                     }
-                }
             }
         }
     }
@@ -745,10 +740,9 @@ fn ts_binding_use_captures_identifier_references() {
     let use_names: Vec<_> = resolved_uses.iter().map(|u| u.name.clone()).collect();
     assert!(
         !binding_names.is_empty(),
-        "binding names: {:?}",
-        binding_names
+        "binding names: {binding_names:?}"
     );
-    assert!(!use_names.is_empty(), "use names: {:?}", use_names);
+    assert!(!use_names.is_empty(), "use names: {use_names:?}");
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -817,8 +811,7 @@ function main() {
             let dn = store.get_data_node(&arg.data_node_id.unwrap()).unwrap();
             assert!(
                 dn.is_some(),
-                "arg[{}].data_node_id → DataNode not found in DB",
-                i
+                "arg[{i}].data_node_id → DataNode not found in DB"
             );
             let dn = dn.unwrap();
             assert_eq!(
@@ -961,7 +954,7 @@ function main(): number {
             ca.access_path.is_none() && ca.range.start_line == 7 && ca.range.start_byte > 95
         })
         .cloned();
-    if let Some(ref arg_20) = arg_20 {
+    if let Some(arg_20) = arg_20 {
         let mut edges_to_20 = Vec::new();
         for ca in &call_args {
             if ca.id == arg_20.id {
@@ -1037,7 +1030,7 @@ function main(): number {
                 let dn = store
                     .get_data_node(dn_id)
                     .unwrap()
-                    .unwrap_or_else(|| panic!("arg[{}].data_node_id → DataNode not in DB", i));
+                    .unwrap_or_else(|| panic!("arg[{i}].data_node_id → DataNode not in DB"));
 
                 assert_eq!(
                     dn.kind,
@@ -1049,9 +1042,8 @@ function main(): number {
 
                 assert!(
                     dn.callsite_id.is_some(),
-                    "arg[{}] DataNode should have callsite_id set (was None). \
-                     This means the adapter didn't compute callsite_id from parent call_expression.",
-                    i
+                    "arg[{i}] DataNode should have callsite_id set (was None). \
+                     This means the adapter didn't compute callsite_id from parent call_expression."
                 );
 
                 // After P1 fixes (post-backfill rewrite), DataNode.callsite_id
@@ -1059,10 +1051,9 @@ function main(): number {
                 assert_eq!(
                     dn.callsite_id.as_ref().unwrap(),
                     &cs.id,
-                    "arg[{}] DataNode.callsite_id does not match callsite.id. \
+                    "arg[{i}] DataNode.callsite_id does not match callsite.id. \
                      This means the post-backfill rewrite (provisional→real \
-                     callsite_id) did not correctly map this DataNode.",
-                    i
+                     callsite_id) did not correctly map this DataNode."
                 );
             }
         }

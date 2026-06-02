@@ -112,15 +112,14 @@ impl ToolRouter {
             .find_symbol_by_id(&sid)
             .ok()
             .flatten()
-            .map(|s| {
+            .and_then(|s| {
                 let lang = match s.language {
                     atlas_engine::Language::C => Some("c"),
                     atlas_engine::Language::Cpp => Some("cpp"),
                     _ => None,
                 };
                 lang.map(|l| (s.qualified_name, l))
-            })
-            .flatten();
+            });
 
         let (qname, lang_str) = match sym_info {
             Some((qname, lang)) => (qname, lang),
@@ -160,7 +159,7 @@ impl ToolRouter {
         // Build proof from lifecycle result
         let proof = atlas_engine::analysis::evaluate_proof(
             &result.suspicious_points,
-            result.final_state.clone(),
+            result.final_state,
             has_user_rules,
             has_any_rules,
         );
@@ -173,7 +172,7 @@ impl ToolRouter {
                 .iter()
                 .map(|t| (t.node_line, t.to_state.as_str().to_string()))
                 .collect(),
-            exit_state: result.final_state.clone(),
+            exit_state: result.final_state,
         };
 
         let mut resp = json!({
@@ -198,7 +197,7 @@ impl ToolRouter {
                 "from": t.from_state.as_str(),
                 "to": t.to_state.as_str(),
                 "line": t.node_line,
-                "reason": t.effect.map(|e| format!("{:?}", e)).unwrap_or_else(|| "transition".to_string()),
+                "reason": t.effect.map(|e| format!("{e:?}")).unwrap_or_else(|| "transition".to_string()),
             })).collect::<Vec<_>>(),
             "suspicious_count": result.suspicious_points.len(),
             "suspicious": result.suspicious_points.iter().map(|p| json!({

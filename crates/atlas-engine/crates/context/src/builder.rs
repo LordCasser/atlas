@@ -75,7 +75,7 @@ impl ContextView {
             self.subject.language.as_str()
         ));
         if let Some(ref sig) = self.subject.signature {
-            md.push_str(&format!("- Signature: `{}`\n", sig));
+            md.push_str(&format!("- Signature: `{sig}`\n"));
         }
         let file_info = self
             .subject_source
@@ -180,7 +180,7 @@ impl ContextView {
                     md.push_str(boundary_note);
                 }
                 if let Some(ref sig) = c.callee_signature {
-                    md.push_str(&format!("   Signature: `{}`\n", sig));
+                    md.push_str(&format!("   Signature: `{sig}`\n"));
                 }
                 md.push_str(&format!(
                     "   @ `{}:{}`\n",
@@ -231,7 +231,7 @@ impl ContextView {
         if !self.importers.is_empty() {
             md.push_str("### Importers\n\n");
             for i in &self.importers {
-                md.push_str(&format!("- `{}`\n", i));
+                md.push_str(&format!("- `{i}`\n"));
             }
             md.push('\n');
         }
@@ -239,7 +239,7 @@ impl ContextView {
         if !self.dependencies.is_empty() {
             md.push_str("### Dependencies\n\n");
             for d in &self.dependencies {
-                md.push_str(&format!("- `{}`\n", d));
+                md.push_str(&format!("- `{d}`\n"));
             }
             md.push('\n');
         }
@@ -250,8 +250,7 @@ impl ContextView {
         if !self.callee_details.is_empty() {
             let first_callee = &self.callee_details[0].symbol.qualified_name;
             md.push_str(&format!(
-                "- **Calls** → `context` with `symbol: \"{}\"`\n",
-                first_callee
+                "- **Calls** → `context` with `symbol: \"{first_callee}\"`\n"
             ));
         }
         if !self.caller_details.is_empty() {

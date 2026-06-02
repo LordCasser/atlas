@@ -591,7 +591,7 @@ pub(crate) fn write_file_facts(conn: &Connection, facts: &FileFacts) -> anyhow::
                 valid_sources.contains(&callsite.caller)
                     && callsite
                         .callee
-                        .map_or(true, |callee| valid_sources.contains(&callee))
+                        .is_none_or(|callee| valid_sources.contains(&callee))
             })
             .cloned()
             .collect();
@@ -606,9 +606,9 @@ pub(crate) fn write_file_facts(conn: &Connection, facts: &FileFacts) -> anyhow::
         .iter()
         .filter(|b| {
             b.function_id
-                .map_or(true, |fid| valid_sources.contains(&fid))
+                .is_none_or(|fid| valid_sources.contains(&fid))
                 && facts.scopes.iter().any(|s| s.id == b.scope_id)
-                && b.symbol_id.map_or(true, |sid| valid_sources.contains(&sid))
+                && b.symbol_id.is_none_or(|sid| valid_sources.contains(&sid))
         })
         .cloned()
         .collect();
@@ -622,7 +622,7 @@ pub(crate) fn write_file_facts(conn: &Connection, facts: &FileFacts) -> anyhow::
             .iter()
             .filter(|bu| {
                 bu.binding_id
-                    .map_or(false, |bid| valid_binding_ids.contains(&bid))
+                    .is_some_and(|bid| valid_binding_ids.contains(&bid))
                     && facts.scopes.iter().any(|s| s.id == bu.scope_id)
             })
             .cloned()
@@ -639,10 +639,10 @@ pub(crate) fn write_file_facts(conn: &Connection, facts: &FileFacts) -> anyhow::
             .iter()
             .filter(|dn| {
                 dn.function_id
-                    .map_or(true, |fid| valid_sources.contains(&fid))
+                    .is_none_or(|fid| valid_sources.contains(&fid))
                     && dn
                         .binding_id
-                        .map_or(true, |bid| valid_binding_ids.contains(&bid))
+                        .is_none_or(|bid| valid_binding_ids.contains(&bid))
             })
             .cloned()
             .collect();
@@ -656,10 +656,10 @@ pub(crate) fn write_file_facts(conn: &Connection, facts: &FileFacts) -> anyhow::
             .iter()
             .filter(|dn| {
                 dn.function_id
-                    .map_or(true, |fid| valid_sources.contains(&fid))
+                    .is_none_or(|fid| valid_sources.contains(&fid))
                     && dn
                         .binding_id
-                        .map_or(true, |bid| valid_binding_ids.contains(&bid))
+                        .is_none_or(|bid| valid_binding_ids.contains(&bid))
             })
             .map(|dn| dn.id)
             .collect();

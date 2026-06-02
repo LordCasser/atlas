@@ -25,8 +25,7 @@ pub fn render(
     };
 
     let mut text = format!(
-        " {} files | {} symbols | {} edges | {}",
-        file_count, symbol_count, edge_count, graph_status
+        " {file_count} files | {symbol_count} symbols | {edge_count} edges | {graph_status}"
     );
 
     if !additional.is_empty() {

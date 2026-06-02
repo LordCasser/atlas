@@ -20,7 +20,7 @@ impl FtsQuery {
         let terms: Vec<String> = raw
             .split_whitespace()
             .filter(|w| !w.is_empty())
-            .map(|w| escape_fts5(w))
+            .map(escape_fts5)
             .collect();
         Self {
             terms,
@@ -44,7 +44,7 @@ impl FtsQuery {
         let last = self.terms.len() - 1;
         for (i, term) in self.terms.iter().enumerate() {
             if i == last && self.prefix {
-                parts.push(format!("{}*", term));
+                parts.push(format!("{term}*"));
             } else {
                 parts.push(term.clone());
             }

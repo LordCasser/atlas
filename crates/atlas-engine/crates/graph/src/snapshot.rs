@@ -2519,8 +2519,7 @@ mod tests {
         let w = snap.edge_weight(0, b_ix);
         assert!(
             (1.0..=1.2).contains(&w),
-            "baseline weight should be ~1.0, got {}",
-            w
+            "baseline weight should be ~1.0, got {w}"
         );
     }
 
@@ -2535,8 +2534,7 @@ mod tests {
         let w = snap.edge_weight(0, b_ix);
         assert!(
             w >= 2.0,
-            "Implements edge should add +1.0 penalty, got {}",
-            w
+            "Implements edge should add +1.0 penalty, got {w}"
         );
     }
 
@@ -2554,7 +2552,7 @@ mod tests {
         let snap = GraphSnapshot::from_parts(vec![a, b], vec![e], 0.0).unwrap();
         let b_ix = snap.id_to_idx[&snap.nodes[1].symbol_id];
         let w = snap.edge_weight(0, b_ix);
-        assert!(w > 1.0, "socks5 name should add penalty, got {}", w);
+        assert!(w > 1.0, "socks5 name should add penalty, got {w}");
     }
 
     // ── CompositePathScore tests ───────────────────────────────────────

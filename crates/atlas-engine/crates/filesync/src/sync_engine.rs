@@ -116,7 +116,7 @@ impl SyncEngine {
                 inv_edges
             );
             let inv_timing = inv_timer
-                .note(format!("{} refs + {} edges", inv_refs, inv_edges))
+                .note(format!("{inv_refs} refs + {inv_edges} edges"))
                 .finish();
             phase_timings.push(inv_timing);
         }

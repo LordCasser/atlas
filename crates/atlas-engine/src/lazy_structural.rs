@@ -268,7 +268,7 @@ impl LazyStructuralService {
         let layer = self
             .store
             .get_file_extraction_state(file_id, layer::STRUCTURAL)?;
-        Ok(layer.map_or(false, |(s, hash)| {
+        Ok(layer.is_some_and(|(s, hash)| {
             s == status::COMPLETE && hash == *current_hash
         }))
     }
@@ -355,7 +355,7 @@ impl LazyStructuralService {
         let file_info = self
             .store
             .get_file(file_id)?
-            .ok_or_else(|| anyhow::anyhow!("file not found: {:?}", file_id))?;
+            .ok_or_else(|| anyhow::anyhow!("file not found: {file_id:?}"))?;
         let frontend = create_frontend(file_info.language).ok_or_else(|| {
             anyhow::anyhow!("frontend not available for {:?}", file_info.language)
         })?;
@@ -490,7 +490,7 @@ impl LazyStructuralService {
         let file_info = self
             .store
             .get_file(file_id)?
-            .ok_or_else(|| anyhow::anyhow!("file not found: {:?}", file_id))?;
+            .ok_or_else(|| anyhow::anyhow!("file not found: {file_id:?}"))?;
         let frontend = create_frontend(file_info.language).ok_or_else(|| {
             anyhow::anyhow!("frontend not available for {:?}", file_info.language)
         })?;

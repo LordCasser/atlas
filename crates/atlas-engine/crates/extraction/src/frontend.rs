@@ -793,7 +793,7 @@ mod tests {
 
         for lang in languages {
             let frontend = crate::languages::create_frontend(lang)
-                .unwrap_or_else(|| panic!("create_frontend failed for {:?}", lang));
+                .unwrap_or_else(|| panic!("create_frontend failed for {lang:?}"));
 
             let profile = frontend.capability;
             let fm = profile
@@ -805,8 +805,7 @@ mod tests {
             if !frontend.dataflow.capability().is_supported() {
                 assert!(
                     !fm.local_dataflow.is_supported(),
-                    "{:?}: dataflow slot unsupported but profile claims local_dataflow",
-                    lang
+                    "{lang:?}: dataflow slot unsupported but profile claims local_dataflow"
                 );
             }
 
@@ -814,8 +813,7 @@ mod tests {
             if !frontend.lexical.capability().is_supported() {
                 assert!(
                     !fm.lexical_bindings.is_supported(),
-                    "{:?}: lexical slot unsupported but profile claims lexical_bindings",
-                    lang
+                    "{lang:?}: lexical slot unsupported but profile claims lexical_bindings"
                 );
             }
 
@@ -823,8 +821,7 @@ mod tests {
             if !frontend.scopes.capability().is_supported() {
                 assert!(
                     !fm.scopes.is_supported(),
-                    "{:?}: scope slot unsupported but profile claims scopes",
-                    lang
+                    "{lang:?}: scope slot unsupported but profile claims scopes"
                 );
             }
         }
@@ -868,7 +865,7 @@ mod tests {
 
         for lang in languages {
             let frontend = crate::languages::create_frontend(lang)
-                .unwrap_or_else(|| panic!("create_frontend failed for {:?}", lang));
+                .unwrap_or_else(|| panic!("create_frontend failed for {lang:?}"));
 
             let derived = frontend.derive_capability_profile();
             let static_profile = frontend.capability.clone();
@@ -896,29 +893,25 @@ mod tests {
             if sf.symbols.is_supported() {
                 assert!(
                     df.symbols.is_supported(),
-                    "{:?}: derived under-reports symbols",
-                    lang
+                    "{lang:?}: derived under-reports symbols"
                 );
             }
             if sf.local_dataflow.is_supported() {
                 assert!(
                     df.local_dataflow.is_supported(),
-                    "{:?}: derived under-reports dataflow",
-                    lang
+                    "{lang:?}: derived under-reports dataflow"
                 );
             }
             if sf.lexical_bindings.is_supported() {
                 assert!(
                     df.lexical_bindings.is_supported(),
-                    "{:?}: derived under-reports lexical",
-                    lang
+                    "{lang:?}: derived under-reports lexical"
                 );
             }
             if sf.scopes.is_supported() {
                 assert!(
                     df.scopes.is_supported(),
-                    "{:?}: derived under-reports scopes",
-                    lang
+                    "{lang:?}: derived under-reports scopes"
                 );
             }
 
@@ -926,8 +919,7 @@ mod tests {
             // supported_features must never be empty for a working language.
             assert!(
                 !derived.supported_features.is_empty(),
-                "{:?}: no supported features",
-                lang
+                "{lang:?}: no supported features"
             );
             // unsupported_features may be empty if all FeatureMatrix
             // capabilities report `is_supported()` — that is valid.
@@ -1075,28 +1067,25 @@ fn test_all_dataflow_languages_produce_facts() {
         if !frontend.dataflow.capability().is_supported() {
             continue;
         }
-        let file_id = FileId::generate(&format!("smoke.{}", ext));
+        let file_id = FileId::generate(&format!("smoke.{ext}"));
         let facts = extract_file(
             &frontend,
             file_id,
-            std::path::Path::new(&format!("smoke.{}", ext)),
+            std::path::Path::new(&format!("smoke.{ext}")),
             source,
             "t",
         )
-        .unwrap_or_else(|e| panic!("{:?} extraction failed: {}", lang, e));
+        .unwrap_or_else(|e| panic!("{lang:?} extraction failed: {e}"));
 
         let node_count = facts.data_nodes.len();
         let edge_count = facts.dataflow_edges.len();
         assert!(
             node_count > 0,
-            "{:?} must produce at least 1 DataNode, got 0",
-            lang
+            "{lang:?} must produce at least 1 DataNode, got 0"
         );
         assert!(
             edge_count > 0,
-            "{:?} must produce at least 1 DataFlowEdge, got 0 (nodes={})",
-            lang,
-            node_count
+            "{lang:?} must produce at least 1 DataFlowEdge, got 0 (nodes={node_count})"
         );
 
         // If lexical is supported, must produce at least some bindings
@@ -1104,8 +1093,7 @@ fn test_all_dataflow_languages_produce_facts() {
             let binding_count = facts.bindings.len();
             assert!(
                 binding_count > 0,
-                "{:?} lexical must produce at least 1 BindingDef, got 0",
-                lang
+                "{lang:?} lexical must produce at least 1 BindingDef, got 0"
             );
         }
     }

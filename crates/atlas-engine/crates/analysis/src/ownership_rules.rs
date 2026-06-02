@@ -59,13 +59,13 @@ impl CppOwnershipRules {
             if pattern == func_name {
                 return Some(match source {
                     RuleSource::User | RuleSource::Learned => RuleMatch::Known {
-                        rule_id: format!("c_free_fn_{}", pattern),
+                        rule_id: format!("c_free_fn_{pattern}"),
                         kind: "free_fn".into(),
                         confidence: 1.0,
                         meta: None,
                     },
                     RuleSource::Builtin => RuleMatch::Heuristic {
-                        rule_id: format!("c_free_fn_{}", pattern),
+                        rule_id: format!("c_free_fn_{pattern}"),
                         kind: "free_fn".into(),
                         confidence: 0.8,
                         meta: None,
@@ -91,13 +91,13 @@ impl CppOwnershipRules {
             if pattern == func_name {
                 return Some(match source {
                     RuleSource::User | RuleSource::Learned => RuleMatch::Known {
-                        rule_id: format!("c_alloc_fn_{}", pattern),
+                        rule_id: format!("c_alloc_fn_{pattern}"),
                         kind: "alloc_fn".into(),
                         confidence: 1.0,
                         meta: None,
                     },
                     RuleSource::Builtin => RuleMatch::Heuristic {
-                        rule_id: format!("c_alloc_fn_{}", pattern),
+                        rule_id: format!("c_alloc_fn_{pattern}"),
                         kind: "alloc_fn".into(),
                         confidence: 0.8,
                         meta: None,

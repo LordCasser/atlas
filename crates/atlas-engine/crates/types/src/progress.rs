@@ -160,6 +160,7 @@ pub struct ProgressState {
 
 impl ProgressState {
     /// Create a fresh state with all 9 phases in Pending.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let all_phases = [
             ProgressPhase::Discovery,

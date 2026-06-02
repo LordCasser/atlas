@@ -12,7 +12,7 @@ impl ToolRouter {
     pub(crate) fn handle_status(&self) -> (String, bool) {
         let stats = match self.store.get_stats() {
             Ok(s) => s,
-            Err(e) => return (format!("Error getting stats: {}", e), true),
+            Err(e) => return (format!("Error getting stats: {e}"), true),
         };
         let lazy_stats = self.store.get_lazy_dataflow_stats().ok();
         let layer_counts = self
@@ -54,7 +54,7 @@ impl ToolRouter {
         } else if structural_complete < stats.total_files as i64 {
             if lazy_stats
                 .as_ref()
-                .map_or(false, |l| l.total_unit_states > 0)
+                .is_some_and(|l| l.total_unit_states > 0)
             {
                 "partial_structural+lazy"
             } else {
@@ -62,12 +62,12 @@ impl ToolRouter {
             }
         } else if lazy_stats
             .as_ref()
-            .map_or(false, |l| l.total_unit_states > 0)
+            .is_some_and(|l| l.total_unit_states > 0)
         {
             // Lazy unit state exists — the index was structural, dataflow came from lazy.
             "structural+lazy"
         } else if dataflow_file_complete >= stats.total_files as i64
-            || lazy_stats.as_ref().map_or(false, |l| l.has_dataflow)
+            || lazy_stats.as_ref().is_some_and(|l| l.has_dataflow)
         {
             // Dataflow exists but no lazy unit state — explicit full index.
             "full"
@@ -181,7 +181,7 @@ impl ToolRouter {
                 .unwrap_or_else(|e| e.to_string()),
                 false,
             ),
-            Err(e) => (format!("Error listing active extraction jobs: {}", e), true),
+            Err(e) => (format!("Error listing active extraction jobs: {e}"), true),
         }
     }
 
@@ -198,7 +198,7 @@ impl ToolRouter {
                 .unwrap_or_else(|e| e.to_string()),
                 false,
             ),
-            Err(e) => (format!("Error listing files: {}", e), true),
+            Err(e) => (format!("Error listing files: {e}"), true),
         }
     }
 }

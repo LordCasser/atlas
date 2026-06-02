@@ -130,8 +130,8 @@ fn print_capabilities() {
     println!();
     println!("  Capability Profile by Language:");
     println!(
-        "  {:<18} {:<20} {:<7} {}",
-        "Language", "Capability Level", "Conf", "Key Limitations"
+        "  {:<18} {:<20} {:<7} Key Limitations",
+        "Language", "Capability Level", "Conf"
     );
     println!("  {:-<18} {:-<20} {:-<7} {:-<48}", "", "", "", "");
 

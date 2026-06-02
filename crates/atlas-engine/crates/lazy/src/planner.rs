@@ -170,7 +170,7 @@ impl LazyDataflowPlanner {
     pub fn plan_for_function(store: &Store, symbol_id: &SymbolId) -> Result<LazyWindow> {
         let sym = match store.find_symbol_by_id(symbol_id)? {
             Some(s) => s,
-            None => anyhow::bail!("symbol not found: {:?}", symbol_id),
+            None => anyhow::bail!("symbol not found: {symbol_id:?}"),
         };
         let seed_unit = AnalysisUnit::from_function(sym.file_id, sym.id, sym.range);
 

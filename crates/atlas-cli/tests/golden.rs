@@ -108,15 +108,15 @@ fn fixtures_dir() -> PathBuf {
 /// - `stem`: e.g. "simple" (matches `simple.ts` and `simple.expected.json`)
 fn run_golden(lang_dir: &str, stem: &str, ext: &str, lang: Language) {
     let dir = fixtures_dir().join(lang_dir);
-    let src_path = dir.join(format!("{}.{}", stem, ext));
-    let expected_path = dir.join(format!("{}.expected.json", stem));
+    let src_path = dir.join(format!("{stem}.{ext}"));
+    let expected_path = dir.join(format!("{stem}.expected.json"));
 
     let source = std::fs::read_to_string(&src_path)
         .unwrap_or_else(|e| panic!("Cannot read {}: {}", src_path.display(), e));
 
-    let rel_path = format!("{}/{}.{}", lang_dir, stem, ext);
+    let rel_path = format!("{lang_dir}/{stem}.{ext}");
     let frontend =
-        atlas_engine::create_frontend(lang).unwrap_or_else(|| panic!("No frontend for {:?}", lang));
+        atlas_engine::create_frontend(lang).unwrap_or_else(|| panic!("No frontend for {lang:?}"));
 
     let file_id = FileId::generate(&rel_path);
     let facts = extract_file(
@@ -233,8 +233,7 @@ fn run_golden(lang_dir: &str, stem: &str, ext: &str, lang: Language) {
     if actual != expected {
         let actual_json = serde_json::to_string_pretty(&actual).unwrap();
         panic!(
-            "\nGolden test mismatch: {}/{}\n\n--- Expected ---\n{}\n\n--- Actual ---\n{}\n",
-            lang_dir, stem, expected_json, actual_json
+            "\nGolden test mismatch: {lang_dir}/{stem}\n\n--- Expected ---\n{expected_json}\n\n--- Actual ---\n{actual_json}\n"
         );
     }
 }

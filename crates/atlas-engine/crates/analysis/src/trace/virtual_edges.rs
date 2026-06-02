@@ -120,7 +120,7 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
             // ── Parameter: find direct + indirect callers ──
             DataNodeKind::Parameter => {
                 let function_id = match &target_node.function_id {
-                    Some(fid) => fid.clone(),
+                    Some(fid) => *fid,
                     None => return Ok(vec![]),
                 };
 
@@ -141,8 +141,8 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                         if let Some(param_idx) = param_index {
                             if arg_idx == param_idx {
                                 edges.push(TraceEdge {
-                                    source_id: arg_dn_id.clone(),
-                                    target_id: target_id.clone(),
+                                    source_id: *arg_dn_id,
+                                    target_id: *target_id,
                                     kind: DataFlowKind::ArgToParam,
                                     confidence: 0.67,
                                     provenance: format!(
@@ -193,8 +193,8 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                                                     for rf in &inner_summary.return_flows {
                                                         for src_id in &rf.sources {
                                                             edges.push(TraceEdge {
-                                                                source_id: src_id.clone(),
-                                                                target_id: target_id.clone(),
+                                                                source_id: *src_id,
+                                                                target_id: *target_id,
                                                                 kind: DataFlowKind::ReturnToCall,
                                                                 confidence: 0.55,
                                                                 provenance: format!(
@@ -230,8 +230,8 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                             if arg_idx == p_idx {
                                 let depth_penalty = 0.85_f64.powi(*depth as i32);
                                 edges.push(TraceEdge {
-                                    source_id: arg_dn_id.clone(),
-                                    target_id: target_id.clone(),
+                                    source_id: *arg_dn_id,
+                                    target_id: *target_id,
                                     kind: DataFlowKind::ArgToParam,
                                     confidence: 0.67 * depth_penalty,
                                     provenance: format!(
@@ -257,7 +257,7 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                 // Find the callsite → get the callee symbol
                 let callsites = store.find_callsites_by_id(callsite_id)?;
                 let callee_sym_id = match callsites.first().and_then(|cs| cs.callee.as_ref()) {
-                    Some(sid) => sid.clone(),
+                    Some(sid) => *sid,
                     None => return Ok(vec![]),
                 };
 
@@ -272,8 +272,8 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                     for rf in &summary.return_flows {
                         for src_id in &rf.sources {
                             edges.push(TraceEdge {
-                                source_id: src_id.clone(),
-                                target_id: target_id.clone(),
+                                source_id: *src_id,
+                                target_id: *target_id,
                                 kind: DataFlowKind::ReturnToCall,
                                 confidence: rf.confidence * 0.85, // cross-boundary penalty
                                 provenance: format!(
@@ -339,9 +339,9 @@ impl TraceEdge {
                 &self.target_id,
                 self.kind.as_str(),
             ),
-            source: self.source_id.clone(),
-            target: self.target_id.clone(),
-            kind: self.kind.clone(),
+            source: self.source_id,
+            target: self.target_id,
+            kind: self.kind,
             location: types::structs::TextRange {
                 start_byte: 0,
                 end_byte: 0,
@@ -367,12 +367,12 @@ fn find_indirect_callers(
 ) -> Vec<(usize, SymbolId, Callsite)> {
     let mut results = Vec::new();
     let mut visited: std::collections::HashSet<SymbolId> = std::collections::HashSet::new();
-    visited.insert(function_id.clone());
+    visited.insert(*function_id);
 
     // BFS queue: (depth, function_id)
     let mut queue: std::collections::VecDeque<(usize, SymbolId)> =
         std::collections::VecDeque::new();
-    queue.push_back((0, function_id.clone()));
+    queue.push_back((0, *function_id));
 
     while let Some((depth, current_fid)) = queue.pop_front() {
         if depth >= max_depth {

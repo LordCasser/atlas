@@ -32,6 +32,7 @@ use types::lazy::LazyWindow;
 /// *ResSym: all symbols + imports + scopes + scope_tree; no references/dataflow/callsites.
 /// *Structural: backfills callsite range/callee only (no data_node_id).
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ExtractionMode {
     /// Lightweight manifest mode (`--analysis manifest`).
     ///

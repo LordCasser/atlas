@@ -618,7 +618,7 @@ impl ToolRouter {
             "atlas_annotate" => self.handle_atlas_annotate(arguments),
             "atlas_domain_rules" => self.handle_atlas_domain_rules(arguments),
             "atlas_rule_learn" => self.handle_atlas_rule_learn(arguments),
-            _ => (format!("Unknown tool: {}", name), true),
+            _ => (format!("Unknown tool: {name}"), true),
         };
 
         // Wrap long results with truncation warning
@@ -678,7 +678,7 @@ impl ToolRouter {
                     false,
                 )
             }
-            None => (format!("Task not found: {}", task_id), true),
+            None => (format!("Task not found: {task_id}"), true),
         }
     }
 
@@ -820,7 +820,7 @@ impl ToolRouter {
         {
             Ok(o) => o,
             Err(e) => {
-                warnings.push(format!("Lazy structural extraction failed: {:#}", e));
+                warnings.push(format!("Lazy structural extraction failed: {e:#}"));
                 return StructuralEnsureOutcome {
                     warnings,
                     built_file_ids,
@@ -836,7 +836,7 @@ impl ToolRouter {
         built_file_ids = outcome.built_file_ids;
         if !built_file_ids.is_empty() {
             if let Err(e) = self.maybe_refresh_graph() {
-                warnings.push(format!("Graph refresh failed: {:#}", e));
+                warnings.push(format!("Graph refresh failed: {e:#}"));
             }
         }
         StructuralEnsureOutcome {
@@ -881,8 +881,7 @@ impl ToolRouter {
             Ok(o) => o,
             Err(e) => {
                 warnings.push(format!(
-                    "Lazy structural extraction failed for '{}': {:#}",
-                    symbol_name, e
+                    "Lazy structural extraction failed for '{symbol_name}': {e:#}"
                 ));
                 return StructuralEnsureOutcome {
                     warnings,
@@ -899,7 +898,7 @@ impl ToolRouter {
         built_file_ids = outcome.built_file_ids;
         if !built_file_ids.is_empty() {
             if let Err(e) = self.maybe_refresh_graph() {
-                warnings.push(format!("Graph refresh failed: {:#}", e));
+                warnings.push(format!("Graph refresh failed: {e:#}"));
             }
         }
         StructuralEnsureOutcome {
@@ -916,11 +915,11 @@ impl ToolRouter {
         let symbols = self
             .store
             .find_symbols_by_qname(qname)
-            .map_err(|e| format!("Lookup error: {}", e))?;
+            .map_err(|e| format!("Lookup error: {e}"))?;
         match symbols.first() {
             Some(s) => Ok(s.id),
             None => {
-                let mut err = format!("Symbol not found: {}", qname);
+                let mut err = format!("Symbol not found: {qname}");
                 err.push_str(self.index_not_run_guidance());
                 Err(err)
             }
@@ -939,9 +938,9 @@ impl ToolRouter {
         let symbols = self
             .store
             .find_symbols_by_qname(qname)
-            .map_err(|e| format!("Lookup error: {}", e))?;
+            .map_err(|e| format!("Lookup error: {e}"))?;
         if symbols.is_empty() {
-            let mut err = format!("Symbol not found: {}", qname);
+            let mut err = format!("Symbol not found: {qname}");
             err.push_str(self.index_not_run_guidance());
             return Err(err);
         }
@@ -964,7 +963,7 @@ impl ToolRouter {
         let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
         // XOR ts components to spread bits, then mix with the atomic sequence
         let rand = (((ts >> 10) ^ (ts & 0xFFFF)) as u32 ^ seq ^ (seq.rotate_left(7))) as u16;
-        format!("q_{:x}_{:04x}", ts, rand)
+        format!("q_{ts:x}_{rand:04x}")
     }
 
     /// Store a query snapshot, pruning expired entries first.
@@ -1648,7 +1647,7 @@ mod tests {
             id: SymbolId::generate(&file_id, "typescript", name, "function", None),
             kind: atlas_engine::SymbolKind::Function,
             name: name.into(),
-            qualified_name: format!("{}.{}", name, name),
+            qualified_name: format!("{name}.{name}"),
             symbol_path: vec![name.into()],
             file_id,
             language: atlas_engine::Language::TypeScript,
@@ -1750,7 +1749,7 @@ mod tests {
 
         let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         let (resp_str, is_error) = router.handle_status();
-        assert!(!is_error, "status failed: {}", resp_str);
+        assert!(!is_error, "status failed: {resp_str}");
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         assert_eq!(resp["index"]["mode"].as_str(), Some("manifest"));
         assert_eq!(resp["index"]["active_extraction_jobs"].as_u64(), Some(0));
@@ -1766,7 +1765,7 @@ mod tests {
 
         let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         let (resp_str, is_error) = router.handle_jobs();
-        assert!(!is_error, "jobs failed: {}", resp_str);
+        assert!(!is_error, "jobs failed: {resp_str}");
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         let jobs = resp["active_jobs"].as_array().unwrap();
         assert_eq!(jobs.len(), 1);
@@ -1799,8 +1798,7 @@ mod tests {
         let codes: Vec<&str> = diags.iter().filter_map(|d| d["code"].as_str()).collect();
         assert!(
             codes.contains(&"include_roots_warning"),
-            "Expected include_roots_warning code, got: {:?}",
-            codes
+            "Expected include_roots_warning code, got: {codes:?}"
         );
     }
 
@@ -1830,8 +1828,7 @@ mod tests {
             .collect();
         assert!(
             codes.contains(&"include_roots_warning"),
-            "Expected include_roots_warning, got: {:?}",
-            codes
+            "Expected include_roots_warning, got: {codes:?}"
         );
     }
 
@@ -1852,19 +1849,17 @@ mod tests {
         });
 
         let (resp_str, is_error) = router.handle_symbol(&args);
-        assert!(!is_error, "Expected success, got: {}", resp_str);
+        assert!(!is_error, "Expected success, got: {resp_str}");
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         let warns = resp["warnings"].as_array();
         assert!(
             warns.is_some(),
-            "Expected 'warnings' field in: {}",
-            resp_str
+            "Expected 'warnings' field in: {resp_str}"
         );
         assert!(
             !warns.unwrap().is_empty(),
-            "Expected non-empty warnings in: {}",
-            resp_str
+            "Expected non-empty warnings in: {resp_str}"
         );
     }
 
@@ -1883,19 +1878,17 @@ mod tests {
         });
 
         let (resp_str, is_error) = router.handle_context(&args);
-        assert!(!is_error, "Expected success, got: {}", resp_str);
+        assert!(!is_error, "Expected success, got: {resp_str}");
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         let warns = resp["warnings"].as_array();
         assert!(
             warns.is_some(),
-            "Expected 'warnings' field in: {}",
-            resp_str
+            "Expected 'warnings' field in: {resp_str}"
         );
         assert!(
             !warns.unwrap().is_empty(),
-            "Expected non-empty warnings in: {}",
-            resp_str
+            "Expected non-empty warnings in: {resp_str}"
         );
     }
 }

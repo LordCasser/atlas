@@ -487,7 +487,7 @@ mod tests {
 
         #[allow(deprecated)]
         FunctionSummary {
-            function_id: function_id.clone(),
+            function_id: *function_id,
             node_count: 5,
             edge_count: 4,
             param_flows: vec![ParameterFlow {
@@ -565,7 +565,7 @@ mod tests {
         store.insert_symbols(&[func_sym.clone()])?;
 
         // Build summary via build_for_function
-        let function_id = func_sym.id.clone();
+        let function_id = func_sym.id;
         let summary = test_summary(&function_id, &file_id);
 
         let _result = SummaryStore::build_for_function(&store, &function_id, |_, fid| {
@@ -639,7 +639,7 @@ mod tests {
         };
         store.insert_symbols(&[func_sym.clone()])?;
 
-        let function_id = func_sym.id.clone();
+        let function_id = func_sym.id;
         let summary = test_summary(&function_id, &file_id);
 
         // Build

@@ -258,11 +258,11 @@ impl ImportResolver {
             }
             ImportKind::FromImport => {
                 if !resolved_module.is_empty() && !name.is_empty() {
-                    candidates.push(format!("{}.{}", resolved_module, name));
+                    candidates.push(format!("{resolved_module}.{name}"));
                 }
                 // Also try with the original module path
                 if module != &resolved_module && !module.is_empty() && !name.is_empty() {
-                    candidates.push(format!("{}.{}", module, name));
+                    candidates.push(format!("{module}.{name}"));
                 }
                 if !name.is_empty() {
                     candidates.push(name.clone());
@@ -404,8 +404,7 @@ mod tests {
         // Should resolve @/utils to src/utils
         assert!(
             candidates.iter().any(|c| c.contains("src/utils")),
-            "expected src/utils in candidates, got: {:?}",
-            candidates
+            "expected src/utils in candidates, got: {candidates:?}"
         );
     }
 

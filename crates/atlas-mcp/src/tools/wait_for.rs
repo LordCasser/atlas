@@ -22,12 +22,12 @@ impl ToolRouter {
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
             .unwrap_or(30)
-            .min(300) as u64; // cap at 5 minutes
+            .min(300); // cap at 5 minutes
         let poll_interval_secs = args
             .get("poll_interval_secs")
             .and_then(|v| v.as_u64())
             .unwrap_or(2)
-            .clamp(1, 10) as u64;
+            .clamp(1, 10);
 
         let deadline = Instant::now() + Duration::from_secs(timeout_secs);
         let poll_duration = Duration::from_secs(poll_interval_secs);
@@ -35,7 +35,7 @@ impl ToolRouter {
         loop {
             let info = match self.task_manager.get_task(task_id) {
                 Some(info) => info,
-                None => return (format!("Task not found: {}", task_id), true),
+                None => return (format!("Task not found: {task_id}"), true),
             };
 
             let status_str = match info.status {
