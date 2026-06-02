@@ -449,6 +449,10 @@ impl App {
                 .callee_details
                 .get(self.detail_selected)
                 .map(|c| c.symbol.id),
+            DetailTab::Peers => ctx
+                .file_peers
+                .get(self.detail_selected)
+                .map(|p| p.id),
             _ => return,
         };
 
@@ -473,6 +477,7 @@ impl App {
             Some(ctx) => match self.detail_tab {
                 DetailTab::Callers => ctx.caller_details.len(),
                 DetailTab::Callees => ctx.callee_details.len(),
+                DetailTab::Peers => ctx.file_peers.len(),
                 _ => 0,
             },
             None => 0,

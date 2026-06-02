@@ -3,7 +3,7 @@
 //! Pure rendering — reads pre-computed `ContextView` and tab/scroll state,
 //! never accesses Store or GraphEngine.
 
-use atlas_engine::{CalleeDetail, CallerDetail, ContextView};
+use atlas_engine::{CalleeDetail, CallerDetail, ContextView, SymbolDef};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -17,6 +17,7 @@ pub enum DetailTab {
     Overview,
     Callers,
     Callees,
+    Peers,
     Source,
 }
 
@@ -25,7 +26,8 @@ impl DetailTab {
         match self {
             DetailTab::Overview => DetailTab::Callers,
             DetailTab::Callers => DetailTab::Callees,
-            DetailTab::Callees => DetailTab::Source,
+            DetailTab::Callees => DetailTab::Peers,
+            DetailTab::Peers => DetailTab::Source,
             DetailTab::Source => DetailTab::Overview,
         }
     }
@@ -35,6 +37,7 @@ impl DetailTab {
             DetailTab::Overview => "Overview",
             DetailTab::Callers => "Callers",
             DetailTab::Callees => "Callees",
+            DetailTab::Peers => "Peers",
             DetailTab::Source => "Source",
         }
     }
@@ -65,6 +68,7 @@ pub fn render(
         DetailTab::Overview,
         DetailTab::Callers,
         DetailTab::Callees,
+        DetailTab::Peers,
         DetailTab::Source,
     ]
     .iter()
@@ -104,6 +108,13 @@ pub fn render(
             frame,
             v_chunks[1],
             &context.callee_details,
+            selected,
+            scroll,
+        ),
+        DetailTab::Peers => render_peer_list(
+            frame,
+            v_chunks[1],
+            &context.file_peers,
             selected,
             scroll,
         ),
@@ -284,6 +295,57 @@ fn render_callee_list(
         Block::default()
             .borders(Borders::ALL)
             .title(format!(" Callees ({}) ", callees.len())),
+    );
+    frame.render_widget(list, area);
+}
+
+fn render_peer_list(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    peers: &[SymbolDef],
+    selected: usize,
+    scroll: usize,
+) {
+    let list_height = area.height.saturating_sub(2) as usize;
+    if list_height == 0 {
+        return;
+    }
+
+    let items: Vec<ListItem> = peers
+        .iter()
+        .skip(scroll)
+        .take(list_height)
+        .enumerate()
+        .map(|(i, p)| {
+            let global_idx = scroll + i;
+            let is_sel = global_idx == selected;
+
+            let name_style = if is_sel {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            ListItem::new(vec![Line::from(vec![
+                Span::styled(
+                    if is_sel { "> " } else { "  " },
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(&p.name, name_style),
+                Span::styled(
+                    format!("  {:?}", p.kind),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])])
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Peers ({}) ", peers.len())),
     );
     frame.render_widget(list, area);
 }
