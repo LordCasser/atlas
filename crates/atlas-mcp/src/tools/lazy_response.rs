@@ -103,9 +103,7 @@ impl AnalysisContract {
         if mask.has(CapabilityMask::MANIFEST) {
             safe.push("can resolve symbol names and top-level declarations".into());
         } else {
-            unsafe_conc.push(
-                "no symbol index available — cannot confirm any symbol exists".into(),
-            );
+            unsafe_conc.push("no symbol index available — cannot confirm any symbol exists".into());
         }
 
         if mask.has(CapabilityMask::STRUCTURAL) {
@@ -115,9 +113,8 @@ impl AnalysisContract {
         if mask.has(CapabilityMask::CALL_EDGES) {
             safe.push("can trace direct caller/callee relationships".into());
         } else {
-            unsafe_conc.push(
-                "cannot confirm complete call graph — some calls may be missing".into(),
-            );
+            unsafe_conc
+                .push("cannot confirm complete call graph — some calls may be missing".into());
         }
 
         if mask.has(CapabilityMask::CFG) {
@@ -228,14 +225,11 @@ impl LazyDiagnostics {
             || dataflow.as_ref().is_some_and(|d| d.budget_exceeded)
         {
             "narrow_scope"
-        } else if structural
-            .as_ref()
-            .is_some_and(|s| {
-                s.files_built == 0
-                    && s.files_cached == 0
-                    && s.precision_tier() == PrecisionTier::Unavailable
-            })
-        {
+        } else if structural.as_ref().is_some_and(|s| {
+            s.files_built == 0
+                && s.files_cached == 0
+                && s.precision_tier() == PrecisionTier::Unavailable
+        }) {
             "run_full_index"
         } else {
             "none"
@@ -278,10 +272,7 @@ impl LazyDiagnostics {
     ///
     /// Used when a single handler triggers both layers (e.g., `trace_variable`
     /// which ensures structural files and dataflow units).
-    pub(crate) fn from_both(
-        structural_outcome: Option<&LazyOutcome>,
-        window: &LazyWindow,
-    ) -> Self {
+    pub(crate) fn from_both(structural_outcome: Option<&LazyOutcome>, window: &LazyWindow) -> Self {
         Self::from_layers(structural_outcome, Some(window), None)
             .expect("from_both always has at least a dataflow window")
     }
@@ -324,10 +315,10 @@ mod tests {
     fn test_analysis_contract_from_full_dataflow() {
         let mask = CapabilityMask::new(
             CapabilityMask::MANIFEST
-            | CapabilityMask::STRUCTURAL
-            | CapabilityMask::CALL_EDGES
-            | CapabilityMask::CFG
-            | CapabilityMask::DATAFLOW,
+                | CapabilityMask::STRUCTURAL
+                | CapabilityMask::CALL_EDGES
+                | CapabilityMask::CFG
+                | CapabilityMask::DATAFLOW,
         );
         let contract = AnalysisContract::from_capability(mask, None, None);
 

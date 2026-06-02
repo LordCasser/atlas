@@ -96,12 +96,7 @@ impl ForwardPathExplorer {
                 visited.insert(callee_key.clone(), new_depth);
                 predecessors.insert(
                     callee_key,
-                    (
-                        current_id,
-                        edge.kind,
-                        edge.ref_id,
-                        edge.location,
-                    ),
+                    (current_id, edge.kind, edge.ref_id, edge.location),
                 );
                 queue.push_back((*callee, new_depth));
             }

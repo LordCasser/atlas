@@ -32,14 +32,7 @@ impl ToolRouter {
         }
 
         match self.store.upsert_domain_rule(
-            language,
-            rule_kind,
-            pattern,
-            "exact",
-            "user",
-            "enabled",
-            confidence,
-            None,
+            language, rule_kind, pattern, "exact", "user", "enabled", confidence, None,
         ) {
             Ok(id) => {
                 let resp = json!({
@@ -60,10 +53,7 @@ impl ToolRouter {
         }
     }
 
-    pub(crate) fn handle_atlas_domain_rules(
-        &mut self,
-        args: &serde_json::Value,
-    ) -> (String, bool) {
+    pub(crate) fn handle_atlas_domain_rules(&mut self, args: &serde_json::Value) -> (String, bool) {
         let action = get_str(args, "action");
         let rule_id = get_str(args, "rule_id");
         let _source = get_str(args, "source"); // unused now but kept for API compat
@@ -89,8 +79,16 @@ impl ToolRouter {
             }
             _ => {
                 // Default: list with optional filters
-                let lang_filter = if language.is_empty() { None } else { Some(language) };
-                let status_filter = if status.is_empty() { None } else { Some(status) };
+                let lang_filter = if language.is_empty() {
+                    None
+                } else {
+                    Some(language)
+                };
+                let status_filter = if status.is_empty() {
+                    None
+                } else {
+                    Some(status)
+                };
                 match self.store.list_domain_rules(lang_filter, status_filter) {
                     Ok(rules) => {
                         let items: Vec<_> = rules
@@ -126,18 +124,15 @@ impl ToolRouter {
         }
     }
 
-    pub(crate) fn handle_atlas_rule_learn(
-        &mut self,
-        args: &serde_json::Value,
-    ) -> (String, bool) {
+    pub(crate) fn handle_atlas_rule_learn(&mut self, args: &serde_json::Value) -> (String, bool) {
         let min_confidence = args
             .get("min_confidence")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.5);
 
         // Delegate to the C learning strategy from domain_rules crate
-        use domain_rules::learning::RuleLearningStrategy;
         use domain_rules::kinds::c::CLearningStrategy;
+        use domain_rules::learning::RuleLearningStrategy;
 
         let learner = CLearningStrategy;
         match learner.discover_candidates(&self.store) {

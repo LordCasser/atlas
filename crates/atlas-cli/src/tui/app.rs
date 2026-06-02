@@ -3,16 +3,16 @@
 //! Phase 4: search + symbol detail (Overview / Callers / Callees / Source tabs).
 
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use atlas_engine::{CallerChain, ContextView, RawTraceEngine, SearchResult, Store};
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style},
-    widgets::{Gauge, Paragraph},
-    Frame,
+    widgets::{Block, Borders, Clear, Gauge, Paragraph},
 };
 
 use super::auto_index::AutoIndexHandle;
@@ -21,6 +21,8 @@ use super::session::GraphSession;
 use super::widgets::context_view::DetailTab;
 use super::widgets::{context_view, results_list, search_bar, status_bar, trace_view};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+const EXIT_CONFIRM_DURATION: Duration = Duration::from_secs(1);
 
 /// Which area of the UI currently receives keyboard input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +69,7 @@ pub struct App {
 
     // ── Auto-index (Phase 6) ──────────────────────────────────────────
     auto_index: Option<AutoIndexHandle>,
+    exit_confirm_until: Option<Instant>,
 
     // ── DB stats (cached once) ────────────────────────────────────────
     file_count: i64,
@@ -97,6 +100,7 @@ impl App {
             project_root,
             session,
             auto_index,
+            exit_confirm_until: None,
             search_input: String::new(),
             search_cursor: 0,
             search_results: Vec::new(),
@@ -144,6 +148,13 @@ impl App {
     }
 
     fn handle_tick(&mut self) {
+        if self
+            .exit_confirm_until
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.exit_confirm_until = None;
+        }
+
         if self.screen != Screen::AutoIndexing {
             return;
         }
@@ -185,11 +196,8 @@ impl App {
             return;
         }
 
-        if key.code == KeyCode::Char('q')
-            && !(self.screen == Screen::SearchHome && self.focus == Focus::SearchBar)
-        {
-            self.should_quit = true;
-            return;
+        if key.code != KeyCode::Esc {
+            self.clear_exit_confirmation();
         }
 
         let code = key.code;
@@ -211,8 +219,11 @@ impl App {
             KeyCode::Esc => {
                 if self.focus == Focus::Results || !self.search_input.is_empty() {
                     self.reset_search_input();
-                } else {
+                    self.clear_exit_confirmation();
+                } else if self.exit_confirmation_active() {
                     self.should_quit = true;
+                } else {
+                    self.request_exit_confirmation();
                 }
             }
 
@@ -477,6 +488,19 @@ impl App {
         self.selected_index = 0;
     }
 
+    fn exit_confirmation_active(&self) -> bool {
+        self.exit_confirm_until
+            .is_some_and(|deadline| Instant::now() < deadline)
+    }
+
+    fn request_exit_confirmation(&mut self) {
+        self.exit_confirm_until = Some(Instant::now() + EXIT_CONFIRM_DURATION);
+    }
+
+    fn clear_exit_confirmation(&mut self) {
+        self.exit_confirm_until = None;
+    }
+
     fn return_to_results(&mut self) {
         self.screen = Screen::SearchHome;
         self.focus = Focus::Results;
@@ -628,6 +652,12 @@ impl App {
             self.session.is_initialized(),
             "",
         );
+
+        if self.exit_confirmation_active() {
+            render_exit_confirmation(frame, area);
+        } else {
+            self.clear_exit_confirmation();
+        }
     }
 }
 
@@ -700,6 +730,17 @@ fn render_auto_index_progress(frame: &mut Frame, area: Rect, handle: &Option<Aut
     frame.render_widget(subtitle, inner[5]);
 }
 
+fn render_exit_confirmation(frame: &mut Frame, area: Rect) {
+    let popup = centered_in(area, 28, 3);
+    frame.render_widget(Clear, popup);
+
+    let prompt = Paragraph::new("再次按esc确认退出")
+        .block(Block::default().borders(Borders::ALL))
+        .style(Style::default().fg(Color::Yellow))
+        .alignment(Alignment::Center);
+    frame.render_widget(prompt, popup);
+}
+
 fn byte_index_at_char(s: &str, char_idx: usize) -> usize {
     s.char_indices()
         .nth(char_idx)
@@ -730,4 +771,38 @@ fn centered_in(area: Rect, width: u16, height: u16) -> Rect {
         ])
         .split(h[1]);
     v[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_app() -> App {
+        App::new(
+            Arc::new(Store::open_in_memory().expect("in-memory store")),
+            PathBuf::from("."),
+        )
+    }
+
+    #[test]
+    fn q_is_search_input_not_quit() {
+        let mut app = test_app();
+
+        app.handle_key_press(KeyEvent::from(KeyCode::Char('q')));
+
+        assert!(!app.should_quit);
+        assert_eq!(app.search_input, "q");
+    }
+
+    #[test]
+    fn empty_search_requires_second_escape_to_quit() {
+        let mut app = test_app();
+
+        app.handle_search_key(KeyCode::Esc);
+        assert!(!app.should_quit);
+        assert!(app.exit_confirmation_active());
+
+        app.handle_search_key(KeyCode::Esc);
+        assert!(app.should_quit);
+    }
 }

@@ -17,7 +17,10 @@ impl ToolRouter {
         let field = atlas_engine::canonicalize_field_path(field_raw);
 
         if symbol.is_empty() || field.is_empty() {
-            return ("Missing required parameters: symbol and field".to_string(), true);
+            return (
+                "Missing required parameters: symbol and field".to_string(),
+                true,
+            );
         }
 
         // Resolve symbol to SymbolId
@@ -49,7 +52,10 @@ impl ToolRouter {
             Ok(nodes) => nodes,
             Err(e) => return (format!("Failed to load CFG nodes: {e}"), true),
         };
-        let mut cfg_edges = self.store.find_cfg_edges_by_function(&sid).unwrap_or_default();
+        let mut cfg_edges = self
+            .store
+            .find_cfg_edges_by_function(&sid)
+            .unwrap_or_default();
 
         let mut lazy_window: Option<atlas_engine::LazyWindow> = None;
 
@@ -68,7 +74,10 @@ impl ToolRouter {
                             );
                         }
                     };
-                    cfg_edges = self.store.find_cfg_edges_by_function(&sid).unwrap_or_default();
+                    cfg_edges = self
+                        .store
+                        .find_cfg_edges_by_function(&sid)
+                        .unwrap_or_default();
                 }
                 Err(e) => {
                     // Lazy extraction itself failed — return graceful diagnostics
@@ -140,8 +149,7 @@ impl ToolRouter {
         };
 
         // Load domain rules from DB for this symbol's language
-        let cpp_rules =
-            atlas_engine::analysis::CppOwnershipRules::load_for(&self.store, lang_str);
+        let cpp_rules = atlas_engine::analysis::CppOwnershipRules::load_for(&self.store, lang_str);
         let has_any_rules = cpp_rules.has_any_rules();
         let has_user_rules = cpp_rules.has_user_rules();
         let ownership_rules = atlas_engine::analysis::OwnershipRules::default();

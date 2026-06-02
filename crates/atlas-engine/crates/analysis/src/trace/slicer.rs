@@ -166,10 +166,7 @@ impl Slicer {
                 for edge in &candidates {
                     let source_key = hex::encode(edge.source.as_bytes());
                     if !visited.contains_key(&source_key) {
-                        predecessors.insert(
-                            current_key.clone(),
-                            (edge.source, edge.kind),
-                        );
+                        predecessors.insert(current_key.clone(), (edge.source, edge.kind));
                     }
                 }
             }

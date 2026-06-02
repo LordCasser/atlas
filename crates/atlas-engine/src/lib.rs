@@ -39,14 +39,14 @@ pub use lazy_crate::LazyDataflowService;
 mod closure_planner;
 /// Investigation context: MCP-session-scoped analysis focus for lazy job prioritization.
 pub mod investigation;
+mod lazy_budget;
 mod lazy_coordinator;
+mod lazy_orchestrator;
 mod lazy_structural;
 mod linux_augment;
 /// Precision tier computation for lazy extraction transparency.
 pub mod precision;
 mod source_extractor;
-mod lazy_budget;
-mod lazy_orchestrator;
 
 /// Closure planner: dependency-closure-aware lazy extraction planning.
 pub use closure_planner::{ClosurePlanner, DependencyClosure, IncludeRoot, PrioritizedWorkset};
@@ -69,11 +69,9 @@ pub use analysis;
 /// Analysis: domain rules, lifecycle proof, and rule learning.
 pub use analysis::domain_rules;
 pub use analysis::lifecycle_proof;
-pub use analysis::rule_learning;
 /// Analysis: C/C++ ownership rules consumer.
 pub use analysis::ownership_rules::CppOwnershipRules;
-/// Domain rules: language-agnostic rule engine.
-pub use domain_rules as rule_engine;
+pub use analysis::rule_learning;
 /// Analysis: summary builder.
 pub use analysis::summary::SummaryBuilder;
 /// Analysis layer: trace engine and query responses.
@@ -91,6 +89,8 @@ pub use context::{CalleeDetail, CallerDetail, ContextBuilder, ContextView};
 pub use db::summary::{SummaryBuildStats, SummaryStore};
 /// Database store and schema version.
 pub use db::{CURRENT_SCHEMA_VERSION, Store};
+/// Domain rules: language-agnostic rule engine.
+pub use domain_rules as rule_engine;
 /// Extraction layer: language frontends, parser pool, grammar registry.
 pub use extraction::{
     ExtractionMode, LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig,
@@ -113,6 +113,10 @@ pub use graph::{
     PathBreakpointKind, PathEdge, PathEdgeDirection, RankedPath, Subgraph, TraversalConfig,
     TraversalDirection, materialize_annotations,
 };
+/// Investigation context types: focus, related symbols/files, desired capabilities.
+pub use investigation::{Investigation, InvestigationFocus};
+/// Unified lazy extraction orchestration: policy presets, outcomes, orchestrator.
+pub use lazy_orchestrator::{LazyOrchestrator, LazyOutcome, LazyPolicy};
 /// Resolution layer: reference resolver, path aliases, config hashing.
 pub use resolution::{
     PATH_ALIAS_CONFIG_FILES, PathAliasConfig, PathAliasResolver, ReferenceResolver,
@@ -126,10 +130,6 @@ pub use types::progress;
 pub use types::*;
 /// Workspace abstractions.
 pub use workspace::{ProjectRoot, SourcePath, Workspace};
-/// Investigation context types: focus, related symbols/files, desired capabilities.
-pub use investigation::{Investigation, InvestigationFocus};
-/// Unified lazy extraction orchestration: policy presets, outcomes, orchestrator.
-pub use lazy_orchestrator::{LazyOrchestrator, LazyOutcome, LazyPolicy};
 
 // ─── Engine ────────────────────────────────────────────────────────────────
 
@@ -354,7 +354,10 @@ impl Engine {
         let mut partial = false;
         let mut lazy_diagnostics: Vec<TraceDiagnostic> = Vec::new();
         let lazy_summary: Option<LazySummary>;
-        match self.lazy_service.ensure_for_position(file_id, line, column, None) {
+        match self
+            .lazy_service
+            .ensure_for_position(file_id, line, column, None)
+        {
             Ok(window) => {
                 lazy_summary = Some(LazySummary {
                     triggered: true,

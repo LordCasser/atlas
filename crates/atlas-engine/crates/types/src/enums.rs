@@ -1029,15 +1029,15 @@ impl CfgNodeKind {
 /// Effect annotation for CFG nodes — what side effect a statement/branch has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EffectKind {
-    Read,        // Read access to a field/variable
-    Write,       // Write/modify a field/variable
-    Allocate,    // Memory allocation (malloc, new, calloc, realloc)
-    Free,        // Memory deallocation (free, delete)
-    Call,        // Function/method call
-    Condition,   // Branch condition evaluation
-    Return,      // Return statement
-    Goto,        // Goto statement
-    Assign,      // Assignment statement
+    Read,      // Read access to a field/variable
+    Write,     // Write/modify a field/variable
+    Allocate,  // Memory allocation (malloc, new, calloc, realloc)
+    Free,      // Memory deallocation (free, delete)
+    Call,      // Function/method call
+    Condition, // Branch condition evaluation
+    Return,    // Return statement
+    Goto,      // Goto statement
+    Assign,    // Assignment statement
 }
 
 impl EffectKind {

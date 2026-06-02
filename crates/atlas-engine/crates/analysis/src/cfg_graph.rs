@@ -27,24 +27,16 @@ impl CfgGraph {
     /// endpoint exists in the node set, and that exactly one Entry and one Exit
     /// node are present.
     pub fn build(nodes: &[CfgNode], edges: &[CfgEdge]) -> anyhow::Result<Self> {
-        let node_map: HashMap<CfgNodeId, CfgNode> = nodes
-            .iter()
-            .map(|n| (n.id, n.clone()))
-            .collect();
+        let node_map: HashMap<CfgNodeId, CfgNode> =
+            nodes.iter().map(|n| (n.id, n.clone())).collect();
 
         // Validate edge endpoints
         for e in edges {
             if !node_map.contains_key(&e.source) {
-                anyhow::bail!(
-                    "CfgGraph: edge source {:?} not found in nodes",
-                    e.source
-                );
+                anyhow::bail!("CfgGraph: edge source {:?} not found in nodes", e.source);
             }
             if !node_map.contains_key(&e.target) {
-                anyhow::bail!(
-                    "CfgGraph: edge target {:?} not found in nodes",
-                    e.target
-                );
+                anyhow::bail!("CfgGraph: edge target {:?} not found in nodes", e.target);
             }
         }
 
@@ -80,11 +72,7 @@ impl CfgGraph {
     }
 
     /// Return all outgoing edges of a given kind from a node.
-    pub fn successors_by_kind(
-        &self,
-        node_id: &CfgNodeId,
-        kind: CfgEdgeKind,
-    ) -> Vec<&CfgEdge> {
+    pub fn successors_by_kind(&self, node_id: &CfgNodeId, kind: CfgEdgeKind) -> Vec<&CfgEdge> {
         self.successors
             .get(node_id)
             .map(|edges| edges.iter().filter(|e| e.kind == kind).collect())
@@ -95,21 +83,30 @@ impl CfgGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use types::ids::SymbolId;
     use types::TextRange;
     use types::cfg::CfgEdge;
     use types::enums::CfgEdgeKind;
+    use types::ids::SymbolId;
 
     fn empty_range() -> TextRange {
         TextRange {
-            start_byte: 0, end_byte: 0,
-            start_line: 0, start_column: 0,
-            end_line: 0, end_column: 0,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 0,
+            start_column: 0,
+            end_line: 0,
+            end_column: 0,
         }
     }
 
     fn test_symbol_id() -> SymbolId {
-        SymbolId::generate(&types::ids::FileId::generate("test.c"), "c", "test_fn", "function", None)
+        SymbolId::generate(
+            &types::ids::FileId::generate("test.c"),
+            "c",
+            "test_fn",
+            "function",
+            None,
+        )
     }
 
     #[test]

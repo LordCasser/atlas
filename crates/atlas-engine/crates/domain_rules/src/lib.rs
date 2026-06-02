@@ -15,16 +15,16 @@
 //!   └── store (DB persistence via db::Store)
 //! ```
 
-pub mod types;
-pub mod pattern;
 pub mod engine;
-pub mod store;
-pub mod registry;
-pub mod learning;
 pub mod kinds;
+pub mod learning;
+pub mod pattern;
+pub mod registry;
+pub mod store;
+pub mod types;
 
-pub use types::*;
 pub use engine::GenericRuleEngine;
-pub use registry::{LanguageRuleKinds, RuleKindSpec, RuleValidationResult};
 pub use learning::{LearnedRuleCandidate, LearningEvidence, RuleLearningStrategy};
+pub use registry::{LanguageRuleKinds, RuleKindSpec, RuleValidationResult};
 pub use store::GenericRuleStore;
+pub use types::*;

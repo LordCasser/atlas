@@ -114,12 +114,7 @@ impl CallerPathExplorer {
                         visited.insert(caller_key.clone(), new_depth);
                         predecessors.insert(
                             current_key,
-                            (
-                                *caller,
-                                edge.kind,
-                                edge.ref_id,
-                                edge.location,
-                            ),
+                            (*caller, edge.kind, edge.ref_id, edge.location),
                         );
                         // Record this as farthest, but do NOT push to queue
                         if new_depth > farthest_depth {
@@ -154,12 +149,7 @@ impl CallerPathExplorer {
                     // step's callsite and range with real evidence.
                     predecessors.insert(
                         current_key,
-                        (
-                            *caller,
-                            edge.kind,
-                            edge.ref_id,
-                            edge.location,
-                        ),
+                        (*caller, edge.kind, edge.ref_id, edge.location),
                     );
                     queue.push_back((*caller, new_depth));
 

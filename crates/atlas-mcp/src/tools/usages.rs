@@ -67,8 +67,7 @@ impl ToolRouter {
         resp["query_id"] = json!(query_id);
 
         (
-            serde_json::to_string_pretty(&resp)
-            .unwrap_or_else(|e| e.to_string()),
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
             false,
         )
     }

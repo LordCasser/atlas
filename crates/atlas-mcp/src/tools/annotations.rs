@@ -10,7 +10,7 @@
 
 use atlas_engine::{FpAnnotation, Language};
 
-use super::{ToolRouter, get_str, MAX_ANNOTATION_QNAME_LENGTH};
+use super::{MAX_ANNOTATION_QNAME_LENGTH, ToolRouter, get_str};
 
 use serde_json::json;
 

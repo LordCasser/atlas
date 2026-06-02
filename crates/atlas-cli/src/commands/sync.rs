@@ -142,9 +142,7 @@ pub fn run(project: &str, analysis: &str) -> Result<()> {
             }
         }
     }
-    println!(
-        "  Summaries:       {summary_count} updated ({summary_skip} skipped / empty)"
-    );
+    println!("  Summaries:       {summary_count} updated ({summary_skip} skipped / empty)");
 
     if !stats.phase_timings.is_empty() {
         print_phase_timings(&stats.phase_timings);

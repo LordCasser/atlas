@@ -458,7 +458,11 @@ impl Store {
                 "INSERT INTO extraction_state
                     (file_id, unit_id, layer, content_hash, status, capability_mask, updated_at)
                  VALUES (?1, NULL, 'resolution_symbols', ?2, 'complete', ?3, datetime('now'))",
-                params![file_id, facts.file.content_hash, CapabilityMask::MANIFEST_BIT as i64],
+                params![
+                    file_id,
+                    facts.file.content_hash,
+                    CapabilityMask::MANIFEST_BIT as i64
+                ],
             )?;
             Ok(())
         })
@@ -467,9 +471,8 @@ impl Store {
     /// Query distinct function names from the symbol table for rule learning.
     pub fn query_function_names(&self) -> anyhow::Result<Vec<String>> {
         let conn = self.lock_read();
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT name FROM symbols WHERE kind = 'function' LIMIT 5000",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT DISTINCT name FROM symbols WHERE kind = 'function' LIMIT 5000")?;
         let names: Vec<String> = stmt
             .query_map([], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;

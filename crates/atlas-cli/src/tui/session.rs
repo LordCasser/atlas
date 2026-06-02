@@ -5,8 +5,8 @@
 //! decoupled from MCP protocol concerns.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use anyhow::Context;
@@ -80,10 +80,7 @@ impl GraphSession {
         }
 
         self.last_check = Instant::now();
-        let current = self
-            .store
-            .index_signature()
-            .unwrap_or_default();
+        let current = self.store.index_signature().unwrap_or_default();
         if current != self.last_signature {
             tracing::info!(
                 "Index signature changed, refreshing graph (was: {}, now: {})",

@@ -86,10 +86,7 @@ fn print_capability_summary(files_by_language: &[(String, i64)]) {
 
     println!();
     println!("  Capability Summary:");
-    println!(
-        "  {:<14} {:<20} Confidence Floor",
-        "Language", "Level"
-    );
+    println!("  {:<14} {:<20} Confidence Floor", "Language", "Level");
     println!("  {:-<14} {:-<20} {:-<16}", "", "", "");
 
     for name in lang_names {

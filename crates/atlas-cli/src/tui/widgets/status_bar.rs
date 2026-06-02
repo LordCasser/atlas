@@ -33,7 +33,7 @@ pub fn render(
         text.push_str(additional);
     }
 
-    text.push_str(" | Esc back | Ctrl-C quit | q lists");
+    text.push_str(" | Esc back/confirm | Ctrl-C quit");
 
     let status = Paragraph::new(text).style(Style::default().fg(Color::Black).bg(Color::Gray));
     frame.render_widget(status, area);

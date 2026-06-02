@@ -18,9 +18,7 @@ pub struct ResultRow {
 
 impl From<SearchResult> for ResultRow {
     fn from(r: SearchResult) -> Self {
-        let file_path = r
-            .file_path
-            .unwrap_or_else(|| String::from("?"));
+        let file_path = r.file_path.unwrap_or_else(|| String::from("?"));
         Self {
             name: r.symbol.name,
             kind: r.symbol.kind,
@@ -99,10 +97,7 @@ pub fn render(
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(format!(
-                " Results ({}) ",
-                rows.len()
-            )),
+            .title(format!(" Results ({}) ", rows.len())),
     );
 
     frame.render_widget(list, area);

@@ -58,9 +58,10 @@ impl GenericRuleEngine {
                     if !pattern::match_pattern(&rule, target) {
                         continue;
                     }
-                    let meta = rule.meta.as_ref().and_then(|m| {
-                        serde_json::from_str(m).ok()
-                    });
+                    let meta = rule
+                        .meta
+                        .as_ref()
+                        .and_then(|m| serde_json::from_str(m).ok());
                     let source = RuleSource::from_str(&rule.source).unwrap_or(RuleSource::User);
                     let rm = match source {
                         RuleSource::Builtin if rule.confidence < 0.9 => RuleMatch::Heuristic {
@@ -170,7 +171,10 @@ mod tests {
         let engine = GenericRuleEngine::new();
         // Query for "rust" — no rules exist for this language
         let matches = engine.match_pattern(&store, "rust", "free_fn", "my_free");
-        assert!(matches.is_empty(), "Unknown language should return empty vec");
+        assert!(
+            matches.is_empty(),
+            "Unknown language should return empty vec"
+        );
     }
 
     // ── §6.2: Status filtering ──────────────────────────────────────
@@ -179,13 +183,23 @@ mod tests {
         let store = test_store();
         store
             .upsert_domain_rule(
-                "c", "free_fn", "candidate_fn", "exact", "learned", "candidate", 0.8, None,
+                "c",
+                "free_fn",
+                "candidate_fn",
+                "exact",
+                "learned",
+                "candidate",
+                0.8,
+                None,
             )
             .unwrap();
 
         let engine = GenericRuleEngine::new();
         let matches = engine.match_pattern(&store, "c", "free_fn", "candidate_fn");
-        assert!(matches.is_empty(), "Candidate status rules should not be returned");
+        assert!(
+            matches.is_empty(),
+            "Candidate status rules should not be returned"
+        );
     }
 
     #[test]
@@ -193,13 +207,23 @@ mod tests {
         let store = test_store();
         store
             .upsert_domain_rule(
-                "c", "free_fn", "rejected_fn", "exact", "learned", "rejected", 0.5, None,
+                "c",
+                "free_fn",
+                "rejected_fn",
+                "exact",
+                "learned",
+                "rejected",
+                0.5,
+                None,
             )
             .unwrap();
 
         let engine = GenericRuleEngine::new();
         let matches = engine.match_pattern(&store, "c", "free_fn", "rejected_fn");
-        assert!(matches.is_empty(), "Rejected status rules should not be returned");
+        assert!(
+            matches.is_empty(),
+            "Rejected status rules should not be returned"
+        );
     }
 
     #[test]
@@ -207,7 +231,14 @@ mod tests {
         let store = test_store();
         store
             .upsert_domain_rule(
-                "c", "free_fn", "safefree_", "prefix", "user", "enabled", 1.0, None,
+                "c",
+                "free_fn",
+                "safefree_",
+                "prefix",
+                "user",
+                "enabled",
+                1.0,
+                None,
             )
             .unwrap();
 
@@ -228,6 +259,9 @@ mod tests {
         let engine = GenericRuleEngine::new();
         // "my_malloc" should NOT match exact pattern "malloc"
         let matches = engine.match_pattern(&store, "c", "alloc_fn", "my_malloc");
-        assert!(matches.is_empty(), "Exact match should reject partial string matches");
+        assert!(
+            matches.is_empty(),
+            "Exact match should reject partial string matches"
+        );
     }
 }

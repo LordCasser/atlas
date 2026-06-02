@@ -31,8 +31,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use db::Store;
 use extraction::{
-    CancelCheck, ExtractionMode, create_frontend,
-    extract_file_with_mode, extract_file_with_mode_cancellable,
+    CancelCheck, ExtractionMode, create_frontend, extract_file_with_mode,
+    extract_file_with_mode_cancellable,
 };
 use types::ids::FileId;
 use types::structs::precision::PrecisionTier;
@@ -268,9 +268,7 @@ impl LazyStructuralService {
         let layer = self
             .store
             .get_file_extraction_state(file_id, layer::STRUCTURAL)?;
-        Ok(layer.is_some_and(|(s, hash)| {
-            s == status::COMPLETE && hash == *current_hash
-        }))
+        Ok(layer.is_some_and(|(s, hash)| s == status::COMPLETE && hash == *current_hash))
     }
 
     /// Check whether a file already has a complete resolution_symbols layer
@@ -665,7 +663,13 @@ mod tests {
         };
         store.upsert_file(&file_info).unwrap();
         store
-            .upsert_file_extraction_state(&fid, layer::STRUCTURAL, "abc123", status::COMPLETE, CapabilityMask::default())
+            .upsert_file_extraction_state(
+                &fid,
+                layer::STRUCTURAL,
+                "abc123",
+                status::COMPLETE,
+                CapabilityMask::default(),
+            )
             .unwrap();
 
         // When structural layer exists, has_resolution_symbols_layer should return true

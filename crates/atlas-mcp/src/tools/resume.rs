@@ -4,8 +4,8 @@
 //! Re-dispatches to the original handler after re-running lazy extraction on
 //! the snapshot's window, so newly cached data is picked up.
 
-use super::query_snapshot::QueryStatus;
 use super::ToolRouter;
+use super::query_snapshot::QueryStatus;
 use serde_json::{Value, json};
 
 impl ToolRouter {
@@ -104,10 +104,8 @@ impl ToolRouter {
 
         // Patch response: keep original query_id so the client can correlate,
         // and add a `resumed_from` field to indicate this is a resume.
-        let patched = Self::patch_resume_response(
-            &resp_str,
-            &original_query_id,
-        ).unwrap_or(resp_str);
+        let patched =
+            Self::patch_resume_response(&resp_str, &original_query_id).unwrap_or(resp_str);
 
         // Mark as Ready if the re-run completed successfully
         if let Some(s) = self.query_snapshots.get_mut(&original_query_id) {

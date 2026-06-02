@@ -674,10 +674,12 @@ fn ts_dataflow_edges_complete_textrange() {
     for node in &nodes {
         if let Ok(edges) = store.find_dataflow_edges_by_source(&node.id) {
             for edge in &edges {
-                if edge.location.start_byte > 0 && edge.location.end_byte > 0
-                    && (edge.location.start_column > 0 || edge.location.end_column > 0) {
-                        edges_with_column = true;
-                    }
+                if edge.location.start_byte > 0
+                    && edge.location.end_byte > 0
+                    && (edge.location.start_column > 0 || edge.location.end_column > 0)
+                {
+                    edges_with_column = true;
+                }
             }
         }
     }

@@ -196,10 +196,7 @@ mod tests {
             Some(Language::C)
         );
         #[cfg(not(feature = "c"))]
-        assert_eq!(
-            LanguageRegistry::detect_language(Path::new("main.c")),
-            None
-        );
+        assert_eq!(LanguageRegistry::detect_language(Path::new("main.c")), None);
         #[cfg(feature = "cpp")]
         assert_eq!(
             LanguageRegistry::detect_language(Path::new("main.cpp")),

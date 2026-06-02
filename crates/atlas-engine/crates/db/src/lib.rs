@@ -9,9 +9,9 @@ pub(crate) mod store_writers;
 
 pub use readers::{CallGraphReader, DataflowReader, FileReader, SymbolReader, TraceStore};
 pub use schema::{CURRENT_SCHEMA_VERSION, SCHEMA_DDL};
+pub use store::domain_rules::DomainRuleRow;
 pub use store::extraction_jobs::{ClaimResult, ExtractionJob};
 pub use store::{Store, StoreStats};
-pub use store::domain_rules::DomainRuleRow;
 
 // Re-export summary types for the analysis layer
 pub mod summary {

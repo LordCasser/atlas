@@ -106,7 +106,12 @@ impl ToolRouter {
             .find_symbol_by_id(&sid)
             .ok()
             .flatten()
-            .map(|s| matches!(s.language, atlas_engine::Language::C | atlas_engine::Language::Cpp))
+            .map(|s| {
+                matches!(
+                    s.language,
+                    atlas_engine::Language::C | atlas_engine::Language::Cpp
+                )
+            })
             .unwrap_or(false);
 
         if !is_c_or_cpp {
@@ -130,7 +135,10 @@ impl ToolRouter {
             .map(|s| s.qualified_name)
             .unwrap_or_else(|| symbol.to_string());
 
-        let cfg_edges = self.store.find_cfg_edges_by_function(&sid).unwrap_or_default();
+        let cfg_edges = self
+            .store
+            .find_cfg_edges_by_function(&sid)
+            .unwrap_or_default();
         let diffs = atlas_engine::analysis::BranchDiffEngine::diff_branches(&cfg_nodes, &cfg_edges);
 
         let mut resp = json!({

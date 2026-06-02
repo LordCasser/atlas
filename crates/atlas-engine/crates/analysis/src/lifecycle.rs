@@ -304,9 +304,10 @@ impl FieldLifecycleEngine {
                                     .get(&edge.target)
                                     .map(|n| n.kind == CfgNodeKind::Join)
                                     .unwrap_or(false)
-                                    && !next_ctx.is_empty() {
-                                        next_ctx.pop();
-                                    }
+                                    && !next_ctx.is_empty()
+                                {
+                                    next_ctx.pop();
+                                }
                             }
                         }
                         branch_contexts.insert(edge.target, next_ctx);
@@ -372,14 +373,10 @@ fn lattice_merge(a: LatticeState, b: LatticeState) -> LatticeState {
         (State(x), State(y)) if x == y => State(x),
         // Freed vs non-Freed
         (State(FieldState::Freed), State(FieldState::Assigned))
-        | (State(FieldState::Assigned), State(FieldState::Freed)) => {
-            State(FieldState::MaybeFreed)
-        }
+        | (State(FieldState::Assigned), State(FieldState::Freed)) => State(FieldState::MaybeFreed),
         // Freed vs others
         (State(FieldState::Freed), State(FieldState::Unknown))
-        | (State(FieldState::Unknown), State(FieldState::Freed)) => {
-            State(FieldState::MaybeFreed)
-        }
+        | (State(FieldState::Unknown), State(FieldState::Freed)) => State(FieldState::MaybeFreed),
         (State(FieldState::Freed), _) if b != State(FieldState::MaybeFreed) => {
             State(FieldState::MaybeFreed)
         }
@@ -417,9 +414,8 @@ fn transfer_state(
         None => return (state, vec![]),
     };
 
-    let target = types::structs::canonicalize_field_path(
-        node.target_field.as_deref().unwrap_or(""),
-    );
+    let target =
+        types::structs::canonicalize_field_path(node.target_field.as_deref().unwrap_or(""));
     let matches_field = target == canonical_target
         || canonical_target.starts_with(&format!("{target}."))
         || target.starts_with(&format!("{canonical_target}."));
@@ -444,9 +440,7 @@ fn transfer_state(
                 vec![SuspiciousPoint {
                     line: node.stmt_range.start_line,
                     kind: SuspiciousKind::UseAfterFree,
-                    message: format!(
-                        "Allocation on previously freed field '{canonical_target}'"
-                    ),
+                    message: format!("Allocation on previously freed field '{canonical_target}'"),
                 }]
             } else {
                 vec![]
@@ -459,9 +453,7 @@ fn transfer_state(
                     vec![SuspiciousPoint {
                         line: node.stmt_range.start_line,
                         kind: SuspiciousKind::DoubleFree,
-                        message: format!(
-                            "Double free of '{canonical_target}' via {callee}"
-                        ),
+                        message: format!("Double free of '{canonical_target}' via {callee}"),
                     }]
                 } else {
                     vec![]
@@ -569,13 +561,16 @@ mod tests {
         }
     }
 
-    fn make_stmt_node(effect: Option<EffectKind>, target: Option<&str>, line: u32, seq: u32) -> CfgNode {
+    fn make_stmt_node(
+        effect: Option<EffectKind>,
+        target: Option<&str>,
+        line: u32,
+        seq: u32,
+    ) -> CfgNode {
         make_node(effect, target, line, CfgNodeKind::Statement, seq)
     }
 
-    fn make_entry_exit_graph(
-        nodes: &[CfgNode],
-    ) -> (Vec<CfgNode>, Vec<CfgEdge>) {
+    fn make_entry_exit_graph(nodes: &[CfgNode]) -> (Vec<CfgNode>, Vec<CfgEdge>) {
         let fid = test_fid();
         let entry = CfgNode::entry(&fid);
         let exit = CfgNode::exit(&fid);
@@ -641,10 +636,12 @@ mod tests {
         let result =
             FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "ptr", &rules);
         assert_eq!(result.final_state, FieldState::Freed);
-        assert!(result
-            .suspicious_points
-            .iter()
-            .all(|p| p.kind != SuspiciousKind::UseAfterFree));
+        assert!(
+            result
+                .suspicious_points
+                .iter()
+                .all(|p| p.kind != SuspiciousKind::UseAfterFree)
+        );
     }
 
     #[test]
@@ -657,10 +654,12 @@ mod tests {
         let rules = OwnershipRules::default();
         let result =
             FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "ptr", &rules);
-        assert!(!result
-            .suspicious_points
-            .iter()
-            .any(|p| p.kind == SuspiciousKind::UseAfterFree));
+        assert!(
+            !result
+                .suspicious_points
+                .iter()
+                .any(|p| p.kind == SuspiciousKind::UseAfterFree)
+        );
     }
 
     #[test]
@@ -687,8 +686,7 @@ mod tests {
         ];
         let (all_nodes, edges) = make_entry_exit_graph(&nodes);
         let rules = OwnershipRules::default();
-        let result =
-            FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "a", &rules);
+        let result = FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "a", &rules);
         assert!(
             result
                 .suspicious_points
@@ -773,13 +771,7 @@ mod tests {
         let fid = test_fid();
         let entry = CfgNode::entry(&fid);
         let exit = CfgNode::exit(&fid);
-        let loop_node = make_node(
-            Some(EffectKind::Condition),
-            None,
-            10,
-            CfgNodeKind::Loop,
-            1,
-        );
+        let loop_node = make_node(Some(EffectKind::Condition), None, 10, CfgNodeKind::Loop, 1);
 
         let all_nodes = vec![entry.clone(), loop_node.clone(), exit.clone()];
         let edges = vec![
@@ -818,8 +810,7 @@ mod tests {
         edges.push(CfgEdge::new(&prev_id, &exit.id, CfgEdgeKind::Normal));
 
         let rules = OwnershipRules::default();
-        let result =
-            FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "x", &rules);
+        let result = FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "x", &rules);
         assert!(result.partial);
         assert_eq!(result.evidence_level, EvidenceLevel::Incomplete);
     }

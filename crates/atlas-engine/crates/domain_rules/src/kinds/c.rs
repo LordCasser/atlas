@@ -155,10 +155,7 @@ impl RuleLearningStrategy for CLearningStrategy {
         "c"
     }
 
-    fn discover_candidates(
-        &self,
-        store: &Store,
-    ) -> anyhow::Result<Vec<LearnedRuleCandidate>> {
+    fn discover_candidates(&self, store: &Store) -> anyhow::Result<Vec<LearnedRuleCandidate>> {
         let mut candidates: Vec<LearnedRuleCandidate> = Vec::new();
 
         let names = store.query_function_names()?;

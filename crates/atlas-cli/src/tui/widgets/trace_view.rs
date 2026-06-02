@@ -58,11 +58,7 @@ pub fn render(
     for step in &chain.steps {
         let step_idx = step.index as usize;
 
-        let marker = if step_idx == selected {
-            "> "
-        } else {
-            "  "
-        };
+        let marker = if step_idx == selected { "> " } else { "  " };
         let marker_style = if step_idx == selected {
             Style::default()
                 .fg(Color::Yellow)
@@ -156,11 +152,7 @@ pub fn render(
     )));
 
     // Render visible slice.
-    let visible: Vec<Line> = lines
-        .into_iter()
-        .skip(scroll)
-        .take(list_height)
-        .collect();
+    let visible: Vec<Line> = lines.into_iter().skip(scroll).take(list_height).collect();
 
     let paragraph = Paragraph::new(visible);
     frame.render_widget(paragraph, inner);

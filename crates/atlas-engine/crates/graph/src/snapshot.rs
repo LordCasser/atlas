@@ -2532,10 +2532,7 @@ mod tests {
         let snap = GraphSnapshot::from_parts(vec![a, b], vec![e], 0.0).unwrap();
         let b_ix = snap.id_to_idx[&snap.nodes[1].symbol_id];
         let w = snap.edge_weight(0, b_ix);
-        assert!(
-            w >= 2.0,
-            "Implements edge should add +1.0 penalty, got {w}"
-        );
+        assert!(w >= 2.0, "Implements edge should add +1.0 penalty, got {w}");
     }
 
     #[test]

@@ -80,8 +80,14 @@ impl Store {
         meta: Option<&str>,
     ) -> anyhow::Result<String> {
         // Input validation
-        anyhow::ensure!(!language.is_empty(), "domain rule language must not be empty");
-        anyhow::ensure!(!rule_kind.is_empty(), "domain rule rule_kind must not be empty");
+        anyhow::ensure!(
+            !language.is_empty(),
+            "domain rule language must not be empty"
+        );
+        anyhow::ensure!(
+            !rule_kind.is_empty(),
+            "domain rule rule_kind must not be empty"
+        );
         anyhow::ensure!(!pattern.is_empty(), "domain rule pattern must not be empty");
         anyhow::ensure!(
             VALID_STATUSES.contains(&status),
@@ -164,9 +170,8 @@ impl Store {
         let select_sql = "SELECT id, language, rule_kind, pattern, pattern_kind, meta, meta_version, source, status, confidence, created_at, updated_at FROM domain_rules WHERE rule_kind = ?1";
         match language {
             Some(lang) => {
-                let mut stmt = conn.prepare(&format!(
-                    "{select_sql} AND language = ?2 ORDER BY source"
-                ))?;
+                let mut stmt =
+                    conn.prepare(&format!("{select_sql} AND language = ?2 ORDER BY source"))?;
                 let rows = stmt.query_map(params![rule_kind, lang], row_to_domain_rule)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
             }
@@ -193,7 +198,9 @@ mod tests {
     fn test_upsert_and_list_domain_rules() {
         let store = test_store();
         let id = store
-            .upsert_domain_rule("c", "free_fn", "my_free", "exact", "user", "enabled", 1.0, None)
+            .upsert_domain_rule(
+                "c", "free_fn", "my_free", "exact", "user", "enabled", 1.0, None,
+            )
             .unwrap();
         assert!(!id.is_empty());
 
@@ -208,7 +215,9 @@ mod tests {
     fn test_list_domain_rules_filter_by_language() {
         let store = test_store();
         store
-            .upsert_domain_rule("c", "free_fn", "c_free", "exact", "user", "enabled", 1.0, None)
+            .upsert_domain_rule(
+                "c", "free_fn", "c_free", "exact", "user", "enabled", 1.0, None,
+            )
             .unwrap();
         store
             .upsert_domain_rule(
@@ -237,12 +246,26 @@ mod tests {
         let store = test_store();
         store
             .upsert_domain_rule(
-                "c", "free_fn", "enabled_fn", "exact", "user", "enabled", 1.0, None,
+                "c",
+                "free_fn",
+                "enabled_fn",
+                "exact",
+                "user",
+                "enabled",
+                1.0,
+                None,
             )
             .unwrap();
         store
             .upsert_domain_rule(
-                "c", "free_fn", "disabled_fn", "exact", "user", "disabled", 1.0, None,
+                "c",
+                "free_fn",
+                "disabled_fn",
+                "exact",
+                "user",
+                "disabled",
+                1.0,
+                None,
             )
             .unwrap();
 
@@ -256,7 +279,14 @@ mod tests {
         let store = test_store();
         let id = store
             .upsert_domain_rule(
-                "c", "free_fn", "to_delete", "exact", "user", "enabled", 1.0, None,
+                "c",
+                "free_fn",
+                "to_delete",
+                "exact",
+                "user",
+                "enabled",
+                1.0,
+                None,
             )
             .unwrap();
         assert!(store.delete_domain_rule(&id).unwrap());
@@ -274,15 +304,17 @@ mod tests {
             .upsert_domain_rule("c", "alloc_fn", "a1", "exact", "user", "enabled", 1.0, None)
             .unwrap();
 
-        let free_rules = store.get_domain_rules_by_kind("free_fn", Some("c")).unwrap();
+        let free_rules = store
+            .get_domain_rules_by_kind("free_fn", Some("c"))
+            .unwrap();
         assert_eq!(free_rules.len(), 1);
 
-        let alloc_rules = store.get_domain_rules_by_kind("alloc_fn", Some("c")).unwrap();
+        let alloc_rules = store
+            .get_domain_rules_by_kind("alloc_fn", Some("c"))
+            .unwrap();
         assert_eq!(alloc_rules.len(), 1);
 
-        let none = store
-            .get_domain_rules_by_kind("nonexistent", None)
-            .unwrap();
+        let none = store.get_domain_rules_by_kind("nonexistent", None).unwrap();
         assert!(none.is_empty());
     }
 
@@ -290,10 +322,14 @@ mod tests {
     fn test_upsert_idempotent() {
         let store = test_store();
         let id1 = store
-            .upsert_domain_rule("c", "free_fn", "func", "exact", "user", "enabled", 0.9, None)
+            .upsert_domain_rule(
+                "c", "free_fn", "func", "exact", "user", "enabled", 0.9, None,
+            )
             .unwrap();
         let id2 = store
-            .upsert_domain_rule("c", "free_fn", "func", "exact", "user", "enabled", 1.0, None)
+            .upsert_domain_rule(
+                "c", "free_fn", "func", "exact", "user", "enabled", 1.0, None,
+            )
             .unwrap();
         assert_eq!(id1, id2);
         let rules = store.list_domain_rules(None, None).unwrap();
@@ -310,10 +346,21 @@ mod tests {
         // The blake3-based ID must produce *different* IDs for these inputs.
         let store = test_store();
         let id_a = store
-            .upsert_domain_rule("c", "free", "fn_malloc", "exact", "user", "enabled", 1.0, None)
+            .upsert_domain_rule(
+                "c",
+                "free",
+                "fn_malloc",
+                "exact",
+                "user",
+                "enabled",
+                1.0,
+                None,
+            )
             .unwrap();
         let id_b = store
-            .upsert_domain_rule("c", "free_fn", "malloc", "exact", "user", "enabled", 1.0, None)
+            .upsert_domain_rule(
+                "c", "free_fn", "malloc", "exact", "user", "enabled", 1.0, None,
+            )
             .unwrap();
         assert_ne!(
             id_a, id_b,
@@ -335,14 +382,26 @@ mod tests {
         let err = store
             .upsert_domain_rule("", "free_fn", "p", "exact", "user", "enabled", 1.0, None)
             .unwrap_err();
-        assert!(err.to_string().contains("language"), "should reject empty language");
+        assert!(
+            err.to_string().contains("language"),
+            "should reject empty language"
+        );
     }
 
     #[test]
     fn test_upsert_rejects_invalid_status() {
         let store = test_store();
         let err = store
-            .upsert_domain_rule("c", "free_fn", "p", "exact", "user", "bogus_status", 1.0, None)
+            .upsert_domain_rule(
+                "c",
+                "free_fn",
+                "p",
+                "exact",
+                "user",
+                "bogus_status",
+                1.0,
+                None,
+            )
             .unwrap_err();
         assert!(
             err.to_string().contains("status"),

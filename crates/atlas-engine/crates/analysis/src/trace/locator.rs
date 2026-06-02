@@ -214,11 +214,7 @@ where
         let nodes = store.get_data_nodes(&ids)?;
         refs = edges
             .iter()
-            .filter_map(|edge| {
-                nodes
-                    .get(id_fn(edge))
-                    .map(TraceDataNodeRef::from_data_node)
-            })
+            .filter_map(|edge| nodes.get(id_fn(edge)).map(TraceDataNodeRef::from_data_node))
             .collect();
     }
     Ok(refs)

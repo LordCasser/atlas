@@ -4,8 +4,8 @@
 //! ownership semantics (free functions, allocation functions, owned field
 //! patterns, cleanup functions).
 
-use domain_rules::{RuleMatch, RuleSource};
 use db::Store;
+use domain_rules::{RuleMatch, RuleSource};
 
 /// C/C++ ownership rules — loaded from the generic rule engine and interpreted
 /// as ownership semantics.
@@ -105,7 +105,10 @@ impl CppOwnershipRules {
                 });
             }
         }
-        if matches!(func_name, "malloc" | "calloc" | "realloc" | "strdup" | "operator new") {
+        if matches!(
+            func_name,
+            "malloc" | "calloc" | "realloc" | "strdup" | "operator new"
+        ) {
             return Some(RuleMatch::Heuristic {
                 rule_id: "builtin_alloc".into(),
                 kind: "alloc_fn".into(),
@@ -174,9 +177,7 @@ mod tests {
     #[test]
     fn test_cpp_ownership_rules_owned_pattern_match() {
         let mut rules = CppOwnershipRules::default();
-        rules
-            .owned_field_patterns
-            .push("data->state.ptr*".into());
+        rules.owned_field_patterns.push("data->state.ptr*".into());
         assert!(rules.matches_owned_pattern("data->state.ptr.cookie"));
         assert!(rules.matches_owned_pattern("data->state.ptr"));
         assert!(!rules.matches_owned_pattern("other->field"));

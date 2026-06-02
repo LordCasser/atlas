@@ -91,9 +91,7 @@ impl Store {
                 .prepare("SELECT callee_name FROM cfg_nodes LIMIT 0")
                 .is_ok();
             if !has_col {
-                conn.execute_batch(
-                    "ALTER TABLE cfg_nodes ADD COLUMN callee_name TEXT;",
-                )?;
+                conn.execute_batch("ALTER TABLE cfg_nodes ADD COLUMN callee_name TEXT;")?;
             }
         }
 
@@ -135,9 +133,7 @@ impl Store {
 
         if let Some((existing_pid, _ts)) = existing {
             if existing_pid != pid as i64 && is_process_alive(existing_pid) {
-                anyhow::bail!(
-                    "Another atlas process (PID {existing_pid}) already holds the lock"
-                );
+                anyhow::bail!("Another atlas process (PID {existing_pid}) already holds the lock");
             }
             // Stale lock — steal it: replace old entry
             tx.execute(

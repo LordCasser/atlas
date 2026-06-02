@@ -795,7 +795,11 @@ impl CapabilityMask {
 /// Using one function everywhere ensures `data->state.ptr`, `data.state.ptr`,
 /// and `data . state . ptr` all compare equal.
 pub fn canonicalize_field_path(raw: &str) -> String {
-    raw.trim().replace("->", ".").chars().filter(|c| !c.is_whitespace()).collect()
+    raw.trim()
+        .replace("->", ".")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -945,7 +949,10 @@ mod tests {
     fn test_capability_mask_has_all_exact() {
         let mask = CapabilityMask::new(CapabilityMask::MANIFEST | CapabilityMask::CFG);
         assert!(mask.has_all(CapabilityMask::MANIFEST | CapabilityMask::CFG));
-        assert!(!mask.has_all(CapabilityMask::MANIFEST | CapabilityMask::CFG | CapabilityMask::DATAFLOW));
+        assert!(
+            !mask
+                .has_all(CapabilityMask::MANIFEST | CapabilityMask::CFG | CapabilityMask::DATAFLOW)
+        );
     }
 
     #[test]
@@ -1269,12 +1276,18 @@ mod canonicalize_tests {
 
     #[test]
     fn spaces_removed() {
-        assert_eq!(canonicalize_field_path("data -> state . ptr"), "data.state.ptr");
+        assert_eq!(
+            canonicalize_field_path("data -> state . ptr"),
+            "data.state.ptr"
+        );
     }
 
     #[test]
     fn leading_trailing_whitespace() {
-        assert_eq!(canonicalize_field_path("  data->state.ptr  "), "data.state.ptr");
+        assert_eq!(
+            canonicalize_field_path("  data->state.ptr  "),
+            "data.state.ptr"
+        );
     }
 
     #[test]

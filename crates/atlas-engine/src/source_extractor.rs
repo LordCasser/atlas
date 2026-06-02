@@ -105,11 +105,7 @@ impl SourceExtractor {
         // Acquire a thread-local parser.
         // Use a scope guard to ensure the parser is always returned to the cache,
         // even on early returns (parse failure, missing node, etc.).
-        let mut parser = TL_PARSER.with(|cell| {
-            cell.borrow_mut()
-                .take()
-                .unwrap_or_default()
-        });
+        let mut parser = TL_PARSER.with(|cell| cell.borrow_mut().take().unwrap_or_default());
 
         // Run extraction; the parser is returned to cache on every path.
         let result = (|| -> Option<String> {

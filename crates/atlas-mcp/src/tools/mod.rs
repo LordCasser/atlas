@@ -27,7 +27,7 @@ use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolI
 
 use serde_json::{Value, json};
 
-use crate::tools::query_snapshot::{InvestigationState, QuerySnapshot, QUERY_SNAPSHOT_TTL_SECS};
+use crate::tools::query_snapshot::{InvestigationState, QUERY_SNAPSHOT_TTL_SECS, QuerySnapshot};
 
 /// Progress report tuple: (progress, total, message)
 pub(crate) type ProgressReport = (f64, Option<f64>, Option<String>);
@@ -815,9 +815,12 @@ impl ToolRouter {
             Some(self.project_root.clone()),
             include_roots,
         );
-        let outcome = match orchestrator
-            .ensure_structural_for_files(&file_vec, LazyPolicy::ForegroundStructural, investigation, query_id)
-        {
+        let outcome = match orchestrator.ensure_structural_for_files(
+            &file_vec,
+            LazyPolicy::ForegroundStructural,
+            investigation,
+            query_id,
+        ) {
             Ok(o) => o,
             Err(e) => {
                 warnings.push(format!("Lazy structural extraction failed: {e:#}"));
@@ -875,9 +878,12 @@ impl ToolRouter {
             Some(self.project_root.clone()),
             include_roots,
         );
-        let outcome = match orchestrator
-            .ensure_structural_for_symbol(symbol_name, LazyPolicy::ForegroundStructural, investigation, query_id)
-        {
+        let outcome = match orchestrator.ensure_structural_for_symbol(
+            symbol_name,
+            LazyPolicy::ForegroundStructural,
+            investigation,
+            query_id,
+        ) {
             Ok(o) => o,
             Err(e) => {
                 warnings.push(format!(
@@ -1744,7 +1750,13 @@ mod tests {
         let store = test_store();
         let file_id = register_test_file(&store, "test.ts");
         store
-            .upsert_file_extraction_state(&file_id, "manifest", "hash1", "complete", atlas_engine::structs::CapabilityMask::default())
+            .upsert_file_extraction_state(
+                &file_id,
+                "manifest",
+                "hash1",
+                "complete",
+                atlas_engine::structs::CapabilityMask::default(),
+            )
             .unwrap();
 
         let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
@@ -1853,10 +1865,7 @@ mod tests {
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         let warns = resp["warnings"].as_array();
-        assert!(
-            warns.is_some(),
-            "Expected 'warnings' field in: {resp_str}"
-        );
+        assert!(warns.is_some(), "Expected 'warnings' field in: {resp_str}");
         assert!(
             !warns.unwrap().is_empty(),
             "Expected non-empty warnings in: {resp_str}"
@@ -1882,10 +1891,7 @@ mod tests {
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         let warns = resp["warnings"].as_array();
-        assert!(
-            warns.is_some(),
-            "Expected 'warnings' field in: {resp_str}"
-        );
+        assert!(warns.is_some(), "Expected 'warnings' field in: {resp_str}");
         assert!(
             !warns.unwrap().is_empty(),
             "Expected non-empty warnings in: {resp_str}"

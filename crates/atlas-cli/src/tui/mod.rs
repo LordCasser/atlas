@@ -23,8 +23,9 @@ use atlas_engine::Store;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::ExecutableCommand;
-use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen,
-                                   LeaveAlternateScreen};
+use ratatui::crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 
 pub use fallback::TextFallback;
 pub use progress::TuiProgress;
@@ -53,16 +54,11 @@ pub fn run_tui(project_root: PathBuf) -> anyhow::Result<()> {
 
     // ── Run app (with panic guard to restore terminal on unwind) ────────
     let mut app = app::App::new(store, project_root);
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        app.run(&mut terminal)
-    }));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.run(&mut terminal)));
 
     // ── Restore terminal (always, even after panic) ─────────────────────
     disable_raw_mode().ok();
-    terminal
-        .backend_mut()
-        .execute(LeaveAlternateScreen)
-        .ok();
+    terminal.backend_mut().execute(LeaveAlternateScreen).ok();
 
     match result {
         Ok(r) => r,

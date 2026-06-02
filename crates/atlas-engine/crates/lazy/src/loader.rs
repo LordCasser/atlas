@@ -385,10 +385,7 @@ fn partition_payload_for_unit(payload: &DataflowPayload, unit: &AnalysisUnit) ->
     let binding_uses: Vec<types::BindingUse> = payload
         .binding_uses
         .iter()
-        .filter(|bu| {
-            bu.binding_id
-                .is_some_and(|bid| binding_ids.contains(&bid))
-        })
+        .filter(|bu| bu.binding_id.is_some_and(|bid| binding_ids.contains(&bid)))
         .cloned()
         .collect();
 

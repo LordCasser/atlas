@@ -3,8 +3,8 @@
 //! Compares the side effects of true/false branches (if/else) or switch cases.
 //! Detects patterns like: one branch frees a field but the other doesn't.
 
-use std::collections::HashMap;
 use crate::cfg_graph::CfgGraph;
+use std::collections::HashMap;
 use types::cfg::{CfgEdge, CfgNode};
 use types::enums::{CfgEdgeKind, CfgNodeKind, EffectKind};
 use types::ids::CfgNodeId;
@@ -264,18 +264,22 @@ mod tests {
         line: u32,
         byte: u32,
     ) -> CfgNode {
-        make_node(fid, CfgNodeKind::Statement, line, byte, effect, target, None)
+        make_node(
+            fid,
+            CfgNodeKind::Statement,
+            line,
+            byte,
+            effect,
+            target,
+            None,
+        )
     }
 
     fn make_join_node(fid: &SymbolId, line: u32, byte: u32) -> CfgNode {
         make_node(fid, CfgNodeKind::Join, line, byte, None, None, None)
     }
 
-    fn make_edge(
-        source: &CfgNodeId,
-        target: &CfgNodeId,
-        kind: CfgEdgeKind,
-    ) -> CfgEdge {
+    fn make_edge(source: &CfgNodeId, target: &CfgNodeId, kind: CfgEdgeKind) -> CfgEdge {
         CfgEdge::new(source, target, kind)
     }
 
@@ -325,7 +329,13 @@ mod tests {
         let stmt = make_stmt_node(&fid, Some(EffectKind::Free), Some("ptr"), 11, 2);
         let join = make_join_node(&fid, 20, 3);
         let exit = make_exit_node(&fid, 4);
-        let nodes = vec![entry.clone(), branch.clone(), stmt.clone(), join.clone(), exit.clone()];
+        let nodes = vec![
+            entry.clone(),
+            branch.clone(),
+            stmt.clone(),
+            join.clone(),
+            exit.clone(),
+        ];
         let edges = vec![
             make_edge(&entry.id, &branch.id, CfgEdgeKind::Normal),
             make_edge(&branch.id, &stmt.id, CfgEdgeKind::TrueBranch),
@@ -350,8 +360,13 @@ mod tests {
         let join2 = make_join_node(&fid, 5, 5);
         let exit = make_exit_node(&fid, 6);
         let nodes = vec![
-            entry.clone(), branch1.clone(), branch2.clone(),
-            stmt.clone(), join1.clone(), join2.clone(), exit.clone(),
+            entry.clone(),
+            branch1.clone(),
+            branch2.clone(),
+            stmt.clone(),
+            join1.clone(),
+            join2.clone(),
+            exit.clone(),
         ];
         let edges = vec![
             make_edge(&entry.id, &branch1.id, CfgEdgeKind::Normal),
@@ -376,7 +391,13 @@ mod tests {
         let alloc = make_stmt_node(&fid, Some(EffectKind::Allocate), Some("ctx->buf"), 2, 2);
         let join = make_join_node(&fid, 3, 3);
         let exit = make_exit_node(&fid, 4);
-        let nodes = vec![entry.clone(), branch.clone(), alloc.clone(), join.clone(), exit.clone()];
+        let nodes = vec![
+            entry.clone(),
+            branch.clone(),
+            alloc.clone(),
+            join.clone(),
+            exit.clone(),
+        ];
         let edges = vec![
             make_edge(&entry.id, &branch.id, CfgEdgeKind::Normal),
             make_edge(&branch.id, &alloc.id, CfgEdgeKind::TrueBranch),
@@ -401,8 +422,14 @@ mod tests {
         let join2 = make_join_node(&fid, 6, 6);
         let exit = make_exit_node(&fid, 7);
         let nodes = vec![
-            entry.clone(), br1.clone(), free1.clone(), join1.clone(),
-            br2.clone(), free2.clone(), join2.clone(), exit.clone(),
+            entry.clone(),
+            br1.clone(),
+            free1.clone(),
+            join1.clone(),
+            br2.clone(),
+            free2.clone(),
+            join2.clone(),
+            exit.clone(),
         ];
         let edges = vec![
             make_edge(&entry.id, &br1.id, CfgEdgeKind::Normal),

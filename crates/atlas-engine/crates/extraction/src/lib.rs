@@ -35,10 +35,10 @@ pub use callsite_spec::{
     cangjie_callsite_extractor, java_callsite_extractor, python_callsite_extractor,
     ts_callsite_extractor,
 };
+pub use cancel::CancelCheck;
 pub use cfg_builder::{CfgBuilder, CfgResult};
 pub use dataflow_builder::{DataFlowBuilder, DataFlowResult};
 pub use error::{ExtractionFailure, ExtractionFailureKind};
-pub use cancel::CancelCheck;
 pub use extract::{extract_file, extract_file_with_mode, extract_file_with_mode_cancellable};
 pub use frontend::{
     FrontendParts, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, ParserSpec,

@@ -17,9 +17,8 @@ use std::time::Instant;
 
 use anyhow::Context;
 use atlas_engine::{
-    ExtractionMode, ExtractedFile, ExtractedFiles, ExtractionPhaseStats,
-    FileLock, Language, LanguageFrontend, LanguageRegistry,
-    ParseWorkerPool, PerLanguageStats, Store, WorkerConfig,
+    ExtractedFile, ExtractedFiles, ExtractionMode, ExtractionPhaseStats, FileLock, Language,
+    LanguageFrontend, LanguageRegistry, ParseWorkerPool, PerLanguageStats, Store, WorkerConfig,
 };
 use rayon::prelude::*;
 
@@ -78,10 +77,7 @@ impl AutoIndexHandle {
 ///
 /// Does **not** block — the caller polls [`AutoIndexHandle::progress`] for
 /// UI updates and checks [`AutoIndexHandle::done`] for completion.
-pub fn spawn_auto_index(
-    store: Arc<Store>,
-    project_root: PathBuf,
-) -> AutoIndexHandle {
+pub fn spawn_auto_index(store: Arc<Store>, project_root: PathBuf) -> AutoIndexHandle {
     let progress = Arc::new(Mutex::new(AutoIndexProgress {
         phase: "Initializing".into(),
         current: 0,
@@ -174,15 +170,16 @@ fn run_manifest_pipeline(
     }
 
     // ── Phase 4: Language init ────────────────────────────────────────
-    let languages: Vec<Language> = dirty.iter().filter_map(|p| Language::from_path(p)).fold(
-        Vec::new(),
-        |mut acc, lang| {
-            if !acc.contains(&lang) {
-                acc.push(lang);
-            }
-            acc
-        },
-    );
+    let languages: Vec<Language> =
+        dirty
+            .iter()
+            .filter_map(|p| Language::from_path(p))
+            .fold(Vec::new(), |mut acc, lang| {
+                if !acc.contains(&lang) {
+                    acc.push(lang);
+                }
+                acc
+            });
 
     set_phase(
         progress,

@@ -6,7 +6,10 @@
 //! queue methods without borrow conflicts.
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 use atlas_engine::FileId;
 
@@ -74,7 +77,8 @@ impl LazyRefreshQueue {
 
     /// Signal that background preparse wrote new data (called from bg thread).
     pub(crate) fn signal_background_writes(&self) {
-        self.background_writes_pending.store(true, Ordering::Release);
+        self.background_writes_pending
+            .store(true, Ordering::Release);
     }
 
     /// Take up to `max_files` file IDs for per-file incremental refresh.
@@ -203,7 +207,9 @@ mod tests {
     #[test]
     fn cumulative_threshold_triggers_full_rebuild() {
         let q = LazyRefreshQueue::new();
-        let fids: Vec<FileId> = (0..400).map(|i| FileId::generate(&format!("{i}.rs"))).collect();
+        let fids: Vec<FileId> = (0..400)
+            .map(|i| FileId::generate(&format!("{i}.rs")))
+            .collect();
         // First 399 should NOT trigger
         q.record_lazy_writes(&fids[..399]);
         assert!(!q.needs_full_rebuild());
@@ -224,7 +230,9 @@ mod tests {
     #[test]
     fn take_incremental_batch_respects_max() {
         let q = LazyRefreshQueue::new();
-        let fids: Vec<FileId> = (0..10).map(|i| FileId::generate(&format!("{i}.rs"))).collect();
+        let fids: Vec<FileId> = (0..10)
+            .map(|i| FileId::generate(&format!("{i}.rs")))
+            .collect();
         q.record_lazy_writes(&fids);
         let batch = q.take_incremental_batch(3);
         assert_eq!(batch.len(), 3);

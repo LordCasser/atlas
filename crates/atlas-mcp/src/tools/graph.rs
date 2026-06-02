@@ -4,8 +4,10 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use atlas_engine::{EdgeKind, InvestigationFocus, Store, SymbolId, SymbolKind, TraversalConfig, TraversalDirection};
 use atlas_engine::analysis;
+use atlas_engine::{
+    EdgeKind, InvestigationFocus, Store, SymbolId, SymbolKind, TraversalConfig, TraversalDirection,
+};
 
 use super::query_snapshot::{QuerySnapshot, QueryStatus};
 use super::{ToolRouter, get_str, get_str_opt, get_u64};
@@ -431,7 +433,12 @@ impl ToolRouter {
                 file_ids_set.insert(sym.file_id);
             }
         }
-        let outcome = self.ensure_structural_for_files(file_ids_set, roots, investigation.as_ref(), Some(&query_id));
+        let outcome = self.ensure_structural_for_files(
+            file_ids_set,
+            roots,
+            investigation.as_ref(),
+            Some(&query_id),
+        );
         let lazy_warnings = outcome.warnings;
         // Cache for no-path diagnostics below (used in user-facing messages).
         let is_manual_full = self.has_manual_full_index();
@@ -697,8 +704,11 @@ impl ToolRouter {
                 tool_args: args.clone(),
                 lazy_window: None,
                 created_at: Instant::now(),
-                status: if tier == atlas_engine::structs::precision::PrecisionTier::Exact
-                    { QueryStatus::Ready } else { QueryStatus::Partial },
+                status: if tier == atlas_engine::structs::precision::PrecisionTier::Exact {
+                    QueryStatus::Ready
+                } else {
+                    QueryStatus::Partial
+                },
             });
             resp["query_id"] = json!(query_id);
 
@@ -809,8 +819,11 @@ impl ToolRouter {
                 tool_args: args.clone(),
                 lazy_window: None,
                 created_at: Instant::now(),
-                status: if tier == atlas_engine::structs::precision::PrecisionTier::Exact
-                    { QueryStatus::Ready } else { QueryStatus::Partial },
+                status: if tier == atlas_engine::structs::precision::PrecisionTier::Exact {
+                    QueryStatus::Ready
+                } else {
+                    QueryStatus::Partial
+                },
             });
             resp["query_id"] = json!(query_id);
 
@@ -1062,7 +1075,10 @@ impl ToolRouter {
                 }
 
                 // Run branch diff analysis
-                let cfg_edges = self.store.find_cfg_edges_by_function(&node.symbol_id).unwrap_or_default();
+                let cfg_edges = self
+                    .store
+                    .find_cfg_edges_by_function(&node.symbol_id)
+                    .unwrap_or_default();
                 let diffs = analysis::BranchDiffEngine::diff_branches(&cfg_nodes, &cfg_edges);
 
                 // Collect fields that have effect annotations
@@ -1079,10 +1095,7 @@ impl ToolRouter {
                 for field_path in &fields {
                     let rules = analysis::OwnershipRules::default();
                     let mut lifecycle = analysis::FieldLifecycleEngine::analyze_field_lifecycle(
-                        &cfg_nodes,
-                        &cfg_edges,
-                        field_path,
-                        &rules,
+                        &cfg_nodes, &cfg_edges, field_path, &rules,
                     );
                     lifecycle.function_qname = node.qualified_name.clone();
 

@@ -19,10 +19,7 @@ pub fn render(frame: &mut ratatui::Frame, area: Rect, input: &str, cursor: usize
             Line::from(" Search (type to filter, Enter to search, Esc to clear) "),
         )
     } else {
-        (
-            Style::default().fg(Color::DarkGray),
-            Line::from(" Search "),
-        )
+        (Style::default().fg(Color::DarkGray), Line::from(" Search "))
     };
 
     let block = Block::default()
@@ -35,22 +32,33 @@ pub fn render(frame: &mut ratatui::Frame, area: Rect, input: &str, cursor: usize
 
     // Build display text with a cursor indicator.
     let display: Line = if input.is_empty() {
-        Line::from(Span::styled("Search symbols...", Style::default().fg(Color::DarkGray)))
+        Line::from(Span::styled(
+            "Search symbols...",
+            Style::default().fg(Color::DarkGray),
+        ))
     } else if focused {
         // Show cursor: split text at cursor position, insert a highlighted block.
         let cursor = cursor.min(input.len());
         let (before, at_char, after) = split_at_cursor(input, cursor);
         let highlight = if at_char.is_empty() {
-            Span::styled(" ", Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD))
+            Span::styled(
+                " ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
         } else {
-            Span::styled(at_char, Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD))
+            Span::styled(
+                at_char,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
         };
 
-        Line::from(vec![
-            Span::raw(before),
-            highlight,
-            Span::raw(after),
-        ])
+        Line::from(vec![Span::raw(before), highlight, Span::raw(after)])
     } else {
         Line::from(Span::raw(input))
     };
@@ -107,4 +115,3 @@ fn split_at_cursor(s: &str, cursor: usize) -> (String, String, String) {
     let after = chars.as_str().to_string();
     (before, at, after)
 }
-

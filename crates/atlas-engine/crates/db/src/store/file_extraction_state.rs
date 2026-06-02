@@ -109,8 +109,8 @@ impl Store {
     /// Returns the bitwise OR of all `capability_mask` values for the file.
     pub fn get_capability_mask(&self, file_id: &FileId) -> anyhow::Result<CapabilityMask> {
         let conn = self.lock_read();
-        let mut stmt = conn
-            .prepare("SELECT capability_mask FROM extraction_state WHERE file_id = ?1")?;
+        let mut stmt =
+            conn.prepare("SELECT capability_mask FROM extraction_state WHERE file_id = ?1")?;
         let rows: Vec<i64> = stmt
             .query_map(params![file_id], |row| row.get(0))?
             .filter_map(|r| r.ok())
@@ -205,8 +205,9 @@ impl Store {
                AND (l.capability_mask & ?1) != 0",
         )?;
         let cfg_bit = CapabilityMask::CFG as i64;
-        let files_with_cfg: usize =
-            stmt.query_row(params![cfg_bit], |row| row.get::<_, i64>(0))?.max(0) as usize;
+        let files_with_cfg: usize = stmt
+            .query_row(params![cfg_bit], |row| row.get::<_, i64>(0))?
+            .max(0) as usize;
 
         Ok((
             files_with_dataflow,

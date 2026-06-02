@@ -605,8 +605,7 @@ pub(crate) fn write_file_facts(conn: &Connection, facts: &FileFacts) -> anyhow::
         .bindings
         .iter()
         .filter(|b| {
-            b.function_id
-                .is_none_or(|fid| valid_sources.contains(&fid))
+            b.function_id.is_none_or(|fid| valid_sources.contains(&fid))
                 && facts.scopes.iter().any(|s| s.id == b.scope_id)
                 && b.symbol_id.is_none_or(|sid| valid_sources.contains(&sid))
         })

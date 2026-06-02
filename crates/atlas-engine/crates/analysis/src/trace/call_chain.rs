@@ -155,13 +155,7 @@ pub fn reconstruct_path(
         let key = hex::encode(current.as_bytes());
         match predecessors.get(&key) {
             Some((pred_id, kind, ref_id, location)) => {
-                raw_steps.push((
-                    *pred_id,
-                    current,
-                    *kind,
-                    *ref_id,
-                    *location,
-                ));
+                raw_steps.push((*pred_id, current, *kind, *ref_id, *location));
                 current = *pred_id;
             }
             None => break,
@@ -195,8 +189,7 @@ pub fn reconstruct_path(
         let range = if let Some(ref cs) = callsite {
             Some(cs.range)
         } else {
-            edge_location
-                .or_else(|| caller_sym.map(|s| s.range))
+            edge_location.or_else(|| caller_sym.map(|s| s.range))
         };
 
         let caller_name = caller_sym.map(|s| s.name.clone()).unwrap_or_default();

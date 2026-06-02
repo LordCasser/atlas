@@ -131,8 +131,8 @@ pub fn evaluate_proof(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::lifecycle::{FieldState, SuspiciousKind, SuspiciousPoint};
+    use super::*;
 
     #[test]
     fn test_evidence_level_ordering() {
@@ -147,10 +147,7 @@ mod tests {
             EvidenceLevel::DomainRuleBacked.as_str(),
             "domain_rule_backed"
         );
-        assert_eq!(
-            EvidenceLevel::UserAnnotated.as_str(),
-            "user_annotated"
-        );
+        assert_eq!(EvidenceLevel::UserAnnotated.as_str(), "user_annotated");
     }
 
     #[test]

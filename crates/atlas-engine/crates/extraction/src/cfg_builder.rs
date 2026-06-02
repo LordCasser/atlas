@@ -278,7 +278,12 @@ fn is_alloc_function_name(name: &str) -> bool {
 }
 
 impl CfgContext<'_> {
-    fn add_node(&mut self, kind: CfgNodeKind, start_byte: u32, stmt_node: Option<&Node>) -> types::ids::CfgNodeId {
+    fn add_node(
+        &mut self,
+        kind: CfgNodeKind,
+        start_byte: u32,
+        stmt_node: Option<&Node>,
+    ) -> types::ids::CfgNodeId {
         let range = if let Some(node) = stmt_node {
             let r = node.range();
             TextRange {
@@ -320,7 +325,11 @@ impl CfgContext<'_> {
 
     /// Infer the effect of a C/C++ CFG node. Returns (effect_kind, target_field).
     /// Uses simple tree-sitter node kind matching — NOT full dataflow analysis.
-    fn infer_effect(&self, node: &Node, node_kind: CfgNodeKind) -> (Option<EffectKind>, Option<String>) {
+    fn infer_effect(
+        &self,
+        node: &Node,
+        node_kind: CfgNodeKind,
+    ) -> (Option<EffectKind>, Option<String>) {
         let kind = node.kind();
 
         // Branch conditions
@@ -370,7 +379,14 @@ impl CfgContext<'_> {
                 }
                 "new_expression" | "delete_expression" => {
                     let is_delete = ck.starts_with("delete");
-                    return (if is_delete { Some(EffectKind::Free) } else { Some(EffectKind::Allocate) }, None);
+                    return (
+                        if is_delete {
+                            Some(EffectKind::Free)
+                        } else {
+                            Some(EffectKind::Allocate)
+                        },
+                        None,
+                    );
                 }
                 "field_expression" | "subscript_expression" => {
                     let target = self.extract_field_path(child);
@@ -516,7 +532,11 @@ impl CfgContext<'_> {
                         _ => {}
                     }
                 }
-                if parts.is_empty() { None } else { Some(types::structs::canonicalize_field_path(&parts.join("."))) }
+                if parts.is_empty() {
+                    None
+                } else {
+                    Some(types::structs::canonicalize_field_path(&parts.join(".")))
+                }
             }
             "subscript_expression" => {
                 // array[index] — extract array name
@@ -744,11 +764,20 @@ impl CfgContext<'_> {
     }
 
     /// Emit a statement/return/throw node and connect to previous.
-    fn emit_stmt(&mut self, kind: CfgNodeKind, start_byte: u32, stmt_node: &Node) -> types::ids::CfgNodeId {
+    fn emit_stmt(
+        &mut self,
+        kind: CfgNodeKind,
+        start_byte: u32,
+        stmt_node: &Node,
+    ) -> types::ids::CfgNodeId {
         let node_id = self.add_node(kind, start_byte, Some(stmt_node));
 
         // Extract callee_name for domain rule matching
-        if kind == CfgNodeKind::Statement || kind == CfgNodeKind::Return || kind == CfgNodeKind::Branch || kind == CfgNodeKind::Loop {
+        if kind == CfgNodeKind::Statement
+            || kind == CfgNodeKind::Return
+            || kind == CfgNodeKind::Branch
+            || kind == CfgNodeKind::Loop
+        {
             let callee = self.extract_callee_name_from_node(stmt_node);
             if let Some(node) = self.nodes.iter_mut().find(|n| n.id == node_id) {
                 node.callee_name = callee;

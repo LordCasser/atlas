@@ -15,7 +15,7 @@ use std::sync::Arc;
 use atlas_engine::Store;
 use serde_json::json;
 
-use super::{PendingProjectActivation, ToolRouter, MAX_FILE_PATH_LENGTH};
+use super::{MAX_FILE_PATH_LENGTH, PendingProjectActivation, ToolRouter};
 
 /// Result of an open_project invocation.
 #[derive(serde::Serialize)]

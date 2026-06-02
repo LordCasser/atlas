@@ -35,9 +35,9 @@ use types::ids::FileId;
 
 use extraction::CancelCheck;
 
-use crate::lazy_budget::LazyBudget;
 use crate::LazyDataflowService;
 use crate::closure_planner::{ClosurePlanner, IncludeRoot};
+use crate::lazy_budget::LazyBudget;
 use crate::lazy_structural::{
     EnsureStructuralResult, LAZY_STRUCTURAL_BUDGET_MS, LazyStructuralService,
 };
@@ -163,8 +163,7 @@ impl LazyCoordinator {
                         Ok((r, job_id))
                     }
                     Err(e) => {
-                        self.store
-                            .fail_extraction_job(&job_id, &format!("{e:#}"))?;
+                        self.store.fail_extraction_job(&job_id, &format!("{e:#}"))?;
                         Err(e)
                     }
                 }
@@ -237,7 +236,8 @@ impl LazyCoordinator {
                 ClaimResult::Claimed { job_id } => {
                     // This caller owns the build — execute extraction
                     let build_result = if is_seed {
-                        service.ensure_structural_for_file(file_id, Some(budget as &dyn CancelCheck))
+                        service
+                            .ensure_structural_for_file(file_id, Some(budget as &dyn CancelCheck))
                     } else {
                         service.ensure_resolution_symbols_for_file(file_id)
                     };
@@ -257,8 +257,7 @@ impl LazyCoordinator {
                             }
                         }
                         Err(e) => {
-                            self.store
-                                .fail_extraction_job(&job_id, &format!("{e:#}"))?;
+                            self.store.fail_extraction_job(&job_id, &format!("{e:#}"))?;
                             return Err(e);
                         }
                     }
@@ -440,11 +439,9 @@ mod tests {
 
     use std::sync::Arc;
 
-    
-
-    #[cfg(feature = "c")]
-use crate::lazy_budget::LazyBudget;
     use crate::closure_planner::IncludeRoot;
+    #[cfg(feature = "c")]
+    use crate::lazy_budget::LazyBudget;
     use crate::lazy_coordinator::LazyCoordinator;
 
     #[test]
@@ -1070,10 +1067,22 @@ use crate::lazy_budget::LazyBudget;
 
         // Record manifest layer as complete for both files
         store
-            .upsert_file_extraction_state(&main_id, "manifest", "abc", "complete", CapabilityMask::default())
+            .upsert_file_extraction_state(
+                &main_id,
+                "manifest",
+                "abc",
+                "complete",
+                CapabilityMask::default(),
+            )
             .unwrap();
         store
-            .upsert_file_extraction_state(&util_id, "manifest", "def", "complete", CapabilityMask::default())
+            .upsert_file_extraction_state(
+                &util_id,
+                "manifest",
+                "def",
+                "complete",
+                CapabilityMask::default(),
+            )
             .unwrap();
 
         // 4. Create coordinator + service with temp dir as project root
@@ -1091,7 +1100,12 @@ use crate::lazy_budget::LazyBudget;
 
         // 5. Call ensure_structural_with_closure on the seed
         let (_result, _job_id) = coordinator
-            .ensure_structural_with_closure(&lazy_service, &main_id, &mut LazyBudget::new(u64::MAX, usize::MAX), None)
+            .ensure_structural_with_closure(
+                &lazy_service,
+                &main_id,
+                &mut LazyBudget::new(u64::MAX, usize::MAX),
+                None,
+            )
             .unwrap();
 
         // 6. Verify: util.h got resolution_symbols layer
@@ -1204,7 +1218,13 @@ use crate::lazy_budget::LazyBudget;
                 })
                 .unwrap();
             store
-                .upsert_file_extraction_state(fid, "manifest", hash, "complete", CapabilityMask::default())
+                .upsert_file_extraction_state(
+                    fid,
+                    "manifest",
+                    hash,
+                    "complete",
+                    CapabilityMask::default(),
+                )
                 .unwrap();
         }
 
@@ -1243,7 +1263,12 @@ use crate::lazy_budget::LazyBudget;
         );
 
         let (_result, _job_id) = coordinator
-            .ensure_structural_with_closure(&lazy, &bar_c_id, &mut LazyBudget::new(u64::MAX, usize::MAX), None)
+            .ensure_structural_with_closure(
+                &lazy,
+                &bar_c_id,
+                &mut LazyBudget::new(u64::MAX, usize::MAX),
+                None,
+            )
             .unwrap();
 
         // 4. Verify: bar.h and baz.h get resolution_symbols (deps)
@@ -1337,7 +1362,13 @@ use crate::lazy_budget::LazyBudget;
             })
             .unwrap();
         store
-            .upsert_file_extraction_state(&file_id, "manifest", "abc", "complete", CapabilityMask::default())
+            .upsert_file_extraction_state(
+                &file_id,
+                "manifest",
+                "abc",
+                "complete",
+                CapabilityMask::default(),
+            )
             .unwrap();
 
         // 3. Run lazy structural extraction via coordinator
@@ -1354,7 +1385,12 @@ use crate::lazy_budget::LazyBudget;
         );
 
         coordinator
-            .ensure_structural_with_closure(&lazy, &file_id, &mut LazyBudget::new(u64::MAX, usize::MAX), None)
+            .ensure_structural_with_closure(
+                &lazy,
+                &file_id,
+                &mut LazyBudget::new(u64::MAX, usize::MAX),
+                None,
+            )
             .unwrap();
 
         // 4. Build GraphEngine from store (this is what MCP handlers do)

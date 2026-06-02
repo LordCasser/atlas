@@ -129,8 +129,13 @@ impl LazyOrchestrator {
         let mut ordered: Vec<FileId> = file_ids.to_vec();
         if let Some(inv) = investigation {
             ordered.sort_by_key(|fid| {
-                if inv.related_files.contains(fid) { 0u8 } // highest priority
-                else { 1u8 }
+                if inv.related_files.contains(fid) {
+                    0u8
+                }
+                // highest priority
+                else {
+                    1u8
+                }
             });
         }
 
@@ -141,9 +146,12 @@ impl LazyOrchestrator {
                 break;
             }
 
-            let (result, _job_id) =
-                self.coordinator
-                    .ensure_structural_with_closure(&self.structural, file_id, &mut budget, query_id)?;
+            let (result, _job_id) = self.coordinator.ensure_structural_with_closure(
+                &self.structural,
+                file_id,
+                &mut budget,
+                query_id,
+            )?;
 
             outcome.files_built += result.files_built;
             outcome.files_cached += result.files_cached;
@@ -248,5 +256,4 @@ mod tests {
         assert_eq!(outcome.files_pending, 0);
         assert!(outcome.pending_job_ids.is_empty());
     }
-
 }
