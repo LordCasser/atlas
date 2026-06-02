@@ -37,7 +37,7 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT cfg_node_id, function_id, kind,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
-                    range_end_line, range_end_column, effect_kind, target_field
+                    range_end_line, range_end_column, effect_kind, target_field, callee_name
              FROM cfg_nodes WHERE function_id = ?1",
         )?;
         let rows = stmt.query_map(params![function_id], row_to_cfg_node)?;
@@ -51,6 +51,22 @@ impl Store {
             "SELECT cfg_edge_id, source_node, target_node, kind FROM cfg_edges WHERE source_node = ?1",
         )?;
         let rows = stmt.query_map(params![source], row_to_cfg_edge)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find all CFG edges for a function by joining with cfg_nodes.
+    pub fn find_cfg_edges_by_function(
+        &self,
+        function_id: &SymbolId,
+    ) -> anyhow::Result<Vec<CfgEdge>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT e.cfg_edge_id, e.source_node, e.target_node, e.kind
+             FROM cfg_edges e
+             JOIN cfg_nodes n ON n.cfg_node_id = e.source_node
+             WHERE n.function_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![function_id], row_to_cfg_edge)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 }

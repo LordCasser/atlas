@@ -1,12 +1,27 @@
-//! Field Lifecycle Analysis — state machine walking CFG with effect annotations.
+//! Field Lifecycle Analysis — path-sensitive fixpoint analysis on CfgGraph.
 //!
-//! Given a function's CFG with effect annotations and a target field path,
-//! produces a timeline of state transitions that traces the field's lifecycle.
+//! Given a function's CFG (nodes + edges) and a target field path, runs a
+//! monotone dataflow fixpoint to trace the field's lifecycle through all
+//! control-flow paths, accounting for branches and loop convergence.
 
-use types::cfg::CfgNode;
-use types::enums::EffectKind;
+use std::collections::{HashMap, VecDeque};
 
+use types::cfg::{CfgEdge, CfgNode};
+use types::enums::{CfgEdgeKind, CfgNodeKind, EffectKind};
+use types::ids::CfgNodeId;
+
+use super::lifecycle_proof::EvidenceLevel;
 use super::ownership_rules::CppOwnershipRules;
+use crate::cfg_graph::CfgGraph;
+
+// ── Budget constants ────────────────────────────────────────────────────
+
+/// Maximum total node visits before giving up (safety cap).
+const MAX_VISITS: usize = 500;
+/// Maximum times a single node can be re-visited (loop convergence cap).
+const MAX_VISITS_PER_NODE: u32 = 10;
+
+// ── State types ─────────────────────────────────────────────────────────
 
 /// States a field can be in during its lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +34,10 @@ pub enum FieldState {
     Escaped,
     Returned,
     Invalidated,
+    /// Path-sensitive merge result: one path freed, other assigned.
+    MaybeFreed,
+    /// Path-sensitive merge result: one path assigned, other unknown.
+    MaybeAssigned,
 }
 
 impl FieldState {
@@ -32,18 +51,54 @@ impl FieldState {
             Self::Escaped => "escaped",
             Self::Returned => "returned",
             Self::Invalidated => "invalidated",
+            Self::MaybeFreed => "maybe_freed",
+            Self::MaybeAssigned => "maybe_assigned",
         }
     }
 }
+
+/// Represents which branch path a transition occurred on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchPath {
+    TruePath,
+    FalsePath,
+}
+
+/// One frame in a nested branch context stack.
+#[derive(Debug, Clone)]
+pub struct BranchFrame {
+    pub branch_node_line: u32,
+    pub path: BranchPath,
+}
+
+/// Lattice element with top/bottom for fixpoint analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LatticeState {
+    Bottom,
+    State(FieldState),
+    Top, // budget-exhausted over-approximation
+}
+
+impl LatticeState {
+    fn as_state(&self) -> Option<FieldState> {
+        match self {
+            LatticeState::State(s) => Some(*s),
+            _ => None,
+        }
+    }
+}
+
+// ── Result types ────────────────────────────────────────────────────────
 
 /// A single state transition in a field's lifecycle.
 #[derive(Debug, Clone)]
 pub struct FieldTransition {
     pub from_state: FieldState,
     pub to_state: FieldState,
-    pub at_node: types::ids::CfgNodeId,
-    pub reason: String,
-    pub line: u32,
+    pub node_id: CfgNodeId,
+    pub node_line: u32,
+    pub effect: Option<EffectKind>,
+    pub branch_frames: Vec<BranchFrame>,
 }
 
 /// Result of field lifecycle analysis.
@@ -54,6 +109,12 @@ pub struct FieldLifecycleResult {
     pub transitions: Vec<FieldTransition>,
     pub final_state: FieldState,
     pub suspicious_points: Vec<SuspiciousPoint>,
+    /// Whether the analysis exceeded its budget and returned partial results.
+    pub partial: bool,
+    /// Evidence level for the conclusion.
+    pub evidence_level: EvidenceLevel,
+    /// State at the function exit node, if reachable.
+    pub exit_state: Option<FieldState>,
 }
 
 /// A point in the lifecycle that may indicate a bug.
@@ -78,279 +139,401 @@ pub struct OwnershipRules {
     pub track_field_based: bool,
 }
 
+// ── Engine ──────────────────────────────────────────────────────────────
+
 /// Engine for field-level lifecycle analysis.
 pub struct FieldLifecycleEngine;
 
 impl FieldLifecycleEngine {
     /// Analyze the lifecycle of a specific field within a function's CFG.
     ///
-    /// Walks CFG nodes in order, applying effect annotations to build
-    /// a state transition sequence. Only processes C/C++ nodes with
-    /// effect annotations (other languages have no effects yet).
+    /// Delegates to `analyze_with_rules` using default CppOwnershipRules.
     pub fn analyze_field_lifecycle(
         cfg_nodes: &[CfgNode],
+        cfg_edges: &[CfgEdge],
         field_path: &str,
-        _ownership_rules: &OwnershipRules,
+        _rules: &OwnershipRules,
     ) -> FieldLifecycleResult {
-        let mut state = FieldState::Unknown;
-        let mut transitions = Vec::new();
-        let mut suspicious = Vec::new();
-
-        for node in cfg_nodes {
-            let effect = match node.effect_kind {
-                Some(e) => e,
-                None => continue,
-            };
-
-            let target = node.target_field.as_deref().unwrap_or("");
-            let matches_field = target == field_path
-                || target.starts_with(&format!("{}.", field_path))
-                || target.starts_with(&format!("{}->", field_path));
-
-            let new_state = match (effect, matches_field) {
-                // Safe free — field matches and effect is Free
-                (EffectKind::Free, true) => {
-                    if state == FieldState::Freed {
-                        suspicious.push(SuspiciousPoint {
-                            line: node.stmt_range.start_line,
-                            kind: SuspiciousKind::DoubleFree,
-                            message: format!("Double free of '{}'", field_path),
-                        });
-                        FieldState::Freed
-                    } else {
-                        FieldState::Freed
-                    }
-                }
-                // Allocation — field becomes Assigned
-                (EffectKind::Allocate, true) => {
-                    if state == FieldState::Freed {
-                        suspicious.push(SuspiciousPoint {
-                            line: node.stmt_range.start_line,
-                            kind: SuspiciousKind::UseAfterFree,
-                            message: format!(
-                                "Allocation on previously freed field '{}'",
-                                field_path
-                            ),
-                        });
-                    }
-                    FieldState::Assigned
-                }
-                // Assignment — field becomes Assigned or Nullified
-                (EffectKind::Assign, true) => {
-                    if node.target_field.as_deref() == Some(field_path) {
-                        FieldState::Assigned
-                    } else {
-                        FieldState::Assigned
-                    }
-                }
-                // Read access — check use-after-free
-                (EffectKind::Read, true) => {
-                    if state == FieldState::Freed {
-                        suspicious.push(SuspiciousPoint {
-                            line: node.stmt_range.start_line,
-                            kind: SuspiciousKind::UseAfterFree,
-                            message: format!("Read of '{}' after free", field_path),
-                        });
-                    }
-                    state
-                }
-                // Write access
-                (EffectKind::Write, true) => {
-                    if state == FieldState::Freed {
-                        suspicious.push(SuspiciousPoint {
-                            line: node.stmt_range.start_line,
-                            kind: SuspiciousKind::UseAfterFree,
-                            message: format!("Write to '{}' after free", field_path),
-                        });
-                    }
-                    if state == FieldState::Unknown {
-                        FieldState::MaybeLive
-                    } else {
-                        state
-                    }
-                }
-                // Return — field escapes
-                (EffectKind::Return, true) => FieldState::Returned,
-                // Call or condition — doesn't change state directly
-                _ => state,
-            };
-
-            if new_state != state {
-                transitions.push(FieldTransition {
-                    from_state: state.clone(),
-                    to_state: new_state.clone(),
-                    at_node: node.id,
-                    reason: format!("{:?} effect on '{}'", effect, target),
-                    line: node.stmt_range.start_line,
-                });
-                state = new_state;
-            }
-        }
-
-        // Final check: if field was allocated but never freed
-        if state == FieldState::Assigned || state == FieldState::MaybeLive {
-            suspicious.push(SuspiciousPoint {
-                line: 0,
-                kind: SuspiciousKind::MissingFree,
-                message: format!(
-                    "Field '{}' may leak (allocated but no free found)",
-                    field_path
-                ),
-            });
-        }
-
-        FieldLifecycleResult {
-            field_path: field_path.to_string(),
-            function_qname: String::new(), // filled in by caller
-            transitions,
-            final_state: state,
-            suspicious_points: suspicious,
-        }
+        let rules = CppOwnershipRules::default();
+        Self::analyze_with_rules(cfg_nodes, cfg_edges, field_path, _rules, &rules)
     }
 
     /// Analyze with domain rules — uses rule-backed function matching.
     ///
-    /// Same as `analyze_field_lifecycle` but uses `rules.match_free()` /
-    /// `rules.match_alloc()` to determine Allocation/Free effects instead
-    /// of relying solely on hardcoded `EffectKind` annotations from the CFG.
+    /// Runs a path-sensitive fixpoint analysis on the CfgGraph. Entry starts
+    /// as `Unknown`; the fixpoint propagates lattice states through the graph
+    /// using merge over predecessors and transfer over node effects.
     pub fn analyze_with_rules(
         cfg_nodes: &[CfgNode],
+        cfg_edges: &[CfgEdge],
         field_path: &str,
         _ownership_rules: &OwnershipRules,
         rules: &CppOwnershipRules,
     ) -> FieldLifecycleResult {
-        let mut state = FieldState::Unknown;
-        let mut transitions = Vec::new();
-        let mut suspicious = Vec::new();
+        // Build graph
+        let graph = match CfgGraph::build(cfg_nodes, cfg_edges) {
+            Ok(g) => g,
+            Err(_) => {
+                return FieldLifecycleResult {
+                    field_path: field_path.to_string(),
+                    function_qname: String::new(),
+                    transitions: vec![],
+                    suspicious_points: vec![],
+                    final_state: FieldState::Unknown,
+                    partial: true,
+                    evidence_level: EvidenceLevel::Incomplete,
+                    exit_state: None,
+                };
+            }
+        };
 
-        for node in cfg_nodes {
-            let effect = match node.effect_kind {
-                Some(e) => e,
+        // Canonicalize field path for matching
+        let canonical_target = types::structs::canonicalize_field_path(field_path);
+
+        // Lattice state per node (out_state), initialized to BOTTOM everywhere
+        let mut out_state: HashMap<CfgNodeId, LatticeState> = HashMap::new();
+        for nid in graph.nodes.keys() {
+            out_state.insert(nid.clone(), LatticeState::Bottom);
+        }
+        // Entry starts as Unknown
+        out_state.insert(graph.entry.clone(), LatticeState::State(FieldState::Unknown));
+
+        // Branch context stack (inherited through edges)
+        let mut branch_contexts: HashMap<CfgNodeId, Vec<BranchFrame>> = HashMap::new();
+        branch_contexts.insert(graph.entry.clone(), vec![]);
+
+        // Worklist and visit tracking
+        let mut worklist: VecDeque<CfgNodeId> = VecDeque::new();
+        worklist.push_back(graph.entry.clone());
+        let mut visit_count: HashMap<CfgNodeId, u32> = HashMap::new();
+        let mut total_visits: usize = 0;
+        let mut partial = false;
+
+        // Transitions + suspicious points (collected during traversal)
+        let mut transitions: Vec<FieldTransition> = Vec::new();
+        let mut suspicious_points: Vec<SuspiciousPoint> = Vec::new();
+
+        while let Some(nid) = worklist.pop_front() {
+            total_visits += 1;
+            if total_visits > MAX_VISITS {
+                partial = true;
+                break;
+            }
+
+            let vc = visit_count.entry(nid.clone()).or_insert(0);
+            *vc += 1;
+            if *vc > MAX_VISITS_PER_NODE {
+                out_state.insert(nid.clone(), LatticeState::Top);
+                partial = true;
+                continue;
+            }
+
+            // MERGE: merge all predecessor out_states → in_state for this node.
+            // Entry node has no predecessors; use its initial state directly.
+            let merged = if nid == graph.entry {
+                out_state.get(&nid).copied().unwrap_or(LatticeState::Bottom)
+            } else {
+                merge_predecessors(&graph, &out_state, &nid)
+            };
+            if merged == LatticeState::Bottom {
+                continue; // No predecessor ready yet
+            }
+
+            let old_out = out_state.get(&nid).copied();
+
+            // TRANSFER: apply node effect
+            let node = match graph.nodes.get(&nid) {
+                Some(n) => n,
                 None => continue,
             };
 
-            let target = node.target_field.as_deref().unwrap_or("");
-            let matches_field = target == field_path
-                || target.starts_with(&format!("{}.", field_path))
-                || target.starts_with(&format!("{}->", field_path));
+            // Get inherited branch context
+            let ctx = branch_contexts.get(&nid).cloned().unwrap_or_default();
 
-            let new_state = match (effect, matches_field) {
-                // Safe free — field matches and effect is Free
-                (EffectKind::Free, true) => {
-                    if state == FieldState::Freed {
-                        suspicious.push(SuspiciousPoint {
-                            line: node.stmt_range.start_line,
-                            kind: SuspiciousKind::DoubleFree,
-                            message: format!("Double free of '{}'", field_path),
-                        });
-                        FieldState::Freed
-                    } else {
-                        FieldState::Freed
-                    }
+            // Apply effect → new state + any suspicious points
+            let (new_state, mut sus) = transfer_state(
+                merged.as_state().unwrap_or(FieldState::Unknown),
+                node,
+                &canonical_target,
+                rules,
+            );
+
+            // Record transition (only if state actually changed)
+            if let Some(from_state) = merged.as_state() {
+                if from_state != new_state {
+                    transitions.push(FieldTransition {
+                        from_state,
+                        to_state: new_state,
+                        node_id: node.id.clone(),
+                        node_line: node.stmt_range.start_line,
+                        effect: node.effect_kind,
+                        branch_frames: ctx.clone(),
+                    });
                 }
-                // Allocation — field becomes Assigned
-                (EffectKind::Allocate, true) => {
-                    if state == FieldState::Freed {
-                        suspicious.push(SuspiciousPoint {
-                            line: node.stmt_range.start_line,
-                            kind: SuspiciousKind::UseAfterFree,
-                            message: format!(
-                                "Allocation on previously freed field '{}'",
-                                field_path
-                            ),
-                        });
-                    }
-                    FieldState::Assigned
-                }
-                // Call effect — use domain rules to determine alloc/free
-                (EffectKind::Call, true) => {
-                    let callee = target;
-                    if rules.match_free(callee).is_some() {
-                        if state == FieldState::Freed {
-                            suspicious.push(SuspiciousPoint {
-                                line: node.stmt_range.start_line,
-                                kind: SuspiciousKind::DoubleFree,
-                                message: format!("Double free of '{}' via {}", field_path, callee),
-                            });
+            }
+            suspicious_points.append(&mut sus);
+
+            let new_lattice = LatticeState::State(new_state);
+
+            // Only propagate if state changed (Entry always propagates)
+            if old_out != Some(new_lattice) || nid == graph.entry {
+                out_state.insert(nid.clone(), new_lattice);
+
+                // Propagate to successors
+                if let Some(succ_edges) = graph.successors.get(&nid) {
+                    for edge in succ_edges {
+                        // Compute branch context for successor
+                        let mut next_ctx = ctx.clone();
+                        match edge.kind {
+                            CfgEdgeKind::TrueBranch => {
+                                next_ctx.push(BranchFrame {
+                                    branch_node_line: node.stmt_range.start_line,
+                                    path: BranchPath::TruePath,
+                                });
+                            }
+                            CfgEdgeKind::FalseBranch => {
+                                next_ctx.push(BranchFrame {
+                                    branch_node_line: node.stmt_range.start_line,
+                                    path: BranchPath::FalsePath,
+                                });
+                            }
+                            _ => {
+                                // Pop branch context when arriving at Join via normal edge
+                                if graph
+                                    .nodes
+                                    .get(&edge.target)
+                                    .map(|n| n.kind == CfgNodeKind::Join)
+                                    .unwrap_or(false)
+                                {
+                                    if !next_ctx.is_empty() {
+                                        next_ctx.pop();
+                                    }
+                                }
+                            }
                         }
-                        FieldState::Freed
-                    } else if rules.match_alloc(callee).is_some() {
-                        FieldState::Assigned
-                    } else {
-                        state
+                        branch_contexts.insert(edge.target.clone(), next_ctx);
+                        worklist.push_back(edge.target.clone());
                     }
                 }
-                // Call effect — doesn't match target but still check domain rules
-                (EffectKind::Call, false) => {
-                    state
-                }
-                // Assignment — field becomes Assigned or Nullified
-                (EffectKind::Assign, true) => FieldState::Assigned,
-                // Read access — check use-after-free
-                (EffectKind::Read, true) => {
-                    if state == FieldState::Freed {
-                        suspicious.push(SuspiciousPoint {
-                            line: node.stmt_range.start_line,
-                            kind: SuspiciousKind::UseAfterFree,
-                            message: format!("Read of '{}' after free", field_path),
-                        });
-                    }
-                    state
-                }
-                // Write access
-                (EffectKind::Write, true) => {
-                    if state == FieldState::Freed {
-                        suspicious.push(SuspiciousPoint {
-                            line: node.stmt_range.start_line,
-                            kind: SuspiciousKind::UseAfterFree,
-                            message: format!("Write to '{}' after free", field_path),
-                        });
-                    }
-                    if state == FieldState::Unknown {
-                        FieldState::MaybeLive
-                    } else {
-                        state
-                    }
-                }
-                // Return — field escapes
-                (EffectKind::Return, true) => FieldState::Returned,
-                // Other effects
-                _ => state,
-            };
-
-            if new_state != state {
-                transitions.push(FieldTransition {
-                    from_state: state.clone(),
-                    to_state: new_state.clone(),
-                    at_node: node.id,
-                    reason: format!("{:?} effect on '{}'", effect, target),
-                    line: node.stmt_range.start_line,
-                });
-                state = new_state;
             }
         }
 
-        // Final check: if field was allocated but never freed
-        if state == FieldState::Assigned || state == FieldState::MaybeLive {
-            suspicious.push(SuspiciousPoint {
-                line: 0,
-                kind: SuspiciousKind::MissingFree,
-                message: format!(
-                    "Field '{}' may leak (allocated but no free found)",
-                    field_path
-                ),
-            });
-        }
+        // Determine final/exit state
+        let final_state = out_state
+            .get(&graph.exit)
+            .and_then(|s| s.as_state())
+            .unwrap_or(FieldState::Unknown);
 
         FieldLifecycleResult {
             field_path: field_path.to_string(),
             function_qname: String::new(),
             transitions,
-            final_state: state,
-            suspicious_points: suspicious,
+            suspicious_points,
+            final_state,
+            partial,
+            evidence_level: if partial {
+                EvidenceLevel::Incomplete
+            } else {
+                EvidenceLevel::Heuristic
+            },
+            exit_state: Some(final_state),
         }
     }
 }
+
+// ── Fixpoint helpers ────────────────────────────────────────────────────
+
+/// Merge all predecessor out_states for a node using the state lattice.
+fn merge_predecessors(
+    graph: &CfgGraph,
+    out_state: &HashMap<CfgNodeId, LatticeState>,
+    nid: &CfgNodeId,
+) -> LatticeState {
+    let preds = match graph.predecessors.get(nid) {
+        Some(p) => p,
+        None => return LatticeState::Bottom,
+    };
+    if preds.is_empty() {
+        return LatticeState::Bottom;
+    }
+    let mut merged = LatticeState::Bottom;
+    for edge in preds {
+        if let Some(s) = out_state.get(&edge.source) {
+            merged = lattice_merge(merged, *s);
+        }
+    }
+    merged
+}
+
+/// Merge two lattice states. Implements the complete merge table.
+fn lattice_merge(a: LatticeState, b: LatticeState) -> LatticeState {
+    use LatticeState::*;
+    match (a, b) {
+        (Bottom, x) | (x, Bottom) => x,
+        (Top, _) | (_, Top) => Top,
+        (State(x), State(y)) if x == y => State(x),
+        // Freed vs non-Freed
+        (State(FieldState::Freed), State(FieldState::Assigned))
+        | (State(FieldState::Assigned), State(FieldState::Freed)) => {
+            State(FieldState::MaybeFreed)
+        }
+        // Freed vs others
+        (State(FieldState::Freed), State(FieldState::Unknown))
+        | (State(FieldState::Unknown), State(FieldState::Freed)) => {
+            State(FieldState::MaybeFreed)
+        }
+        (State(FieldState::Freed), _) if b != State(FieldState::MaybeFreed) => {
+            State(FieldState::MaybeFreed)
+        }
+        (_, State(FieldState::Freed)) if a != State(FieldState::MaybeFreed) => {
+            State(FieldState::MaybeFreed)
+        }
+        // Assigned vs others
+        (State(FieldState::Assigned), State(FieldState::Unknown))
+        | (State(FieldState::Unknown), State(FieldState::Assigned)) => {
+            State(FieldState::MaybeAssigned)
+        }
+        // MaybeFreed consolidators
+        (State(FieldState::MaybeFreed), _) | (_, State(FieldState::MaybeFreed)) => {
+            State(FieldState::MaybeFreed)
+        }
+        // MaybeAssigned consolidators
+        (State(FieldState::MaybeAssigned), _) | (_, State(FieldState::MaybeAssigned)) => {
+            State(FieldState::MaybeAssigned)
+        }
+        // Default: conservative merge
+        _ => State(FieldState::Unknown),
+    }
+}
+
+/// Apply a node's effect to the current state and produce a new state.
+/// Returns (new_state, suspicious_points_found).
+fn transfer_state(
+    state: FieldState,
+    node: &CfgNode,
+    canonical_target: &str,
+    rules: &CppOwnershipRules,
+) -> (FieldState, Vec<SuspiciousPoint>) {
+    let effect = match node.effect_kind {
+        Some(e) => e,
+        None => return (state, vec![]),
+    };
+
+    let target = types::structs::canonicalize_field_path(
+        node.target_field.as_deref().unwrap_or(""),
+    );
+    let matches_field = target == canonical_target
+        || canonical_target.starts_with(&format!("{}.", target))
+        || target.starts_with(&format!("{}.", canonical_target));
+
+    let callee = node.callee_name.as_deref().unwrap_or("");
+
+    match (effect, matches_field) {
+        (EffectKind::Free, true) => {
+            let sus = if state == FieldState::Freed || state == FieldState::MaybeFreed {
+                vec![SuspiciousPoint {
+                    line: node.stmt_range.start_line,
+                    kind: SuspiciousKind::DoubleFree,
+                    message: format!("Double free of '{}'", canonical_target),
+                }]
+            } else {
+                vec![]
+            };
+            (FieldState::Freed, sus)
+        }
+        (EffectKind::Allocate, true) => {
+            let sus = if state == FieldState::Freed || state == FieldState::MaybeFreed {
+                vec![SuspiciousPoint {
+                    line: node.stmt_range.start_line,
+                    kind: SuspiciousKind::UseAfterFree,
+                    message: format!(
+                        "Allocation on previously freed field '{}'",
+                        canonical_target
+                    ),
+                }]
+            } else {
+                vec![]
+            };
+            (FieldState::Assigned, sus)
+        }
+        (EffectKind::Call, true) => {
+            if rules.match_free(callee).is_some() {
+                let sus = if state == FieldState::Freed || state == FieldState::MaybeFreed {
+                    vec![SuspiciousPoint {
+                        line: node.stmt_range.start_line,
+                        kind: SuspiciousKind::DoubleFree,
+                        message: format!(
+                            "Double free of '{}' via {}",
+                            canonical_target, callee
+                        ),
+                    }]
+                } else {
+                    vec![]
+                };
+                (FieldState::Freed, sus)
+            } else if rules.match_alloc(callee).is_some() {
+                (FieldState::Assigned, vec![])
+            } else {
+                (state, vec![])
+            }
+        }
+        (EffectKind::Call, false) => (state, vec![]),
+        (EffectKind::Assign, true) => (FieldState::Assigned, vec![]),
+        (EffectKind::Read, true) => {
+            let sus = if state == FieldState::Freed || state == FieldState::MaybeFreed {
+                vec![SuspiciousPoint {
+                    line: node.stmt_range.start_line,
+                    kind: SuspiciousKind::UseAfterFree,
+                    message: format!(
+                        "{} of '{}' after {}",
+                        if state == FieldState::Freed {
+                            "Read"
+                        } else {
+                            "Possible read"
+                        },
+                        canonical_target,
+                        if state == FieldState::Freed {
+                            "free"
+                        } else {
+                            "possible free"
+                        }
+                    ),
+                }]
+            } else {
+                vec![]
+            };
+            (state, sus)
+        }
+        (EffectKind::Write, true) => {
+            let sus = if state == FieldState::Freed || state == FieldState::MaybeFreed {
+                vec![SuspiciousPoint {
+                    line: node.stmt_range.start_line,
+                    kind: SuspiciousKind::UseAfterFree,
+                    message: format!(
+                        "Write to '{}' after {}",
+                        canonical_target,
+                        if state == FieldState::Freed {
+                            "free"
+                        } else {
+                            "possible free"
+                        }
+                    ),
+                }]
+            } else {
+                vec![]
+            };
+            if state == FieldState::Unknown {
+                (FieldState::MaybeLive, sus)
+            } else {
+                (state, sus)
+            }
+        }
+        (EffectKind::Return, true) => (FieldState::Returned, vec![]),
+        _ => (state, vec![]),
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -359,14 +542,26 @@ mod tests {
     use types::ids::CfgNodeId;
     use types::structs::TextRange;
 
-    fn make_node(effect: Option<EffectKind>, target: Option<&str>, line: u32) -> CfgNode {
+    /// Counter for generating unique CfgNodeIds in tests.
+    fn test_fid() -> types::ids::SymbolId {
+        types::ids::SymbolId::default()
+    }
+
+    fn make_node(
+        effect: Option<EffectKind>,
+        target: Option<&str>,
+        line: u32,
+        kind: CfgNodeKind,
+        seq: u32,
+    ) -> CfgNode {
+        let fid = test_fid();
         CfgNode {
-            id: CfgNodeId::default(),
-            function_id: types::ids::SymbolId::default(),
-            kind: CfgNodeKind::Statement,
+            id: CfgNodeId::generate(&fid, "test", seq),
+            function_id: fid,
+            kind,
             stmt_range: TextRange {
-                start_byte: 0,
-                end_byte: 0,
+                start_byte: seq,
+                end_byte: seq,
                 start_line: line,
                 start_column: 0,
                 end_line: line,
@@ -374,17 +569,44 @@ mod tests {
             },
             effect_kind: effect,
             target_field: target.map(|s| s.to_string()),
+            callee_name: None,
         }
+    }
+
+    fn make_stmt_node(effect: Option<EffectKind>, target: Option<&str>, line: u32, seq: u32) -> CfgNode {
+        make_node(effect, target, line, CfgNodeKind::Statement, seq)
+    }
+
+    fn make_entry_exit_graph(
+        nodes: &[CfgNode],
+    ) -> (Vec<CfgNode>, Vec<CfgEdge>) {
+        let fid = test_fid();
+        let entry = CfgNode::entry(&fid);
+        let exit = CfgNode::exit(&fid);
+        let mut all_nodes = vec![entry.clone(), exit.clone()];
+        all_nodes.extend_from_slice(nodes);
+
+        let mut edges = Vec::new();
+        let mut prev_id = entry.id.clone();
+        for n in nodes {
+            edges.push(CfgEdge::new(&prev_id, &n.id, CfgEdgeKind::Normal));
+            prev_id = n.id.clone();
+        }
+        edges.push(CfgEdge::new(&prev_id, &exit.id, CfgEdgeKind::Normal));
+
+        (all_nodes, edges)
     }
 
     #[test]
     fn test_use_after_free_detected() {
         let nodes = vec![
-            make_node(Some(EffectKind::Free), Some("ptr"), 10),
-            make_node(Some(EffectKind::Read), Some("ptr"), 12),
+            make_stmt_node(Some(EffectKind::Free), Some("ptr"), 10, 1),
+            make_stmt_node(Some(EffectKind::Read), Some("ptr"), 12, 2),
         ];
+        let (all_nodes, edges) = make_entry_exit_graph(&nodes);
         let rules = OwnershipRules::default();
-        let result = FieldLifecycleEngine::analyze_field_lifecycle(&nodes, "ptr", &rules);
+        let result =
+            FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "ptr", &rules);
         assert!(!result.suspicious_points.is_empty());
         assert_eq!(
             result.suspicious_points[0].kind,
@@ -395,11 +617,13 @@ mod tests {
     #[test]
     fn test_double_free_detected() {
         let nodes = vec![
-            make_node(Some(EffectKind::Free), Some("ptr"), 10),
-            make_node(Some(EffectKind::Free), Some("ptr"), 15),
+            make_stmt_node(Some(EffectKind::Free), Some("ptr"), 10, 1),
+            make_stmt_node(Some(EffectKind::Free), Some("ptr"), 15, 2),
         ];
+        let (all_nodes, edges) = make_entry_exit_graph(&nodes);
         let rules = OwnershipRules::default();
-        let result = FieldLifecycleEngine::analyze_field_lifecycle(&nodes, "ptr", &rules);
+        let result =
+            FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "ptr", &rules);
         let double_frees: Vec<_> = result
             .suspicious_points
             .iter()
@@ -411,13 +635,15 @@ mod tests {
     #[test]
     fn test_clean_lifecycle() {
         let nodes = vec![
-            make_node(Some(EffectKind::Allocate), Some("ptr"), 10),
-            make_node(Some(EffectKind::Write), Some("ptr"), 11),
-            make_node(Some(EffectKind::Read), Some("ptr"), 12),
-            make_node(Some(EffectKind::Free), Some("ptr"), 13),
+            make_stmt_node(Some(EffectKind::Allocate), Some("ptr"), 10, 1),
+            make_stmt_node(Some(EffectKind::Write), Some("ptr"), 11, 2),
+            make_stmt_node(Some(EffectKind::Read), Some("ptr"), 12, 3),
+            make_stmt_node(Some(EffectKind::Free), Some("ptr"), 13, 4),
         ];
+        let (all_nodes, edges) = make_entry_exit_graph(&nodes);
         let rules = OwnershipRules::default();
-        let result = FieldLifecycleEngine::analyze_field_lifecycle(&nodes, "ptr", &rules);
+        let result =
+            FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "ptr", &rules);
         assert_eq!(result.final_state, FieldState::Freed);
         assert!(result
             .suspicious_points
@@ -427,13 +653,14 @@ mod tests {
 
     #[test]
     fn test_nullify_after_alloc() {
-        // Allocate -> Assign NULL -> should be Nullified
         let nodes = vec![
-            make_node(Some(EffectKind::Allocate), Some("ptr"), 10),
-            make_node(Some(EffectKind::Assign), Some("ptr"), 12), // Assign NULL-like
+            make_stmt_node(Some(EffectKind::Allocate), Some("ptr"), 10, 1),
+            make_stmt_node(Some(EffectKind::Assign), Some("ptr"), 12, 2),
         ];
+        let (all_nodes, edges) = make_entry_exit_graph(&nodes);
         let rules = OwnershipRules::default();
-        let result = FieldLifecycleEngine::analyze_field_lifecycle(&nodes, "ptr", &rules);
+        let result =
+            FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "ptr", &rules);
         assert!(!result
             .suspicious_points
             .iter()
@@ -443,26 +670,29 @@ mod tests {
     #[test]
     fn test_return_escaped_state() {
         let nodes = vec![
-            make_node(Some(EffectKind::Allocate), Some("ptr"), 10),
-            make_node(Some(EffectKind::Return), Some("ptr"), 15),
+            make_stmt_node(Some(EffectKind::Allocate), Some("ptr"), 10, 1),
+            make_stmt_node(Some(EffectKind::Return), Some("ptr"), 15, 2),
         ];
+        let (all_nodes, edges) = make_entry_exit_graph(&nodes);
         let rules = OwnershipRules::default();
-        let result = FieldLifecycleEngine::analyze_field_lifecycle(&nodes, "ptr", &rules);
+        let result =
+            FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "ptr", &rules);
         assert_eq!(result.final_state, FieldState::Returned);
     }
 
     #[test]
     fn test_interleaved_fields_dont_cross_contaminate() {
-        // Two fields: "a" and "b". Free "b" should not trigger use-after-free for "a".
         let nodes = vec![
-            make_node(Some(EffectKind::Allocate), Some("a"), 10),
-            make_node(Some(EffectKind::Allocate), Some("b"), 11),
-            make_node(Some(EffectKind::Free), Some("b"), 12),
-            make_node(Some(EffectKind::Read), Some("a"), 13), // Fine -- "a" not freed
-            make_node(Some(EffectKind::Free), Some("a"), 14),
+            make_stmt_node(Some(EffectKind::Allocate), Some("a"), 10, 1),
+            make_stmt_node(Some(EffectKind::Allocate), Some("b"), 11, 2),
+            make_stmt_node(Some(EffectKind::Free), Some("b"), 12, 3),
+            make_stmt_node(Some(EffectKind::Read), Some("a"), 13, 4),
+            make_stmt_node(Some(EffectKind::Free), Some("a"), 14, 5),
         ];
+        let (all_nodes, edges) = make_entry_exit_graph(&nodes);
         let rules = OwnershipRules::default();
-        let result = FieldLifecycleEngine::analyze_field_lifecycle(&nodes, "a", &rules);
+        let result =
+            FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "a", &rules);
         assert!(
             result
                 .suspicious_points
@@ -475,25 +705,126 @@ mod tests {
 
     #[test]
     fn test_no_effects_produces_unknown_state() {
-        let nodes = vec![make_node(None, None, 10)];
+        let nodes = vec![make_stmt_node(None, None, 10, 1)];
+        let (all_nodes, edges) = make_entry_exit_graph(&nodes);
         let rules = OwnershipRules::default();
         let result =
-            FieldLifecycleEngine::analyze_field_lifecycle(&nodes, "any_field", &rules);
+            FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "any_field", &rules);
         assert_eq!(result.final_state, FieldState::Unknown);
         assert!(result.transitions.is_empty());
     }
 
     #[test]
     fn test_allocate_free_allocate_reuse() {
-        // allocate -> free -> allocate again (common pattern)
         let nodes = vec![
-            make_node(Some(EffectKind::Allocate), Some("ptr"), 10),
-            make_node(Some(EffectKind::Free), Some("ptr"), 15),
-            make_node(Some(EffectKind::Allocate), Some("ptr"), 20),
-            make_node(Some(EffectKind::Free), Some("ptr"), 25),
+            make_stmt_node(Some(EffectKind::Allocate), Some("ptr"), 10, 1),
+            make_stmt_node(Some(EffectKind::Free), Some("ptr"), 15, 2),
+            make_stmt_node(Some(EffectKind::Allocate), Some("ptr"), 20, 3),
+            make_stmt_node(Some(EffectKind::Free), Some("ptr"), 25, 4),
         ];
+        let (all_nodes, edges) = make_entry_exit_graph(&nodes);
         let rules = OwnershipRules::default();
-        let result = FieldLifecycleEngine::analyze_field_lifecycle(&nodes, "ptr", &rules);
+        let result =
+            FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "ptr", &rules);
         assert_eq!(result.final_state, FieldState::Freed);
+    }
+
+    #[test]
+    fn test_fixpoint_branch_merge() {
+        // Branch: True path frees, False path allocates → merge should be MaybeFreed
+        let fid = test_fid();
+        let entry = CfgNode::entry(&fid);
+        let exit = CfgNode::exit(&fid);
+        let branch = make_node(
+            Some(EffectKind::Condition),
+            None,
+            10,
+            CfgNodeKind::Branch,
+            1,
+        );
+        let free_node = make_stmt_node(Some(EffectKind::Free), Some("ptr"), 11, 2);
+        let alloc_node = make_stmt_node(Some(EffectKind::Allocate), Some("ptr"), 12, 3);
+        let join = make_node(None, None, 13, CfgNodeKind::Join, 4);
+
+        let all_nodes = vec![
+            entry.clone(),
+            branch.clone(),
+            free_node.clone(),
+            alloc_node.clone(),
+            join.clone(),
+            exit.clone(),
+        ];
+        let edges = vec![
+            CfgEdge::new(&entry.id, &branch.id, CfgEdgeKind::Normal),
+            CfgEdge::new(&branch.id, &free_node.id, CfgEdgeKind::TrueBranch),
+            CfgEdge::new(&branch.id, &alloc_node.id, CfgEdgeKind::FalseBranch),
+            CfgEdge::new(&free_node.id, &join.id, CfgEdgeKind::Normal),
+            CfgEdge::new(&alloc_node.id, &join.id, CfgEdgeKind::Normal),
+            CfgEdge::new(&join.id, &exit.id, CfgEdgeKind::Normal),
+        ];
+
+        let rules = OwnershipRules::default();
+        let result =
+            FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "ptr", &rules);
+        // At join, one path is freed, the other is assigned → MaybeFreed
+        assert_eq!(result.final_state, FieldState::MaybeFreed);
+        assert!(!result.partial);
+    }
+
+    #[test]
+    fn test_loop_converges_via_lattice() {
+        // A self-loop that doesn't change state converges quickly.
+        let fid = test_fid();
+        let entry = CfgNode::entry(&fid);
+        let exit = CfgNode::exit(&fid);
+        let loop_node = make_node(
+            Some(EffectKind::Condition),
+            None,
+            10,
+            CfgNodeKind::Loop,
+            1,
+        );
+
+        let all_nodes = vec![entry.clone(), loop_node.clone(), exit.clone()];
+        let edges = vec![
+            CfgEdge::new(&entry.id, &loop_node.id, CfgEdgeKind::Normal),
+            CfgEdge::new(&loop_node.id, &loop_node.id, CfgEdgeKind::LoopBack),
+            CfgEdge::new(&loop_node.id, &exit.id, CfgEdgeKind::Normal),
+        ];
+
+        let rules = OwnershipRules::default();
+        let result =
+            FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "nonexist", &rules);
+        // Loop converges before budget is exhausted.
+        assert!(!result.partial);
+        assert_ne!(result.evidence_level, EvidenceLevel::Incomplete);
+    }
+
+    #[test]
+    fn test_budget_exhaustion_marks_partial() {
+        // Create enough nodes to exceed MAX_VISITS (500).
+        let fid = test_fid();
+        let entry = CfgNode::entry(&fid);
+        let exit = CfgNode::exit(&fid);
+
+        let mut all_nodes = vec![entry.clone()];
+        let mut edges = Vec::new();
+        let mut prev_id = entry.id.clone();
+
+        // Build 600 nodes in a chain → exceeds MAX_VISITS=500
+        for i in 0..600u32 {
+            let n = make_stmt_node(Some(EffectKind::Read), Some("x"), i, i);
+            edges.push(CfgEdge::new(&prev_id, &n.id, CfgEdgeKind::Normal));
+            prev_id = n.id.clone();
+            all_nodes.push(n);
+        }
+        all_nodes.push(exit.clone());
+        edges.push(CfgEdge::new(&prev_id, &exit.id, CfgEdgeKind::Normal));
+
+        let rules = OwnershipRules::default();
+        let result =
+            FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "x", &rules);
+        assert!(result.partial);
+        assert_eq!(result.evidence_level, EvidenceLevel::Incomplete);
     }
 }

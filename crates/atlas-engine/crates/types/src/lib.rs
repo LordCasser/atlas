@@ -50,9 +50,10 @@ pub use enums::{
 
 // --- Core IR ---
 pub use structs::{
-    ArgumentFact, Callsite, CapabilityMask, DiagnosticLevel, ExtractDiagnostic, ExtractionError,
-    FailureCategory, FileFacts, FileInfo, FpAnnotation, ImportDef, IndexReport, RawEdge,
-    ReferenceUse, ResolvedTarget, ScopeDef, SymbolDef, TextRange, layer, status,
+    canonicalize_field_path, ArgumentFact, Callsite, CapabilityMask, DiagnosticLevel,
+    ExtractDiagnostic, ExtractionError, FailureCategory, FileFacts, FileInfo, FpAnnotation,
+    ImportDef, IndexReport, RawEdge, ReferenceUse, ResolvedTarget, ScopeDef, SymbolDef, TextRange,
+    layer, status,
 };
 
 // --- Binding types ---

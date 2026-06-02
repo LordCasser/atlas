@@ -39,6 +39,11 @@ pub struct CfgNode {
     /// Target field/expression path when relevant (e.g., "data->state.ptr").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_field: Option<String>,
+    /// Callee function name for Call-effect nodes (e.g., "free", "Safefree").
+    /// Populated by cfg_builder for call_expression nodes.
+    /// Used by lifecycle analysis to match domain rules (free_fn/alloc_fn).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callee_name: Option<String>,
 }
 
 impl CfgNode {
@@ -52,6 +57,7 @@ impl CfgNode {
             stmt_range: range,
             effect_kind: None,
             target_field: None,
+            callee_name: None,
         }
     }
 

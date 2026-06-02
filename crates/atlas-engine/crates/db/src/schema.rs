@@ -250,7 +250,8 @@ CREATE TABLE IF NOT EXISTS cfg_nodes (
     range_end_line       INTEGER NOT NULL,
     range_end_column     INTEGER NOT NULL,
     effect_kind          TEXT,                     -- read/write/allocate/free/call/condition/return/goto/assign
-    target_field         TEXT                      -- e.g. "data->state.aptr" (normalized struct field path)
+    target_field         TEXT,                     -- e.g. "data->state.aptr" (normalized struct field path)
+    callee_name          TEXT                      -- callee function name for Call-effect nodes (nullable, for domain rule matching)
 );
 
 -- cfg_edges: control-flow edges between CFG nodes

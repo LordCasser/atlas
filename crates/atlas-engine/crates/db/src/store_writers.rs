@@ -505,8 +505,8 @@ pub(crate) fn write_cfg_nodes(conn: &Connection, nodes: &[CfgNode]) -> anyhow::R
         r#"INSERT OR REPLACE INTO cfg_nodes
            (cfg_node_id, function_id, kind,
             range_start_byte, range_end_byte, range_start_line, range_start_column,
-            range_end_line, range_end_column, effect_kind, target_field)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)"#,
+            range_end_line, range_end_column, effect_kind, target_field, callee_name)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"#,
     )?;
     for n in nodes {
         stmt.execute(params![
@@ -521,6 +521,7 @@ pub(crate) fn write_cfg_nodes(conn: &Connection, nodes: &[CfgNode]) -> anyhow::R
             n.stmt_range.end_column,
             n.effect_kind.map(|k| k.as_str()),
             n.target_field.as_deref(),
+            n.callee_name.as_deref(),
         ])?;
     }
     Ok(())

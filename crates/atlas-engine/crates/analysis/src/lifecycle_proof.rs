@@ -26,6 +26,8 @@ impl LifecycleVerdict {
 /// Evidence level for a lifecycle analysis conclusion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EvidenceLevel {
+    /// Budget-exhausted or incomplete analysis result.
+    Incomplete,
     Heuristic,
     DomainRuleBacked,
     UserAnnotated,
@@ -34,6 +36,7 @@ pub enum EvidenceLevel {
 impl EvidenceLevel {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Incomplete => "incomplete",
             Self::Heuristic => "heuristic",
             Self::DomainRuleBacked => "domain_rule_backed",
             Self::UserAnnotated => "user_annotated",

@@ -38,12 +38,42 @@ impl ToolRouter {
             })
             .collect();
 
+        // Compute progress when filtering by query_id
+        let (progress, pending_jobs, message) = if let Some(qid) = query_id {
+            match self.store.get_job_counts_by_trigger_query(qid) {
+                Ok(prog) => {
+                    let pending = prog.queued + prog.building;
+                    let msg = if pending > 0 {
+                        format!("{} jobs pending", pending)
+                    } else {
+                        "all jobs complete".to_string()
+                    };
+                    (Some(prog), pending, msg)
+                }
+                Err(_) => (None, 0i64, "unavailable".to_string()),
+            }
+        } else {
+            (None, 0i64, String::new())
+        };
+
+        let mut resp = json!({
+            "jobs": result,
+            "total": jobs.len(),
+        });
+
+        if let Some(prog) = progress {
+            resp["progress"] = json!({
+                "queued": prog.queued,
+                "building": prog.building,
+                "complete": prog.complete,
+                "failed": prog.failed,
+            });
+            resp["pending_jobs"] = json!(pending_jobs);
+            resp["message"] = json!(message);
+        }
+
         (
-            serde_json::to_string_pretty(&json!({
-                "jobs": result,
-                "total": jobs.len(),
-            }))
-            .unwrap_or_else(|e| e.to_string()),
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
             false,
         )
     }

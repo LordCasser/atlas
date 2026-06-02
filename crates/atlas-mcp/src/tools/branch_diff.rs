@@ -130,7 +130,8 @@ impl ToolRouter {
             .map(|s| s.qualified_name)
             .unwrap_or_else(|| symbol.to_string());
 
-        let diffs = atlas_engine::analysis::BranchDiffEngine::diff_branches(&cfg_nodes);
+        let cfg_edges = self.store.find_cfg_edges_by_function(&sid).unwrap_or_default();
+        let diffs = atlas_engine::analysis::BranchDiffEngine::diff_branches(&cfg_nodes, &cfg_edges);
 
         let mut resp = json!({
             "ok": true,

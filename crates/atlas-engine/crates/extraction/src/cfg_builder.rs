@@ -408,6 +408,41 @@ impl CfgContext<'_> {
         None
     }
 
+    /// Extract the callee function name from a statement node.
+    /// Returns the name if the statement is a function call, None otherwise.
+    fn extract_callee_name_from_node(&self, node: &Node) -> Option<String> {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "call_expression" || child.kind() == "expression_statement" {
+                return self.extract_callee_name_from_expr(&child);
+            }
+            if child.kind() == "call_expression" {
+                break;
+            }
+        }
+        None
+    }
+
+    /// Recursively find the callee name inside a call/expression node.
+    fn extract_callee_name_from_expr(&self, node: &Node) -> Option<String> {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "identifier" => {
+                    return Some(child.utf8_text(self.source).ok()?.to_string());
+                }
+                "call_expression" | "member_expression" | "field_expression" => {
+                    return self.extract_callee_name_from_expr(&child);
+                }
+                "expression_statement" => {
+                    return self.extract_callee_name_from_expr(&child);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// Extract the left-hand-side field path from an assignment_expression.
     fn extract_lhs_field(&self, assign_node: &Node) -> Option<String> {
         let mut cursor = assign_node.walk();
@@ -456,11 +491,6 @@ impl CfgContext<'_> {
         false
     }
 
-    /// Canonicalize a field path by replacing `->` with `.` for consistency.
-    fn canonicalize_field_path(path: &str) -> String {
-        path.replace("->", ".")
-    }
-
     /// Walk a tree-sitter node to build a dot-separated field access path.
     /// E.g., for `data->state.aptr.cookiehost` returns "data.state.aptr.cookiehost"
     fn extract_field_path(&self, node: &Node) -> Option<String> {
@@ -486,21 +516,21 @@ impl CfgContext<'_> {
                         _ => {}
                     }
                 }
-                if parts.is_empty() { None } else { Some(Self::canonicalize_field_path(&parts.join("."))) }
+                if parts.is_empty() { None } else { Some(types::structs::canonicalize_field_path(&parts.join("."))) }
             }
             "subscript_expression" => {
                 // array[index] — extract array name
                 let mut cursor = node.walk();
                 if let Some(first) = node.named_children(&mut cursor).next() {
                     if let Ok(text) = first.utf8_text(self.source) {
-                        return Some(Self::canonicalize_field_path(&text.to_string()));
+                        return Some(types::structs::canonicalize_field_path(&text.to_string()));
                     }
                 }
                 None
             }
             "identifier" => {
                 if let Ok(text) = node.utf8_text(self.source) {
-                    Some(Self::canonicalize_field_path(&text.to_string()))
+                    Some(types::structs::canonicalize_field_path(&text.to_string()))
                 } else {
                     None
                 }
@@ -510,7 +540,7 @@ impl CfgContext<'_> {
                 let mut cursor = node.walk();
                 for child in node.named_children(&mut cursor) {
                     if let Some(path) = self.extract_field_path(&child) {
-                        return Some(Self::canonicalize_field_path(&path));
+                        return Some(types::structs::canonicalize_field_path(&path));
                     }
                 }
                 None
@@ -716,6 +746,14 @@ impl CfgContext<'_> {
     /// Emit a statement/return/throw node and connect to previous.
     fn emit_stmt(&mut self, kind: CfgNodeKind, start_byte: u32, stmt_node: &Node) -> types::ids::CfgNodeId {
         let node_id = self.add_node(kind, start_byte, Some(stmt_node));
+
+        // Extract callee_name for domain rule matching
+        if kind == CfgNodeKind::Statement || kind == CfgNodeKind::Return || kind == CfgNodeKind::Branch || kind == CfgNodeKind::Loop {
+            let callee = self.extract_callee_name_from_node(stmt_node);
+            if let Some(node) = self.nodes.iter_mut().find(|n| n.id == node_id) {
+                node.callee_name = callee;
+            }
+        }
 
         // Annotate effect for C/C++ (language check via self.config)
         if self.is_c_or_cpp() {

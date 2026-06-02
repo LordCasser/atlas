@@ -12,6 +12,7 @@
 pub mod cross_function;
 pub mod summary;
 pub mod trace;
+pub mod cfg_graph;
 pub mod lifecycle;
 pub mod branch_diff;
 pub mod domain_rules;

@@ -362,6 +362,7 @@ pub(crate) fn row_to_cfg_node(row: &Row) -> rusqlite::Result<CfgNode> {
         CfgNodeKind::from_str(&kind_str).ok_or_else(|| parse_err(2, &kind_str, "CfgNodeKind"))?;
     let effect_kind: Option<String> = row.get(9)?;
     let target_field: Option<String> = row.get(10)?;
+    let callee_name: Option<String> = row.get(11)?;
     Ok(CfgNode {
         id: row.get(0)?,
         function_id: row.get(1)?,
@@ -376,6 +377,7 @@ pub(crate) fn row_to_cfg_node(row: &Row) -> rusqlite::Result<CfgNode> {
         },
         effect_kind: effect_kind.and_then(|k| EffectKind::from_str(&k)),
         target_field,
+        callee_name,
     })
 }
 

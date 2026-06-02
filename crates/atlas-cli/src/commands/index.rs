@@ -309,6 +309,20 @@ pub fn run(
             return Ok(());
         }
 
+        // ── Manifest-only early return ──
+        // Manifest mode only extracts symbols; skip resolution, edge building,
+        // annotation materialization, and summary building.
+        if matches!(mode, ExtractionMode::Manifest) {
+            // Still commit path alias config and finalize metadata.
+            atlas_engine::phase_commit_path_alias_config(&store, &root)?;
+            atlas_engine::phase_finalize(&store, &root, &include_patterns)?;
+            // Signal progress complete so TUI doesn't wait indefinitely.
+            ps.lock()
+                .unwrap()
+                .start_phase(ProgressPhase::Finalizing, Some("manifest index complete".into()));
+            return Ok(());
+        }
+
         // ── Resolution (parallel matching + serial write) ──
         let path_alias = atlas_engine::PathAliasConfig::resolver(&root);
 

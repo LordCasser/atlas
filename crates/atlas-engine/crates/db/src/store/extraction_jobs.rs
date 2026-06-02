@@ -304,6 +304,44 @@ impl Store {
             rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
         }
     }
+
+    /// Count extraction jobs grouped by status for a given trigger query.
+    /// Returns counts for queued, building, complete, and failed jobs.
+    pub fn get_job_counts_by_trigger_query(
+        &self,
+        query_id: &str,
+    ) -> anyhow::Result<QueryJobProgress> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT status, COUNT(*) FROM extraction_jobs
+             WHERE trigger_query = ?1
+             GROUP BY status",
+        )?;
+        let mut progress = QueryJobProgress::default();
+        let rows = stmt.query_map(params![query_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (status, count) = row?;
+            match status.as_str() {
+                "queued" => progress.queued = count,
+                "building" => progress.building = count,
+                "complete" => progress.complete = count,
+                "failed" => progress.failed = count,
+                _ => {}
+            }
+        }
+        Ok(progress)
+    }
+}
+
+/// Progress summary for jobs triggered by a specific query.
+#[derive(Debug, Clone, Default)]
+pub struct QueryJobProgress {
+    pub queued: i64,
+    pub building: i64,
+    pub complete: i64,
+    pub failed: i64,
 }
 
 // ── Row mapping ─────────────────────────────────────────────────────────────

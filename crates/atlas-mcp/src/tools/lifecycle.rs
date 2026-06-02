@@ -13,7 +13,8 @@ use std::time::Instant;
 impl ToolRouter {
     pub(crate) fn handle_atlas_lifecycle(&mut self, args: &serde_json::Value) -> (String, bool) {
         let symbol = get_str(args, "symbol");
-        let field = get_str(args, "field");
+        let field_raw = get_str(args, "field");
+        let field = atlas_engine::canonicalize_field_path(field_raw);
 
         if symbol.is_empty() || field.is_empty() {
             return ("Missing required parameters: symbol and field".to_string(), true);
@@ -48,6 +49,7 @@ impl ToolRouter {
             Ok(nodes) => nodes,
             Err(e) => return (format!("Failed to load CFG nodes: {e}"), true),
         };
+        let mut cfg_edges = self.store.find_cfg_edges_by_function(&sid).unwrap_or_default();
 
         let mut lazy_window: Option<atlas_engine::LazyWindow> = None;
 
@@ -66,6 +68,7 @@ impl ToolRouter {
                             );
                         }
                     };
+                    cfg_edges = self.store.find_cfg_edges_by_function(&sid).unwrap_or_default();
                 }
                 Err(e) => {
                     // Lazy extraction itself failed — return graceful diagnostics
@@ -147,7 +150,8 @@ impl ToolRouter {
         // Run rule-backed lifecycle analysis
         let mut result = atlas_engine::analysis::FieldLifecycleEngine::analyze_with_rules(
             &cfg_nodes,
-            field,
+            &cfg_edges,
+            &field,
             &ownership_rules,
             &cpp_rules,
         );
@@ -167,7 +171,7 @@ impl ToolRouter {
             states: result
                 .transitions
                 .iter()
-                .map(|t| (t.line, t.to_state.as_str().to_string()))
+                .map(|t| (t.node_line, t.to_state.as_str().to_string()))
                 .collect(),
             exit_state: result.final_state.clone(),
         };
@@ -178,6 +182,7 @@ impl ToolRouter {
             "field_path": result.field_path,
             "function": result.function_qname,
             "final_state": result.final_state.as_str(),
+            "partial": result.partial,
             "verdict": proof.verdict.as_str(),
             "evidence_level": proof.evidence_level.as_str(),
             "reasoning": proof.reasoning,
@@ -192,8 +197,8 @@ impl ToolRouter {
             "transitions": result.transitions.iter().map(|t| json!({
                 "from": t.from_state.as_str(),
                 "to": t.to_state.as_str(),
-                "line": t.line,
-                "reason": t.reason,
+                "line": t.node_line,
+                "reason": t.effect.map(|e| format!("{:?}", e)).unwrap_or_else(|| "transition".to_string()),
             })).collect::<Vec<_>>(),
             "suspicious_count": result.suspicious_points.len(),
             "suspicious": result.suspicious_points.iter().map(|p| json!({

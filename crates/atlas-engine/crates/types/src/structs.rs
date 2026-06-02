@@ -788,6 +788,16 @@ impl CapabilityMask {
     }
 }
 
+/// Canonicalize a field access path: replace `->` with `.` and collapse whitespace.
+///
+/// This is the single canonicalization point used by CFG effect annotation,
+/// lifecycle analysis, domain rule matching, and MCP user input normalization.
+/// Using one function everywhere ensures `data->state.ptr`, `data.state.ptr`,
+/// and `data . state . ptr` all compare equal.
+pub fn canonicalize_field_path(raw: &str) -> String {
+    raw.trim().replace("->", ".").chars().filter(|c| !c.is_whitespace()).collect()
+}
+
 // ---------------------------------------------------------------------------
 // IndexReport — post-indexing summary
 // ---------------------------------------------------------------------------
@@ -1240,5 +1250,35 @@ mod tests {
         let mut empty = IndexReport::new();
         empty.finalize();
         assert_eq!(empty.resolution_rate, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod canonicalize_tests {
+    use super::*;
+
+    #[test]
+    fn arrow_to_dot() {
+        assert_eq!(canonicalize_field_path("data->state.ptr"), "data.state.ptr");
+    }
+
+    #[test]
+    fn already_dot() {
+        assert_eq!(canonicalize_field_path("data.state.ptr"), "data.state.ptr");
+    }
+
+    #[test]
+    fn spaces_removed() {
+        assert_eq!(canonicalize_field_path("data -> state . ptr"), "data.state.ptr");
+    }
+
+    #[test]
+    fn leading_trailing_whitespace() {
+        assert_eq!(canonicalize_field_path("  data->state.ptr  "), "data.state.ptr");
+    }
+
+    #[test]
+    fn nested_arrow() {
+        assert_eq!(canonicalize_field_path("a->b->c"), "a.b.c");
     }
 }

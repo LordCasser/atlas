@@ -84,6 +84,19 @@ impl Store {
     pub fn init_schema(&self) -> anyhow::Result<()> {
         let conn = self.lock();
         conn.execute_batch(SCHEMA_DDL)?;
+
+        // Migration: add callee_name to cfg_nodes (nullable, backward-compat)
+        {
+            let has_col: bool = conn
+                .prepare("SELECT callee_name FROM cfg_nodes LIMIT 0")
+                .is_ok();
+            if !has_col {
+                conn.execute_batch(
+                    "ALTER TABLE cfg_nodes ADD COLUMN callee_name TEXT;",
+                )?;
+            }
+        }
+
         Ok(())
     }
 

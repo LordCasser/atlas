@@ -1064,7 +1064,8 @@ impl ToolRouter {
                 }
 
                 // Run branch diff analysis
-                let diffs = analysis::BranchDiffEngine::diff_branches(&cfg_nodes);
+                let cfg_edges = self.store.find_cfg_edges_by_function(&node.symbol_id).unwrap_or_default();
+                let diffs = analysis::BranchDiffEngine::diff_branches(&cfg_nodes, &cfg_edges);
 
                 // Collect fields that have effect annotations
                 let mut fields: HashSet<String> = HashSet::new();
@@ -1081,6 +1082,7 @@ impl ToolRouter {
                     let rules = analysis::OwnershipRules::default();
                     let mut lifecycle = analysis::FieldLifecycleEngine::analyze_field_lifecycle(
                         &cfg_nodes,
+                        &cfg_edges,
                         field_path,
                         &rules,
                     );
