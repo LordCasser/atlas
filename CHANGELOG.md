@@ -2,6 +2,15 @@
 
 All notable changes to Atlas will be documented in this file.
 
+## [1.3.0] — 2026-06-02
+
+### Release preparation
+
+- Bumped Atlas workspace packages, lockfile metadata, and release-facing documentation to 1.3.0.
+- Merged the domain-rules and lazy-experience temporary architecture notes into the main docs, and added a dedicated language extension guide for domain rules.
+
+---
+
 ## [1.1.0] — 2026-05-28
 
 ### First public release
