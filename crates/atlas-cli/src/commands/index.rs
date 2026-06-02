@@ -324,15 +324,15 @@ pub fn run(
                 return Ok(());
             }
 
-        // ── Resolution (parallel matching + serial write) ──
-        let unresolved = store.get_stats()?.unresolved_references;
-        ps.lock().unwrap().start_phase(
-            ProgressPhase::Resolution,
-            Some(format!("{unresolved} references")),
-        );
-        ps.lock().unwrap().set_total(unresolved as u64);
+            // ── Resolution (parallel matching + serial write) ──
+            let unresolved = store.get_stats()?.unresolved_references;
+            ps.lock().unwrap().start_phase(
+                ProgressPhase::Resolution,
+                Some(format!("{unresolved} references")),
+            );
+            ps.lock().unwrap().set_total(unresolved as u64);
 
-        let path_alias = atlas_engine::PathAliasConfig::resolver(&root);
+            let path_alias = atlas_engine::PathAliasConfig::resolver(&root);
 
             let path_alias_config_changed =
                 atlas_engine::PathAliasConfig::has_changed(&store, &root)?;

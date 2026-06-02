@@ -778,10 +778,34 @@ mod tests {
     use super::*;
 
     fn test_app() -> App {
-        App::new(
-            Arc::new(Store::open_in_memory().expect("in-memory store")),
-            PathBuf::from("."),
-        )
+        let store = Arc::new(Store::open_in_memory().expect("in-memory store"));
+        let project_root = PathBuf::from(".");
+        let session = GraphSession::new(Arc::clone(&store), project_root.clone());
+
+        App {
+            should_quit: false,
+            store,
+            project_root,
+            session,
+            search_input: String::new(),
+            search_cursor: 0,
+            search_results: Vec::new(),
+            selected_index: 0,
+            focus: Focus::SearchBar,
+            screen: Screen::SearchHome,
+            detail_tab: DetailTab::Overview,
+            detail_context: None,
+            detail_selected: 0,
+            detail_scroll: 0,
+            trace_chain: None,
+            trace_selected: 0,
+            trace_scroll: 0,
+            auto_index: None,
+            exit_confirm_until: None,
+            file_count: 0,
+            symbol_count: 0,
+            edge_count: 0,
+        }
     }
 
     #[test]
