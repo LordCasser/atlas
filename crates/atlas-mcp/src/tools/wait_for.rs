@@ -61,7 +61,7 @@ impl ToolRouter {
                 if let Some(ref error) = info.error {
                     response["error"] = serde_json::Value::String(error.clone());
                 }
-                if status_str == "completed" && info.method == "open_project" {
+                if status_str == "completed" && info.method == "project" {
                     if let Some(project) = self.activate_pending_project_for_task(&info.task_id) {
                         response["activation"] = serde_json::Value::String("activated".into());
                         response["activated_project"] = serde_json::Value::String(project);

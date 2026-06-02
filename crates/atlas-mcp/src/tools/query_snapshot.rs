@@ -172,14 +172,14 @@ mod tests {
     fn test_query_snapshot_construction() {
         let snapshot = QuerySnapshot {
             query_id: "q_test".into(),
-            tool_name: "trace_point".into(),
+            tool_name: "trace".into(),
             tool_args: serde_json::json!({"line": 1}),
             lazy_window: None,
             created_at: std::time::Instant::now(),
             status: QueryStatus::Partial,
         };
         assert_eq!(snapshot.query_id, "q_test");
-        assert_eq!(snapshot.tool_name, "trace_point");
+        assert_eq!(snapshot.tool_name, "trace");
     }
 
     #[test]

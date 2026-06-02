@@ -56,10 +56,14 @@ impl ToolRouter {
             "usages": usages,
         });
 
+        let mut stored_args = args.clone();
+        if let Some(obj) = stored_args.as_object_mut() {
+            obj.insert("view".into(), serde_json::Value::String("usages".into()));
+        }
         self.store_snapshot(QuerySnapshot {
             query_id: query_id.clone(),
-            tool_name: "usages".into(),
-            tool_args: args.clone(),
+            tool_name: "symbol".into(),
+            tool_args: stored_args,
             lazy_window: None,
             created_at: Instant::now(),
             status: QueryStatus::Ready,

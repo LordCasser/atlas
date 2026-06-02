@@ -11,7 +11,7 @@ use serde_json::json;
 use std::time::Instant;
 
 impl ToolRouter {
-    pub(crate) fn handle_atlas_lifecycle(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_lifecycle(&mut self, args: &serde_json::Value) -> (String, bool) {
         let symbol = get_str(args, "symbol");
         let field_raw = get_str(args, "field");
         let field = atlas_engine::canonicalize_field_path(field_raw);
@@ -40,7 +40,7 @@ impl ToolRouter {
 
         self.store_snapshot(QuerySnapshot {
             query_id: query_id.clone(),
-            tool_name: "atlas_lifecycle".into(),
+            tool_name: "lifecycle".into(),
             tool_args: args.clone(),
             lazy_window: None,
             created_at: Instant::now(),

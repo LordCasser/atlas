@@ -289,7 +289,7 @@ impl ToolRouter {
         )
     }
 
-    pub(crate) fn handle_symbol(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_symbol_detail(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "qualified_name");
         if qname.len() > MAX_SYMBOL_NAME_LENGTH {
             return (
@@ -388,13 +388,13 @@ impl ToolRouter {
             .callers(&sym.id)
             .callers
             .iter()
-            .map(|&ix| self.node_json(snap, ix))
+            .map(|&ix| self.node_json(snap, ix, None))
             .collect();
         let callee_nodes: Vec<_> = graph
             .callees(&sym.id)
             .callees
             .iter()
-            .map(|&ix| self.node_json(snap, ix))
+            .map(|&ix| self.node_json(snap, ix, None))
             .collect();
 
         let mut result = json!({
@@ -426,10 +426,14 @@ impl ToolRouter {
         }
         result["query_id"] = json!(query_id);
 
+        let mut stored_args = args.clone();
+        if let Some(obj) = stored_args.as_object_mut() {
+            obj.insert("view".into(), serde_json::Value::String("detail".into()));
+        }
         self.store_snapshot(QuerySnapshot {
             query_id: query_id.clone(),
             tool_name: "symbol".into(),
-            tool_args: args.clone(),
+            tool_args: stored_args,
             lazy_window: None,
             created_at: Instant::now(),
             status: if structural_tier == PrecisionTier::Exact {

@@ -143,7 +143,7 @@ impl ToolRouter {
         let all_complete = tier == atlas_engine::structs::precision::PrecisionTier::Exact;
         self.store_snapshot(QuerySnapshot {
             query_id: query_id.clone(),
-            tool_name: "trace_point".into(),
+            tool_name: "trace".into(),
             tool_args: args.clone(),
             lazy_window: None, // trace_point only triggers structural, not dataflow
             created_at: Instant::now(),
@@ -355,7 +355,7 @@ impl ToolRouter {
             tier == atlas_engine::structs::precision::PrecisionTier::Exact && !partial;
         self.store_snapshot(QuerySnapshot {
             query_id: query_id.clone(),
-            tool_name: "trace_variable".into(),
+            tool_name: "trace".into(),
             tool_args: args.clone(),
             lazy_window,
             created_at: Instant::now(),
@@ -507,7 +507,7 @@ impl ToolRouter {
             structural_tier == atlas_engine::structs::precision::PrecisionTier::Exact;
         self.store_snapshot(QuerySnapshot {
             query_id: query_id.clone(),
-            tool_name: "trace_caller_path".into(),
+            tool_name: "trace".into(),
             tool_args: args.clone(),
             lazy_window: None,
             created_at: Instant::now(),
@@ -631,7 +631,7 @@ impl ToolRouter {
                 structural_tier == atlas_engine::structs::precision::PrecisionTier::Exact;
             self.store_snapshot(QuerySnapshot {
                 query_id: query_id.clone(),
-                tool_name: "trace_forward".into(),
+                tool_name: "trace".into(),
                 tool_args: args.clone(),
                 lazy_window: None,
                 created_at: Instant::now(),
@@ -749,7 +749,7 @@ impl ToolRouter {
             structural_tier == atlas_engine::structs::precision::PrecisionTier::Exact;
         self.store_snapshot(QuerySnapshot {
             query_id: query_id.clone(),
-            tool_name: "trace_forward".into(),
+            tool_name: "trace".into(),
             tool_args: args.clone(),
             lazy_window: None,
             created_at: Instant::now(),

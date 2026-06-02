@@ -75,20 +75,122 @@ impl ToolRouter {
         self.send_progress(0.7, "Building context view...");
         match self.context_builder().build_context_for_symbol(&sid) {
             Ok(view) => {
-                let md = view.to_markdown();
                 self.send_progress(1.0, "Context complete");
+
+                // ── subject ────────────────────────────────────────────────
+                let subject = serde_json::to_value(&view.subject).unwrap_or(json!(null));
+
+                // ── subject_source ─────────────────────────────────────────
+                // When includeCode, override with full source; otherwise use
+                // the context builder's preview (first N lines).
+                let subject_source = if include_code {
+                    if let Some(src) = self.read_symbol_source(&sid) {
+                        let lines: Vec<String> =
+                            src.lines().map(|l| l.to_string()).collect();
+                        let total = lines.len() as u32;
+                        Some(json!({
+                            "lines": lines,
+                            "start_line": view.subject_source.as_ref().map(|s| s.start_line).unwrap_or(0),
+                            "total_lines": total,
+                            "truncated": false,
+                        }))
+                    } else {
+                        view.subject_source.as_ref().map(|s| {
+                            json!({
+                                "lines": s.lines,
+                                "start_line": s.start_line,
+                                "total_lines": s.total_lines,
+                                "truncated": s.truncated,
+                            })
+                        })
+                    }
+                } else {
+                    view.subject_source.as_ref().map(|s| {
+                        json!({
+                            "lines": s.lines,
+                            "start_line": s.start_line,
+                            "total_lines": s.total_lines,
+                            "truncated": s.truncated,
+                        })
+                    })
+                };
+
+                // ── caller_details ─────────────────────────────────────────
+                let caller_details: Vec<serde_json::Value> = view
+                    .caller_details
+                    .iter()
+                    .map(|c| {
+                        json!({
+                            "symbol": serde_json::to_value(&c.symbol).unwrap_or(json!(null)),
+                            "callsite_line": c.callsite_line,
+                            "callsite_snippet": c.callsite_snippet,
+                            "edge_kind": c.edge_kind.as_str(),
+                        })
+                    })
+                    .collect();
+
+                // ── callee_details ─────────────────────────────────────────
+                let callee_details: Vec<serde_json::Value> = view
+                    .callee_details
+                    .iter()
+                    .map(|c| {
+                        json!({
+                            "symbol": serde_json::to_value(&c.symbol).unwrap_or(json!(null)),
+                            "callsite_line": c.callsite_line,
+                            "callsite_snippet": c.callsite_snippet,
+                            "edge_kind": c.edge_kind.as_str(),
+                            "callee_signature": c.callee_signature,
+                        })
+                    })
+                    .collect();
+
+                // ── file_peers ─────────────────────────────────────────────
+                let file_peers: Vec<serde_json::Value> = view
+                    .file_peers
+                    .iter()
+                    .map(|p| serde_json::to_value(p).unwrap_or(json!(null)))
+                    .collect();
+
+                // ── trail ──────────────────────────────────────────────────
+                let mut trail = json!({
+                    "full_source": format!(
+                        "explore with includeCode=true, symbol: \"{}\"",
+                        view.subject.qualified_name
+                    ),
+                });
+                if !view.callee_details.is_empty() {
+                    trail["calls"] = json!(format!(
+                        "symbol with view=context, qname: \"{}\"",
+                        view.callee_details[0].symbol.qualified_name
+                    ));
+                }
+                if !view.caller_details.is_empty() {
+                    trail["called_by"] = json!(format!(
+                        "trace with kind=callers, symbol: \"{}\"",
+                        view.subject.name
+                    ));
+                }
+
+                // ── assemble result ────────────────────────────────────────
                 let mut result = json!({
-                    "markdown": md,
+                    "symbol": qname,
+                    "view": "context",
+                    "subject": subject,
+                    "subject_file_path": view.subject_file_path,
+                    "caller_details": caller_details,
+                    "callee_details": callee_details,
+                    "file_peers": file_peers,
+                    "importers": view.importers,
+                    "dependencies": view.dependencies,
+                    "trail": trail,
                     "precision_tier": serde_json::to_value(tier).unwrap_or(json!(null)),
                 });
+                if let Some(ss) = subject_source {
+                    result["subject_source"] = ss;
+                }
                 if tier != PrecisionTier::Exact {
                     if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
                         result["hint"] = json!(hint);
-                    }
-                }
-                if include_code {
-                    if let Some(src) = self.read_symbol_source(&sid) {
-                        result["source"] = json!(src);
                     }
                 }
                 // Surface include_roots and lazy-structural warnings to the caller.
@@ -104,10 +206,14 @@ impl ToolRouter {
                 }
 
                 // Store query snapshot for potential atlas_resume
+                let mut stored_args = args.clone();
+                if let Some(obj) = stored_args.as_object_mut() {
+                    obj.insert("view".into(), serde_json::Value::String("context".into()));
+                }
                 self.store_snapshot(QuerySnapshot {
                     query_id: query_id.clone(),
-                    tool_name: "context".into(),
-                    tool_args: args.clone(),
+                    tool_name: "symbol".into(),
+                    tool_args: stored_args,
                     lazy_window: None,
                     created_at: Instant::now(),
                     status: if tier == PrecisionTier::Exact {

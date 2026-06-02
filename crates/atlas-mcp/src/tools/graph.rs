@@ -14,15 +14,43 @@ use super::{ToolRouter, get_str, get_str_opt, get_u64};
 
 use serde_json::json;
 
-/// Check if an edge kind represents a call relationship.
-fn is_call_edge(kind: &EdgeKind) -> bool {
-    matches!(
-        kind,
-        EdgeKind::Calls
-            | EdgeKind::Instantiates
-            | EdgeKind::Implements
-            | EdgeKind::RegistersCallback
-    )
+/// Check whether an edge kind is allowed by a configurable filter.
+/// An empty `allowed` slice means *all* edge kinds are allowed.
+fn is_allowed_edge(kind: &EdgeKind, allowed: &[EdgeKind]) -> bool {
+    if allowed.is_empty() {
+        return true; // wildcard / all edges
+    }
+    allowed.contains(kind)
+}
+
+/// Default edge kinds for call-graph traversal (call relationships).
+const DEFAULT_CALL_EDGES: &[EdgeKind] = &[EdgeKind::Calls, EdgeKind::Instantiates, EdgeKind::Implements];
+
+/// Parse the `edge_kinds` argument for call-graph tools.
+/// Returns the list of allowed edge kinds; an empty vec means "all edges" (wildcard).
+fn resolve_call_edge_kinds(args: &serde_json::Value) -> Result<Vec<EdgeKind>, String> {
+    let raw = match args.get("edge_kinds") {
+        None | Some(serde_json::Value::Null) => return Ok(DEFAULT_CALL_EDGES.to_vec()),
+        Some(v) => v,
+    };
+    let arr = raw
+        .as_array()
+        .ok_or_else(|| "edge_kinds must be an array of strings".to_string())?;
+    if arr.is_empty() {
+        return Ok(vec![]); // all edge kinds
+    }
+    if arr.len() == 1 && arr[0].as_str() == Some("*") {
+        return Ok(vec![]); // wildcard → all edge kinds
+    }
+    let mut kinds = Vec::with_capacity(arr.len());
+    for v in arr {
+        let s = v.as_str().unwrap_or("");
+        if s == "*" {
+            return Err("'*' must be the only value in edge_kinds".to_string());
+        }
+        kinds.push(parse_edge_kind(s)?);
+    }
+    Ok(kinds)
 }
 
 /// Check if a SymbolKind represents a callable entity (can appear as the
@@ -113,7 +141,7 @@ impl ToolRouter {
             .node_indices
             .iter()
             .take(limit)
-            .map(|ix| self.node_json(snap, *ix))
+            .map(|ix| self.node_json(snap, *ix, None))
             .collect();
 
         let mut resp = json!({
@@ -131,7 +159,7 @@ impl ToolRouter {
 
         self.store_snapshot(QuerySnapshot {
             query_id: query_id.clone(),
-            tool_name: "neighbors".into(),
+            tool_name: "calls".into(),
             tool_args: args.clone(),
             lazy_window: None,
             created_at: Instant::now(),
@@ -163,7 +191,7 @@ impl ToolRouter {
         let snap = graph.snapshot();
         let shown = cg.callers.iter().take(limit);
 
-        let nodes: Vec<_> = shown.map(|ix| self.node_json(snap, *ix)).collect();
+        let nodes: Vec<_> = shown.map(|ix| self.node_json(snap, *ix, None)).collect();
 
         let mut resp = json!({
             "symbol": qname,
@@ -178,7 +206,7 @@ impl ToolRouter {
 
         self.store_snapshot(QuerySnapshot {
             query_id: query_id.clone(),
-            tool_name: "callers".into(),
+            tool_name: "calls".into(),
             tool_args: args.clone(),
             lazy_window: None,
             created_at: Instant::now(),
@@ -210,7 +238,7 @@ impl ToolRouter {
         let snap = graph.snapshot();
         let shown = cg.callees.iter().take(limit);
 
-        let nodes: Vec<_> = shown.map(|ix| self.node_json(snap, *ix)).collect();
+        let nodes: Vec<_> = shown.map(|ix| self.node_json(snap, *ix, None)).collect();
 
         let mut resp = json!({
             "symbol": qname,
@@ -225,7 +253,7 @@ impl ToolRouter {
 
         self.store_snapshot(QuerySnapshot {
             query_id: query_id.clone(),
-            tool_name: "callees".into(),
+            tool_name: "calls".into(),
             tool_args: args.clone(),
             lazy_window: None,
             created_at: Instant::now(),
@@ -243,6 +271,11 @@ impl ToolRouter {
         let qname = get_str(args, "symbol");
         let depth = get_u64(args, "depth").unwrap_or(3) as usize;
         let limit = get_u64(args, "limit").unwrap_or(100) as usize;
+
+        let edge_kinds = match resolve_call_edge_kinds(args) {
+            Ok(k) => k,
+            Err(e) => return (e, true),
+        };
 
         let sid = match self.resolve_qname(qname) {
             Ok(id) => id,
@@ -274,7 +307,7 @@ impl ToolRouter {
         };
         hops.push(json!({
             "depth": 0,
-            "symbol": self.node_json(snap, root_ix),
+            "symbol": self.node_json(snap, root_ix, None),
             "callers": [],
             "callees": [],
         }));
@@ -300,8 +333,8 @@ impl ToolRouter {
                     if visited.contains(&neighbor_id) {
                         continue;
                     }
-                    // Only include call-related edges
-                    if !is_call_edge(&edge_kind) {
+                    // Only include edges matching the configured edge_kinds filter
+                    if !is_allowed_edge(&edge_kind, &edge_kinds) {
                         continue;
                     }
                     visited.insert(neighbor_id);
@@ -321,7 +354,7 @@ impl ToolRouter {
                     if visited.contains(&neighbor_id) {
                         continue;
                     }
-                    if !is_call_edge(&edge_kind) {
+                    if !is_allowed_edge(&edge_kind, &edge_kinds) {
                         continue;
                     }
                     visited.insert(neighbor_id);
@@ -369,7 +402,7 @@ impl ToolRouter {
 
         self.store_snapshot(QuerySnapshot {
             query_id: query_id.clone(),
-            tool_name: "callgraph".into(),
+            tool_name: "calls".into(),
             tool_args: args.clone(),
             lazy_window: None,
             created_at: Instant::now(),
@@ -520,7 +553,7 @@ impl ToolRouter {
             let mut hops: Vec<serde_json::Value> =
                 Vec::with_capacity(path.node_indices.len() + path.edge_indices.len());
             for i in 0..path.node_indices.len() {
-                let mut node_json = tool.node_json(snap, path.node_indices[i]);
+                let mut node_json = tool.node_json(snap, path.node_indices[i], None);
                 if include_code {
                     let node = snap.node(path.node_indices[i]);
                     if let Some(src) = tool.read_symbol_source(&node.symbol_id) {

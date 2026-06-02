@@ -11,7 +11,7 @@ use serde_json::json;
 use std::time::Instant;
 
 impl ToolRouter {
-    pub(crate) fn handle_atlas_branch_diff(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_branch_diff(&mut self, args: &serde_json::Value) -> (String, bool) {
         let symbol = get_str(args, "symbol");
 
         if symbol.is_empty() {
@@ -35,7 +35,7 @@ impl ToolRouter {
 
         self.store_snapshot(QuerySnapshot {
             query_id: query_id.clone(),
-            tool_name: "atlas_branch_diff".into(),
+            tool_name: "branch_diff".into(),
             tool_args: args.clone(),
             lazy_window: None,
             created_at: Instant::now(),
@@ -100,33 +100,6 @@ impl ToolRouter {
 
         // --- CFG is available — run branch diff analysis ---
 
-        // Branch diff only supports C/C++ — gate on language
-        let is_c_or_cpp = self
-            .store
-            .find_symbol_by_id(&sid)
-            .ok()
-            .flatten()
-            .map(|s| {
-                matches!(
-                    s.language,
-                    atlas_engine::Language::C | atlas_engine::Language::Cpp
-                )
-            })
-            .unwrap_or(false);
-
-        if !is_c_or_cpp {
-            let resp = json!({
-                "ok": false,
-                "function": symbol,
-                "error": "unsupported_language",
-                "message": "Branch diff analysis only supports C/C++",
-            });
-            return (
-                serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
-                false,
-            );
-        }
-
         let qname = self
             .store
             .find_symbol_by_id(&sid)
@@ -139,7 +112,31 @@ impl ToolRouter {
             .store
             .find_cfg_edges_by_function(&sid)
             .unwrap_or_default();
-        let diffs = atlas_engine::analysis::BranchDiffEngine::diff_branches(&cfg_nodes, &cfg_edges);
+
+        // Try to enrich with DataFlow-based effects (language-agnostic)
+        let enriched = {
+            let lang = self
+                .store
+                .find_symbol_by_id(&sid)
+                .ok()
+                .flatten()
+                .map(|s| s.language);
+            if let Some(lang) = lang {
+                let config = atlas_engine::analysis::ResourceOpConfig::default_for(lang);
+                match atlas_engine::analysis::DataFlowEffectEnricher::enrich(
+                    self.store.as_ref(), &cfg_nodes, &sid, &config,
+                ) {
+                    Ok(effects) => Some(effects),
+                    Err(_) => None, // Graceful fallback — branch_diff still works with CFG effect_kind
+                }
+            } else {
+                None
+            }
+        };
+
+        let diffs = atlas_engine::analysis::BranchDiffEngine::diff_branches_with_enrichment(
+            &cfg_nodes, &cfg_edges, enriched.as_ref(),
+        );
 
         let mut resp = json!({
             "ok": true,

@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 impl ToolRouter {
     /// Handle `atlas_resume` — re-run lazy extraction then re-execute the
     /// original tool handler with the same arguments.
-    pub(crate) fn handle_resume(&mut self, args: &Value) -> (String, bool) {
+    pub(crate) fn handle_resume_task(&mut self, args: &Value) -> (String, bool) {
         let query_id = crate::tools::get_str(args, "query_id");
         if query_id.is_empty() {
             return (
@@ -75,22 +75,70 @@ impl ToolRouter {
         // Copy query_id before snapshot moves
         let original_query_id = query_id.to_string();
 
-        // Re-dispatch to original handler
+        // Re-dispatch to original handler (new public tool names)
         let (resp_str, is_error) = match snapshot.tool_name.as_str() {
-            "trace_variable" => self.handle_trace_variable(&snapshot.tool_args),
-            "trace_point" => self.handle_trace_point(&snapshot.tool_args),
-            "trace_caller_path" => self.handle_trace_caller_path(&snapshot.tool_args),
-            "trace_forward" => self.handle_trace_forward(&snapshot.tool_args),
-            "usages" => self.handle_usages(&snapshot.tool_args),
-            "callers" => self.handle_callers(&snapshot.tool_args),
-            "callees" => self.handle_callees(&snapshot.tool_args),
-            "neighbors" => self.handle_neighbors(&snapshot.tool_args),
-            "path" => self.handle_path(&snapshot.tool_args),
-            "context" => self.handle_context(&snapshot.tool_args),
+            "trace" => {
+                let kind = snapshot.tool_args.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                match kind {
+                    "point" => self.handle_trace_point(&snapshot.tool_args),
+                    "variable" => self.handle_trace_variable(&snapshot.tool_args),
+                    "forward" => self.handle_trace_forward(&snapshot.tool_args),
+                    "callers" => self.handle_trace_caller_path(&snapshot.tool_args),
+                    _ => return (
+                        serde_json::to_string(
+                            &json!({"error": format!("resume not supported for trace kind '{}'", kind)}),
+                        ).unwrap(),
+                        true,
+                    ),
+                }
+            }
+            "calls" => {
+                let direction = snapshot.tool_args.get("direction").and_then(|v| v.as_str()).unwrap_or("");
+                let depth = snapshot.tool_args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1);
+                let edge_kinds_is_custom = snapshot.tool_args.get("edge_kinds")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        let kinds: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+                        !kinds.is_empty() && kinds != ["calls", "instantiates", "implements"]
+                    })
+                    .unwrap_or(false);
+                if depth > 1 || direction == "both" || direction.is_empty() {
+                    self.handle_callgraph(&snapshot.tool_args)
+                } else if edge_kinds_is_custom {
+                    self.handle_neighbors(&snapshot.tool_args)
+                } else {
+                    match direction {
+                        "incoming" => self.handle_callers(&snapshot.tool_args),
+                        "outgoing" => self.handle_callees(&snapshot.tool_args),
+                        _ => return (
+                            serde_json::to_string(
+                                &json!({"error": format!("resume not supported for calls direction '{}'", direction)}),
+                            ).unwrap(),
+                            true,
+                        ),
+                    }
+                }
+            }
+            "symbol" => {
+                let view = snapshot.tool_args.get("view").and_then(|v| v.as_str()).unwrap_or("");
+                match view {
+                    "detail" | "" => self.handle_symbol_detail(&snapshot.tool_args),
+                    "context" => self.handle_context(&snapshot.tool_args),
+                    "usages" => self.handle_usages(&snapshot.tool_args),
+                    _ => return (
+                        serde_json::to_string(
+                            &json!({"error": format!("resume not supported for symbol view '{}'", view)}),
+                        ).unwrap(),
+                        true,
+                    ),
+                }
+            }
             "search" => self.handle_search(&snapshot.tool_args),
-            "symbol" => self.handle_symbol(&snapshot.tool_args),
-            "atlas_lifecycle" => self.handle_atlas_lifecycle(&snapshot.tool_args),
-            "atlas_branch_diff" => self.handle_atlas_branch_diff(&snapshot.tool_args),
+            "path" => self.handle_path(&snapshot.tool_args),
+            "explore" => self.handle_explore(&snapshot.tool_args),
+            "impact" => self.handle_impact(&snapshot.tool_args),
+            "lifecycle" => self.handle_lifecycle(&snapshot.tool_args),
+            "branch_diff" => self.handle_branch_diff(&snapshot.tool_args),
             _ => {
                 return (
                     serde_json::to_string(

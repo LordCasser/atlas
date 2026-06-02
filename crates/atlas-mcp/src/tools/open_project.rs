@@ -99,7 +99,7 @@ impl ToolRouter {
 
         let task_id = self
             .task_manager
-            .create_task("open_project", "open_project");
+            .create_task("project", "project");
         let tid = task_id.clone();
         let task_manager = self.task_manager.clone();
         let pending = self.pending_project_activations.clone();
@@ -151,7 +151,7 @@ impl ToolRouter {
                     let msg = resp
                         .error
                         .clone()
-                        .unwrap_or_else(|| "open_project failed".to_string());
+                        .unwrap_or_else(|| "project open failed".to_string());
                     task_manager.fail_task(&tid, &msg);
                 }
             }
@@ -161,13 +161,13 @@ impl ToolRouter {
             serde_json::to_string_pretty(&json!({
                 "background": true,
                 "task_id": task_id,
-                "tool_name": "open_project",
-                "method": "open_project",
+                "tool_name": "project",
+                "method": "project",
                 "status": "running",
                 "progress": 0.0,
                 "progress_message": "queued",
                 "auto_background": auto_background,
-                "note": "open_project is running in background. Poll task_status for progress percentages; completion activates when task_status or wait_for_task observes the completed task."
+                "note": "project open is running in background. Poll task_status for progress percentages; completion activates when task_status or wait_for_task observes the completed task."
             }))
             .unwrap_or_else(|e| e.to_string()),
             false,

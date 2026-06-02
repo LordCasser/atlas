@@ -175,7 +175,7 @@ impl ServerHandler for AtlasMcpService {
         async move {
             // ── For long-running tools with progress token, set up progress channel ─
             let _progress_task =
-                if matches!(tool_name.as_str(), "index" | "open_project" | "search")
+                if matches!(tool_name.as_str(), "index" | "project" | "search")
                     && has_progress_token
                 {
                     let (tx, mut rx) =
@@ -278,7 +278,7 @@ fn should_auto_background_without_progress(
     }
     match tool_name {
         "index" => true,
-        "open_project" => args
+        "project" => args
             .get("scan_files")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
@@ -312,12 +312,12 @@ mod tests {
             true
         ));
         assert!(super::should_auto_background_without_progress(
-            "open_project",
+            "project",
             &json!({ "scan_files": true }),
             false
         ));
         assert!(!super::should_auto_background_without_progress(
-            "open_project",
+            "project",
             &json!({}),
             false
         ));
