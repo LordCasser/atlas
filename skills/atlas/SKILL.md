@@ -4,7 +4,7 @@ description: Semantic code graph engine for local repositories. Indexes 14 langu
 license: MIT
 compatibility: Requires Rust toolchain. Build with `cargo build --release -p atlas-cli --features "all-languages,mcp"`.
 metadata:
-  version: "1.3.0"
+  version: "1.3.1"
   repository: https://github.com/lordcasser/atlas
 ---
 
@@ -37,16 +37,16 @@ A compiled Atlas binary (`atlas`) or an Atlas MCP server, plus a local source ch
 
 2. **Pick the narrowest query**
    - Symbol lookup: `search` → `symbol`
-   - Callers/callees: `callers`, `callees`, `callgraph`
-   - Dependencies: `dependencies`, `dependents`
-   - Source position: `trace_point` with `file_path`, `line`, `column`
-   - Value origin: `trace_variable`
-   - Caller chain: `trace_caller_path`
-   - Forward call trace: `trace_forward`
-   - Agent context: `context`
+   - Callers/callees: `calls(direction="incoming")`, `calls(direction="outgoing")`, `calls(depth=2)`
+   - Dependencies: `file_dependencies(file_path, direction="incoming")`, `file_dependencies(file_path, direction="outgoing")`
+   - Source position: `trace(kind="point")` with `file_path`, `line`, `column`
+   - Value origin: `trace(kind="variable")`
+   - Caller chain: `trace(kind="callers")`
+   - Forward call trace: `trace(kind="forward")`
+   - Agent context: `symbol(view="context")`
 
 3. **Respect capability metadata**
-   - Call `language_capabilities` or `atlas doctor` when trace precision matters.
+   - Call `project(action="status")` or `atlas doctor` when trace precision matters.
    - `partial_result: true` and diagnostics are first-class output; explain limitations.
 
 4. **Refresh after edits**
@@ -69,43 +69,36 @@ atlas trace variable --project <repo> --file src/app.ts --line 12 --column 18 --
 
 ## MCP tools
 
+All 18 tools use short names (no `atlas_` prefix):
+
 | Tool | Purpose | Key arguments |
 |------|---------|---------------|
-| `status` | Project statistics | none |
-| `files` | Indexed file list | none |
-| `language_capabilities` | Per-language capability profiles | none |
+| `project` | Open, inspect, or list files | `action="open\|status\|files"` |
+| `index` | Index/re-index active project | optional `include`, `exclude`, `background` |
 | `search` | Symbol search by name | `query` (required), optional `scope`, `kind`, `limit`, `background` |
-| `symbol` | Symbol details with caller/callee summaries | `qualified_name`, optional `includeCode` |
-| `neighbors` | Symbol graph neighborhood | `symbol`, optional `direction`, `depth`, `limit` |
-| `callers` | Incoming call edges | `symbol`, optional `limit` |
-| `callees` | Outgoing call edges | `symbol`, optional `limit` |
-| `callgraph` | Call graph sub-graph | `symbol`, optional `depth`, `limit` |
-| `path` | Shortest path between symbols | `from`, `to`, optional `max_depth`, `direction`, `prefer_production`, `edge_kinds`, `includeCode` |
-| `explore` | Symbol structure exploration | `symbol`, optional `includeCode` |
-| `impact` | Bidirectional impact analysis (upstream + downstream) | `symbol`, optional `depth` |
-| `context` | Agent context snippet | `symbol`, optional `includeCode` |
-| `trace_point` | Source-position inspection | `file_path` or `file_id`, `line`, `column` |
-| `trace_variable` | Variable provenance trace | `file_path` or `file_id`, `line`, `column`, optional `max_depth` |
-| `trace_caller_path` | Caller chain exploration | `symbol` (hex ID) or `symbol_name`, optional `max_depth` |
-| `trace_forward` | Forward call chain (how does A reach B?) | `from`, `to`, optional `from_name`, `to_name`, `max_depth` |
-| `usages` | Symbol usage sites | `symbol`, optional `limit` |
-| `dependencies` | File dependencies (outgoing) | `file_id`, optional `limit` |
-| `dependents` | File reverse dependencies (incoming) | `file_id`, optional `limit` |
-| `index` | Index active project (manifest mode) | optional `include`, `exclude`, `background` |
-| `open_project` | Open/switch active project | `project_path`, optional `storage`, `scan_files`, `background` |
-| `task_status` | Poll background task | `task_id` |
-| `wait_for_task` | Block until task completes | `task_id`, optional `timeout_secs`, `poll_interval_secs` |
-| `annotate_fp_dispatch` | Declare C/C++ function-pointer dispatch | `field_qname`, `target_qname`, optional `confidence` |
-| `list_fp_annotations` | List FP dispatch annotations | none |
-| `delete_fp_annotation` | Delete FP dispatch annotation | `annotation_id` or `field_qname` |
+| `symbol` | Symbol details, context, or usages | `qname` (required), `view="detail\|context\|usages"`, optional `includeCode`, `limit` |
+| `calls` | Call graph queries (callers, callees, multi-hop) | `symbol` (required), `direction="incoming\|outgoing\|both"`, optional `depth`, `limit`, `edge_kinds` |
+| `explore` | Symbol exploration (depth=1 adjacency) | `symbol` (required), optional `includeCode` |
+| `path` | Shortest path between symbols | `from`, `to` (required), optional `max_depth`, `direction`, `edge_kinds`, `includeCode`, `include_roots` |
+| `impact` | Bidirectional impact analysis | `symbol` (required), optional `depth`, `semantic` |
+| `file_dependencies` | File-level import/include graph | `file_path` (required), `direction="incoming\|outgoing\|both"`, optional `limit` |
+| `trace` | Source-level trace (point, variable, forward, callers) | `kind="point\|variable\|forward\|callers"` (required), `file_path`/`file_id`, `line`, `column`, `symbol`, `from`/`to` |
+| `lifecycle` | Field lifecycle analysis (C/C++) | `symbol`, `field` (required), optional `include_roots` |
+| `branch_diff` | Branch side-effect comparison (C/C++) | `symbol` (required), optional `include_roots` |
+| `fp_dispatches` | Function-pointer dispatch annotations | `action="add\|list\|delete"` |
+| `domain_rules` | Domain rules for lifecycle analysis | `action="add\|list\|delete\|learn"` |
+| `tasks` | List background extraction jobs | optional `query_id` |
+| `task_status` | Poll background task progress | `task_id` (required) |
+| `wait_for_task` | Block until task completes | `task_id` (required), optional `timeout_secs`, `poll_interval_secs` |
+| `resume_task` | Resume a previous partial query | `query_id` (required) |
 
 ## Query tactics
 
 - Start with `search` for names. Use `kind:function`, `kind:class`, or shorter terms if exact match fails.
 - Prefer shallow graph depths (`depth: 1-2`) to avoid noisy results.
 - For barrel re-export chains (`import { X } from './barrel'` where barrel has `export * from './lib'`), Atlas follows the chain to the original definition via `ExportFrom` facts.
-- For code review, combine `impact` with `usages` and `context`.
-- For value flow debugging, call `trace_point` first, then `trace_variable` at the same position.
+- For code review, combine `impact` with `symbol(view="usages")` and `symbol(view="context")`.
+- For value flow debugging, call `trace(kind="point")` first, then `trace(kind="variable")` at the same position.
 
 ## Trace response handling
 
