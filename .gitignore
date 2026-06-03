@@ -8,6 +8,8 @@
 .gitmodules
 examples/
 codegraph/
+.cursor/
+.codegraph/
 
 .env*
 *.log
