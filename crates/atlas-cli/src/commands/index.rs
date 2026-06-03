@@ -364,11 +364,15 @@ pub fn run(
             }
 
             // ── Summary build (Schema v3: persist function summaries) ──
-            ps.lock().unwrap().start_phase(
-                ProgressPhase::Finalizing,
-                Some("Building summaries...".into()),
-            );
-            let _summary_stats = atlas_engine::phase_build_summaries(&store)?;
+            // Only Full mode produces the dataflow data that summaries depend on.
+            // Structural mode has no dataflow — summary builds would silently fail.
+            if mode.produces_dataflow() {
+                ps.lock().unwrap().start_phase(
+                    ProgressPhase::Finalizing,
+                    Some("Building summaries...".into()),
+                );
+                let _summary_stats = atlas_engine::phase_build_summaries(&store)?;
+            }
             if interrupted() {
                 return Ok(());
             }

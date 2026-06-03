@@ -31,7 +31,7 @@ use types::caller_path::{CallerChain, ForwardChain};
 use types::capability::{CapabilityLevel, FeatureSupport, LanguageCapabilityProfile};
 use types::ids::{FileId, SymbolId};
 use types::trace::{
-    BoundaryKind, BoundaryMarker, Evidence, TraceDiagnostic, TracePath, TracePoint,
+    BoundaryKind, BoundaryMarker, Evidence, LazySummary, TraceDiagnostic, TracePath, TracePoint,
 };
 
 use super::virtual_edges::SummaryEdgeProvider;
@@ -61,6 +61,10 @@ pub struct TraceQueryResponse<T> {
     pub diagnostics: Vec<TraceDiagnostic>,
     /// The query result, if any.
     pub result: Option<T>,
+    /// Metadata about lazy dataflow loading that occurred during this query.
+    /// None if lazy loading was not triggered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lazy_summary: Option<LazySummary>,
 }
 
 impl<T> TraceQueryResponse<T> {
@@ -73,6 +77,7 @@ impl<T> TraceQueryResponse<T> {
             partial_result: false,
             diagnostics: vec![],
             result: Some(result),
+            lazy_summary: None,
         }
     }
 
@@ -91,6 +96,7 @@ impl<T> TraceQueryResponse<T> {
             partial_result: true,
             diagnostics: vec![diagnostic],
             result: None,
+            lazy_summary: None,
         }
     }
 
@@ -103,6 +109,7 @@ impl<T> TraceQueryResponse<T> {
             partial_result: false,
             diagnostics: vec![TraceDiagnostic::error(message)],
             result: None,
+            lazy_summary: None,
         }
     }
 }
@@ -332,6 +339,7 @@ impl TraceEngine {
                     partial_result: partial,
                     diagnostics,
                     result: Some(chain),
+                    lazy_summary: None,
                 }
             }
             Ok(None) => TraceQueryResponse::partial(
@@ -470,6 +478,7 @@ impl TraceEngine {
                         ),
                 ],
                 result: None,
+                lazy_summary: None,
             };
         }
 
@@ -653,6 +662,7 @@ impl TraceEngine {
                     partial_result: partial,
                     diagnostics,
                     result: Some(chain),
+                    lazy_summary: None,
                 }
             }
             Ok(None) => TraceQueryResponse::partial(

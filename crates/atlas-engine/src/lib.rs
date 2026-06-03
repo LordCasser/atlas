@@ -438,9 +438,7 @@ impl Engine {
         let mut resp = self.trace.trace_variable(file_id, line, column, max_depth);
         resp.partial_result = resp.partial_result || partial;
         resp.diagnostics.extend(lazy_diagnostics);
-        if let Some(ref mut path) = resp.result {
-            path.lazy_summary = lazy_summary;
-        }
+        resp.lazy_summary = lazy_summary;
         resp
     }
 

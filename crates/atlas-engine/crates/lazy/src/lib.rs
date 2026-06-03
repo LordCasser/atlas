@@ -19,7 +19,7 @@ use anyhow::Result;
 use db::Store;
 use types::ids::{FileId, SymbolId};
 use types::lazy::LazyWindow;
-use types::structs::precision;
+use types::structs::{precision, CapabilityMask};
 
 /// Public entry point for the `atlas-engine` facade.
 ///
@@ -78,6 +78,20 @@ impl LazyDataflowService {
             window.precision_tier = Some(tier);
         }
 
+        // Compute capability mask from ensure result.
+        // If any dataflow was produced (built or cached), set the base
+        // dataflow-implying bits.  CFG is omitted here because per-unit
+        // CFG support varies by language; the summary window mask is
+        // conservative.
+        if result.units_built > 0 || result.units_cached > 0 {
+            window.capability_mask = CapabilityMask::from_bits(
+                CapabilityMask::MANIFEST
+                    | CapabilityMask::STRUCTURAL
+                    | CapabilityMask::CALL_EDGES
+                    | CapabilityMask::DATAFLOW,
+            );
+        }
+
         Ok(window)
     }
 
@@ -107,6 +121,20 @@ impl LazyDataflowService {
             let incomplete = result.budget_exceeded || result.units_pending > 0;
             let tier = precision::dataflow_precision(available, planned, incomplete);
             window.precision_tier = Some(tier);
+        }
+
+        // Compute capability mask from ensure result.
+        // If any dataflow was produced (built or cached), set the base
+        // dataflow-implying bits.  CFG is omitted here because per-unit
+        // CFG support varies by language; the summary window mask is
+        // conservative.
+        if result.units_built > 0 || result.units_cached > 0 {
+            window.capability_mask = CapabilityMask::from_bits(
+                CapabilityMask::MANIFEST
+                    | CapabilityMask::STRUCTURAL
+                    | CapabilityMask::CALL_EDGES
+                    | CapabilityMask::DATAFLOW,
+            );
         }
 
         Ok(window)
