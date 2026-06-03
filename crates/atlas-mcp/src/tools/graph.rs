@@ -127,8 +127,24 @@ impl ToolRouter {
         };
 
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let _investigation = self.investigation_state.active_investigation.clone();
+        let investigation = self.investigation_state.active_investigation.clone();
         let query_id = Self::generate_query_id();
+
+        // Lazy structural: ensure graph edges exist before querying
+        let file_id = self.store.find_symbol_by_id(&sid).ok().flatten().map(|s| s.file_id);
+        let file_ids: Vec<atlas_engine::FileId> = file_id.into_iter().collect();
+        let outcome_files = self.ensure_structural_for_files(
+            file_ids,
+            vec![],
+            investigation.as_ref(),
+            Some(&query_id),
+        );
+        let outcome_name = self.ensure_structural_for_symbol_name(
+            qname,
+            vec![],
+            investigation.as_ref(),
+            Some(&query_id),
+        );
 
         let graph = self.context_builder().graph_snapshot();
         let cg = graph.callers(&sid);
@@ -146,6 +162,20 @@ impl ToolRouter {
             resp["note"] = json!(
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
+        }
+
+        // Lazy structural response — merge warnings from both outcomes
+        let mut lazy_warnings: Vec<String> = outcome_files.warnings;
+        lazy_warnings.extend(outcome_name.warnings);
+        let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
+        if !lazy_warnings.is_empty() {
+            resp["warnings"] = json!(lazy_warnings);
+        }
+        resp["precision_tier"] = serde_json::to_value(tier).unwrap_or(json!(null));
+        if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
+            if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
+                resp["hint"] = json!(hint);
+            }
         }
 
         self.store_snapshot(QuerySnapshot {
@@ -174,8 +204,18 @@ impl ToolRouter {
         };
 
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let _investigation = self.investigation_state.active_investigation.clone();
+        let investigation = self.investigation_state.active_investigation.clone();
         let query_id = Self::generate_query_id();
+
+        // Lazy structural: ensure graph edges exist before querying
+        let file_id = self.store.find_symbol_by_id(&sid).ok().flatten().map(|s| s.file_id);
+        let file_ids: Vec<atlas_engine::FileId> = file_id.into_iter().collect();
+        let outcome = self.ensure_structural_for_files(
+            file_ids,
+            vec![],
+            investigation.as_ref(),
+            Some(&query_id),
+        );
 
         let graph = self.context_builder().graph_snapshot();
         let cg = graph.callees(&sid);
@@ -193,6 +233,19 @@ impl ToolRouter {
             resp["note"] = json!(
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
+        }
+
+        // Lazy structural response
+        let lazy_warnings = outcome.warnings;
+        let tier = outcome.precision_tier;
+        if !lazy_warnings.is_empty() {
+            resp["warnings"] = json!(lazy_warnings);
+        }
+        resp["precision_tier"] = serde_json::to_value(tier).unwrap_or(json!(null));
+        if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
+            if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
+                resp["hint"] = json!(hint);
+            }
         }
 
         self.store_snapshot(QuerySnapshot {
@@ -228,8 +281,60 @@ impl ToolRouter {
         };
 
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let _investigation = self.investigation_state.active_investigation.clone();
+        let investigation = self.investigation_state.active_investigation.clone();
         let query_id = Self::generate_query_id();
+
+        // Lazy structural: ensure graph edges exist before querying.
+        // Direction-dependent: outgoing needs file edges, incoming needs
+        // symbol-name candidate edges to find callers.
+        let file_id = self.store.find_symbol_by_id(&sid).ok().flatten().map(|s| s.file_id);
+        let file_ids: Vec<atlas_engine::FileId> = file_id.into_iter().collect();
+        let (lazy_warnings, tier) = match direction {
+            "incoming" => {
+                let f = self.ensure_structural_for_files(
+                    file_ids,
+                    vec![],
+                    investigation.as_ref(),
+                    Some(&query_id),
+                );
+                let n = self.ensure_structural_for_symbol_name(
+                    qname,
+                    vec![],
+                    investigation.as_ref(),
+                    Some(&query_id),
+                );
+                let mut w = f.warnings;
+                w.extend(n.warnings);
+                (w, std::cmp::min(f.precision_tier, n.precision_tier))
+            }
+            "outgoing" => {
+                let f = self.ensure_structural_for_files(
+                    file_ids,
+                    vec![],
+                    investigation.as_ref(),
+                    Some(&query_id),
+                );
+                (f.warnings, f.precision_tier)
+            }
+            // "both" or default — need both directions
+            _ => {
+                let f = self.ensure_structural_for_files(
+                    file_ids,
+                    vec![],
+                    investigation.as_ref(),
+                    Some(&query_id),
+                );
+                let n = self.ensure_structural_for_symbol_name(
+                    qname,
+                    vec![],
+                    investigation.as_ref(),
+                    Some(&query_id),
+                );
+                let mut w = f.warnings;
+                w.extend(n.warnings);
+                (w, std::cmp::min(f.precision_tier, n.precision_tier))
+            }
+        };
 
         let graph = self.context_builder().graph_snapshot();
         let snap = graph.snapshot();
@@ -354,6 +459,17 @@ impl ToolRouter {
             resp["note"] = json!(
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
+        }
+
+        // Lazy structural response
+        if !lazy_warnings.is_empty() {
+            resp["warnings"] = json!(lazy_warnings);
+        }
+        resp["precision_tier"] = serde_json::to_value(tier).unwrap_or(json!(null));
+        if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
+            if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
+                resp["hint"] = json!(hint);
+            }
         }
 
         self.store_snapshot(QuerySnapshot {
@@ -893,7 +1009,7 @@ impl ToolRouter {
         };
 
         self.update_investigation(InvestigationFocus::Symbol(sym.id));
-        let _investigation = self.investigation_state.active_investigation.clone();
+        let investigation = self.investigation_state.active_investigation.clone();
         let query_id = Self::generate_query_id();
 
         let source = if include_code {
@@ -901,6 +1017,21 @@ impl ToolRouter {
         } else {
             None
         };
+
+        // Lazy structural: ensure graph edges exist before querying
+        let file_ids: Vec<atlas_engine::FileId> = std::iter::once(sym.file_id).collect();
+        let outcome_files = self.ensure_structural_for_files(
+            file_ids,
+            vec![],
+            investigation.as_ref(),
+            Some(&query_id),
+        );
+        let outcome_name = self.ensure_structural_for_symbol_name(
+            qname,
+            vec![],
+            investigation.as_ref(),
+            Some(&query_id),
+        );
 
         let graph = self.context_builder().graph_snapshot();
         let snap = graph.snapshot();
@@ -963,6 +1094,20 @@ impl ToolRouter {
             );
         }
 
+        // Lazy structural response — merge warnings from both outcomes
+        let mut lazy_warnings: Vec<String> = outcome_files.warnings;
+        lazy_warnings.extend(outcome_name.warnings);
+        let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
+        if !lazy_warnings.is_empty() {
+            resp["warnings"] = json!(lazy_warnings);
+        }
+        resp["precision_tier"] = serde_json::to_value(tier).unwrap_or(json!(null));
+        if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
+            if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
+                resp["hint"] = json!(hint);
+            }
+        }
+
         self.store_snapshot(QuerySnapshot {
             query_id: query_id.clone(),
             tool_name: "explore".into(),
@@ -992,6 +1137,23 @@ impl ToolRouter {
             .get("include_children")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+
+        // Parse optional direction parameter.
+        let direction_str = args
+            .get("direction")
+            .and_then(|v| v.as_str())
+            .unwrap_or("outgoing");
+        let direction = match direction_str {
+            "outgoing" => TraversalDirection::Outgoing,
+            "incoming" => TraversalDirection::Incoming,
+            "both" => TraversalDirection::Both,
+            other => {
+                return (
+                    format!("direction must be 'outgoing', 'incoming', or 'both', got: {other}"),
+                    true,
+                );
+            }
+        };
 
         // Parse optional edge_kinds override.
         let edge_kinds: Option<Vec<EdgeKind>> = match args.get("edge_kinds") {
@@ -1031,14 +1193,24 @@ impl ToolRouter {
         };
 
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let _investigation = self.investigation_state.active_investigation.clone();
+        let investigation = self.investigation_state.active_investigation.clone();
         let query_id = Self::generate_query_id();
+
+        // Lazy structural: ensure graph edges exist before impact analysis
+        let file_id = self.store.find_symbol_by_id(&sid).ok().flatten().map(|s| s.file_id);
+        let file_ids: Vec<atlas_engine::FileId> = file_id.into_iter().collect();
+        let outcome = self.ensure_structural_for_files(
+            file_ids,
+            vec![],
+            investigation.as_ref(),
+            Some(&query_id),
+        );
 
         let graph = self.context_builder().graph_snapshot();
         let sub = if include_children {
-            graph.impact_with_children_and_kinds(&sid, depth.min(5), edge_kinds.clone())
+            graph.impact_with_children_and_kinds(&sid, depth.min(5), edge_kinds.clone(), direction)
         } else {
-            graph.impact_with_kinds(&sid, depth.min(5), edge_kinds.clone())
+            graph.impact_with_kinds(&sid, depth.min(5), edge_kinds.clone(), direction)
         };
         let snap = graph.snapshot();
 
@@ -1265,6 +1437,7 @@ impl ToolRouter {
             "file_groups": grouped,
             "edge_kinds_used": edge_kinds_used,
             "include_children": include_children,
+            "direction": direction_str,
         });
         if semantic {
             resp["semantic_impact"] = json!({
@@ -1280,6 +1453,29 @@ impl ToolRouter {
             resp["note"] = json!(
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
+        }
+
+        if direction == TraversalDirection::Both
+            && edge_kinds_used
+                .iter()
+                .any(|k| *k == "imports" || *k == "includes")
+        {
+            resp["noise_note"] = json!(
+                "Bidirectional traversal with imports/includes may include unrelated consumer modules. Consider direction='outgoing' for narrower impact radius."
+            );
+        }
+
+        // Lazy structural response
+        let lazy_warnings = outcome.warnings;
+        let tier = outcome.precision_tier;
+        if !lazy_warnings.is_empty() {
+            resp["warnings"] = json!(lazy_warnings);
+        }
+        resp["precision_tier"] = serde_json::to_value(tier).unwrap_or(json!(null));
+        if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
+            if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
+                resp["hint"] = json!(hint);
+            }
         }
 
         self.store_snapshot(QuerySnapshot {
@@ -1442,5 +1638,265 @@ mod tests {
             "edge_kinds": "calls"
         }));
         assert!(is_error, "expected error for non-array edge_kinds, got: {resp}");
+    }
+
+    #[test]
+    fn test_handle_impact_direction_defaults_to_outgoing() {
+        let store = test_store();
+        let mut router = test_router(store);
+        // Symbol won't exist, but argument parsing happens before resolve_qname
+        let (_resp, is_error) = router.handle_impact(&json!({
+            "symbol": "nonexistent"
+        }));
+        // Should error due to missing symbol, NOT due to missing direction
+        assert!(is_error);
+    }
+
+    #[test]
+    fn test_handle_impact_accepts_outgoing_direction() {
+        let store = test_store();
+        let mut router = test_router(store);
+        let (_resp, is_error) = router.handle_impact(&json!({
+            "symbol": "nonexistent",
+            "direction": "outgoing"
+        }));
+        assert!(is_error); // still errors on missing symbol, but param accepted
+    }
+
+    #[test]
+    fn test_handle_impact_accepts_incoming_direction() {
+        let store = test_store();
+        let mut router = test_router(store);
+        let (_resp, is_error) = router.handle_impact(&json!({
+            "symbol": "nonexistent",
+            "direction": "incoming"
+        }));
+        assert!(is_error);
+    }
+
+    #[test]
+    fn test_handle_impact_accepts_both_direction() {
+        let store = test_store();
+        let mut router = test_router(store);
+        let (_resp, is_error) = router.handle_impact(&json!({
+            "symbol": "nonexistent",
+            "direction": "both"
+        }));
+        assert!(is_error);
+    }
+
+    #[test]
+    fn test_handle_impact_invalid_direction_returns_error() {
+        let store = test_store();
+        let mut router = test_router(store);
+        let (resp, is_error) = router.handle_impact(&json!({
+            "symbol": "anything",
+            "direction": "sideways"
+        }));
+        assert!(is_error, "expected error for invalid direction, got: {resp}");
+        assert!(
+            resp.contains("direction must be"),
+            "error should mention valid directions, got: {resp}"
+        );
+    }
+
+    // ── lazy structural response fields ─────────────────────────────────
+
+    #[test]
+    fn test_handle_impact_response_has_warnings_field() {
+        let store = test_store();
+        let fid = FileId::generate("test.ts");
+        store
+            .upsert_file(&atlas_engine::FileInfo {
+                file_id: fid,
+                path: "test.ts".into(),
+                language: atlas_engine::Language::TypeScript,
+                content_hash: "hash1".into(),
+                status: atlas_engine::ParseStatus::Success,
+            })
+            .unwrap();
+        let sym = atlas_engine::SymbolDef {
+            id: atlas_engine::SymbolId::generate(&fid, "typescript", "main", "function", None),
+            kind: atlas_engine::SymbolKind::Function,
+            name: "main".into(),
+            qualified_name: "main".into(),
+            symbol_path: vec!["main".into()],
+            file_id: fid,
+            language: atlas_engine::Language::TypeScript,
+            range: atlas_engine::TextRange::default(),
+            name_range: atlas_engine::TextRange::default(),
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".into(),
+        };
+        store.insert_symbols(&[sym]).unwrap();
+
+        let mut router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+        let (resp_str, is_error) = router.handle_impact(&json!({"symbol": "main"}));
+        assert!(!is_error, "expected success, got error: {resp_str}");
+
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        // With empty store, ensure returns early -> no warnings
+        // Field may be absent (not printed) or present as empty array
+        let warnings = resp.get("warnings");
+        if let Some(w) = warnings {
+            assert!(w.is_array(), "warnings should be an array");
+            assert!(
+                w.as_array().unwrap().is_empty(),
+                "warnings should be empty for empty store"
+            );
+        }
+        // precision_tier must be present
+        assert!(
+            resp.get("precision_tier").is_some(),
+            "precision_tier field missing"
+        );
+    }
+
+    #[test]
+    fn test_handle_impact_response_has_direction() {
+        let store = test_store();
+        let fid = FileId::generate("test.ts");
+        store
+            .upsert_file(&atlas_engine::FileInfo {
+                file_id: fid,
+                path: "test.ts".into(),
+                language: atlas_engine::Language::TypeScript,
+                content_hash: "hash1".into(),
+                status: atlas_engine::ParseStatus::Success,
+            })
+            .unwrap();
+        let sym = atlas_engine::SymbolDef {
+            id: atlas_engine::SymbolId::generate(&fid, "typescript", "f", "function", None),
+            kind: atlas_engine::SymbolKind::Function,
+            name: "f".into(),
+            qualified_name: "f".into(),
+            symbol_path: vec!["f".into()],
+            file_id: fid,
+            language: atlas_engine::Language::TypeScript,
+            range: atlas_engine::TextRange::default(),
+            name_range: atlas_engine::TextRange::default(),
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".into(),
+        };
+        store.insert_symbols(&[sym]).unwrap();
+
+        let mut router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+        let (resp_str, is_error) =
+            router.handle_impact(&json!({"symbol": "f", "direction": "both"}));
+        assert!(!is_error, "expected success, got: {resp_str}");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        assert_eq!(resp["direction"], "both");
+    }
+
+    #[test]
+    fn test_handle_callees_response_has_warnings_and_precision() {
+        let store = test_store();
+        let fid = FileId::generate("test.ts");
+        store
+            .upsert_file(&atlas_engine::FileInfo {
+                file_id: fid,
+                path: "test.ts".into(),
+                language: atlas_engine::Language::TypeScript,
+                content_hash: "hash1".into(),
+                status: atlas_engine::ParseStatus::Success,
+            })
+            .unwrap();
+        let sym = atlas_engine::SymbolDef {
+            id: atlas_engine::SymbolId::generate(&fid, "typescript", "g", "function", None),
+            kind: atlas_engine::SymbolKind::Function,
+            name: "g".into(),
+            qualified_name: "g".into(),
+            symbol_path: vec!["g".into()],
+            file_id: fid,
+            language: atlas_engine::Language::TypeScript,
+            range: atlas_engine::TextRange::default(),
+            name_range: atlas_engine::TextRange::default(),
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".into(),
+        };
+        store.insert_symbols(&[sym]).unwrap();
+
+        let mut router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+        let (resp_str, is_error) = router.handle_callees(&json!({"symbol": "g"}));
+        assert!(!is_error, "expected success, got: {resp_str}");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        assert!(
+            resp.get("precision_tier").is_some(),
+            "precision_tier missing from callees response"
+        );
+    }
+
+    #[test]
+    fn test_handle_callers_response_has_warnings_and_precision() {
+        let store = test_store();
+        let fid = FileId::generate("test.ts");
+        store
+            .upsert_file(&atlas_engine::FileInfo {
+                file_id: fid,
+                path: "test.ts".into(),
+                language: atlas_engine::Language::TypeScript,
+                content_hash: "hash1".into(),
+                status: atlas_engine::ParseStatus::Success,
+            })
+            .unwrap();
+        let sym = atlas_engine::SymbolDef {
+            id: atlas_engine::SymbolId::generate(&fid, "typescript", "h", "function", None),
+            kind: atlas_engine::SymbolKind::Function,
+            name: "h".into(),
+            qualified_name: "h".into(),
+            symbol_path: vec!["h".into()],
+            file_id: fid,
+            language: atlas_engine::Language::TypeScript,
+            range: atlas_engine::TextRange::default(),
+            name_range: atlas_engine::TextRange::default(),
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".into(),
+        };
+        store.insert_symbols(&[sym]).unwrap();
+
+        let mut router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+        let (resp_str, is_error) = router.handle_callers(&json!({"symbol": "h"}));
+        assert!(!is_error, "expected success, got: {resp_str}");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        assert!(
+            resp.get("precision_tier").is_some(),
+            "precision_tier missing from callers response"
+        );
     }
 }

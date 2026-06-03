@@ -223,24 +223,28 @@ impl RecoverySpec for ArkTsRecovery {
         let root = tree.root_node();
         let source_bytes = source.as_bytes();
 
-        // Walk all nodes looking for ERROR nodes whose text starts with "struct "
+        // Walk all nodes looking for ERROR nodes containing "struct" keyword.
+        // Deduplicate by struct name to avoid nested ERROR nodes producing duplicates.
+        let mut recovered: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let mut to_visit: Vec<tree_sitter::Node<'_>> = vec![root];
 
         while let Some(node) = to_visit.pop() {
             if node.kind() == "ERROR" {
-                // Check if this ERROR node text starts with "struct "
                 if let Ok(text) = node.utf8_text(source_bytes) {
-                    if let Some(struct_name) = extract_struct_name(text) {
-                        if let Some((def_range, name_range)) =
-                            find_struct_range(node, struct_name, source_bytes)
-                        {
-                            let symbol =
-                                build_struct_symbol(file_id, struct_name, def_range, name_range);
-                            let scope =
-                                build_struct_scope(file_id, struct_name, def_range, name_range);
+                    if let Some((struct_name, struct_offset)) = extract_struct_name(text) {
+                        if recovered.insert(struct_name.to_string()) {
+                            if let Some((def_range, name_range)) =
+                                find_struct_range(node, struct_name, struct_offset, source_bytes)
+                            {
+                                let symbol =
+                                    build_struct_symbol(file_id, struct_name, def_range, name_range);
+                                let scope =
+                                    build_struct_scope(file_id, struct_name, def_range, name_range);
 
-                            symbols.push(symbol);
-                            scopes.push(scope);
+                                symbols.push(symbol);
+                                scopes.push(scope);
+                            }
                         }
                     }
                 }
@@ -273,17 +277,34 @@ impl RecoverySpec for ArkTsRecovery {
     }
 }
 
-/// Extract the struct name from ERROR node text that starts with "struct ".
+/// Extract the struct name from ERROR node text by searching for "struct" keyword.
 ///
-/// e.g., `"struct Index {"` → `Some("Index")`
-///        `"struct\nMyComp\n{\n"` → `Some("MyComp")`
-fn extract_struct_name(error_text: &str) -> Option<&str> {
-    // Strip "struct" keyword, then skip any whitespace/newlines before the name.
-    let after_keyword = error_text.strip_prefix("struct")?;
-    let after_keyword = after_keyword.trim_start();
-    // Take until `{`, newline, or end of text
-    let name = after_keyword.split(['{', '\n', '\r']).next()?.trim();
-    if name.is_empty() { None } else { Some(name) }
+/// Returns (struct_name, byte_offset_of_struct_keyword_in_error_text).
+///
+/// e.g., `"struct Index {"` → `Some(("Index", 0))`
+///        `"@Component\nstruct Index {"` → `Some(("Index", 11))`
+fn extract_struct_name(error_text: &str) -> Option<(&str, usize)> {
+    // Search for "struct" as a standalone keyword (not part of another word).
+    let mut offset = 0usize;
+    while let Some(pos) = error_text[offset..].find("struct") {
+        let abs_pos = offset + pos;
+        // Check word boundary before: must be at start or preceded by whitespace
+        let before_ok = abs_pos == 0
+            || error_text.as_bytes().get(abs_pos.wrapping_sub(1))
+                .map_or(false, |b| b.is_ascii_whitespace());
+        // Check word boundary after: must be end, whitespace, or `{`
+        let after_ok = error_text.as_bytes().get(abs_pos + "struct".len())
+            .map_or(true, |b| b.is_ascii_whitespace() || *b == b'{');
+        if before_ok && after_ok {
+            let after_keyword = error_text[abs_pos + "struct".len()..].trim_start();
+            let name = after_keyword.split(['{', '\n', '\r']).next()?.trim();
+            if !name.is_empty() {
+                return Some((name, abs_pos));
+            }
+        }
+        offset = abs_pos + "struct".len();
+    }
+    None
 }
 
 /// Find the struct's definition range (from `struct` keyword to closing `}`)
@@ -293,21 +314,22 @@ fn extract_struct_name(error_text: &str) -> Option<&str> {
 fn find_struct_range(
     error_node: tree_sitter::Node,
     struct_name: &str,
+    struct_keyword_offset_in_error: usize,
     source_bytes: &[u8],
 ) -> Option<(TextRange, TextRange)> {
     let error_start = error_node.start_byte();
+    let struct_keyword_pos = error_start + struct_keyword_offset_in_error;
 
-    // Find the opening `{` in source starting from error_start
-    let source_slice = &source_bytes[error_start..];
+    // Find the opening `{` in source starting from struct_keyword_pos
+    let source_slice = &source_bytes[struct_keyword_pos..];
     let brace_offset = source_slice.iter().position(|&b| b == b'{')?;
-    let open_brace_pos = error_start + brace_offset;
+    let open_brace_pos = struct_keyword_pos + brace_offset;
 
     // Brace-match to find closing `}`
     let close_brace_pos = match_brace(source_bytes, open_brace_pos)?;
 
     // Find struct name position in source
     // The name appears after "struct " and before `{`
-    let struct_keyword_pos = error_start; // "struct" starts at error node start
     let name_start = struct_keyword_pos + "struct ".len();
     // Find exact name position by scanning from name_start
     let name_byte_offset = source_bytes[name_start..]
@@ -474,17 +496,26 @@ mod tests {
 
     #[test]
     fn test_extract_struct_name_simple() {
-        assert_eq!(extract_struct_name("struct Index {"), Some("Index"));
+        assert_eq!(extract_struct_name("struct Index {"), Some(("Index", 0)));
     }
 
     #[test]
     fn test_extract_struct_name_no_brace() {
-        assert_eq!(extract_struct_name("struct Index "), Some("Index"));
+        assert_eq!(extract_struct_name("struct Index "), Some(("Index", 0)));
     }
 
     #[test]
     fn test_extract_struct_name_multiline() {
-        assert_eq!(extract_struct_name("struct\nMyComp\n{\n"), Some("MyComp"));
+        assert_eq!(extract_struct_name("struct\nMyComp\n{\n"), Some(("MyComp", 0)));
+    }
+
+    #[test]
+    fn test_extract_struct_name_with_decorator() {
+        // "@Component\n" is 11 bytes; "struct" starts at offset 11
+        assert_eq!(
+            extract_struct_name("@Component\nstruct Index {"),
+            Some(("Index", 11))
+        );
     }
 
     #[test]
@@ -495,6 +526,71 @@ mod tests {
     #[test]
     fn test_extract_struct_name_empty() {
         assert_eq!(extract_struct_name("struct {"), None);
+    }
+
+    #[test]
+    fn test_extract_struct_name_multiple_decorators() {
+        // Multiple decorators before struct
+        let result = extract_struct_name("@Entry @Component struct Index {");
+        assert!(result.is_some(), "should find struct with multiple decorators");
+        let (name, offset) = result.unwrap();
+        assert_eq!(name, "Index");
+        assert!(offset > 0, "offset should be after decorators");
+    }
+
+    #[test]
+    fn test_extract_struct_name_decorator_newline() {
+        // Decorator on own line, struct on next line
+        assert_eq!(
+            extract_struct_name("@Component\nstruct CategorySamples {"),
+            Some(("CategorySamples", 11))
+        );
+    }
+
+    #[test]
+    fn test_extract_struct_name_decorator_space() {
+        // Decorator with space before struct on same line
+        let result = extract_struct_name("@Component struct Foo {");
+        assert!(result.is_some());
+        let (name, offset) = result.unwrap();
+        assert_eq!(name, "Foo");
+        assert!(offset > 0);
+    }
+
+    #[test]
+    fn test_extract_struct_name_struct_in_middle() {
+        // "struct" appears later in the text, not at start
+        let result = extract_struct_name("some garbage struct Bar {");
+        assert!(result.is_some());
+        let (name, offset) = result.unwrap();
+        assert_eq!(name, "Bar");
+        assert!(offset > 0);
+    }
+
+    #[test]
+    fn test_extract_struct_name_struct_in_identifier() {
+        // "struct" as part of another identifier — should NOT match
+        assert_eq!(extract_struct_name("restructure code"), None);
+        assert_eq!(extract_struct_name("@Component struct{restructure}"), None); // no name before {
+        // But if space-separated, it IS a keyword match
+        let r = extract_struct_name("struct\n");
+        // "struct" at start followed by newline but no { and no name → should be None or return empty
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    fn test_extract_struct_name_no_string_keyword() {
+        // No "struct" keyword at all
+        assert_eq!(extract_struct_name("function foo()"), None);
+        assert_eq!(extract_struct_name("@State count: number = 0"), None);
+        assert_eq!(extract_struct_name("class Foo { }"), None);
+    }
+
+    #[test]
+    fn test_extract_struct_name_only_keyword() {
+        // Just "struct" with no name
+        assert_eq!(extract_struct_name("struct"), None);
+        assert_eq!(extract_struct_name("struct "), None); // trailing space but no name
     }
 
     #[test]

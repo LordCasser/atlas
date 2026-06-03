@@ -1771,6 +1771,144 @@ fn test_rust_scope_exit() {
         has_scope_exit_free,
         "Expected a scope-exit Free effect at Exit node for unfreed allocation. \
          Exit node effects: {:?}",
-        exit_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
+         exit_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
     );
+}
+
+#[cfg(feature = "java")]
+#[test]
+fn test_java_try_with_lifecycle() {
+    use atlas_engine::analysis::cfg_graph::CfgGraph;
+    use atlas_engine::analysis::scope_exit::run_scope_exit_pass;
+    use atlas_engine::effects::{ConsumptionStyle, PlaceRef, SemanticEffect, SemanticEffectKind};
+    use atlas_engine::ids::EffectId;
+    use std::collections::HashMap;
+
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // Index a Java source file with try-with-resources
+    let files = &[(
+        "try_resource.java",
+        r#"import java.io.*;
+
+class ResourceTest {
+    void readFile() throws IOException {
+        try (FileInputStream fis = new FileInputStream("data.txt")) {
+            byte[] buf = new byte[1024];
+            fis.read(buf);
+        }
+    }
+}
+"#,
+    )];
+
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("try_resource.java");
+
+    // Find the readFile method
+    let syms = store.find_symbols_by_file(&file_id).unwrap();
+    let method_sym = syms
+        .iter()
+        .find(|s| s.name == "readFile" && s.kind.as_str() == "method")
+        .expect("readFile method not found");
+
+    // Load CFG
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&method_sym.id)
+        .unwrap();
+    assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
+
+    // Verify there is a BlockExit node
+    let has_block_exit = cfg_nodes
+        .iter()
+        .any(|n| n.kind == atlas_engine::CfgNodeKind::BlockExit);
+    assert!(has_block_exit, "CFG should have a BlockExit node for try-with-resources");
+
+    let cfg_edges = store
+        .find_cfg_edges_by_function(&method_sym.id)
+        .unwrap();
+
+    // Build CfgGraph
+    let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+
+    // Find a Statement node with JavaTryWith context and the BlockExit node
+    let stmt_node = cfg_nodes
+        .iter()
+        .find(|n| n.kind == atlas_engine::CfgNodeKind::Statement
+            && n.call_context == atlas_engine::enums::CallContext::JavaTryWith);
+    assert!(stmt_node.is_some(), "Should find a Statement with JavaTryWith context");
+    let stmt_node = stmt_node.unwrap();
+
+    let be_node = cfg_nodes
+        .iter()
+        .find(|n| n.kind == atlas_engine::CfgNodeKind::BlockExit)
+        .expect("BlockExit node should exist");
+
+    let exit_node = cfg_nodes
+        .iter()
+        .find(|n| n.kind == atlas_engine::CfgNodeKind::Exit)
+        .expect("Exit node should exist");
+
+    // Manually construct an Alloc effect for the resource
+    let place = PlaceRef::Local {
+        name: "fis".to_string(),
+    };
+    let alloc_kind = SemanticEffectKind::Alloc {
+        target: place.clone(),
+        callee: "newInputStream".to_string(),
+    };
+    let alloc_effect = SemanticEffect {
+        id: EffectId::generate(&stmt_node.id, 0, "Alloc"),
+        cfg_node_id: stmt_node.id,
+        order: 0,
+        kind: alloc_kind,
+        confidence: 0.85,
+        consumption_style: None,
+        description: None,
+    };
+
+    let mut effects: HashMap<atlas_engine::ids::CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
+    effects.insert(stmt_node.id, vec![alloc_effect]);
+
+    // Run scope_exit_pass — should add a Free at BlockExit for the JavaTryWith alloc
+    run_scope_exit_pass(&mut effects, &cfg_graph);
+
+    // Verify the BlockExit node has a Free with ContextManaged style
+    let be_effects = effects.get(&be_node.id);
+    assert!(
+        be_effects.is_some(),
+        "BlockExit node should have scope-exit effects for JavaTryWith"
+    );
+    let be_effects = be_effects.unwrap();
+    let has_block_exit_free = be_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Free { callee, .. }
+            if callee.contains("<block-exit>"))
+    });
+    assert!(
+        has_block_exit_free,
+        "Expected a block-exit Free effect at BlockExit for JavaTryWith alloc"
+    );
+
+    // Verify the ConsumptionStyle is ContextManaged
+    let block_exit_free = be_effects.iter().find(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Free { .. })
+    });
+    assert!(block_exit_free.is_some(), "Should have a Free effect");
+    assert_eq!(
+        block_exit_free.unwrap().consumption_style,
+        Some(ConsumptionStyle::ContextManaged),
+        "JavaTryWith Free should have ContextManaged consumption style"
+    );
+
+    // Exit node should NOT have this Free
+    if let Some(exit_effects) = effects.get(&exit_node.id) {
+        let has_scope_exit_free = exit_effects.iter().any(|eff| {
+            matches!(&eff.kind, SemanticEffectKind::Free { callee, .. }
+                if callee.contains("<scope-exit>") || callee.contains("<block-exit>"))
+        });
+        assert!(
+            !has_scope_exit_free,
+            "Exit node should NOT have the scope-exit Free when BlockExit was reached for JavaTryWith"
+        );
+    }
 }
