@@ -236,7 +236,7 @@ CFG hardening deliverables:
 
 Remaining CFG gaps (not blocking L5 semantics):
 - try/catch/finally, switch, async/await, labeled break/continue — remain unsupported.
-- ArkTS, C#, PHP, Ruby, Kotlin — CFG still `feature_unsupported()`.
+- ArkTS, PHP, Ruby — CFG still `feature_unsupported()`. C# and Kotlin CFG were enabled in M6b (supported_with_limitations, 0.72 and 0.67 respectively).
 
 ## 5. Language-by-Language Plan
 
@@ -247,7 +247,7 @@ ArkTS-compatible syntax.
 
 Primary gaps:
 
-- Nested destructuring and async patterns are only partially verified.
+- Nested destructuring and async patterns are only partially verified. (M5a focused on resource patterns and registries; destructuring dataflow improvements remain deferred.)
 - Barrel/re-export chains are best-effort.
 - Framework semantics are absent outside generic resource patterns.
 - CFG lacks advanced constructs such as try/catch/finally, switch, async/await.
@@ -268,13 +268,16 @@ Evolution:
    - `react_hook`: `useEffect`, `useMemo`, `useCallback`. (Exclude `useState` —
      it is a state binding, not an effect/side-effect boundary. `useState` does
      not allocate or release resources.)
-   - `effect_cleanup`: return function from `useEffect` (note: this cannot be
-     matched at callee level; requires CFG+DataFlow analysis. Mark as aspirational
-     until CFG hardening is complete.)
+    - `effect_cleanup`: ✅ Implemented in M5b: EffectComposer detects CleanupReturn
+      DataNodes and marks consumer Frees as Deferred style.
 5. Add a TypeScript framework consumer for React:
    - `useEffect` body is an async/reactive boundary.
-   - cleanup return is a deferred cleanup edge (aspirational, needs CFG).
-   - state setter calls are side effects but not resource frees.
+    - cleanup return is a deferred cleanup edge. ✅ Implemented: DataNodeKind::CleanupReturn
+      captured via tree-sitter query; EffectComposer post-process marks Free as
+      Deferred when CleanupReturn exists.
+    - state setter calls are side effects but not resource frees.
+    - **Limitation**: only explicit cleanup functions (e.g., `return () => clearInterval(id)`)
+      are tracked — implicit/memoized cleanup chains not supported.
 
 Acceptance:
 
@@ -322,7 +325,7 @@ but high runtime dynamism.
 Primary gaps:
 
 - Dynamic import and attribute lookup cannot be fully static.
-- Context manager semantics are not yet first-class effects.
+- Context manager semantics are now first-class effects. ✅ Implemented in M5b: CallContext::PythonWith + CfgNodeKind::BlockExit + ScopeExitAnalyzer emits Free at with-block exit with ConsumptionStyle::ContextManaged.
 - Decorators and descriptors need better structural attribution.
 
 Evolution:
@@ -343,10 +346,12 @@ Evolution:
 
 Acceptance:
 
-- `with open() as f` does not report missing close.
+- `with open() as f` ✅ Fixed: ScopeExitAnalyzer emits Free at BlockExit for unfreed allocations inside `with_statement`.
 - `f = open(); f.close()` reports balanced lifecycle.
 - `f = open(); return f` reports escape to return value.
 - Decorated functions remain findable by normal symbol search and context.
+
+**Limitation**: Free location is with-block exit (post-`__exit__`), not `__del__` / GC finalization. Block-level precision but not object-level liveness tracking.
 
 ### 5.4 Java
 
@@ -356,7 +361,7 @@ classpath/type-system modeling.
 Primary gaps:
 
 - Maven/Gradle/classpath resolution is not modeled.
-- Try-with-resources should become a semantic resource boundary.
+- Try-with-resources is now a semantic resource boundary. ✅ Implemented in M6a: CallContext::JavaTryWith + CfgNodeKind::BlockExit + ScopeExitAnalyzer handles JavaTryWith as context_managed.
 - Overload resolution is name-based/best-effort.
 
 Evolution:
@@ -365,16 +370,15 @@ Evolution:
    constructors, generics, try-with-resources, and lambdas.
 2. Improve import/container resolution for package-qualified names inside the
    indexed project.
-3. Add Java domain rule registry:
-   - `resource_factory`: `openStream`, `openConnection`, constructors for
-     known `AutoCloseable` types.
-   - `close_method`: `.close`, `.disconnect`, `.dispose`.
-   - `scope_cleanup`: try-with-resources.
-   - `async_boundary`: `CompletableFuture`, executor submission.
-4. Implement a Java semantic consumer:
-   - try-with-resources emits context-managed/deferred cleanup.
-   - `.close()` emits method-call consumption.
-   - constructors can emit resource production when rule-backed.
+3. ✅ Java domain rule registry implemented in M6a: `JavaRegistry` with 4 rule kinds:
+    - `alloc_fn`: `newInputStream`, `newOutputStream`, `getConnection`.
+    - `free_fn`: `.close`, `.disconnect`, `.destroy`.
+    - `try_resource`: try-with-resources scope.
+    - `cleanup_fn`: explicit cleanup patterns.
+4. ✅ Java semantic consumer implemented in M6a:
+    - try-with-resources emits context-managed/deferred cleanup via ScopeExitAnalyzer.
+    - `.close()` emits method-call consumption.
+    - constructors emit resource production when rule-backed.
 
 Acceptance:
 
@@ -436,9 +440,8 @@ Evolution:
 1. Add fixtures for constructors/destructors, `new/delete`, `unique_ptr`,
    `shared_ptr`, move operations, references, and templates.
 2. Add C++ domain rule registry separate from C with explicit `language='cpp'`
-   registration. **Implementation note**: `CppOwnershipRules::load` in
-   `analysis/src/ownership_rules.rs` currently hardcodes `load(store, "c")`;
-   this must be refactored to load C and C++ rules independently.
+    registration. ✅ **Fixed in M4a**: `CppOwnershipRules::load` renamed to
+    `load_for(Language)`; no longer hardcoded to `"c"`.
    - `alloc_fn`: `operator new`, `make_unique`, `make_shared`.
    - `free_fn`: `operator delete`, `delete`.
    - `raii_type`: user or builtin RAII type patterns.
@@ -521,11 +524,11 @@ Acceptance:
 
 ### 5.9 C#
 
-Current role: DataflowFull via summaries but no CFG support.
+Current role: DataflowFull via summaries with CFG enabled in M6b (supported_with_limitations 0.72).
 
 Primary gaps:
 
-- CFG unsupported.
+- CFG enabled in M6b (supported_with_limitations 0.72).
 - Partial classes across files are not merged.
 - `using` / `IDisposable` semantics are absent.
 
@@ -548,8 +551,8 @@ Evolution:
 
 Acceptance:
 
-- C# moves from no-CFG to verified basic CFG.
-- `using` prevents false missing-cleanup findings.
+- C# ✅ moves from no-CFG to verified basic CFG (M6b: supported_with_limitations 0.72).
+- `using` ✅ prevents false missing-cleanup findings: CallContext::CSharpUsing + CfgNodeKind::BlockExit (same pattern as Python/Java). ScopeExitAnalyzer handles CSharpUsing as context_managed. CSharpRegistry created with idisposable rule kind.
 - partial-class facts are linked or explicitly diagnosed as partial.
 
 ### 5.10 Rust
@@ -600,14 +603,13 @@ call limitations.
 
 Primary gaps:
 
-- Parameter DataNode extraction must be corrected.
+- Parameter DataNode extraction corrected. ✅ Fixed in M3: ArgToParam bridge verified; both bridges pass without expected failure.
 - Namespace aliases and dynamic calls need confidence-aware handling.
-- Resource functions are common and should be semantic effects.
+- Resource functions are now semantic effects. ✅ Implemented in M6d: PhpRegistry (procedural_resource) + enhanced ResourceOpConfig (fopen, mysqli_connect, curl_init, etc.). CFG remains unsupported — resource tracking is ScopeExitAnalyzer-based at function exit.
 
 Evolution:
 
-1. Fix parameter DataNode extraction first; do not deepen semantics until this
-   is stable.
+1. ✅ Parameter DataNode extraction fixed in M3; both ArgToParam/ReturnToCall bridges verified.
 2. Add fixtures for namespaces, `use` aliases, methods, dynamic method calls,
    closures, `fopen/fclose`, database connections, and exceptions.
 3. Add PHP domain rule registry:
@@ -637,8 +639,7 @@ Primary gaps:
 
 Evolution:
 
-1. Add CFG support for basic methods, `if`, loops, blocks, and rescue/ensure
-   as future work.
+1. ✅ M6d: RubyRegistry (block_resource, alloc_fn, free_fn, cleanup_fn) + enhanced ResourceOpConfig (File.open, TCPSocket, Net::HTTP). ScopeExitAnalyzer handles block-managed resources at function exit. CFG for if/loops remains future work.
 2. Add fixtures for blocks, `yield`, modules, mixins, `File.open` block form,
    `.close`, and metaprogramming fallbacks.
 3. Add Ruby domain rule registry:
@@ -653,13 +654,13 @@ Evolution:
 
 Acceptance:
 
-- `File.open {}` does not report missing close.
+- `File.open {}` ✅ Fixed: ScopeExitAnalyzer emits Free at function Exit for unfreed allocations.
 - block parameter receives the opened resource in local dataflow.
 - `send` calls are visible as low-confidence dynamic boundaries.
 
 ### 5.13 Kotlin
 
-Current role: DataflowFull with extension receiver binding gap and no CFG.
+Current role: DataflowFull with CFG enabled in M6c (supported_with_limitations 0.67). Extension receiver binding gap remains.
 
 Primary gaps:
 
@@ -669,14 +670,15 @@ Primary gaps:
 
 Evolution:
 
-1. Add CFG support for functions, classes, `if`, loops, `try/finally`, lambdas.
+1. ✅ CFG support added in M6c (supported_with_limitations 0.67) for functions,
+    classes, `if`, loops. try/finally and lambdas remain future work.
 2. Add fixtures for extension functions, receivers, data classes, nullable
    operators, `use {}`, coroutines, and Java interop calls.
-3. Add Kotlin domain rule registry:
-   - `resource_factory`: `openConnection`, Java interop open methods.
-   - `close_method`: `.close`, `.dispose`.
-   - `use_scope`: `.use {}`.
-   - `coroutine_boundary`: `launch`, `async`, `withContext`.
+3. ✅ Kotlin domain rule registry implemented in M6c: `KotlinRegistry` with 4 rule kinds:
+    - `coroutine`: `launch`, `async`, `withContext`.
+    - `alloc_fn`: `openConnection`, Java interop open methods.
+    - `free_fn`: `.close`, `.dispose`.
+    - `cleanup_fn`: `.use {}`, `bufferedReader`.
 4. Add Kotlin semantic consumer:
    - `.use {}` emits context-managed cleanup.
    - extension receiver maps into a receiver place.
@@ -687,6 +689,8 @@ Acceptance:
 - Extension receiver `this` binding is traceable.
 - `.use {}` balances resource lifecycle.
 - coroutine captures are marked as escape/boundary diagnostics.
+
+**Limitation**: Coroutine escape analysis deferred (no CallContext variant for coroutine launch). Resources created inside `.use {}` are handled by ScopeExitAnalyzer at function exit.
 
 ### 5.14 Cangjie
 
@@ -724,30 +728,25 @@ L6 (Semantic Effects) depends on L5 (CFG), and L7 (Language Semantics) depends
 on L6. Therefore CFG hardening (M2) MUST complete and be verified for a language
 before any per-language semantics work begins for that language (M4-M6).
 
-For languages in M6 (Managed Runtime) that lack CFG support (Java, C#, Kotlin,
-Ruby, PHP): semantic analysis is limited to CFG-independent diagnostics (e.g.,
+For languages in M6 (Managed Runtime) that lack CFG support (Ruby, PHP): semantic analysis is limited to CFG-independent diagnostics (e.g.,
 DataFlow-based resource operation matching). Full branch_diff/lifecycle requires
 CFG and should be deferred or delivered with explicit reduced-precision
-annotations.
+annotations. Java had CFG before M6a (0.75 confidence); C# and Kotlin CFG were enabled in M6b (0.72 and 0.67 respectively).
 
-### M1: Capability Truthfulness
+### M1: Capability Truthfulness ✅ (completed — supplanted by M2)
 
-Scope:
+Scope (completed in Phase A):
 
-- Fix capability/documentation drift.
-- Add consistency tests.
-- Make `DataflowFull` wording precise in README and architecture docs.
-- **Immediately downgrade CFG declarations**: all 8 languages currently claiming
-  CFG support (TypeScript, JavaScript, Python, Java, C, C++, Go, Rust) must have
-  `FeatureMatrix.cfg` annotated with limitation: "branch/loop body traversal not
-  yet implemented; only CFG node topology (Branch/Loop/Join) is emitted."
-  This is a fact-correction, not a regression.
+- ✅ Fix capability/documentation drift.
+- ✅ Add consistency tests (`test_cfg_known_limitation`).
+- ✅ CFG declarations downgraded: all 8 languages annotated with "branch/loop body
+  traversal not yet implemented" (Phase A). Later superseded in M2 when body
+  traversal was verified and limitations were lifted.
 
-Exit criteria:
-
+Exit criteria met:
 - `cargo test -p atlas-cli --features "all-languages,mcp"` passes.
-- Docs and capability profiles agree for every language.
-- CFG limitation annotations are present for all applicable languages.
+- `test_cfg_known_limitation` was added (now asserts "implemented").
+- Capability annotations were corrected (M1 downgrade → M2 upgrade).
 
 ### M2: CFG Hardening ✅ (completed)
 
