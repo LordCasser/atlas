@@ -15,6 +15,8 @@ use super::lifecycle_proof::EvidenceLevel;
 use super::ownership_rules::CppOwnershipRules;
 use crate::cfg_graph::CfgGraph;
 
+type TransitionTrace = Vec<(FieldState, FieldState, Option<EffectKind>)>;
+
 // ── Budget constants ────────────────────────────────────────────────────
 
 /// Maximum total node visits before giving up (safety cap).
@@ -426,11 +428,7 @@ fn transfer_state(
     node: &CfgNode,
     canonical_target: &str,
     _rules: &CppOwnershipRules,
-) -> (
-    FieldState,
-    Vec<SuspiciousPoint>,
-    Vec<(FieldState, FieldState, Option<EffectKind>)>,
-) {
+) -> (FieldState, Vec<SuspiciousPoint>, TransitionTrace) {
     // ── Semantic-effects path ─────────────────────────────────────────────
     if !node.semantic_effects.is_empty() {
         let mut current = state;
@@ -557,7 +555,7 @@ fn check_transition_suspicious(
         return vec![SuspiciousPoint {
             line,
             kind: SuspiciousKind::DoubleFree,
-            message: format!("Double free of '{}'", field),
+            message: format!("Double free of '{field}'"),
         }];
     }
 
@@ -568,7 +566,7 @@ fn check_transition_suspicious(
         return vec![SuspiciousPoint {
             line,
             kind: SuspiciousKind::UseAfterFree,
-            message: format!("Write to '{}' after free", field),
+            message: format!("Write to '{field}' after free"),
         }];
     }
 
@@ -578,7 +576,7 @@ fn check_transition_suspicious(
         return vec![SuspiciousPoint {
             line,
             kind: SuspiciousKind::UseAfterFree,
-            message: format!("Escape of '{}' after free", field),
+            message: format!("Escape of '{field}' after free"),
         }];
     }
 
@@ -589,8 +587,8 @@ fn check_transition_suspicious(
 /// Handles prefix-based matching (e.g. "data.aptr" matches "data.aptr.cookiehost").
 fn field_matches(target_canon: &str, canonical_target: &str) -> bool {
     target_canon == canonical_target
-        || canonical_target.starts_with(&format!("{}.", target_canon))
-        || target_canon.starts_with(&format!("{}.", canonical_target))
+        || canonical_target.starts_with(&format!("{target_canon}."))
+        || target_canon.starts_with(&format!("{canonical_target}."))
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -771,7 +769,6 @@ mod tests {
         let fid = test_fid();
         let id1 = CfgNodeId::generate(&fid, "test", 1);
         let id2 = CfgNodeId::generate(&fid, "test", 2);
-        let id3 = CfgNodeId::generate(&fid, "test", 3);
         let id4 = CfgNodeId::generate(&fid, "test", 4);
         let nodes = vec![
             make_stmt_node(vec![se_alloc(id1, 0, "ptr")], 10, 1),
@@ -835,7 +832,6 @@ mod tests {
         let id1 = CfgNodeId::generate(&fid, "test", 1);
         let id2 = CfgNodeId::generate(&fid, "test", 2);
         let id3 = CfgNodeId::generate(&fid, "test", 3);
-        let id4 = CfgNodeId::generate(&fid, "test", 4);
         let id5 = CfgNodeId::generate(&fid, "test", 5);
         let nodes = vec![
             make_stmt_node(vec![se_alloc(id1, 0, "a")], 10, 1),
@@ -894,10 +890,8 @@ mod tests {
         let fid = test_fid();
         let entry = CfgNode::entry(&fid);
         let exit = CfgNode::exit(&fid);
-        let id_branch = CfgNodeId::generate(&fid, "test", 1);
         let id_free = CfgNodeId::generate(&fid, "test", 2);
         let id_alloc = CfgNodeId::generate(&fid, "test", 3);
-        let id_join = CfgNodeId::generate(&fid, "test", 4);
         let branch = make_node(Vec::new(), 10, CfgNodeKind::Branch, 1);
         let free_node = make_stmt_node(vec![se_free(id_free, 0, "ptr")], 11, 2);
         let alloc_node = make_stmt_node(vec![se_alloc(id_alloc, 0, "ptr")], 12, 3);

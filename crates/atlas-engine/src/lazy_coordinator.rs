@@ -439,6 +439,7 @@ mod tests {
 
     use std::sync::Arc;
 
+    use crate::CapabilityMask;
     use crate::closure_planner::IncludeRoot;
     #[cfg(feature = "c")]
     use crate::lazy_budget::LazyBudget;

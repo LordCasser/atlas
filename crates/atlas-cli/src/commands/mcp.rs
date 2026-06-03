@@ -3,8 +3,6 @@
 //! Reads JSON-RPC requests from stdin, writes responses to stdout,
 //! using Content-Length header framing.
 
-#![cfg(feature = "mcp")]
-
 use crate::runtime::{CommandContext, DbMode};
 
 pub fn run(project: &str) -> anyhow::Result<()> {

@@ -330,8 +330,8 @@ fn get_or_create_summary<'a>(
 
 fn format_value_source(src: &ValueSource) -> String {
     match src {
-        ValueSource::CallReturn { callee } => format!("return({})", callee),
-        ValueSource::Param { name } => format!("param({})", name),
+        ValueSource::CallReturn { callee } => format!("return({callee})"),
+        ValueSource::Param { name } => format!("param({name})"),
         ValueSource::Local { name } => name.clone(),
         ValueSource::LiteralNull => "null".to_string(),
         ValueSource::Unknown => "unknown".to_string(),
@@ -371,8 +371,7 @@ fn diff_field(
             IssueSeverity::High,
             0.85,
             format!(
-                "field '{}' freed and reallocated in true branch, untouched in false branch",
-                field
+                "field '{field}' freed and reallocated in true branch, untouched in false branch"
             ),
             true_summary,
             false_summary,
@@ -391,8 +390,7 @@ fn diff_field(
             IssueSeverity::High,
             0.85,
             format!(
-                "field '{}' freed and reallocated in false branch, untouched in true branch",
-                field
+                "field '{field}' freed and reallocated in false branch, untouched in true branch"
             ),
             true_summary,
             false_summary,
@@ -407,10 +405,7 @@ fn diff_field(
             BranchAsymmetryKind::AsymmetricFree,
             IssueSeverity::Medium,
             0.70,
-            format!(
-                "field '{}' freed in true branch but not in false branch",
-                field
-            ),
+            format!("field '{field}' freed in true branch but not in false branch"),
             true_summary,
             false_summary,
         ));
@@ -422,10 +417,7 @@ fn diff_field(
             BranchAsymmetryKind::AsymmetricFree,
             IssueSeverity::Medium,
             0.70,
-            format!(
-                "field '{}' freed in false branch but not in true branch",
-                field
-            ),
+            format!("field '{field}' freed in false branch but not in true branch"),
             true_summary,
             false_summary,
         ));
@@ -439,10 +431,7 @@ fn diff_field(
             BranchAsymmetryKind::AsymmetricAlloc,
             IssueSeverity::Medium,
             0.65,
-            format!(
-                "field '{}' allocated in true branch but not in false branch",
-                field
-            ),
+            format!("field '{field}' allocated in true branch but not in false branch"),
             true_summary,
             false_summary,
         ));
@@ -454,10 +443,7 @@ fn diff_field(
             BranchAsymmetryKind::AsymmetricAlloc,
             IssueSeverity::Medium,
             0.65,
-            format!(
-                "field '{}' allocated in false branch but not in true branch",
-                field
-            ),
+            format!("field '{field}' allocated in false branch but not in true branch"),
             true_summary,
             false_summary,
         ));
@@ -477,10 +463,7 @@ fn diff_field(
             BranchAsymmetryKind::AsymmetricWrite,
             severity,
             confidence,
-            format!(
-                "field '{}' written in true branch but not in false branch",
-                field
-            ),
+            format!("field '{field}' written in true branch but not in false branch"),
             true_summary,
             false_summary,
         ));
@@ -494,10 +477,7 @@ fn diff_field(
             BranchAsymmetryKind::AsymmetricWrite,
             severity,
             confidence,
-            format!(
-                "field '{}' written in false branch but not in true branch",
-                field
-            ),
+            format!("field '{field}' written in false branch but not in true branch"),
             true_summary,
             false_summary,
         ));
@@ -515,8 +495,7 @@ fn diff_field(
                 IssueSeverity::Low,
                 0.40,
                 format!(
-                    "field '{}' written to '{}' in true branch and '{}' in false branch",
-                    field, tv, fv
+                    "field '{field}' written to '{tv}' in true branch and '{fv}' in false branch"
                 ),
                 true_summary,
                 false_summary,
@@ -527,6 +506,7 @@ fn diff_field(
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_issue(
     field: &str,
     branch_node_id: CfgNodeId,
@@ -568,6 +548,7 @@ mod tests {
         types::ids::SymbolId::default()
     }
 
+    #[allow(dead_code)]
     fn make_stmt_node(line: u32, seq: u32, effects: Vec<SemanticEffect>) -> CfgNode {
         let fid = test_fid();
         let nid = CfgNodeId::generate(&fid, "test_stmt", seq);
@@ -576,8 +557,8 @@ mod tests {
             function_id: fid,
             kind: CfgNodeKind::Statement,
             stmt_range: TextRange {
-                start_byte: seq as u32,
-                end_byte: seq as u32 + 1,
+                start_byte: seq,
+                end_byte: seq + 1,
                 start_line: line,
                 start_column: 0,
                 end_line: line,
@@ -587,6 +568,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn make_branch_node(line: u32, seq: u32) -> CfgNode {
         let fid = test_fid();
         let nid = CfgNodeId::generate(&fid, "test_branch", seq);
@@ -595,8 +577,8 @@ mod tests {
             function_id: fid,
             kind: CfgNodeKind::Branch,
             stmt_range: TextRange {
-                start_byte: seq as u32,
-                end_byte: seq as u32 + 1,
+                start_byte: seq,
+                end_byte: seq + 1,
                 start_line: line,
                 start_column: 0,
                 end_line: line,
@@ -606,6 +588,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn make_join_node(line: u32, seq: u32) -> CfgNode {
         let fid = test_fid();
         let nid = CfgNodeId::generate(&fid, "test_join", seq);
@@ -614,8 +597,8 @@ mod tests {
             function_id: fid,
             kind: CfgNodeKind::Join,
             stmt_range: TextRange {
-                start_byte: seq as u32,
-                end_byte: seq as u32 + 1,
+                start_byte: seq,
+                end_byte: seq + 1,
                 start_line: line,
                 start_column: 0,
                 end_line: line,
@@ -1124,8 +1107,7 @@ mod tests {
         let issues = analyze_branch_semantic(&graph, &composition);
         assert!(
             issues.is_empty(),
-            "Symmetric branches should produce no issues, got: {:?}",
-            issues
+            "Symmetric branches should produce no issues, got: {issues:?}"
         );
     }
 }

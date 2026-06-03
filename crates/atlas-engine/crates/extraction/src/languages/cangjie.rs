@@ -414,9 +414,8 @@ fn is_cangjie_call_expr(node: tree_sitter::Node) -> bool {
             if child.kind() == "callSuffix" {
                 // Also check that we have a callable target (atomicVariable or fieldAccess)
                 let has_target = (0..node.child_count()).any(|j| {
-                    node.child(j as u32).map_or(false, |c| {
-                        c.kind() == "atomicVariable" || c.kind() == "fieldAccess"
-                    })
+                    node.child(j as u32)
+                        .is_some_and(|c| c.kind() == "atomicVariable" || c.kind() == "fieldAccess")
                 });
                 if has_target {
                     return true;
@@ -752,7 +751,7 @@ mod tests {
             }
         }
 
-        assert_eq!(bindings.len(), 2, "expected 2 bindings, got {:?}", bindings);
+        assert_eq!(bindings.len(), 2, "expected 2 bindings, got {bindings:?}");
         assert!(
             bindings.iter().any(|b| b.kind == BindingKind::Parameter),
             "missing parameter binding"

@@ -73,11 +73,7 @@ pub fn render(
     ]
     .iter()
     .map(|t| {
-        let label = if *t == tab {
-            format!(" {} ", t.as_str())
-        } else {
-            format!(" {} ", t.as_str())
-        };
+        let label = format!(" {} ", t.as_str());
         let style = if *t == tab {
             Style::default()
                 .fg(Color::Yellow)

@@ -578,8 +578,7 @@ fn java_cross_file_import_call() {
     let names: Vec<_> = syms.iter().map(|s| s.name.clone()).collect();
     assert!(
         names.contains(&"Greeter".to_string()),
-        "Greeter class not found: {:?}",
-        names
+        "Greeter class not found: {names:?}"
     );
 }
 

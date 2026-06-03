@@ -131,7 +131,7 @@ impl GraphEngine {
             return Subgraph::default();
         };
 
-        let max_depth = config.max_depth.max(1).min(5);
+        let max_depth = config.max_depth.clamp(1, 5);
         let mut visited_nodes = std::collections::HashSet::new();
         let mut visited_edges = std::collections::HashSet::new();
         let mut frontier = vec![start_ix];
@@ -159,10 +159,10 @@ impl GraphEngine {
             }
         }
 
-        let mut sub = Subgraph::default();
-        sub.node_indices = visited_nodes.into_iter().collect();
-        sub.edge_indices = visited_edges.into_iter().collect();
-        sub
+        Subgraph {
+            node_indices: visited_nodes.into_iter().collect(),
+            edge_indices: visited_edges.into_iter().collect(),
+        }
     }
 
     /// Kinds of edges that represent "calls" — includes promoted constructor/interface edges.

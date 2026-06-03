@@ -761,13 +761,12 @@ fn normalize_php_dataflow_builder(
             }
             // Skip left-hand side of assignment (already captured as df.assign_target)
             if let Some(parent) = node.parent() {
-                if parent.kind() == "assignment_expression" {
-                    if parent
+                if parent.kind() == "assignment_expression"
+                    && parent
                         .child_by_field_name("left")
-                        .map_or(false, |n| n.id() == node.id())
-                    {
-                        return (None, None);
-                    }
+                        .is_some_and(|n| n.id() == node.id())
+                {
+                    return (None, None);
                 }
             }
             // Skip superglobals (already captured as df.superglobal)

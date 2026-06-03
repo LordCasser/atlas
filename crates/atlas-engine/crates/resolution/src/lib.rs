@@ -360,8 +360,10 @@ impl ReferenceResolver {
         }
         let unresolved = self.store.find_unresolved_references()?;
         let total_refs = unresolved.len();
-        let mut stats = ResolutionStats::default();
-        stats.total_refs = total_refs;
+        let mut stats = ResolutionStats {
+            total_refs,
+            ..Default::default()
+        };
 
         // Group references by file for efficient context loading
         let mut by_file: HashMap<FileId, Vec<ReferenceUse>> = HashMap::new();
@@ -487,8 +489,10 @@ impl ReferenceResolver {
         let writer_progress = progress_mutex.map(Arc::clone);
         let writer_handle = std::thread::spawn(
             move || -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
-                let mut stats = ResolutionStats::default();
-                stats.total_refs = total_refs as usize;
+                let mut stats = ResolutionStats {
+                    total_refs: total_refs as usize,
+                    ..Default::default()
+                };
                 let mut pending: Vec<(ReferenceId, ResolvedTarget)> = Vec::with_capacity(2000);
                 let mut all: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
                 let batch_size = 2000;
@@ -591,8 +595,10 @@ impl ReferenceResolver {
         }
 
         let total_refs: usize = by_file.values().map(|v| v.len()).sum();
-        let mut stats = ResolutionStats::default();
-        stats.total_refs = total_refs;
+        let mut stats = ResolutionStats {
+            total_refs,
+            ..Default::default()
+        };
 
         let mut pending_resolutions: Vec<(ReferenceId, ResolvedTarget)> = Vec::new();
         let mut all_resolved: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();

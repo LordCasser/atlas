@@ -173,6 +173,7 @@ impl ToolRouter {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn prepare_project(args: &serde_json::Value) -> Result<PreparedProject, OpenProjectResult> {
     let project_path = args["project_path"]
         .as_str()

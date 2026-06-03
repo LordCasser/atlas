@@ -206,17 +206,16 @@ fn resolve_data_node_refs<F>(
 where
     F: Fn(&types::dataflow::DataFlowEdge) -> &DataNodeId,
 {
-    let refs: Vec<TraceDataNodeRef>;
-    if edges.is_empty() {
-        refs = Vec::new();
+    let refs = if edges.is_empty() {
+        Vec::new()
     } else {
         let ids: Vec<DataNodeId> = edges.iter().map(|e| *id_fn(e)).collect();
         let nodes = store.get_data_nodes(&ids)?;
-        refs = edges
+        edges
             .iter()
             .filter_map(|edge| nodes.get(id_fn(edge)).map(TraceDataNodeRef::from_data_node))
-            .collect();
-    }
+            .collect()
+    };
     Ok(refs)
 }
 

@@ -59,6 +59,7 @@ impl PatternKind {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "exact" => Some(Self::Exact),
@@ -88,6 +89,7 @@ impl RuleSource {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "builtin" => Some(Self::Builtin),
@@ -119,6 +121,7 @@ impl RuleStatus {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "candidate" => Some(Self::Candidate),

@@ -524,8 +524,7 @@ pub(crate) fn write_cfg_nodes(conn: &Connection, nodes: &[CfgNode]) -> anyhow::R
             None::<&str>,
             serde_json::to_string(&n.semantic_effects)
                 .ok()
-                .map(|s| if s == "[]" { None } else { Some(s) })
-                .flatten(),
+                .and_then(|s| if s == "[]" { None } else { Some(s) }),
             None::<&str>,
         ])?;
     }

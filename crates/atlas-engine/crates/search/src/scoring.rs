@@ -60,6 +60,7 @@ pub struct SearchScore {
 
 impl SearchScore {
     /// Create a score from raw signals and apply configurable weights.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         fts_score: f64,
         total_degree: usize,

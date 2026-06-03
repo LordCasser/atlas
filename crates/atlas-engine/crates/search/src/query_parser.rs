@@ -15,7 +15,7 @@
 //!
 //! - `kind:function lang:typescript path:src name:auth authenticate`
 //!   → kind_filter=Function, language=TypeScript, path_filter="src",
-//!     name_filter="auth", freetext="authenticate"
+//!   name_filter="auth", freetext="authenticate"
 //!
 //! - `lang:python fastapi`
 //!   → language=Python, freetext="fastapi"

@@ -967,8 +967,7 @@ mod tests {
             .collect();
         assert!(
             field_texts.iter().any(|t| t.contains("field")),
-            "should capture field assignment, got: {:?}",
-            field_texts
+            "should capture field assignment, got: {field_texts:?}"
         );
 
         // Should have a CallTarget DataNode from "new Foo()"
@@ -978,8 +977,7 @@ mod tests {
             .collect();
         assert!(
             call_names.iter().any(|t| t.contains("Foo")),
-            "should capture new Foo(x, y) call target, got: {:?}",
-            call_names
+            "should capture new Foo(x, y) call target, got: {call_names:?}"
         );
     }
 }

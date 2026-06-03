@@ -1302,7 +1302,7 @@ mod tests {
     fn test_confidence_add() {
         let a = Confidence::new(0.3);
         let b = Confidence::new(0.4);
-        assert!((a + b).as_f32() - 0.7 < f32::EPSILON);
+        assert!(((a + b).as_f32() - 0.7).abs() < f32::EPSILON);
     }
 
     // ── EffectKind tests ──────────────────────────────────────────────────

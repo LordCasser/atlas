@@ -694,9 +694,7 @@ fn normalize_rust_dataflow_builder(
                 .parent()
                 .filter(|p| p.kind() == "block")
                 .and_then(|b| b.parent())
-                .map_or(false, |p| {
-                    matches!(p.kind(), "function_item" | "closure_expression")
-                });
+                .is_some_and(|p| matches!(p.kind(), "function_item" | "closure_expression"));
             let text = node_text(node, source).unwrap_or_default();
             let data_kind = if is_fn_tail {
                 DataNodeKind::Return

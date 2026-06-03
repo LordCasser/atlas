@@ -481,13 +481,13 @@ fn fx5_java_capability_declares_dataflow_full() {
     let engine = TraceEngine::new(store.clone());
 
     let file_id = FileId::generate("App.java");
-    // Java now has DataflowBasic support — use trace_variable instead of trace_point.
+    // Java now has DataflowFull support; trace_point must still expose capability metadata.
     let resp = engine.trace_point(&file_id, 3, 20);
 
     // Must NOT crash. Response must be ok=true.
     assert!(resp.ok, "Java trace_point must return ok=true");
 
-    // Capability must be present and indicate DataflowBasic level.
+    // Capability must be present and indicate DataflowFull level.
     let cap = resp
         .capability
         .as_ref()

@@ -670,9 +670,9 @@ impl GraphSnapshot {
         self.nodes[node_ix]
             .incoming
             .iter()
-            .filter_map(|&eix| {
+            .map(|&eix| {
                 let edge = &self.edges[eix];
-                Some((edge.source_ix, edge.kind))
+                (edge.source_ix, edge.kind)
             })
             .collect()
     }
@@ -685,9 +685,9 @@ impl GraphSnapshot {
         self.nodes[node_ix]
             .outgoing
             .iter()
-            .filter_map(|&eix| {
+            .map(|&eix| {
                 let edge = &self.edges[eix];
-                Some((edge.target_ix, edge.kind))
+                (edge.target_ix, edge.kind)
             })
             .collect()
     }
@@ -1317,6 +1317,7 @@ impl GraphSnapshot {
 
     /// Find up to `k` alternative paths with edge-removal diversity, ranked
     /// by composite semantic+topological+centrality score (descending).
+    #[allow(clippy::too_many_arguments)]
     pub fn k_ranked_paths(
         &self,
         from: NodeIx,
@@ -1549,6 +1550,7 @@ impl GraphSnapshot {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn dijkstra_core(
         &self,
         from: NodeIx,
@@ -1847,7 +1849,7 @@ impl GraphPath {
                 direction: PathEdgeDirection::Forward,
             })
             .collect();
-        let confidence = if edges.is_empty() { 1.0 } else { 1.0 };
+        let confidence = 1.0;
         Self {
             node_indices,
             edges,
@@ -2811,11 +2813,11 @@ mod tests {
 
             // file_a nodes removed
             assert_eq!(snap.nodes.len(), 2);
-            assert!(snap.id_to_idx.get(&sym_a1).is_none());
-            assert!(snap.id_to_idx.get(&sym_a2).is_none());
+            assert!(!snap.id_to_idx.contains_key(&sym_a1));
+            assert!(!snap.id_to_idx.contains_key(&sym_a2));
             // file_b nodes preserved
-            assert!(snap.id_to_idx.get(&sym_b1).is_some());
-            assert!(snap.id_to_idx.get(&sym_b2).is_some());
+            assert!(snap.id_to_idx.contains_key(&sym_b1));
+            assert!(snap.id_to_idx.contains_key(&sym_b2));
 
             // Edge A1->B1 removed (source gone), B1->B2 preserved
             assert_eq!(snap.edges.len(), 1);
@@ -2845,7 +2847,7 @@ mod tests {
             snap.remove_files_in_place(&[file_b]); // file_b not in graph
 
             assert_eq!(snap.nodes.len(), 1);
-            assert!(snap.id_to_idx.get(&sym).is_some());
+            assert!(snap.id_to_idx.contains_key(&sym));
         }
 
         fn symbol_def(id: SymbolId, file_id: FileId, name: &str, line: u32) -> SymbolDef {

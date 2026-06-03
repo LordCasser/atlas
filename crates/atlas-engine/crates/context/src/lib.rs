@@ -15,6 +15,8 @@ mod builder;
 
 pub use builder::{CalleeDetail, CallerDetail, ContextSlice, ContextView, SourceSnippet};
 
+pub type SourceLookupFn = dyn Fn(&SymbolId) -> Option<String> + Send + Sync;
+
 /// AI context builder: constructs symbol-rich context from the codebase graph.
 pub struct ContextBuilder {
     store: Arc<Store>,
@@ -23,7 +25,7 @@ pub struct ContextBuilder {
     /// Optional callback for extracting symbol source via AST-aware parsing.
     /// When set, `read_source_snippet` delegates to this callback; when `None`,
     /// falls back to `TextRange`-based line extraction.
-    source_fn: Option<Arc<dyn Fn(&SymbolId) -> Option<String> + Send + Sync>>,
+    source_fn: Option<Arc<SourceLookupFn>>,
 }
 
 impl ContextBuilder {
@@ -50,10 +52,7 @@ impl ContextBuilder {
     /// instead of using `TextRange`-based line extraction.  The callback
     /// receives a `SymbolId` and returns the exact source text for that
     /// symbol (usually via tree-sitter re-parsing).
-    pub fn with_source_fn(
-        mut self,
-        f: Arc<dyn Fn(&SymbolId) -> Option<String> + Send + Sync>,
-    ) -> Self {
+    pub fn with_source_fn(mut self, f: Arc<SourceLookupFn>) -> Self {
         self.source_fn = Some(f);
         self
     }

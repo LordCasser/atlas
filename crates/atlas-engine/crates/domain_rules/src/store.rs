@@ -23,6 +23,7 @@ impl<'a> GenericRuleStore<'a> {
     }
 
     /// Insert or replace a domain rule.
+    #[allow(clippy::too_many_arguments)]
     pub fn upsert_domain_rule(
         &self,
         language: &str,

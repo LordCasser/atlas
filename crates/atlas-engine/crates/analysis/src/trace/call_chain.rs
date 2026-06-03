@@ -103,15 +103,17 @@ pub fn create_boundary_marker(
 
 // ── symbol cache ───────────────────────────────────────────────────────────
 
+type RawCallStep = (
+    SymbolId,
+    SymbolId,
+    EdgeKind,
+    Option<ReferenceId>,
+    Option<TextRange>,
+);
+
 /// Prefetch all unique symbols referenced by the raw steps into a cache.
 pub fn build_symbol_cache(
-    raw_steps: &[(
-        SymbolId,
-        SymbolId,
-        EdgeKind,
-        Option<ReferenceId>,
-        Option<TextRange>,
-    )],
+    raw_steps: &[RawCallStep],
     store: &(impl SymbolReader + CallGraphReader),
 ) -> HashMap<SymbolId, types::SymbolDef> {
     let mut cache = HashMap::new();
@@ -142,13 +144,7 @@ pub fn reconstruct_path(
     store: &(impl SymbolReader + CallGraphReader),
 ) -> anyhow::Result<Vec<ReconstructedStep>> {
     // Collect raw steps walking backward from start_id to stop_id.
-    let mut raw_steps: Vec<(
-        SymbolId,
-        SymbolId,
-        EdgeKind,
-        Option<ReferenceId>,
-        Option<TextRange>,
-    )> = Vec::new();
+    let mut raw_steps: Vec<RawCallStep> = Vec::new();
     let mut current = *start_id;
 
     while &current != stop_id {

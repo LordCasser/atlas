@@ -5,9 +5,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use atlas_engine::analysis;
-use atlas_engine::{
-    EdgeKind, InvestigationFocus, Store, SymbolId, SymbolKind, TraversalConfig, TraversalDirection,
-};
+use atlas_engine::{EdgeKind, InvestigationFocus, Store, SymbolId, SymbolKind, TraversalDirection};
 
 use super::query_snapshot::{QuerySnapshot, QueryStatus};
 use super::{ToolRouter, get_str, get_str_opt, get_u64};

@@ -11,6 +11,8 @@
 //! - References (from all other reference kinds)
 //! - Contains (from container → child relationships discovered during resolution)
 
+#![allow(clippy::items_after_test_module)]
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 

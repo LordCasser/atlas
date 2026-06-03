@@ -66,8 +66,8 @@ fn find_file_id(store: &Store, _root: &Path, rel_path: &str) -> FileId {
     let files = store.list_files().expect("list files");
     let file = files
         .iter()
-        .find(|f| f.path == rel_path || f.path.ends_with(&format!("/{}", rel_path)))
-        .expect(&format!("file not found: {}", rel_path));
+        .find(|f| f.path == rel_path || f.path.ends_with(&format!("/{rel_path}")))
+        .unwrap_or_else(|| panic!("file not found: {rel_path}"));
     file.file_id
 }
 
@@ -76,7 +76,7 @@ fn find_symbol(store: &Store, file_id: &FileId, name: &str) -> SymbolId {
     let syms = store.find_symbols_by_file(file_id).expect("find symbols");
     syms.iter()
         .find(|s| s.name == name)
-        .expect(&format!("symbol '{}' not found", name))
+        .unwrap_or_else(|| panic!("symbol '{name}' not found"))
         .id
 }
 
@@ -99,7 +99,7 @@ fn call_tool(router: &mut ToolRouter, name: &str, args: Value) -> (Value, bool) 
     let content_json: Value = match serde_json::from_str(&text) {
         Ok(v) => v,
         Err(e) => {
-            println!("[DEBUG] JSON parse error: {:?}", e);
+            println!("[DEBUG] JSON parse error: {e:?}");
             println!(
                 "[DEBUG] Raw text (first 500 chars): {:?}",
                 &text[..text.len().min(500)]
@@ -592,7 +592,7 @@ fn p2_mcp_output_truncation_safety() {
 }
 
 // ────────────────────────────────────────────────────────────────
-// P1: Capability boundary — Java trace_variable is DataflowBasic
+// P1: Capability boundary — Java trace_variable is DataflowFull
 // ────────────────────────────────────────────────────────────────
 
 #[cfg(feature = "java")]
@@ -626,7 +626,7 @@ fn p1_mcp_java_trace_variable_is_partial() {
         .any(|d| d.get("code").and_then(|c| c.as_str()) == Some("unsupported_language"));
     assert!(
         !has_unsupported,
-        "Java DataflowBasic trace must not be gated as unsupported_language"
+        "Java DataflowFull trace must not be gated as unsupported_language"
     );
     assert!(
         content_json.get("capability").is_some(),
@@ -648,7 +648,7 @@ fn p1_mcp_java_trace_variable_is_partial() {
 }
 
 // ────────────────────────────────────────────────────────────────
-// P1: Capability boundary — Go trace_variable is DataflowBasic
+// P1: Capability boundary — Go trace_variable is DataflowFull
 // ────────────────────────────────────────────────────────────────
 
 #[cfg(feature = "go")]
@@ -936,8 +936,7 @@ function c(): number { return d(); }
                 .unwrap_or(0);
             assert!(
                 steps <= 2,
-                "steps should be limited by max_depth=2, got {}",
-                steps
+                "steps should be limited by max_depth=2, got {steps}"
             );
             let max_depth_reached = result
                 .get("max_depth_reached")
@@ -1088,8 +1087,7 @@ fn p7a_mcp_trace_variable_truncation_diagnostic() {
             .any(|d| d.get("code").and_then(|c| c.as_str()) == Some("max_depth_truncated"));
         assert!(
             has_truncation,
-            "truncated trace should include max_depth_truncated diagnostic, got: {:?}",
-            diags
+            "truncated trace should include max_depth_truncated diagnostic, got: {diags:?}"
         );
     }
 }
@@ -1139,8 +1137,7 @@ function d(): number { return 42; }
         .any(|d| d.get("code").and_then(|c| c.as_str()) == Some("max_depth_truncated"));
     assert!(
         has_truncation,
-        "truncated caller path should include max_depth_truncated diagnostic, got: {:?}",
-        diags
+        "truncated caller path should include max_depth_truncated diagnostic, got: {diags:?}"
     );
 }
 
@@ -1183,7 +1180,7 @@ fn mcp_dependencies_returns_imports() {
     ];
     let (_tmp, mut router) = build_router(files);
     let store = Store::open_db(&_tmp.path().join(".atlas/atlas.db")).expect("open store");
-    let file_id = find_file_id(&store, _tmp.path(), "app.ts");
+    let _file_id = find_file_id(&store, _tmp.path(), "app.ts");
 
     let (json, is_error) = call_tool(
         &mut router,
@@ -1194,7 +1191,7 @@ fn mcp_dependencies_returns_imports() {
     let deps = json.get("dependencies").and_then(|d| d.as_array());
     assert!(deps.is_some(), "should have dependencies array");
     assert!(
-        deps.unwrap().len() > 0,
+        !deps.unwrap().is_empty(),
         "should have at least one dependency"
     );
 }
@@ -1334,8 +1331,7 @@ fn index_rejects_analysis_parameter() {
         errors
             .iter()
             .any(|e| e.as_str().unwrap_or("").contains("analysis")),
-        "error should mention unsupported analysis: {:?}",
-        json
+        "error should mention unsupported analysis: {json:?}"
     );
 }
 
@@ -1507,8 +1503,7 @@ fn open_project_memory_no_index_switches_project() {
     );
     assert!(
         !is_error,
-        "project(action=open) (memory) should succeed: {:?}",
-        json
+        "project(action=open) (memory) should succeed: {json:?}"
     );
     assert!(json["ok"].as_bool().unwrap_or(false), "ok must be true");
 
@@ -1560,19 +1555,17 @@ fn open_project_then_index_enables_search() {
     );
     assert!(
         !is_error,
-        "project(action=open) (memory) should succeed: {:?}",
-        json
+        "project(action=open) (memory) should succeed: {json:?}"
     );
     assert!(json["ok"].as_bool().unwrap_or(false), "ok must be true");
 
     let (index, index_error) = call_tool(&mut router, "index", json!({}));
-    assert!(!index_error, "index should succeed: {:?}", index);
+    assert!(!index_error, "index should succeed: {index:?}");
 
     // Index result should show discovered files
     assert!(
         index["files_discovered"].as_u64().unwrap_or(0) >= 1,
-        "should discover at least 1 file, got: {:?}",
-        index
+        "should discover at least 1 file, got: {index:?}"
     );
 
     // Status should show indexed files
@@ -1607,7 +1600,7 @@ fn open_project_then_index_enables_search() {
         .expect("files should be array");
     let _greet_file = file_list
         .iter()
-        .find(|f| f["path"].as_str().map_or(false, |p| p.contains("lib.ts")))
+        .find(|f| f["path"].as_str().is_some_and(|p| p.contains("lib.ts")))
         .expect("should find lib.ts");
 
     // trace_point should resolve the greet function
@@ -1621,11 +1614,7 @@ fn open_project_then_index_enables_search() {
             "column": 17,
         }),
     );
-    assert!(
-        !trace_error,
-        "trace(point) should succeed: {:?}",
-        trace_json
-    );
+    assert!(!trace_error, "trace(point) should succeed: {trace_json:?}");
 }
 
 #[test]
@@ -1640,8 +1629,7 @@ fn mcp_search_requires_scope() {
 
     assert!(
         !search_error,
-        "search without scope should succeed with manual index: {:?}",
-        search_json
+        "search without scope should succeed with manual index: {search_json:?}"
     );
     // Scope defaults to project root; response is a valid ScopedSearchResponse.
     assert_eq!(search_json["query"].as_str(), Some("greet"));
@@ -1685,7 +1673,7 @@ fn mcp_search_large_scope_stays_manifest_level() {
         json!({ "query": "target_fn_7", "scope": "src", "kind": "function" }),
     );
 
-    assert!(!search_error, "search should succeed: {:?}", search_json);
+    assert!(!search_error, "search should succeed: {search_json:?}");
     // Search no longer turns medium/full-project scopes into implicit
     // structural indexing. It should answer from manifest facts and guide the
     // caller to narrow scope for deeper parsing.
@@ -1696,8 +1684,7 @@ fn mcp_search_large_scope_stays_manifest_level() {
         results
             .iter()
             .any(|r| r["name"].as_str() == Some("target_fn_7")),
-        "manifest search should find exact function without synchronous structural parsing: {:?}",
-        search_json
+        "manifest search should find exact function without synchronous structural parsing: {search_json:?}"
     );
 }
 
@@ -1722,8 +1709,7 @@ fn open_project_rejects_indexing_parameters() {
     assert!(is_error, "project(action=open) must reject index=true");
     assert!(
         json["error"].as_str().unwrap_or("").contains("index tool"),
-        "error should point users to index: {:?}",
-        json
+        "error should point users to index: {json:?}"
     );
 }
 
@@ -1756,13 +1742,12 @@ fn open_project_persistent_creates_db_and_survives_reopen() {
     );
     assert!(
         !is_error1,
-        "first project(action=open) should succeed: {:?}",
-        json1
+        "first project(action=open) should succeed: {json1:?}"
     );
     assert!(json1["ok"].as_bool().unwrap_or(false), "ok must be true");
 
     let (index_json, index_error) = call_tool(&mut router, "index", json!({}));
-    assert!(!index_error, "index should succeed: {:?}", index_json);
+    assert!(!index_error, "index should succeed: {index_json:?}");
 
     // Verify .atlas/atlas.db exists
     let db_path = tmp.path().join(".atlas/atlas.db");
@@ -1802,7 +1787,7 @@ fn open_project_persistent_creates_db_and_survives_reopen() {
             "storage": "persistent",
         }),
     );
-    assert!(!is_error2, "re-open should succeed: {:?}", json2);
+    assert!(!is_error2, "re-open should succeed: {json2:?}");
 
     // Search should still find add after reopen without re-index
     let (search_json2, _) = call_tool(

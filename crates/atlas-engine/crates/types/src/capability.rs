@@ -364,6 +364,7 @@ impl LanguageCapabilityProfile {
     }
 
     /// All profiles for the languages whose tree-sitter grammars are compiled in.
+    #[allow(clippy::vec_init_then_push)]
     pub fn all_compiled() -> Vec<Self> {
         let mut profiles = Vec::with_capacity(14);
 

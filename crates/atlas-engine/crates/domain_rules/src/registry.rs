@@ -2,6 +2,8 @@
 
 use super::types::{DomainRule, PatternKind, RuleSource, RuleStatus};
 
+pub type MetaValidator = fn(&serde_json::Value) -> Result<(), String>;
+
 /// Specification for a single rule kind within a language.
 #[derive(Debug, Clone)]
 pub struct RuleKindSpec {
@@ -10,7 +12,7 @@ pub struct RuleKindSpec {
     pub auto_learn_enabled: bool,
     pub allowed_pattern_kinds: &'static [PatternKind],
     pub default_status: fn(RuleSource) -> RuleStatus,
-    pub meta_validator: Option<fn(&serde_json::Value) -> Result<(), String>>,
+    pub meta_validator: Option<MetaValidator>,
 }
 
 /// Result of validating a domain rule against a language's kind specification.

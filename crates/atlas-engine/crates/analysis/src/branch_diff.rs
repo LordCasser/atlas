@@ -300,7 +300,7 @@ impl BranchDiffEngine {
 mod tests {
     use super::*;
     use types::cfg::CfgEdge;
-    use types::effects::{PlaceRef, SemanticEffect, SemanticEffectKind, ValueSource};
+    use types::effects::{PlaceRef, SemanticEffect, SemanticEffectKind};
     use types::enums::{CfgEdgeKind, CfgNodeKind};
     use types::ids::{CfgNodeId, EffectId, SymbolId};
     use types::structs::TextRange;

@@ -149,6 +149,7 @@ impl ToolRouter {
         (result_str, is_err)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_search_sync(
         &self,
         query: &str,
@@ -218,6 +219,7 @@ impl ToolRouter {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_search_background(
         &self,
         query: &str,
@@ -450,6 +452,7 @@ impl ToolRouter {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_scoped_search<F>(
     task_manager: Arc<TaskManager>,
     store: Arc<Store>,
@@ -670,8 +673,7 @@ fn search_symbols_scoped(
 ) -> anyhow::Result<Vec<SymbolDef>> {
     let candidate_limit = limit
         .saturating_mul(SEARCH_CANDIDATE_MULTIPLIER)
-        .max(50)
-        .min(1000);
+        .clamp(50, 1000);
 
     // When scope is empty (project root / "."), use non-scoped search
     // functions — scoped equivalents treat empty scope as "no files".

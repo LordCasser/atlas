@@ -282,10 +282,7 @@ fn extract_struct_name(error_text: &str) -> Option<&str> {
     let after_keyword = error_text.strip_prefix("struct")?;
     let after_keyword = after_keyword.trim_start();
     // Take until `{`, newline, or end of text
-    let name = after_keyword
-        .split(|c: char| c == '{' || c == '\n' || c == '\r')
-        .next()?
-        .trim();
+    let name = after_keyword.split(['{', '\n', '\r']).next()?.trim();
     if name.is_empty() { None } else { Some(name) }
 }
 
@@ -298,7 +295,7 @@ fn find_struct_range(
     struct_name: &str,
     source_bytes: &[u8],
 ) -> Option<(TextRange, TextRange)> {
-    let error_start = error_node.start_byte() as usize;
+    let error_start = error_node.start_byte();
 
     // Find the opening `{` in source starting from error_start
     let source_slice = &source_bytes[error_start..];

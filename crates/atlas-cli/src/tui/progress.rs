@@ -171,10 +171,8 @@ fn write_interrupted<W: Write>(writer: &mut W, state: &ProgressState) -> std::io
     }
 
     for entry in &snap.phases {
-        if let PhaseState::Completed { note, .. } = &entry.state {
-            if let Some(n) = note {
-                writeln!(writer, "  {} — {}", entry.phase.display_name(), n)?;
-            }
+        if let PhaseState::Completed { note: Some(n), .. } = &entry.state {
+            writeln!(writer, "  {} — {}", entry.phase.display_name(), n)?;
         }
     }
 

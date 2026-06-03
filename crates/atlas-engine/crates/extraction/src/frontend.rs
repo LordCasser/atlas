@@ -767,6 +767,7 @@ mod tests {
     ///   claim that category as supported.
     /// - Specific checks: dataflow, lexical, scopes.
     #[test]
+    #[allow(clippy::vec_init_then_push)]
     fn test_capability_profile_matches_slot_capabilities() {
         let mut languages: Vec<Language> = Vec::new();
         #[cfg(feature = "typescript")]
@@ -835,6 +836,7 @@ mod tests {
     /// supported in the static profile; the reverse is NOT required
     /// (static may claim supported features that the slots haven't caught up to).
     #[test]
+    #[allow(clippy::vec_init_then_push)]
     fn test_auto_derived_profile_matches_static() {
         let mut languages: Vec<Language> = Vec::new();
         #[cfg(feature = "typescript")]

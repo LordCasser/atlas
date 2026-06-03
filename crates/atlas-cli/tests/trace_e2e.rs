@@ -1244,8 +1244,7 @@ fun process(name: String): String {
         kinds
             .iter()
             .any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ArgToCall)),
-        "Kotlin should produce Assign or ArgToCall, got: {:?}",
-        kinds
+        "Kotlin should produce Assign or ArgToCall, got: {kinds:?}"
     );
 }
 
@@ -1311,8 +1310,7 @@ function process($req) {
             k,
             DataFlowKind::FieldLoad | DataFlowKind::Assign | DataFlowKind::ArgToCall
         )),
-        "PHP should produce FieldLoad/Assign/ArgToCall, got: {:?}",
-        kinds
+        "PHP should produce FieldLoad/Assign/ArgToCall, got: {kinds:?}"
     );
 }
 
@@ -1370,7 +1368,7 @@ end
         .expect("Ruby trace should produce a result");
     let kinds: Vec<DataFlowKind> = path.steps.iter().map(|s| s.edge_kind).collect();
     assert!(
-        path.steps.len() >= 1,
+        !path.steps.is_empty(),
         "Ruby path should have steps, got {}: {:?}",
         path.steps.len(),
         kinds
@@ -1383,8 +1381,7 @@ end
                 | DataFlowKind::ArgToParam
                 | DataFlowKind::ReturnValue
         )),
-        "Ruby path should have Assign/ArgToCall/ReturnValue, got: {:?}",
-        kinds
+        "Ruby path should have Assign/ArgToCall/ReturnValue, got: {kinds:?}"
     );
     for step in &path.steps {
         assert!(step.evidence.is_some());
@@ -1998,7 +1995,7 @@ fn p5_py_param_slice_caller_evidence_combined() {
 /// NOT the reference/import graph.  They locate a data node by name via
 /// `find_data_nodes_by_file` (same pattern as the Python trace test)
 /// and assert properties of the backward slice.
-
+///
 /// Test A: shadowing — inner scope variable `total` must NOT be
 /// conflated with outer scope `total`.
 ///
@@ -3450,15 +3447,13 @@ class Body {
     // Must have FieldLoad for req.body.name chain
     assert!(
         kinds.contains(&DataFlowKind::FieldLoad),
-        "Java canonical path should contain FieldLoad, got: {:?}",
-        kinds
+        "Java canonical path should contain FieldLoad, got: {kinds:?}"
     );
 
     // Must have Assign for local variable assignments
     assert!(
         kinds.contains(&DataFlowKind::Assign),
-        "Java canonical path should contain Assign, got: {:?}",
-        kinds
+        "Java canonical path should contain Assign, got: {kinds:?}"
     );
 
     for step in &path.steps {
@@ -3582,17 +3577,15 @@ func process(name string) string {
     let path = resp.result.as_ref().expect("Go should produce a result");
     let kinds: Vec<DataFlowKind> = path.steps.iter().map(|s| s.edge_kind).collect();
     assert!(
-        path.steps.len() >= 1,
-        "Go path should have steps, got: {:?}",
-        kinds
+        !path.steps.is_empty(),
+        "Go path should have steps, got: {kinds:?}"
     );
     assert!(
         kinds.iter().any(|k| matches!(
             k,
             DataFlowKind::Assign | DataFlowKind::ArgToCall | DataFlowKind::ArgToParam
         )),
-        "Go path should have Assign/ArgToCall/ArgToParam, got: {:?}",
-        kinds
+        "Go path should have Assign/ArgToCall/ArgToParam, got: {kinds:?}"
     );
     for step in &path.steps {
         assert!(
@@ -3655,17 +3648,15 @@ fn process(name: &str) -> String {
     let path = resp.result.as_ref().expect("Rust should produce a result");
     let kinds: Vec<DataFlowKind> = path.steps.iter().map(|s| s.edge_kind).collect();
     assert!(
-        path.steps.len() >= 1,
-        "Rust path should have steps, got: {:?}",
-        kinds
+        !path.steps.is_empty(),
+        "Rust path should have steps, got: {kinds:?}"
     );
     assert!(
         kinds.iter().any(|k| matches!(
             k,
             DataFlowKind::Assign | DataFlowKind::ArgToCall | DataFlowKind::ArgToParam
         )),
-        "Rust path should have Assign/ArgToCall/ArgToParam, got: {:?}",
-        kinds
+        "Rust path should have Assign/ArgToCall/ArgToParam, got: {kinds:?}"
     );
     for step in &path.steps {
         assert!(
@@ -3806,8 +3797,7 @@ fn vfy_csharp_same_class_method_call_dataflow() {
         kinds
             .iter()
             .any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ArgToCall)),
-        "C# should produce Assign/ArgToCall, got: {:?}",
-        kinds
+        "C# should produce Assign/ArgToCall, got: {kinds:?}"
     );
 }
 
@@ -3851,8 +3841,7 @@ fn vfy_cpp_variable_and_return_dataflow() {
         kinds
             .iter()
             .any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ReturnValue)),
-        "C++ should produce Assign/ReturnValue, got: {:?}",
-        kinds
+        "C++ should produce Assign/ReturnValue, got: {kinds:?}"
     );
 }
 
@@ -3892,8 +3881,7 @@ fn vfy_arkts_parameter_to_return_dataflow() {
         kinds
             .iter()
             .any(|k| matches!(k, DataFlowKind::Assign | DataFlowKind::ReturnValue)),
-        "ArkTS should produce Assign or ReturnValue, got: {:?}",
-        kinds
+        "ArkTS should produce Assign or ReturnValue, got: {kinds:?}"
     );
 }
 
