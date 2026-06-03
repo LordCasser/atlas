@@ -10,6 +10,29 @@
 4. Golden fixture 用于锁定抽取输出，不用于证明产品能力已经端到端可用。
 5. 新增语言、新增 schema、新增 CLI/MCP 工具、新增 analysis 能力，都必须同时补测试和文档。
 6. 低置信度、启发式、fallback 行为必须在测试里显式断言 confidence、strategy 或 diagnostics。
+7. 涉及分析等级、索引模式或用户入口的改动，必须验证所有相关代码路径；不能只验证最方便的一条 helper 或 shared pipeline。
+
+### 1.1 分析等级与入口路径覆盖
+
+Atlas 同时存在 extraction mode、capability level、lazy precision tier 和多个用户入口。任何改变 `Manifest`、`ResolutionSymbols`、`Structural`、`LazyDataflow`、`Full`，或改变 capability/mask/precision/status 展示的 PR，都必须明确列出并验证受影响路径。
+
+最低路径矩阵：
+
+| 等级/路径 | 必须验证的入口 | 必须验证的结果 |
+|-----------|----------------|----------------|
+| Manifest | `atlas index --analysis manifest`、shared `run_index_pipeline(Manifest)`、必要时 `atlas sync --analysis manifest` | 只写 manifest 事实；不会误报 structural/dataflow；用户可见 precision/status 正确 |
+| ResolutionSymbols | dependency/lazy resolution 触发路径 | 只写 resolution symbols/imports/scopes；不会破坏已有 manifest/structural 层；stale hash 行为正确 |
+| Structural | `atlas index` 默认路径、shared filesync pipeline、`atlas sync` 默认路径、`LazyStructuralService` | symbols/scopes/references/callsites 写入；resolution/graph build 正确；manifest -> structural 升级正确 |
+| LazyDataflow | high-level `Engine::trace_variable`、`LazyDataflowService::ensure_for_position`、`ensure_for_function`、prebuilt full-index cache hit | unit dataflow/CFG 写入或复用正确；callsite/data-node joins 正确；partial/pending diagnostics 正确 |
+| Full | `atlas index --analysis full`、shared pipeline Full、`atlas sync --analysis full` | structural + dataflow + CFG + summaries 全链路持久化；file/unit extraction_state 和 capability mask 不欠报、不误报 |
+| Raw analysis consumers | `RawTraceEngine`、analysis crate direct tests | 明确说明它们是否负责触发 lazy；若不触发，测试必须先准备所需 DB facts |
+
+测试要求：
+- 同一修复如果影响 shared pipeline 和 CLI 自有 pipeline，必须覆盖两者。
+- 同一修复如果影响 file-level state 和 unit-level state，必须覆盖两者。
+- 同一修复如果影响 lazy 和 non-lazy，必须至少有一个 lazy 回归测试和一个 full/structural 回归测试。
+- capability/status/precision 的测试必须验证数据库状态和用户可见输出，不能只检查内存对象。
+- 当某个路径确认不受影响时，PR 或 review 里必须写明理由。
 
 ## 2. 测试分层
 

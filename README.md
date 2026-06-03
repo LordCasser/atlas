@@ -329,7 +329,8 @@ Conventions:
 2. Add or update fixtures when changing extraction, resolution, graph, or trace behavior.
 3. Update [`docs/trace-contract.md`](docs/trace-contract.md) and tests when trace response fields or diagnostics change.
 4. Update [`docs/architecture.md`](docs/architecture.md) when implemented module boundaries, schema, CLI, MCP, or analysis behavior changes.
-5. Keep release-facing documentation in `docs/`; delete obsolete content rather than accumulating stale docs.
+5. When changing analysis levels, extraction modes, lazy behavior, capability masks, status, or precision, verify every affected entry path: CLI `index`, shared filesync pipeline, `sync`, lazy structural, lazy dataflow, high-level `Engine`, and raw analysis consumers. See [`docs/testing.md`](docs/testing.md).
+6. Keep release-facing documentation in `docs/`; delete obsolete content rather than accumulating stale docs.
 
 ## Known limitations
 

@@ -1019,6 +1019,7 @@ dependencies = [
  "blake3",
  "db",
  "extraction",
+ "tracing",
  "types",
  "workspace",
 ]

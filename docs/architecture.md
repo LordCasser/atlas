@@ -9,6 +9,7 @@
 3. SQLite 是持久化源（`.atlas/atlas.db`）；内存图只作为查询加速和分析工作集。
 4. MCP 是一等入口；CLI、MCP、context 输出都必须可限制大小。
 5. 所有启发式语义结果必须可解释，不能把低置信度结果伪装成精确结果。
+6. 分析等级相关改动必须验证完整入口矩阵：CLI 自有管线、shared filesync pipeline、sync、lazy structural、lazy dataflow、高层 Engine 和 raw analysis consumer。任何模式或 capability/status/precision 变化都不能只验证单一路径。
 
 ## 2. 模块边界与依赖方向
 
@@ -243,6 +244,13 @@ Source files
 ### 7.1 Lazy Dataflow
 
 analysis 层按需加载 dataflow facts（而非全量预加载），通过 `LazyWindow` 控制分析范围。结构性 lazy 提取 budget-capped (18s/30 files)；后台 preparse 使用更宽预算 (60s/100 files)。`ExtractionMode::LazyDataflow` 支持增量按需抽取。
+
+等级路径约束：
+- `Manifest`、`ResolutionSymbols`、`Structural`、`LazyDataflow`、`Full` 是 extraction mode；`DataflowBasic/DataflowFull` 是语言 capability；`PrecisionTier` 是 lazy 结果质量。三者含义不同，禁止混用。
+- `atlas index` CLI、`filesync::run_index_pipeline`、`atlas sync`、`LazyStructuralService`、`LazyDataflowService` 和 `analysis::TraceEngine` 是不同入口。修改任一等级行为时，必须确认这些入口是否受影响。
+- 高层 `Engine::trace_variable` 负责触发 lazy dataflow；raw `analysis::TraceEngine` 只消费已存在 facts。用户入口应优先走高层 Engine，除非明确只需要底层已持久化数据。
+- `Full` 必须在 facts、summary、extraction_state、capability mask 和用户可见 status 上都表现为完整分析；不能只在 facts 表中写入 dataflow/CFG。
+- lazy 路径必须复用或严格对齐 structural facts，尤其是 callsite、symbol、scope、content_hash 和 capability mask；不得重建一套会与 structural DB 状态漂移的事实解释。
 
 提取层能力集中通过 `extraction_state.capability_mask` 表达，不把 precision 字段扩散到每个 symbol/reference/edge：
 
