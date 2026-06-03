@@ -36,6 +36,18 @@ All notable changes to Atlas will be documented in this file.
 - `trace(kind="callers\|forward")` `symbol`/`from`/`to` parameters auto-detect hex IDs vs qualified names
 - `project(action="status")` always includes language capabilities (no `verbose` gate)
 
+### Branch diff architecture
+
+- `branch_diff` now documents the semantic analysis path as the default
+  (`semantic=true`) for MCP callers.
+- Semantic branch diff compares `EffectComposition` data instead of only legacy
+  single-effect CFG annotations.
+- Added structured `BranchDiffIssue` output internally, including asymmetry kind,
+  severity, confidence, true/false branch summaries, and evidence-bearing field
+  effect details.
+- Preserved compatibility with legacy `BranchDiff` consumers by converting
+  structured semantic issues back into the existing public result shape.
+
 ### Release hardening
 
 - `cargo check --workspace --all-features`, `cargo test --workspace --all-features`,
