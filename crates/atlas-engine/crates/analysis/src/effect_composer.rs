@@ -269,8 +269,11 @@ pub fn compose_effects(
         }
     }
 
-    // Step 3: Run scope-exit post-pass (implicit Drop for Rust, Python with, no-op for other langs)
-    run_scope_exit_pass(&mut node_effects, cfg);
+    // Step 3: Run scope-exit post-pass (implicit Drop for Rust, Python with, etc.)
+    // Only for languages with deterministic implicit scope cleanup.
+    if contract.supports_implicit_scope_cleanup() {
+        run_scope_exit_pass(&mut node_effects, cfg);
+    }
 
     // Step 4: Build TransferGraph
     let transfer_graph = build_transfer_graph(&node_effects, cfg);

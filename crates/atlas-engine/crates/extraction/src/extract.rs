@@ -412,8 +412,10 @@ pub fn extract_file_with_mode_cancellable(
     let (cfg_nodes, cfg_edges) = if mode.produces_cfg()
         && frontend
             .capability
-            .supported_features
-            .contains(&"cfg".to_string())
+            .features
+            .as_ref()
+            .map(|f| f.cfg.is_supported())
+            .unwrap_or(false)
     {
         let cfg_result =
             super::cfg_builder::build_cfg_for_functions(language, root, &symbols, source_bytes)

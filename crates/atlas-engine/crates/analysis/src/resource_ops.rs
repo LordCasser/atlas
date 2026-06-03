@@ -82,6 +82,10 @@ pub struct ResourceOpConfig {
     pub consumers: Vec<ResourceOpPattern>,
     /// Patterns for resource escape (goroutine, thread, global, etc.)
     pub escapes: Vec<ResourceOpPattern>,
+    /// Whether this language has deterministic implicit scope cleanup
+    /// (Rust Drop, Python __del__, C++ destructors, Java try-with-resources,
+    /// C# using/IDisposable).  When true, ScopeExitAnalyzer is enabled.
+    pub implicit_scope_cleanup: bool,
 }
 
 impl ResourceOpConfig {
@@ -137,6 +141,7 @@ impl ResourceOpConfig {
             producers,
             consumers,
             escapes: vec![],
+            implicit_scope_cleanup: true, // C/C++ destructors
         }
     }
 
@@ -188,6 +193,7 @@ impl ResourceOpConfig {
             producers,
             consumers,
             escapes: vec![],
+            implicit_scope_cleanup: false, // GC (TS/JS)
         }
     }
 
@@ -219,6 +225,7 @@ impl ResourceOpConfig {
             producers,
             consumers,
             escapes: vec![],
+            implicit_scope_cleanup: true, // Python __del__, with statement
         }
     }
 
@@ -250,6 +257,7 @@ impl ResourceOpConfig {
             producers,
             consumers,
             escapes: vec![],
+            implicit_scope_cleanup: true, // Java try-with-resources
         }
     }
 
@@ -266,7 +274,7 @@ impl ResourceOpConfig {
         ];
         let consumers = vec![ResourceOpPattern::new(
             ResourceOpKind::Consume,
-            Suffix(".Close()".into()),
+            Suffix(".Close".into()),
             0,
         )];
         // Go escape is handled by CallContext::GoGoroutine, not by explicit patterns
@@ -275,6 +283,7 @@ impl ResourceOpConfig {
             producers,
             consumers,
             escapes: vec![],
+            implicit_scope_cleanup: false, // GC, no deterministic finalization
         }
     }
 
@@ -310,6 +319,7 @@ impl ResourceOpConfig {
             producers,
             consumers,
             escapes,
+            implicit_scope_cleanup: true, // Rust Drop
         }
     }
 
@@ -334,6 +344,7 @@ impl ResourceOpConfig {
             producers,
             consumers,
             escapes: vec![],
+            implicit_scope_cleanup: true, // C# using/IDisposable
         }
     }
 
@@ -358,6 +369,7 @@ impl ResourceOpConfig {
             producers,
             consumers,
             escapes: vec![],
+            implicit_scope_cleanup: false, // GC, no CFG
         }
     }
 
@@ -384,6 +396,7 @@ impl ResourceOpConfig {
             producers,
             consumers,
             escapes: vec![],
+            implicit_scope_cleanup: false, // GC, no CFG
         }
     }
 
@@ -407,6 +420,7 @@ impl ResourceOpConfig {
             producers,
             consumers,
             escapes: vec![],
+            implicit_scope_cleanup: false, // GC
         }
     }
 
@@ -417,6 +431,7 @@ impl ResourceOpConfig {
             producers: Vec::new(),
             consumers: Vec::new(),
             escapes: vec![],
+            implicit_scope_cleanup: false,
         }
     }
 
@@ -515,6 +530,10 @@ impl OwnershipContract for ResourceOpConfig {
             }
         }
     }
+
+    fn supports_implicit_scope_cleanup(&self) -> bool {
+        self.implicit_scope_cleanup
+    }
 }
 
 /// 从 callee 名称推断消费/释放的语法风格。
@@ -603,6 +622,32 @@ mod tests {
 
     // ── Go tests ───────────────────────────────────────────────────────────
 
+    /// Regression: Go normalizer previously stored only the terminal
+    /// `field_identifier` text (e.g. "Open" instead of "os.Open"), causing
+    /// CalleeMatcher rules to never match.
+    #[cfg(feature = "go")]
+    #[test]
+    fn test_go_names_match_qualified_calls_not_terminals() {
+        let config = ResourceOpConfig::default_for(Language::Go);
+        // Qualified names from selector_expression → must match
+        assert_eq!(
+            config.classify_return("os.Open"),
+            Some(ReturnContract::NewOwned)
+        );
+        assert_eq!(
+            config.classify_return("os.Create"),
+            Some(ReturnContract::NewOwned)
+        );
+        // Terminal-only names (old buggy output) → must NOT match
+        assert_eq!(config.classify_return("Open"), None);
+        assert_eq!(config.classify_return("Create"), None);
+        // Method-style consumption → must match
+        assert!(config.classify_consumption("f.Close").is_some());
+        assert!(config.classify_consumption("conn.Close").is_some());
+        // Terminal-only consumption → must NOT match
+        assert!(config.classify_consumption("Close").is_none());
+    }
+
     #[cfg(feature = "go")]
     #[test]
     fn test_go_config_produces() {
@@ -613,26 +658,35 @@ mod tests {
         assert!(config.is_producer("sql.Open"));
         assert!(config.is_producer("net.Dial"));
         assert!(config.is_producer("os.OpenFile"));
-        // Suffix ".Close()" consumers should NOT be producers
-        assert!(!config.is_producer("file.Close()"));
+        // Suffix ".Close" consumers should NOT be producers
+        assert!(!config.is_producer("f.Close"));
+        assert!(!config.is_producer("conn.Close"));
         // Unrelated names should not match
         assert!(!config.is_producer("close"));
         assert!(!config.is_producer("free"));
+        // Verify Exact("os.Open") actually fires via classify_return
+        assert_eq!(
+            config.classify_return("os.Open"),
+            Some(ReturnContract::NewOwned)
+        );
     }
 
     #[cfg(feature = "go")]
     #[test]
     fn test_go_config_consumes() {
         let config = ResourceOpConfig::default_for(Language::Go);
-        // Suffix ".Close()" should match method-style and defer-style closes
-        assert_eq!(config.is_consumer("file.Close()"), Some(0));
-        assert_eq!(config.is_consumer("conn.Close()"), Some(0));
-        assert_eq!(config.is_consumer("resp.Body.Close()"), Some(0));
-        // Verify Close is NOT detected without parentheses suffix
+        // Suffix ".Close" should match method-style closes (no parens — the
+        // selector_expression text for f.Close() is "f.Close")
+        assert_eq!(config.is_consumer("f.Close"), Some(0));
+        assert_eq!(config.is_consumer("conn.Close"), Some(0));
+        assert_eq!(config.is_consumer("resp.Body.Close"), Some(0));
+        // Verify Close is NOT detected without dot prefix
         assert_eq!(config.is_consumer("Close"), None);
         // Producers should NOT be consumers
         assert_eq!(config.is_consumer("os.Open"), None);
         assert_eq!(config.is_consumer("sql.Open"), None);
+        // Verify Suffix(".Close") fires via classify_consumption
+        assert!(config.classify_consumption("f.Close").is_some());
     }
 
     #[cfg(feature = "go")]
@@ -648,9 +702,9 @@ mod tests {
             config.classify_return("sql.Open"),
             Some(ReturnContract::NewOwned)
         );
-        assert_eq!(config.classify_return("file.Close()"), None);
+        assert_eq!(config.classify_return("f.Close"), None);
         // classify_consumption uses consumer patterns
-        let cc = config.classify_consumption("file.Close()");
+        let cc = config.classify_consumption("f.Close");
         assert!(cc.is_some());
         let contract = cc.unwrap();
         assert_eq!(contract.style, ConsumptionStyle::MethodCall);
@@ -821,6 +875,33 @@ mod tests {
 
     // ── TypeScript / JavaScript tests ───────────────────────────────────────
 
+    /// Regression: TS normalizer previously stored only terminal identifier
+    /// text ("close" instead of "conn.close"), causing Suffix(".close") to
+    /// never match.
+    #[cfg(feature = "typescript")]
+    #[test]
+    fn test_ts_names_match_member_expressions_not_terminals() {
+        let config = ResourceOpConfig::default_for(Language::TypeScript);
+        // Member-expression text from extractor → must match consumer suffixes
+        assert!(config.classify_consumption("conn.close").is_some());
+        assert!(config.classify_consumption("file.dispose").is_some());
+        assert!(config.classify_consumption("obj.destroy").is_some());
+        assert!(config.classify_consumption("res.release").is_some());
+        // Terminal-only names (old buggy output) → must NOT match
+        assert!(config.classify_consumption("close").is_none());
+        assert!(config.classify_consumption("dispose").is_none());
+        assert!(config.classify_consumption("destroy").is_none());
+        // Exact-match producers still work
+        assert_eq!(
+            config.classify_return("createReadStream"),
+            Some(ReturnContract::NewOwned)
+        );
+        assert_eq!(
+            config.classify_return("createServer"),
+            Some(ReturnContract::NewOwned)
+        );
+    }
+
     #[cfg(feature = "typescript")]
     #[test]
     fn test_ts_config_produces() {
@@ -976,12 +1057,95 @@ mod tests {
         assert!(config.classify_consumption("openConnection").is_none());
     }
 
-    // ── Part C: Wildcard matcher test ──────────────────────────────────────
+    // ── Meta-test: every registered pattern self-matches ──────────────────
 
+    /// Regression: rules were written against expected callee names but
+    /// extractors may have produced different names.  This test verifies
+    /// that every CalleeMatcher in each language's default config actually
+    /// matches the name it's registered under.
+    ///
+    /// For Exact/Prefix/Suffix/Contains matchers, the matcher's own string
+    /// is used as the test input — the match is reflexive.  Wildcard is
+    /// skipped (no self-string to test).
+    #[cfg(all(
+        feature = "go",
+        feature = "typescript",
+        feature = "python",
+        feature = "rust",
+        feature = "java",
+        feature = "csharp",
+        feature = "php",
+        feature = "ruby",
+        feature = "kotlin",
+    ))]
+    #[test]
+    fn test_all_registered_patterns_self_match() {
+        let langs = [
+            Language::Go,
+            Language::TypeScript,
+            Language::Python,
+            Language::Rust,
+            Language::Java,
+            Language::CSharp,
+            Language::Php,
+            Language::Ruby,
+            Language::Kotlin,
+        ];
 
-    // ── C# tests ───────────────────────────────────────────────────────────
+        for &lang in &langs {
+            let config = ResourceOpConfig::default_for(lang);
+            let lang_name = lang.as_str();
 
-    #[cfg(feature = "csharp")]
+            // Test producers
+            for pattern in &config.producers {
+                let test_name = self_pattern_test_name(&pattern.matcher);
+                if test_name.is_empty() {
+                    continue; // skip Wildcard
+                }
+                let result = config.classify_return(&test_name);
+                assert!(
+                    result.is_some(),
+                    "{} producer {:?} (registered as {:?}) failed to match its own name '{}' via classify_return",
+                    lang_name, pattern.kind, pattern.matcher, test_name
+                );
+                // Must be NewOwned or MaybeOwned for producers
+                match result {
+                    Some(ReturnContract::NewOwned | ReturnContract::MaybeOwned) => {}
+                    _ => panic!(
+                        "{} producer {:?} returned unexpected contract {:?} for '{}'",
+                        lang_name, pattern.matcher, result, test_name
+                    ),
+                }
+            }
+
+            // Test consumers
+            for pattern in &config.consumers {
+                let test_name = self_pattern_test_name(&pattern.matcher);
+                if test_name.is_empty() {
+                    continue;
+                }
+                let result = config.classify_consumption(&test_name);
+                assert!(
+                    result.is_some(),
+                    "{} consumer {:?} (registered as {:?}) failed to match its own name '{}' via classify_consumption",
+                    lang_name, pattern.kind, pattern.matcher, test_name
+                );
+            }
+        }
+    }
+
+    /// Extract the self-match test name from a CalleeMatcher variant.
+    /// Returns empty string for Wildcard (no self-name to test).
+    fn self_pattern_test_name(matcher: &CalleeMatcher) -> String {
+        match matcher {
+            CalleeMatcher::Exact(s)
+            | CalleeMatcher::Prefix(s)
+            | CalleeMatcher::Suffix(s)
+            | CalleeMatcher::Contains(s) => s.clone(),
+            CalleeMatcher::Wildcard => String::new(),
+        }
+    }
+
     #[test]
     fn test_csharp_config_produces() {
         let config = ResourceOpConfig::default_for(Language::CSharp);

@@ -154,6 +154,16 @@ pub trait OwnershipContract: Send + Sync {
     fn classify_escape(&self, _callee: &str, _context: CallContext) -> Option<EscapeTarget> {
         None
     }
+
+    /// Whether this language has deterministic implicit scope cleanup
+    /// (e.g., Rust Drop, Python __del__, C++ destructors, Java try-with-resources,
+    /// C# using/IDisposable).
+    /// When true, ScopeExitAnalyzer emits Free at scope exit for
+    /// unmatched Allocs. When false, unmatched Allocs are left as-is
+    /// (appropriate for GC languages without deterministic finalization).
+    fn supports_implicit_scope_cleanup(&self) -> bool {
+        false
+    }
 }
 
 // ==================== ReturnContract ====================

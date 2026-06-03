@@ -1677,4 +1677,38 @@ mod tests {
             FeatureSupport::Unsupported { .. } => true,
         }
     }
+
+    /// Regression: `extract.rs` previously gated CFG on the legacy
+    /// `supported_features.contains("cfg")` string list instead of
+    /// `FeatureMatrix.cfg.is_supported()`.  Cangjie had CFG in the matrix
+    /// but NOT in the string list, causing a runtime mismatch.
+    ///
+    /// This test iterates all compiled language profiles and asserts that
+    /// `FeatureMatrix.cfg.is_supported()` and the presence of `"cfg"` in
+    /// `supported_features` are always consistent.
+    #[test]
+    fn test_cfg_feature_matrix_consistent_with_supported_features() {
+        let profiles = LanguageCapabilityProfile::all_compiled();
+        assert!(
+            !profiles.is_empty(),
+            "need at least one compiled language profile"
+        );
+
+        for profile in &profiles {
+            let matrix = profile
+                .features
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} has no FeatureMatrix", profile.language));
+
+            let matrix_says_cfg = matrix.cfg.is_supported();
+            let string_list_says_cfg = profile.supported_features.contains(&"cfg".to_string());
+
+            assert_eq!(
+                matrix_says_cfg, string_list_says_cfg,
+                "{}: FeatureMatrix.cfg.is_supported()={} but supported_features contains 'cfg'={}. \
+                 The two authorities must agree.",
+                profile.language, matrix_says_cfg, string_list_says_cfg,
+            );
+        }
+    }
 }

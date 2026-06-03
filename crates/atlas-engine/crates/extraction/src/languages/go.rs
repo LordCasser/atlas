@@ -670,32 +670,40 @@ fn normalize_go_dataflow_builder(
             };
             (Some(dn), None)
         }
-        "df.call_target" => node_text(node, source)
-            .map(|name| {
-                let access_path = name.clone();
-                let callsite_id = find_call_expression_go(node).map(|ce| {
-                    types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
-                });
-                let node_id = DataNodeId::generate(
-                    &file_id,
-                    None::<&SymbolId>,
-                    "call_target",
-                    Some(&name),
-                    Some(&access_path),
-                    range.start_byte,
-                );
-                let dn = DataNode::call_target(
-                    node_id,
-                    file_id,
-                    None,
-                    callsite_id,
-                    &name,
-                    &access_path,
-                    range,
-                );
-                (Some(dn), None)
-            })
-            .unwrap_or((None, None)),
+        "df.call_target" => {
+            // The captured node is field_identifier (e.g., "Open") inside a
+            // selector_expression (e.g., "os.Open").  Walk up to the parent
+            // selector_expression to get the full qualified callee text.
+            // For unqualified calls the node is a plain identifier (e.g., "Println").
+            let terminal_text = node_text(node, source).unwrap_or_default();
+            let name = node
+                .parent()
+                .filter(|p| p.kind() == "selector_expression")
+                .and_then(|p| node_text(p, source))
+                .unwrap_or_else(|| terminal_text.clone());
+            let access_path = name.clone();
+            let callsite_id = find_call_expression_go(node).map(|ce| {
+                types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+            });
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "call_target",
+                Some(&name),
+                Some(&access_path),
+                range.start_byte,
+            );
+            let dn = DataNode::call_target(
+                node_id,
+                file_id,
+                None,
+                callsite_id,
+                &name,
+                &access_path,
+                range,
+            );
+            (Some(dn), None)
+        }
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
             let callsite_id = find_call_expression_go(node)

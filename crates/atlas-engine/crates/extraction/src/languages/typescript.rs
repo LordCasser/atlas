@@ -456,12 +456,18 @@ pub(crate) fn normalize_ts_dataflow_builder(
             (Some(dn), None)
         }
         "df.call_target" => node_text(node, source)
-            .map(|name| {
+            .map(|terminal_name| {
+                // For member_expression captures (e.g., "conn.close"), walk up to the
+                // full member_expression to get the qualified callee text ("conn.close").
+                // For plain identifier captures (e.g., "open"), use the terminal text.
                 let access_path = node
                     .parent()
                     .filter(|p| p.kind() == "member_expression")
                     .and_then(|p| node_text(p, source))
-                    .unwrap_or_else(|| name.clone());
+                    .unwrap_or_else(|| terminal_name.clone());
+                // Use the full qualified text as `name` so Suffix rules (".close")
+                // match against "conn.close" instead of just "close".
+                let name = access_path.clone();
                 let callsite_id = find_call_expression(node).map(|ce| {
                     types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
                 });

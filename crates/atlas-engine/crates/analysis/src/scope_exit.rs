@@ -60,11 +60,7 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
         }
     }
 
-    if allocs.is_empty() {
-        return;
-    }
-
-    // 2. Find Exit node (for non-PythonWith allocs)
+    // 2. Find Exit node (for non-context-managed allocs)
     let exit_node = cfg.nodes.values().find(|n| n.kind == CfgNodeKind::Exit);
     let Some(exit) = exit_node else {
         return;
@@ -792,5 +788,92 @@ mod tests {
                 "Exit node should NOT have the scope/block-exit Free when BlockExit was reached"
             );
         }
+    }
+
+    // ── Language gating tests ───────────────────────────────────────────────
+
+    /// Regression: ScopeExitAnalyzer previously emitted Free at Exit for ALL
+    /// languages regardless of whether they have deterministic scope cleanup.
+    /// The fix gates `run_scope_exit_pass` behind
+    /// `OwnershipContract::supports_implicit_scope_cleanup()` in
+    /// `compose_effects`.  This test verifies that GC languages correctly
+    /// declare `implicit_scope_cleanup=false` and that `run_scope_exit_pass`
+    /// still works for managed languages (Rust, C, Python, etc.).
+    #[test]
+    fn test_scope_exit_not_applied_for_gc_languages() {
+        use crate::resource_ops::ResourceOpConfig;
+        use types::effects::OwnershipContract;
+        use types::enums::Language;
+
+        // GC languages: no deterministic finalization
+        let go = ResourceOpConfig::default_for(Language::Go);
+        assert!(
+            !go.supports_implicit_scope_cleanup(),
+            "Go should NOT support implicit scope cleanup (GC, no deterministic finalization)"
+        );
+
+        let ts = ResourceOpConfig::default_for(Language::TypeScript);
+        assert!(
+            !ts.supports_implicit_scope_cleanup(),
+            "TypeScript should NOT support implicit scope cleanup (GC)"
+        );
+
+        // Managed languages: deterministic scope cleanup
+        let rust = ResourceOpConfig::default_for(Language::Rust);
+        assert!(
+            rust.supports_implicit_scope_cleanup(),
+            "Rust should support implicit scope cleanup (Drop)"
+        );
+
+        let c = ResourceOpConfig::default_for(Language::C);
+        assert!(
+            c.supports_implicit_scope_cleanup(),
+            "C should support implicit scope cleanup"
+        );
+
+        // Demonstrate that run_scope_exit_pass itself works fine —
+        // the gating happens at the compose_effects level, not here.
+        let sym_id = make_sym_id();
+        let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
+        let cfg = make_cfg_with_alloc_node(
+            &sym_id,
+            &mut node_id,
+            CfgNodeKind::Statement,
+            false,
+            false,
+        );
+
+        let mut effects: HashMap<CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
+        let place = PlaceRef::Local {
+            name: "x".to_string(),
+        };
+        effects.insert(
+            node_id,
+            vec![make_effect(
+                &node_id,
+                0,
+                SemanticEffectKind::Alloc {
+                    target: place.clone(),
+                    callee: "open".to_string(),
+                },
+                0.85,
+            )],
+        );
+
+        run_scope_exit_pass(&mut effects, &cfg);
+
+        // run_scope_exit_pass always emits Free at Exit (it doesn't know
+        // about the contract).  The contract's supports_implicit_scope_cleanup()
+        // is what gates the call in compose_effects.
+        let exit_node = cfg
+            .nodes
+            .values()
+            .find(|n| n.kind == CfgNodeKind::Exit)
+            .unwrap();
+        let exit_effects = effects.get(&exit_node.id);
+        assert!(
+            exit_effects.is_some(),
+            "run_scope_exit_pass itself should emit Free at Exit (gating is in compose_effects)"
+        );
     }
 }
