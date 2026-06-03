@@ -365,8 +365,8 @@ impl LanguageCapabilityProfile {
 
     /// All profiles for the languages whose tree-sitter grammars are compiled in.
     pub fn all_compiled() -> Vec<Self> {
-        use Language::*;
-        let mut profiles = Vec::with_capacity(8);
+        
+        let profiles = Vec::with_capacity(8);
 
         #[cfg(feature = "typescript")]
         profiles.push(Self::for_language(TypeScript));

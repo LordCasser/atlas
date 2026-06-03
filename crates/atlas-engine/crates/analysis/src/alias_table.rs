@@ -25,7 +25,6 @@ use std::collections::{HashMap, HashSet};
 
 use types::dataflow::DataFlowEdge;
 use types::enums::DataFlowKind;
-use types::ids::DataNodeId;
 
 /// Canonical target of a local alias.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +54,7 @@ impl AliasTable {
     /// Consumes the `Assign` (local ← local) and `FieldLoad`
     /// (local ← field) edges.
     pub fn build(edges: &[DataFlowEdge]) -> Self {
-        let mut raw: HashMap<String, HashSet<AliasTarget>> = HashMap::new();
+        let raw: HashMap<String, HashSet<AliasTarget>> = HashMap::new();
 
         for edge in edges {
             match edge.kind {
