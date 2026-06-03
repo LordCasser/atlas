@@ -549,7 +549,7 @@ discover files
 - Graph 惰性初始化：首次 graph-backed tool 调用时构建 snapshot。
 - 后续请求通过 `maybe_refresh_graph()`（5 秒缓存签名检查）检测外部索引变化。
 - 当 handler 内部触发 lazy structural 并写入新 facts（如 `symbol(view="context")` 的 Tier 3 解析），handler 显式调用 `force_refresh_graph()`（跳过缓存冷却），确保 graph 包含刚解析的边。
-- `project(action="open")` 不索引，只激活项目；调用后需单独 `index`。
+- `project(action="open")` 不索引，只激活项目；默认 `storage="auto"`，通过只读打开候选持久化库并复用 `project(status)` 的 index mode 判断，只有状态显示存在可复用索引时才复用 `.atlas/atlas.db`，否则使用内存库。没有持久化索引时调用后需单独 `index`。
 - `index` handler 调用共享 `IndexPipeline`，MCP 入口仍选择 manifest-only 策略以保护交互延迟。
 - `search` 的 `scope` 对 manifest-only 索引为强制参数；存在 manual full index 时为可选。
 - `background: true` 支持：`search`, `index`, `project(action="open")`。
