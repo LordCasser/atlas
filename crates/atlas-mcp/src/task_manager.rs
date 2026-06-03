@@ -6,7 +6,7 @@
 //! not support `notify_progress`.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 /// Completed/failed task retention window.
@@ -63,10 +63,14 @@ impl TaskManager {
         }
     }
 
+    fn lock_inner(&self) -> MutexGuard<'_, TaskManagerInner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Register a new running task with an automatically generated `task-xxxxx`
     /// id and return its task_id.
     pub fn create_task(&self, tool_name: &str, method: &str) -> String {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         prune_old_locked(&mut inner, Duration::from_secs(CLEANUP_AFTER_SECS));
 
         let task_id = next_auto_task_id(&mut inner);
@@ -81,7 +85,7 @@ impl TaskManager {
     /// are reserved for stable task domains such as `analysis:{short_hash}`;
     /// ordinary background tools should use [`Self::create_task`].
     pub fn create_task_with_id(&self, task_id: &str, tool_name: &str, method: &str) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         prune_old_locked(&mut inner, Duration::from_secs(CLEANUP_AFTER_SECS));
 
         if inner.tasks.contains_key(task_id) {
@@ -104,10 +108,10 @@ impl TaskManager {
         }
         let percent = percent.clamp(0.0, 100.0);
 
-        if let Some(info) = self.inner.lock().unwrap().tasks.get_mut(task_id) {
+        if let Some(info) = self.lock_inner().tasks.get_mut(task_id) {
             let should_update = match info.progress {
                 None => true,
-                Some(prev) if prev == 0.0 => true,
+                Some(0.0) => true,
                 Some(_) if percent >= 100.0 => true,
                 Some(prev) => (percent - prev).abs() >= PROGRESS_UPDATE_THRESHOLD,
             };
@@ -119,7 +123,7 @@ impl TaskManager {
     }
 
     pub fn complete_task(&self, task_id: &str, result: serde_json::Value) {
-        if let Some(info) = self.inner.lock().unwrap().tasks.get_mut(task_id) {
+        if let Some(info) = self.lock_inner().tasks.get_mut(task_id) {
             info.status = TaskStatus::Completed;
             info.progress = Some(100.0);
             info.result = Some(result);
@@ -128,7 +132,7 @@ impl TaskManager {
     }
 
     pub fn fail_task(&self, task_id: &str, error: &str) {
-        if let Some(info) = self.inner.lock().unwrap().tasks.get_mut(task_id) {
+        if let Some(info) = self.lock_inner().tasks.get_mut(task_id) {
             info.status = TaskStatus::Failed;
             info.error = Some(error.to_string());
             info.completed_at = Some(Instant::now());
@@ -136,7 +140,7 @@ impl TaskManager {
     }
 
     pub fn get_task(&self, task_id: &str) -> Option<TaskInfo> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         prune_old_locked(&mut inner, Duration::from_secs(CLEANUP_AFTER_SECS));
         inner.tasks.get(task_id).cloned()
     }
@@ -150,7 +154,7 @@ impl TaskManager {
     ///
     /// Running tasks are always retained.
     pub fn prune_old_tasks(&self, max_age: Duration) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         prune_old_locked(&mut inner, max_age);
     }
 }
