@@ -110,17 +110,27 @@ impl ToolRouter {
                     .get("depth")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(1);
-                let edge_kinds_is_custom = snapshot
+                // Distinguish "not provided" (→ default) from explicit "[]" (→ wildcard).
+                let raw_kinds = snapshot
                     .tool_args
                     .get("edge_kinds")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
+                    .and_then(|v| v.as_array());
+                let (is_wildcard, edge_kinds_is_custom): (bool, bool) = match raw_kinds {
+                    Some(arr) => {
                         let kinds: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
-                        !kinds.is_empty() && kinds != ["calls", "instantiates", "implements"]
-                    })
-                    .unwrap_or(false);
-                // Custom edge_kinds, multi-hop, or bidirectional → callgraph (P0-2 fix)
-                if edge_kinds_is_custom || depth > 1 || direction == "both" || direction.is_empty()
+                        let wildcard = kinds.is_empty();
+                        let custom = !wildcard && kinds != ["calls", "instantiates", "implements"];
+                        (wildcard, custom)
+                    }
+                    None => (false, false),
+                };
+                // Custom edge_kinds, wildcard (explicit []), multi-hop, or bidirectional
+                // → callgraph (handles all properly)
+                if is_wildcard
+                    || edge_kinds_is_custom
+                    || depth > 1
+                    || direction == "both"
+                    || direction.is_empty()
                 {
                     // handle_callgraph internally defaults depth to 3, but our
                     // schema default is 1. Inject depth when not user-specified.

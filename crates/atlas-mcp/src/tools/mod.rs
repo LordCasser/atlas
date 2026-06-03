@@ -1493,22 +1493,25 @@ impl ToolRouter {
         let direction = get_str(args, "direction");
         let depth = get_u64(args, "depth").unwrap_or(1);
 
-        // Check if edge_kinds is non-default
-        let edge_kinds: Vec<&str> = args
-            .get("edge_kinds")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
-            .unwrap_or_default();
-        // Treat empty edge_kinds as "all edges" (wildcard) per schema contract.
-        // Only the explicit default set triggers the simple caller/callee fast path.
+        // Distinguish "not provided" (→ default) from explicit "[]" (→ wildcard).
+        // JSON preserves this: missing key → None, present but empty array → Some([]).
+        let raw_kinds = args.get("edge_kinds").and_then(|v| v.as_array());
+        let (is_wildcard, edge_kinds): (bool, Vec<&str>) = match raw_kinds {
+            Some(arr) => {
+                let kinds: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+                (kinds.is_empty(), kinds)
+            }
+            // Not provided → use documented default
+            None => (false, vec!["calls", "instantiates", "implements"]),
+        };
         let is_default_edges =
-            !edge_kinds.is_empty() && edge_kinds == ["calls", "instantiates", "implements"];
-        let is_custom_edges = !edge_kinds.is_empty() && !is_default_edges;
+            !is_wildcard && edge_kinds == ["calls", "instantiates", "implements"];
+        let is_custom_edges = !is_wildcard && !is_default_edges;
 
-        // Custom edge_kinds, wildcard (empty), multi-hop, or bidirectional
+        // Custom edge_kinds, wildcard (explicit []), multi-hop, or bidirectional
         // → callgraph (handles all properly)
         if is_custom_edges
-            || edge_kinds.is_empty()
+            || is_wildcard
             || depth > 1
             || direction == "both"
             || direction.is_empty()

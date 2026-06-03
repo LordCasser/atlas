@@ -231,7 +231,7 @@ MCP 使用 JSON-RPC over stdio。V1 核心公开工具名使用无 `atlas_` 前�
 
 - project/index/status: `open_project`, `index`, `status`, `files`, `language_capabilities`
 - symbol/search: `search`, `symbol`, `usages`
-- graph: `neighbors`, `callers`, `callees`, `callgraph`, `impact`, `path`, `context`, `explore`
+- graph: `calls`, `impact`, `path`, `context`, `explore`
 - trace: `trace_point`, `trace_variable`, `trace_caller_path`, `trace_forward`
 - file dependencies: `dependencies`, `dependents`
 - background tasks: `task_status`, `wait_for_task`

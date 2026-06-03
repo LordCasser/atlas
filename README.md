@@ -194,7 +194,7 @@ enabled = true
 | --- | --- |
 | Project management | `open_project`, `index`, `status`, `jobs`, `files`, `language_capabilities` |
 | Symbol search/detail | `search`, `symbol`, `usages` |
-| Graph navigation | `neighbors`, `callers`, `callees`, `callgraph`, `path`, `explore`, `impact` |
+| Graph navigation | `calls`, `path`, `explore`, `impact` |
 | Context | `context` |
 | Trace | `trace_point`, `trace_variable`, `trace_caller_path`, `trace_forward` |
 | File dependencies | `dependencies`, `dependents` |
