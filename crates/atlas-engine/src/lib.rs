@@ -216,6 +216,34 @@ impl Engine {
         })
     }
 
+    /// Construct an Engine from an existing [`Arc<Store>`].
+    ///
+    /// Useful when the caller already holds an `Arc<Store>` (e.g., MCP server
+    /// creates its own store) and wants a high-level Engine wrapped around it.
+    /// When `project_root` is provided, trace results can include source code
+    /// snippets from the file system.
+    pub fn from_store(store: Arc<Store>, project_root: Option<&std::path::Path>) -> Self {
+        let lazy_service = lazy_crate::LazyDataflowService::new(
+            store.clone(),
+            project_root.map(|p| p.to_path_buf()),
+        );
+        let lazy_structural = LazyStructuralService::new(
+            store.clone(),
+            project_root.map(|p| p.to_path_buf()),
+        );
+        let trace = if let Some(root) = project_root {
+            analysis::trace::TraceEngine::new_with_root(store.clone(), root.to_path_buf())
+        } else {
+            analysis::trace::TraceEngine::new(store.clone())
+        };
+        Self {
+            store,
+            lazy_service,
+            lazy_structural,
+            trace,
+        }
+    }
+
     /// Access the underlying database store.
     pub fn store(&self) -> &Arc<Store> {
         &self.store
@@ -426,6 +454,19 @@ impl Engine {
         max_depth: usize,
     ) -> analysis::trace::TraceQueryResponse<types::caller_path::CallerChain> {
         self.trace.trace_callers(target_id, max_depth)
+    }
+
+    /// Trace forward from a source symbol to a target symbol.
+    ///
+    /// Answers "how does A reach B?" by walking forward through call edges.
+    /// Returns a [`types::caller_path::ForwardChain`] if a path exists.
+    pub fn trace_forward(
+        &self,
+        source_id: &SymbolId,
+        target_id: &SymbolId,
+        max_depth: usize,
+    ) -> analysis::trace::TraceQueryResponse<types::caller_path::ForwardChain> {
+        self.trace.trace_forward(source_id, target_id, max_depth)
     }
 }
 

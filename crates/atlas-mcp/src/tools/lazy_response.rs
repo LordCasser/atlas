@@ -266,19 +266,24 @@ impl LazyDiagnostics {
             .expect("from_structural always has a structural outcome")
     }
 
-    /// Create diagnostics from both structural and dataflow layers.
-    ///
-    /// Thin wrapper around [`from_layers`].
-    ///
-    /// Used when a single handler triggers both layers (e.g., `trace_variable`
-    /// which ensures structural files and dataflow units).
-    pub(crate) fn from_both(structural_outcome: Option<&LazyOutcome>, window: &LazyWindow) -> Self {
-        Self::from_layers(structural_outcome, Some(window), None)
-            .expect("from_both always has at least a dataflow window")
-    }
 }
 
 impl LazyLayerDiagnostics {
+    /// Build dataflow-layer diagnostics from Engine's [`LazySummary`].
+    /// Used when the Engine handles lazy dataflow internally (P2#14 refactoring)
+    /// and the MCP layer constructs combined diagnostics from structural +
+    /// Engine-returned dataflow summary.
+    pub(crate) fn from_lazy_summary(summary: &atlas_engine::LazySummary) -> Self {
+        Self {
+            triggered: summary.triggered,
+            files_built: summary.units_built,
+            files_cached: summary.units_cached,
+            files_pending: summary.units_pending,
+            pending_job_ids: summary.pending_job_ids.clone(),
+            budget_exceeded: summary.truncated,
+        }
+    }
+
     /// Approximate precision tier from layer diagnostics.
     fn precision_tier(&self) -> PrecisionTier {
         if self.files_built == 0 && self.files_cached == 0 {

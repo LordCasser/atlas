@@ -14,8 +14,9 @@ use anyhow::{Context, Result};
 use db::store_rows::UnitExtractionStateRecord;
 use db::{ClaimResult, Store};
 use extraction::{ExtractionMode, LanguageFrontend, create_frontend};
+use types::capability::LanguageCapabilityProfile;
 use types::enums::Language;
-use types::ids::{BindingId, CfgNodeId, DataNodeId, FileId};
+use types::ids::{BindingId, CallsiteId, CfgNodeId, DataNodeId, FileId};
 use types::lazy::{AnalysisUnit, LazyWindow};
 use types::structs::CapabilityMask;
 
@@ -156,14 +157,65 @@ impl LazyDataflowLoader {
                 };
             result.budget_exceeded |= payload.budget_exceeded;
 
+            // ── Callsite ID remap ───────────────────────────────────────
+            // LazyDataflow skips callsite extraction (mode.rs:86-89), so
+            // DataNodes keep provisional byte-based callsite_ids set during
+            // dataflow extraction.  Query the DB's structural callsites
+            // (already written during the structural index phase) and build
+            // a provisional→real map.
+            let cs_id_map: std::collections::HashMap<CallsiteId, CallsiteId> =
+                match store.find_callsites_by_file(&units[0].file_id) {
+                    Ok(callsites) => callsites,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to find callsites for lazy remap (file {:?}): {e:#}",
+                            units[0].file_id
+                        );
+                        Vec::new()
+                    }
+                }
+                .iter()
+                .map(|cs| {
+                    (
+                        CallsiteId::from_file_byte(&units[0].file_id, cs.range.start_byte),
+                        cs.id,
+                    )
+                })
+                .collect();
+
             // Step 4: Partition and write per uncached unit
-            let current_hash = store
+            let file_info = store
                 .get_file(&units[0].file_id)?
-                .map(|f| f.content_hash)
-                .unwrap_or_default();
+                .ok_or_else(|| {
+                    anyhow::anyhow!("file not found during lazy write: {:?}", units[0].file_id)
+                })?;
+            let current_hash = file_info.content_hash.clone();
+            let file_lang = file_info.language;
+
+            // Determine CFG capability from the language profile.
+            // DATAFLOW is always set: an empty result for an empty function is a
+            // successful outcome, not a missing capability.
+            let profile = LanguageCapabilityProfile::for_language(file_lang);
+            let cfg_supported = profile
+                .features
+                .as_ref()
+                .map(|f| f.cfg.is_supported())
+                .unwrap_or(false);
 
             for (unit, job_id) in &claimed {
-                let unit_payload = partition_payload_for_unit(&payload, unit);
+                let mut unit_payload = partition_payload_for_unit(&payload, unit);
+
+                // Remap provisional byte-based callsite_ids to real
+                // CallsiteIds so that downstream backfill and query
+                // joins (update_callsite_arg_data_nodes,
+                // find_data_nodes_by_callsite) operate on real IDs.
+                for dn in &mut unit_payload.data_nodes {
+                    if let Some(ref provisional) = dn.callsite_id {
+                        if let Some(real) = cs_id_map.get(provisional) {
+                            dn.callsite_id = Some(*real);
+                        }
+                    }
+                }
 
                 let write_result = (|| -> Result<()> {
                     store.replace_dataflow_for_unit(
@@ -183,6 +235,20 @@ impl LazyDataflowLoader {
                     } else {
                         "complete"
                     };
+
+                    // Build capability mask: base bits are always present.
+                    // DATAFLOW: set unconditionally (extraction completed — empty
+                    //   result for an empty function is a success).
+                    // CFG: only set if the language supports it AND actual CFG
+                    //   nodes were produced for this unit.
+                    let mut mask_bits = CapabilityMask::MANIFEST_BIT
+                        | CapabilityMask::STRUCTURAL_BIT
+                        | CapabilityMask::CALL_EDGES
+                        | CapabilityMask::DATAFLOW;
+                    if cfg_supported && !unit_payload.cfg_nodes.is_empty() {
+                        mask_bits |= CapabilityMask::CFG;
+                    }
+
                     store.upsert_unit_extraction_state(&UnitExtractionStateRecord {
                         file_id: unit.file_id,
                         unit_id: unit.unit_id,
@@ -192,13 +258,7 @@ impl LazyDataflowLoader {
                         node_count: Some(unit_payload.data_nodes.len() as i64),
                         edge_count: Some(unit_payload.dataflow_edges.len() as i64),
                         budget_exceeded: payload.budget_exceeded,
-                        capability_mask: CapabilityMask::from_bits(
-                            CapabilityMask::MANIFEST_BIT
-                                | CapabilityMask::STRUCTURAL_BIT
-                                | CapabilityMask::CALL_EDGES
-                                | CapabilityMask::CFG
-                                | CapabilityMask::DATAFLOW,
-                        ),
+                        capability_mask: CapabilityMask::from_bits(mask_bits),
                         built_at: String::new(),
                     })?;
                     Ok(())
@@ -243,10 +303,43 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
     {
         let prebuilt = store.count_data_nodes_for_unit(unit).unwrap_or(0);
         if prebuilt > 0 {
-            let current_hash = store
+            let file = store
                 .get_file(&unit.file_id)?
-                .map(|f| f.content_hash)
-                .unwrap_or_default();
+                .ok_or_else(|| {
+                    anyhow::anyhow!("file not found for prebuilt check: {:?}", unit.file_id)
+                })?;
+            let current_hash = file.content_hash;
+            let file_lang = file.language;
+
+            // CFG capability is gated by the language profile.
+            // DATAFLOW is always set: pre-existing data nodes confirm a prior
+            // successful extraction.
+            let profile = LanguageCapabilityProfile::for_language(file_lang);
+            let cfg_supported = profile
+                .features
+                .as_ref()
+                .map(|f| f.cfg.is_supported())
+                .unwrap_or(false);
+
+            let mut mask_bits = CapabilityMask::MANIFEST_BIT
+                | CapabilityMask::STRUCTURAL_BIT
+                | CapabilityMask::CALL_EDGES
+                | CapabilityMask::DATAFLOW;
+            if cfg_supported
+                && unit
+                    .symbol_id
+                    .as_ref()
+                    .map(|sym_id| {
+                        store
+                            .find_cfg_nodes_by_function(sym_id)
+                            .map(|nodes| !nodes.is_empty())
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false)
+            {
+                mask_bits |= CapabilityMask::CFG;
+            }
+
             store.upsert_unit_extraction_state(&UnitExtractionStateRecord {
                 file_id: unit.file_id,
                 unit_id: unit.unit_id,
@@ -256,13 +349,7 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
                 node_count: Some(prebuilt as i64),
                 edge_count: None,
                 budget_exceeded: false,
-                capability_mask: CapabilityMask::from_bits(
-                    CapabilityMask::MANIFEST_BIT
-                        | CapabilityMask::STRUCTURAL_BIT
-                        | CapabilityMask::CALL_EDGES
-                        | CapabilityMask::CFG
-                        | CapabilityMask::DATAFLOW,
-                ),
+                capability_mask: CapabilityMask::from_bits(mask_bits),
                 built_at: String::new(),
             })?;
             return Ok((true, DataflowPayload::empty()));
@@ -420,6 +507,8 @@ fn get_cached_frontend(lang: Language) -> Option<&'static LanguageFrontend> {
             Language::Java,
             Language::C,
             Language::Cpp,
+            Language::ArkTS,
+            Language::Cangjie,
             Language::Go,
             Language::CSharp,
             Language::Rust,
@@ -436,4 +525,202 @@ fn get_cached_frontend(lang: Language) -> Option<&'static LanguageFrontend> {
         cache
     });
     map.get(&lang)
+}
+
+// ---------------------------------------------------------------------------
+// tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use types::enums::Language;
+
+    // ------------------------------------------------------------------
+    // Frontend cache regression tests — ensure newly added languages
+    // (ArkTS, Cangjie) are included in the lazy frontend process cache.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_cached_frontend_includes_arkts() {
+        #[cfg(feature = "arkts")]
+        {
+            let fe = super::get_cached_frontend(Language::ArkTS);
+            assert!(
+                fe.is_some(),
+                "ArkTS frontend should be cached when arkts feature is enabled"
+            );
+            assert_eq!(fe.unwrap().language(), Language::ArkTS);
+        }
+        #[cfg(not(feature = "arkts"))]
+        {
+            let fe = super::get_cached_frontend(Language::ArkTS);
+            assert!(
+                fe.is_none(),
+                "ArkTS frontend should NOT be cached when arkts feature is disabled"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cached_frontend_includes_cangjie() {
+        #[cfg(feature = "cangjie")]
+        {
+            let fe = super::get_cached_frontend(Language::Cangjie);
+            assert!(
+                fe.is_some(),
+                "Cangjie frontend should be cached when cangjie feature is enabled"
+            );
+            assert_eq!(fe.unwrap().language(), Language::Cangjie);
+        }
+        #[cfg(not(feature = "cangjie"))]
+        {
+            let fe = super::get_cached_frontend(Language::Cangjie);
+            assert!(
+                fe.is_none(),
+                "Cangjie frontend should NOT be cached when cangjie feature is disabled"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cached_frontend_typescript_available() {
+        #[cfg(feature = "typescript")]
+        {
+            let fe = super::get_cached_frontend(Language::TypeScript);
+            assert!(
+                fe.is_some(),
+                "TypeScript frontend should be cached when typescript feature is enabled"
+            );
+            assert_eq!(fe.unwrap().language(), Language::TypeScript);
+        }
+        #[cfg(not(feature = "typescript"))]
+        {
+            let fe = super::get_cached_frontend(Language::TypeScript);
+            assert!(
+                fe.is_none(),
+                "TypeScript frontend should NOT be cached when typescript feature is disabled"
+            );
+        }
+    }
+
+    // Helper that mirrors the mask computation in LazyDataflowLoader::ensure
+    // (lines 206–212).  Extracted here to make the regression test self-
+    // checking without requiring a full DB + extraction pipeline.
+    fn compute_unit_mask(cfg_supported: bool, has_cfg_nodes: bool) -> CapabilityMask {
+        let mut bits = CapabilityMask::MANIFEST_BIT
+            | CapabilityMask::STRUCTURAL_BIT
+            | CapabilityMask::CALL_EDGES
+            | CapabilityMask::DATAFLOW;
+        if cfg_supported && has_cfg_nodes {
+            bits |= CapabilityMask::CFG;
+        }
+        CapabilityMask::from_bits(bits)
+    }
+
+    // ------------------------------------------------------------------
+    // Profile-level checks — CFG support per language
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn php_profile_cfg_unsupported() {
+        let profile = LanguageCapabilityProfile::for_language(Language::Php);
+        let cfg_support = profile
+            .features
+            .as_ref()
+            .map(|f| f.cfg.is_supported())
+            .unwrap_or(false);
+        assert!(
+            !cfg_support,
+            "PHP profile must report CFG as unsupported"
+        );
+    }
+
+    #[test]
+    fn ruby_profile_cfg_supported() {
+        let profile = LanguageCapabilityProfile::for_language(Language::Ruby);
+        let cfg_support = profile
+            .features
+            .as_ref()
+            .map(|f| f.cfg.is_supported())
+            .unwrap_or(false);
+        assert!(
+            cfg_support,
+            "Ruby profile must report CFG as supported"
+        );
+    }
+
+    #[test]
+    fn typescript_profile_cfg_supported() {
+        let profile = LanguageCapabilityProfile::for_language(Language::TypeScript);
+        let cfg_support = profile
+            .features
+            .as_ref()
+            .map(|f| f.cfg.is_supported())
+            .unwrap_or(false);
+        assert!(
+            cfg_support,
+            "TypeScript profile must report CFG as supported"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Mask-computation logic — regression for the lazy CFG bit fix
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn mask_no_cfg_when_language_unsupported() {
+        // Even with CFG nodes present, the CFG bit must NOT be set when the
+        // language does not support CFG (the pre-fix behaviour was to
+        // unconditionally set it).
+        let mask = compute_unit_mask(/* cfg_supported */ false, /* has_cfg_nodes */ true);
+        assert!(
+            !mask.has(CapabilityMask::CFG),
+            "CFG bit must NOT be set for CFG-unsupported languages"
+        );
+        assert!(
+            mask.has(CapabilityMask::DATAFLOW),
+            "DATAFLOW bit must still be set"
+        );
+    }
+
+    #[test]
+    fn mask_no_cfg_when_no_nodes_even_if_supported() {
+        // Even when the language supports CFG, the bit must NOT be set when
+        // the unit produced zero CFG nodes (e.g. an empty function body).
+        let mask = compute_unit_mask(/* cfg_supported */ true, /* has_cfg_nodes */ false);
+        assert!(
+            !mask.has(CapabilityMask::CFG),
+            "CFG bit must NOT be set when no CFG nodes were produced"
+        );
+        assert!(
+            mask.has(CapabilityMask::DATAFLOW),
+            "DATAFLOW bit must still be set"
+        );
+    }
+
+    #[test]
+    fn mask_sets_cfg_when_supported_and_nodes_present() {
+        // The normal happy path: CFG-supported language + actual CFG nodes.
+        let mask = compute_unit_mask(/* cfg_supported */ true, /* has_cfg_nodes */ true);
+        assert!(
+            mask.has(CapabilityMask::CFG),
+            "CFG bit must be set when language supports CFG and nodes are present"
+        );
+        assert!(
+            mask.has(CapabilityMask::DATAFLOW),
+            "DATAFLOW bit must also be set"
+        );
+    }
+
+    #[test]
+    fn mask_always_has_dataflow_manifest_structural_call_edges() {
+        // The base bits are unconditional — they represent capabilities that
+        // are always produced by a successful lazy dataflow build.
+        let mask = compute_unit_mask(/* cfg_supported */ false, /* has_cfg_nodes */ false);
+        assert!(mask.has(CapabilityMask::MANIFEST_BIT));
+        assert!(mask.has(CapabilityMask::STRUCTURAL_BIT));
+        assert!(mask.has(CapabilityMask::CALL_EDGES));
+        assert!(mask.has(CapabilityMask::DATAFLOW));
+    }
 }

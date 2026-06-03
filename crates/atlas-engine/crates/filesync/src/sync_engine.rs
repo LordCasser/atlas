@@ -153,31 +153,36 @@ impl SyncEngine {
         phase_timings.push(ext_timing);
 
         // 4. Re-resolve all unresolved references (P2: two-step pipeline)
-        tracing::info!("resolving symbol references");
-        let res_timer = PhaseTimer::start("Resolution");
-        // P2: Load path aliases if present
-        let path_alias = resolution::PathAliasConfig::resolver(&self.project_root);
-        let mut resolver =
-            resolution::ReferenceResolver::with_path_alias(self.store.clone(), path_alias);
-        let (resolved, res_stats) = resolver.resolve_all()?;
-        let res_timing = res_timer
-            .items(res_stats.total_refs as u64)
-            .note(format!("{} resolved", res_stats.resolved))
-            .finish();
-        phase_timings.push(res_timing);
+        if self.mode.produces_references() {
+            tracing::info!("resolving symbol references");
+            let res_timer = PhaseTimer::start("Resolution");
+            // P2: Load path aliases if present
+            let path_alias = resolution::PathAliasConfig::resolver(&self.project_root);
+            let mut resolver =
+                resolution::ReferenceResolver::with_path_alias(self.store.clone(), path_alias);
+            let (resolved, res_stats) = resolver.resolve_all()?;
+            let res_timing = res_timer
+                .items(res_stats.total_refs as u64)
+                .note(format!("{} resolved", res_stats.resolved))
+                .finish();
+            phase_timings.push(res_timing);
 
-        // 4b. Build edges from resolved references
-        tracing::info!("building symbol graph");
-        let edge_timer = PhaseTimer::start("Graph build");
-        let builder = GraphBuilder::new(self.store.clone());
-        let build_stats = builder.build_all(&resolved);
-        stats.new_edges = build_stats.edges_built;
-        let edge_timing = edge_timer.items(build_stats.edges_built as u64).finish();
-        phase_timings.push(edge_timing);
+            // 4b. Build edges from resolved references
+            tracing::info!("building symbol graph");
+            let edge_timer = PhaseTimer::start("Graph build");
+            let builder = GraphBuilder::new(self.store.clone());
+            let build_stats = builder.build_all(&resolved);
+            stats.new_edges = build_stats.edges_built;
+            let edge_timing = edge_timer.items(build_stats.edges_built as u64).finish();
+            phase_timings.push(edge_timing);
 
-        // 4c. Materialize user annotations as edges
-        if let Err(e) = graph::materialize_annotations(&self.store) {
-            tracing::warn!("failed to materialize annotations: {}", e);
+            // 4c. Materialize user annotations as edges
+            if let Err(e) = graph::materialize_annotations(&self.store) {
+                tracing::warn!("failed to materialize annotations: {}", e);
+            }
+        } else {
+            tracing::debug!("skipping resolution/graph/annotations (mode produces no references)");
+            stats.new_edges = 0;
         }
 
         // Commit path alias config hash baseline AFTER the full pipeline succeeded.

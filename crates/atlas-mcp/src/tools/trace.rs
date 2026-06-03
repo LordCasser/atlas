@@ -5,11 +5,9 @@
 use std::time::Instant;
 
 use atlas_engine::SymbolId;
-use atlas_engine::{
-    InvestigationFocus, LazySummary, RawTraceEngine, TraceDiagnostic, TraceQueryResponse,
-};
+use atlas_engine::{InvestigationFocus, TraceQueryResponse};
 
-use super::lazy_response::LazyDiagnostics;
+use super::lazy_response::{LazyDiagnostics, LazyLayerDiagnostics};
 use super::query_snapshot::{QuerySnapshot, QueryStatus};
 use super::{
     MAX_FILE_PATH_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str, get_str_opt, get_u64,
@@ -107,9 +105,8 @@ impl ToolRouter {
             .as_ref()
             .map(LazyDiagnostics::from_structural);
 
-        let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
         self.send_progress(0.8, "Running trace point...");
-        let mut resp = engine.trace_point(&file_id, line, column);
+        let mut resp = self.engine.trace_point(&file_id, line, column);
         self.send_progress(1.0, "Trace complete");
 
         resp.diagnostics.extend(warnings_to_trace_diagnostics(
@@ -248,81 +245,34 @@ impl ToolRouter {
         // Capture structural lazy outcome before fields are moved.
         let structural_lo = outcome.lazy_outcome.clone();
 
-        // Lazy-load dataflow before tracing, so Locator can find data nodes.
-        // Always trigger lazy dataflow extraction — the loader internally
-        // checks for pre-built data via `count_data_nodes_for_unit` and skips
-        // extraction when data already exists.
-        let lazy_start = std::time::Instant::now();
-        let mut partial = false;
-        let mut lazy_diags: Vec<TraceDiagnostic> = Vec::new();
-        let lazy_summary: Option<LazySummary>;
-        let mut combined_lazy_diag: Option<LazyDiagnostics> = None;
-        let mut lazy_window: Option<atlas_engine::LazyWindow> = None;
-        match self
-            .lazy_service
-            .ensure_for_position(&file_id, line, column, Some(&query_id))
-        {
-            Ok(window) => {
-                lazy_window = Some(window.clone());
-                lazy_summary = Some(LazySummary {
-                    triggered: true,
-                    units_built: window.units_built,
-                    units_cached: window.units_cached,
-                    units_pending: window.units_pending,
-                    pending_job_ids: window.pending_job_ids.clone(),
-                    truncated: window.truncated,
-                    duration_ms: lazy_start.elapsed().as_millis() as u64,
-                    precision_tier: window.precision_tier,
-                });
-                // Build combined diagnostics from both layers.
-                combined_lazy_diag =
-                    Some(LazyDiagnostics::from_both(structural_lo.as_ref(), &window));
-                if window.truncated {
-                    partial = true;
-                    lazy_diags.push(
-                        TraceDiagnostic::warning(
-                            "Lazy dataflow reached its internal budget. Result is partial. For full offline coverage, run `atlas index --analysis full`."
-                        ).with_code("lazy_dataflow_budget_exceeded")
-                    );
+        // Engine::trace_variable handles lazy dataflow orchestration + trace
+        // in a single call.  The response already carries lazy_summary,
+        // diagnostics, and partial_result from the dataflow layer.
+        let mut resp = self.engine.trace_variable(&file_id, line, column, max_depth);
+
+        // Build combined lazy diagnostics from the structural outcome.
+        // Engine already injects dataflow-layer diagnostics into resp.diagnostics;
+        // we surface the structural layer separately so the agent sees both.
+        let mut combined_lazy_diag: Option<LazyDiagnostics> = structural_lo
+            .as_ref()
+            .map(|lo| LazyDiagnostics::from_structural(lo));
+
+        // Populate dataflow diagnostics from Engine's LazySummary (P2#14).
+        // After routing through Engine, the MCP layer no longer has a direct
+        // LazyWindow from dataflow extraction — but Engine's response carries
+        // the summary.  Convert it so the agent sees both structural AND
+        // dataflow layer stats in the lazy_diagnostics block.
+        if let Some(ref mut diag) = combined_lazy_diag {
+            if let Some(ref path) = resp.result {
+                if let Some(ref summary) = path.lazy_summary {
+                    diag.dataflow = Some(LazyLayerDiagnostics::from_lazy_summary(summary));
                 }
-                if window.units_pending > 0 {
-                    partial = true;
-                    lazy_diags.push(
-                        TraceDiagnostic::warning(
-                            "Lazy dataflow is already being built by another request. Result may be partial; retry after the reported pending job completes."
-                        )
-                        .with_code("lazy_dataflow_already_building"),
-                    );
-                }
-            }
-            Err(e) => {
-                partial = true;
-                lazy_summary = Some(LazySummary {
-                    triggered: true,
-                    units_built: 0,
-                    units_cached: 0,
-                    units_pending: 0,
-                    pending_job_ids: Vec::new(),
-                    truncated: true,
-                    duration_ms: lazy_start.elapsed().as_millis() as u64,
-                    precision_tier: None,
-                });
-                // Fall back to structural-only diagnostics when dataflow fails.
-                if let Some(ref lo) = structural_lo {
-                    combined_lazy_diag = Some(LazyDiagnostics::from_structural(lo));
-                }
-                lazy_diags.push(
-                    TraceDiagnostic::warning(&format!("Lazy dataflow build failed: {e}"))
-                        .with_code("lazy_dataflow_build_failed"),
-                );
             }
         }
 
-        let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
-        let mut resp = engine.trace_variable(&file_id, line, column, max_depth);
+        // Merge structural-partial flag into Engine's dataflow partial_result.
         let lazy_partial = !outcome.warnings.is_empty();
-        resp.partial_result = resp.partial_result || partial || lazy_partial;
-        resp.diagnostics.extend(lazy_diags);
+        resp.partial_result = resp.partial_result || lazy_partial;
         resp.diagnostics.extend(warnings_to_trace_diagnostics(
             root_warnings,
             "include_roots_warning",
@@ -331,9 +281,6 @@ impl ToolRouter {
             outcome.warnings,
             "lazy_structural_warning",
         ));
-        if let Some(ref mut path) = resp.result {
-            path.lazy_summary = lazy_summary;
-        }
         let is_error = !resp.ok;
 
         let tier = outcome.precision_tier;
@@ -352,12 +299,12 @@ impl ToolRouter {
 
         // Store query snapshot for potential atlas_resume
         let all_complete =
-            tier == atlas_engine::structs::precision::PrecisionTier::Exact && !partial;
+            tier == atlas_engine::structs::precision::PrecisionTier::Exact && !resp.partial_result;
         self.store_snapshot(QuerySnapshot {
             query_id: query_id.clone(),
             tool_name: "trace".into(),
             tool_args: args.clone(),
-            lazy_window,
+            lazy_window: None,
             created_at: Instant::now(),
             status: if all_complete {
                 QueryStatus::Ready
@@ -484,8 +431,7 @@ impl ToolRouter {
                 lazy_diag = Some(LazyDiagnostics::from_structural(lo));
             }
         }
-        let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
-        let resp = engine.trace_callers(&target_id, max_depth);
+        let resp = self.engine.trace_callers(&target_id, max_depth);
         let mut resp = resp;
         let is_error = !resp.ok;
 
@@ -668,8 +614,7 @@ impl ToolRouter {
             lazy_diag = Some(LazyDiagnostics::from_structural(lo));
         }
 
-        let engine = RawTraceEngine::new_with_root(self.store.clone(), self.project_root.clone());
-        let mut resp = engine.trace_forward(&from_id, &to_id, max_depth);
+        let mut resp = self.engine.trace_forward(&from_id, &to_id, max_depth);
         let is_error = !resp.ok;
         resp.diagnostics.extend(warnings_to_trace_diagnostics(
             root_warnings,

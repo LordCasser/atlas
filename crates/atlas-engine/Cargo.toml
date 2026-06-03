@@ -37,14 +37,14 @@ tempfile = "3"
 default = ["typescript", "javascript", "python"]
 
 # ── Language features (aggregated from sub-crates) ──
-typescript = ["types/typescript", "extraction/typescript", "analysis/typescript"]
+typescript = ["types/typescript", "extraction/typescript", "analysis/typescript", "lazy/typescript"]
 javascript = ["types/javascript", "extraction/javascript"]
 python = ["types/python", "extraction/python", "analysis/python"]
 java = ["types/java", "extraction/java", "analysis/java"]
 c = ["types/c", "extraction/c"]
 cpp = ["types/cpp", "extraction/cpp"]
-arkts = ["typescript", "types/arkts", "extraction/arkts"]
-cangjie = ["types/cangjie", "extraction/cangjie"]
+arkts = ["typescript", "types/arkts", "extraction/arkts", "lazy/arkts"]
+cangjie = ["types/cangjie", "extraction/cangjie", "lazy/cangjie"]
 go = ["types/go", "extraction/go"]
 csharp = ["types/csharp", "extraction/csharp", "analysis/csharp"]
 rust = ["types/rust", "extraction/rust"]

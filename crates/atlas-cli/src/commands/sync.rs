@@ -15,6 +15,7 @@ pub fn run(project: &str, analysis: &str) -> Result<()> {
         "full" => ExtractionMode::Full,
         _ => ExtractionMode::Structural,
     };
+    let has_dataflow = mode.produces_dataflow();
 
     let ctx = CommandContext::open(project, DbMode::ExistingReadWrite)?;
     let root = ctx.root.clone(); // clone before move into SyncEngine
@@ -108,41 +109,43 @@ pub fn run(project: &str, analysis: &str) -> Result<()> {
 
     // ── Summary rebuild (Schema v3: incrementally rebuild summaries
     //    for functions in changed files only, not the whole project) ──
-    let changed_paths: Vec<_> = changed
-        .added
-        .iter()
-        .chain(changed.modified.iter())
-        .collect();
-    let mut summary_count = 0usize;
-    let mut summary_skip = 0usize;
-    if !changed_paths.is_empty() {
-        for path in &changed_paths {
-            let rel = path.to_string_lossy();
-            if let Ok(Some(file_id)) = ctx.store.resolve_file_id(&ctx.root, &rel) {
-                if let Ok(symbols) = ctx.store.find_symbols_by_file(&file_id) {
-                    for sym in symbols.iter().filter(|s| {
-                        matches!(
-                            s.kind,
-                            atlas_engine::enums::SymbolKind::Function
-                                | atlas_engine::enums::SymbolKind::Method
-                                | atlas_engine::enums::SymbolKind::Constructor
-                        )
-                    }) {
-                        match atlas_engine::SummaryStore::build_for_function(
-                            &ctx.store,
-                            &sym.id,
-                            |s, fid| atlas_engine::SummaryBuilder::build(s, fid, None),
-                        ) {
-                            Ok(s) if !s.is_empty() => summary_count += 1,
-                            Ok(_) => summary_skip += 1,
-                            Err(_) => summary_skip += 1,
+    if has_dataflow {
+        let changed_paths: Vec<_> = changed
+            .added
+            .iter()
+            .chain(changed.modified.iter())
+            .collect();
+        let mut summary_count = 0usize;
+        let mut summary_skip = 0usize;
+        if !changed_paths.is_empty() {
+            for path in &changed_paths {
+                let rel = path.to_string_lossy();
+                if let Ok(Some(file_id)) = ctx.store.resolve_file_id(&ctx.root, &rel) {
+                    if let Ok(symbols) = ctx.store.find_symbols_by_file(&file_id) {
+                        for sym in symbols.iter().filter(|s| {
+                            matches!(
+                                s.kind,
+                                atlas_engine::enums::SymbolKind::Function
+                                    | atlas_engine::enums::SymbolKind::Method
+                                    | atlas_engine::enums::SymbolKind::Constructor
+                            )
+                        }) {
+                            match atlas_engine::SummaryStore::build_for_function(
+                                &ctx.store,
+                                &sym.id,
+                                |s, fid| atlas_engine::SummaryBuilder::build(s, fid, None),
+                            ) {
+                                Ok(s) if !s.is_empty() => summary_count += 1,
+                                Ok(_) => summary_skip += 1,
+                                Err(_) => summary_skip += 1,
+                            }
                         }
                     }
                 }
             }
         }
+        println!("  Summaries:       {summary_count} updated ({summary_skip} skipped / empty)");
     }
-    println!("  Summaries:       {summary_count} updated ({summary_skip} skipped / empty)");
 
     if !stats.phase_timings.is_empty() {
         print_phase_timings(&stats.phase_timings);

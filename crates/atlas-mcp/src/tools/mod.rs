@@ -105,6 +105,9 @@ pub(crate) struct StructuralEnsureOutcome {
 /// Dispatches tools/list and tools/call.
 pub struct ToolRouter {
     pub(crate) store: Arc<Store>,
+    /// High-level Engine wrapping the full extraction → trace pipeline.
+    /// Constructed once from the shared store and reused across trace calls.
+    pub(crate) engine: atlas_engine::Engine,
     pub(crate) lazy_service: LazyDataflowService,
     /// Graph engines built lazily on first request (after MCP handshake).
     pub(crate) search: Option<SearchEngine>,
@@ -158,9 +161,11 @@ impl ToolRouter {
     ) -> Self {
         let last_graph_signature = store.index_signature().unwrap_or_default();
         let lazy_service = LazyDataflowService::new(store.clone(), Some(project_root.clone()));
+        let engine = atlas_engine::Engine::from_store(store.clone(), Some(&project_root));
         let source_extractor = SourceExtractor::new(store.clone(), project_root.clone());
         Self {
             store: store.clone(),
+            engine,
             lazy_service,
             search: Some(search),
             context: Some(context),
@@ -187,9 +192,11 @@ impl ToolRouter {
     pub fn new_empty(store: Arc<Store>, project_root: std::path::PathBuf) -> Self {
         let tools = make_all_tools();
         let lazy_service = LazyDataflowService::new(store.clone(), Some(project_root.clone()));
+        let engine = atlas_engine::Engine::from_store(store.clone(), Some(&project_root));
         let source_extractor = SourceExtractor::new(store.clone(), project_root.clone());
         Self {
             store: store.clone(),
+            engine,
             lazy_service,
             search: None,
             context: None,
