@@ -605,7 +605,7 @@ Primary gaps:
 
 - Parameter DataNode extraction corrected. ✅ Fixed in M3: ArgToParam bridge verified; both bridges pass without expected failure.
 - Namespace aliases and dynamic calls need confidence-aware handling.
-- Resource functions are now semantic effects. ✅ Implemented in M6d: PhpRegistry (procedural_resource) + enhanced ResourceOpConfig (fopen, mysqli_connect, curl_init, etc.). CFG remains unsupported — resource tracking is ScopeExitAnalyzer-based at function exit.
+- Resource functions are now semantic effects. ✅ Implemented in M6d: PhpRegistry (procedural_resource) + enhanced ResourceOpConfig (fopen, mysqli_connect, curl_init, etc.). CFG remains unsupported — resource tracking is pattern-based only (ScopeExitAnalyzer is N/A without CFG).
 
 Evolution:
 
@@ -639,7 +639,7 @@ Primary gaps:
 
 Evolution:
 
-1. ✅ M6d: RubyRegistry (block_resource, alloc_fn, free_fn, cleanup_fn) + enhanced ResourceOpConfig (File.open, TCPSocket, Net::HTTP). ScopeExitAnalyzer handles block-managed resources at function exit. CFG for if/loops remains future work.
+1. ✅ M6d: RubyRegistry (block_resource, alloc_fn, free_fn, cleanup_fn) + enhanced ResourceOpConfig (File.open, TCPSocket, Net::HTTP). Resource tracking is pattern-based only (Ruby lacks CFG; ScopeExitAnalyzer is N/A). CFG for if/loops remains future work.
 2. Add fixtures for blocks, `yield`, modules, mixins, `File.open` block form,
    `.close`, and metaprogramming fallbacks.
 3. Add Ruby domain rule registry:
@@ -654,7 +654,7 @@ Evolution:
 
 Acceptance:
 
-- `File.open {}` ✅ Fixed: ScopeExitAnalyzer emits Free at function Exit for unfreed allocations.
+- `File.open {}` ✅ Fixed: ResourceOpConfig patterns identify File.open as a producer. Ruby lacks CFG so implicit scope cleanup is N/A.
 - block parameter receives the opened resource in local dataflow.
 - `send` calls are visible as low-confidence dynamic boundaries.
 
@@ -936,8 +936,8 @@ Scope:
 Exit criteria met:
 - C# `using`/IDisposable: Alloc → Free at BlockExit (ContextManaged).
 - Kotlin `.use {}` lambda scope exit handled by ScopeExitAnalyzer.
-- Ruby `File.open` with block handled by ScopeExitAnalyzer.
-- PHP procedural resources: patterns + ScopeExitAnalyzer.
+- Ruby `File.open` with block handled by ResourceOpConfig patterns only (Ruby lacks CFG; ScopeExitAnalyzer is N/A).
+- PHP procedural resources: patterns only (PHP lacks CFG; lifecycle analysis via patterns only).
 - All M6 languages have domain registries and ResourceOpConfig.
 
 **Prerequisite**: Java CFG verified (0.75 confidence).
