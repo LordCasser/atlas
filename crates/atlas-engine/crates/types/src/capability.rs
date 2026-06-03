@@ -476,7 +476,10 @@ mod profiles {
                 field_access: FeatureSupport::supported_with_confidence(0.60),
                 call_arguments: FeatureSupport::supported_with_confidence(0.60),
                 returns_flow: FeatureSupport::supported_with_confidence(0.60),
-                cfg: FeatureSupport::supported_with_confidence(0.60),
+                cfg: FeatureSupport::supported_with_limitations(
+                    0.60,
+                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.55,
                     vec![
@@ -537,7 +540,10 @@ mod profiles {
                 field_access: FeatureSupport::supported_with_confidence(0.60),
                 call_arguments: FeatureSupport::supported_with_confidence(0.60),
                 returns_flow: FeatureSupport::supported_with_confidence(0.60),
-                cfg: FeatureSupport::supported_with_confidence(0.60),
+                cfg: FeatureSupport::supported_with_limitations(
+                    0.60,
+                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.55,
                     vec![
@@ -605,7 +611,10 @@ mod profiles {
                 field_access: FeatureSupport::supported_with_confidence(0.72),
                 call_arguments: FeatureSupport::supported_with_confidence(0.72),
                 returns_flow: FeatureSupport::supported_with_confidence(0.72),
-                cfg: FeatureSupport::supported_with_confidence(0.72),
+                cfg: FeatureSupport::supported_with_limitations(
+                    0.72,
+                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.72,
                     vec![
@@ -665,7 +674,10 @@ mod profiles {
                 field_access: FeatureSupport::supported_with_confidence(0.75),
                 call_arguments: FeatureSupport::supported_with_confidence(0.75),
                 returns_flow: FeatureSupport::supported_with_confidence(0.75),
-                cfg: FeatureSupport::supported_with_confidence(0.75),
+                cfg: FeatureSupport::supported_with_limitations(
+                    0.75,
+                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.75,
                     vec![
@@ -738,7 +750,10 @@ mod profiles {
                 field_access: FeatureSupport::supported_with_confidence(0.73),
                 call_arguments: FeatureSupport::supported_with_confidence(0.73),
                 returns_flow: FeatureSupport::supported_with_confidence(0.73),
-                cfg: FeatureSupport::supported_with_confidence(0.73),
+                cfg: FeatureSupport::supported_with_limitations(
+                    0.73,
+                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.60,
                     vec![
@@ -803,7 +818,10 @@ mod profiles {
                 field_access: FeatureSupport::supported_with_confidence(0.70),
                 call_arguments: FeatureSupport::supported_with_confidence(0.70),
                 returns_flow: FeatureSupport::supported_with_confidence(0.70),
-                cfg: FeatureSupport::supported_with_confidence(0.70),
+                cfg: FeatureSupport::supported_with_limitations(
+                    0.70,
+                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.60,
                     vec!["cross-function bridges via summary tables (ArgToParam, ReturnToCall)"],
@@ -904,7 +922,7 @@ mod profiles {
                 "use_def".into(),
                 "interprocedural_dataflow".into(),
             ],
-            unsupported_features: vec!["cfg".into()],
+            unsupported_features: vec![],
             limitations: vec![
                 "AST-driven local dataflow with basic parameter/local/return/call capture".into(),
                 "method call targets now captured (simple + obj.method() patterns)".into(),
@@ -944,7 +962,10 @@ mod profiles {
                     0.65,
                     vec!["basic return value capture"],
                 ),
-                cfg: FeatureSupport::supported_with_confidence(0.60),
+                cfg: FeatureSupport::supported_with_limitations(
+                    0.60,
+                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.55,
                     vec![
@@ -1005,7 +1026,10 @@ mod profiles {
                 field_access: FeatureSupport::supported_with_confidence(0.78),
                 call_arguments: FeatureSupport::supported_with_confidence(0.78),
                 returns_flow: FeatureSupport::supported_with_confidence(0.78),
-                cfg: FeatureSupport::supported_with_confidence(0.78),
+                cfg: FeatureSupport::supported_with_limitations(
+                    0.78,
+                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.78,
                     vec![
@@ -1129,7 +1153,10 @@ mod profiles {
                 field_access: FeatureSupport::supported_with_confidence(0.70),
                 call_arguments: FeatureSupport::supported_with_confidence(0.70),
                 returns_flow: FeatureSupport::supported_with_confidence(0.70),
-                cfg: FeatureSupport::supported_with_confidence(0.70),
+                cfg: FeatureSupport::supported_with_limitations(
+                    0.70,
+                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.60,
                     vec!["cross-function bridges via summary tables"],
@@ -1614,5 +1641,30 @@ mod tests {
             (0.0..=1.0).contains(&min),
             "min_confidence_floor should be in [0,1], got {min}"
         );
+    }
+
+    #[test]
+    fn test_cfg_known_limitation() {
+        for profile in LanguageCapabilityProfile::all_compiled() {
+            if let Some(fm) = &profile.features {
+                if fm.cfg.is_supported() {
+                    // Every supported CFG should carry the traversal limitation
+                    let msg = format!(
+                        "Language {}: CFG is supported but missing branch/loop body traversal limitation",
+                        profile.language
+                    );
+                    assert!(has_cfg_traversal_limitation(&fm.cfg), "{}", msg);
+                }
+            }
+        }
+    }
+
+    fn has_cfg_traversal_limitation(fs: &FeatureSupport) -> bool {
+        match fs {
+            FeatureSupport::Supported { limitations, .. } => {
+                limitations.iter().any(|l| l.contains("body traversal"))
+            }
+            FeatureSupport::Unsupported { .. } => true,
+        }
     }
 }

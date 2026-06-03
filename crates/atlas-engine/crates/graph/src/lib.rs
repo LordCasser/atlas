@@ -182,6 +182,18 @@ impl GraphEngine {
         EdgeKind::RegistersCallback,
     ];
 
+    /// Default edge kinds for impact analysis: calls, instantiates, implements,
+    /// callback registrations, imports, and includes. This superset of CALL_EDGES
+    /// captures dependency and control-flow relationships that matter for impact radius.
+    pub const DEFAULT_IMPACT_EDGES: &[EdgeKind] = &[
+        EdgeKind::Calls,
+        EdgeKind::Instantiates,
+        EdgeKind::Implements,
+        EdgeKind::RegistersCallback,
+        EdgeKind::Imports,
+        EdgeKind::Includes,
+    ];
+
     // ── callers / callees / callgraph ────────────────────────────────────
 
     /// Find direct callers (incoming Calls + promoted Instantiates/Implements edges).
@@ -268,11 +280,11 @@ impl GraphEngine {
 
     // ── impact analysis ──────────────────────────────────────────────────
 
-    /// Impact radius: BFS bidirectionally (follows Calls + Imports) up to `depth`.
+    /// Impact radius: BFS bidirectionally (follows calls, instantiates, implements,
+    /// callback registrations, imports, and includes) up to `depth`.
     /// Both downstream (what this affects) and upstream (what affects this)
-    /// are traversed. Only call and import edges are traversed; type references
-    /// (References) and container edges (Contains) are excluded to avoid noise
-    /// from struct fields, local variables, and type aliases.
+    /// are traversed. Type references (References) and container edges (Contains)
+    /// are excluded to avoid noise from struct fields, local variables, and type aliases.
     pub fn impact(&self, id: &SymbolId, depth: usize) -> Subgraph {
         let Some(&start) = self.snapshot.id_to_idx.get(id) else {
             return Subgraph::default();
@@ -281,7 +293,7 @@ impl GraphEngine {
             direction: TraversalDirection::Both,
             max_depth: depth,
             limit: 1000,
-            edge_kind_filter: Some(vec![EdgeKind::Calls, EdgeKind::Imports]),
+            edge_kind_filter: Some(Self::DEFAULT_IMPACT_EDGES.to_vec()),
         };
         let visited = self.snapshot.bfs(&[start], &config);
         Subgraph {
@@ -308,7 +320,80 @@ impl GraphEngine {
             direction: TraversalDirection::Both,
             max_depth: depth,
             limit: 1000,
-            edge_kind_filter: Some(vec![EdgeKind::Calls, EdgeKind::Imports]),
+            edge_kind_filter: Some(Self::DEFAULT_IMPACT_EDGES.to_vec()),
+        };
+        let visited = self.snapshot.bfs(&starts, &config);
+        Subgraph {
+            node_indices: visited.iter().map(|(nix, _)| *nix).collect(),
+            edge_indices: vec![],
+        }
+    }
+
+    /// Impact radius with a custom edge kind filter.
+    ///
+    /// When `edge_kinds` is `None`, uses [`DEFAULT_IMPACT_EDGES`].
+    /// When `Some(empty_vec)`, traverses all edge kinds (no filter).
+    pub fn impact_with_kinds(
+        &self,
+        id: &SymbolId,
+        depth: usize,
+        edge_kinds: Option<Vec<EdgeKind>>,
+    ) -> Subgraph {
+        let Some(&start) = self.snapshot.id_to_idx.get(id) else {
+            return Subgraph::default();
+        };
+        // When edge_kinds is None, use the expanded default.
+        // When Some(empty) is provided, pass None to TraversalConfig (all edges).
+        let filter: Option<Vec<EdgeKind>> = match edge_kinds {
+            None => Some(Self::DEFAULT_IMPACT_EDGES.to_vec()),
+            Some(kinds) if kinds.is_empty() => None,
+            Some(kinds) => Some(kinds),
+        };
+        let config = TraversalConfig {
+            direction: TraversalDirection::Both,
+            max_depth: depth,
+            limit: 1000,
+            edge_kind_filter: filter,
+        };
+        let visited = self.snapshot.bfs(&[start], &config);
+        Subgraph {
+            node_indices: visited.iter().map(|(nix, _)| *nix).collect(),
+            edge_indices: vec![],
+        }
+    }
+
+    /// Impact radius including container children with custom edge kind filter.
+    /// Expands the starting set by adding all symbols whose `container` is the target,
+    /// then runs bidirectional BFS with the given edge kind filter.
+    ///
+    /// When `edge_kinds` is `None`, uses [`DEFAULT_IMPACT_EDGES`].
+    /// When `Some(empty_vec)`, traverses all edge kinds (no filter).
+    pub fn impact_with_children_and_kinds(
+        &self,
+        id: &SymbolId,
+        depth: usize,
+        edge_kinds: Option<Vec<EdgeKind>>,
+    ) -> Subgraph {
+        let Some(&start) = self.snapshot.id_to_idx.get(id) else {
+            return Subgraph::default();
+        };
+        // Collect children: all nodes whose container == target
+        let mut starts: Vec<NodeIx> = vec![start];
+        for (ix, node) in self.snapshot.nodes.iter().enumerate() {
+            if node.container.as_ref() == Some(id) {
+                starts.push(ix);
+            }
+        }
+        let filter: Option<Vec<EdgeKind>> = match edge_kinds {
+            None => Some(Self::DEFAULT_IMPACT_EDGES.to_vec()),
+            Some(kinds) if kinds.is_empty() => None,
+            Some(kinds) => Some(kinds),
+        };
+        let config = TraversalConfig {
+            direction: TraversalDirection::Both,
+            max_depth: depth,
+            limit: 1000,
+            edge_kind_filter: filter,
         };
         let visited = self.snapshot.bfs(&starts, &config);
         Subgraph {
@@ -506,5 +591,175 @@ mod tests {
         let c = make_symbol(fid, "log", "log", SymbolKind::Function);
         let users = engine.usage_symbols(&c.id);
         assert_eq!(users.len(), 1); // only helper calls log
+    }
+
+    #[test]
+    fn test_impact_basic_bidirectional() {
+        let engine = GraphEngine::from_snapshot(test_snapshot());
+        let fid = make_file_id("test.ts");
+        let a = make_symbol(fid, "main", "main", SymbolKind::Function);
+        let sub = engine.impact(&a.id, 2);
+        assert_eq!(sub.node_indices.len(), 3);
+    }
+
+    #[test]
+    fn test_impact_default_excludes_references() {
+        let fid = make_file_id("test.ts");
+        let a = make_symbol(fid, "a", "a", SymbolKind::Function);
+        let b = make_symbol(fid, "b", "b", SymbolKind::Function);
+        let c = make_symbol(fid, "c", "c", SymbolKind::Class);
+        let e1 = make_edge(a.id, b.id, EdgeKind::Calls);
+        let e2 = make_edge(a.id, c.id, EdgeKind::References);
+        let snapshot = GraphSnapshot::from_parts(vec![a, b, c], vec![e1, e2], 0.0).unwrap();
+        let engine = GraphEngine::from_snapshot(snapshot);
+
+        let a = make_symbol(fid, "a", "a", SymbolKind::Function);
+        let b = make_symbol(fid, "b", "b", SymbolKind::Function);
+        let c = make_symbol(fid, "c", "c", SymbolKind::Class);
+        let sub = engine.impact(&a.id, 2);
+        let result_ids: Vec<SymbolId> = sub
+            .node_indices
+            .iter()
+            .map(|ix| engine.snapshot.node(*ix).symbol_id)
+            .collect();
+        assert!(result_ids.contains(&b.id));
+        assert!(!result_ids.contains(&c.id));
+    }
+
+    #[test]
+    fn test_impact_with_kinds_all_edges() {
+        let fid = make_file_id("test.ts");
+        let a = make_symbol(fid, "a", "a", SymbolKind::Function);
+        let b = make_symbol(fid, "b", "b", SymbolKind::Function);
+        let c = make_symbol(fid, "c", "c", SymbolKind::Class);
+        let e1 = make_edge(a.id, b.id, EdgeKind::Calls);
+        let e2 = make_edge(a.id, c.id, EdgeKind::References);
+        let snapshot = GraphSnapshot::from_parts(vec![a, b, c], vec![e1, e2], 0.0).unwrap();
+        let engine = GraphEngine::from_snapshot(snapshot);
+
+        let a = make_symbol(fid, "a", "a", SymbolKind::Function);
+        let b = make_symbol(fid, "b", "b", SymbolKind::Function);
+        let c = make_symbol(fid, "c", "c", SymbolKind::Class);
+        let sub = engine.impact_with_kinds(&a.id, 2, Some(vec![]));
+        let result_ids: Vec<SymbolId> = sub
+            .node_indices
+            .iter()
+            .map(|ix| engine.snapshot.node(*ix).symbol_id)
+            .collect();
+        assert!(result_ids.contains(&b.id));
+        assert!(result_ids.contains(&c.id));
+    }
+
+    #[test]
+    fn test_impact_depth_limit() {
+        let fid = make_file_id("test.ts");
+        let a = make_symbol(fid, "a", "a", SymbolKind::Function);
+        let b = make_symbol(fid, "b", "b", SymbolKind::Function);
+        let c = make_symbol(fid, "c", "c", SymbolKind::Function);
+        let d = make_symbol(fid, "d", "d", SymbolKind::Function);
+        let e1 = make_edge(a.id, b.id, EdgeKind::Calls);
+        let e2 = make_edge(b.id, c.id, EdgeKind::Calls);
+        let e3 = make_edge(c.id, d.id, EdgeKind::Calls);
+        let snapshot = GraphSnapshot::from_parts(vec![a, b, c, d], vec![e1, e2, e3], 0.0).unwrap();
+        let engine = GraphEngine::from_snapshot(snapshot);
+
+        let a = make_symbol(fid, "a", "a", SymbolKind::Function);
+        let sub1 = engine.impact(&a.id, 1);
+        assert_eq!(sub1.node_indices.len(), 2); // a, b
+        let sub2 = engine.impact(&a.id, 2);
+        assert_eq!(sub2.node_indices.len(), 3); // a, b, c
+        let sub3 = engine.impact(&a.id, 3);
+        assert_eq!(sub3.node_indices.len(), 4); // a, b, c, d
+    }
+
+    #[test]
+    fn test_impact_with_children() {
+        let fid = make_file_id("test.ts");
+        let container = make_symbol(fid, "Container", "Container", SymbolKind::Class);
+        let mut child = make_symbol(fid, "child", "Container.child", SymbolKind::Method);
+        child.container = Some(container.id);
+        let external = make_symbol(fid, "external", "external", SymbolKind::Function);
+        let e1 = make_edge(child.id, external.id, EdgeKind::Calls);
+        let snapshot =
+            GraphSnapshot::from_parts(vec![container, child, external], vec![e1], 0.0).unwrap();
+        let engine = GraphEngine::from_snapshot(snapshot);
+
+        let container = make_symbol(fid, "Container", "Container", SymbolKind::Class);
+        let child = make_symbol(fid, "child", "Container.child", SymbolKind::Method);
+        let sub = engine.impact(&container.id, 2);
+        let ids: Vec<SymbolId> = sub
+            .node_indices
+            .iter()
+            .map(|ix| engine.snapshot.node(*ix).symbol_id)
+            .collect();
+        assert!(!ids.contains(&child.id));
+
+        let sub2 = engine.impact_with_children(&container.id, 2);
+        let ids2: Vec<SymbolId> = sub2
+            .node_indices
+            .iter()
+            .map(|ix| engine.snapshot.node(*ix).symbol_id)
+            .collect();
+        assert!(ids2.contains(&child.id));
+    }
+
+    #[test]
+    fn test_impact_instantiates_edge() {
+        let fid = make_file_id("test.ts");
+        let a = make_symbol(fid, "a", "a", SymbolKind::Function);
+        let b = make_symbol(fid, "b", "b", SymbolKind::Class);
+        let c = make_symbol(fid, "c", "c", SymbolKind::Function);
+        let e1 = make_edge(a.id, b.id, EdgeKind::Instantiates);
+        let e2 = make_edge(b.id, c.id, EdgeKind::Calls);
+        let snapshot = GraphSnapshot::from_parts(vec![a, b, c], vec![e1, e2], 0.0).unwrap();
+        let engine = GraphEngine::from_snapshot(snapshot);
+
+        let a = make_symbol(fid, "a", "a", SymbolKind::Function);
+        let sub = engine.impact(&a.id, 2);
+        assert_eq!(sub.node_indices.len(), 3);
+    }
+
+    #[test]
+    fn test_impact_includes_edge() {
+        let fid = make_file_id("test.ts");
+        let a = make_symbol(fid, "a", "a", SymbolKind::Function);
+        let b = make_symbol(fid, "b", "b", SymbolKind::Function);
+        let c = make_symbol(fid, "c", "c", SymbolKind::Function);
+        let e1 = make_edge(a.id, b.id, EdgeKind::Includes);
+        let e2 = make_edge(b.id, c.id, EdgeKind::Calls);
+        let snapshot = GraphSnapshot::from_parts(vec![a, b, c], vec![e1, e2], 0.0).unwrap();
+        let engine = GraphEngine::from_snapshot(snapshot);
+
+        let a = make_symbol(fid, "a", "a", SymbolKind::Function);
+        let b = make_symbol(fid, "b", "b", SymbolKind::Function);
+        let sub = engine.impact(&a.id, 2);
+        let ids: Vec<SymbolId> = sub
+            .node_indices
+            .iter()
+            .map(|ix| engine.snapshot.node(*ix).symbol_id)
+            .collect();
+        assert!(ids.contains(&b.id));
+
+        // Narrowed filter: only Calls + Imports (no Includes) — b unreachable
+        let sub2 = engine.impact_with_kinds(
+            &a.id,
+            2,
+            Some(vec![EdgeKind::Calls, EdgeKind::Imports]),
+        );
+        let ids2: Vec<SymbolId> = sub2
+            .node_indices
+            .iter()
+            .map(|ix| engine.snapshot.node(*ix).symbol_id)
+            .collect();
+        assert!(!ids2.contains(&b.id));
+    }
+
+    #[test]
+    fn test_impact_unknown_symbol() {
+        let engine = GraphEngine::from_snapshot(test_snapshot());
+        let fid = make_file_id("test.ts");
+        let unknown = make_symbol(fid, "ghost", "ghost", SymbolKind::Function);
+        let sub = engine.impact(&unknown.id, 2);
+        assert!(sub.node_indices.is_empty());
     }
 }

@@ -1316,3 +1316,85 @@ function main() {
         stats.edges_built,
     );
 }
+
+// ────────────────────────────────────────────────────────────────
+// Impact analysis end-to-end integration test
+// ────────────────────────────────────────────────────────────────
+
+#[test]
+fn ts_impact_analysis_end_to_end() {
+    use atlas_engine::GraphEngine;
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[
+        (
+            "lib.ts",
+            r#"export function helper(x: number): number {
+    return x * 2;
+}
+export class Calculator {
+    add(a: number, b: number): number {
+        return a + b;
+    }
+}
+"#,
+        ),
+        (
+            "app.ts",
+            r#"import { helper, Calculator } from './lib';
+
+function compute(): number {
+    const calc = new Calculator();
+    const doubled = helper(5);
+    return calc.add(doubled, 1);
+}
+"#,
+        ),
+    ];
+    let (store, _stats) = index_files(files);
+    let engine = GraphEngine::from_store(&store, 0.0).unwrap();
+
+    // Find compute function
+    let app_id = FileId::generate("app.ts");
+    let app_syms = store
+        .find_symbols_by_file(&app_id)
+        .unwrap();
+    let compute_sym = app_syms
+        .iter()
+        .find(|s| s.name == "compute")
+        .expect("compute not found");
+
+    // Run impact analysis on compute
+    let sub = engine.impact(&compute_sym.id, 3);
+    assert!(
+        !sub.node_indices.is_empty(),
+        "impact should find reachable nodes"
+    );
+
+    // Resolve reached node IDs
+    let reached_ids: Vec<_> = sub
+        .node_indices
+        .iter()
+        .map(|ix| engine.snapshot().node(*ix).symbol_id)
+        .collect();
+    let reached_syms: Vec<_> = reached_ids
+        .iter()
+        .filter_map(|id| store.find_symbol_by_id(id).ok())
+        .flatten()
+        .collect();
+    let reached_names: Vec<_> = reached_syms.iter().map(|s| s.name.as_str()).collect();
+
+    // Should reach at least compute (self), helper (Calls), add (Calls via calc.add())
+    assert!(
+        reached_names.contains(&"helper"),
+        "impact should reach helper via Calls, got {reached_names:?}"
+    );
+    assert!(
+        reached_names.contains(&"add"),
+        "impact should reach Calculator.add via Calls, got {reached_names:?}"
+    );
+    assert!(
+        reached_names.len() >= 3,
+        "impact should reach at least 3 nodes, got {reached_names:?}"
+    );
+}

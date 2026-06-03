@@ -74,6 +74,17 @@ const DEFAULT_PATH_EDGES: &[EdgeKind] = &[
     EdgeKind::RegistersCallback,
 ];
 
+/// Default edge kinds for impact analysis: calls, instantiates, implements,
+/// callback registrations, imports, and includes.
+const DEFAULT_IMPACT_EDGES: &[EdgeKind] = &[
+    EdgeKind::Calls,
+    EdgeKind::Instantiates,
+    EdgeKind::Implements,
+    EdgeKind::RegistersCallback,
+    EdgeKind::Imports,
+    EdgeKind::Includes,
+];
+
 /// Parse a snake_case edge kind string to an EdgeKind.
 fn parse_edge_kind(s: &str) -> Result<EdgeKind, String> {
     match s {
@@ -976,6 +987,44 @@ impl ToolRouter {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        // Parse optional include_children flag.
+        let include_children = args
+            .get("include_children")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // Parse optional edge_kinds override.
+        let edge_kinds: Option<Vec<EdgeKind>> = match args.get("edge_kinds") {
+            None | Some(serde_json::Value::Null) => None, // use engine default
+            Some(raw) => {
+                let arr = match raw.as_array() {
+                    Some(a) => a,
+                    None => {
+                        return ("edge_kinds must be an array of strings".to_string(), true);
+                    }
+                };
+                if arr.is_empty() || (arr.len() == 1 && arr[0].as_str() == Some("*")) {
+                    Some(vec![]) // wildcard → all edge kinds
+                } else {
+                    let mut kinds = Vec::with_capacity(arr.len());
+                    for v in arr {
+                        let s = v.as_str().unwrap_or("");
+                        if s == "*" {
+                            return (
+                                "'*' must be the only value in edge_kinds".to_string(),
+                                true,
+                            );
+                        }
+                        kinds.push(match parse_edge_kind(s) {
+                            Ok(k) => k,
+                            Err(e) => return (e, true),
+                        });
+                    }
+                    Some(kinds)
+                }
+            }
+        };
+
         let sid = match self.resolve_qname(qname) {
             Ok(id) => id,
             Err(e) => return (e, true),
@@ -986,8 +1035,22 @@ impl ToolRouter {
         let query_id = Self::generate_query_id();
 
         let graph = self.context_builder().graph_snapshot();
-        let sub = graph.impact(&sid, depth.min(5));
+        let sub = if include_children {
+            graph.impact_with_children_and_kinds(&sid, depth.min(5), edge_kinds.clone())
+        } else {
+            graph.impact_with_kinds(&sid, depth.min(5), edge_kinds.clone())
+        };
         let snap = graph.snapshot();
+
+        // Determine which edge kinds were actually used for the response.
+        let edge_kinds_used: Vec<&str> = match &edge_kinds {
+            None => DEFAULT_IMPACT_EDGES
+                .iter()
+                .map(|k| k.as_str())
+                .collect(),
+            Some(kinds) if kinds.is_empty() => vec!["*"],
+            Some(kinds) => kinds.iter().map(|k| k.as_str()).collect(),
+        };
 
         // Group impacted nodes by file for hierarchical output.
         let mut file_groups: std::collections::HashMap<
@@ -1025,7 +1088,16 @@ impl ToolRouter {
         let mut lifecycle_paths: Vec<serde_json::Value> = Vec::new();
         let domain_rules = if semantic {
             match self.store.list_domain_rules(None, None) {
-                Ok(_rows) => Some(analysis::CppOwnershipRules::load_for(&self.store, "c")),
+                Ok(_rows) => {
+                    let lang_str = self
+                        .store
+                        .find_symbol_by_id(&sid)
+                        .ok()
+                        .flatten()
+                        .map(|s| s.language.as_str())
+                        .unwrap_or("c");
+                    Some(analysis::CppOwnershipRules::load_for(&self.store, lang_str))
+                }
                 Err(e) => {
                     tracing::warn!("Failed to load domain rules: {e}");
                     None
@@ -1057,7 +1129,47 @@ impl ToolRouter {
                     .store
                     .find_cfg_edges_by_function(&node.symbol_id)
                     .unwrap_or_default();
-                let diffs = analysis::BranchDiffEngine::diff_branches(&cfg_nodes, &cfg_edges);
+                // ── Semantic branch diff with dataflow composition ──
+                let lang = self
+                    .store
+                    .find_symbol_by_id(&node.symbol_id)
+                    .ok()
+                    .flatten()
+                    .map(|s| s.language)
+                    .unwrap_or(atlas_engine::Language::C);
+                let contract = atlas_engine::analysis::ResourceOpConfig::default_for(lang);
+
+                // Load DataFlow nodes and edges
+                let data_nodes = self
+                    .store
+                    .find_data_nodes_by_function(&node.symbol_id)
+                    .unwrap_or_default();
+                let dataflow_edges = if data_nodes.is_empty() {
+                    vec![]
+                } else {
+                    let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
+                    self.store
+                        .find_dataflow_edges_by_sources(&all_ids)
+                        .unwrap_or_default()
+                };
+
+                let composition =
+                    match atlas_engine::analysis::cfg_graph::CfgGraph::build(&cfg_nodes, &cfg_edges)
+                    {
+                        Ok(cfg_graph) => atlas_engine::analysis::compose_effects(
+                            &cfg_graph,
+                            &data_nodes,
+                            &dataflow_edges,
+                            &contract,
+                        ),
+                        Err(_) => atlas_engine::analysis::EffectComposition::default(),
+                    };
+
+                let diffs = analysis::BranchDiffEngine::diff_branches_semantic(
+                    &cfg_nodes,
+                    &cfg_edges,
+                    &composition,
+                );
 
                 // Collect fields that have effect annotations (both legacy and semantic)
                 let mut fields: HashSet<String> = HashSet::new();
@@ -1089,9 +1201,17 @@ impl ToolRouter {
 
                 // For each field, run lifecycle analysis
                 for field_path in &fields {
-                    let rules = analysis::OwnershipRules::default();
-                    let mut lifecycle = analysis::FieldLifecycleEngine::analyze_field_lifecycle(
-                        &cfg_nodes, &cfg_edges, field_path, &rules,
+                    let ownership_rules = analysis::OwnershipRules::default();
+                    let cpp_rules = domain_rules
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_else(analysis::CppOwnershipRules::default);
+                    let mut lifecycle = analysis::FieldLifecycleEngine::analyze_with_rules(
+                        &cfg_nodes,
+                        &cfg_edges,
+                        field_path,
+                        &ownership_rules,
+                        &cpp_rules,
                     );
                     lifecycle.function_qname = node.qualified_name.clone();
 
@@ -1132,11 +1252,19 @@ impl ToolRouter {
             }
         }
 
+        let total_reached = sub.node_indices.len();
+        let truncated = total_reached > total_shown || total_reached >= 1000;
         let mut resp = json!({
             "symbol": qname,
             "max_depth": depth,
-            "impacted_nodes": total_shown,
+            "total_reached": total_reached,
+            "shown": total_shown,
+            "truncated": truncated,
+            "partial_result": truncated,
+            "bfs_limit": 1000,
             "file_groups": grouped,
+            "edge_kinds_used": edge_kinds_used,
+            "include_children": include_children,
         });
         if semantic {
             resp["semantic_impact"] = json!({
@@ -1146,6 +1274,9 @@ impl ToolRouter {
             });
         }
         if !self.has_manual_full_index() {
+            resp["capability_note"] = json!(
+                "manifest-only: structural data incomplete. Run 'atlas index' for full results."
+            );
             resp["note"] = json!(
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
