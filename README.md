@@ -68,10 +68,7 @@ cargo install --path crates/atlas-cli --features "all-languages,mcp"
 
 ```bash
 # Run from your project root
-# Create .atlas/ and initialize the SQLite schema
-atlas init
-
-# Build the first full index
+# Auto initialize the SQLite schema and build the index
 atlas index
 
 # Inspect index health and database statistics
