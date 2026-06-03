@@ -24,5 +24,28 @@
       "name": "Method#0",
       "kind": "method"
     }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "exit",
+      "kind": "normal"
+    }
   ]
 }

@@ -1,48 +1,60 @@
 {
   "symbols": [
     {
-      "name": "main",
+      "name": "readFile",
       "kind": "function"
     },
     {
-      "name": "items",
+      "name": "file",
       "kind": "property"
     },
     {
-      "name": "items",
+      "name": "file",
+      "kind": "variable"
+    },
+    {
+      "name": "reader",
+      "kind": "variable"
+    },
+    {
+      "name": "line",
+      "kind": "property"
+    },
+    {
+      "name": "line",
       "kind": "variable"
     }
   ],
   "references": [
     {
-      "text": "listOf",
+      "text": "File",
       "kind": "call"
     },
     {
-      "text": "println",
+      "text": "file",
       "kind": "call"
     },
     {
-      "text": "items",
+      "text": "file",
+      "kind": "field_access"
+    },
+    {
+      "text": "reader",
+      "kind": "call"
+    },
+    {
+      "text": "reader",
       "kind": "field_access"
     },
     {
       "text": "println",
       "kind": "call"
-    },
-    {
-      "text": "Date",
-      "kind": "call"
     }
   ],
   "imports": [
     {
-      "module": "kotlin.collections.listOf",
-      "imported_name": "listOf"
-    },
-    {
-      "module": "java.util.Date",
-      "imported_name": "Date"
+      "module": "java.io.File",
+      "imported_name": "File"
     }
   ],
   "scopes": [
@@ -51,26 +63,26 @@
       "kind": "file"
     },
     {
-      "name": "Function#56",
+      "name": "Function#21",
       "kind": "function"
     },
     {
-      "name": "Block#67",
+      "name": "Block#36",
       "kind": "block"
     }
   ],
   "callsites": [
     {
-      "caller": "main"
+      "caller": "readFile"
     },
     {
-      "caller": "main"
+      "caller": "readFile"
     },
     {
-      "caller": "main"
+      "caller": "readFile"
     },
     {
-      "caller": "main"
+      "caller": "readFile"
     }
   ],
   "cfg_nodes": [
@@ -85,6 +97,15 @@
     },
     {
       "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "block_exit"
     },
     {
       "kind": "exit"
@@ -108,6 +129,21 @@
     },
     {
       "source_kind": "statement",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "block_exit",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "block_exit",
       "target_kind": "exit",
       "kind": "normal"
     }

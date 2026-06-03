@@ -1501,7 +1501,7 @@ fn test_python_with_lifecycle() {
 fn test_ts_react_cleanup() {
     use atlas_engine::analysis::cfg_graph::CfgGraph;
     use atlas_engine::analysis::{ResourceOpConfig, compose_effects};
-    use atlas_engine::effects::{ConsumptionStyle, PlaceRef, SemanticEffectKind};
+    use atlas_engine::effects::{ConsumptionStyle, SemanticEffectKind};
 
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[(
@@ -1512,47 +1512,64 @@ fn test_ts_react_cleanup() {
     let (store, _stats) = index_files(files);
     let file_id = FileId::generate("react_effect_cleanup.tsx");
 
-    // Find the Timer function
+    // Collect ALL function symbols in the file (arrow functions get
+    // separate symbols with independent CFGs in Full mode).
     let syms = store.find_symbols_by_file(&file_id).unwrap();
-    let timer_sym = syms
+    let fn_syms: Vec<_> = syms
         .iter()
-        .find(|s| s.name == "Timer")
-        .expect("Timer function not found");
+        .filter(|s| {
+            matches!(
+                s.kind,
+                atlas_engine::SymbolKind::Function
+                    | atlas_engine::SymbolKind::Method
+                    | atlas_engine::SymbolKind::Constructor
+            )
+        })
+        .collect();
 
-    // Load CFG
-    let cfg_nodes = store.find_cfg_nodes_by_function(&timer_sym.id).unwrap();
-    assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
-
-    let cfg_edges = store.find_cfg_edges_by_function(&timer_sym.id).unwrap();
-
-    // Build CfgGraph
-    let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
-
-    // Load DataFlow
-    let data_nodes = store.find_data_nodes_by_function(&timer_sym.id).unwrap();
-    let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
-        vec![]
-    } else {
-        let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
-        store
-            .find_dataflow_edges_by_sources(&all_ids)
-            .unwrap_or_default()
-    };
-
-    // Verify CleanupReturn DataNode exists
-    let has_cleanup_return = data_nodes
-        .iter()
-        .any(|dn| dn.kind == atlas_engine::DataNodeKind::CleanupReturn);
     assert!(
-        has_cleanup_return,
-        "Expected a CleanupReturn DataNode for return () => cleanup()"
+        !fn_syms.is_empty(),
+        "Expected at least one function symbol in the file"
     );
 
-    // Run compose_effects
+    // Run compose_effects for every function, collecting all effects
+    // across all scopes.  With the per-node CallContext::ReactEffectCleanup
+    // gating the Deferred marking only applies inside the cleanup arrow
+    // body — not across the entire Timer function.
     let contract = ResourceOpConfig::default_for(atlas_engine::Language::TypeScript);
-    let composition = compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
+    let mut all_effects: Vec<atlas_engine::effects::SemanticEffect> = Vec::new();
 
-    let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
+    for sym in &fn_syms {
+        let cfg_nodes = store.find_cfg_nodes_by_function(&sym.id).unwrap_or_default();
+        if cfg_nodes.is_empty() {
+            continue;
+        }
+        let cfg_edges = store.find_cfg_edges_by_function(&sym.id).unwrap_or_default();
+        let cfg_graph =
+            CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+        let data_nodes = store.find_data_nodes_by_function(&sym.id).unwrap_or_default();
+        let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
+            vec![]
+        } else {
+            let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
+            store
+                .find_dataflow_edges_by_sources(&all_ids)
+                .unwrap_or_default()
+        };
+
+        if cfg_graph.nodes.is_empty() {
+            continue;
+        }
+
+        let composition = compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
+        all_effects.extend(
+            composition
+                .node_effects
+                .values()
+                .flatten()
+                .cloned(),
+        );
+    }
 
     // Assert useEffect → Alloc (MaybeOwned at 0.6 confidence)
     let use_effect_alloc = all_effects.iter().any(|eff| {
@@ -1569,14 +1586,15 @@ fn test_ts_react_cleanup() {
         "Expected an Alloc effect for setInterval"
     );
 
-    // Assert clearInterval → Free (Deferred)
+    // Assert clearInterval → Free (Deferred) — only inside the cleanup
+    // arrow body, which has its own CFG with ReactEffectCleanup context.
     let clear_interval_free = all_effects.iter().any(|eff| {
         matches!(&eff.kind, SemanticEffectKind::Free { callee, .. } if callee == "clearInterval")
             && eff.consumption_style == Some(ConsumptionStyle::Deferred)
     });
     assert!(
         clear_interval_free,
-        "Expected a Deferred Free effect for clearInterval"
+        "Expected a Deferred Free effect for clearInterval (in cleanup arrow scope)"
     );
 
     // Verify ConsumptionStyle::Deferred is set on at least one Free
@@ -2419,9 +2437,61 @@ fun readFile() {
 
         let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
 
-        // Assert: at least one Alloc effect exists.
-        // Note: Kotlin is a GC language without deterministic implicit scope
-        // cleanup, so ScopeExitAnalyzer does NOT produce a Free effect.
+        use atlas_engine::enums::CfgNodeKind;
+        use atlas_engine::enums::CallContext;
+
+        // Verify BlockExit node exists (emitted for Kotlin .use {} blocks)
+        let has_block_exit = cfg_graph
+            .nodes
+            .values()
+            .any(|n| n.kind == CfgNodeKind::BlockExit);
+        assert!(
+            has_block_exit,
+            "CFG should have a BlockExit node for Kotlin .use {{}} block"
+        );
+
+        // Verify a Statement node has KotlinUse context
+        let has_kotlin_use_ctx = cfg_graph
+            .nodes
+            .values()
+            .any(|n| n.call_context == CallContext::KotlinUse);
+        assert!(
+            has_kotlin_use_ctx,
+            "CFG should have a node with KotlinUse call context"
+        );
+
+        // Diagnose: for each Alloc, check which CFG node it's on and whether that node has KotlinUse context
+        eprintln!("=== DIAGNOSTIC: All CFG nodes ===");
+        for (id, node) in &cfg_graph.nodes {
+            eprintln!(
+                "CFG node id={:?} kind={:?} call_context={:?} stmt_range=({},{})",
+                id, node.kind, node.call_context, node.stmt_range.start_byte, node.stmt_range.end_byte
+            );
+        }
+        eprintln!("=== DIAGNOSTIC: All DataNodes ===");
+        for dn in &data_nodes {
+            eprintln!(
+                "DataNode id={:?} kind={:?} name={:?} access_path={:?} range=({},{})",
+                dn.id, dn.kind, dn.name, dn.access_path, dn.range.start_byte, dn.range.end_byte
+            );
+        }
+        eprintln!("=== DIAGNOSTIC: All Alloc effects ===");
+        for eff in all_effects.iter() {
+            if let SemanticEffectKind::Alloc { callee, target } = &eff.kind {
+                let cfg_node = cfg_graph.nodes.get(&eff.cfg_node_id);
+                eprintln!(
+                    "Alloc callee={} target={:?} cfg_node_id={:?} cfg_kind={:?} call_context={:?}",
+                    callee, target, eff.cfg_node_id,
+                    cfg_node.map(|n| n.kind),
+                    cfg_node.map(|n| n.call_context)
+                );
+            }
+        }
+        eprintln!("=== END DIAGNOSTIC ===");
+
+        // Assert: at least one Alloc effect exists for the resource producer.
+        // Kotlin .use {} is now modeled as a context-managed block (like Python with,
+        // Java try-with-resources), so ScopeExitAnalyzer DOES produce a BlockExit Free.
         let has_alloc = all_effects.iter().any(|eff| {
             matches!(&eff.kind, SemanticEffectKind::Alloc { .. })
         });
@@ -2430,6 +2500,18 @@ fun readFile() {
             "Expected at least one Alloc effect for Kotlin .use resource. \
              Found {} total effects: {:?}",
             all_effects.len(),
+            all_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
+        );
+
+        // Verify scope-exit Free at BlockExit for .use-managed resource
+        let has_auto_free = all_effects.iter().any(|eff| {
+            matches!(&eff.kind, SemanticEffectKind::Free { callee, .. }
+                if callee.contains("<block-exit>"))
+        });
+        assert!(
+            has_auto_free,
+            "Expected scope-exit Free at BlockExit for Kotlin .use-managed resource. \
+             Found effects: {:?}",
             all_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
         );
     }
@@ -2459,7 +2541,12 @@ fun readFile() {
 #[cfg(feature = "ruby")]
 mod ruby_tests {
     use super::*;
+    use atlas_engine::analysis::cfg_graph::CfgGraph;
     use atlas_engine::analysis::resource_ops::ResourceOpConfig;
+    use atlas_engine::analysis::compose_effects;
+    use atlas_engine::effects::{SemanticEffectKind};
+    use atlas_engine::enums::CallContext;
+    use atlas_engine::enums::CfgNodeKind;
 
     #[test]
     fn test_ruby_block_resource() {
@@ -2488,6 +2575,64 @@ end
 
         // Verify symbols were extracted
         assert!(!func_sym.id.to_string().is_empty());
+
+        // Load CFG
+        let cfg_nodes = store.find_cfg_nodes_by_function(&func_sym.id).unwrap();
+        assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
+        let cfg_edges = store.find_cfg_edges_by_function(&func_sym.id).unwrap();
+        let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+
+        // Verify BlockExit node exists (emitted for Ruby block calls)
+        let has_block_exit = cfg_graph
+            .nodes
+            .values()
+            .any(|n| n.kind == CfgNodeKind::BlockExit);
+        assert!(has_block_exit, "CFG should have a BlockExit node for Ruby block call");
+
+        // Verify a Statement node has RubyBlock context
+        let has_ruby_block_ctx = cfg_graph
+            .nodes
+            .values()
+            .any(|n| n.call_context == CallContext::RubyBlock);
+        assert!(
+            has_ruby_block_ctx,
+            "CFG should have a node with RubyBlock call context"
+        );
+
+        // Run compose_effects to verify resource operation detection
+        let data_nodes = store.find_data_nodes_by_function(&func_sym.id).unwrap_or_default();
+        let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
+            vec![]
+        } else {
+            let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
+            store
+                .find_dataflow_edges_by_sources(&all_ids)
+                .unwrap_or_default()
+        };
+
+        let contract = ResourceOpConfig::default_for(Language::Ruby);
+        let composition = compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
+
+        let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
+
+        // Verify File.open produces an Alloc effect
+        let has_alloc = all_effects.iter().any(|eff| {
+            matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "File.open")
+        });
+        assert!(
+            has_alloc,
+            "Expected Alloc effect for File.open. Found effects: {:?}",
+            all_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
+        );
+
+        // Verify scope-exit Free at BlockExit (auto-free for block-managed resource)
+        let has_auto_free = all_effects.iter().any(|eff| {
+            matches!(&eff.kind, SemanticEffectKind::Free { callee, .. } if callee.contains("<block-exit>"))
+        });
+        assert!(
+            has_auto_free,
+            "Expected scope-exit Free at BlockExit for Ruby block-managed File.open"
+        );
     }
 
     #[test]
@@ -2498,6 +2643,9 @@ end
         assert!(config.is_producer("File.new"));
         assert!(config.is_producer("TCPSocket.new"));
         assert!(config.is_producer("Net::HTTP.start"));
+        assert!(config.is_producer("IO.open"));
+        assert!(config.is_producer("Tempfile.create"));
+        assert!(config.is_producer("Dir.chdir"));
         // Suffix matches
         assert!(config.is_producer("some.open"));
         assert!(config.is_producer("obj.new"));
@@ -2509,6 +2657,307 @@ end
         // Non-patterns
         assert!(!config.is_producer("free"));
     }
+}
+
+// ────────────────────────────────────────────────────────────────
+// Scope-Exit Cleanup Language Policies (P1#5)
+// ────────────────────────────────────────────────────────────────
+// These tests verify the per-language/per-pattern cleanup eligibility
+// mechanism: compose_effects → run_scope_exit_pass only generates
+// implicit Free effects when the language AND pattern both allow it,
+// or when a context-managed block (PythonWith, JavaTryWith, CSharpUsing)
+// forces cleanup regardless of eligibility.
+
+/// Python `open()` without `with` block should produce an Alloc effect
+/// but NO implicit Free at exit (Python is a GC language without
+/// deterministic scope cleanup; only PythonWith context forces cleanup).
+#[test]
+fn test_python_open_without_with_no_auto_free() {
+    use atlas_engine::analysis::cfg_graph::CfgGraph;
+    use atlas_engine::analysis::{ResourceOpConfig, compose_effects};
+    use atlas_engine::effects::SemanticEffectKind;
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "no_with.py",
+        "def read_file():\n    f = open(\"test.txt\")\n    return f.read()\n",
+    )];
+
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("no_with.py");
+
+    let syms = store.find_symbols_by_file(&file_id).unwrap();
+    let func_sym = syms
+        .iter()
+        .find(|s| s.name == "read_file")
+        .expect("read_file function not found");
+
+    // Load CFG
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&func_sym.id)
+        .unwrap();
+    assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
+    let cfg_edges = store
+        .find_cfg_edges_by_function(&func_sym.id)
+        .unwrap();
+    let cfg_graph =
+        CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+
+    // Load DataFlow
+    let data_nodes = store
+        .find_data_nodes_by_function(&func_sym.id)
+        .unwrap();
+    let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
+        vec![]
+    } else {
+        let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
+        store
+            .find_dataflow_edges_by_sources(&all_ids)
+            .unwrap_or_default()
+    };
+
+    // Run compose_effects with Python contract
+    let contract = ResourceOpConfig::default_for(atlas_engine::Language::Python);
+    let composition = compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
+
+    let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
+
+    // Assert that open() produces an Alloc effect
+    let has_alloc_for_open = all_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "open")
+    });
+    assert!(
+        has_alloc_for_open,
+        "Expected an Alloc effect for open() in Python without 'with'. \
+         Found {} total effects: {:?}",
+        all_effects.len(),
+        all_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
+    );
+
+    // Assert NO Free effect is generated — Python open() without 'with'
+    // should NOT get implicit scope-exit cleanup (implicit_scope_cleanup=false).
+    let has_free = all_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Free { .. })
+    });
+    assert!(
+        !has_free,
+        "Expected NO implicit Free effect for open() without with-block. \
+         Python should not auto-free plain open() calls. \
+         Found Free effects: {:?}",
+        all_effects
+            .iter()
+            .filter(|e| matches!(&e.kind, SemanticEffectKind::Free { .. }))
+            .map(|e| &e.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // Verify the Alloc effect is marked as NOT eligible for implicit cleanup
+    let open_alloc = all_effects.iter().find(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "open")
+    });
+    assert!(
+        open_alloc.is_some_and(|e| e.eligible_for_implicit_cleanup == Some(false)),
+        "Alloc for open() should have eligible_for_implicit_cleanup == Some(false), \
+         got {:?}",
+        open_alloc.map(|e| e.eligible_for_implicit_cleanup)
+    );
+}
+
+/// C `malloc()` without `free()` should produce an Alloc effect but NO
+/// implicit Free at exit — C is a language without deterministic scope
+/// cleanup (implicit_scope_cleanup=false).  Memory management is manual.
+#[cfg(feature = "c")]
+#[test]
+fn test_c_malloc_without_free_no_auto_free() {
+    use atlas_engine::analysis::cfg_graph::CfgGraph;
+    use atlas_engine::analysis::{ResourceOpConfig, compose_effects};
+    use atlas_engine::effects::SemanticEffectKind;
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "alloc_no_free.c",
+        "void f() {\n    void* p = malloc(16);\n}\n",
+    )];
+
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("alloc_no_free.c");
+
+    let syms = store.find_symbols_by_file(&file_id).unwrap();
+    let func_sym = syms
+        .iter()
+        .find(|s| s.name == "f")
+        .expect("function f not found");
+
+    // Load CFG
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&func_sym.id)
+        .unwrap();
+    assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
+    let cfg_edges = store
+        .find_cfg_edges_by_function(&func_sym.id)
+        .unwrap();
+    let cfg_graph =
+        CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+
+    // Load DataFlow
+    let data_nodes = store
+        .find_data_nodes_by_function(&func_sym.id)
+        .unwrap();
+    let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
+        vec![]
+    } else {
+        let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
+        store
+            .find_dataflow_edges_by_sources(&all_ids)
+            .unwrap_or_default()
+    };
+
+    // Run compose_effects with C contract
+    let contract = ResourceOpConfig::default_for(atlas_engine::Language::C);
+    let composition = compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
+
+    let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
+
+    // Assert that malloc() produces an Alloc effect
+    let has_alloc_for_malloc = all_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc")
+    });
+    assert!(
+        has_alloc_for_malloc,
+        "Expected an Alloc effect for malloc() in C. \
+         Found {} total effects: {:?}",
+        all_effects.len(),
+        all_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
+    );
+
+    // Assert NO Free effect — C should NOT auto-free unfreed malloc()
+    // (manual deallocation required, implicit_scope_cleanup=false).
+    let has_free = all_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Free { .. })
+    });
+    assert!(
+        !has_free,
+        "Expected NO implicit Free effect for malloc() without free() in C. \
+         C requires manual free(); no scope-exit cleanup. \
+         Found Free effects: {:?}",
+        all_effects
+            .iter()
+            .filter(|e| matches!(&e.kind, SemanticEffectKind::Free { .. }))
+            .map(|e| &e.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // Verify the Alloc is explicitly ineligible
+    let malloc_alloc = all_effects.iter().find(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc")
+    });
+    assert!(
+        malloc_alloc.is_some_and(|e| e.eligible_for_implicit_cleanup == Some(false)),
+        "Alloc for malloc() should have eligible_for_implicit_cleanup == Some(false), \
+         got {:?}",
+        malloc_alloc.map(|e| e.eligible_for_implicit_cleanup)
+    );
+}
+
+/// C++ `malloc()` without `free()` should NOT get implicit scope-exit Free.
+/// C++ has implicit_scope_cleanup=true at the language level (RAII), but
+/// individual C API patterns like `malloc` are explicitly marked
+/// `implicit_cleanup: false` — manual deallocation is still required for
+/// C library calls, even in C++ code.
+#[cfg(feature = "cpp")]
+#[test]
+fn test_cpp_malloc_without_free_no_auto_free() {
+    use atlas_engine::analysis::cfg_graph::CfgGraph;
+    use atlas_engine::analysis::{ResourceOpConfig, compose_effects};
+    use atlas_engine::effects::SemanticEffectKind;
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "alloc_no_free.cpp",
+        "void f() {\n    void* p = malloc(16);\n}\n",
+    )];
+
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("alloc_no_free.cpp");
+
+    let syms = store.find_symbols_by_file(&file_id).unwrap();
+    let func_sym = syms
+        .iter()
+        .find(|s| s.name == "f")
+        .expect("function f not found");
+
+    // Load CFG
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&func_sym.id)
+        .unwrap();
+    assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
+    let cfg_edges = store
+        .find_cfg_edges_by_function(&func_sym.id)
+        .unwrap();
+    let cfg_graph =
+        CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+
+    // Load DataFlow
+    let data_nodes = store
+        .find_data_nodes_by_function(&func_sym.id)
+        .unwrap();
+    let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
+        vec![]
+    } else {
+        let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
+        store
+            .find_dataflow_edges_by_sources(&all_ids)
+            .unwrap_or_default()
+    };
+
+    // Run compose_effects with C++ contract
+    let contract = ResourceOpConfig::default_for(atlas_engine::Language::Cpp);
+    let composition = compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
+
+    let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
+
+    // Assert that malloc() produces an Alloc effect
+    let has_alloc_for_malloc = all_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc")
+    });
+    assert!(
+        has_alloc_for_malloc,
+        "Expected an Alloc effect for malloc() in C++. \
+         Found {} total effects: {:?}",
+        all_effects.len(),
+        all_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
+    );
+
+    // Assert NO implicit Free — even though C++ has RAII at the language
+    // level, malloc() is a C API pattern explicitly marked ineligible.
+    let has_free = all_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Free { .. })
+    });
+    assert!(
+        !has_free,
+        "Expected NO implicit Free effect for malloc() without free() in C++. \
+         malloc() has implicit_cleanup=false in C++ patterns, even though \
+         C++ has implicit_scope_cleanup=true at the language level. \
+         Found Free effects: {:?}",
+        all_effects
+            .iter()
+            .filter(|e| matches!(&e.kind, SemanticEffectKind::Free { .. }))
+            .map(|e| &e.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // The Alloc must carry eligible_for_implicit_cleanup == Some(false)
+    // — the per-pattern flag overrides the language-level default.
+    let malloc_alloc = all_effects.iter().find(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc")
+    });
+    assert!(
+        malloc_alloc.is_some_and(|e| e.eligible_for_implicit_cleanup == Some(false)),
+        "Alloc for malloc() in C++ should have eligible_for_implicit_cleanup == Some(false). \
+         The per-pattern implicit_cleanup:false must override the C++ language-level \
+         implicit_scope_cleanup:true. Got {:?}",
+        malloc_alloc.map(|e| e.eligible_for_implicit_cleanup)
+    );
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -2570,4 +3019,299 @@ function read_file() {
         assert!(!config.is_producer("free"));
         assert_eq!(config.is_consumer("open"), None);
     }
+}
+
+// ────────────────────────────────────────────────────────────────
+// C E2E Semantic Effects Tests
+// ────────────────────────────────────────────────────────────────
+
+/// C `malloc()` without `free()` — full pipeline from parse through
+/// compose_effects.  Iterates over all function symbols in the file.
+/// C has no deterministic scope cleanup, so no implicit Free is expected.
+#[cfg(feature = "c")]
+#[test]
+fn test_c_parse_to_effects_no_auto_free() {
+    use atlas_engine::analysis::cfg_graph::CfgGraph;
+    use atlas_engine::analysis::{ResourceOpConfig, compose_effects};
+    use atlas_engine::effects::SemanticEffectKind;
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "test.c",
+        "void f() {\n    void* p = malloc(16);\n}\n",
+    )];
+
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("test.c");
+
+    let syms = store.find_symbols_by_file(&file_id).unwrap();
+    let fn_syms: Vec<_> = syms
+        .iter()
+        .filter(|s| matches!(s.kind, atlas_engine::SymbolKind::Function))
+        .collect();
+    assert!(!fn_syms.is_empty(), "Expected at least one function symbol");
+
+    let contract = ResourceOpConfig::default_for(atlas_engine::Language::C);
+    let mut all_effects: Vec<atlas_engine::effects::SemanticEffect> = Vec::new();
+
+    for sym in &fn_syms {
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .unwrap_or_default();
+        if cfg_nodes.is_empty() {
+            continue;
+        }
+        let cfg_edges = store
+            .find_cfg_edges_by_function(&sym.id)
+            .unwrap_or_default();
+        let cfg_graph =
+            CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+        let data_nodes = store
+            .find_data_nodes_by_function(&sym.id)
+            .unwrap_or_default();
+        let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
+            vec![]
+        } else {
+            let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
+            store
+                .find_dataflow_edges_by_sources(&all_ids)
+                .unwrap_or_default()
+        };
+
+        if cfg_graph.nodes.is_empty() {
+            continue;
+        }
+
+        let composition = compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
+        all_effects.extend(
+            composition
+                .node_effects
+                .values()
+                .flatten()
+                .cloned(),
+        );
+    }
+
+    // Assert: Alloc effect EXISTS for malloc
+    let has_alloc_for_malloc = all_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc")
+    });
+    assert!(
+        has_alloc_for_malloc,
+        "Expected an Alloc effect for malloc() in C. \
+         Found {} total effects: {:?}",
+        all_effects.len(),
+        all_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
+    );
+
+    // Assert: NO Free effect is produced (no implicit cleanup in C)
+    let has_free = all_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Free { .. })
+    });
+    assert!(
+        !has_free,
+        "Expected NO implicit Free effect for malloc() without free() in C. \
+         C requires manual free(); no scope-exit cleanup. \
+         Found Free effects: {:?}",
+        all_effects
+            .iter()
+            .filter(|e| matches!(&e.kind, SemanticEffectKind::Free { .. }))
+            .map(|e| &e.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // Assert: Alloc has eligible_for_implicit_cleanup == Some(false)
+    let malloc_alloc = all_effects.iter().find(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc")
+    });
+    assert!(
+        malloc_alloc.is_some_and(|e| e.eligible_for_implicit_cleanup == Some(false)),
+        "Alloc for malloc() should have eligible_for_implicit_cleanup == Some(false), \
+         got {:?}",
+        malloc_alloc.map(|e| e.eligible_for_implicit_cleanup)
+    );
+}
+
+/// C `malloc()` with explicit `free(p)` in the same function.
+/// Verifies that both Alloc and Free effects are produced, and the Free
+/// carries ConsumptionStyle::ExplicitCall (not Deferred or ContextManaged).
+#[cfg(feature = "c")]
+#[test]
+fn test_c_parse_to_effects_with_explicit_free() {
+    use atlas_engine::analysis::cfg_graph::CfgGraph;
+    use atlas_engine::analysis::{ResourceOpConfig, compose_effects};
+    use atlas_engine::effects::{ConsumptionStyle, SemanticEffectKind};
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "with_free.c",
+        "void f() {\n    void* p = malloc(16);\n    free(p);\n}\n",
+    )];
+
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("with_free.c");
+
+    let syms = store.find_symbols_by_file(&file_id).unwrap();
+    let func_sym = syms
+        .iter()
+        .find(|s| s.name == "f")
+        .expect("function f not found");
+
+    // Load CFG
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&func_sym.id)
+        .unwrap();
+    assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
+    let cfg_edges = store
+        .find_cfg_edges_by_function(&func_sym.id)
+        .unwrap();
+    let cfg_graph =
+        CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+
+    // Load DataFlow
+    let data_nodes = store
+        .find_data_nodes_by_function(&func_sym.id)
+        .unwrap();
+    let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
+        vec![]
+    } else {
+        let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
+        store
+            .find_dataflow_edges_by_sources(&all_ids)
+            .unwrap_or_default()
+    };
+
+    // Run compose_effects with C contract
+    let contract = ResourceOpConfig::default_for(atlas_engine::Language::C);
+    let composition = compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
+
+    let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
+
+    // Assert: Alloc exists for malloc
+    let has_alloc_for_malloc = all_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc")
+    });
+    assert!(
+        has_alloc_for_malloc,
+        "Expected an Alloc effect for malloc(). \
+         Found {} total effects: {:?}",
+        all_effects.len(),
+        all_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
+    );
+
+    // Assert: Free exists for free(p)
+    let free_effect = all_effects.iter().find(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Free { callee, .. } if callee == "free")
+    });
+    assert!(
+        free_effect.is_some(),
+        "Expected a Free effect for free(p). \
+         Found {} total effects: {:?}",
+        all_effects.len(),
+        all_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
+    );
+
+    // Assert: Free has consumption_style == ExplicitCall
+    assert_eq!(
+        free_effect.unwrap().consumption_style,
+        Some(ConsumptionStyle::ExplicitCall),
+        "Free for free(p) should have ExplicitCall consumption style, got {:?}",
+        free_effect.unwrap().consumption_style
+    );
+}
+
+/// C++ code calling the C API `fopen()` without `fclose()` should produce
+/// an Alloc but NO implicit Free.  Even though C++ has RAII at the language
+/// level, C API patterns like `fopen` are explicitly marked ineligible for
+/// implicit cleanup — manual `fclose()` is still required.
+#[cfg(feature = "cpp")]
+#[test]
+fn test_cpp_c_api_no_auto_free() {
+    use atlas_engine::analysis::cfg_graph::CfgGraph;
+    use atlas_engine::analysis::{ResourceOpConfig, compose_effects};
+    use atlas_engine::effects::SemanticEffectKind;
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "fopen_test.cpp",
+        "#include <cstdio>\nvoid f() {\n    FILE* fp = fopen(\"test.txt\", \"r\");\n}\n",
+    )];
+
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("fopen_test.cpp");
+
+    let syms = store.find_symbols_by_file(&file_id).unwrap();
+    let func_sym = syms
+        .iter()
+        .find(|s| s.name == "f")
+        .expect("function f not found");
+
+    // Load CFG
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&func_sym.id)
+        .unwrap();
+    assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
+    let cfg_edges = store
+        .find_cfg_edges_by_function(&func_sym.id)
+        .unwrap();
+    let cfg_graph =
+        CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+
+    // Load DataFlow
+    let data_nodes = store
+        .find_data_nodes_by_function(&func_sym.id)
+        .unwrap();
+    let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
+        vec![]
+    } else {
+        let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
+        store
+            .find_dataflow_edges_by_sources(&all_ids)
+            .unwrap_or_default()
+    };
+
+    // Run compose_effects with C++ contract
+    let contract = ResourceOpConfig::default_for(atlas_engine::Language::Cpp);
+    let composition = compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
+
+    let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
+
+    // Assert: Alloc exists for fopen
+    let has_alloc_for_fopen = all_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "fopen")
+    });
+    assert!(
+        has_alloc_for_fopen,
+        "Expected an Alloc effect for fopen() in C++. \
+         Found {} total effects: {:?}",
+        all_effects.len(),
+        all_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
+    );
+
+    // Assert: NO Free for fclose (C API pattern excluded from C++ auto-free)
+    let has_free = all_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Free { .. })
+    });
+    assert!(
+        !has_free,
+        "Expected NO implicit Free effect for fopen() without fclose() in C++. \
+         C API patterns like fopen are explicitly excluded from C++ implicit cleanup. \
+         Found Free effects: {:?}",
+        all_effects
+            .iter()
+            .filter(|e| matches!(&e.kind, SemanticEffectKind::Free { .. }))
+            .map(|e| &e.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // Assert: Alloc has eligible_for_implicit_cleanup == Some(false)
+    let fopen_alloc = all_effects.iter().find(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "fopen")
+    });
+    assert!(
+        fopen_alloc.is_some_and(|e| e.eligible_for_implicit_cleanup == Some(false)),
+        "Alloc for fopen() should have eligible_for_implicit_cleanup == Some(false), \
+         got {:?}",
+        fopen_alloc.map(|e| e.eligible_for_implicit_cleanup)
+    );
 }

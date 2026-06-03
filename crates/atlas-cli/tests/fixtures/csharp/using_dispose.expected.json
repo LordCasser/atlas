@@ -1,0 +1,178 @@
+{
+  "symbols": [
+    {
+      "name": "ResourceDemo",
+      "kind": "class"
+    },
+    {
+      "name": "ReadFile",
+      "kind": "method"
+    },
+    {
+      "name": "buffer",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "System",
+      "kind": "type_reference"
+    },
+    {
+      "text": "System",
+      "kind": "type_reference"
+    },
+    {
+      "text": "IO",
+      "kind": "type_reference"
+    },
+    {
+      "text": "ResourceDemo",
+      "kind": "type_reference"
+    },
+    {
+      "text": "ReadFile",
+      "kind": "type_reference"
+    },
+    {
+      "text": "stream",
+      "kind": "type_reference"
+    },
+    {
+      "text": "FileStream",
+      "kind": "instantiation"
+    },
+    {
+      "text": "FileStream",
+      "kind": "type_reference"
+    },
+    {
+      "text": "FileMode",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Open",
+      "kind": "field_access"
+    },
+    {
+      "text": "Open",
+      "kind": "type_reference"
+    },
+    {
+      "text": "buffer",
+      "kind": "type_reference"
+    },
+    {
+      "text": "stream",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Read",
+      "kind": "call"
+    },
+    {
+      "text": "Read",
+      "kind": "field_access"
+    },
+    {
+      "text": "Read",
+      "kind": "type_reference"
+    },
+    {
+      "text": "buffer",
+      "kind": "type_reference"
+    },
+    {
+      "text": "buffer",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Length",
+      "kind": "field_access"
+    },
+    {
+      "text": "Length",
+      "kind": "type_reference"
+    }
+  ],
+  "imports": [
+    {
+      "module": "System.IO",
+      "imported_name": "IO"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Class#32",
+      "kind": "class"
+    },
+    {
+      "name": "Method#57",
+      "kind": "method"
+    },
+    {
+      "name": "Block#77",
+      "kind": "block"
+    },
+    {
+      "name": "Block#158",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "ReadFile"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "block_exit"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "block_exit",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "block_exit",
+      "target_kind": "exit",
+      "kind": "normal"
+    }
+  ]
+}

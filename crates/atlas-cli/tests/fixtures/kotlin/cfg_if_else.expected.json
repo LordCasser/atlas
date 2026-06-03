@@ -54,7 +54,19 @@
       "kind": "entry"
     },
     {
+      "kind": "branch"
+    },
+    {
       "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "return"
     },
     {
       "kind": "exit"
@@ -63,12 +75,32 @@
   "cfg_edges": [
     {
       "source_kind": "entry",
+      "target_kind": "branch",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "branch",
       "target_kind": "statement",
+      "kind": "true_branch"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "statement",
+      "kind": "false_branch"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
       "kind": "normal"
     },
     {
       "source_kind": "statement",
-      "target_kind": "exit",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "return",
       "kind": "normal"
     }
   ]

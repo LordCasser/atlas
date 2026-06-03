@@ -38,7 +38,16 @@
       "kind": "entry"
     },
     {
+      "kind": "loop"
+    },
+    {
       "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "return"
     },
     {
       "kind": "exit"
@@ -47,12 +56,27 @@
   "cfg_edges": [
     {
       "source_kind": "entry",
+      "target_kind": "loop",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "loop",
       "target_kind": "statement",
       "kind": "normal"
     },
     {
       "source_kind": "statement",
-      "target_kind": "exit",
+      "target_kind": "loop",
+      "kind": "loop_back"
+    },
+    {
+      "source_kind": "loop",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "return",
       "kind": "normal"
     }
   ]

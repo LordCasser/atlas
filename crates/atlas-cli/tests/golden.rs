@@ -619,3 +619,27 @@ fn golden_rust_scope_exit() {
 fn golden_java_try_resource() {
     run_golden("java", "try_resource", "java", Language::Java);
 }
+
+#[cfg(feature = "csharp")]
+#[test]
+fn golden_csharp_using_dispose() {
+    run_golden("csharp", "using_dispose", "cs", Language::CSharp);
+}
+
+#[cfg(feature = "kotlin")]
+#[test]
+fn golden_kotlin_use_resource() {
+    run_golden("kotlin", "use_resource", "kt", Language::Kotlin);
+}
+
+#[cfg(feature = "ruby")]
+#[test]
+fn golden_ruby_block_resource() {
+    run_golden("ruby", "block_resource", "rb", Language::Ruby);
+}
+
+#[cfg(feature = "php")]
+#[test]
+fn golden_php_procedural_resource() {
+    run_golden("php", "procedural_resource", "php", Language::Php);
+}

@@ -6,6 +6,7 @@
 
 use atlas_cli::commands::index;
 use atlas_cli::runtime::{CommandContext, DbMode};
+use atlas_engine::enums::DataNodeKind;
 use atlas_engine::Store;
 use atlas_engine::{layer, status};
 use std::sync::Arc;
@@ -323,6 +324,149 @@ fn p2_lazy_ensure_for_symbol_by_name() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// P3: Lazy Dataflow Capability Mask — CFG Gate (P1#4 regression test)
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Full DB round-trip: structural index → lazy dataflow → read
+/// `unit_extraction_state.capability_mask` and assert the CFG bit
+/// follows the language profile + actual-CFG-nodes gate (loader.rs lines
+/// 240-242).
+///
+/// Regression: if the gate is removed, PHP records would erroneously
+/// carry the CFG bit and this test will fail.
+#[test]
+#[cfg(all(feature = "typescript", feature = "php"))]
+fn p3_capability_mask_cfg_gated_by_language() {
+    use atlas_engine::CapabilityMask;
+    use atlas_engine::LazyDataflowService;
+
+    // TypeScript function with if/else — should produce CFG nodes.
+    // PHP function — cfg is FeatureSupport::unsupported in the profile.
+    let tmp = setup_project(&[
+        (
+            "process.ts",
+            "function process(x: number): number {\n\
+                 if (x > 0) {\n\
+                     return x * 2;\n\
+                 }\n\
+                 return 0;\n\
+             }\n",
+        ),
+        (
+            "greet.php",
+            "<?php\n\
+             function greet($name) {\n\
+                 return \"Hello, \" . $name;\n\
+             }\n",
+        ),
+    ]);
+    let project = tmp.path().to_string_lossy().to_string();
+
+    // 1. Run manifest + structural index (produces function symbols)
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
+    index::run(&project, &[], &[], &[], "structural").expect("atlas index");
+
+    let store = open_store(&tmp);
+    let files = store.list_files().unwrap();
+    let ts_file = files
+        .iter()
+        .find(|f| f.path.ends_with(".ts"))
+        .expect("TS file");
+    let php_file = files
+        .iter()
+        .find(|f| f.path.ends_with(".php"))
+        .expect("PHP file");
+
+    let svc = LazyDataflowService::new(store.clone(), Some(tmp.path().to_path_buf()));
+
+    // ── TypeScript: trigger lazy dataflow ─────────────────────────────
+    let ts_symbols = store.find_symbols_by_file(&ts_file.file_id).unwrap();
+    let ts_fn = ts_symbols
+        .iter()
+        .find(|s| s.name == "process")
+        .expect("TS function 'process' not found in symbols");
+    let ts_window = svc
+        .ensure_for_function(&ts_fn.id, None)
+        .expect("TS lazy dataflow");
+    assert!(
+        ts_window.units_built >= 1,
+        "TS dataflow should build at least 1 unit"
+    );
+
+    // Compute TS unit_id (first 16 bytes of symbol_id bytes)
+    let mut ts_unit_id = [0u8; 16];
+    ts_unit_id.copy_from_slice(&ts_fn.id.as_bytes()[..16]);
+    let ts_state = store
+        .get_unit_extraction_state(&ts_file.file_id, &ts_unit_id, layer::DATAFLOW)
+        .unwrap()
+        .expect("TS unit extraction state should exist after lazy dataflow");
+    let ts_mask = ts_state.capability_mask;
+    assert!(
+        ts_mask.has(CapabilityMask::DATAFLOW),
+        "TS must have DATAFLOW bit"
+    );
+    assert!(
+        ts_mask.has(CapabilityMask::MANIFEST_BIT),
+        "TS must have MANIFEST bit"
+    );
+    assert!(
+        ts_mask.has(CapabilityMask::STRUCTURAL_BIT),
+        "TS must have STRUCTURAL bit"
+    );
+    assert!(
+        ts_mask.has(CapabilityMask::CALL_EDGES),
+        "TS must have CALL_EDGES bit"
+    );
+    assert!(
+        ts_mask.has(CapabilityMask::CFG),
+        "TS function with control flow must have CFG bit set"
+    );
+
+    // ── PHP: trigger lazy dataflow ────────────────────────────────────
+    let php_symbols = store.find_symbols_by_file(&php_file.file_id).unwrap();
+    let php_fn = php_symbols
+        .iter()
+        .find(|s| s.name == "greet")
+        .expect("PHP function 'greet' not found in symbols");
+    let php_window = svc
+        .ensure_for_function(&php_fn.id, None)
+        .expect("PHP lazy dataflow");
+    assert!(
+        php_window.units_built >= 1,
+        "PHP dataflow should build at least 1 unit"
+    );
+
+    // Compute PHP unit_id
+    let mut php_unit_id = [0u8; 16];
+    php_unit_id.copy_from_slice(&php_fn.id.as_bytes()[..16]);
+    let php_state = store
+        .get_unit_extraction_state(&php_file.file_id, &php_unit_id, layer::DATAFLOW)
+        .unwrap()
+        .expect("PHP unit extraction state should exist after lazy dataflow");
+    let php_mask = php_state.capability_mask;
+    assert!(
+        php_mask.has(CapabilityMask::DATAFLOW),
+        "PHP must have DATAFLOW bit"
+    );
+    assert!(
+        php_mask.has(CapabilityMask::MANIFEST_BIT),
+        "PHP must have MANIFEST bit"
+    );
+    assert!(
+        php_mask.has(CapabilityMask::STRUCTURAL_BIT),
+        "PHP must have STRUCTURAL bit"
+    );
+    assert!(
+        php_mask.has(CapabilityMask::CALL_EDGES),
+        "PHP must have CALL_EDGES bit"
+    );
+    assert!(
+        !php_mask.has(CapabilityMask::CFG),
+        "PHP must NOT have CFG bit — language profile declares cfg as unsupported"
+    );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // Constants
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -334,4 +478,111 @@ fn layer_constants_match_strings() {
     assert_eq!(status::COMPLETE, "complete");
     assert_eq!(status::PARTIAL, "partial");
     assert_eq!(status::FAILED, "failed");
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// P2: Lazy Dataflow — Callsite ID remap (P0#1)
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Verify that CallArg DataNodes produced by lazy dataflow extraction carry
+/// real structural CallsiteIds, not provisional byte-offset values.
+///
+/// **Background**: LazyDataflow mode skips callsite extraction (mode.rs:27),
+/// so CallArg DataNodes initially receive provisional `CallsiteId::from_file_byte`
+/// IDs.  The loader (`loader.rs:160-210`) remaps them to real `CallsiteId::generate`
+/// IDs by querying structural callsites already in the DB.
+///
+/// **Regression**: Without the cs_id_map remap, this test FAILS because
+/// provisional byte-offset IDs never match real structural CallsiteIds.
+#[test]
+fn p2_lazy_dataflow_callsite_id_remap() {
+    // ── Setup: TypeScript with a call chain that produces CallArg DataNodes ──
+    // multiply(a, b) returns a*b; caller(x) calls multiply(x, 2) with two args.
+    let tmp = setup_project(&[(
+        "lib.ts",
+        "function multiply(a: number, b: number): number {\n\
+         \x20   return a * b;\n\
+         }\n\
+         \n\
+         function caller(x: number): number {\n\
+         \x20   const result = multiply(x, 2);\n\
+         \x20   return result;\n\
+         }\n",
+    )]);
+    let project = tmp.path().to_string_lossy().to_string();
+
+    // Step 1: Structural index → produces real Callsites (with real CallsiteIds)
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
+    index::run(&project, &[], &[], &[], "structural").expect("atlas index structural");
+
+    let store = open_store(&tmp);
+    let files = store.list_files().unwrap();
+    let fid = files[0].file_id;
+
+    // Precondition: structural callsites must exist (e.g. multiply(x, 2))
+    let cs_structural: Vec<_> = store.find_callsites_by_file(&fid).unwrap();
+    assert!(
+        !cs_structural.is_empty(),
+        "structural index must produce at least one callsite"
+    );
+    let structural_cs_ids: std::collections::HashSet<_> =
+        cs_structural.iter().map(|cs| cs.id).collect();
+
+    // No dataflow before lazy
+    assert!(
+        store.find_data_nodes_by_file(&fid).unwrap().is_empty(),
+        "no data nodes before lazy dataflow"
+    );
+
+    // Step 2: Trigger lazy dataflow for the 'caller' function
+    let symbols = store.find_symbols_by_name("caller").unwrap();
+    assert!(!symbols.is_empty(), "'caller' symbol not found after structural index");
+    let caller_sym_id = symbols[0].id;
+
+    let svc = atlas_engine::LazyDataflowService::new(
+        store.clone(),
+        Some(tmp.path().to_path_buf()),
+    );
+    let _window = svc
+        .ensure_for_function(&caller_sym_id, None)
+        .expect("lazy dataflow ensure_for_function");
+
+    // Step 3: Verify data nodes exist after lazy extraction
+    let dn_after = store.find_data_nodes_by_file(&fid).unwrap();
+    assert!(
+        !dn_after.is_empty(),
+        "data nodes must exist after lazy dataflow"
+    );
+
+    // Step 4: THE KEY ASSERTION — find CallArg DataNodes and verify their
+    // callsite_ids match real structural CallsiteIds (not provisional
+    // byte-offset values from extraction).
+    //
+    // Before the P0#1 fix: CallArg DataNodes would carry provisional
+    // CallsiteId::from_file_byte(file_id, byte_offset) values, which
+    // NEVER match the structural CallsiteId::generate(ref_id, caller,
+    // byte_offset) values stored in the callsites table.
+    let call_arg_nodes: Vec<_> = dn_after
+        .iter()
+        .filter(|dn| dn.kind == DataNodeKind::CallArg)
+        .collect();
+    assert!(
+        !call_arg_nodes.is_empty(),
+        "must have at least one CallArg DataNode (from multiply(x, 2) call)"
+    );
+
+    for dn in &call_arg_nodes {
+        assert!(
+            dn.callsite_id.is_some(),
+            "CallArg DataNode must have a callsite_id after lazy dataflow"
+        );
+        let cs_id = dn.callsite_id.unwrap();
+        assert!(
+            structural_cs_ids.contains(&cs_id),
+            "CallArg DataNode callsite_id {cs_id:?} must match a real structural CallsiteId.\n\
+             Structural callsite IDs: {structural_cs_ids:?}\n\
+             Without the cs_id_map remap (loader.rs L160-210), CallArg DataNodes carry\n\
+             provisional byte-offset CallsiteIds that never match structural IDs."
+        );
+    }
 }

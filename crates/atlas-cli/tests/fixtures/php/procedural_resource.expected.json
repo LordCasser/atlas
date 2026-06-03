@@ -1,0 +1,103 @@
+{
+  "symbols": [
+    {
+      "name": "read_file",
+      "kind": "function"
+    },
+    {
+      "name": "db_query",
+      "kind": "function"
+    }
+  ],
+  "references": [
+    {
+      "text": "fopen",
+      "kind": "call"
+    },
+    {
+      "text": "fread",
+      "kind": "call"
+    },
+    {
+      "text": "filesize",
+      "kind": "call"
+    },
+    {
+      "text": "fclose",
+      "kind": "call"
+    },
+    {
+      "text": "mysqli_connect",
+      "kind": "call"
+    },
+    {
+      "text": "mysqli_query",
+      "kind": "call"
+    },
+    {
+      "text": "mysqli_close",
+      "kind": "call"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#6",
+      "kind": "function"
+    },
+    {
+      "name": "Block#27",
+      "kind": "block"
+    },
+    {
+      "name": "Conditional#71",
+      "kind": "conditional"
+    },
+    {
+      "name": "Block#84",
+      "kind": "block"
+    },
+    {
+      "name": "Function#177",
+      "kind": "function"
+    },
+    {
+      "name": "Block#197",
+      "kind": "block"
+    },
+    {
+      "name": "Conditional#266",
+      "kind": "conditional"
+    },
+    {
+      "name": "Block#277",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "read_file"
+    },
+    {
+      "caller": "read_file"
+    },
+    {
+      "caller": "read_file"
+    },
+    {
+      "caller": "read_file"
+    },
+    {
+      "caller": "db_query"
+    },
+    {
+      "caller": "db_query"
+    },
+    {
+      "caller": "db_query"
+    }
+  ]
+}
