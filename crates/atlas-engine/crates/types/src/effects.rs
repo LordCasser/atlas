@@ -37,6 +37,12 @@ pub struct SemanticEffect {
     /// Human-readable description of the effect's origin (e.g., "React effect cleanup return").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Whether this Alloc is eligible for implicit scope-exit cleanup.
+    /// `None` = not set (backward compat: old data treated as eligible).
+    /// `Some(true)` = eligible, `Some(false)` = not eligible.
+    /// Non-Alloc effects ignore this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eligible_for_implicit_cleanup: Option<bool>,
 }
 
 // Semantic identity is determined by id alone; confidence is an annotation
@@ -163,6 +169,13 @@ pub trait OwnershipContract: Send + Sync {
     /// (appropriate for GC languages without deterministic finalization).
     fn supports_implicit_scope_cleanup(&self) -> bool {
         false
+    }
+
+    /// Per-callee eligibility for implicit scope-exit cleanup.
+    /// Default delegates to `supports_implicit_scope_cleanup()`.
+    /// Override to implement per-pattern gating (e.g., C++ RAII vs C API allocs).
+    fn eligible_for_implicit_cleanup(&self, _callee: &str) -> bool {
+        self.supports_implicit_scope_cleanup()
     }
 }
 

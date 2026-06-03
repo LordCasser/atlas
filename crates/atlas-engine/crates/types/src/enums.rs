@@ -368,6 +368,12 @@ pub enum CallContext {
     JavaTryWith,
     /// C# `using` statement — call executes in a context-managed block.
     CSharpUsing,
+    /// React useEffect cleanup return body — frees inside are deferred.
+    ReactEffectCleanup,
+    /// Ruby block-managed resource — allocs inside get auto-free at block exit.
+    RubyBlock,
+    /// Kotlin `.use {}` block — allocs inside get auto-free at block exit.
+    KotlinUse,
 }
 
 impl CallContext {
@@ -379,6 +385,9 @@ impl CallContext {
             Self::PythonWith => "python_with",
             Self::JavaTryWith => "java_try_with",
             Self::CSharpUsing => "csharp_using",
+            Self::ReactEffectCleanup => "react_effect_cleanup",
+            Self::RubyBlock => "ruby_block",
+            Self::KotlinUse => "kotlin_use",
         }
     }
 
@@ -391,6 +400,9 @@ impl CallContext {
             "python_with" => Some(Self::PythonWith),
             "java_try_with" => Some(Self::JavaTryWith),
             "csharp_using" => Some(Self::CSharpUsing),
+            "react_effect_cleanup" => Some(Self::ReactEffectCleanup),
+            "ruby_block" => Some(Self::RubyBlock),
+            "kotlin_use" => Some(Self::KotlinUse),
             _ => None,
         }
     }

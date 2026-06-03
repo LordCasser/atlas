@@ -911,70 +911,62 @@ mod profiles {
     // now captured via postfixExpression(fieldAccess, callSuffix) pattern.
 
     fn cangjie_profile() -> LanguageCapabilityProfile {
+        let fm = FeatureMatrix {
+            symbols: FeatureSupport::supported_with_confidence(0.65),
+            references: FeatureSupport::supported_with_confidence(0.65),
+            imports: FeatureSupport::supported_with_confidence(0.65),
+            scopes: FeatureSupport::supported_with_confidence(0.65),
+            call_graph: FeatureSupport::supported_with_limitations(
+                0.65,
+                vec!["simple function calls + method calls (obj.method())"],
+            ),
+            lexical_bindings: FeatureSupport::supported_with_limitations(
+                0.65,
+                vec!["basic parameter/local binding extraction"],
+            ),
+            local_dataflow: FeatureSupport::supported_with_limitations(
+                0.65,
+                vec!["AST-driven local dataflow"],
+            ),
+            use_def: FeatureSupport::supported_with_limitations(
+                0.65,
+                vec!["basic use-def via lexical bindings + dataflow"],
+            ),
+            field_access: FeatureSupport::supported_with_limitations(
+                0.55,
+                vec!["basic field access capture"],
+            ),
+            call_arguments: FeatureSupport::supported_with_limitations(
+                0.65,
+                vec!["basic call argument capture"],
+            ),
+            returns_flow: FeatureSupport::supported_with_limitations(
+                0.65,
+                vec!["basic return value capture"],
+            ),
+            cfg: FeatureSupport::supported_with_limitations(
+                0.60,
+                vec!["Control-flow graph with branch/loop body traversal implemented"],
+            ),
+            interprocedural_summaries: FeatureSupport::supported_with_limitations(
+                0.65,
+                vec![
+                    "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall basic)",
+                ],
+            ),
+        };
         LanguageCapabilityProfile {
             language: "cangjie".into(),
             capability_level: CapabilityLevel::DataflowFull,
-            supported_features: vec![
-                "symbol_extraction".into(),
-                "reference_extraction".into(),
-                "import_resolution".into(),
-                "call_graph".into(),
-                "lexical_bindings".into(),
-                "local_dataflow".into(),
-                "use_def".into(),
-                "interprocedural_dataflow".into(),
-            ],
-            unsupported_features: vec![],
+            supported_features: fm.supported_feature_names(),
+            unsupported_features: fm.unsupported_feature_names(),
             limitations: vec![
                 "AST-driven local dataflow with basic parameter/local/return/call capture".into(),
                 "method call targets now captured (simple + obj.method() patterns)".into(),
                 "scope-chain-aware binding not implemented".into(),
             ],
             confidence_floor: 0.65,
-            features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.65),
-                references: FeatureSupport::supported_with_confidence(0.65),
-                imports: FeatureSupport::supported_with_confidence(0.65),
-                scopes: FeatureSupport::supported_with_confidence(0.65),
-                call_graph: FeatureSupport::supported_with_limitations(
-                    0.65,
-                    vec!["simple function calls + method calls (obj.method())"],
-                ),
-                lexical_bindings: FeatureSupport::supported_with_limitations(
-                    0.65,
-                    vec!["basic parameter/local binding extraction"],
-                ),
-                local_dataflow: FeatureSupport::supported_with_limitations(
-                    0.65,
-                    vec!["AST-driven local dataflow"],
-                ),
-                use_def: FeatureSupport::supported_with_limitations(
-                    0.65,
-                    vec!["basic use-def via lexical bindings + dataflow"],
-                ),
-                field_access: FeatureSupport::supported_with_limitations(
-                    0.55,
-                    vec!["basic field access capture"],
-                ),
-                call_arguments: FeatureSupport::supported_with_limitations(
-                    0.65,
-                    vec!["basic call argument capture"],
-                ),
-                returns_flow: FeatureSupport::supported_with_limitations(
-                    0.65,
-                    vec!["basic return value capture"],
-                ),
-                cfg: FeatureSupport::supported_with_limitations(
-                    0.60,
-                    vec!["Control-flow graph with branch/loop body traversal implemented"],
-                ),
-                interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.65,
-                    vec![
-                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall basic)",
-                    ],
-                ),
-            }),
+            features: Some(fm),
         }
     }
 
@@ -1235,9 +1227,8 @@ mod profiles {
     // ---- Ruby (DataflowFull) -------------------------------------------------
     // NOTE: ArgToParam bridge fires (fx17 passes); ReturnToCall bridge (fx18) and
     //       basic local dataflow (fx32) also verified.  Upgraded to DataflowFull;
-    //       gaps tracked via golden fixtures.
-    //       Confidence raised from 0.62 to 0.65: block/yield gap documented in
-    //       ruby.rs frontend; structured gap tracking in place.
+    //       gaps tracked via golden fixtures.  CFG support added for
+    //       block-managed resource lifecycle (File.open { |f| ... }).
     fn ruby_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "ruby".into(),
@@ -1254,8 +1245,9 @@ mod profiles {
                 "call_arguments".into(),
                 "return_flow".into(),
                 "interprocedural_dataflow".into(),
+                "cfg".into(),
             ],
-            unsupported_features: vec!["cfg".into(), "scope_aware_binding".into()],
+            unsupported_features: vec!["scope_aware_binding".into()],
             limitations: vec![
                 "name-based binding (no proper shadowing)".into(),
                 "AST-driven local dataflow with language-specific gaps".into(),
@@ -1284,7 +1276,10 @@ mod profiles {
                 field_access: FeatureSupport::supported_with_confidence(0.65),
                 call_arguments: FeatureSupport::supported_with_confidence(0.65),
                 returns_flow: FeatureSupport::supported_with_confidence(0.65),
-                cfg: FeatureSupport::unsupported("CFG builder not implemented for Ruby"),
+                cfg: FeatureSupport::supported_with_limitations(
+                    0.65,
+                    vec!["CFG with block body traversal implemented for Ruby block-managed resources"],
+                ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.65,
                     vec![

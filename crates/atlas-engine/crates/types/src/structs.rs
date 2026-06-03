@@ -759,7 +759,6 @@ impl CapabilityMask {
                     mask.set(Self::MANIFEST);
                     mask.set(Self::STRUCTURAL);
                     mask.set(Self::CALL_EDGES);
-                    mask.set(Self::CFG);
                     mask.set(Self::DATAFLOW);
                 }
                 "cfg" => mask.set(Self::CFG),
@@ -973,7 +972,7 @@ mod tests {
     fn test_capability_mask_from_layers_dataflow() {
         let mask = CapabilityMask::from_layers(&["dataflow"]);
         assert!(mask.has(CapabilityMask::DATAFLOW));
-        assert!(mask.has(CapabilityMask::CFG));
+        assert!(!mask.has(CapabilityMask::CFG));
         assert!(mask.has(CapabilityMask::STRUCTURAL));
     }
 
