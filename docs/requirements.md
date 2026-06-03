@@ -58,8 +58,8 @@ MVP 可以 best-effort：
 
 - C/C++ include-aware direct call graph。
 - ArkTS via TypeScript grammar。
-- Cangjie grammar-based minimal extraction（Symbolic 级别，启用 `all-languages` 或显式启用 `cangjie` feature 时可用）。
-- Go/Rust/C#/PHP/Ruby/Kotlin 的基础 DataflowBasic 抽取和调用图（启用 `all-languages` 时）；完整 path-level 变量来源追踪、CFG 和跨函数 summary 仍以 capability limitations 和测试覆盖为准。
+- Cangjie DataflowFull 抽取和调用图（启用 `all-languages` 或显式启用 `cangjie` feature 时可用）；CFG 暂未支持。
+- Go/Rust/C#/PHP/Ruby/Kotlin 的 DataflowFull 抽取和调用图（启用 `all-languages` 时）；具体 path-level 变量来源追踪、CFG 和跨函数 summary gap 以 capability limitations 和测试覆盖为准。
 - 低置信度 name-based resolution。
 
 ## 4. 功能需求
@@ -229,17 +229,16 @@ CLI、MCP 和 context 输出都必须包含语言能力信息。最小字段：
 
 MCP 使用 JSON-RPC over stdio。V1 核心公开工具名使用无 `atlas_` 前缀的短名。核心工具：
 
-- project/index/status: `open_project`, `index`, `status`, `files`, `language_capabilities`
-- symbol/search: `search`, `symbol`, `usages`
-- graph: `calls`, `impact`, `path`, `context`, `explore`
-- trace: `trace_point`, `trace_variable`, `trace_caller_path`, `trace_forward`
-- file dependencies: `dependencies`, `dependents`
-- background tasks: `task_status`, `wait_for_task`
-- FP dispatch annotations: `annotate_fp_dispatch`, `list_fp_annotations`, `delete_fp_annotation`
+- project/index: `project`, `index`
+- symbol/search: `search`, `symbol`
+- graph: `calls`, `impact`, `path`, `explore`
+- trace: `trace`
+- file dependencies: `file_dependencies`
+- semantic analysis: `lifecycle`, `branch_diff`, `domain_rules`
+- background tasks: `tasks`, `task_status`, `wait_for_task`, `resume_task`
+- FP dispatch annotations: `fp_dispatches`
 
-新增 lazy recovery、lifecycle、branch diff 和 domain-rules 工具当前使用显式 `atlas_` 前缀：`atlas_resume`、`atlas_jobs`、`atlas_lifecycle`、`atlas_branch_diff`、`atlas_annotate`、`atlas_domain_rules`、`atlas_rule_learn`。这些工具在稳定前不得改变 V1 核心短名工具的语义。
-
-耗时工具必须能避免 MCP 客户端普通 tool-call 超时：`search`、`index`、`open_project` 支持 `background=true` 时应立即返回 `task_id`；客户端随后用 `task_status` 轮询或 `wait_for_task` 阻塞等待。`open_project(background=true)` 完成后由 `task_status`/`wait_for_task` 激活准备好的项目。
+耗时工具必须能避免 MCP 客户端普通 tool-call 超时：`search`、`index`、`project(action="open")` 支持 `background=true` 时应立即返回 `task_id`；客户端随后用 `task_status` 轮询或 `wait_for_task` 阻塞等待。`project(background=true)` 完成后由 `task_status`/`wait_for_task` 激活准备好的项目。
 
 工具输出必须 bounded、结构化，并在涉及启发式关系时暴露 confidence/provenance。
 

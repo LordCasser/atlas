@@ -22,8 +22,8 @@
 //! # Feature flags
 //!
 //! Language support is gated by Cargo features (e.g. `typescript`, `python`,
-//! `java`).  The `all-languages` feature enables every language except
-//! experimental frontends (Cangjie).
+//! `java`).  The `all-languages` feature enables every supported language,
+//! including Cangjie.
 
 use std::path::Path;
 use std::sync::Arc;

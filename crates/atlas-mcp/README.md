@@ -55,8 +55,8 @@ names without the old `atlas_` prefix.
 | `path` | `from`: qualified name, `to`: qualified name | `max_depth`: integer (default 5, max 10), `direction`, `edge_kinds`, `includeCode` |
 | `explore` | `symbol`: qualified name | `includeCode`: boolean (default `false`) |
 | `impact` | `symbol`: qualified name | `depth`: integer (default 3, max 5) |
-| `file_dependencies` | `file_id`: hex string | `direction`: `"incoming"`\|`"outgoing"`\|`"both"`, `limit`: integer |
-| `trace` | `kind`: `"point"`\|`"variable"`\|`"forward"`\|`"caller-path"` | `symbol`/`from`/`to`/`line`/`column`/`file_id` (depends on kind) |
+| `file_dependencies` | `file_path`: project-relative or absolute path | `direction`: `"incoming"`\|`"outgoing"`\|`"both"`, `limit`: integer |
+| `trace` | `kind`: `"point"`\|`"variable"`\|`"forward"`\|`"callers"` | `symbol`/`from`/`to`/`line`/`column`/`file_id` (depends on kind) |
 | `lifecycle` | `symbol`: qualified name, `field`: string | `include_proof`: boolean |
 | `branch_diff` | `symbol`: qualified name | `semantic`: boolean (default `true`) |
 | `fp_dispatches` | `action`: `"add"`\|`"list"`\|`"delete"` | `field_qname`, `target_qname`, `annotation_id` |
@@ -68,7 +68,7 @@ names without the old `atlas_` prefix.
 
 Notes:
 
-- `trace` accepts a `kind` parameter: `"point"` (single location), `"variable"` (dataflow trace), `"forward"` (path between two symbols), or `"caller-path"` (caller chain). Each kind has different required args (`symbol`/`from`/`to`/`line`/`column`/`file_id`).
+- `trace` accepts a `kind` parameter: `"point"` (single location), `"variable"` (dataflow trace), `"forward"` (path between two symbols), or `"callers"` (caller chain). Each kind has different required args (`symbol`/`from`/`to`/`line`/`column`/`file_id`).
 - `calls` with `direction="incoming"` or `"outgoing"` and `depth=1` replaces old `callers`/`callees`. Multi-hop uses `direction="both"` and `depth>1`.
 - `fp_dispatches` with `action: "add"|"list"|"delete"` replaces old `annotate_fp_dispatch`, `list_fp_annotations`, `delete_fp_annotation`.
 - `project` with `action: "open"|"status"|"files"` replaces old `open_project`, `status`, `files`.
@@ -96,9 +96,9 @@ Example:
 
 ## Key design decisions
 
-- **Graph is lazily initialized**: `ToolRouter::ensure_graph_initialized()` is called by the MCP server layer before dispatching to graph-backed tools. Store-backed tools (search, trace, status, files, usages) skip graph construction entirely.
+- **Graph is lazily initialized**: `ToolRouter::ensure_graph_initialized()` is called by the MCP server layer before dispatching to graph-backed tools. Store-backed tools (`search`, `trace`, `project`, `file_dependencies`, `symbol(view="usages")`) skip graph construction entirely.
 - **Background tasks are the compatibility progress channel**: progress-aware MCP clients use protocol progress notifications; clients without that support use the background task API and poll `task_status`.
 - **Scope is mandatory for search**: `search` never performs global extraction. Scope size controls parsing depth: small scopes get bounded structural parsing; large scopes stay manifest-level with a narrowing warning.
-- **Active project switching**: `open_project` can switch the active project at runtime. `activate_project()` atomically replaces the store, lazy service, and clears graph caches.
-- **Memory storage mode**: `open_project(storage="memory")` opens an in-memory SQLite store for zero-footprint temporary sessions.
-- **FileLock for persistent stores**: `index` acquires a cross-process exclusive lock before writing. `open_project(storage="persistent")` only opens and initializes the project database.
+- **Active project switching**: `project(action="open")` can switch the active project at runtime. `activate_project()` atomically replaces the store, lazy service, and clears graph caches.
+- **Memory storage mode**: `project(action="open", storage="memory")` opens an in-memory SQLite store for zero-footprint temporary sessions.
+- **FileLock for persistent stores**: `index` acquires a cross-process exclusive lock before writing. `project(action="open", storage="persistent")` only opens and initializes the project database.

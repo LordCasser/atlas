@@ -37,7 +37,7 @@ source code ──parse/extract──▶ .atlas/atlas.db ──query──▶ CL
 - **Local-first**: writes all index data to `<project>/.atlas/atlas.db`; no cloud service required.
 - **Deterministic extraction**: tree-sitter AST queries and stable blake3-based IDs instead of model guesses.
 - **Incremental sync**: content-hash based dirty-file detection with Git-aware file discovery.
-- **Agent-native MCP**: stdio MCP server exposing 28 bounded tools for search, graph, context, dependencies, trace, background tasks, and project management.
+- **Agent-native MCP**: stdio MCP server exposing 18 bounded tools for search, graph, dependencies, trace, semantic analysis, background tasks, and project management.
 - **Graph + trace queries**: callers, callees, shortest path, impact, source-position lookup, variable origin tracing, and caller-path tracing.
 - **Explicit capability boundaries**: language capability metadata and trace diagnostics report partial results instead of silently overclaiming precision.
 
@@ -130,8 +130,8 @@ atlas mcp
 
 Atlas MCP uses the client's current working directory. Configure the MCP server
 without a project path, and start the client from the repository you want Atlas
-to inspect. You can also switch projects at runtime with the `open_project`
-MCP tool.
+to inspect. You can also switch projects at runtime with the `project` MCP tool
+using `action: "open"`.
 
 Config files by client:
 
@@ -192,16 +192,16 @@ enabled = true
 
 | Group | MCP tools |
 | --- | --- |
-| Project management | `open_project`, `index`, `status`, `jobs`, `files`, `language_capabilities` |
-| Symbol search/detail | `search`, `symbol`, `usages` |
+| Project management | `project`, `index` |
+| Symbol search/detail | `search`, `symbol` |
 | Graph navigation | `calls`, `path`, `explore`, `impact` |
-| Context | `context` |
-| Trace | `trace_point`, `trace_variable`, `trace_caller_path`, `trace_forward` |
-| File dependencies | `dependencies`, `dependents` |
-| Background tasks | `task_status`, `wait_for_task` |
-| FP dispatch (C/C++) | `annotate_fp_dispatch`, `list_fp_annotations`, `delete_fp_annotation` |
+| Trace | `trace` |
+| File dependencies | `file_dependencies` |
+| Semantic analysis | `lifecycle`, `branch_diff`, `domain_rules` |
+| Background tasks | `tasks`, `task_status`, `wait_for_task`, `resume_task` |
+| FP dispatch (C/C++) | `fp_dispatches` |
 
-> `open_project` supports switching the active project at runtime. It defaults to `storage: "memory"` and `scan_files: false` for zero-footprint, fast project switching. Use `background: true` for large trees; then call `task_status` or `wait_for_task` with the returned `task_id`.
+> `project(action="open")` supports switching the active project at runtime. It defaults to `storage: "memory"` and `scan_files: false` for zero-footprint, fast project switching. Use `background: true` for large trees; then call `task_status` or `wait_for_task` with the returned `task_id`. `project` activates a project but does not index it; call `index` afterwards.
 
 Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/trace-contract.md`](docs/trace-contract.md): `ok`, `kind`, `capability`, `partial_result`, `diagnostics`, and `result`.
 
@@ -223,9 +223,11 @@ atlas/
 │           ├── resolution        # reference/import/include/path-alias resolution
 │           ├── graph             # symbol edge builder, graph snapshot, graph traversal engine
 │           ├── analysis          # trace engine, variable slicing, caller-path analysis
+│           ├── domain_rules      # domain-specific semantic rules and rule learning
 │           ├── search            # FTS5 + LIKE + fuzzy search and query parsing
 │           ├── context           # agent-facing Markdown context builder
-│           └── filesync          # file discovery, content hashing, incremental sync, locks
+│           ├── filesync          # file discovery, content hashing, incremental sync, locks
+│           └── lazy              # on-demand dataflow job planning and loading
 ├── docs/                          # architectural and release documentation
 ├── skills/atlas/                 # Agent Skill for using Atlas
 ├── Cargo.toml                    # workspace manifest
@@ -256,10 +258,11 @@ atlas-cli ──▶ atlas-engine, atlas-mcp
 atlas-mcp ──▶ atlas-engine
 
 atlas-engine facade ──▶ types, workspace, db, extraction, resolution,
-                        graph, analysis, search, context, filesync
+                        graph, analysis, domain_rules, search, context,
+                        filesync, lazy
 
 engine internals stay acyclic:
-types/workspace/db ─▶ extraction/resolution/graph/analysis/search/context/filesync ─▶ facade/API
+types/workspace/db ─▶ extraction/resolution/graph/analysis/domain_rules/search/context/filesync/lazy ─▶ facade/API
 ```
 
 ### Storage model
@@ -351,7 +354,7 @@ Conventions:
 - Java classpath, Maven, and Gradle resolution are not fully modeled.
 - Python dynamic runtime constructs and generated symbols are outside the static extraction model.
 - TypeScript barrel/re-export chains use best-effort name fallback rather than a full export graph.
-- Dataflow and trace precision varies by language; inspect `atlas doctor` or `language_capabilities` before relying on a trace result.
+- Dataflow and trace precision varies by language; inspect `atlas doctor` or trace capability metadata before relying on a trace result.
 - MCP serves a local SQLite index; run `atlas sync` or `atlas index` after source changes.
 - Call edges (`Calls`, `Instantiates`, `Implements`) are only created when both the caller and callee are indexed project symbols. External library calls (e.g., `useState` from `react`, `printf` from `stdio.h`) do not produce edges. See [Edge visibility](#edge-visibility-project-internal-symbols-only) for details.
 
@@ -367,7 +370,7 @@ source code
   → tree_sitter::Tree (CST)
 ```
 
-Tree-sitter is an incremental, error-tolerant parser. Atlas uses **13 language grammars** (TypeScript, Python, Java, C, C++, Go, C#, Rust, PHP, Ruby, Kotlin, ArkTS, Cangjie), each compiled from a `grammar.js` into a parser. Parsing is done per-file via a thread-local `Parser` to avoid allocation overhead.
+Tree-sitter is an incremental, error-tolerant parser. Atlas uses **14 language grammars** (TypeScript, JavaScript, Python, Java, C, C++, Go, C#, Rust, PHP, Ruby, Kotlin, ArkTS, Cangjie), each compiled from a `grammar.js` into a parser. Parsing is done per-file via a thread-local `Parser` to avoid allocation overhead.
 
 ### 2. Query → captures
 

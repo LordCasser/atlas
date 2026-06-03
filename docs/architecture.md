@@ -128,7 +128,7 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 
 ### 6.1 Schema（当前版本：V1）
 
-当前 schema 版本为 V1，所有变更直接在主 DDL 中进行，无需迁移。
+当前 schema 版本为 V1。新库以主 DDL 为准；为兼容已有 V1 数据库，允许在 `Store::init_schema` 中保留少量幂等 compatibility ALTER，但每个兼容 ALTER 必须同步反映到主 DDL 并在架构文档中说明。更大的不兼容 schema 变化必须提升 schema version 并提供显式迁移。
 
 主要表（23 张）：
 
@@ -538,7 +538,7 @@ discover files
 | 组 | 工具 |
 |----|------|
 | Project | `project(action="open\|status\|files")`, `index` |
-| Symbol | `search`, `symbol(view="detail\|context\|usages")` — 主参数 `qname` |
+| Symbol | `search`, `symbol(view="detail\|context\|usages")` — 主参数 `symbol` |
 | Graph / Impact | `calls(direction="incoming\|outgoing\|both", edge_kinds=[...])`, `explore`, `path`, `impact` |
 | File Graph | `file_dependencies(file_path, direction="incoming\|outgoing\|both")` |
 | Source Trace | `trace(kind="point\|variable\|forward\|callers")` |
@@ -548,11 +548,11 @@ discover files
 
 - Graph 惰性初始化：首次 graph-backed tool 调用时构建 snapshot。
 - 后续请求通过 `maybe_refresh_graph()`（5 秒缓存签名检查）检测外部索引变化。
-- 当 handler 内部触发 lazy structural 并写入新 facts（如 `context` 的 Tier 3 解析），handler 显式调用 `force_refresh_graph()`（跳过缓存冷却），确保 graph 包含刚解析的边。
-- `open_project` 不索引，只激活项目；调用后需单独 `index`。
+- 当 handler 内部触发 lazy structural 并写入新 facts（如 `symbol(view="context")` 的 Tier 3 解析），handler 显式调用 `force_refresh_graph()`（跳过缓存冷却），确保 graph 包含刚解析的边。
+- `project(action="open")` 不索引，只激活项目；调用后需单独 `index`。
 - `index` handler 调用共享 `IndexPipeline`，MCP 入口仍选择 manifest-only 策略以保护交互延迟。
 - `search` 的 `scope` 对 manifest-only 索引为强制参数；存在 manual full index 时为可选。
-- `background: true` 支持：`search`, `index`, `open_project`。
+- `background: true` 支持：`search`, `index`, `project(action="open")`。
 - 结果截断 25KB，额外 content block 标注截断信息。
 
 ### 11.4 CLI
@@ -666,7 +666,7 @@ branch_diff    lifecycle
   include directories like `arch/<arch>/include/` or `include/generated/`.
   See MCP README for usage.
 
-- **零初始语义**：`open_project` 激活项目但不会索引它。在 search/trace 之前需要显式调用 `index`（manifest extraction）。没有 manifest 索引，lazy extraction 缺乏起点。
+- **零初始语义**：`project(action="open")` 激活项目但不会索引它。在 search/trace 之前需要显式调用 `index`（manifest extraction）。没有 manifest 索引，lazy extraction 缺乏起点。
 
 ### Graph
 
