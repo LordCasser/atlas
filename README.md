@@ -185,7 +185,7 @@ enabled = true
 | Background tasks | `tasks`, `task_status`, `wait_for_task`, `resume_task` |
 | FP dispatch (C/C++) | `fp_dispatches` |
 
-> `project(action="open")` supports switching the active project at runtime. It defaults to `storage: "memory"` and `scan_files: false` for zero-footprint, fast project switching. Use `background: true` for large trees; then call `task_status` or `wait_for_task` with the returned `task_id`. `project` activates a project but does not index it; call `index` afterwards.
+> `project(action="open")` supports switching the active project at runtime. It defaults to `storage: "auto"` and `scan_files: false`: Atlas reads the candidate persistent project status and reuses `.atlas/atlas.db` only when it reports a reusable index, otherwise it opens an in-memory zero-footprint project. Use `background: true` for large trees; then call `task_status` or `wait_for_task` with the returned `task_id`. `project` activates a project but does not index it; call `index` afterwards when no persistent index exists.
 
 Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/trace-contract.md`](docs/trace-contract.md): `ok`, `kind`, `capability`, `partial_result`, `diagnostics`, and `result`.
 

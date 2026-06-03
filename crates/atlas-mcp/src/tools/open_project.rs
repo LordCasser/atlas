@@ -1,7 +1,9 @@
 //! `open_project` MCP tool — open and activate a project.
 //!
 //! Unlike the MCP server's initial project (which is always persistent),
-//! `open_project` defaults to `storage: "memory"` for zero-footprint,
+//! `open_project` defaults to automatic storage selection: read the candidate
+//! persistent project status and reuse `.atlas/atlas.db` only when it reports a
+//! reusable index, otherwise use `storage: "memory"` for zero-footprint,
 //! instant-start temporary sessions. Indexing is handled exclusively by the
 //! `index` tool after project activation.
 //!
@@ -46,7 +48,7 @@ impl ToolRouter {
     ///
     /// Parameters:
     ///   project_path (required): absolute path to the project directory.
-    ///   storage (optional): "memory" (default) | "persistent".
+    ///   storage (optional): "auto" (default) | "memory" | "persistent".
     ///   scan_files (optional): run pre-index discovery for file_count (default: false).
     ///   background (optional): prepare in a background task and activate on wait/status.
     pub(crate) fn handle_open_project(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -245,21 +247,30 @@ fn prepare_project(args: &serde_json::Value) -> Result<PreparedProject, OpenProj
         });
     }
 
-    let storage = args["storage"].as_str().unwrap_or("memory").to_string();
-    if storage != "memory" && storage != "persistent" {
-        return Err(OpenProjectResult {
-            ok: false,
-            active_project: String::new(),
-            db_path: String::new(),
-            storage: storage.clone(),
-            file_count: None,
-            suggestion: None,
-            error: Some(format!(
-                "Unknown storage mode '{storage}'. Valid choices: 'memory', 'persistent'."
-            )),
-        });
-    }
-
+    let requested_storage = args["storage"].as_str().unwrap_or("auto");
+    let auto_index_mode = if requested_storage == "auto" {
+        reusable_persistent_index_mode(&canonical)
+    } else {
+        None
+    };
+    let storage = match requested_storage {
+        "auto" if auto_index_mode.is_some() => "persistent".to_string(),
+        "auto" => "memory".to_string(),
+        "memory" | "persistent" => requested_storage.to_string(),
+        _ => {
+            return Err(OpenProjectResult {
+                ok: false,
+                active_project: String::new(),
+                db_path: String::new(),
+                storage: requested_storage.to_string(),
+                file_count: None,
+                suggestion: None,
+                error: Some(format!(
+                    "Unknown storage mode '{requested_storage}'. Valid choices: 'auto', 'memory', 'persistent'."
+                )),
+            });
+        }
+    };
     let scan_files = args["scan_files"].as_bool().unwrap_or(false);
 
     let store: Arc<Store> = match storage.as_str() {
@@ -312,7 +323,13 @@ fn prepare_project(args: &serde_json::Value) -> Result<PreparedProject, OpenProj
     })?;
 
     let mut file_count: Option<usize> = None;
-    let mut suggestion: Option<String> = None;
+    let mut suggestion: Option<String> = if let Some(index_mode) = auto_index_mode {
+        Some(format!(
+            "Reusable persistent index detected via project status (mode={index_mode}); opened .atlas/atlas.db. Pass storage=\"memory\" for an empty temporary index."
+        ))
+    } else {
+        None
+    };
 
     // For responsiveness, plain `open_project` does not walk large trees.
     // Callers that need the estimate can opt in with `scan_files=true`.
@@ -321,10 +338,13 @@ fn prepare_project(args: &serde_json::Value) -> Result<PreparedProject, OpenProj
         if let Ok(discovered) = atlas_engine::discovery::discover_files(&canonical, &config) {
             file_count = Some(discovered.len());
             if discovered.len() > LARGE_PROJECT_FILE_COUNT {
-                suggestion = Some(format!(
-                    "Large project detected ({} files). After open_project activates it, call index with background=true if the client timeout budget is short.",
-                    discovered.len()
-                ));
+                append_suggestion(
+                    &mut suggestion,
+                    format!(
+                        "Large project detected ({} files). After open_project activates it, call index with background=true if the client timeout budget is short.",
+                        discovered.len()
+                    ),
+                );
             }
         }
     }
@@ -351,4 +371,25 @@ fn unsupported_index_param(args: &serde_json::Value) -> Option<&'static str> {
     ["index", "analysis", "include", "exclude"]
         .into_iter()
         .find(|key| args.get(*key).is_some())
+}
+
+fn reusable_persistent_index_mode(project_root: &std::path::Path) -> Option<String> {
+    let db_path = project_root.join(".atlas").join("atlas.db");
+    let store = Store::open_db_read_only(&db_path).ok()?;
+    let index_mode = super::status::read_index_mode(&store).ok()?;
+    if matches!(index_mode.as_str(), "none" | "unknown") {
+        None
+    } else {
+        Some(index_mode)
+    }
+}
+
+fn append_suggestion(existing: &mut Option<String>, message: String) {
+    match existing {
+        Some(current) => {
+            current.push(' ');
+            current.push_str(&message);
+        }
+        None => *existing = Some(message),
+    }
 }

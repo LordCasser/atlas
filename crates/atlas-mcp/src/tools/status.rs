@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use atlas_engine::{Language, LanguageCapabilityProfile};
+use atlas_engine::{Language, LanguageCapabilityProfile, Store};
 
 use super::ToolRouter;
 
@@ -35,39 +35,17 @@ impl ToolRouter {
         let structural_complete = complete("structural");
         let dataflow_file_complete = complete("dataflow");
 
-        // Determine index mode:
-        //   "none"           — no files indexed
-        //   "manifest"       — files/basic top-level symbols only
-        //   "partial_structural" — some fresh files have structural facts
-        //   "structural+lazy"— unit-level lazy dataflow state exists
-        //   "full"           — dataflow was explicitly built via index --analysis full
-        //                       (data_nodes exist but NO lazy unit state)
-        //   "structural"     — files indexed, no dataflow, no lazy unit state
-        let index_mode = if stats.total_files == 0 {
-            "none"
-        } else if structural_complete == 0 {
-            if manifest_complete > 0 {
-                "manifest"
-            } else {
-                "unknown"
-            }
-        } else if structural_complete < stats.total_files as i64 {
-            if lazy_stats.as_ref().is_some_and(|l| l.total_unit_states > 0) {
-                "partial_structural+lazy"
-            } else {
-                "partial_structural"
-            }
-        } else if lazy_stats.as_ref().is_some_and(|l| l.total_unit_states > 0) {
-            // Lazy unit state exists — the index was structural, dataflow came from lazy.
-            "structural+lazy"
-        } else if dataflow_file_complete >= stats.total_files as i64
-            || lazy_stats.as_ref().is_some_and(|l| l.has_dataflow)
-        {
-            // Dataflow exists but no lazy unit state — explicit full index.
-            "full"
-        } else {
-            "structural"
-        };
+        let index_mode = compute_index_mode(
+            stats.total_files,
+            manifest_complete,
+            structural_complete,
+            dataflow_file_complete,
+            lazy_stats
+                .as_ref()
+                .map(|l| l.total_unit_states)
+                .unwrap_or(0),
+            lazy_stats.as_ref().is_some_and(|l| l.has_dataflow),
+        );
 
         let index_hint = if stats.total_files == 0 {
             Some(
@@ -230,6 +208,84 @@ impl ToolRouter {
             }
             Err(e) => (format!("Error listing files: {e}"), true),
         }
+    }
+}
+
+/// Read the same index mode that `project(action="status")` reports.
+///
+/// This is used by `project(action="open", storage="auto")` to decide whether
+/// a persistent candidate DB contains a reusable index, instead of guessing
+/// from filesystem presence alone.
+pub(crate) fn read_index_mode(store: &Store) -> anyhow::Result<String> {
+    let stats = store.get_stats()?;
+    let lazy_stats = store.get_lazy_dataflow_stats().ok();
+    let layer_counts = store
+        .count_fresh_file_extraction_state()
+        .unwrap_or_default();
+
+    let mut fresh_layers: HashMap<(String, String), i64> = HashMap::new();
+    for (layer, status, count) in &layer_counts {
+        fresh_layers.insert((layer.clone(), status.clone()), *count);
+    }
+    let complete = |layer: &str| -> i64 {
+        fresh_layers
+            .get(&(layer.to_string(), "complete".to_string()))
+            .copied()
+            .unwrap_or(0)
+    };
+
+    Ok(compute_index_mode(
+        stats.total_files,
+        complete("manifest"),
+        complete("structural"),
+        complete("dataflow"),
+        lazy_stats
+            .as_ref()
+            .map(|l| l.total_unit_states)
+            .unwrap_or(0),
+        lazy_stats.as_ref().is_some_and(|l| l.has_dataflow),
+    )
+    .to_string())
+}
+
+// Determine index mode:
+//   "none"           — no files indexed
+//   "manifest"       — files/basic top-level symbols only
+//   "partial_structural" — some fresh files have structural facts
+//   "structural+lazy"— unit-level lazy dataflow state exists
+//   "full"           — dataflow was explicitly built via index --analysis full
+//                       (data_nodes exist but NO lazy unit state)
+//   "structural"     — files indexed, no dataflow, no lazy unit state
+fn compute_index_mode(
+    total_files: i64,
+    manifest_complete: i64,
+    structural_complete: i64,
+    dataflow_file_complete: i64,
+    lazy_total_unit_states: i64,
+    lazy_has_dataflow: bool,
+) -> &'static str {
+    if total_files == 0 {
+        "none"
+    } else if structural_complete == 0 {
+        if manifest_complete > 0 {
+            "manifest"
+        } else {
+            "unknown"
+        }
+    } else if structural_complete < total_files {
+        if lazy_total_unit_states > 0 {
+            "partial_structural+lazy"
+        } else {
+            "partial_structural"
+        }
+    } else if lazy_total_unit_states > 0 {
+        // Lazy unit state exists — the index was structural, dataflow came from lazy.
+        "structural+lazy"
+    } else if dataflow_file_complete >= total_files || lazy_has_dataflow {
+        // Dataflow exists but no lazy unit state — explicit full index.
+        "full"
+    } else {
+        "structural"
     }
 }
 

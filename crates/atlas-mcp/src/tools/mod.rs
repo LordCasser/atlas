@@ -1040,7 +1040,7 @@ fn make_project_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "project".into(),
-            description: "Open, inspect, or list files in a project. Use action='open' to activate a project (never indexes), 'status' for a comprehensive overview including language capabilities and index mode, 'files' to list indexed files with language and parse status. Parameters for action='open': project_path (required), storage, scan_files, background. action='status' returns file/symbol/edge counts, extraction state, per-language capability profiles. action='files' supports optional limit, language, and path_prefix filters.".into(),
+            description: "Open, inspect, or list files in a project. Use action='open' to activate a project (never indexes), 'status' for a comprehensive overview including language capabilities and index mode, 'files' to list indexed files with language and parse status. Parameters for action='open': project_path (required), storage, scan_files, background. If storage is omitted or 'auto', Atlas reuses persistent storage only when project status shows a reusable index; otherwise it opens an in-memory project. action='status' returns file/symbol/edge counts, extraction state, per-language capability profiles. action='files' supports optional limit, language, and path_prefix filters.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
@@ -1052,8 +1052,8 @@ fn make_project_tools() -> Vec<Tool> {
                     "project_path": { "type": "string", "description": "Absolute path to the project directory to open (required for action='open')." },
                     "storage": {
                         "type": "string",
-                        "enum": ["memory", "persistent"],
-                        "description": "Storage mode: \"memory\" (in-memory, zero footprint, default) or \"persistent\" (project/.atlas/atlas.db)."
+                        "enum": ["auto", "memory", "persistent"],
+                        "description": "Storage mode: \"auto\" (default; reuse project/.atlas/atlas.db only when project status shows a reusable index, otherwise memory), \"memory\" (in-memory, zero footprint), or \"persistent\" (project/.atlas/atlas.db)."
                     },
                     "scan_files": { "type": "boolean", "description": "Run file discovery to estimate file_count without indexing (default false; can be slow on very large trees)." },
                     "background": { "type": "boolean", "description": "Prepare/open in a background task; task_status/wait_for_task activates the completed project." },
