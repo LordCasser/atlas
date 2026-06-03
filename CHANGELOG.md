@@ -4,7 +4,7 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
-## [1.3.1] — 2026-06-02
+## [1.3.1] — 2026-06-03
 
 ### BREAKING: MCP tool refactor (33 → 18 tools)
 
@@ -17,7 +17,7 @@ All notable changes to Atlas will be documented in this file.
 | Old tools | New tool |
 |-----------|----------|
 | `open_project`, `status`, `files`, `language_capabilities` | `project(action="open\|status\|files")` |
-| `symbol`, `context`, `usages` | `symbol(view="detail\|context\|usages")`, `qname` parameter |
+| `symbol`, `context`, `usages` | `symbol(view="detail\|context\|usages")`, `symbol` parameter |
 | `callers`, `callees`, `callgraph`, `neighbors` | `calls(direction="incoming\|outgoing\|both", edge_kinds=[...])` |
 | `trace_point`, `trace_variable`, `trace_forward`, `trace_caller_path` | `trace(kind="point\|variable\|forward\|callers")` |
 | `dependencies`, `dependents` | `file_dependencies(direction="incoming\|outgoing\|both")`, `file_path` parameter |
@@ -35,6 +35,21 @@ All notable changes to Atlas will be documented in this file.
 - `file_dependencies` uses `file_path` (no `file_id`)
 - `trace(kind="callers\|forward")` `symbol`/`from`/`to` parameters auto-detect hex IDs vs qualified names
 - `project(action="status")` always includes language capabilities (no `verbose` gate)
+
+### Release hardening
+
+- `cargo check --workspace --all-features`, `cargo test --workspace --all-features`,
+  strict `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+  and `cargo build --release -p atlas-cli --features all-languages,mcp` pass.
+- Fixed all-features test compilation by importing `CapabilityMask` in lazy coordinator tests.
+- Cleared Clippy release-gate warnings across CLI, MCP, graph, analysis, extraction,
+  resolution, search, context, and domain-rules modules.
+- Hardened MCP background task tracking against poisoned `Mutex` recovery.
+- Removed unused deprecated `serde_yaml` from `atlas-cli` and `Cargo.lock`.
+- Added package `repository`, `homepage`, and `documentation` metadata for
+  `atlas-cli`, `atlas-engine`, and `atlas-mcp`.
+- Updated README, MCP README, architecture, requirements, and Atlas skill docs to
+  match the current 18-tool MCP API and DataflowFull language matrix.
 
 ---
 
@@ -224,4 +239,3 @@ source code with tree-sitter, stores deterministic code facts in SQLite, and exp
 - MCP: 28 stdio tools with lazy graph init, background task support, progress
   notifications.
 - 14-Cargo-package Rust workspace, edition 2024, SQLite 22-table schema V1.
-

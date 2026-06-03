@@ -15,8 +15,11 @@ Initialize and index a project before starting MCP:
 ```bash
 atlas init --project /path/to/project
 atlas index --project /path/to/project
-atlas mcp --project /path/to/project
+cd /path/to/project
+atlas mcp
 ```
+
+Atlas MCP uses the client's current working directory. Configure the server without a project path and start the client from the repository you want Atlas to inspect. You can also switch projects at runtime with `project(action="open")`.
 
 MCP client JSON:
 
@@ -25,7 +28,7 @@ MCP client JSON:
   "mcpServers": {
     "atlas": {
       "command": "/absolute/path/to/atlas",
-      "args": ["mcp", "--project", "/absolute/path/to/project"]
+      "args": ["mcp"]
     }
   }
 }
@@ -36,7 +39,7 @@ Codex config:
 ```toml
 [mcp_servers.atlas]
 command = "/absolute/path/to/atlas"
-args = ["mcp", "--project", "/absolute/path/to/project"]
+args = ["mcp"]
 enabled = true
 ```
 
@@ -49,9 +52,9 @@ All 18 tools use short names (no `atlas_` prefix):
 | Project overview | `project(action="status")` | none |
 | Indexed files | `project(action="files")` | optional `limit`, `language`, `path_prefix` |
 | Symbol search | `search` | `query` (required), optional `scope`, `kind`, `limit`, `background` |
-| Symbol details | `symbol(view="detail")` | `qname` (required), optional `includeCode` |
-| Agent context | `symbol(view="context")` | `qname` (required), optional `includeCode` |
-| Symbol usages | `symbol(view="usages")` | `qname` (required), optional `limit` |
+| Symbol details | `symbol(view="detail")` | `symbol` (required), optional `includeCode` |
+| Agent context | `symbol(view="context")` | `symbol` (required), optional `includeCode` |
+| Symbol usages | `symbol(view="usages")` | `symbol` (required), optional `limit` |
 | Call graph | `calls` | `symbol` (required), `direction="incoming\|outgoing\|both"`, optional `depth`, `limit`, `edge_kinds` |
 | Symbol exploration | `explore` | `symbol` (required), optional `includeCode` |
 | Shortest path | `path` | `from`, `to` (required), optional `max_depth`, `direction`, `prefer_production`, `edge_kinds`, `includeCode` |
@@ -73,7 +76,7 @@ All 18 tools use short names (no `atlas_` prefix):
 ## Query tactics
 
 - Start with `search` for names. Use `kind:function`, `kind:class`, or shorter search terms if exact names fail.
-- Convert user-visible file paths to IDs with `files` only when a tool requires `file_id`.
+- Prefer `file_path` for source-position and file-dependency queries; use `file_id` only when a tool explicitly accepts or returns it.
 - Use shallow graph depths first (`depth: 1` or `2`) to avoid noisy results.
 - For code-review or refactor questions, combine `impact` with `symbol(view="usages")` and `symbol(view="context")`.
 - For debugging value flow, call `trace(kind="point")` first, then `trace(kind="variable")` at the same position.
@@ -96,5 +99,5 @@ When `partial_result` is true or diagnostics are non-empty, summarize the eviden
 - **No database**: run `atlas init` and `atlas index` for the project.
 - **Stale result**: run `atlas sync`; restart MCP only if the client does not reconnect or refresh its server process.
 - **No symbol found**: retry `search` with shorter names, no kind filter, or larger `limit`.
-- **Trace is empty**: check `language_capabilities`; the language or construct may only support symbolic graph queries.
+- **Trace is empty**: check `project(action="status")` and trace capability metadata; the language or construct may have a documented limitation.
 - **Huge output**: reduce `limit`, lower graph `depth`, or query a more specific symbol.

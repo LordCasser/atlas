@@ -20,20 +20,20 @@ Use Atlas as the deterministic code-facts layer before reasoning about a reposit
 |----------|-----------------|
 | TypeScript, JavaScript | Symbols, references, imports, scopes, call graph, lexical bindings, intra-procedural dataflow, use-def chains, field access, call arguments, return flow, CFG, interprocedural summaries (ArgToParam + ReturnToCall) |
 | Python, Java, C, C++, Go, Rust | Same as above; Python/Java/C/C++/Go/Rust have CFG; C function pointers limited depth 3; C++ templates/overloads not modeled; Rust ReturnToCall gap documented |
-| C#, PHP, Ruby, Kotlin, ArkTS, Cangjie | Symbols, references, imports, call graph, lexical bindings, local dataflow, use-def, interprocedural summaries; CFG varies by language (see `language_capabilities`) |
+| C#, PHP, Ruby, Kotlin, ArkTS, Cangjie | Symbols, references, imports, call graph, lexical bindings, local dataflow, use-def, interprocedural summaries; CFG varies by language (see `project(action="status")` and trace capability metadata) |
 
 All 14 languages compiled by `all-languages`.
 
 ## Requirements
 
-A compiled Atlas binary (`atlas`) or an Atlas MCP server, plus a local source checkout. MCP requires the project to be indexed first.
+A compiled Atlas binary (`atlas`) or an Atlas MCP server, plus a local source checkout. MCP uses the client's current working directory by default; switch repositories with `project(action="open")` when needed. Index the project before relying on search, graph, or trace results.
 
 ## Workflow
 
 1. **Confirm the index exists**
    - CLI: `atlas status --project <repo>` or `atlas doctor --project <repo>`
-   - MCP: call `status`
-   - If no `.atlas/atlas.db`, run `atlas init --project <repo>` then `atlas index --project <repo>`
+   - MCP: call `project(action="status")`
+   - If no `.atlas/atlas.db`, run `atlas init --project <repo>` then `atlas index --project <repo>`, or use MCP `project(action="open", project_path="<repo>", storage="persistent")` followed by `index`
 
 2. **Pick the narrowest query**
    - Symbol lookup: `search` → `symbol`
@@ -76,7 +76,7 @@ All 18 tools use short names (no `atlas_` prefix):
 | `project` | Open, inspect, or list files | `action="open\|status\|files"` |
 | `index` | Index/re-index active project | optional `include`, `exclude`, `background` |
 | `search` | Symbol search by name | `query` (required), optional `scope`, `kind`, `limit`, `background` |
-| `symbol` | Symbol details, context, or usages | `qname` (required), `view="detail\|context\|usages"`, optional `includeCode`, `limit` |
+| `symbol` | Symbol details, context, or usages | `symbol` (required), `view="detail\|context\|usages"`, optional `includeCode`, `limit` |
 | `calls` | Call graph queries (callers, callees, multi-hop) | `symbol` (required), `direction="incoming\|outgoing\|both"`, optional `depth`, `limit`, `edge_kinds` |
 | `explore` | Symbol exploration (depth=1 adjacency) | `symbol` (required), optional `includeCode` |
 | `path` | Shortest path between symbols | `from`, `to` (required), optional `max_depth`, `direction`, `edge_kinds`, `includeCode`, `include_roots` |
@@ -118,7 +118,7 @@ When `partial_result: true` or diagnostics present, summarize the evidence and s
 - Cite Atlas evidence: symbol names, qualified names, file paths, edge kinds, trace diagnostics.
 - Atlas is best-effort static analysis with explicit language capability boundaries. Never claim compiler-grade certainty.
 - If Atlas returns nothing, try broader search (shorter name, no kind filter, larger `limit`), then state no indexed fact matched.
-- All 14 languages have DataflowFull capability; specific features (CFG, interprocedural) vary — check `language_capabilities`.
+- All 14 languages have DataflowFull capability; specific features (CFG, interprocedural) vary — check `project(action="status")` or trace capability metadata.
 
 ## References
 
