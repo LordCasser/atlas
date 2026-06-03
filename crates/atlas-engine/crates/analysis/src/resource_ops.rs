@@ -222,18 +222,28 @@ impl ResourceOpConfig {
         }
     }
 
-    /// Java — try-with-resources, .close(), .dispose().
+    /// Java — try-with-resources is handled by CallContext::JavaTryWith
+    /// + ScopeExitAnalyzer (Free at BlockExit).
     fn default_java() -> Self {
         use CalleeMatcher::Suffix;
         let language = None;
         let producers = vec![
+            // Try-with-resources is handled by CallContext::JavaTryWith + ScopeExitAnalyzer
+            // These explicit patterns match constructor-based resource creation
             ResourceOpPattern::new(ResourceOpKind::Produce, Suffix("openConnection".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Produce, Suffix("openStream".into()), 0),
+            // Common Java resource constructors
+            ResourceOpPattern::new(ResourceOpKind::Produce, Suffix("newInputStream".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Suffix("newOutputStream".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Suffix("getConnection".into()), 0),
         ];
         let consumers = vec![
             ResourceOpPattern::new(ResourceOpKind::Consume, Suffix(".close".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Consume, Suffix(".close()".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Consume, Suffix(".dispose".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Consume, Suffix(".dispose()".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Consume, Suffix(".destroy".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Consume, Suffix(".destroy()".into()), 0),
         ];
         Self {
             language,
@@ -305,9 +315,13 @@ impl ResourceOpConfig {
 
     /// C# — .Dispose(), using statements.
     fn default_csharp() -> Self {
-        use CalleeMatcher::Suffix;
+        use CalleeMatcher::{Exact, Suffix};
         let language = None;
         let producers = vec![
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("File.Open".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("new FileStream".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Suffix("SqlConnection".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Suffix("HttpClient".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Produce, Suffix("OpenConnection".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Produce, Suffix("OpenStream".into()), 0),
         ];
@@ -329,10 +343,14 @@ impl ResourceOpConfig {
         let language = None;
         let producers = vec![
             ResourceOpPattern::new(ResourceOpKind::Produce, Exact("fopen".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("mysqli_connect".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("curl_init".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Produce, Suffix("connect".into()), 0),
         ];
         let consumers = vec![
             ResourceOpPattern::new(ResourceOpKind::Consume, Exact("fclose".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Consume, Exact("mysqli_close".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Consume, Exact("curl_close".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Consume, Suffix("close".into()), 0),
         ];
         Self {
@@ -345,13 +363,19 @@ impl ResourceOpConfig {
 
     /// Ruby.
     fn default_ruby() -> Self {
-        use CalleeMatcher::Suffix;
+        use CalleeMatcher::{Exact, Suffix};
         let language = None;
         let producers = vec![
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("File.open".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("File.new".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("TCPSocket.new".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("Net::HTTP.start".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Produce, Suffix(".open".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Produce, Suffix(".new".into()), 0),
         ];
         let consumers = vec![
+            ResourceOpPattern::new(ResourceOpKind::Consume, Exact(".close".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Consume, Exact(".dispose".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Consume, Suffix(".close".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Consume, Suffix(".dispose".into()), 0),
         ];
@@ -365,14 +389,16 @@ impl ResourceOpConfig {
 
     /// Kotlin.
     fn default_kotlin() -> Self {
-        use CalleeMatcher::Suffix;
+        use CalleeMatcher::{Exact, Suffix};
         let language = None;
-        let producers = vec![ResourceOpPattern::new(
-            ResourceOpKind::Produce,
-            Suffix("openConnection".into()),
-            0,
-        )];
+        let producers = vec![
+            ResourceOpPattern::new(ResourceOpKind::Produce, Suffix("File".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Suffix("bufferedReader".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Suffix("bufferedWriter".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Suffix("openConnection".into()), 0),
+        ];
         let consumers = vec![
+            ResourceOpPattern::new(ResourceOpKind::Consume, Exact(".use".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Consume, Suffix(".close".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Consume, Suffix(".dispose".into()), 0),
         ];
@@ -886,7 +912,216 @@ mod tests {
         assert!(config.classify_consumption("open").is_none());
     }
 
+    // ── Java tests ──────────────────────────────────────────────────────────
+
+    #[cfg(feature = "java")]
+    #[test]
+    fn test_java_config_produces() {
+        let config = ResourceOpConfig::default_for(Language::Java);
+        // Suffix producers
+        assert!(config.is_producer("openConnection"));
+        assert!(config.is_producer("openStream"));
+        assert!(config.is_producer("newInputStream"));
+        assert!(config.is_producer("getConnection"));
+        // Consumers should NOT be producers
+        assert!(!config.is_producer("file.close"));
+        assert!(!config.is_producer("file.close()"));
+        assert!(!config.is_producer("stream.dispose"));
+        // Unrelated
+        assert!(!config.is_producer("free"));
+    }
+
+    #[cfg(feature = "java")]
+    #[test]
+    fn test_java_config_consumes() {
+        let config = ResourceOpConfig::default_for(Language::Java);
+        // .close/.dispose/.destroy suffixes (both field-access and method-call forms)
+        assert_eq!(config.is_consumer("file.close"), Some(0));
+        assert_eq!(config.is_consumer("file.close()"), Some(0));
+        assert_eq!(config.is_consumer("conn.dispose"), Some(0));
+        assert_eq!(config.is_consumer("conn.dispose()"), Some(0));
+        assert_eq!(config.is_consumer("obj.destroy"), Some(0));
+        assert_eq!(config.is_consumer("obj.destroy()"), Some(0));
+        // Producers should NOT be consumers
+        assert_eq!(config.is_consumer("openConnection"), None);
+        assert_eq!(config.is_consumer("openStream"), None);
+        assert_eq!(config.is_consumer("newInputStream"), None);
+    }
+
+    #[cfg(feature = "java")]
+    #[test]
+    fn test_java_config_classify() {
+        let config = ResourceOpConfig::default_for(Language::Java);
+        // classify_return: producers -> NewOwned
+        assert_eq!(
+            config.classify_return("openConnection"),
+            Some(ReturnContract::NewOwned)
+        );
+        assert_eq!(
+            config.classify_return("newInputStream"),
+            Some(ReturnContract::NewOwned)
+        );
+        assert_eq!(
+            config.classify_return("getConnection"),
+            Some(ReturnContract::NewOwned)
+        );
+        assert_eq!(config.classify_return("file.close"), None);
+        // classify_consumption: consumers with MethodCall style
+        let cc = config.classify_consumption("file.close()");
+        assert!(cc.is_some());
+        assert_eq!(cc.unwrap().style, ConsumptionStyle::MethodCall);
+        let cc2 = config.classify_consumption("file.close");
+        assert!(cc2.is_some());
+        // Producers should not be consumers
+        assert!(config.classify_consumption("openConnection").is_none());
+    }
+
     // ── Part C: Wildcard matcher test ──────────────────────────────────────
+
+
+    // ── C# tests ───────────────────────────────────────────────────────────
+
+    #[cfg(feature = "csharp")]
+    #[test]
+    fn test_csharp_config_produces() {
+        let config = ResourceOpConfig::default_for(Language::CSharp);
+        // Exact producers
+        assert!(config.is_producer("File.Open"));
+        assert!(config.is_producer("new FileStream"));
+        // Suffix producers
+        assert!(config.is_producer("SqlConnection"));
+        assert!(config.is_producer("HttpClient"));
+        assert!(config.is_producer("OpenConnection"));
+        assert!(config.is_producer("OpenStream"));
+        // Consumers should NOT be producers
+        assert!(!config.is_producer("conn.Dispose"));
+        assert!(!config.is_producer("stream.Close"));
+        // Unrelated
+        assert!(!config.is_producer("free"));
+    }
+
+    #[cfg(feature = "csharp")]
+    #[test]
+    fn test_csharp_config_consumes() {
+        let config = ResourceOpConfig::default_for(Language::CSharp);
+        // Suffix consumers
+        assert_eq!(config.is_consumer("conn.Dispose"), Some(0));
+        assert_eq!(config.is_consumer("stream.Close"), Some(0));
+        // Producers should NOT be consumers
+        assert_eq!(config.is_consumer("File.Open"), None);
+        assert_eq!(config.is_consumer("new FileStream"), None);
+        assert_eq!(config.is_consumer("OpenConnection"), None);
+        // Unrelated
+        assert_eq!(config.is_consumer("free"), None);
+    }
+
+    // ── Kotlin tests ───────────────────────────────────────────────────────
+
+    #[cfg(feature = "kotlin")]
+    #[test]
+    fn test_kotlin_config_produces() {
+        let config = ResourceOpConfig::default_for(Language::Kotlin);
+        // Suffix producers
+        assert!(config.is_producer("File"));
+        assert!(config.is_producer("bufferedReader"));
+        assert!(config.is_producer("bufferedWriter"));
+        assert!(config.is_producer("openConnection"));
+        // Consumers should NOT be producers
+        assert!(!config.is_producer(".use"));
+        assert!(!config.is_producer("file.close"));
+        // Unrelated
+        assert!(!config.is_producer("free"));
+    }
+
+    #[cfg(feature = "kotlin")]
+    #[test]
+    fn test_kotlin_config_consumes() {
+        let config = ResourceOpConfig::default_for(Language::Kotlin);
+        // Exact consumer (.use)
+        assert_eq!(config.is_consumer(".use"), Some(0));
+        // Suffix consumers
+        assert_eq!(config.is_consumer("file.close"), Some(0));
+        assert_eq!(config.is_consumer("conn.dispose"), Some(0));
+        // Producers should NOT be consumers
+        assert_eq!(config.is_consumer("File"), None);
+        assert_eq!(config.is_consumer("bufferedReader"), None);
+        // Unrelated
+        assert_eq!(config.is_consumer("free"), None);
+    }
+
+    // ── Ruby tests ─────────────────────────────────────────────────────────
+
+    #[cfg(feature = "ruby")]
+    #[test]
+    fn test_ruby_config_produces() {
+        let config = ResourceOpConfig::default_for(Language::Ruby);
+        // Exact producers
+        assert!(config.is_producer("File.open"));
+        assert!(config.is_producer("File.new"));
+        assert!(config.is_producer("TCPSocket.new"));
+        assert!(config.is_producer("Net::HTTP.start"));
+        // Suffix producers
+        assert!(config.is_producer("some.open"));
+        assert!(config.is_producer("obj.new"));
+        // Consumers should NOT be producers
+        assert!(!config.is_producer("file.close"));
+        assert!(!config.is_producer(".dispose"));
+        // Unrelated
+        assert!(!config.is_producer("free"));
+    }
+
+    #[cfg(feature = "ruby")]
+    #[test]
+    fn test_ruby_config_consumes() {
+        let config = ResourceOpConfig::default_for(Language::Ruby);
+        // Exact consumers
+        assert_eq!(config.is_consumer(".close"), Some(0));
+        assert_eq!(config.is_consumer(".dispose"), Some(0));
+        // Suffix consumers
+        assert_eq!(config.is_consumer("file.close"), Some(0));
+        assert_eq!(config.is_consumer("obj.dispose"), Some(0));
+        // Producers should NOT be consumers
+        assert_eq!(config.is_consumer("File.open"), None);
+        assert_eq!(config.is_consumer("File.new"), None);
+        // Unrelated
+        assert_eq!(config.is_consumer("free"), None);
+    }
+
+    // ── PHP tests ──────────────────────────────────────────────────────────
+
+    #[cfg(feature = "php")]
+    #[test]
+    fn test_php_config_produces() {
+        let config = ResourceOpConfig::default_for(Language::Php);
+        // Exact producers
+        assert!(config.is_producer("fopen"));
+        assert!(config.is_producer("mysqli_connect"));
+        assert!(config.is_producer("curl_init"));
+        // Suffix producers
+        assert!(config.is_producer("db_connect"));
+        // Consumers should NOT be producers
+        assert!(!config.is_producer("fclose"));
+        assert!(!config.is_producer("mysqli_close"));
+        // Unrelated
+        assert!(!config.is_producer("free"));
+    }
+
+    #[cfg(feature = "php")]
+    #[test]
+    fn test_php_config_consumes() {
+        let config = ResourceOpConfig::default_for(Language::Php);
+        // Exact consumers
+        assert_eq!(config.is_consumer("fclose"), Some(0));
+        assert_eq!(config.is_consumer("mysqli_close"), Some(0));
+        assert_eq!(config.is_consumer("curl_close"), Some(0));
+        // Suffix consumers
+        assert_eq!(config.is_consumer("handle_close"), Some(0));
+        // Producers should NOT be consumers
+        assert_eq!(config.is_consumer("fopen"), None);
+        assert_eq!(config.is_consumer("mysqli_connect"), None);
+        // Unrelated
+        assert_eq!(config.is_consumer("free"), None);
+    }
 
     #[test]
     fn test_wildcard_matcher() {

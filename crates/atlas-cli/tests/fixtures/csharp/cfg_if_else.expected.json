@@ -1,49 +1,29 @@
 {
   "symbols": [
     {
-      "name": "Program",
+      "name": "App",
       "kind": "class"
     },
     {
-      "name": "Main",
+      "name": "TestIf",
       "kind": "method"
-    },
-    {
-      "name": "list",
-      "kind": "variable"
     }
   ],
   "references": [
     {
-      "text": "System",
+      "text": "App",
       "kind": "type_reference"
     },
     {
-      "text": "System",
+      "text": "TestIf",
       "kind": "type_reference"
     },
     {
-      "text": "Collections",
+      "text": "x",
       "kind": "type_reference"
     },
     {
-      "text": "Generic",
-      "kind": "type_reference"
-    },
-    {
-      "text": "Program",
-      "kind": "type_reference"
-    },
-    {
-      "text": "Main",
-      "kind": "type_reference"
-    },
-    {
-      "text": "list",
-      "kind": "type_reference"
-    },
-    {
-      "text": "List",
+      "text": "x",
       "kind": "type_reference"
     },
     {
@@ -63,22 +43,24 @@
       "kind": "type_reference"
     },
     {
-      "text": "list",
+      "text": "Console",
       "kind": "type_reference"
     },
     {
-      "text": "Count",
+      "text": "WriteLine",
+      "kind": "call"
+    },
+    {
+      "text": "WriteLine",
       "kind": "field_access"
     },
     {
-      "text": "Count",
+      "text": "WriteLine",
       "kind": "type_reference"
-    }
-  ],
-  "imports": [
+    },
     {
-      "module": "System.Collections.Generic",
-      "imported_name": "Generic"
+      "text": "x",
+      "kind": "type_reference"
     }
   ],
   "scopes": [
@@ -87,21 +69,36 @@
       "kind": "file"
     },
     {
-      "name": "Class#49",
+      "name": "Class#0",
       "kind": "class"
     },
     {
-      "name": "Method#69",
+      "name": "Method#16",
       "kind": "method"
     },
     {
-      "name": "Block#88",
+      "name": "Block#34",
+      "kind": "block"
+    },
+    {
+      "name": "Conditional#44",
+      "kind": "conditional"
+    },
+    {
+      "name": "Block#55",
+      "kind": "block"
+    },
+    {
+      "name": "Block#110",
       "kind": "block"
     }
   ],
   "callsites": [
     {
-      "caller": "Main"
+      "caller": "TestIf"
+    },
+    {
+      "caller": "TestIf"
     }
   ],
   "cfg_nodes": [
@@ -109,10 +106,19 @@
       "kind": "entry"
     },
     {
+      "kind": "branch"
+    },
+    {
       "kind": "statement"
     },
     {
       "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "return"
     },
     {
       "kind": "exit"
@@ -121,17 +127,32 @@
   "cfg_edges": [
     {
       "source_kind": "entry",
+      "target_kind": "branch",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "branch",
       "target_kind": "statement",
+      "kind": "true_branch"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "statement",
+      "kind": "false_branch"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
       "kind": "normal"
     },
     {
       "source_kind": "statement",
-      "target_kind": "statement",
+      "target_kind": "join",
       "kind": "normal"
     },
     {
-      "source_kind": "statement",
-      "target_kind": "exit",
+      "source_kind": "join",
+      "target_kind": "return",
       "kind": "normal"
     }
   ]

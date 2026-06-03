@@ -1,5 +1,5 @@
-//! Scope-exit post-pass: emits implicit Free effects for Rust Drop at scope exit
-//! and Python `with` context-managed blocks at BlockExit.
+//! Scope-exit post-pass: emits implicit Free effects for Rust Drop at scope exit,
+//! Python `with`, Java `try-with-resources`, and C# `using` context-managed blocks at BlockExit.
 //!
 //! Runs AFTER `compose_effects` main loop. For each Alloc effect without a matching
 //! explicit Free effect, emits a Free:
@@ -23,7 +23,8 @@ use super::effect_composer::make_effect;
 /// explicit Free within the same function (e.g., Rust Drop at scope exit,
 /// Python context-manager `with` statement).
 ///
-/// For Python `with` Allocs (CallContext::PythonWith), the Free is emitted
+/// For Python `with` / Java `try-with-resources` Allocs
+/// (CallContext::PythonWith / CallContext::JavaTryWith), the Free is emitted
 /// at the nearest BlockExit successor instead of at the function Exit.
 pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>, cfg: &CfgGraph) {
     // 1. Collect all Allocs and their associated Free places
@@ -34,17 +35,21 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
         for effect in node_effects {
             match &effect.kind {
                 SemanticEffectKind::Alloc { target, callee } => {
-                    // Check if this alloc node has PythonWith context
-                    let is_python_with = cfg
+                    // Check if this alloc node has PythonWith or JavaTryWith context
+                    let is_context_managed = cfg
                         .nodes
                         .get(&effect.cfg_node_id)
-                        .map(|n| n.call_context == CallContext::PythonWith)
+                        .map(|n| {
+                            n.call_context == CallContext::PythonWith
+                                || n.call_context == CallContext::JavaTryWith
+                                || n.call_context == CallContext::CSharpUsing
+                        })
                         .unwrap_or(false);
                     allocs.push((
                         effect.cfg_node_id,
                         target.clone(),
                         callee.clone(),
-                        is_python_with,
+                        is_context_managed,
                     ));
                 }
                 SemanticEffectKind::Free { place, .. } => {
@@ -66,7 +71,7 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
     };
 
     // 3. Emit Free for each allocation that has no matching explicit Free
-    for (alloc_node_id, place, callee, is_python_with) in &allocs {
+    for (alloc_node_id, place, callee, is_context_managed) in &allocs {
         // Skip if this place is already freed explicitly
         let already_freed = freed_places.iter().any(|fp| match (fp, place) {
             (PlaceRef::Field { path: p1 }, PlaceRef::Field { path: p2 }) => p1 == p2,
@@ -77,7 +82,7 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
             continue;
         }
 
-        if *is_python_with {
+        if *is_context_managed {
             // Find the nearest BlockExit successor from the alloc node
             if let Some(block_exit_id) = find_block_exit_successor(alloc_node_id, cfg) {
                 let exit_effects = effects.entry(block_exit_id).or_default();
@@ -108,7 +113,7 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
             },
             0.70,
         );
-        if *is_python_with {
+        if *is_context_managed {
             new_effect.consumption_style = Some(ConsumptionStyle::ContextManaged);
         }
         exit_effects.push(new_effect);
@@ -551,5 +556,241 @@ mod tests {
             scope_exit_free.is_some(),
             "An unfreed alloc (different place) should produce a scope-exit Free"
         );
+    }
+
+    #[test]
+    fn test_java_try_with_finds_block_exit() {
+        let sym_id = make_sym_id();
+        let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
+        let cfg = make_cfg_with_alloc_node(
+            &sym_id,
+            &mut node_id,
+            CfgNodeKind::Statement,
+            true, // use BlockExit + context managed
+            true, // include BlockExit
+        );
+
+        // Replace the PythonWith context with JavaTryWith
+        if let Some(node) = cfg.nodes.get(&node_id) {
+            // Rebuild the graph with the corrected call context
+        }
+        // Actually, we need to build a fresh graph with JavaTryWith context.
+        // Rebuild with make_cfg_with_alloc_node but modify to use JavaTryWith.
+        drop(cfg); // discard the PythonWith graph
+
+        // Build a CFG with JavaTryWith context
+        let entry = CfgNode::entry(&sym_id);
+        let stmt_range = types::structs::TextRange {
+            start_byte: 1,
+            end_byte: 10,
+            start_line: 0,
+            start_column: 0,
+            end_line: 0,
+            end_column: 0,
+        };
+        let mut stmt = CfgNode::new(&sym_id, CfgNodeKind::Statement, stmt_range);
+        stmt.call_context = CallContext::JavaTryWith;
+        let java_node_id = stmt.id;
+
+        let be_range = types::structs::TextRange {
+            start_byte: 12,
+            end_byte: 12,
+            start_line: 0,
+            start_column: 0,
+            end_line: 0,
+            end_column: 0,
+        };
+        let be = CfgNode::new(&sym_id, CfgNodeKind::BlockExit, be_range);
+        let be_id = be.id;
+
+        let exit = CfgNode::exit(&sym_id);
+
+        let nodes = vec![entry.clone(), stmt.clone(), be.clone(), exit.clone()];
+        let edges = vec![
+            types::cfg::CfgEdge::new(&entry.id, &java_node_id, CfgEdgeKind::Normal),
+            types::cfg::CfgEdge::new(&java_node_id, &be_id, CfgEdgeKind::Normal),
+            types::cfg::CfgEdge::new(&be_id, &exit.id, CfgEdgeKind::Normal),
+        ];
+        let cfg = CfgGraph::build(&nodes, &edges).expect("CfgGraph build should succeed");
+
+        let mut effects: HashMap<CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
+        let place = PlaceRef::Local {
+            name: "fis".to_string(),
+        };
+
+        // Insert an Alloc with JavaTryWith context
+        effects.insert(
+            java_node_id,
+            vec![make_effect(
+                &java_node_id,
+                0,
+                SemanticEffectKind::Alloc {
+                    target: place.clone(),
+                    callee: "newInputStream".to_string(),
+                },
+                0.85,
+            )],
+        );
+
+        run_scope_exit_pass(&mut effects, &cfg);
+
+        // Find BlockExit node
+        let be_effects = effects.get(&be_id);
+        assert!(
+            be_effects.is_some(),
+            "BlockExit node should have effects for JavaTryWith alloc"
+        );
+        let be_effects = be_effects.unwrap();
+        let free_effect = be_effects
+            .iter()
+            .find(|e| matches!(&e.kind, SemanticEffectKind::Free { .. }));
+        assert!(
+            free_effect.is_some(),
+            "BlockExit node should have a Free effect"
+        );
+        let free = free_effect.unwrap();
+        // Verify <block-exit> prefix in callee
+        match &free.kind {
+            SemanticEffectKind::Free { callee, .. } => {
+                assert!(
+                    callee.contains("<block-exit>"),
+                    "callee should contain <block-exit> prefix, got: {}",
+                    callee
+                );
+            }
+            _ => panic!("expected Free effect"),
+        }
+        // Should have ContextManaged consumption style
+        assert_eq!(
+            free.consumption_style,
+            Some(ConsumptionStyle::ContextManaged),
+            "JavaTryWith free should have ContextManaged style"
+        );
+
+        // Exit node should NOT have this Free (it went to BlockExit instead)
+        if let Some(exit_effects) = effects.get(&exit.id) {
+            let has_our_free = exit_effects.iter().any(|e| {
+                matches!(&e.kind, SemanticEffectKind::Free { callee, .. } if callee.contains("<block-exit>") || callee.contains("<scope-exit>"))
+            });
+            assert!(
+                !has_our_free,
+                "Exit node should NOT have the scope/block-exit Free when BlockExit was reached"
+            );
+        }
+    }
+
+    #[test]
+    fn test_csharp_using_finds_block_exit() {
+        let sym_id = make_sym_id();
+        let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
+        let cfg = make_cfg_with_alloc_node(
+            &sym_id,
+            &mut node_id,
+            CfgNodeKind::Statement,
+            true, // use BlockExit + context managed
+            true, // include BlockExit
+        );
+
+        // Rebuild with CSharpUsing context on the Statement node
+        drop(cfg);
+
+        let entry = CfgNode::entry(&sym_id);
+        let stmt_range = types::structs::TextRange {
+            start_byte: 1,
+            end_byte: 10,
+            start_line: 0,
+            start_column: 0,
+            end_line: 0,
+            end_column: 0,
+        };
+        let mut stmt = CfgNode::new(&sym_id, CfgNodeKind::Statement, stmt_range);
+        stmt.call_context = CallContext::CSharpUsing;
+        let cs_node_id = stmt.id;
+
+        let be_range = types::structs::TextRange {
+            start_byte: 12,
+            end_byte: 12,
+            start_line: 0,
+            start_column: 0,
+            end_line: 0,
+            end_column: 0,
+        };
+        let be = CfgNode::new(&sym_id, CfgNodeKind::BlockExit, be_range);
+        let be_id = be.id;
+
+        let exit = CfgNode::exit(&sym_id);
+
+        let nodes = vec![entry.clone(), stmt.clone(), be.clone(), exit.clone()];
+        let edges = vec![
+            types::cfg::CfgEdge::new(&entry.id, &cs_node_id, CfgEdgeKind::Normal),
+            types::cfg::CfgEdge::new(&cs_node_id, &be_id, CfgEdgeKind::Normal),
+            types::cfg::CfgEdge::new(&be_id, &exit.id, CfgEdgeKind::Normal),
+        ];
+        let cfg = CfgGraph::build(&nodes, &edges).expect("CfgGraph build should succeed");
+
+        let mut effects: HashMap<CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
+        let place = PlaceRef::Local {
+            name: "stream".to_string(),
+        };
+
+        // Insert an Alloc with CSharpUsing context
+        effects.insert(
+            cs_node_id,
+            vec![make_effect(
+                &cs_node_id,
+                0,
+                SemanticEffectKind::Alloc {
+                    target: place.clone(),
+                    callee: "new FileStream".to_string(),
+                },
+                0.85,
+            )],
+        );
+
+        run_scope_exit_pass(&mut effects, &cfg);
+
+        // Find BlockExit node
+        let be_effects = effects.get(&be_id);
+        assert!(
+            be_effects.is_some(),
+            "BlockExit node should have effects for CSharpUsing alloc"
+        );
+        let be_effects = be_effects.unwrap();
+        let free_effect = be_effects
+            .iter()
+            .find(|e| matches!(&e.kind, SemanticEffectKind::Free { .. }));
+        assert!(
+            free_effect.is_some(),
+            "BlockExit node should have a Free effect"
+        );
+        let free = free_effect.unwrap();
+        // Verify <block-exit> prefix in callee
+        match &free.kind {
+            SemanticEffectKind::Free { callee, .. } => {
+                assert!(
+                    callee.contains("<block-exit>"),
+                    "callee should contain <block-exit> prefix, got: {}",
+                    callee
+                );
+            }
+            _ => panic!("expected Free effect"),
+        }
+        // Should have ContextManaged consumption style
+        assert_eq!(
+            free.consumption_style,
+            Some(ConsumptionStyle::ContextManaged),
+            "CSharpUsing free should have ContextManaged style"
+        );
+
+        // Exit node should NOT have this Free (it went to BlockExit instead)
+        if let Some(exit_effects) = effects.get(&exit.id) {
+            let has_our_free = exit_effects.iter().any(|e| {
+                matches!(&e.kind, SemanticEffectKind::Free { callee, .. } if callee.contains("<block-exit>") || callee.contains("<scope-exit>"))
+            });
+            assert!(
+                !has_our_free,
+                "Exit node should NOT have the scope/block-exit Free when BlockExit was reached"
+            );
+        }
     }
 }

@@ -364,6 +364,10 @@ pub enum CallContext {
     GoDefer,
     /// Python `with` statement — call executes in a context-managed block.
     PythonWith,
+    /// Java `try-with-resources` — call executes in a context-managed block.
+    JavaTryWith,
+    /// C# `using` statement — call executes in a context-managed block.
+    CSharpUsing,
 }
 
 impl CallContext {
@@ -373,6 +377,8 @@ impl CallContext {
             Self::GoGoroutine => "go_goroutine",
             Self::GoDefer => "go_defer",
             Self::PythonWith => "python_with",
+            Self::JavaTryWith => "java_try_with",
+            Self::CSharpUsing => "csharp_using",
         }
     }
 
@@ -383,6 +389,8 @@ impl CallContext {
             "go_goroutine" => Some(Self::GoGoroutine),
             "go_defer" => Some(Self::GoDefer),
             "python_with" => Some(Self::PythonWith),
+            "java_try_with" => Some(Self::JavaTryWith),
+            "csharp_using" => Some(Self::CSharpUsing),
             _ => None,
         }
     }

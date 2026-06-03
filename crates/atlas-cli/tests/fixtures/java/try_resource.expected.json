@@ -1,62 +1,52 @@
 {
   "symbols": [
     {
-      "name": "Calculator",
+      "name": "ResourceTest",
       "kind": "class"
     },
     {
-      "name": "Add",
+      "name": "readFile",
       "kind": "method"
     },
     {
-      "name": "Main",
-      "kind": "method"
-    },
-    {
-      "name": "result",
+      "name": "buf",
       "kind": "variable"
     }
   ],
   "references": [
     {
-      "text": "Calculator",
+      "text": "IOException",
       "kind": "type_reference"
     },
     {
-      "text": "Add",
+      "text": "FileInputStream",
       "kind": "type_reference"
     },
     {
-      "text": "a",
+      "text": "FileInputStream",
+      "kind": "instantiation"
+    },
+    {
+      "text": "FileInputStream",
       "kind": "type_reference"
     },
     {
-      "text": "b",
-      "kind": "type_reference"
-    },
-    {
-      "text": "a",
-      "kind": "type_reference"
-    },
-    {
-      "text": "b",
-      "kind": "type_reference"
-    },
-    {
-      "text": "Main",
-      "kind": "type_reference"
-    },
-    {
-      "text": "result",
-      "kind": "type_reference"
-    },
-    {
-      "text": "Add",
+      "text": "fis",
       "kind": "call"
     },
     {
-      "text": "Add",
-      "kind": "type_reference"
+      "text": "read",
+      "kind": "call"
+    }
+  ],
+  "imports": [
+    {
+      "module": "java.io",
+      "imported_name": "io"
+    },
+    {
+      "module": "java.io",
+      "imported_name": "io"
     }
   ],
   "scopes": [
@@ -65,29 +55,30 @@
       "kind": "file"
     },
     {
-      "name": "Class#0",
+      "name": "Class#19",
       "kind": "class"
     },
     {
-      "name": "Method#23",
+      "name": "Method#44",
       "kind": "method"
     },
     {
-      "name": "Block#59",
+      "name": "Block#79",
       "kind": "block"
     },
     {
-      "name": "Method#94",
-      "kind": "method"
-    },
-    {
-      "name": "Block#113",
+      "name": "Block#149",
       "kind": "block"
     }
   ],
   "callsites": [
     {
-      "caller": "Main"
+      "caller": "readFile",
+      "receiver": "fis"
+    },
+    {
+      "caller": "readFile",
+      "receiver": "fis"
     }
   ],
   "cfg_nodes": [
@@ -95,16 +86,13 @@
       "kind": "entry"
     },
     {
-      "kind": "return"
-    },
-    {
-      "kind": "exit"
-    },
-    {
-      "kind": "entry"
+      "kind": "statement"
     },
     {
       "kind": "statement"
+    },
+    {
+      "kind": "block_exit"
     },
     {
       "kind": "exit"
@@ -113,16 +101,21 @@
   "cfg_edges": [
     {
       "source_kind": "entry",
-      "target_kind": "return",
-      "kind": "normal"
-    },
-    {
-      "source_kind": "entry",
       "target_kind": "statement",
       "kind": "normal"
     },
     {
       "source_kind": "statement",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "block_exit",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "block_exit",
       "target_kind": "exit",
       "kind": "normal"
     }

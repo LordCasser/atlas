@@ -139,6 +139,31 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
                 "break_expression",
             ],
         },
+        Language::CSharp => CfgLanguageConfig {
+            block_kinds: &["block"],
+            if_kinds: &["if_statement"],
+            loop_kinds: &[
+                "for_statement",
+                "foreach_statement",
+                "while_statement",
+                "do_statement",
+            ],
+            return_kinds: &["return_statement"],
+            throw_kinds: &["throw_statement"],
+            stmt_kinds: &["expression_statement", "local_declaration_statement"],
+        },
+        Language::Kotlin => CfgLanguageConfig {
+            block_kinds: &["function_body"],
+            if_kinds: &["if_expression"],
+            loop_kinds: &[
+                "for_statement",
+                "while_statement",
+                "do_while_statement",
+            ],
+            return_kinds: &["jump_expression"],
+            throw_kinds: &[],
+            stmt_kinds: &["property_declaration", "assignment", "variable_declaration"],
+        },
         Language::Cangjie => CfgLanguageConfig {
             block_kinds: &["block"],
             if_kinds: &["ifExpression"],
@@ -591,6 +616,50 @@ impl CfgContext<'_> {
                     self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
                 }
                 i += 1;
+            } else if kind == "try_with_resources_statement" {
+                // Java try-with-resources: set context, walk resource specs, walk body, emit BlockExit
+                self.pending_call_context = CallContext::JavaTryWith;
+
+                let mut child_cursor = stmt.walk();
+                let named: Vec<Node> = stmt.named_children(&mut child_cursor).collect();
+
+                // Walk resource_specification children (e.g., new FileInputStream("file"))
+                // The 'resources' child contains 'resource' nodes with 'variable_declarator'
+                for gc in &named {
+                    let kind = gc.kind();
+                    if kind == "resources" {
+                        // resources is a container; walk its named children (each 'resource')
+                        let mut rc = gc.walk();
+                        for res in gc.named_children(&mut rc) {
+                            if res.kind() == "resource" {
+                                // A resource has a variable_declarator; emit the whole resource as Statement
+                                self.emit_stmt(
+                                    CfgNodeKind::Statement,
+                                    stmt_range.start_byte,
+                                    &res,
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Walk the body block
+                for gc in &named {
+                    if gc.kind() == "block" {
+                        self.walk_block(*gc, stmt_range.start_byte);
+                    }
+                }
+
+                // Emit BlockExit node (zero-length range at end of try-with-resources)
+                let block_exit_id =
+                    self.add_node(CfgNodeKind::BlockExit, stmt.end_byte() as u32, None);
+                if let Some(last_id) = self.prev_node_id.take() {
+                    self.add_edge(&last_id, &block_exit_id, CfgEdgeKind::Normal);
+                }
+                self.prev_node_id = Some(block_exit_id);
+
+                i += 1;
+                continue;
             } else if kind == "try_statement" || kind == "switch_statement" {
                 // Deferred: treat as single statement
                 self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
@@ -603,6 +672,41 @@ impl CfgContext<'_> {
                 // Rust match — complex control flow, deferred
                 self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
                 i += 1;
+            } else if kind == "using_statement" {
+                // C# using: set context, walk resource declaration, walk body, emit BlockExit
+                self.pending_call_context = CallContext::CSharpUsing;
+
+                let mut child_cursor = stmt.walk();
+                let named: Vec<Node> = stmt.named_children(&mut child_cursor).collect();
+
+                // Walk resource declaration nodes (skip "using" keyword, walk named children for resource)
+                for gc in &named {
+                    let gc_kind = gc.kind();
+                    if gc_kind == "variable_declaration"
+                        || gc_kind == "local_declaration_statement"
+                        || gc_kind == "object_creation_expression"
+                    {
+                        self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, gc);
+                    }
+                }
+
+                // Walk the body block
+                for gc in &named {
+                    if gc.kind() == "block" {
+                        self.walk_block(*gc, stmt_range.start_byte);
+                    }
+                }
+
+                // Emit BlockExit node (zero-length range at end of using statement)
+                let block_exit_id =
+                    self.add_node(CfgNodeKind::BlockExit, stmt.end_byte() as u32, None);
+                if let Some(last_id) = self.prev_node_id.take() {
+                    self.add_edge(&last_id, &block_exit_id, CfgEdgeKind::Normal);
+                }
+                self.prev_node_id = Some(block_exit_id);
+
+                i += 1;
+                continue;
             } else if kind == "with_statement" {
                 // Python with: set context, walk allocation clause, walk body, emit BlockExit
                 self.pending_call_context = CallContext::PythonWith;

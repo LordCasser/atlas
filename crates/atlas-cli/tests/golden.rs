@@ -408,6 +408,18 @@ fn golden_csharp_class() {
     run_golden("csharp", "class", "cs", Language::CSharp);
 }
 
+#[cfg(feature = "csharp")]
+#[test]
+fn golden_csharp_cfg_if_else() {
+    run_golden("csharp", "cfg_if_else", "cs", Language::CSharp);
+}
+
+#[cfg(feature = "csharp")]
+#[test]
+fn golden_csharp_cfg_loop() {
+    run_golden("csharp", "cfg_loop", "cs", Language::CSharp);
+}
+
 // -- Rust --
 
 #[cfg(feature = "rust")]
@@ -512,6 +524,18 @@ fn golden_kotlin_class() {
     run_golden("kotlin", "class", "kt", Language::Kotlin);
 }
 
+#[cfg(feature = "kotlin")]
+#[test]
+fn golden_kotlin_cfg_if_else() {
+    run_golden("kotlin", "cfg_if_else", "kt", Language::Kotlin);
+}
+
+#[cfg(feature = "kotlin")]
+#[test]
+fn golden_kotlin_cfg_loop() {
+    run_golden("kotlin", "cfg_loop", "kt", Language::Kotlin);
+}
+
 // -- Java (Symbolic + Dataflow, opt-in) --
 
 #[cfg(feature = "java")]
@@ -588,4 +612,10 @@ fn golden_go_goroutine() {
 #[test]
 fn golden_rust_scope_exit() {
     run_golden("rust", "scope_exit", "rs", Language::Rust);
+}
+
+#[cfg(feature = "java")]
+#[test]
+fn golden_java_try_resource() {
+    run_golden("java", "try_resource", "java", Language::Java);
 }

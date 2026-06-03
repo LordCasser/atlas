@@ -1059,10 +1059,10 @@ mod profiles {
                 "access_path".into(),
                 "call_arguments".into(),
                 "return_flow".into(),
+                "cfg".into(),
                 "interprocedural_dataflow".into(),
             ],
             unsupported_features: vec![
-                "cfg".into(),
                 "scope_aware_binding".into(),
             ],
             limitations: vec![
@@ -1092,7 +1092,10 @@ mod profiles {
                 field_access: FeatureSupport::supported_with_confidence(0.72),
                 call_arguments: FeatureSupport::supported_with_confidence(0.72),
                 returns_flow: FeatureSupport::supported_with_confidence(0.72),
-                cfg: FeatureSupport::unsupported("CFG builder not implemented for C#"),
+                cfg: FeatureSupport::supported_with_limitations(
+                    0.72,
+                    vec!["Control-flow graph with using_statement and branch/loop body traversal implemented"],
+                ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.72,
                     vec![
@@ -1313,10 +1316,10 @@ mod profiles {
                 "access_path".into(),
                 "call_arguments".into(),
                 "return_flow".into(),
+                "cfg".into(),
                 "interprocedural_dataflow".into(),
             ],
             unsupported_features: vec![
-                "cfg".into(),
                 "scope_aware_binding".into(),
             ],
             limitations: vec![
@@ -1346,7 +1349,10 @@ mod profiles {
                 field_access: FeatureSupport::supported_with_confidence(0.67),
                 call_arguments: FeatureSupport::supported_with_confidence(0.67),
                 returns_flow: FeatureSupport::supported_with_confidence(0.67),
-                cfg: FeatureSupport::unsupported("CFG builder not implemented for Kotlin"),
+                cfg: FeatureSupport::supported_with_limitations(
+                    0.67,
+                    vec!["Control-flow graph with branch/loop body traversal implemented"],
+                ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.67,
                     vec![

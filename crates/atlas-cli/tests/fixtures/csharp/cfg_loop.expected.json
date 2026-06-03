@@ -1,61 +1,41 @@
 {
   "symbols": [
     {
-      "name": "Calculator",
+      "name": "App",
       "kind": "class"
     },
     {
-      "name": "Add",
+      "name": "TestLoop",
       "kind": "method"
-    },
-    {
-      "name": "Main",
-      "kind": "method"
-    },
-    {
-      "name": "result",
-      "kind": "variable"
     }
   ],
   "references": [
     {
-      "text": "Calculator",
+      "text": "App",
       "kind": "type_reference"
     },
     {
-      "text": "Add",
+      "text": "TestLoop",
       "kind": "type_reference"
     },
     {
-      "text": "a",
+      "text": "x",
       "kind": "type_reference"
     },
     {
-      "text": "b",
+      "text": "x",
       "kind": "type_reference"
     },
     {
-      "text": "a",
+      "text": "x",
       "kind": "type_reference"
     },
     {
-      "text": "b",
+      "text": "x",
       "kind": "type_reference"
     },
     {
-      "text": "Main",
-      "kind": "type_reference"
-    },
-    {
-      "text": "result",
-      "kind": "type_reference"
-    },
-    {
-      "text": "Add",
-      "kind": "call"
-    },
-    {
-      "text": "Add",
+      "text": "x",
       "kind": "type_reference"
     }
   ],
@@ -69,25 +49,20 @@
       "kind": "class"
     },
     {
-      "name": "Method#23",
+      "name": "Method#16",
       "kind": "method"
     },
     {
-      "name": "Block#59",
+      "name": "Block#36",
       "kind": "block"
     },
     {
-      "name": "Method#94",
-      "kind": "method"
+      "name": "Loop#46",
+      "kind": "loop"
     },
     {
-      "name": "Block#113",
+      "name": "Block#60",
       "kind": "block"
-    }
-  ],
-  "callsites": [
-    {
-      "caller": "Main"
     }
   ],
   "cfg_nodes": [
@@ -95,16 +70,16 @@
       "kind": "entry"
     },
     {
-      "kind": "return"
-    },
-    {
-      "kind": "exit"
-    },
-    {
-      "kind": "entry"
+      "kind": "loop"
     },
     {
       "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "return"
     },
     {
       "kind": "exit"
@@ -113,17 +88,27 @@
   "cfg_edges": [
     {
       "source_kind": "entry",
-      "target_kind": "return",
+      "target_kind": "loop",
       "kind": "normal"
     },
     {
-      "source_kind": "entry",
+      "source_kind": "loop",
       "target_kind": "statement",
       "kind": "normal"
     },
     {
       "source_kind": "statement",
-      "target_kind": "exit",
+      "target_kind": "loop",
+      "kind": "loop_back"
+    },
+    {
+      "source_kind": "loop",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "return",
       "kind": "normal"
     }
   ]

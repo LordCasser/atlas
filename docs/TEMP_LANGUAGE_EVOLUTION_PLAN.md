@@ -911,7 +911,57 @@ Scope:
 - ✅ **2 integration tests**: `test_python_with_lifecycle`, `test_ts_react_cleanup`.
 - ✅ **54 engine + 71 trace_fixtures + 50 golden + 50 IR + 92 ID store** — all pass.
 
-### M6: Managed Runtime Semantics
+### M6b/c/d/e: C# + Kotlin + Ruby + PHP ✅ (completed)
+
+Scope:
+
+- ✅ **C# CFG**: From `unsupported` → `supported_with_limitations(0.72)`. Added
+  `CfgLanguageConfig` with `using_statement` handler (identical pattern to
+  Python/Java context manager). `CallContext::CSharpUsing` added.
+- ✅ **Kotlin CFG**: From `unsupported` → `supported_with_limitations(0.67)`. Added
+  `CfgLanguageConfig` with verified tree-sitter-kotlin v0.4.0 node kinds
+  (`function_body`, `if_expression`, `for_statement`, `while_statement`).
+- ✅ **`ScopeExitAnalyzer`**: `is_context_managed` handles `CSharpUsing` alongside
+  `PythonWith`/`JavaTryWith`.
+- ✅ **4 new domain registries**: `CSharpRegistry` (idisposable), `KotlinRegistry`
+  (coroutine), `RubyRegistry` (block_resource), `PhpRegistry` (procedural_resource).
+- ✅ **Enhanced ResourceOpConfig**: C# (File.Open, FileStream, SqlConnection),
+  Kotlin (.use extension, bufferedReader), Ruby (File.open, TCPSocket, Net::HTTP),
+  PHP (fopen, mysqli_connect, curl_init — exact consumers).
+- ✅ **C#/Kotlin capability profiles**: `cfg` upgraded from unsupported, `FeatureMatrix`
+  updated to include `cfg` in supported features.
+- ✅ **8 resource_ops tests** + **8 integration tests** + **4 fixture files**.
+- ✅ **Test results**: 48 domain-rules + 104 analysis + 29 integration + 25 golden
+  + 33 trace_fixtures — 239 total, zero regressions.
+
+Exit criteria met:
+- C# `using`/IDisposable: Alloc → Free at BlockExit (ContextManaged).
+- Kotlin `.use {}` lambda scope exit handled by ScopeExitAnalyzer.
+- Ruby `File.open` with block handled by ScopeExitAnalyzer.
+- PHP procedural resources: patterns + ScopeExitAnalyzer.
+- All M6 languages have domain registries and ResourceOpConfig.
+
+**Prerequisite**: Java CFG verified (0.75 confidence).
+
+Scope:
+
+- ✅ **Added `CallContext::JavaTryWith`** to types/src/enums.rs.
+- ✅ **Added `try_with_resources_statement` handler** in cfg_builder.rs — walks resource
+  specifications, walks body block, emits `CfgNodeKind::BlockExit` at try block end.
+  Placed before the generic `try_statement` handler (plain try-catch-finally unchanged).
+- ✅ **`ScopeExitAnalyzer`**: Renamed `is_python_with` → `is_context_managed`; handles
+  both `PythonWith` and `JavaTryWith` → Free at BlockExit with `ConsumptionStyle::ContextManaged`.
+- ✅ **Enhanced `default_java()`**: Added `newInputStream`, `newOutputStream`, `getConnection`
+  producers; consumers `.close()`, `.dispose()`, `.destroy()`.
+- ✅ **Created `JavaRegistry`** in domain_rules/src/kinds/java.rs: rule kinds
+  `java/alloc_fn`, `java/free_fn`, `java/try_resource`, `java/cleanup_fn` with builtin rules.
+- ✅ **Wired registries**: `kinds/mod.rs` + analysis/java feature flag.
+- ✅ **3 resource_ops tests** + **1 golden fixture** (try_resource.java) + **1 integration test**.
+- ✅ **Test results**: 36 domain-rules + 99 analysis + 26 golden + 23 integration — zero regressions.
+
+Exit criteria met:
+- Java try-with-resources lifecycle: Alloc at constructor → Free at BlockExit (ContextManaged).
+- Java `.close()` explicit consumption verified.
 
 **Prerequisite**: For full semantics (branch_diff/lifecycle), each language must
 have verified CFG support from M2. Java and C# require CFG hardening; Kotlin,

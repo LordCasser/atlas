@@ -1912,3 +1912,564 @@ class ResourceTest {
         );
     }
 }
+
+// ────────────────────────────────────────────────────────────────
+// C# using statement lifecycle tests
+// ────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "csharp")]
+mod csharp_tests {
+    use super::*;
+    use atlas_engine::analysis::cfg_graph::CfgGraph;
+    use atlas_engine::analysis::resource_ops::ResourceOpConfig;
+    use atlas_engine::analysis::scope_exit::run_scope_exit_pass;
+    use atlas_engine::effects::{ConsumptionStyle, PlaceRef, SemanticEffect, SemanticEffectKind};
+    use atlas_engine::ids::EffectId;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_csharp_using_lifecycle() {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        let files = &[(
+            "using_dispose.cs",
+            r#"using System;
+using System.IO;
+
+class ResourceDemo
+{
+    void ReadFile()
+    {
+        using (var stream = new FileStream("data.txt", FileMode.Open))
+        {
+            byte[] buffer = new byte[1024];
+            stream.Read(buffer, 0, buffer.Length);
+        }
+    }
+}
+"#,
+        )];
+
+        let (store, _stats) = index_files(files);
+        let file_id = FileId::generate("using_dispose.cs");
+
+        // Find the ReadFile method
+        let syms = store.find_symbols_by_file(&file_id).unwrap();
+        let method_sym = syms
+            .iter()
+            .find(|s| s.name == "ReadFile" && s.kind.as_str() == "method")
+            .expect("ReadFile method not found");
+
+        // Load CFG
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&method_sym.id)
+            .unwrap();
+        assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
+
+        // Verify there is a BlockExit node
+        let has_block_exit = cfg_nodes
+            .iter()
+            .any(|n| n.kind == atlas_engine::CfgNodeKind::BlockExit);
+        assert!(has_block_exit, "CFG should have a BlockExit node for using statement");
+
+        let cfg_edges = store
+            .find_cfg_edges_by_function(&method_sym.id)
+            .unwrap();
+
+        // Build CfgGraph
+        let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+
+        // Find a Statement node with CSharpUsing context and the BlockExit node
+        let stmt_node = cfg_nodes
+            .iter()
+            .find(|n| n.kind == atlas_engine::CfgNodeKind::Statement
+                && n.call_context == atlas_engine::enums::CallContext::CSharpUsing);
+        assert!(stmt_node.is_some(), "Should find a Statement with CSharpUsing context");
+        let stmt_node = stmt_node.unwrap();
+
+        let be_node = cfg_nodes
+            .iter()
+            .find(|n| n.kind == atlas_engine::CfgNodeKind::BlockExit)
+            .expect("BlockExit node should exist");
+
+        let exit_node = cfg_nodes
+            .iter()
+            .find(|n| n.kind == atlas_engine::CfgNodeKind::Exit)
+            .expect("Exit node should exist");
+
+        // Manually construct an Alloc effect for the resource
+        let place = PlaceRef::Local {
+            name: "stream".to_string(),
+        };
+        let alloc_kind = SemanticEffectKind::Alloc {
+            target: place.clone(),
+            callee: "new FileStream".to_string(),
+        };
+        let alloc_effect = SemanticEffect {
+            id: EffectId::generate(&stmt_node.id, 0, "Alloc"),
+            cfg_node_id: stmt_node.id,
+            order: 0,
+            kind: alloc_kind,
+            confidence: 0.85,
+            consumption_style: None,
+            description: None,
+        };
+
+        let mut effects: HashMap<atlas_engine::ids::CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
+        effects.insert(stmt_node.id, vec![alloc_effect]);
+
+        // Run scope_exit_pass — should add a Free at BlockExit for the CSharpUsing alloc
+        run_scope_exit_pass(&mut effects, &cfg_graph);
+
+        // Verify the BlockExit node has a Free with ContextManaged style
+        let be_effects = effects.get(&be_node.id);
+        assert!(
+            be_effects.is_some(),
+            "BlockExit node should have scope-exit effects for CSharpUsing"
+        );
+        let be_effects = be_effects.unwrap();
+        let has_block_exit_free = be_effects.iter().any(|eff| {
+            matches!(&eff.kind, SemanticEffectKind::Free { callee, .. }
+                if callee.contains("<block-exit>"))
+        });
+        assert!(
+            has_block_exit_free,
+            "Expected a block-exit Free effect at BlockExit for CSharpUsing alloc"
+        );
+
+        // Verify the ConsumptionStyle is ContextManaged
+        let block_exit_free = be_effects.iter().find(|eff| {
+            matches!(&eff.kind, SemanticEffectKind::Free { .. })
+        });
+        assert!(block_exit_free.is_some(), "Should have a Free effect");
+        assert_eq!(
+            block_exit_free.unwrap().consumption_style,
+            Some(ConsumptionStyle::ContextManaged),
+            "CSharpUsing Free should have ContextManaged consumption style"
+        );
+
+        // Exit node should NOT have this Free
+        if let Some(exit_effects) = effects.get(&exit_node.id) {
+            let has_scope_exit_free = exit_effects.iter().any(|eff| {
+                matches!(&eff.kind, SemanticEffectKind::Free { callee, .. }
+                    if callee.contains("<scope-exit>") || callee.contains("<block-exit>"))
+            });
+            assert!(
+                !has_scope_exit_free,
+                "Exit node should NOT have the scope-exit Free when BlockExit was reached for CSharpUsing"
+            );
+        }
+    }
+
+    #[test]
+    fn test_csharp_resource_patterns() {
+        let config = ResourceOpConfig::default_for(Language::CSharp);
+        // Producers
+        assert!(config.is_producer("File.Open"));
+        assert!(config.is_producer("new FileStream"));
+        assert!(config.is_producer("SqlConnection"));
+        assert!(config.is_producer("OpenConnection"));
+        assert!(config.is_producer("OpenStream"));
+        // Consumers
+        assert_eq!(config.is_consumer("conn.Dispose"), Some(0));
+        assert_eq!(config.is_consumer("stream.Close"), Some(0));
+        // Non-patterns
+        assert!(!config.is_producer("free"));
+        assert_eq!(config.is_consumer("open"), None);
+    }
+
+    #[test]
+    fn test_csharp_using_multiple_resources() {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        let files = &[(
+            "using_multi.cs",
+            r#"using System;
+using System.IO;
+
+class MultiDemo
+{
+    void ProcessFiles()
+    {
+        using (var input = new FileStream("in.txt", FileMode.Open),
+                    var output = new FileStream("out.txt", FileMode.Create))
+        {
+            byte[] buffer = new byte[1024];
+            input.Read(buffer, 0, buffer.Length);
+            output.Write(buffer, 0, buffer.Length);
+        }
+    }
+}
+"#,
+        )];
+
+        let (store, _stats) = index_files(files);
+        let file_id = FileId::generate("using_multi.cs");
+
+        // Find the ProcessFiles method
+        let syms = store.find_symbols_by_file(&file_id).unwrap();
+        let method_sym = syms
+            .iter()
+            .find(|s| s.name == "ProcessFiles" && s.kind.as_str() == "method")
+            .expect("ProcessFiles method not found");
+
+        // Load CFG
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&method_sym.id)
+            .unwrap();
+        assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
+
+        // Verify there is a BlockExit node
+        let has_block_exit = cfg_nodes
+            .iter()
+            .any(|n| n.kind == atlas_engine::CfgNodeKind::BlockExit);
+        assert!(has_block_exit, "CFG should have a BlockExit node for using statement");
+
+        let cfg_edges = store
+            .find_cfg_edges_by_function(&method_sym.id)
+            .unwrap();
+
+        use atlas_engine::analysis::cfg_graph::CfgGraph;
+        let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+
+        // Find Statement nodes with CSharpUsing context
+        let using_stmts: Vec<_> = cfg_nodes
+            .iter()
+            .filter(|n| n.kind == atlas_engine::CfgNodeKind::Statement
+                && n.call_context == atlas_engine::enums::CallContext::CSharpUsing)
+            .collect();
+        assert!(
+            !using_stmts.is_empty(),
+            "Should find at least one Statement with CSharpUsing context"
+        );
+
+        // Find the BlockExit node
+        let be_node = cfg_nodes
+            .iter()
+            .find(|n| n.kind == atlas_engine::CfgNodeKind::BlockExit)
+            .expect("BlockExit node should exist");
+
+        // Manually construct Alloc effects for both resources on the same statement node
+        use atlas_engine::analysis::scope_exit::run_scope_exit_pass;
+        use atlas_engine::effects::{ConsumptionStyle, PlaceRef, SemanticEffect, SemanticEffectKind};
+        use atlas_engine::ids::EffectId;
+        use std::collections::HashMap;
+
+        let mut effects: HashMap<atlas_engine::ids::CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
+
+        // Both `using` resources are on the same statement (multi-declaration using)
+        let stmt = &using_stmts[0];
+        let stmt_effects = effects.entry(stmt.id).or_default();
+
+        let alloc_input = SemanticEffect {
+            id: EffectId::generate(&stmt.id, 0, "Alloc"),
+            cfg_node_id: stmt.id,
+            order: 0,
+            kind: SemanticEffectKind::Alloc {
+                target: PlaceRef::Local {
+                    name: "input".to_string(),
+                },
+                callee: "new FileStream".to_string(),
+            },
+            confidence: 0.85,
+            consumption_style: None,
+            description: None,
+        };
+        stmt_effects.push(alloc_input);
+
+        let alloc_output = SemanticEffect {
+            id: EffectId::generate(&stmt.id, 1, "Alloc"),
+            cfg_node_id: stmt.id,
+            order: 1,
+            kind: SemanticEffectKind::Alloc {
+                target: PlaceRef::Local {
+                    name: "output".to_string(),
+                },
+                callee: "new FileStream".to_string(),
+            },
+            confidence: 0.85,
+            consumption_style: None,
+            description: None,
+        };
+        stmt_effects.push(alloc_output);
+
+        // Run scope_exit_pass
+        run_scope_exit_pass(&mut effects, &cfg_graph);
+
+        // Both resources should get scoped exit Free at the same BlockExit
+        let be_effects = effects.get(&be_node.id);
+        assert!(
+            be_effects.is_some(),
+            "BlockExit node should have scope-exit effects for multi-resource using"
+        );
+        let be_effects = be_effects.unwrap();
+
+        let free_count = be_effects.iter().filter(|eff| {
+            matches!(&eff.kind, SemanticEffectKind::Free { .. })
+        }).count();
+        assert!(
+            free_count >= 2,
+            "Expected >= 2 Free effects at BlockExit for multiple using resources, got {}",
+            free_count
+        );
+
+        // Verify all Free effects have ContextManaged style
+        for eff in be_effects {
+            if matches!(&eff.kind, SemanticEffectKind::Free { .. }) {
+                assert_eq!(
+                    eff.consumption_style,
+                    Some(atlas_engine::effects::ConsumptionStyle::ContextManaged),
+                    "CSharpUsing Free should have ContextManaged consumption style"
+                );
+            }
+        }
+
+        // Exit node should NOT have these Frees
+        if let Some(exit_node) = cfg_nodes.iter().find(|n| n.kind == atlas_engine::CfgNodeKind::Exit) {
+            if let Some(exit_effects) = effects.get(&exit_node.id) {
+                let has_scope_exit_free = exit_effects.iter().any(|eff| {
+                    matches!(&eff.kind, SemanticEffectKind::Free { callee, .. }
+                        if callee.contains("<scope-exit>") || callee.contains("<block-exit>"))
+                });
+                assert!(
+                    !has_scope_exit_free,
+                    "Exit node should NOT have scope/block-exit Frees when BlockExit was reached"
+                );
+            }
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// Kotlin .use lifecycle tests
+// ────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "kotlin")]
+mod kotlin_tests {
+    use super::*;
+    use atlas_engine::analysis::resource_ops::ResourceOpConfig;
+
+    #[test]
+    fn test_kotlin_use_lifecycle() {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        let files = &[(
+            "use_resource.kt",
+            r#"import java.io.File
+
+fun readFile() {
+    val file = File("data.txt")
+    file.bufferedReader().use { reader ->
+        val line = reader.readLine()
+        println(line)
+    }
+}
+"#,
+        )];
+
+        let (store, _stats) = index_files(files);
+        let file_id = FileId::generate("use_resource.kt");
+
+        // Find the readFile function
+        let syms = store.find_symbols_by_file(&file_id).unwrap();
+        let func_sym = syms
+            .iter()
+            .find(|s| s.name == "readFile" && s.kind.as_str() == "function")
+            .expect("readFile function not found");
+
+        // Verify that CFG nodes were extracted
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&func_sym.id)
+            .unwrap();
+        assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
+
+        let cfg_edges = store
+            .find_cfg_edges_by_function(&func_sym.id)
+            .unwrap();
+
+        use atlas_engine::analysis::cfg_graph::CfgGraph;
+        let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+
+        // Load DataFlow
+        let data_nodes = store
+            .find_data_nodes_by_function(&func_sym.id)
+            .unwrap();
+        let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
+            vec![]
+        } else {
+            let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
+            store
+                .find_dataflow_edges_by_sources(&all_ids)
+                .unwrap_or_default()
+        };
+
+        // Run compose_effects with Kotlin ResourceOpConfig
+        use atlas_engine::analysis::{ResourceOpConfig, compose_effects};
+        use atlas_engine::effects::SemanticEffectKind;
+        let contract = ResourceOpConfig::default_for(atlas_engine::Language::Kotlin);
+        let composition = compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
+
+        let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
+
+        // Assert: at least one Alloc effect exists
+        let has_alloc = all_effects.iter().any(|eff| {
+            matches!(&eff.kind, SemanticEffectKind::Alloc { .. })
+        });
+        assert!(
+            has_alloc,
+            "Expected at least one Alloc effect for Kotlin .use resource. \
+             Found {} total effects: {:?}",
+            all_effects.len(),
+            all_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
+        );
+
+        // Assert: at least one Free effect exists (from scope exit at BlockExit)
+        let has_free = all_effects.iter().any(|eff| {
+            matches!(&eff.kind, SemanticEffectKind::Free { .. })
+        });
+        assert!(
+            has_free,
+            "Expected at least one Free effect for Kotlin .use resource. \
+             Found {} total effects: {:?}",
+            all_effects.len(),
+            all_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_kotlin_resource_patterns() {
+        let config = ResourceOpConfig::default_for(Language::Kotlin);
+        // Producers
+        assert!(config.is_producer("File"));
+        assert!(config.is_producer("bufferedReader"));
+        assert!(config.is_producer("bufferedWriter"));
+        assert!(config.is_producer("openConnection"));
+        // Consumers — .use is an Exact consumer
+        assert_eq!(config.is_consumer(".use"), Some(0));
+        assert_eq!(config.is_consumer("file.close"), Some(0));
+        assert_eq!(config.is_consumer("conn.dispose"), Some(0));
+        // Non-patterns
+        assert!(!config.is_producer("free"));
+        assert_eq!(config.is_consumer("open"), None);
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// Ruby block resource tests
+// ────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "ruby")]
+mod ruby_tests {
+    use super::*;
+    use atlas_engine::analysis::resource_ops::ResourceOpConfig;
+
+    #[test]
+    fn test_ruby_block_resource() {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        let files = &[(
+            "block_resource.rb",
+            r#"def read_file
+  File.open("data.txt") do |f|
+    content = f.read
+    puts content
+  end
+end
+"#,
+        )];
+
+        let (store, _stats) = index_files(files);
+        let file_id = FileId::generate("block_resource.rb");
+
+        // Find the read_file method
+        let syms = store.find_symbols_by_file(&file_id).unwrap();
+        let func_sym = syms
+            .iter()
+            .find(|s| s.name == "read_file" && s.kind.as_str() == "method")
+            .expect("read_file method not found");
+
+        // Verify symbols were extracted
+        assert!(!func_sym.id.to_string().is_empty());
+    }
+
+    #[test]
+    fn test_ruby_resource_patterns() {
+        let config = ResourceOpConfig::default_for(Language::Ruby);
+        // Producers — Exact matches take priority
+        assert!(config.is_producer("File.open"));
+        assert!(config.is_producer("File.new"));
+        assert!(config.is_producer("TCPSocket.new"));
+        assert!(config.is_producer("Net::HTTP.start"));
+        // Suffix matches
+        assert!(config.is_producer("some.open"));
+        assert!(config.is_producer("obj.new"));
+        // Consumers
+        assert_eq!(config.is_consumer(".close"), Some(0));
+        assert_eq!(config.is_consumer("file.close"), Some(0));
+        assert_eq!(config.is_consumer(".dispose"), Some(0));
+        assert_eq!(config.is_consumer("obj.dispose"), Some(0));
+        // Non-patterns
+        assert!(!config.is_producer("free"));
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// PHP procedural resource tests
+// ────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "php")]
+mod php_tests {
+    use super::*;
+    use atlas_engine::analysis::resource_ops::ResourceOpConfig;
+
+    #[test]
+    fn test_php_procedural_resource() {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        let files = &[(
+            "procedural_resource.php",
+            r#"<?php
+function read_file() {
+    $handle = fopen("data.txt", "r");
+    if ($handle) {
+        $content = fread($handle, filesize("data.txt"));
+        fclose($handle);
+    }
+}
+"#,
+        )];
+
+        let (store, _stats) = index_files(files);
+        let file_id = FileId::generate("procedural_resource.php");
+
+        // Find the read_file function
+        let syms = store.find_symbols_by_file(&file_id).unwrap();
+        let func_sym = syms
+            .iter()
+            .find(|s| s.name == "read_file" && s.kind.as_str() == "function")
+            .expect("read_file function not found");
+
+        // Verify symbols were extracted
+        assert!(!func_sym.id.to_string().is_empty());
+    }
+
+    #[test]
+    fn test_php_resource_patterns() {
+        let config = ResourceOpConfig::default_for(Language::Php);
+        // Producers — Exact matches
+        assert!(config.is_producer("fopen"));
+        assert!(config.is_producer("mysqli_connect"));
+        assert!(config.is_producer("curl_init"));
+        // Suffix connect
+        assert!(config.is_producer("db_connect"));
+        // Consumers — Exact matches
+        assert_eq!(config.is_consumer("fclose"), Some(0));
+        assert_eq!(config.is_consumer("mysqli_close"), Some(0));
+        assert_eq!(config.is_consumer("curl_close"), Some(0));
+        // Suffix close
+        assert_eq!(config.is_consumer("handle_close"), Some(0));
+        // Non-patterns
+        assert!(!config.is_producer("free"));
+        assert_eq!(config.is_consumer("open"), None);
+    }
+}

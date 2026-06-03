@@ -1,48 +1,26 @@
 {
   "symbols": [
     {
-      "name": "main",
+      "name": "testIf",
       "kind": "function"
-    },
-    {
-      "name": "items",
-      "kind": "property"
-    },
-    {
-      "name": "items",
-      "kind": "variable"
     }
   ],
   "references": [
     {
-      "text": "listOf",
-      "kind": "call"
+      "text": "Int",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Int",
+      "kind": "type_reference"
     },
     {
       "text": "println",
       "kind": "call"
     },
     {
-      "text": "items",
-      "kind": "field_access"
-    },
-    {
       "text": "println",
       "kind": "call"
-    },
-    {
-      "text": "Date",
-      "kind": "call"
-    }
-  ],
-  "imports": [
-    {
-      "module": "kotlin.collections.listOf",
-      "imported_name": "listOf"
-    },
-    {
-      "module": "java.util.Date",
-      "imported_name": "Date"
     }
   ],
   "scopes": [
@@ -51,26 +29,24 @@
       "kind": "file"
     },
     {
-      "name": "Function#56",
+      "name": "Function#0",
       "kind": "function"
     },
     {
-      "name": "Block#67",
+      "name": "Block#24",
       "kind": "block"
+    },
+    {
+      "name": "Conditional#30",
+      "kind": "conditional"
     }
   ],
   "callsites": [
     {
-      "caller": "main"
+      "caller": "testIf"
     },
     {
-      "caller": "main"
-    },
-    {
-      "caller": "main"
-    },
-    {
-      "caller": "main"
+      "caller": "testIf"
     }
   ],
   "cfg_nodes": [

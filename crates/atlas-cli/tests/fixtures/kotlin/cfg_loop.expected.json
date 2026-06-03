@@ -1,0 +1,59 @@
+{
+  "symbols": [
+    {
+      "name": "testLoop",
+      "kind": "function"
+    }
+  ],
+  "references": [
+    {
+      "text": "Int",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Int",
+      "kind": "type_reference"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#0",
+      "kind": "function"
+    },
+    {
+      "name": "Block#26",
+      "kind": "block"
+    },
+    {
+      "name": "Loop#32",
+      "kind": "loop"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "exit",
+      "kind": "normal"
+    }
+  ]
+}
