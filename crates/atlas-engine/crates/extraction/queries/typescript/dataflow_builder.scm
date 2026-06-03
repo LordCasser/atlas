@@ -87,3 +87,7 @@
 (new_expression
   constructor: (_) @df.call_target
   arguments: (arguments (_) @df.call_arg))
+
+;; --- React useEffect cleanup return: return () => { cleanup(); } ---
+(return_statement
+  (arrow_function) @df.react_cleanup_return)

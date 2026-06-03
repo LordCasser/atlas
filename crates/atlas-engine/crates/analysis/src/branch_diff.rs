@@ -343,6 +343,8 @@ mod tests {
             order,
             kind,
             confidence: 0.8,
+            consumption_style: None,
+            description: None,
         }
     }
 
@@ -360,6 +362,7 @@ mod tests {
             function_id: *fid,
             kind,
             stmt_range: range,
+            call_context: types::enums::CallContext::None,
             semantic_effects: effects,
         }
     }

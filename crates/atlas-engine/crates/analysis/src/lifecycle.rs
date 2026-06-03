@@ -625,6 +625,8 @@ mod tests {
             order,
             kind,
             confidence: 0.8,
+            consumption_style: None,
+            description: None,
         }
     }
 
@@ -643,6 +645,7 @@ mod tests {
                 end_line: line,
                 end_column: 0,
             },
+            call_context: types::enums::CallContext::None,
             semantic_effects: effects,
         }
     }

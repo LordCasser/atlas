@@ -1,0 +1,107 @@
+{
+  "symbols": [
+    {
+      "name": "test_if",
+      "kind": "function"
+    }
+  ],
+  "references": [
+    {
+      "text": "printf",
+      "kind": "call"
+    },
+    {
+      "text": "printf",
+      "kind": "call"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "int test_if(int x) {\n    if (x > 0) {\n        printf(\"pos\\n\");\n    } else {\n        printf(\"neg\\n\");\n    }\n    return x;\n}\n",
+      "kind": "file"
+    },
+    {
+      "name": "int test_if(int x) {\n    if (x > 0) {\n        printf(\"pos\\n\");\n    } else {\n        printf(\"neg\\n\");\n    }\n    return x;\n}",
+      "kind": "function"
+    },
+    {
+      "name": "{\n    if (x > 0) {\n        printf(\"pos\\n\");\n    } else {\n        printf(\"neg\\n\");\n    }\n    return x;\n}",
+      "kind": "block"
+    },
+    {
+      "name": "if (x > 0) {\n        printf(\"pos\\n\");\n    } else {\n        printf(\"neg\\n\");\n    }",
+      "kind": "conditional"
+    },
+    {
+      "name": "{\n        printf(\"pos\\n\");\n    }",
+      "kind": "block"
+    },
+    {
+      "name": "{\n        printf(\"neg\\n\");\n    }",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "test_if"
+    },
+    {
+      "caller": "test_if"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "branch"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "branch",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "statement",
+      "kind": "true_branch"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "statement",
+      "kind": "false_branch"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "return",
+      "kind": "normal"
+    }
+  ]
+}

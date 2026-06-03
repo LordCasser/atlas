@@ -1,0 +1,95 @@
+{
+  "symbols": [
+    {
+      "name": "main",
+      "kind": "package"
+    },
+    {
+      "name": "main",
+      "kind": "function"
+    },
+    {
+      "name": "f",
+      "kind": "variable"
+    },
+    {
+      "name": "_",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "Open",
+      "kind": "call"
+    },
+    {
+      "text": "Open",
+      "kind": "field_access"
+    },
+    {
+      "text": "Close",
+      "kind": "call"
+    },
+    {
+      "text": "Close",
+      "kind": "field_access"
+    }
+  ],
+  "imports": [
+    {
+      "module": "os",
+      "imported_name": "os"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#27",
+      "kind": "function"
+    },
+    {
+      "name": "Block#39",
+      "kind": "block"
+    },
+    {
+      "name": "Block#52",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "main",
+      "receiver": "os"
+    },
+    {
+      "caller": "main",
+      "receiver": "f"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "exit",
+      "kind": "normal"
+    }
+  ]
+}

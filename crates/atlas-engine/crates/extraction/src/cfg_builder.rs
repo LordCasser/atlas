@@ -28,7 +28,7 @@
 
 use tree_sitter::Node;
 use types::cfg::{CfgEdge, CfgNode};
-use types::enums::{CfgEdgeKind, CfgNodeKind, EffectKind, Language, SymbolKind};
+use types::enums::{CallContext, CfgEdgeKind, CfgNodeKind, EffectKind, Language, SymbolKind};
 use types::ids::SymbolId;
 use types::structs::{SymbolDef, TextRange};
 
@@ -134,7 +134,6 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
             return_kinds: &["return_expression"],
             throw_kinds: &[], // Rust uses Result, not throw
             stmt_kinds: &[
-                "expression_statement",
                 "let_declaration",
                 "continue_expression",
                 "break_expression",
@@ -189,6 +188,9 @@ struct CfgContext<'a> {
     prev_node_id: Option<types::ids::CfgNodeId>,
     language: Language,
     config: CfgLanguageConfig,
+    /// Pending call-site context for the next emitted statement node
+    /// (Python with, Go go/defer, etc.).
+    pending_call_context: CallContext,
 }
 
 impl CfgBuilder {
@@ -210,6 +212,7 @@ impl CfgBuilder {
             prev_node_id: None,
             language,
             config,
+            pending_call_context: CallContext::None,
         };
 
         // 1. Create Entry node
@@ -304,7 +307,9 @@ impl CfgContext<'_> {
                 end_column: 0,
             }
         };
-        let node = CfgNode::new(&self.function_id, kind, range);
+        let mut node = CfgNode::new(&self.function_id, kind, range);
+        node.call_context = self.pending_call_context;
+        self.pending_call_context = CallContext::None;
         let id = node.id;
         self.nodes.push(node);
         id
@@ -561,6 +566,31 @@ impl CfgContext<'_> {
                 // Nested block
                 self.walk_block(stmt, stmt_range.start_byte);
                 i += 1;
+            } else if kind == "statement_list" {
+                // Go block wrapper: recurse through statement_list body
+                self.walk_block(stmt, stmt_range.start_byte);
+                i += 1;
+            } else if kind == "expression_statement" {
+                // Rust wrapper: check if inner expression is if/loop
+                let mut child_cursor = stmt.walk();
+                let inner: Vec<Node> = stmt.named_children(&mut child_cursor).collect();
+                let dispatched = if let Some(first) = inner.first() {
+                    if self.config.if_kinds.contains(&first.kind()) {
+                        self.walk_if_node(*first, stmt_range.start_byte);
+                        true
+                    } else if self.config.loop_kinds.contains(&first.kind()) {
+                        self.walk_loop_node(*first, stmt_range.start_byte);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if !dispatched {
+                    self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
+                }
+                i += 1;
             } else if kind == "try_statement" || kind == "switch_statement" {
                 // Deferred: treat as single statement
                 self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
@@ -573,6 +603,51 @@ impl CfgContext<'_> {
                 // Rust match — complex control flow, deferred
                 self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
                 i += 1;
+            } else if kind == "with_statement" {
+                // Python with: set context, walk allocation clause, walk body, emit BlockExit
+                self.pending_call_context = CallContext::PythonWith;
+
+                let mut child_cursor = stmt.walk();
+                let named: Vec<Node> = stmt.named_children(&mut child_cursor).collect();
+
+                // Walk with_clause children (e.g., open("file"))
+                for gc in &named {
+                    if gc.kind() == "with_clause" {
+                        self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, gc);
+                    }
+                }
+
+                // Walk the block body
+                for gc in &named {
+                    if gc.kind() == "block" {
+                        self.walk_block(*gc, stmt_range.start_byte);
+                    }
+                }
+
+                // Emit BlockExit node (zero-length range at end of with statement)
+                let block_exit_id =
+                    self.add_node(CfgNodeKind::BlockExit, stmt.end_byte() as u32, None);
+                if let Some(last_id) = self.prev_node_id.take() {
+                    self.add_edge(&last_id, &block_exit_id, CfgEdgeKind::Normal);
+                }
+                self.prev_node_id = Some(block_exit_id);
+
+                i += 1;
+                continue;
+            } else if kind == "go_statement" || kind == "defer_statement" {
+                // Go goroutine/defer: set call context, process inner expression
+                self.pending_call_context = if kind == "go_statement" {
+                    CallContext::GoGoroutine
+                } else {
+                    CallContext::GoDefer
+                };
+                if let Some(inner) = self.find_first_expression(&stmt) {
+                    self.process_go_defer_inner(&inner, stmt_range.start_byte);
+                } else {
+                    self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
+                }
+                i += 1;
+                continue;
             } else {
                 // Unknown constructs → treat as statement
                 self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
@@ -724,6 +799,20 @@ impl CfgContext<'_> {
         idx + 1
     }
 
+    /// Node-based wrapper for `walk_if`: collects children and delegates.
+    fn walk_if_node(&mut self, node: Node, start_byte: u32) {
+        let mut cursor = node.walk();
+        let children: Vec<Node> = node.named_children(&mut cursor).collect();
+        self.walk_if(&children, 0, start_byte);
+    }
+
+    /// Node-based wrapper for `walk_loop`: collects children and delegates.
+    fn walk_loop_node(&mut self, node: Node, start_byte: u32) {
+        let mut cursor = node.walk();
+        let children: Vec<Node> = node.named_children(&mut cursor).collect();
+        self.walk_loop(&children, 0, start_byte);
+    }
+
     /// Emit a statement/return/throw node and connect to previous.
     fn emit_stmt(
         &mut self,
@@ -745,6 +834,43 @@ impl CfgContext<'_> {
             self.prev_node_id = Some(node_id);
         }
         node_id
+    }
+
+    /// Find the first expression child inside a `go_statement` or `defer_statement` node.
+    fn find_first_expression<'a>(&self, node: &Node<'a>) -> Option<Node<'a>> {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            let kind = child.kind();
+            if kind == "call_expression" || kind == "func_literal" || kind == "expression_statement"
+            {
+                return Some(child);
+            }
+        }
+        None
+    }
+
+    /// Process the inner expression of a `go_statement`/`defer_statement`.
+    fn process_go_defer_inner(&mut self, inner: &Node, start_byte: u32) {
+        let mut inner_cursor = inner.walk();
+        if inner.kind() == "expression_statement" {
+            // Unwrap expression_statement wrapper (some tree-sitter grammars)
+            if let Some(expr) = inner.named_children(&mut inner_cursor).next() {
+                self.emit_stmt(CfgNodeKind::Statement, start_byte, &expr);
+                return;
+            }
+        }
+        if inner.kind() == "call_expression" {
+            // Find the callee (function name) and emit as statement
+            let callee = inner
+                .named_children(&mut inner_cursor)
+                .next()
+                .unwrap_or(*inner);
+            self.emit_stmt(CfgNodeKind::Statement, start_byte, &callee);
+        } else if inner.kind() == "func_literal" {
+            self.emit_stmt(CfgNodeKind::Statement, start_byte, inner);
+        } else {
+            self.emit_stmt(CfgNodeKind::Statement, start_byte, inner);
+        }
     }
 }
 

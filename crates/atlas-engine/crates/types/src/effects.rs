@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::enums::CallContext;
 use super::ids::{CfgNodeId, EffectId};
 
 // ==================== SemanticEffect ====================
@@ -30,6 +31,12 @@ pub struct SemanticEffect {
     pub kind: SemanticEffectKind,
     /// Confidence score [0.0, 1.0] — how certain we are about this effect.
     pub confidence: f64,
+    /// How the resource is consumed (explicit call, deferred, context-managed, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumption_style: Option<ConsumptionStyle>,
+    /// Human-readable description of the effect's origin (e.g., "React effect cleanup return").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 // Semantic identity is determined by id alone; confidence is an annotation
@@ -117,6 +124,8 @@ pub enum EscapeTarget {
     Argument,
     ReturnValue,
     Thread,
+    /// Coroutine / async context escape (e.g., Go goroutines, Kotlin coroutines).
+    AsyncContext,
     Unknown,
 }
 
@@ -138,6 +147,13 @@ pub trait OwnershipContract: Send + Sync {
     /// Check whether a call consumes/releases a resource, with location
     /// and consumption style.
     fn classify_consumption(&self, callee: &str) -> Option<ConsumptionContract>;
+
+    /// Check whether a call (in a given call-site context) causes a resource to escape
+    /// the local scope (e.g., goroutine, thread, global store).
+    /// Default: never escapes.
+    fn classify_escape(&self, _callee: &str, _context: CallContext) -> Option<EscapeTarget> {
+        None
+    }
 }
 
 // ==================== ReturnContract ====================

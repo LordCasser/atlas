@@ -3,7 +3,7 @@
 use crate::schema::SCHEMA_DDL;
 use crate::store_fts::{chrono_now_ms, is_process_alive};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, params};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -60,6 +60,33 @@ impl Store {
         })
     }
 
+    /// Open an existing SQLite database read-only.
+    ///
+    /// This is intended for status/probing paths that must not create or modify
+    /// a candidate database. Mutation methods on the returned store will fail at
+    /// the SQLite layer because the underlying connection is read-only.
+    pub fn open_db_read_only(db_path: &Path) -> anyhow::Result<Self> {
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY;
+        let conn = Connection::open_with_flags(db_path, flags)?;
+        conn.execute_batch(
+            r#"
+            PRAGMA query_only = ON;
+            PRAGMA busy_timeout = 10000;
+            PRAGMA cache_size = -65536;
+            PRAGMA temp_store = MEMORY;
+            PRAGMA mmap_size = 268435456;
+            "#,
+        )?;
+
+        Ok(Self {
+            reader: StoreReader {
+                conn: Mutex::new(conn),
+                read_conn: None,
+            },
+            db_path: db_path.to_path_buf(),
+        })
+    }
+
     /// Open an empty in-memory database (no file on disk).
     ///
     /// Used by tests and by [`open_project`] with `storage: "memory"`.
@@ -92,6 +119,16 @@ impl Store {
                 .is_ok();
             if !has_col {
                 conn.execute_batch("ALTER TABLE cfg_nodes ADD COLUMN callee_name TEXT;")?;
+            }
+        }
+
+        // Migration: add call_context to cfg_nodes (nullable, backward-compat)
+        {
+            let has_col: bool = conn
+                .prepare("SELECT call_context FROM cfg_nodes LIMIT 0")
+                .is_ok();
+            if !has_col {
+                conn.execute_batch("ALTER TABLE cfg_nodes ADD COLUMN call_context TEXT;")?;
             }
         }
 

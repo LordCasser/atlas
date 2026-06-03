@@ -348,7 +348,48 @@ impl EdgeKind {
 }
 
 // ---------------------------------------------------------------------------
-// ReferenceKind — what kind of reference a usage is
+// CallContext — call-site context annotation set by CFG builder
+// ---------------------------------------------------------------------------
+
+/// Call-site context annotation set by the CFG builder.
+/// Language-agnostic; each language's CFG builder sets appropriate values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum CallContext {
+    /// No special call-site context.
+    #[default]
+    None,
+    /// Go `go` keyword — call executes in a goroutine.
+    GoGoroutine,
+    /// Go `defer` keyword — call is deferred to function exit.
+    GoDefer,
+    /// Python `with` statement — call executes in a context-managed block.
+    PythonWith,
+}
+
+impl CallContext {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::GoGoroutine => "go_goroutine",
+            Self::GoDefer => "go_defer",
+            Self::PythonWith => "python_with",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "none" => Some(Self::None),
+            "go_goroutine" => Some(Self::GoGoroutine),
+            "go_defer" => Some(Self::GoDefer),
+            "python_with" => Some(Self::PythonWith),
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EffectKind — CFG node side-effect annotation
 // ---------------------------------------------------------------------------
 
 /// 12 reference kinds describing how a symbol is referenced.
@@ -857,6 +898,8 @@ pub enum DataNodeKind {
     Global,
     /// Unknown / opaque node (low confidence).
     Unknown,
+    /// React useEffect cleanup return: `return () => cleanup();`
+    CleanupReturn,
 }
 
 impl DataNodeKind {
@@ -875,6 +918,7 @@ impl DataNodeKind {
             Self::Receiver => "receiver",
             Self::Global => "global",
             Self::Unknown => "unknown",
+            Self::CleanupReturn => "cleanup_return",
         }
     }
 
@@ -894,6 +938,7 @@ impl DataNodeKind {
             "receiver" => Some(Self::Receiver),
             "global" => Some(Self::Global),
             "unknown" => Some(Self::Unknown),
+            "cleanup_return" => Some(Self::CleanupReturn),
             _ => None,
         }
     }
@@ -990,6 +1035,8 @@ pub enum CfgNodeKind {
     Throw,
     /// Join point after branch/loop.
     Join,
+    /// Block-exit point (Python `with`, Rust block drop, C++ destructor scope).
+    BlockExit,
 }
 
 impl CfgNodeKind {
@@ -1003,6 +1050,7 @@ impl CfgNodeKind {
             Self::Return => "return",
             Self::Throw => "throw",
             Self::Join => "join",
+            Self::BlockExit => "block_exit",
         }
     }
 
@@ -1017,6 +1065,7 @@ impl CfgNodeKind {
             "return" => Some(Self::Return),
             "throw" => Some(Self::Throw),
             "join" => Some(Self::Join),
+            "block_exit" => Some(Self::BlockExit),
             _ => None,
         }
     }

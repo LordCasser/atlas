@@ -6,6 +6,7 @@
 
 use db::Store;
 use domain_rules::{RuleMatch, RuleSource};
+use types::enums::Language;
 
 /// C/C++ ownership rules — loaded from the generic rule engine and interpreted
 /// as ownership semantics.
@@ -18,9 +19,13 @@ pub struct CppOwnershipRules {
 }
 
 impl CppOwnershipRules {
-    /// Load rules from the database for language "c".
-    pub fn load(_engine: &domain_rules::GenericRuleEngine, store: &Store) -> Self {
-        Self::load_for(store, "c")
+    /// Load rules from the database for the given language.
+    pub fn load(
+        _engine: &domain_rules::GenericRuleEngine,
+        store: &Store,
+        language: Language,
+    ) -> Self {
+        Self::load_for(store, language.as_str())
     }
 
     /// Load rules for a specific language from the database.

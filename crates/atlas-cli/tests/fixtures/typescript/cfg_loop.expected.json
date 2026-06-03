@@ -1,0 +1,77 @@
+{
+  "symbols": [
+    {
+      "name": "testLoop",
+      "kind": "function"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#0",
+      "kind": "function"
+    },
+    {
+      "name": "Block#29",
+      "kind": "block"
+    },
+    {
+      "name": "Loop#35",
+      "kind": "loop"
+    },
+    {
+      "name": "Block#49",
+      "kind": "block"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "loop"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "loop",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "loop",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "loop",
+      "kind": "loop_back"
+    },
+    {
+      "source_kind": "loop",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "return",
+      "kind": "normal"
+    }
+  ]
+}

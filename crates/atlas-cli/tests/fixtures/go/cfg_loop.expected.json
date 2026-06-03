@@ -1,0 +1,91 @@
+{
+  "symbols": [
+    {
+      "name": "main",
+      "kind": "package"
+    },
+    {
+      "name": "testLoop",
+      "kind": "function"
+    }
+  ],
+  "references": [
+    {
+      "text": "int",
+      "kind": "type_reference"
+    },
+    {
+      "text": "int",
+      "kind": "type_reference"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#14",
+      "kind": "function"
+    },
+    {
+      "name": "Block#39",
+      "kind": "block"
+    },
+    {
+      "name": "Loop#45",
+      "kind": "loop"
+    },
+    {
+      "name": "Block#55",
+      "kind": "block"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "loop"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "loop",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "loop",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "loop",
+      "kind": "loop_back"
+    },
+    {
+      "source_kind": "loop",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "return",
+      "kind": "normal"
+    }
+  ]
+}

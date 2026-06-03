@@ -1,0 +1,97 @@
+{
+  "symbols": [
+    {
+      "name": "Timer",
+      "kind": "function"
+    },
+    {
+      "name": "id",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "useEffect",
+      "kind": "call"
+    },
+    {
+      "text": "setInterval",
+      "kind": "call"
+    },
+    {
+      "text": "clearInterval",
+      "kind": "call"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#0",
+      "kind": "function"
+    },
+    {
+      "name": "Block#17",
+      "kind": "block"
+    },
+    {
+      "name": "Function#33",
+      "kind": "function"
+    },
+    {
+      "name": "Block#39",
+      "kind": "block"
+    },
+    {
+      "name": "Function#72",
+      "kind": "function"
+    },
+    {
+      "name": "Block#78",
+      "kind": "block"
+    },
+    {
+      "name": "Function#104",
+      "kind": "function"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "Timer"
+    },
+    {
+      "caller": "Timer"
+    },
+    {
+      "caller": "Timer"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "return",
+      "kind": "normal"
+    }
+  ]
+}

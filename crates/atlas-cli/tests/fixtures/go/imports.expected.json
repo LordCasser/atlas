@@ -59,12 +59,20 @@
       "kind": "statement"
     },
     {
+      "kind": "statement"
+    },
+    {
       "kind": "exit"
     }
   ],
   "cfg_edges": [
     {
       "source_kind": "entry",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
       "target_kind": "statement",
       "kind": "normal"
     },

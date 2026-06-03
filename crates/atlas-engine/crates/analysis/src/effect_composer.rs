@@ -17,10 +17,11 @@ use std::collections::{HashMap, HashSet};
 use types::cfg::CfgNode;
 use types::dataflow::{DataFlowEdge, DataNode};
 use types::effects::*;
-use types::enums::{DataFlowKind, DataNodeKind};
+use types::enums::{CallContext, DataFlowKind, DataNodeKind};
 use types::ids::{CfgNodeId, DataNodeId, EffectId};
 
 use super::cfg_graph::CfgGraph;
+use super::scope_exit::run_scope_exit_pass;
 
 // ---------------------------------------------------------------------------
 // EffectComposition — the output of compose_effects
@@ -212,10 +213,34 @@ pub fn compose_effects(
             }
 
             // Step 1b: Check if this call frees a resource
-            if let Some(cc) = contract.classify_consumption(callee_name) {
-                let free_effects =
+            if let Some(mut cc) = contract.classify_consumption(callee_name) {
+                // Go defer: set Deferred consumption style
+                if node.call_context == CallContext::GoDefer {
+                    cc.style = ConsumptionStyle::Deferred;
+                }
+                let mut free_effects =
                     resolve_free_effect(node_id, callee_name, &cc, &node.stmt_range, &dfi);
+                // Propagate consumption style to each free effect
+                for eff in &mut free_effects {
+                    eff.consumption_style = Some(cc.style.clone());
+                }
                 effects.extend(free_effects);
+            }
+
+            // Step 1c: Check if this call causes resource escape
+            if let Some(escape_target) = contract.classify_escape(callee_name, node.call_context) {
+                let source = ValueSource::CallReturn {
+                    callee: (*callee_name).to_string(),
+                };
+                effects.push(make_effect(
+                    node_id,
+                    effects.len() as u32,
+                    SemanticEffectKind::Escape {
+                        value: source,
+                        to: escape_target,
+                    },
+                    0.85,
+                ));
             }
         }
 
@@ -227,6 +252,25 @@ pub fn compose_effects(
             node_effects.insert(*node_id, effects);
         }
     }
+
+    // Step 2.5: React cleanup return detection — mark consumer Free effects
+    // as Deferred when the enclosing function has a `return () => cleanup()` pattern.
+    let has_cleanup_return = data_nodes
+        .iter()
+        .any(|dn| matches!(dn.kind, DataNodeKind::CleanupReturn));
+    if has_cleanup_return {
+        for (_node_id, node_effects) in node_effects.iter_mut() {
+            for eff in node_effects.iter_mut() {
+                if matches!(eff.kind, SemanticEffectKind::Free { .. }) {
+                    eff.consumption_style = Some(ConsumptionStyle::Deferred);
+                    eff.description = Some("React effect cleanup return".to_string());
+                }
+            }
+        }
+    }
+
+    // Step 3: Run scope-exit post-pass (implicit Drop for Rust, Python with, no-op for other langs)
+    run_scope_exit_pass(&mut node_effects, cfg);
 
     // Step 4: Build TransferGraph
     let transfer_graph = build_transfer_graph(&node_effects, cfg);
@@ -674,7 +718,7 @@ fn find_return_receiver(_cfg_node_id: &CfgNodeId, _dfi: &DfIndex) -> PlaceRef {
 // make_effect — helper to construct a SemanticEffect with deterministic ID
 // ---------------------------------------------------------------------------
 
-fn make_effect(
+pub(crate) fn make_effect(
     cfg_node_id: &CfgNodeId,
     order: u32,
     kind: SemanticEffectKind,
@@ -688,11 +732,13 @@ fn make_effect(
         order,
         kind,
         confidence,
+        consumption_style: None,
+        description: None,
     }
 }
 
 /// Short string name for a SemanticEffectKind — used in EffectId generation.
-fn effect_kind_name(kind: &SemanticEffectKind) -> &'static str {
+pub(crate) fn effect_kind_name(kind: &SemanticEffectKind) -> &'static str {
     match kind {
         SemanticEffectKind::Alloc { .. } => "Alloc",
         SemanticEffectKind::Free { .. } => "Free",

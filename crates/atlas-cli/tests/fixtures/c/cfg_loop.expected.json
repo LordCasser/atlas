@@ -1,0 +1,77 @@
+{
+  "symbols": [
+    {
+      "name": "test_loop",
+      "kind": "function"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "int test_loop(int x) {\n    while (x > 0) {\n        x = x - 1;\n    }\n    return x;\n}\n",
+      "kind": "file"
+    },
+    {
+      "name": "int test_loop(int x) {\n    while (x > 0) {\n        x = x - 1;\n    }\n    return x;\n}",
+      "kind": "function"
+    },
+    {
+      "name": "{\n    while (x > 0) {\n        x = x - 1;\n    }\n    return x;\n}",
+      "kind": "block"
+    },
+    {
+      "name": "while (x > 0) {\n        x = x - 1;\n    }",
+      "kind": "loop"
+    },
+    {
+      "name": "{\n        x = x - 1;\n    }",
+      "kind": "block"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "loop"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "loop",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "loop",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "loop",
+      "kind": "loop_back"
+    },
+    {
+      "source_kind": "loop",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "return",
+      "kind": "normal"
+    }
+  ]
+}

@@ -506,8 +506,8 @@ pub(crate) fn write_cfg_nodes(conn: &Connection, nodes: &[CfgNode]) -> anyhow::R
            (cfg_node_id, function_id, kind,
             range_start_byte, range_end_byte, range_start_line, range_start_column,
             range_end_line, range_end_column, effect_kind, target_field,
-            semantic_effects_json, callee_name)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"#,
+            semantic_effects_json, callee_name, call_context)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"#,
     )?;
     for n in nodes {
         stmt.execute(params![
@@ -526,6 +526,7 @@ pub(crate) fn write_cfg_nodes(conn: &Connection, nodes: &[CfgNode]) -> anyhow::R
                 .ok()
                 .and_then(|s| if s == "[]" { None } else { Some(s) }),
             None::<&str>,
+            n.call_context.as_str(),
         ])?;
     }
     Ok(())

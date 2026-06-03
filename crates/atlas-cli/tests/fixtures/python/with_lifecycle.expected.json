@@ -1,0 +1,94 @@
+{
+  "symbols": [
+    {
+      "name": "read_config",
+      "kind": "function"
+    }
+  ],
+  "references": [
+    {
+      "text": "open",
+      "kind": "call"
+    },
+    {
+      "text": "read",
+      "kind": "call"
+    },
+    {
+      "text": "read",
+      "kind": "field_access"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#0",
+      "kind": "function"
+    },
+    {
+      "name": "Block#23",
+      "kind": "block"
+    },
+    {
+      "name": "Conditional#23",
+      "kind": "conditional"
+    },
+    {
+      "name": "Block#61",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "read_config"
+    },
+    {
+      "caller": "read_config"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "block_exit"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "block_exit",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "block_exit",
+      "target_kind": "return",
+      "kind": "normal"
+    }
+  ]
+}

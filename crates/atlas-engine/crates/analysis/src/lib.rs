@@ -21,6 +21,7 @@ pub mod lifecycle_proof;
 pub mod ownership_rules;
 pub mod resource_ops;
 pub mod rule_learning;
+pub mod scope_exit;
 pub mod summary;
 pub mod trace;
 

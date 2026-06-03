@@ -14,7 +14,9 @@
 use atlas_engine::GraphBuilder;
 use atlas_engine::ReferenceResolver;
 use atlas_engine::Store;
-use atlas_engine::enums::{CfgNodeKind, DataFlowKind, DataNodeKind, Language, SymbolKind};
+use atlas_engine::enums::{
+    CfgEdgeKind, CfgNodeKind, DataFlowKind, DataNodeKind, Language, SymbolKind,
+};
 use atlas_engine::extract_file;
 use atlas_engine::ids::FileId;
 use atlas_engine::trace::{Locator, Slicer, TraceEngine};
@@ -3299,6 +3301,1047 @@ fn fx_cfg_rust() {
             "Rust CFG for '{}': expected > 0 edges, got {}",
             sym.name,
             edge_count
+        );
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// CFG body traversal tests — verify if/else and loop bodies
+// are properly traversed with Statement nodes and correct edges.
+// ────────────────────────────────────────────────────────────────
+
+/// Verify TypeScript CFG body traversal for if/else:
+/// Statement nodes in consequence/alternative, TrueBranch/FalseBranch edges,
+/// Join node, and post-Join flow.
+#[test]
+#[cfg(feature = "typescript")]
+fn fx_cfg_if_else_ts() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg_if.ts",
+        r#"function testIf(x: number) {
+    if (x > 0) {
+        console.log("pos");
+    } else {
+        console.log("neg");
+    }
+    return x;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_if.ts");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .collect();
+    assert!(!func_syms.is_empty(), "expected at least one function");
+
+    for sym in &func_syms {
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
+        eprintln!(
+            "=== {} CFG nodes: {:#?}",
+            sym.name,
+            cfg_nodes.iter().map(|n| &n.kind).collect::<Vec<_>>()
+        );
+
+        // ── Node kind assertions ──
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Entry),
+            "missing Entry"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Exit),
+            "missing Exit"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Branch),
+            "missing Branch"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "missing Join"
+        );
+
+        // Must have at least 2 Statement nodes (one per branch body)
+        let stmt_count = cfg_nodes
+            .iter()
+            .filter(|n| n.kind == CfgNodeKind::Statement)
+            .count();
+        assert!(
+            stmt_count >= 2,
+            "expected >= 2 Statement nodes (body statements), got {}",
+            stmt_count
+        );
+
+        // ── Edge assertions ──
+        let mut edges = Vec::new();
+        for node in &cfg_nodes {
+            let e = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
+            edges.extend(e);
+        }
+        eprintln!(
+            "=== {} CFG edges: {:#?}",
+            sym.name,
+            edges
+                .iter()
+                .map(|e| format!("{:?}→{:?}", e.kind, e.target))
+                .collect::<Vec<_>>()
+        );
+
+        assert!(
+            edges.iter().any(|e| e.kind == CfgEdgeKind::TrueBranch),
+            "missing TrueBranch edge for consequence body"
+        );
+        assert!(
+            edges.iter().any(|e| e.kind == CfgEdgeKind::FalseBranch),
+            "missing FalseBranch edge for alternative body"
+        );
+    }
+}
+
+/// Verify TypeScript CFG body traversal for while loop:
+/// Statement node in body, LoopBack edge, Loop→Join exit.
+#[test]
+#[cfg(feature = "typescript")]
+fn fx_cfg_loop_ts() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg_loop.ts",
+        r#"function testLoop(x: number) {
+    while (x > 0) {
+        x = x - 1;
+    }
+    return x;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_loop.ts");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .collect();
+    assert!(!func_syms.is_empty(), "expected at least one function");
+
+    for sym in &func_syms {
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
+
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Loop),
+            "missing Loop node"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "missing Join node"
+        );
+
+        let stmt_count = cfg_nodes
+            .iter()
+            .filter(|n| n.kind == CfgNodeKind::Statement)
+            .count();
+        assert!(
+            stmt_count >= 1,
+            "expected >= 1 Statement node (loop body), got {}",
+            stmt_count
+        );
+
+        let mut edges = Vec::new();
+        for node in &cfg_nodes {
+            let e = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
+            edges.extend(e);
+        }
+
+        let loop_id = cfg_nodes
+            .iter()
+            .find(|n| n.kind == CfgNodeKind::Loop)
+            .map(|n| n.id)
+            .expect("loop_id");
+
+        // Loop → first body Statement
+        let has_loop_body = edges
+            .iter()
+            .any(|e| e.source == loop_id && e.kind == CfgEdgeKind::Normal);
+        assert!(has_loop_body, "missing Loop → body edge");
+
+        // LoopBack from body Statement back to Loop
+        let has_loopback = edges.iter().any(|e| e.kind == CfgEdgeKind::LoopBack);
+        assert!(has_loopback, "missing LoopBack edge");
+    }
+}
+
+/// Verify Python CFG body traversal for if/else.
+#[test]
+#[cfg(feature = "python")]
+fn fx_cfg_if_else_python() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg_if.py",
+        r#"def test_if(x: int) -> int:
+    if x > 0:
+        print("pos")
+    else:
+        print("neg")
+    return x
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_if.py");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .collect();
+    assert!(!func_syms.is_empty(), "expected at least one function");
+
+    for sym in &func_syms {
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
+
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Branch),
+            "Python: missing Branch node"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "Python: missing Join node"
+        );
+
+        let stmt_count = cfg_nodes
+            .iter()
+            .filter(|n| n.kind == CfgNodeKind::Statement)
+            .count();
+        assert!(
+            stmt_count >= 2,
+            "Python: expected >= 2 Statement nodes (body statements), got {}",
+            stmt_count
+        );
+    }
+}
+
+/// Verify Python CFG body traversal for while loop.
+#[test]
+#[cfg(feature = "python")]
+fn fx_cfg_loop_python() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg_loop.py",
+        r#"def test_loop(x: int) -> int:
+    while x > 0:
+        x = x - 1
+    return x
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_loop.py");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .collect();
+    assert!(!func_syms.is_empty(), "expected at least one function");
+
+    for sym in &func_syms {
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
+
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Loop),
+            "Python: missing Loop node"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "Python: missing Join node"
+        );
+
+        let stmt_count = cfg_nodes
+            .iter()
+            .filter(|n| n.kind == CfgNodeKind::Statement)
+            .count();
+        assert!(
+            stmt_count >= 1,
+            "Python: expected >= 1 Statement node (loop body), got {}",
+            stmt_count
+        );
+
+        let mut edges = Vec::new();
+        for node in &cfg_nodes {
+            let e = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
+            edges.extend(e);
+        }
+        assert!(
+            edges.iter().any(|e| e.kind == CfgEdgeKind::LoopBack),
+            "Python: missing LoopBack edge"
+        );
+    }
+}
+
+/// Verify Go CFG body traversal for if/else.
+#[test]
+#[cfg(feature = "go")]
+fn fx_cfg_if_else_go() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg_if.go",
+        r#"package main
+
+func testIf(x int) int {
+    if x > 0 {
+        println("pos")
+    } else {
+        println("neg")
+    }
+    return x
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_if.go");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .collect();
+    assert!(!func_syms.is_empty(), "expected at least one function");
+
+    for sym in &func_syms {
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
+
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Branch),
+            "Go: missing Branch node"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "Go: missing Join node"
+        );
+
+        let stmt_count = cfg_nodes
+            .iter()
+            .filter(|n| n.kind == CfgNodeKind::Statement)
+            .count();
+        assert!(
+            stmt_count >= 2,
+            "Go: expected >= 2 Statement nodes (body statements), got {}",
+            stmt_count
+        );
+    }
+}
+
+/// Verify Go CFG body traversal for for loop (Go uses `for` as sole loop).
+#[test]
+#[cfg(feature = "go")]
+fn fx_cfg_loop_go() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg_loop.go",
+        r#"package main
+
+func testLoop(x int) int {
+    for x > 0 {
+        x = x - 1
+    }
+    return x
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_loop.go");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .collect();
+    assert!(!func_syms.is_empty(), "expected at least one function");
+
+    for sym in &func_syms {
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
+
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Loop),
+            "Go: missing Loop node"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "Go: missing Join node"
+        );
+
+        let stmt_count = cfg_nodes
+            .iter()
+            .filter(|n| n.kind == CfgNodeKind::Statement)
+            .count();
+        assert!(
+            stmt_count >= 1,
+            "Go: expected >= 1 Statement node (loop body), got {}",
+            stmt_count
+        );
+
+        let mut edges = Vec::new();
+        for node in &cfg_nodes {
+            let e = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
+            edges.extend(e);
+        }
+        assert!(
+            edges.iter().any(|e| e.kind == CfgEdgeKind::LoopBack),
+            "Go: missing LoopBack edge"
+        );
+    }
+}
+
+/// Verify Rust CFG body traversal for if/else.
+#[test]
+#[cfg(feature = "rust")]
+fn fx_cfg_if_else_rust() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg_if.rs",
+        r#"fn test_if(x: i32) -> i32 {
+    if x > 0 {
+        println!("pos");
+    } else {
+        println!("neg");
+    }
+    x
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_if.rs");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .collect();
+    assert!(!func_syms.is_empty(), "expected at least one function");
+
+    for sym in &func_syms {
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
+
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Branch),
+            "Rust: missing Branch node"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "Rust: missing Join node"
+        );
+
+        let stmt_count = cfg_nodes
+            .iter()
+            .filter(|n| n.kind == CfgNodeKind::Statement)
+            .count();
+        assert!(
+            stmt_count >= 2,
+            "Rust: expected >= 2 Statement nodes (body statements), got {}",
+            stmt_count
+        );
+    }
+}
+
+/// Verify Rust CFG body traversal for while loop.
+#[test]
+#[cfg(feature = "rust")]
+fn fx_cfg_loop_rust() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg_loop.rs",
+        r#"fn test_loop(mut x: i32) -> i32 {
+    while x > 0 {
+        x = x - 1;
+    }
+    x
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_loop.rs");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .collect();
+    assert!(!func_syms.is_empty(), "expected at least one function");
+
+    for sym in &func_syms {
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
+
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Loop),
+            "Rust: missing Loop node"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "Rust: missing Join node"
+        );
+
+        let stmt_count = cfg_nodes
+            .iter()
+            .filter(|n| n.kind == CfgNodeKind::Statement)
+            .count();
+        assert!(
+            stmt_count >= 1,
+            "Rust: expected >= 1 Statement node (loop body), got {}",
+            stmt_count
+        );
+
+        let mut edges = Vec::new();
+        for node in &cfg_nodes {
+            let e = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
+            edges.extend(e);
+        }
+        assert!(
+            edges.iter().any(|e| e.kind == CfgEdgeKind::LoopBack),
+            "Rust: missing LoopBack edge"
+        );
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// Java CFG body traversal tests
+// ────────────────────────────────────────────────────────────────
+
+/// Verify Java CFG body traversal for if/else:
+/// Statement nodes in consequence/alternative, TrueBranch/FalseBranch edges,
+/// Join node, and post-Join flow.
+#[test]
+#[cfg(feature = "java")]
+fn fx_cfg_if_else_java() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg_if.java",
+        r#"class App {
+    int testIf(int x) {
+        if (x > 0) {
+            System.out.println("pos");
+        } else {
+            System.out.println("neg");
+        }
+        return x;
+    }
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_if.java");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .collect();
+    assert!(!func_syms.is_empty(), "expected at least one function");
+
+    for sym in &func_syms {
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
+
+        // ── Node kind assertions ──
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Entry),
+            "Java: missing Entry"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Exit),
+            "Java: missing Exit"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Branch),
+            "Java: missing Branch"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "Java: missing Join"
+        );
+
+        let stmt_count = cfg_nodes
+            .iter()
+            .filter(|n| n.kind == CfgNodeKind::Statement)
+            .count();
+        assert!(
+            stmt_count >= 2,
+            "Java: expected >= 2 Statement nodes (body statements), got {}",
+            stmt_count
+        );
+
+        // ── Edge assertions ──
+        let mut edges = Vec::new();
+        for node in &cfg_nodes {
+            let e = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
+            edges.extend(e);
+        }
+
+        assert!(
+            edges.iter().any(|e| e.kind == CfgEdgeKind::TrueBranch),
+            "Java: missing TrueBranch edge"
+        );
+        assert!(
+            edges.iter().any(|e| e.kind == CfgEdgeKind::FalseBranch),
+            "Java: missing FalseBranch edge"
+        );
+
+        assert!(
+            edges.len() > 3,
+            "Java: expected > 3 total CFG edges, got {}",
+            edges.len()
+        );
+    }
+}
+
+/// Verify Java CFG body traversal for while loop:
+/// Statement node in body, LoopBack edge, Loop→Join exit.
+#[test]
+#[cfg(feature = "java")]
+fn fx_cfg_loop_java() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg_loop.java",
+        r#"class App {
+    int testLoop(int x) {
+        while (x > 0) {
+            x = x - 1;
+        }
+        return x;
+    }
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_loop.java");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .collect();
+    assert!(!func_syms.is_empty(), "expected at least one function");
+
+    for sym in &func_syms {
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
+
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Loop),
+            "Java: missing Loop node"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "Java: missing Join node"
+        );
+
+        let stmt_count = cfg_nodes
+            .iter()
+            .filter(|n| n.kind == CfgNodeKind::Statement)
+            .count();
+        assert!(
+            stmt_count >= 1,
+            "Java: expected >= 1 Statement node (loop body), got {}",
+            stmt_count
+        );
+
+        let mut edges = Vec::new();
+        for node in &cfg_nodes {
+            let e = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
+            edges.extend(e);
+        }
+        assert!(
+            edges.iter().any(|e| e.kind == CfgEdgeKind::LoopBack),
+            "Java: missing LoopBack edge"
+        );
+
+        assert!(
+            edges.len() > 3,
+            "Java: expected > 3 total CFG edges, got {}",
+            edges.len()
+        );
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// C CFG body traversal tests
+// ────────────────────────────────────────────────────────────────
+
+/// Verify C CFG body traversal for if/else:
+/// Statement nodes, TrueBranch/FalseBranch edges, Join node.
+#[test]
+#[cfg(feature = "c")]
+fn fx_cfg_if_else_c() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg_if.c",
+        r#"int test_if(int x) {
+    if (x > 0) {
+        printf("pos\n");
+    } else {
+        printf("neg\n");
+    }
+    return x;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_if.c");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .collect();
+    assert!(!func_syms.is_empty(), "expected at least one function");
+
+    for sym in &func_syms {
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
+
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Entry),
+            "C: missing Entry"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Exit),
+            "C: missing Exit"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Branch),
+            "C: missing Branch"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "C: missing Join"
+        );
+
+        let stmt_count = cfg_nodes
+            .iter()
+            .filter(|n| n.kind == CfgNodeKind::Statement)
+            .count();
+        assert!(
+            stmt_count >= 2,
+            "C: expected >= 2 Statement nodes (body statements), got {}",
+            stmt_count
+        );
+
+        let mut edges = Vec::new();
+        for node in &cfg_nodes {
+            let e = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
+            edges.extend(e);
+        }
+        assert!(
+            edges.iter().any(|e| e.kind == CfgEdgeKind::TrueBranch),
+            "C: missing TrueBranch edge"
+        );
+        assert!(
+            edges.iter().any(|e| e.kind == CfgEdgeKind::FalseBranch),
+            "C: missing FalseBranch edge"
+        );
+
+        assert!(
+            edges.len() > 3,
+            "C: expected > 3 total CFG edges, got {}",
+            edges.len()
+        );
+    }
+}
+
+/// Verify C CFG body traversal for while loop:
+/// Statement node in body, LoopBack edge, Loop→Join exit.
+#[test]
+#[cfg(feature = "c")]
+fn fx_cfg_loop_c() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg_loop.c",
+        r#"int test_loop(int x) {
+    while (x > 0) {
+        x = x - 1;
+    }
+    return x;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_loop.c");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .collect();
+    assert!(!func_syms.is_empty(), "expected at least one function");
+
+    for sym in &func_syms {
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
+
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Loop),
+            "C: missing Loop node"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "C: missing Join node"
+        );
+
+        let stmt_count = cfg_nodes
+            .iter()
+            .filter(|n| n.kind == CfgNodeKind::Statement)
+            .count();
+        assert!(
+            stmt_count >= 1,
+            "C: expected >= 1 Statement node (loop body), got {}",
+            stmt_count
+        );
+
+        let mut edges = Vec::new();
+        for node in &cfg_nodes {
+            let e = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
+            edges.extend(e);
+        }
+        assert!(
+            edges.iter().any(|e| e.kind == CfgEdgeKind::LoopBack),
+            "C: missing LoopBack edge"
+        );
+
+        assert!(
+            edges.len() > 3,
+            "C: expected > 3 total CFG edges, got {}",
+            edges.len()
+        );
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// C++ CFG body traversal tests
+// ────────────────────────────────────────────────────────────────
+
+/// Verify C++ CFG body traversal for if/else:
+/// Statement nodes, TrueBranch/FalseBranch edges, Join node.
+#[test]
+#[cfg(feature = "cpp")]
+fn fx_cfg_if_else_cpp() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg_if.cpp",
+        r#"int test_if(int x) {
+    if (x > 0) {
+        printf("pos\n");
+    } else {
+        printf("neg\n");
+    }
+    return x;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_if.cpp");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .collect();
+    assert!(!func_syms.is_empty(), "expected at least one function");
+
+    for sym in &func_syms {
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
+
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Entry),
+            "C++: missing Entry"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Exit),
+            "C++: missing Exit"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Branch),
+            "C++: missing Branch"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "C++: missing Join"
+        );
+
+        let stmt_count = cfg_nodes
+            .iter()
+            .filter(|n| n.kind == CfgNodeKind::Statement)
+            .count();
+        assert!(
+            stmt_count >= 2,
+            "C++: expected >= 2 Statement nodes (body statements), got {}",
+            stmt_count
+        );
+
+        let mut edges = Vec::new();
+        for node in &cfg_nodes {
+            let e = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
+            edges.extend(e);
+        }
+        assert!(
+            edges.iter().any(|e| e.kind == CfgEdgeKind::TrueBranch),
+            "C++: missing TrueBranch edge"
+        );
+        assert!(
+            edges.iter().any(|e| e.kind == CfgEdgeKind::FalseBranch),
+            "C++: missing FalseBranch edge"
+        );
+
+        assert!(
+            edges.len() > 3,
+            "C++: expected > 3 total CFG edges, got {}",
+            edges.len()
+        );
+    }
+}
+
+/// Verify C++ CFG body traversal for while loop:
+/// Statement node in body, LoopBack edge, Loop→Join exit.
+#[test]
+#[cfg(feature = "cpp")]
+fn fx_cfg_loop_cpp() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg_loop.cpp",
+        r#"int test_loop(int x) {
+    while (x > 0) {
+        x = x - 1;
+    }
+    return x;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_loop.cpp");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .collect();
+    assert!(!func_syms.is_empty(), "expected at least one function");
+
+    for sym in &func_syms {
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
+
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Loop),
+            "C++: missing Loop node"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "C++: missing Join node"
+        );
+
+        let stmt_count = cfg_nodes
+            .iter()
+            .filter(|n| n.kind == CfgNodeKind::Statement)
+            .count();
+        assert!(
+            stmt_count >= 1,
+            "C++: expected >= 1 Statement node (loop body), got {}",
+            stmt_count
+        );
+
+        let mut edges = Vec::new();
+        for node in &cfg_nodes {
+            let e = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
+            edges.extend(e);
+        }
+        assert!(
+            edges.iter().any(|e| e.kind == CfgEdgeKind::LoopBack),
+            "C++: missing LoopBack edge"
+        );
+
+        assert!(
+            edges.len() > 3,
+            "C++: expected > 3 total CFG edges, got {}",
+            edges.len()
         );
     }
 }

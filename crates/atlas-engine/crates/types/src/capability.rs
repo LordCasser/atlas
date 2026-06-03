@@ -478,12 +478,12 @@ mod profiles {
                 returns_flow: FeatureSupport::supported_with_confidence(0.60),
                 cfg: FeatureSupport::supported_with_limitations(
                     0.60,
-                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                    vec!["Control-flow graph with branch/loop body traversal implemented"],
                 ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.72,
                     vec![
-                        "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
                         "indirect callers limited to depth 3 (runtime fallback)",
                     ],
                 ),
@@ -542,12 +542,12 @@ mod profiles {
                 returns_flow: FeatureSupport::supported_with_confidence(0.60),
                 cfg: FeatureSupport::supported_with_limitations(
                     0.60,
-                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                    vec!["Control-flow graph with branch/loop body traversal implemented"],
                 ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.60,
                     vec![
-                        "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
+                        "cross-function bridges via summary tables (ReturnToCall verified; ArgToParam not yet verified)",
                         "indirect callers limited to depth 3 (runtime fallback)",
                     ],
                 ),
@@ -612,13 +612,13 @@ mod profiles {
                 call_arguments: FeatureSupport::supported_with_confidence(0.72),
                 returns_flow: FeatureSupport::supported_with_confidence(0.72),
                 cfg: FeatureSupport::supported_with_limitations(
-                    0.72,
-                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                    0.70,
+                    vec!["Control-flow graph with branch/loop body traversal implemented"],
                 ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.72,
                     vec![
-                        "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
                     ],
                 ),
             }),
@@ -676,12 +676,12 @@ mod profiles {
                 returns_flow: FeatureSupport::supported_with_confidence(0.75),
                 cfg: FeatureSupport::supported_with_limitations(
                     0.75,
-                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                    vec!["Control-flow graph with branch/loop body traversal implemented"],
                 ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.75,
                     vec![
-                        "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
                     ],
                 ),
             }),
@@ -752,12 +752,12 @@ mod profiles {
                 returns_flow: FeatureSupport::supported_with_confidence(0.73),
                 cfg: FeatureSupport::supported_with_limitations(
                     0.73,
-                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                    vec!["Control-flow graph with branch/loop body traversal implemented"],
                 ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.60,
+                    0.73,
                     vec![
-                        "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
                     ],
                 ),
             }),
@@ -820,11 +820,13 @@ mod profiles {
                 returns_flow: FeatureSupport::supported_with_confidence(0.70),
                 cfg: FeatureSupport::supported_with_limitations(
                     0.70,
-                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                    vec!["Control-flow graph with branch/loop body traversal implemented"],
                 ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.60,
-                    vec!["cross-function bridges via summary tables (ArgToParam, ReturnToCall)"],
+                    0.70,
+                    vec![
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
+                    ],
                 ),
             }),
         }
@@ -895,9 +897,9 @@ mod profiles {
                 returns_flow: FeatureSupport::supported_with_confidence(0.60),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for ArkTS"),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.60,
                     vec![
-                        "cross-function bridges via summary tables",
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
                     ],
                 ),
             }),
@@ -964,10 +966,10 @@ mod profiles {
                 ),
                 cfg: FeatureSupport::supported_with_limitations(
                     0.60,
-                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                    vec!["Control-flow graph with branch/loop body traversal implemented"],
                 ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.65,
                     vec![
                         "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall basic)",
                     ],
@@ -1028,12 +1030,12 @@ mod profiles {
                 returns_flow: FeatureSupport::supported_with_confidence(0.78),
                 cfg: FeatureSupport::supported_with_limitations(
                     0.78,
-                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                    vec!["Control-flow graph with branch/loop body traversal implemented"],
                 ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.78,
                     vec![
-                        "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
                     ],
                 ),
             }),
@@ -1092,9 +1094,9 @@ mod profiles {
                 returns_flow: FeatureSupport::supported_with_confidence(0.72),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for C#"),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.72,
                     vec![
-                        "cross-function bridges via summary tables (ArgToParam, ReturnToCall)",
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
                     ],
                 ),
             }),
@@ -1155,22 +1157,20 @@ mod profiles {
                 returns_flow: FeatureSupport::supported_with_confidence(0.70),
                 cfg: FeatureSupport::supported_with_limitations(
                     0.70,
-                    vec!["branch/loop body traversal not yet implemented — only CFG node topology (Branch/Loop/Join) is emitted"],
+                    vec!["Control-flow graph with branch/loop body traversal implemented"],
                 ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.60,
-                    vec!["cross-function bridges via summary tables"],
+                    0.70,
+                    vec![
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
+                    ],
                 ),
             }),
         }
     }
 
     // ---- PHP (DataflowFull) --------------------------------------------------
-    // NOTE: PHP ArgToParam fixture (fx15) is marked should_panic — extraction
-    //       does not produce DataNodes for function parameters.  Upgraded to
-    //       DataflowFull with known extraction gap documented via fixture.
-    //       Confidence raised from 0.58 to 0.62: dynamic method calls now
-    //       emit low-confidence callsites/references instead of being absent.
+    // NOTE: PHP ArgToParam (fx15) and ReturnToCall (fx16) bridges verified.
     fn php_profile() -> LanguageCapabilityProfile {
         LanguageCapabilityProfile {
             language: "php".into(),
@@ -1220,8 +1220,10 @@ mod profiles {
                 returns_flow: FeatureSupport::supported_with_confidence(0.62),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for PHP"),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.55,
-                    vec!["cross-function bridges via summary tables"],
+                    0.62,
+                    vec![
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
+                    ],
                 ),
             }),
         }
@@ -1282,7 +1284,9 @@ mod profiles {
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for Ruby"),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.65,
-                    vec!["cross-function bridges via summary tables"],
+                    vec![
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
+                    ],
                 ),
             }),
         }
@@ -1344,9 +1348,9 @@ mod profiles {
                 returns_flow: FeatureSupport::supported_with_confidence(0.67),
                 cfg: FeatureSupport::unsupported("CFG builder not implemented for Kotlin"),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
-                    0.55,
+                    0.67,
                     vec![
-                        "cross-function bridges via summary tables",
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
                     ],
                 ),
             }),
@@ -1648,22 +1652,22 @@ mod tests {
         for profile in LanguageCapabilityProfile::all_compiled() {
             if let Some(fm) = &profile.features {
                 if fm.cfg.is_supported() {
-                    // Every supported CFG should carry the traversal limitation
+                    // Every supported CFG should declare body traversal as implemented
                     let msg = format!(
-                        "Language {}: CFG is supported but missing branch/loop body traversal limitation",
+                        "Language {}: CFG is supported but body traversal not declared as implemented",
                         profile.language
                     );
-                    assert!(has_cfg_traversal_limitation(&fm.cfg), "{}", msg);
+                    assert!(has_cfg_body_traversal_implemented(&fm.cfg), "{}", msg);
                 }
             }
         }
     }
 
-    fn has_cfg_traversal_limitation(fs: &FeatureSupport) -> bool {
+    fn has_cfg_body_traversal_implemented(fs: &FeatureSupport) -> bool {
         match fs {
-            FeatureSupport::Supported { limitations, .. } => {
-                limitations.iter().any(|l| l.contains("body traversal"))
-            }
+            FeatureSupport::Supported { limitations, .. } => limitations
+                .iter()
+                .any(|l| l.contains("body traversal") && l.contains("implemented")),
             FeatureSupport::Unsupported { .. } => true,
         }
     }

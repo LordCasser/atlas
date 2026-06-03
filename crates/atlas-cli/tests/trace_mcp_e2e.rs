@@ -1777,17 +1777,28 @@ fn open_project_persistent_creates_db_and_survives_reopen() {
     let results = search_json["results"].as_array().unwrap();
     assert!(!results.is_empty(), "search for 'add' should find results");
 
-    // Re-open the same project — should work from existing DB without re-indexing.
+    // Re-open the same project without a storage override. The default auto
+    // mode should reuse the existing persistent DB without re-indexing.
     let (json2, is_error2) = call_tool(
         &mut router,
         "project",
         json!({
             "action": "open",
             "project_path": tmp.path().to_string_lossy(),
-            "storage": "persistent",
         }),
     );
     assert!(!is_error2, "re-open should succeed: {json2:?}");
+    assert_eq!(
+        json2["storage"].as_str(),
+        Some("persistent"),
+        "auto storage should reuse existing .atlas/atlas.db"
+    );
+    assert!(
+        json2["suggestion"]
+            .as_str()
+            .is_some_and(|s| s.contains("Reusable persistent index detected via project status")),
+        "response should explain why persistent storage was selected: {json2:?}"
+    );
 
     // Search should still find add after reopen without re-index
     let (search_json2, _) = call_tool(
@@ -1799,5 +1810,54 @@ fn open_project_persistent_creates_db_and_survives_reopen() {
     assert!(
         !results2.is_empty(),
         "search after reopen should still find 'add'"
+    );
+}
+
+#[test]
+fn open_project_auto_ignores_empty_persistent_db() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let tmp = TempDir::new().expect("temp dir");
+    std::fs::write(tmp.path().join("lib.ts"), "export const x = 1;\n").unwrap();
+
+    let files = &[("dummy.ts", "export const seed = 1;\n")];
+    let (_tmp_initial, mut router) = build_router(files);
+
+    // Explicit persistent open creates a schema but no reusable index.
+    let (persistent_json, persistent_error) = call_tool(
+        &mut router,
+        "project",
+        json!({
+            "action": "open",
+            "project_path": tmp.path().to_string_lossy(),
+            "storage": "persistent",
+        }),
+    );
+    assert!(
+        !persistent_error,
+        "explicit persistent open should succeed: {persistent_json:?}"
+    );
+    assert_eq!(persistent_json["storage"].as_str(), Some("persistent"));
+
+    // Auto should read project status from the candidate DB, see index mode
+    // "none", and avoid treating the empty DB as a usable persistent index.
+    let (auto_json, auto_error) = call_tool(
+        &mut router,
+        "project",
+        json!({
+            "action": "open",
+            "project_path": tmp.path().to_string_lossy(),
+        }),
+    );
+    assert!(!auto_error, "auto open should succeed: {auto_json:?}");
+    assert_eq!(
+        auto_json["storage"].as_str(),
+        Some("memory"),
+        "auto storage must not reuse a persistent DB whose status has no index"
+    );
+    assert_eq!(
+        auto_json["db_path"].as_str(),
+        Some(":memory:"),
+        "auto fallback should be an in-memory store"
     );
 }

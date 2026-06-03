@@ -39,7 +39,7 @@ default = ["typescript", "javascript", "python"]
 # ── Language features (aggregated from sub-crates) ──
 typescript = ["types/typescript", "extraction/typescript", "analysis/typescript"]
 javascript = ["types/javascript", "extraction/javascript"]
-python = ["types/python", "extraction/python"]
+python = ["types/python", "extraction/python", "analysis/python"]
 java = ["types/java", "extraction/java"]
 c = ["types/c", "extraction/c"]
 cpp = ["types/cpp", "extraction/cpp"]

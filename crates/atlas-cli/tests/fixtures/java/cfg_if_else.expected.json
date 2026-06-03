@@ -1,0 +1,133 @@
+{
+  "symbols": [
+    {
+      "name": "App",
+      "kind": "class"
+    },
+    {
+      "name": "testIf",
+      "kind": "method"
+    }
+  ],
+  "references": [
+    {
+      "text": "System",
+      "kind": "field_access"
+    },
+    {
+      "text": "out",
+      "kind": "field_access"
+    },
+    {
+      "text": "println",
+      "kind": "call"
+    },
+    {
+      "text": "System",
+      "kind": "field_access"
+    },
+    {
+      "text": "out",
+      "kind": "field_access"
+    },
+    {
+      "text": "println",
+      "kind": "call"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Class#0",
+      "kind": "class"
+    },
+    {
+      "name": "Method#16",
+      "kind": "method"
+    },
+    {
+      "name": "Block#34",
+      "kind": "block"
+    },
+    {
+      "name": "Conditional#44",
+      "kind": "conditional"
+    },
+    {
+      "name": "Block#55",
+      "kind": "block"
+    },
+    {
+      "name": "Block#111",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "testIf",
+      "receiver": "System.out"
+    },
+    {
+      "caller": "testIf",
+      "receiver": "System.out"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "branch"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "branch",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "statement",
+      "kind": "true_branch"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "statement",
+      "kind": "false_branch"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "return",
+      "kind": "normal"
+    }
+  ]
+}

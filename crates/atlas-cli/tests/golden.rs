@@ -304,6 +304,54 @@ fn golden_typescript_cfg() {
     run_golden("typescript", "cfg", "ts", Language::TypeScript);
 }
 
+#[cfg(feature = "typescript")]
+#[test]
+fn golden_typescript_cfg_if_else() {
+    run_golden("typescript", "cfg_if_else", "ts", Language::TypeScript);
+}
+
+#[cfg(feature = "typescript")]
+#[test]
+fn golden_typescript_cfg_loop() {
+    run_golden("typescript", "cfg_loop", "ts", Language::TypeScript);
+}
+
+#[cfg(feature = "python")]
+#[test]
+fn golden_python_cfg_if_else() {
+    run_golden("python", "cfg_if_else", "py", Language::Python);
+}
+
+#[cfg(feature = "python")]
+#[test]
+fn golden_python_cfg_loop() {
+    run_golden("python", "cfg_loop", "py", Language::Python);
+}
+
+#[cfg(feature = "go")]
+#[test]
+fn golden_go_cfg_if_else() {
+    run_golden("go", "cfg_if_else", "go", Language::Go);
+}
+
+#[cfg(feature = "go")]
+#[test]
+fn golden_go_cfg_loop() {
+    run_golden("go", "cfg_loop", "go", Language::Go);
+}
+
+#[cfg(feature = "rust")]
+#[test]
+fn golden_rust_cfg_if_else() {
+    run_golden("rust", "cfg_if_else", "rs", Language::Rust);
+}
+
+#[cfg(feature = "rust")]
+#[test]
+fn golden_rust_cfg_loop() {
+    run_golden("rust", "cfg_loop", "rs", Language::Rust);
+}
+
 // ---------------------------------------------------------------------------
 // Post-MVP language golden tests (Symbolic level)
 // ---------------------------------------------------------------------------
@@ -464,6 +512,48 @@ fn golden_kotlin_class() {
     run_golden("kotlin", "class", "kt", Language::Kotlin);
 }
 
+// -- Java (Symbolic + Dataflow, opt-in) --
+
+#[cfg(feature = "java")]
+#[test]
+fn golden_java_cfg_if_else() {
+    run_golden("java", "cfg_if_else", "java", Language::Java);
+}
+
+#[cfg(feature = "java")]
+#[test]
+fn golden_java_cfg_loop() {
+    run_golden("java", "cfg_loop", "java", Language::Java);
+}
+
+// -- C (Symbolic + Dataflow, opt-in) --
+
+#[cfg(feature = "c")]
+#[test]
+fn golden_c_cfg_if_else() {
+    run_golden("c", "cfg_if_else", "c", Language::C);
+}
+
+#[cfg(feature = "c")]
+#[test]
+fn golden_c_cfg_loop() {
+    run_golden("c", "cfg_loop", "c", Language::C);
+}
+
+// -- C++ (Symbolic + Dataflow, opt-in) --
+
+#[cfg(feature = "cpp")]
+#[test]
+fn golden_cpp_cfg_if_else() {
+    run_golden("cpp", "cfg_if_else", "cpp", Language::Cpp);
+}
+
+#[cfg(feature = "cpp")]
+#[test]
+fn golden_cpp_cfg_loop() {
+    run_golden("cpp", "cfg_loop", "cpp", Language::Cpp);
+}
+
 // -- Cangjie (Symbolic, opt-in, reduced fixtures) --
 
 #[cfg(feature = "cangjie")]
@@ -482,4 +572,20 @@ fn golden_cangjie_imports() {
 #[test]
 fn golden_cangjie_calls() {
     run_golden("cangjie", "calls", "cj", Language::Cangjie);
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle/Semantic fixture golden tests (extraction-level)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "go")]
+#[test]
+fn golden_go_goroutine() {
+    run_golden("go", "goroutine", "go", Language::Go);
+}
+
+#[cfg(feature = "rust")]
+#[test]
+fn golden_rust_scope_exit() {
+    run_golden("rust", "scope_exit", "rs", Language::Rust);
 }

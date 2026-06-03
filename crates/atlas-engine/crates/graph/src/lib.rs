@@ -741,11 +741,8 @@ mod tests {
         assert!(ids.contains(&b.id));
 
         // Narrowed filter: only Calls + Imports (no Includes) — b unreachable
-        let sub2 = engine.impact_with_kinds(
-            &a.id,
-            2,
-            Some(vec![EdgeKind::Calls, EdgeKind::Imports]),
-        );
+        let sub2 =
+            engine.impact_with_kinds(&a.id, 2, Some(vec![EdgeKind::Calls, EdgeKind::Imports]));
         let ids2: Vec<SymbolId> = sub2
             .node_indices
             .iter()

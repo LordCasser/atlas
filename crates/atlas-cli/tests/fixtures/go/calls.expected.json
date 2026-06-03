@@ -63,7 +63,7 @@
       "kind": "entry"
     },
     {
-      "kind": "statement"
+      "kind": "return"
     },
     {
       "kind": "exit"
@@ -75,10 +75,18 @@
       "kind": "statement"
     },
     {
+      "kind": "statement"
+    },
+    {
       "kind": "exit"
     }
   ],
   "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "return",
+      "kind": "normal"
+    },
     {
       "source_kind": "entry",
       "target_kind": "statement",
@@ -86,11 +94,6 @@
     },
     {
       "source_kind": "statement",
-      "target_kind": "exit",
-      "kind": "normal"
-    },
-    {
-      "source_kind": "entry",
       "target_kind": "statement",
       "kind": "normal"
     },

@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::effects::SemanticEffect;
-use super::enums::{CfgEdgeKind, CfgNodeKind};
+use super::enums::{CallContext, CfgEdgeKind, CfgNodeKind};
 use super::ids::{CfgEdgeId, CfgNodeId, SymbolId};
 use super::structs::TextRange;
 
@@ -34,6 +34,9 @@ pub struct CfgNode {
     pub function_id: SymbolId,
     pub kind: CfgNodeKind,
     pub stmt_range: TextRange,
+    /// Call-site context (goroutine, defer, etc.) — `None` for non-call nodes.
+    #[serde(default)]
+    pub call_context: CallContext,
     /// Multi-effect vector — language-agnostic semantic effects for this node.
     ///
     /// When non-empty, consumers should prefer `semantic_effects` over the
@@ -52,6 +55,7 @@ impl CfgNode {
             function_id: *function_id,
             kind,
             stmt_range: range,
+            call_context: CallContext::None,
             semantic_effects: Vec::new(),
         }
     }

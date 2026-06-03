@@ -564,6 +564,7 @@ mod tests {
                 end_line: line,
                 end_column: 0,
             },
+            call_context: types::enums::CallContext::None,
             semantic_effects: effects,
         }
     }
@@ -584,6 +585,7 @@ mod tests {
                 end_line: line,
                 end_column: 0,
             },
+            call_context: types::enums::CallContext::None,
             semantic_effects: vec![],
         }
     }
@@ -604,6 +606,7 @@ mod tests {
                 end_line: line,
                 end_column: 0,
             },
+            call_context: types::enums::CallContext::None,
             semantic_effects: vec![],
         }
     }
@@ -622,6 +625,8 @@ mod tests {
             order,
             kind,
             confidence: 0.9,
+            consumption_style: None,
+            description: None,
         }
     }
 
@@ -666,6 +671,7 @@ mod tests {
                 end_line: 0,
                 end_column: 0,
             },
+            call_context: types::enums::CallContext::None,
             semantic_effects: vec![],
         };
 
@@ -721,6 +727,7 @@ mod tests {
                     end_line: 1,
                     end_column: 0,
                 },
+                call_context: types::enums::CallContext::None,
                 semantic_effects: vec![],
             },
             CfgNode {
@@ -735,6 +742,7 @@ mod tests {
                     end_line: 2,
                     end_column: 0,
                 },
+                call_context: types::enums::CallContext::None,
                 semantic_effects: vec![true_free_se],
             },
             CfgNode {
@@ -749,6 +757,7 @@ mod tests {
                     end_line: 3,
                     end_column: 0,
                 },
+                call_context: types::enums::CallContext::None,
                 semantic_effects: vec![true_alloc_se],
             },
             CfgNode {
@@ -763,6 +772,7 @@ mod tests {
                     end_line: 4,
                     end_column: 0,
                 },
+                call_context: types::enums::CallContext::None,
                 semantic_effects: vec![true_store_se],
             },
             CfgNode {
@@ -777,6 +787,7 @@ mod tests {
                     end_line: 5,
                     end_column: 0,
                 },
+                call_context: types::enums::CallContext::None,
                 semantic_effects: vec![],
             },
             CfgNode {
@@ -791,6 +802,7 @@ mod tests {
                     end_line: 6,
                     end_column: 0,
                 },
+                call_context: types::enums::CallContext::None,
                 semantic_effects: vec![],
             },
             CfgNode {
@@ -805,6 +817,7 @@ mod tests {
                     end_line: 7,
                     end_column: 0,
                 },
+                call_context: types::enums::CallContext::None,
                 semantic_effects: vec![],
             },
         ];
@@ -976,6 +989,7 @@ mod tests {
                     end_line: 0,
                     end_column: 0,
                 },
+                call_context: types::enums::CallContext::None,
                 semantic_effects: vec![],
             },
             CfgNode {
@@ -990,6 +1004,7 @@ mod tests {
                     end_line: 1,
                     end_column: 0,
                 },
+                call_context: types::enums::CallContext::None,
                 semantic_effects: vec![],
             },
             CfgNode {
@@ -1004,6 +1019,7 @@ mod tests {
                     end_line: 2,
                     end_column: 0,
                 },
+                call_context: types::enums::CallContext::None,
                 semantic_effects: vec![free_effect.clone()],
             },
             CfgNode {
@@ -1018,6 +1034,7 @@ mod tests {
                     end_line: 3,
                     end_column: 0,
                 },
+                call_context: types::enums::CallContext::None,
                 semantic_effects: vec![free_effect.clone()],
             },
             CfgNode {
@@ -1032,6 +1049,7 @@ mod tests {
                     end_line: 4,
                     end_column: 0,
                 },
+                call_context: types::enums::CallContext::None,
                 semantic_effects: vec![],
             },
             CfgNode {
@@ -1046,6 +1064,7 @@ mod tests {
                     end_line: 5,
                     end_column: 0,
                 },
+                call_context: types::enums::CallContext::None,
                 semantic_effects: vec![],
             },
         ];

@@ -1356,9 +1356,7 @@ function compute(): number {
 
     // Find compute function
     let app_id = FileId::generate("app.ts");
-    let app_syms = store
-        .find_symbols_by_file(&app_id)
-        .unwrap();
+    let app_syms = store.find_symbols_by_file(&app_id).unwrap();
     let compute_sym = app_syms
         .iter()
         .find(|s| s.name == "compute")
@@ -1396,5 +1394,383 @@ function compute(): number {
     assert!(
         reached_names.len() >= 3,
         "impact should reach at least 3 nodes, got {reached_names:?}"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────
+// Python `with` lifecycle test (Part 1e)
+// ────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_python_with_lifecycle() {
+    use atlas_engine::analysis::cfg_graph::CfgGraph;
+    use atlas_engine::analysis::{ResourceOpConfig, compose_effects};
+    use atlas_engine::effects::{ConsumptionStyle, PlaceRef, SemanticEffectKind};
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "with_lifecycle.py",
+        include_str!("fixtures/python/with_lifecycle.py"),
+    )];
+
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("with_lifecycle.py");
+
+    // Find the read_config function
+    let syms = store.find_symbols_by_file(&file_id).unwrap();
+    let read_config_sym = syms
+        .iter()
+        .find(|s| s.name == "read_config")
+        .expect("read_config function not found");
+
+    // Load CFG
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&read_config_sym.id)
+        .unwrap();
+    assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
+
+    let cfg_edges = store
+        .find_cfg_edges_by_function(&read_config_sym.id)
+        .unwrap();
+
+    // Verify BlockExit node exists
+    let has_block_exit = cfg_nodes
+        .iter()
+        .any(|n| n.kind == atlas_engine::CfgNodeKind::BlockExit);
+    assert!(
+        has_block_exit,
+        "CFG should contain a BlockExit node for with_statement"
+    );
+
+    // Build CfgGraph
+    let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+
+    // Load DataFlow
+    let data_nodes = store
+        .find_data_nodes_by_function(&read_config_sym.id)
+        .unwrap();
+    let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
+        vec![]
+    } else {
+        let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
+        store
+            .find_dataflow_edges_by_sources(&all_ids)
+            .unwrap_or_default()
+    };
+
+    // Run compose_effects
+    let contract = ResourceOpConfig::default_for(atlas_engine::Language::Python);
+    let composition = compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
+
+    // Assert that open() produces an Alloc effect
+    let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
+    let has_alloc_for_open = all_effects.iter().any(
+        |eff| matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "open"),
+    );
+    assert!(has_alloc_for_open, "Expected an Alloc effect for open()");
+
+    // Assert that a Free effect exists at a BlockExit node
+    let has_free_at_block_exit = cfg_nodes.iter().any(|n| {
+        n.kind == atlas_engine::CfgNodeKind::BlockExit
+            && composition.node_effects.get(&n.id).map_or(false, |effs| {
+                effs.iter()
+                    .any(|e| matches!(&e.kind, SemanticEffectKind::Free { .. }))
+            })
+    });
+    assert!(
+        has_free_at_block_exit,
+        "Expected a Free effect at BlockExit node"
+    );
+
+    // Assert the Free has ConsumptionStyle::ContextManaged
+    let context_managed_free = all_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Free { .. })
+            && eff.consumption_style == Some(ConsumptionStyle::ContextManaged)
+    });
+    assert!(
+        context_managed_free,
+        "Expected a Free effect with ContextManaged consumption style"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────
+// React useEffect cleanup return test (Part 2e)
+// ────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_ts_react_cleanup() {
+    use atlas_engine::analysis::cfg_graph::CfgGraph;
+    use atlas_engine::analysis::{ResourceOpConfig, compose_effects};
+    use atlas_engine::effects::{ConsumptionStyle, PlaceRef, SemanticEffectKind};
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "react_effect_cleanup.tsx",
+        include_str!("fixtures/typescript/react_effect_cleanup.tsx"),
+    )];
+
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("react_effect_cleanup.tsx");
+
+    // Find the Timer function
+    let syms = store.find_symbols_by_file(&file_id).unwrap();
+    let timer_sym = syms
+        .iter()
+        .find(|s| s.name == "Timer")
+        .expect("Timer function not found");
+
+    // Load CFG
+    let cfg_nodes = store.find_cfg_nodes_by_function(&timer_sym.id).unwrap();
+    assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
+
+    let cfg_edges = store.find_cfg_edges_by_function(&timer_sym.id).unwrap();
+
+    // Build CfgGraph
+    let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+
+    // Load DataFlow
+    let data_nodes = store.find_data_nodes_by_function(&timer_sym.id).unwrap();
+    let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
+        vec![]
+    } else {
+        let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
+        store
+            .find_dataflow_edges_by_sources(&all_ids)
+            .unwrap_or_default()
+    };
+
+    // Verify CleanupReturn DataNode exists
+    let has_cleanup_return = data_nodes
+        .iter()
+        .any(|dn| dn.kind == atlas_engine::DataNodeKind::CleanupReturn);
+    assert!(
+        has_cleanup_return,
+        "Expected a CleanupReturn DataNode for return () => cleanup()"
+    );
+
+    // Run compose_effects
+    let contract = ResourceOpConfig::default_for(atlas_engine::Language::TypeScript);
+    let composition = compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
+
+    let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
+
+    // Assert useEffect → Alloc (MaybeOwned at 0.6 confidence)
+    let use_effect_alloc = all_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "useEffect")
+    });
+    assert!(use_effect_alloc, "Expected an Alloc effect for useEffect");
+
+    // Assert setInterval → Alloc (NewOwned)
+    let set_interval_alloc = all_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "setInterval")
+    });
+    assert!(
+        set_interval_alloc,
+        "Expected an Alloc effect for setInterval"
+    );
+
+    // Assert clearInterval → Free (Deferred)
+    let clear_interval_free = all_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Free { callee, .. } if callee == "clearInterval")
+            && eff.consumption_style == Some(ConsumptionStyle::Deferred)
+    });
+    assert!(
+        clear_interval_free,
+        "Expected a Deferred Free effect for clearInterval"
+    );
+
+    // Verify ConsumptionStyle::Deferred is set on at least one Free
+    let has_deferred_free = all_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Free { .. })
+            && eff.consumption_style == Some(ConsumptionStyle::Deferred)
+    });
+    assert!(
+        has_deferred_free,
+        "Expected at least one Free effect with Deferred consumption style"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────
+// Go Goroutine Escape Test (Part C)
+// ────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "go")]
+#[test]
+fn test_go_goroutine_escape() {
+    use atlas_engine::analysis::cfg_graph::CfgGraph;
+    use atlas_engine::analysis::{ResourceOpConfig, compose_effects};
+    use atlas_engine::effects::{EscapeTarget, SemanticEffectKind};
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "goroutine.go",
+        r#"package main
+
+import "os"
+
+func main() {
+	go func() {
+		f, _ := os.Open("file.txt")
+		f.Close()
+	}()
+}
+"#,
+    )];
+
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("goroutine.go");
+
+    // Find the main function
+    let syms = store.find_symbols_by_file(&file_id).unwrap();
+    let main_sym = syms
+        .iter()
+        .find(|s| s.name == "main" && s.kind.as_str() == "function")
+        .expect("main function not found");
+
+    // Load CFG
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&main_sym.id)
+        .unwrap();
+    assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
+
+    let cfg_edges = store
+        .find_cfg_edges_by_function(&main_sym.id)
+        .unwrap();
+
+    // Build CfgGraph
+    let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+
+    // Load DataFlow
+    let data_nodes = store
+        .find_data_nodes_by_function(&main_sym.id)
+        .unwrap();
+    let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
+        vec![]
+    } else {
+        let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
+        store
+            .find_dataflow_edges_by_sources(&all_ids)
+            .unwrap_or_default()
+    };
+
+    // Run compose_effects with Go OwnershipContract
+    let contract = ResourceOpConfig::default_for(atlas_engine::Language::Go);
+    let composition = compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
+
+    let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
+
+    // Assert that an Escape effect with EscapeTarget::Thread is produced
+    // (the goroutine context causes resource escape)
+    let has_thread_escape = all_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Escape { to: EscapeTarget::Thread, .. })
+    });
+    assert!(
+        has_thread_escape,
+        "Expected an Escape effect with EscapeTarget::Thread. \
+         Found {} total effects: {:?}",
+        all_effects.len(),
+        all_effects.iter().map(|e| &e.kind).collect::<Vec<_>>(),
+    );
+}
+
+// ────────────────────────────────────────────────────────────────
+// Rust Scope Exit Test (Drop at Exit)
+// ────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "rust")]
+#[test]
+fn test_rust_scope_exit() {
+    use atlas_engine::analysis::cfg_graph::CfgGraph;
+    use atlas_engine::analysis::scope_exit::run_scope_exit_pass;
+    use atlas_engine::effects::{PlaceRef, SemanticEffect, SemanticEffectKind};
+    use atlas_engine::ids::EffectId;
+    use std::collections::HashMap;
+
+    let _ = tracing_subscriber::fmt::try_init();
+    // Use a simple Rust source for CFG construction.
+    // The scope_exit_pass is tested here with manually constructed effects,
+    // since the compose_effects pipeline's callee classification depends on
+    // the dataflow query capturing specific call patterns (e.g., path-based
+    // calls like Box::new are not yet captured by the Rust dataflow query).
+    let files = &[(
+        "scope_exit.rs",
+        r#"fn main() {
+    let x = alloc(42);
+}
+"#,
+    )];
+
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("scope_exit.rs");
+
+    // Find the main function
+    let syms = store.find_symbols_by_file(&file_id).unwrap();
+    let main_sym = syms
+        .iter()
+        .find(|s| s.name == "main" && s.kind.as_str() == "function")
+        .expect("main function not found");
+
+    // Load CFG
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&main_sym.id)
+        .unwrap();
+    assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
+
+    let cfg_edges = store
+        .find_cfg_edges_by_function(&main_sym.id)
+        .unwrap();
+
+    // Build CfgGraph
+    let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+
+    // Find a Statement node and the Exit node
+    let stmt_node = cfg_nodes
+        .iter()
+        .find(|n| n.kind == atlas_engine::CfgNodeKind::Statement)
+        .expect("Statement node should exist");
+    let exit_node = cfg_nodes
+        .iter()
+        .find(|n| n.kind == atlas_engine::CfgNodeKind::Exit)
+        .expect("Exit node should exist");
+
+    // Manually construct an Alloc effect for an unfreed local
+    let place = PlaceRef::Local {
+        name: "x".to_string(),
+    };
+    let alloc_kind = SemanticEffectKind::Alloc {
+        target: place.clone(),
+        callee: "Box::new".to_string(),
+    };
+    let alloc_effect = SemanticEffect {
+        id: EffectId::generate(&stmt_node.id, 0, "Alloc"),
+        cfg_node_id: stmt_node.id,
+        order: 0,
+        kind: alloc_kind,
+        confidence: 0.85,
+        consumption_style: None,
+        description: None,
+    };
+
+    let mut effects: HashMap<atlas_engine::ids::CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
+    effects.insert(stmt_node.id, vec![alloc_effect]);
+
+    // Run scope_exit_pass — should add a Free at Exit for the unfreed alloc
+    run_scope_exit_pass(&mut effects, &cfg_graph);
+
+    // Verify the Exit node has a scope-exit Free
+    let exit_effects = effects.get(&exit_node.id);
+    assert!(
+        exit_effects.is_some(),
+        "Exit node should have scope-exit effects"
+    );
+    let exit_effects = exit_effects.unwrap();
+    let has_scope_exit_free = exit_effects.iter().any(|eff| {
+        matches!(&eff.kind, SemanticEffectKind::Free { callee, .. } if callee.contains("<scope-exit>"))
+    });
+    assert!(
+        has_scope_exit_free,
+        "Expected a scope-exit Free effect at Exit node for unfreed allocation. \
+         Exit node effects: {:?}",
+        exit_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
     );
 }

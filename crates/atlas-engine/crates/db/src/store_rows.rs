@@ -356,7 +356,7 @@ pub(crate) fn row_to_callsite(row: &Row) -> rusqlite::Result<Callsite> {
 }
 
 pub(crate) fn row_to_cfg_node(row: &Row) -> rusqlite::Result<CfgNode> {
-    use types::enums::CfgNodeKind;
+    use types::enums::{CallContext, CfgNodeKind};
     let kind_str: String = row.get(2)?;
     let kind =
         CfgNodeKind::from_str(&kind_str).ok_or_else(|| parse_err(2, &kind_str, "CfgNodeKind"))?;
@@ -366,6 +366,12 @@ pub(crate) fn row_to_cfg_node(row: &Row) -> rusqlite::Result<CfgNode> {
             Some(s) if !s.is_empty() && s != "[]" => serde_json::from_str(&s).unwrap_or_default(),
             _ => Vec::new(),
         }
+    };
+    let call_context: CallContext = {
+        let ctx_str: Option<String> = row.get(13)?;
+        ctx_str
+            .and_then(|s| CallContext::from_str(&s))
+            .unwrap_or(CallContext::None)
     };
     Ok(CfgNode {
         id: row.get(0)?,
@@ -379,6 +385,7 @@ pub(crate) fn row_to_cfg_node(row: &Row) -> rusqlite::Result<CfgNode> {
             end_line: row.get::<_, u32>(7)?,
             end_column: row.get::<_, u32>(8)?,
         },
+        call_context,
         semantic_effects,
     })
 }

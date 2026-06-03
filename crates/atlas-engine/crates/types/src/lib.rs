@@ -50,9 +50,9 @@ pub use ids::{
 // --- Enums ---
 pub use enums::Confidence;
 pub use enums::{
-    BindingKind, CfgEdgeKind, CfgNodeKind, DataFlowKind, DataNodeKind, EdgeKind, ImportKind,
-    Language, ParseStatus, Provenance, ReferenceKind, ResolutionStatus, ResolutionStrategy,
-    ScopeKind, SymbolKind, Visibility,
+    BindingKind, CallContext, CfgEdgeKind, CfgNodeKind, DataFlowKind, DataNodeKind, EdgeKind,
+    ImportKind, Language, ParseStatus, Provenance, ReferenceKind, ResolutionStatus,
+    ResolutionStrategy, ScopeKind, SymbolKind, Visibility,
 };
 
 // --- Core IR ---

@@ -621,6 +621,31 @@ pub(crate) fn normalize_ts_dataflow_builder(
             };
             (Some(dn), None)
         }
+        "df.react_cleanup_return" => {
+            // React useEffect cleanup return: `return () => { cleanup(); }`
+            let text = node_text(node, source).unwrap_or_else(|| "<cleanup>".to_string());
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&types::ids::SymbolId>,
+                "cleanup_return",
+                Some(&text),
+                None,
+                range.start_byte,
+            );
+            let dn = DataNode {
+                id: node_id,
+                file_id,
+                function_id: None,
+                kind: types::enums::DataNodeKind::CleanupReturn,
+                binding_id: None,
+                callsite_id: None,
+                name: Some("<cleanup>".to_string()),
+                access_path: Some(text),
+                arg_index: None,
+                range,
+            };
+            (Some(dn), None)
+        }
         _ => (None, None),
     }
 }
