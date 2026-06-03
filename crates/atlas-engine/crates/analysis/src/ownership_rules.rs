@@ -249,4 +249,80 @@ mod tests {
         assert!(rules.matches_owned_pattern("data->state.ptr"));
         assert!(!rules.matches_owned_pattern("other->field"));
     }
+
+    #[test]
+    fn test_custom_rules_change_alloc_detection() {
+        // Default rules don't know custom names
+        let default = CppOwnershipRules::default();
+        assert!(default.match_alloc("custom_pool_alloc").is_none());
+        assert!(default.match_alloc("my_mempool_get").is_none());
+
+        // Add custom alloc rules
+        let mut custom = CppOwnershipRules::default();
+        custom
+            .allocation_functions
+            .push(("custom_pool_alloc".into(), RuleSource::User));
+        custom
+            .allocation_functions
+            .push(("my_mempool_get".into(), RuleSource::User));
+
+        // Custom names now match
+        assert!(custom.match_alloc("custom_pool_alloc").is_some());
+        assert!(custom.match_alloc("my_mempool_get").is_some());
+        // Builtin defaults should still work alongside custom ones
+        assert!(custom.match_alloc("malloc").is_some());
+    }
+
+    #[test]
+    fn test_custom_rules_change_free_detection() {
+        let default = CppOwnershipRules::default();
+        assert!(default.match_free("custom_pool_free").is_none());
+        assert!(default.match_free("my_mempool_put").is_none());
+
+        let mut custom = CppOwnershipRules::default();
+        custom
+            .free_functions
+            .push(("custom_pool_free".into(), RuleSource::User));
+        custom
+            .free_functions
+            .push(("my_mempool_put".into(), RuleSource::User));
+
+        assert!(custom.match_free("custom_pool_free").is_some());
+        assert!(custom.match_free("my_mempool_put").is_some());
+        // Builtin defaults should still work
+        assert!(custom.match_free("free").is_some());
+    }
+
+    #[test]
+    fn test_custom_rules_change_owned_field_matching() {
+        let default = CppOwnershipRules::default();
+        // No default patterns match "secret->*" fields
+        assert!(!default.matches_owned_pattern("secret->internal_buf"));
+
+        let mut custom = CppOwnershipRules::default();
+        custom.owned_field_patterns.push("secret->*".into());
+
+        assert!(custom.matches_owned_pattern("secret->internal_buf"));
+        assert!(custom.matches_owned_pattern("secret->ptr"));
+    }
+
+    #[test]
+    fn test_match_returns_confidence() {
+        let mut rules = CppOwnershipRules::default();
+
+        // Builtin heuristic returns Heuristic variant
+        let m = rules.match_alloc("malloc").unwrap();
+        assert!(matches!(m, RuleMatch::Heuristic { .. }));
+
+        // User-defined rule returns Known variant
+        rules
+            .allocation_functions
+            .push(("myalloc".into(), RuleSource::User));
+        let m = rules.match_alloc("myalloc").unwrap();
+        assert!(matches!(m, RuleMatch::Known { .. }));
+
+        // Non-matches return None
+        assert!(rules.match_alloc("printf").is_none());
+        assert!(rules.match_free("printf").is_none());
+    }
 }

@@ -1298,3 +1298,149 @@ impl ToolRouter {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_edge_kind;
+    use super::EdgeKind;
+    use crate::tools::ToolRouter;
+    use atlas_engine::Store;
+    use atlas_engine::ids::FileId;
+    use std::sync::Arc;
+    use serde_json::json;
+
+    // ── Helpers ─────────────────────────────────────────────────────────
+    fn test_store() -> Arc<Store> {
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        Arc::new(store)
+    }
+
+    fn test_router(store: Arc<Store>) -> ToolRouter {
+        ToolRouter::new_empty(store, std::path::PathBuf::from("/tmp/test_project"))
+    }
+
+    #[test]
+    fn test_parse_edge_kind_all_valid() {
+        let cases: &[(&str, EdgeKind)] = &[
+            ("calls", EdgeKind::Calls),
+            ("instantiates", EdgeKind::Instantiates),
+            ("implements", EdgeKind::Implements),
+            ("registers_callback", EdgeKind::RegistersCallback),
+            ("references", EdgeKind::References),
+            ("contains", EdgeKind::Contains),
+            ("imports", EdgeKind::Imports),
+            ("includes", EdgeKind::Includes),
+            ("exports", EdgeKind::Exports),
+            ("extends", EdgeKind::Extends),
+            ("typeof", EdgeKind::TypeOf),
+            ("returns", EdgeKind::Returns),
+            ("overrides", EdgeKind::Overrides),
+            ("decorates", EdgeKind::Decorates),
+            ("defines", EdgeKind::Defines),
+            ("argument", EdgeKind::Argument),
+            ("parameter", EdgeKind::Parameter),
+            ("assigns", EdgeKind::Assigns),
+            ("reads", EdgeKind::Reads),
+            ("writes", EdgeKind::Writes),
+            ("field_read", EdgeKind::FieldRead),
+            ("field_write", EdgeKind::FieldWrite),
+        ];
+        for (s, expected) in cases {
+            let result = parse_edge_kind(s);
+            assert!(result.is_ok(), "Expected Ok for '{s}', got Err");
+            assert_eq!(result.unwrap(), *expected, "Wrong EdgeKind for '{s}'");
+        }
+    }
+
+    #[test]
+    fn test_parse_edge_kind_invalid() {
+        let cases = &["", "*", "unknown_edge", "Calls", "calls "];
+        for s in cases {
+            let result = parse_edge_kind(s);
+            assert!(result.is_err(), "Expected Err for '{s}', got Ok");
+        }
+    }
+
+    #[test]
+    fn test_parse_edge_kind_imports() {
+        assert_eq!(parse_edge_kind("imports"), Ok(EdgeKind::Imports));
+        assert_eq!(parse_edge_kind("includes"), Ok(EdgeKind::Includes));
+    }
+
+    #[test]
+    fn test_parse_edge_kind_instantiates() {
+        assert_eq!(
+            parse_edge_kind("instantiates"),
+            Ok(EdgeKind::Instantiates)
+        );
+        assert_eq!(
+            parse_edge_kind("registers_callback"),
+            Ok(EdgeKind::RegistersCallback)
+        );
+    }
+
+    // ── handle_impact argument parsing and error paths ──────────────────
+
+    #[test]
+    fn test_handle_impact_missing_symbol_argument() {
+        let store = test_store();
+        // Register a file so the store isn't completely empty
+        let fid = FileId::generate("test.ts");
+        store
+            .upsert_file(&atlas_engine::FileInfo {
+                file_id: fid,
+                path: "test.ts".into(),
+                language: atlas_engine::Language::TypeScript,
+                content_hash: "hash1".into(),
+                status: atlas_engine::ParseStatus::Success,
+            })
+            .unwrap();
+        let mut router = test_router(store);
+        let (resp, is_error) = router.handle_impact(&json!({}));
+        assert!(is_error, "expected error for missing symbol, got: {resp}");
+    }
+
+    #[test]
+    fn test_handle_impact_invalid_edge_kind_string() {
+        let store = test_store();
+        let mut router = test_router(store);
+        let (resp, is_error) = router.handle_impact(&json!({
+            "symbol": "anything",
+            "edge_kinds": ["nonexistent_edge"]
+        }));
+        assert!(is_error, "expected error for invalid edge kind, got: {resp}");
+        // Verify the error message mentions the invalid kind
+        let resp_lower = resp.to_lowercase();
+        assert!(
+            resp_lower.contains("unknown edge kind") || resp_lower.contains("nonexistent"),
+            "error should mention invalid edge kind, got: {resp}"
+        );
+    }
+
+    #[test]
+    fn test_handle_impact_mixed_wildcard_returns_error() {
+        let store = test_store();
+        let mut router = test_router(store);
+        let (resp, is_error) = router.handle_impact(&json!({
+            "symbol": "anything",
+            "edge_kinds": ["*", "calls"]
+        }));
+        assert!(is_error, "expected error for mixed wildcard, got: {resp}");
+        assert!(
+            resp.contains("must be the only value"),
+            "error message mismatch: {resp}"
+        );
+    }
+
+    #[test]
+    fn test_handle_impact_edge_kinds_not_array() {
+        let store = test_store();
+        let mut router = test_router(store);
+        let (resp, is_error) = router.handle_impact(&json!({
+            "symbol": "anything",
+            "edge_kinds": "calls"
+        }));
+        assert!(is_error, "expected error for non-array edge_kinds, got: {resp}");
+    }
+}
