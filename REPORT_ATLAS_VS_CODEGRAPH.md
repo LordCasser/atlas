@@ -1,827 +1,845 @@
-# Atlas vs CodeGraph MCP 工具行为对比报告
+# Atlas vs CodeGraph 逐语言完整工具对比报告
 
-> 报告生成日期: 2026-05-28
-> 环境: 每个 example 项目下均执行了 `codegraph init .` 和 `codegraph index`
-> Atlas 版本: 1.3.0 (Rust 实现), CodeGraph 版本: 11.10.1 (TypeScript 实现)
-> **重要更正**: 此前使用 `atlas_open_project` 默认 memory 模式导致索引数据为 0，本报告数据均来自 persistent 模式（.atlas/atlas.db 持久索引）
+> 生成日期: 2026-06-03 | Atlas v1.3.1 | 测试方式: 每项 MCP 工具逐一调用
 
 ---
 
-## 总体概述
+## 1. C 语言 (curl)
 
-本报告对 8 种编程语言的 example 项目进行 Atlas 和 CodeGraph 的 MCP 工具行为对比。Atlas 是 Rust 实现的代码分析引擎，CodeGraph 是 TypeScript 实现的代码分析引擎（基于 tree-sitter）。两者均提供 MCP 协议接口。
-
-### 对比方法论
-
-对每种语言，执行以下维度的对比：
-1. **项目索引** — 索引的文件数、节点数、边数
-2. **搜索能力** — 符号搜索的精确度和覆盖面
-3. **符号详情** — 单个符号的信息丰富度
-4. **调用图** — 调用/被调关系追踪
-5. **唯一工具** — 各自独有的工具能力
-6. **异常情况** — 工具调用失败或行为异常
-
-### 总览数据速查
-
-| 语言 | 项目 | Atlas 文件 | Atlas 符号 | Atlas 边 | CG 文件 | CG 节点 | CG 边 | 边数胜出 |
-|------|------|-----------|-----------|---------|--------|--------|------|---------|
-| C | curl | 732 | 11,276 | **51,416** | 755 | 11,187 | 25,600 | **Atlas (2.0x)** |
-| C# | shadowsocks-windows | 90 | 2,493 | **39,311** | 90 | 2,612 | 4,374 | **Atlas (9.0x)** |
-| Go | gin | 99 | 2,692 | **17,540** | 110 | 2,544 | 7,196 | **Atlas (2.4x)** |
-| Java | apktool | 152 | 3,019 | **10,729** | 152 | 3,186 | 7,296 | **Atlas (1.5x)** |
-| Python | scrapy | 11 | 98 | 113 | 11 | 159 | **214** | **CodeGraph (1.9x)** |
-| Rust | bat | 104 | 3,528 | **15,035** | 128 | 2,608 | 5,160 | **Atlas (2.9x)** |
-| TypeScript | opencode | 1,931 | 35,080 | 65,400 | 1,931 | 28,865 | **66,375** | **CodeGraph (1.0x)** |
-| Cangjie | cjvs | **24** | **190** | **160** | 1 | 0 | 0 | **Atlas (独有)** |
-
-**核心发现**: Atlas 在 6/8 语言上拥有更多边（更细粒度关系图），且多数情况下大幅领先。CodeGraph 在 TypeScript 上勉强胜出（66,375 vs 65,400），在 Python 上明显领先（214 vs 113）。**Cangjie 是 Atlas 独有支持**的语言 — CodeGraph 完全无法分析。
-
----
-
-## 1. C 语言 (c_example)
-
-**项目**: curl (HTTP 客户端库) — 一个成熟的 C 项目
-
-### 1.1 索引统计
-
+### 项目概况
 | 指标 | Atlas | CodeGraph |
 |------|-------|-----------|
 | 文件数 | 732 | 755 |
-| 符号/节点数 | 11,276 | 11,187 |
-| 边数 | **51,416** | 25,600 |
-| 引用数 | 76,014 | — |
-| 语言 | C (主), C++, Python | C (724), PHP (13), YAML (10), C++ (4), Python (4) |
-| 索引模式 | full | full |
-| 部分解析文件 | 有 (partial) | 无此概念 |
+| 符号数 | 11,276 | 11,187 |
+| 边数 | 51,414 | 25,600 |
+| 引用数 | 76,014 | - |
+| Atlas 语言置信度 | 0.73 | - |
+| CodeGraph 索引大小 | - | - |
 
-**差异分析**:
-- Atlas 索引了 732 个文件（部分为 `partial` 状态，如头文件和复杂宏较多的文件），CodeGraph 索引了 755 个文件
-- Atlas 的边数 (51,416) 明显多于 CodeGraph (25,600)，说明 Atlas 在 C 语言上建立了更细粒度的关系图
-- CodeGraph 额外索引了一些非 C 文件（PHP、YAML 等）
+### 工具全面测试
 
-### 1.2 工具对比
+#### 1.1 atlas_search / codegraph_search
 
-#### 1.2.1 项目状态 (status)
+**测试场景**: 搜索 `curl_easy_perform`
 
-| 方面 | Atlas | CodeGraph |
-|------|-------|-----------|
-| 调用方式 | `atlas_status` | `codegraph_codegraph_status` |
-| 信息丰富度 | 高 — 含版本、语言能力、文件/符号/边/引用计数 | 中 — 含节点按类型和文件按语言分布 |
-| 语言能力 | 详细列出每种语言的 capability_level 和 confidence_floor | 无此维度 |
-| 特殊功能 | 显示 unresolved_references 数量 | 显示 DB 大小和 backend 类型 |
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 搜索结果 | 1 个精确结果: `lib/easy.c:709` | 1 个结果: `lib/easy.c:710` |
+| 排序 | 按 score 降序 (1.08) | 按符号名 |
+| 噪音控制 | 精确，无额外结果 | 精确，无额外结果 |
+| line 差异 | -1 (从 `{` 前一行开始计数) | - |
 
-**结论**: Atlas 的状态信息更丰富（含能力矩阵），CodeGraph 的分布视图更直观。
+**测试场景**: 搜索 `main`
 
-#### 1.2.2 符号搜索 (search)
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 搜索结果 | 131+ 个 `main` 函数，按 score 排序 | 50+ 个 `main` (aggregated) |
+| 聚焦能力 | 可指定 `scope` 限制范围 | 无精准 scope 过滤 |
+| 区分度 | 显示完整路径，用户可判断 | 列出所有，无评分 |
 
-**测试**: 搜索 `curl_easy_perform`
+**结论**: Atlas 搜索提供 score 排序和 scope 过滤，更适合大型项目
 
-| 方面 | Atlas | CodeGraph |
-|------|-------|-----------|
-| 结果数 | 1 个（精确匹配） | 5 个（含相关符号） |
-| 精确度 | 高 — 返回唯一精确匹配 | 中 — 返回类似名称的符号 |
-| 作用域 | 支持 `scope` 参数限定目录 | 支持 `projectPath` 跨项目 |
-| 搜索能力 | 需要 scope（manifest-only 时） | 全局搜索 |
+#### 1.2 atlas_symbol / codegraph_node
 
-**CodeGraph 搜索原始输出**:
-```
-### curl_easy_perform (function)
-lib/easy.c:710
+**测试场景**: 查看 `curl_easy_perform` 详情
 
-### curl_easy_perform_ev (function)
-lib/easy.c:720
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 定位行 | lib/easy.c:709 | lib/easy.c:710 |
+| 返回格式 | 结构化 JSON | Markdown 文本 |
+| 源码 | 含完整函数体 (含 caller/callee 摘要) | 含完整函数体 + trail |
+| Callers 显示 | 190 个 callers (limit 控制) | 189+ 显示 "+179 more" |
+| Callees | 1 个: `easy_perform` | 1 个: `easy_perform` |
+| 程序化消费 | 适合 JSON 解析 | 适合人工阅读 |
 
-### curl_easy_send (function)
-lib/easy.c:1145
+#### 1.3 atlas_calls (incoming+outgoing) / codegraph_callers + codegraph_callees
 
-### curl_easy_recv (function)
-lib/easy.c:1115
+**测试场景**: `curl_easy_perform` 调用图
 
-### Curl_close (function)
-lib/url.c:333
-```
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| Callers 数量 | 190+ (limit 分页) | 189+ (limit 10 仅显示前 10) |
+| Callees 数量 | 1 (`easy_perform`) | 1 (`easy_perform`) |
+| 边类型区分 | `calls`, `references` | 仅 `calls` |
+| 深度控制 | `depth` 参数 | 单层，需手动 follow |
+| 聚合 | 无，精确符号 | 多同名符号时聚合 (aggregated) |
 
-#### 1.2.3 符号详情 (symbol / node)
+**结论**: Atlas 在 C 语言调用图上更精确，支持边类型区分
 
-**测试**: 获取 `curl_easy_perform` 的详细信息
+#### 1.4 atlas_path / codegraph_trace
 
-| 方面 | Atlas `atlas_symbol` | CodeGraph `codegraph_node` |
-|------|----------------------|---------------------------|
-| 源码显示 | 支持 (includeCode=true) | 支持 (includeCode=true) |
-| 被调者 (callees) | 1 个 — `easy_perform` (lib/easy.c:644) | 1 个 — `easy_perform` (lib/easy.c:645) |
-| 调用者 (callers) | 190 个（显示前 100 个） | 全部列出（+179 more 表示法） |
-| 调用者精确度 | 一致 | 一致 |
-| 额外信息 | 无 | 显示函数注释文档 |
-| 文件同行符号 | `atlas_context` 提供 | `codegraph_node` 不提供 |
+**测试场景**: `main → curl_easy_perform` 路径追踪
 
-**结论**: 两者在符号详情上基本一致，都能精确追踪 C 函数的调用关系。行号差异（644 vs 645）源于定义行 vs 实现体起点的计数方式不同。
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 路径成功 | ✅ 成功 | ❌ 失败 |
+| 路径质量 | "direct", score 0.925 | "No direct call path" |
+| 歧义处理 | 从 131 个 `main` 中自动匹配 | 聚合 50 个 `main`，无法选择 |
+| 失败原因 | - | 动态分派 / 歧义 |
+| 路径展示 | Hop-by-hop 带 score | 聚合列表 |
+| 多候选 | 1 个路径 + 1 个替代 | - |
 
-#### 1.2.4 调用者/被调者 (callers/callees)
+**结论**: Atlas 在 C 路径追踪上显著优于 CodeGraph，歧义处理更强
 
-| 方面 | Atlas | CodeGraph |
-|------|-------|-----------|
-| 结果一致性 | callees: 1 (easy_perform) | callees: 1 (easy_perform @ line 645) |
-| API 风格 | 返回结构化 JSON | 返回 markdown 文本 |
-| 限制参数 | limit 支持 | limit 支持 |
+#### 1.5 atlas_impact / codegraph_impact
 
-#### 1.2.5 调用图 (callgraph)
+**测试场景**: `curl_easy_perform` 变更影响分析
 
-| 方面 | Atlas `atlas_callgraph` | CodeGraph `codegraph_impact` |
-|------|------------------------|------------------------------|
-| 深度 | 支持 depth 参数 | 支持 depth 参数 |
-| 方向 | BFS 双向 | 影响分析（双向可达） |
-| 结果格式 | 分层 JSON（depth 分组） | 按文件分组的符号列表 |
-| 用途 | 调用链追踪 | 变更影响分析 |
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 影响节点数 | 30 (depth 2) | 390 |
+| 展示方式 | 文件分组，每个文件内符号列表 | 文件列表，含行号 |
+| 覆盖范围 | 按 depth 精确限制 | 聚合所有调用者 |
 
-#### 1.2.6 上下文工具 (context)
+**结论**: CodeGraph 的影响分析更全面（390 节点），但包含噪音；Atlas 更精确
 
-**Atlas `atlas_context`**: 返回 markdown 格式的符号概述，包含源码、调用者示例（含代码片段）、被调者、文件同行符号。
+#### 1.6 atlas_explore / codegraph_explore
 
-**CodeGraph `codegraph_context`**: 提供任务导向的上下文，搜索 + node + callers + callees 的组合输出。
+**测试场景**: 探索 `curl_easy_perform` 的邻居
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 返回格式 | 结构化的 incoming/outgoing 边 | 关系图 + 源码 |
+| 边类型 | `calls`, `references` | `calls`, `references` |
+| 源码包含 | 不含 (需单独调用) | 含多个文件的 verbatim 源码 |
+| 可读性 | 结构化数据 | 更友好 |
+
+#### 1.7 atlas_file_dependencies (CodeGraph 无对应)
+
+**测试场景**: `lib/easy.c` 的 include 依赖
+
+- Atlas 返回 **38 个 include 依赖**
+- 区分 `incoming` (哪些文件 include 本文件) 和 `outgoing` (本文件 include 了哪些)
+- CodeGraph 无此工具
+
+**结论**: Atlas 独特功能，对于 C/C++ 项目的 #include 分析非常有价值
+
+#### 1.8 atlas_trace (callers) — Atlas 特有深度追踪
+
+**测试场景**: 反向追踪 `curl_easy_perform` 的调用者链 (depth=3)
+
+- 返回 **202 个节点** 的调用链
+- 每步包含: 调用者/被调用者 hex ID、证据片段、参数值
+- 截断提示: "Caller path truncated: reached depth 3 of max_depth=3"
+- CodeGraph 无此功能
+
+**结论**: Atlas 独有，适合深度的跨函数数据流分析
+
+#### 1.9 atlas_lifecycle — Atlas C/C++ 特有
+
+**测试场景**: 追踪 `curl_easy_perform` 中 `data->state` 的生命周期
+
+- 返回 `incomplete` (该函数太短，仅代理调用)
+- 但机制可用: CFG effect annotations, use-after-free/double-free 检测
+- CodeGraph 无此功能
+
+#### 1.10 codegraph_context — CodeGraph 独有
+
+**测试场景**: "How does curl_easy_perform work?"
+
+- 返回 `Entry Points`: `curl_easy_perform`, `CURL` type_alias
+- 相关符号列表 (easy_perform, main 示例)
+- 关键源码: `curl_easy_perform`, `easy_perform`, `CURL` typedefs
+- Atlas 无此功能
+
+#### 1.11 codegraph_files — CodeGraph 独有
+
+**测试场景**: 项目文件结构
+
+- 返回 755 个文件按语言分组 (C 724, yaml 12, cpp 6, ...)
+- 每个文件附带符号计数
+- Atlas 无 `atlas_files` 工具
+
+### C 语言总结
+
+| 维度 | 胜出 | 说明 |
+|------|------|------|
+| 符号搜索 | Atlas | score 排序 + scope 过滤 |
+| 符号详情 | 平手 | Atlas JSON 适合程序化，CodeGraph Markdown 适合人工 |
+| 调用图 | Atlas | 边类型区分 + 精确解析 |
+| 路径追踪 | **Atlas** | 成功追踪 main→curl_easy_perform，CodeGraph 失败 |
+| 影响分析 | CodeGraph | 节点更多 (390 vs 30) |
+| 文件依赖 | **Atlas 独有** | include 依赖分析 |
+| 深度追踪 | **Atlas 独有** | trace_callers 多跳分析 |
+| 生命周期 | **Atlas 独有** | C/C++ CFG 分析 |
+| 任务上下文 | **CodeGraph 独有** | codegraph_context |
+| 文件浏览 | **CodeGraph 独有** | codegraph_files |
+| 探索能力 | 平手 | 各有侧重 |
 
 ---
 
-### 1.3 C 语言总结
+## 2. Go 语言 (gin) — 完整版
 
-| 指标 | 胜出方 | 说明 |
-|------|--------|------|
-| 索引边数 (粒度) | **Atlas** | 51,416 vs 25,600，2x 更细 |
-| 搜索覆盖面 | **CodeGraph** | 返回更多相关符号 |
-| 搜索精确度 | **Atlas** | scope 限定更精确 |
-| 符号详情 | **持平** | 两者均提供源码 + 调用关系 |
-| 状态信息 | **Atlas** | 含语言能力矩阵 |
-| 影响分析 | **CodeGraph** | 专有工具，结果更易读 |
-
----
-
-## 2. C# 语言 (c_sharp_example)
-
-**项目**: shadowsocks-windows (C# 实现的 Shadowsocks 客户端)
-
-### 2.1 索引统计
-
-| 指标 | Atlas | CodeGraph |
-|------|-------|-----------|
-| 文件数 | 90 | 90 |
-| 符号/节点数 | 2,493 | 2,612 |
-| 边数 | **39,311** | 4,374 |
-| 引用数 | 36,247 | — |
-| 未解析引用 | 11,494 | — |
-| 索引模式 | full | full |
-| 语言能力 | C#: dataflow_full, confidence 0.72 | — |
-
-**差异分析**:
-- Atlas 的边数 (39,311) 大幅领先 CodeGraph (4,374)，约为 **9 倍**
-- CodeGraph 符号数略多 (2,612 vs 2,493)
-- Atlas 额外检测到 11,494 个未解析引用，说明其引用追踪更积极
-
-### 2.2 工具对比
-
-#### 2.2.1 符号搜索 (search)
-
-**测试**: 搜索 `ShadowsocksController` 等 C# 符号
-
-| 方面 | Atlas | CodeGraph |
-|------|-------|-----------|
-| 搜索方式 | 基于符号名 + 可选 kind 过滤 | 全局搜索 + 关键字 |
-| 结果格式 | JSON | Markdown |
-
-#### 2.2.2 符号详情 (symbol / node)
-
-两者在 C# 上均支持源码显示和调用关系追踪。Atlas 的 JSON 结构化输出适合程序化处理。
-
-### 2.3 C# 语言总结
-
-| 指标 | 胜出方 | 说明 |
-|------|--------|------|
-| 索引边数 (粒度) | **Atlas** | 39,311 vs 4,374，约 9x 更细 |
-| 符号数 | **CodeGraph** | 2,612 vs 2,493 (略多) |
-| 语言能力信息 | **Atlas** | 提供 confidence 分数 |
-
----
-
-## 3. Go 语言 (go_example)
-
-**项目**: gin (Go 的 HTTP Web 框架)
-
-### 3.1 索引统计
-
+### 项目概况
 | 指标 | Atlas | CodeGraph |
 |------|-------|-----------|
 | 文件数 | 99 | 110 |
-| 符号/节点数 | **2,692** | 2,544 |
-| 边数 | **17,540** | 7,196 |
-| 引用数 | 25,645 | — |
-| 未解析引用 | 7,483 | — |
-| 索引模式 | structural | full |
-| 语言能力 | Go: dataflow_full, confidence 0.78 | — |
+| 符号数 | 2,692 | 2,544 |
+| 边数 | 17,579 | 7,196 |
+| 引用数 | 25,645 | - |
+| Atlas 语言置信度 | 0.78 (最高) | - |
 
-**差异分析**:
-- Atlas 边数 (17,540) 约为 CodeGraph (7,196) 的 **2.4 倍**
-- Atlas 符号数 (2,692) 也多于 CodeGraph (2,544)
-- CodeGraph 额外索引了 11 个文件（含测试文件和辅助脚本）
-- Go 是 Atlas confidence 最高的语言之一 (0.78)
+### 工具全面测试
 
-### 3.2 Go 语言总结
+#### 2.1 atlas_search / codegraph_search
 
-| 指标 | 胜出方 | 说明 |
-|------|--------|------|
-| 索引边数 (粒度) | **Atlas** | 17,540 vs 7,196，2.4x 更细 |
-| 符号数 | **Atlas** | 2,692 vs 2,544 |
-| 文件覆盖面 | **CodeGraph** | 110 vs 99 文件 |
-| 语言 confidence | **Atlas** | Go 0.78 — 所有语言最高之一 |
+**场景 1**: 搜索 `Engine` 结构体
 
----
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 符号精度 | ✅ 正确: `gin.Engine.Engine` struct (gin.go:91) | ❌ 错误: 返回 `defaultValidator.Engine()` 方法 |
+| Score | 1.06 | 无评分 |
+| 数量 | 15 个相关结果排序 | 10 个 |
+| 噪音 | 低，前几个都是相关 Engine 引用 | 中，含不相关 Engine 方法 |
 
-## 4. Java 语言 (java_example)
+**场景 2**: 搜索 `gin.Default`
 
-**项目**: apktool (Android APK 逆向工具)
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 结果 | 15 个结果，`gin.Default` 排第一 (score 0.68) | 10 个，聚合了多个 `Default` |
+| 准确度 | ✅ 正确识别 | ⚠️ 聚合同名不同包符号 |
+| 额外信息 | 显示 Default, DefaultQuery, DefaultPostForm 等 | 显示 Default, DefaultFileSystem 等 |
 
-### 4.1 索引统计
+**结论**: Atlas 的 Go 符号解析精度显著高于 CodeGraph
 
-| 指标 | Atlas | CodeGraph |
-|------|-------|-----------|
-| 文件数 | 152 | 152 |
-| 符号/节点数 | 3,019 | **3,186** |
-| 边数 | **10,729** | 7,296 |
-| 引用数 | 15,385 | — |
-| 未解析引用 | 5,222 | — |
-| 索引模式 | full | full |
-| 语言能力 | Java: dataflow_full, confidence 0.75; Kotlin: 0.67 | — |
+#### 2.2 atlas_symbol / codegraph_node
 
-**差异分析**:
-- Atlas 边数 (10,729) 多于 CodeGraph (7,296)，约为 **1.5 倍**
-- CodeGraph 符号数略多 (3,186 vs 3,019)
-- Atlas 检测到混合语言项目（Java + Kotlin），CodeGraph 未标注语言分布
+**场景**: 查看 `gin.Default` 详情
 
-### 4.2 Java 语言总结
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 定位 | gin.go:235 | `codegraph_node` 返回 "Symbol not found" |
+| 源码 | ✅ 完整 6 行函数体 | ❌ 无法定位 |
+| 签名 | `(opts ...OptionFunc) *Engine` | N/A |
+| Callers | 7 个 (Bind, ShouldBind, 5 个测试) | N/A |
+| Callees | 6 个 (Logger, New, Use, With, Recovery, debugPrintWARNINGDefault) | N/A |
 
-| 指标 | 胜出方 | 说明 |
-|------|--------|------|
-| 索引边数 (粒度) | **Atlas** | 10,729 vs 7,296，1.5x 更细 |
-| 符号数 | **CodeGraph** | 3,186 vs 3,019 (略多) |
-| 多语言检测 | **Atlas** | 检测到 Kotlin 文件 |
-| 未解析引用 | **Atlas** | 提供 5,222 个未解析引用，揭示依赖边界 |
+**结论**: CodeGraph 的 Go 符号解析明显弱于 Atlas。`gin.Default` 在 `codegraph_node` 中找不到，而 `codegraph_search` 能搜到但聚合多个 Default。
 
----
+#### 2.3 atlas_calls / codegraph_callers + codegraph_callees
 
-## 5. Python 语言 (python_example)
+**场景**: `gin.Default` 的调用关系
 
-**项目**: scrapy 的简化子集（爬虫框架示例）
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| Callees 精确度 | **6 个精确** | 聚合结果含无关 Default |
+| 边类型 | `calls` + `references` 区分 | 仅 `calls` |
+| 调用者 | 7 个 (含测试) | 聚合后难以区分 |
 
-### 5.1 索引统计
+**结论**: Atlas 的 Go 调用图精确度远超 CodeGraph
 
-| 指标 | Atlas | CodeGraph |
-|------|-------|-----------|
-| 文件数 | 11 | 11 |
-| 符号/节点数 | 98 | **159** |
-| 边数 | 113 | **214** |
-| 引用数 | 692 | — |
-| 未解析引用 | 606 | — |
-| 索引模式 | full | full |
-| 语言能力 | Python: dataflow_full, confidence 0.72 | — |
+#### 2.4 atlas_path / codegraph_trace
 
-**差异分析**:
-- Python 是 Atlas **唯一落后**的语言：CodeGraph 边数 (214) 约是 Atlas (113) 的 **1.9 倍**
-- CodeGraph 符号数 (159) 也大幅多于 Atlas (98)
+**场景**: `gin.Default → ServeHTTP` 路径追踪
 
-### 5.1a 边数差异根因深度分析
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 结果 | ❌ 失败 | ❌ 失败 |
+| 失败原因 | Go 接口动态分派 (`*Engine` 方法集) | 接口方法分派 |
+| 信息质量 | 提供 frontier 边界信息 | 仅说 "dynamic dispatch" |
 
-#### 项目特性放大差异
+**结论**: 两者都无法处理 Go 接口动态分派
 
-scrapy example 是一个 **薄封装层** 项目 — 11 个文件、~1,100 行代码，但大量逻辑通过外部库实现（scrapy、selenium、webdriver-manager、标准库）。这种"胶水代码"的特性是 Python 边数差异的根本放大因素。
+#### 2.5 atlas_explore / codegraph_explore
 
-#### Atlas 的边计数哲学：仅限已解析符号
+**场景**: 探索 `gin.Default` 的邻居
 
-Atlas 的 113 条边仅包含 **项目内已解析的引用** —— 调用链两端都必须在项目源码中有定义：
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| Incoming | 9 条 (7 calls + 2 references) | 106 符号/31 文件 |
+| Outgoing | 10 条 (6 calls + 4 references) | 关系图 + 源码 |
+| 边类型标注 | ✅ 每条边标注 `calls` 或 `references` | ⚠️ 不区分 |
+| 源码包含 | 不含 | ✅ 含多个文件 verbatim 源码 |
 
-```
-项目内符号调用链（产生边 ✓）：
-  main() → run_spider()                          # 函数调用，目标在 run.py
-  start_requests() → open_browser()              # self.method，目标在 base_spider.py
-  WikipediaSpider.parse_data() → get_current_url() # self.method，目标在 base_spider.py
-  WikipediaSpider.parse_data() → WikipediaItem()   # 类实例化，目标在 items.py
+**CodeGraph explore 特点**: 返回 verbatim 源码（无需 Read 工具再读），适合一次性理解模块上下文。
 
-对外部/未解析引用（不产生边 ✗）：
-  CrawlerProcess(settings)                        # scrapy 外部库
-  WebDriverWait(self.driver, 30)                  # selenium 外部库
-  self.driver.find_element(By.ID, ...)             # 动态类型属性上的方法
-  response.css('#firstHeading')                    # scrapy.Response 外部类型
-  HtmlResponse(url=..., body=...)                  # scrapy 外部类
-  datetime.now()                                   # 标准库
-  unittest.TestCase                                # 标准库
-  os.environ.setdefault()                          # 标准库
-  self.logger.info(...)                            # 从 scrapy.Spider 继承（外部）
-```
+#### 2.6 atlas_impact / codegraph_impact
 
-Atlas 的 606/692 = **87.5% 未解析引用率** 直接说明了问题：该项目绝大多数引用指向外部代码。
+**场景**: `gin.Default` 变更影响分析 (depth=2)
 
-#### CodeGraph 的边计数哲学：包含所有引用
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 影响节点数 | 30 | **45** |
+| 分组方式 | 文件分组 + 每个符号列表 | 文件 + 符号列表 |
+| 覆盖范围 | 调用者 + 内部 callees | 内部 callees + ginS 全局实例包装器 |
+| 额外覆盖 | 无 | **ginS/gins.go 全部 27 个包装函数** |
 
-CodeGraph 的 214 条边包含 **更广泛的引用类型**：
+**结论**: CodeGraph 的 impact 分析更全面，覆盖到了 ginS 单例包装器的全部方法
 
-| 边类型 | Atlas | CodeGraph | 示例 |
-|--------|-------|-----------|------|
-| 项目内函数调用 | ✓ (113) | ✓ | `main→run_spider` |
-| Import 声明引用 | ✗ | ✓ | `from scrapy.crawler import CrawlerProcess` |
-| 外部类继承 | ✗ | ✓ | `class BrowserSpider(scrapy.Spider, ABC)` |
-| 外部对象方法调用 | ✗ | ✗ | `driver.get(url)` |
-| 文本级符号引用 | ✗ | ✓ | `Mock`, `time.sleep`, `traceback.print_exc` |
-| 标准库调用 | ✗ | ✓ | `datetime.now()`, `sys.path.insert()` |
+#### 2.7 atlas_trace (callers) — Atlas 特有
 
-CodeGraph 的搜索行为（之前发现它能在字符串值中匹配 "engine"）印证了它使用更宽松的引用扫描——包括 import 声明、文本 token 等，这解释了其边数更高的原因。
+**场景**: 反向追踪 `gin.Default` 的调用者链 (depth=3)
 
-#### 具体验证：已验证的 Atlas 内部调用链
+- 返回 **16 个节点** 的调用链
+- 找到 `MustBindWith → ... → TestRaceParamsContextCopy → Default` 路径
+- 每步包含: 调用参数、证据片段、文件位置
+- 截断提示: "Caller path truncated: reached depth 3 of max_depth=3"
+- CodeGraph 无此功能
 
-| 调用方 | 被调方 | Atlas 捕获 | 说明 |
-|--------|--------|-----------|------|
-| `main` | `run_spider`, `list_spiders`, `create_custom_spider` | ✓ (3 条) | 项目内函数 |
-| `start_requests` | `open_browser`, `before_login`, `after_login`, `get_target_urls`, `navigate_to`, `wait_for_element`, `parse_data` | ✓ (7 条) | self.method 调用 |
-| `WikipediaSpider.parse_data` | `get_current_url`, `WikipediaItem` | ✓ (2 条) | self.method + 本地类 |
-| `open_browser` | （无） | ✗ (0 条) | 所有调用指向外部库/selenium |
-| `run_spider` | （无） | ✗ (0 条) | 所有调用指向 scrapy 和动态导入 |
+#### 2.8 atlas_file_dependencies (Atlas 特有)
 
-#### 语言独立性分析
+**场景**: `gin.go` 的 import 依赖
 
-要理解这并非"Python 分析引擎弱"而是项目结构差异，可对比其他语言中 Atlas 的优势情况：
+- Atlas 返回 **0 个依赖**（Go 的 import 解析可能未捕获）
+- 说明 Go 的 import 分析在 Atlas 中尚未完善
 
-| 语言 | 项目特性 | Atlas 边 | CodeGraph 边 | 胜出 |
-|------|---------|---------|-------------|------|
-| C (curl) | 自包含 C 库，大量内部跨文件调用 | **51,416** | 25,600 | Atlas (2x) |
-| Rust (bat) | 自包含 Rust 项目，内联依赖 | **15,035** | 5,160 | Atlas (2.9x) |
-| Go (gin) | 自包含 Go 框架，内联实现 | **17,540** | 7,196 | Atlas (2.4x) |
-| Python (scrapy) | 薄封装层，>80% 调用指向外部 | 113 | **214** | CodeGraph (1.9x) |
+#### 2.9 codegraph_context (CodeGraph 特有)
 
-**如果在 Python 中选择一个更大、更自包含的项目（如 Flask、black、pydantic 等内部实现为主的项目），Atlas 的 edge 计数预计会反超 CodeGraph**，因为项目内部引用比例会大幅提升。
+**场景**: "How does gin.Default create a router?"
 
-#### Python 动态性的固有挑战
+- 返回 `Entry Points`: `gin.Default` (gin.go:236), `binding.Default` 等
+- 关键源码: `Default`, `New`, `Engine` struct, `debugPrintWARNINGDefault`
+- 发现 3 个同名的 `Default` 函数（gin.Default, binding.Default x2）
+- Atlas 无此功能
 
-即使在自包含的 Python 项目中，以下模式仍会导致 Atlas 的引用解析率低于静态语言：
+#### 2.10 codegraph_files (CodeGraph 特有)
 
-1. **鸭子类型**：`self.driver.xxx()` — `self.driver` 的类型在实例化时赋值，静态分析需要类型推断才能确认 `driver` 有 `.quit()` 方法
-2. **Monkey-patching**：Python 允许运行时修改类和方法，静态分析无法追踪
-3. **`__import__` 和反射**：`importlib.import_module()` 动态导入在静态分析中无法解析
-4. **元类 / 描述符**：`__getattr__`、`__getattribute__` 让属性访问变成函数调用
-5. **生成器 / 协程**：`yield from` 和 `async/await` 引入间接控制流
+**场景**: 项目文件结构
 
-#### 结论
+- 返回 **110 个文件**，按 go (99) 和 yaml (11) 分组
+- 每个文件包含符号计数
+- Atlas 无等价功能
 
-Atlas 在 Python 上边数少 **不是引擎能力弱**，而是 **edge 定义更严格**（仅限已解析的项目内引用）+ **所选项目是薄外部封装层** + **Python 动态特性放大** 三者的叠加效应。在更自包含的 Python 项目中，Atlas 的优势会恢复。
+### Go 语言总结
 
-### 5.2 Python 语言总结
-
-| 指标 | 胜出方 | 说明 |
-|------|--------|------|
-| 索引边数 | **CodeGraph** | 214 vs 113 |
-| 符号数 | **CodeGraph** | 159 vs 98 |
-| 引用追踪 | **Atlas** | 692 引用，虽然大量未解析 |
-| 语言能力信息 | **Atlas** | 提供 Python confidence 0.72 |
+| 维度 | 胜出 | 说明 |
+|------|------|------|
+| 符号搜索 | **Atlas** | 正确识别 Engine 而非 defaultValidator.Engine() |
+| 符号详情 | **Atlas** | CodeGraph 的 codegraph_node 无法找到 gin.Default |
+| 调用图 | **Atlas** | 6 个精确 callees，边类型区分 |
+| 路径追踪 | 平手 | 均无法处理 Go 接口动态分派 |
+| 影响分析 | CodeGraph | 覆盖更广（45 vs 30），含 ginS 包装器 |
+| 深度追踪 | **Atlas 独有** | trace_callers 链式分析 |
+| 文件依赖 | Atlas 独有 | 但 Go 支持待完善 |
+| 任务上下文 | **CodeGraph 独有** | codegraph_context 含多个同名函数 |
+| 文件浏览 | **CodeGraph 独有** | codegraph_files 语言分组 |
+| 探索 | 各有侧重 | Atlas 边类型精确；CodeGraph 含源码 |
+| 语言置信度 | Atlas: 0.78 | Atlas 对 Go 支持最佳 |
 
 ---
 
-## 6. Rust 语言 (rust_example)
+## 3. Rust 语言 (bat)
 
-**项目**: bat (类 cat 命令行工具)
-
-### 6.1 索引统计
-
+### 项目概况
 | 指标 | Atlas | CodeGraph |
 |------|-------|-----------|
 | 文件数 | 104 | 128 |
-| 符号/节点数 | **3,528** | 2,608 |
-| 边数 | **15,035** | 5,160 |
-| 引用数 | 32,427 | — |
-| 未解析引用 | 9,734 | — |
-| 索引模式 | full | full |
-| 语言能力 | Rust: dataflow_full, confidence 0.70 | — |
+| 符号数 | 3,528 | 2,608 |
+| 边数 | 15,030 | 5,160 |
+| 引用数 | 32,427 | - |
+| Atlas 语言置信度 | 0.70 | - |
 
-**差异分析**:
-- Atlas 边数 (15,035) 约为 CodeGraph (5,160) 的 **2.9 倍**
-- Atlas 符号数 (3,528) 也多于 CodeGraph (2,608)
-- CodeGraph 多索引了 24 个文件（测试、构建脚本等）
-- Rust 是 Atlas 优势最明显的静态语言之一
+### 工具全面测试
 
-### 6.2 Rust 语言总结
+#### 3.1 atlas_search / codegraph_search
 
-| 指标 | 胜出方 | 说明 |
-|------|--------|------|
-| 索引边数 (粒度) | **Atlas** | 15,035 vs 5,160，2.9x 更细 |
-| 符号数 | **Atlas** | 3,528 vs 2,608 |
-| 文件覆盖面 | **CodeGraph** | 128 vs 104 |
-| 引用追踪 | **Atlas** | 32,427 引用，深度建模 |
+**场景 1**: 搜索 `PrettyPrinter` struct
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 结果 | `PrettyPrinter` (src/pretty_printer.rs:37) | `PrettyPrinter` (src/pretty_printer.rs:38) |
+| Score | 1.06 | 无评分 |
+| 额外 | - | +34 个成员方法列表 |
+
+**场景 2**: 搜索 `Config` struct
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 结果 | `Config` (src/config.rs:36) | `Config` (src/config.rs:37) + 7 callers |
+| Score | 1.06 | 无评分 |
+| 额外 | 无 | **显示所有 7 个调用者** |
+
+**场景 3**: 搜索 `print_with_writer` 方法
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 结果 | 找到 (qualified: `PrettyPrinter<'a>::print_with_writer`) | 找到 (simple: `PrettyPrinter::print_with_writer`) |
+| 命名方式 | **需要 lifetime 泛型参数** `<'a>` | 简单命名即可 |
+| 发现难度 | 高 (需知道精确的带有 lifetime 的 qname) | 低 |
+
+**结论**: CodeGraph 的 Rust 搜索更易用（简化命名），Atlas 的 lifetime 限定更精确但使用不便
+
+#### 3.2 atlas_symbol / codegraph_node
+
+**场景**: 查看 `PrettyPrinter` 详情
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 结构体字段 | 7 个字段 | 7 个字段 |
+| 成员方法 | **仅结构体定义** | **35 个成员方法列表+签名** |
+| 源码 | 含结构体定义 | 含结构体定义 + 方法签名 |
+| Callers | 0 (struct 级别) | 有 trail 显示调用关系 |
+
+**结论**: CodeGraph 的 Rust 节点信息更丰富，自动列出 impl 块中所有方法
+
+#### 3.3 atlas_calls / codegraph_callers + codegraph_callees
+
+**场景**: `PrettyPrinter::print_with_writer` 的调用图
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| Atlas 所需命名 | `PrettyPrinter<'a>::print_with_writer` | `PrettyPrinter::print_with_writer` |
+| Callees (Atlas) | **7 个**: clear, insert, HighlightedLineRanges, new, from, collect, Controller::run | **2 个**: print_with_writer, Result (type_alias) |
+| 边类型 | `calls` + `references` + `instantiates` | 仅 `calls` |
+| 丰富度 | Atlas 更多 callee (含 struct 初始化) | CodeGraph 较少 |
+
+**结论**: Atlas 在 Rust 调用图上更完整，区分 calls/references/instantiates 三种边类型
+
+#### 3.4 atlas_path / codegraph_trace
+
+**场景 1**: `main → PrettyPrinter<'a>::print` 路径
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 路径成功 | ✅ 成功 | ❌ 失败 |
+| 路径 | main (examples/advanced.rs) → PrettyPrinter::print → print_with_writer | - |
+| 歧义处理 | 从 14 个 main 中匹配 | 聚合 21 个 main |
+| Score | 1.0 (direct) | - |
+
+**场景 2**: `Controller::run_with_error_handler` 符号解析
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 查询结果 | Symbol not found | ✅ 找到 |
+
+#### 3.5 atlas_impact / codegraph_impact
+
+**场景**: `PrettyPrinter<'a>::new` 变更影响
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 影响节点数 | **25** | **13** |
+| 分组方式 | 文件分组 | 文件分组 |
+
+**结论**: Atlas 影响分析覆盖范围更大 (25 vs 13)
+
+#### 3.6 atlas_explore / codegraph_explore
+
+**场景**: 探索 `PrettyPrinter<'a>::print_with_writer`
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| Incoming edges | 2 (print: calls + references) | 147 符号/25 文件 |
+| Outgoing edges | 60+ (calls, references, instantiates) | 关系图: implements, references, calls |
+| 边类型标注 | ✅ 精确区分 | ✅ 精确区分 |
+| 源码 | 无 | ✅ verbatim 源码 |
+
+#### 3.7 atlas_trace (callers) — Atlas 特有
+
+**场景**: 反向追踪 `PrettyPrinter<'a>::print_with_writer` (depth=5)
+
+- 返回 **33 个节点** 的调用链
+- 找到 `App::new → ... → print → print_with_writer`
+- 每步含: caller/callee hex ID、参数值、证据片段
+- CodeGraph 无此功能
+
+#### 3.8 atlas_file_dependencies (Atlas 特有)
+
+**场景**: `src/pretty_printer.rs` 的依赖
+
+- 4 个 use 依赖: Read, Path, Term, PagingMode
+- 0 个被依赖
+
+#### 3.9 codegraph_context (CodeGraph 特有)
+
+**场景**: "How does bat's PrettyPrinter work?"
+
+- 返回 `Entry Points`: `main` (src/bin/bat/main.rs:454), `Printer` (trait), `PrettyPrinter` (struct)
+- 返回 15+ 相关符号
+- 含关键源码: main, run, Printer trait, PrettyPrinter struct
+- Atlas 无此功能
+
+#### 3.10 codegraph_files (CodeGraph 特有)
+
+**场景**: 项目文件结构
+
+- **128 个文件**，17 种语言分组
+- 主语言: rust (67 个文件)，其他含 yaml (8), python (7), ruby (5) 等测试文件
+- 每个文件含符号计数
+
+### Rust 语言总结
+
+| 维度 | 胜出 | 说明 |
+|------|------|------|
+| 符号搜索 | CodeGraph | 简化命名，无需 lifetime 泛型 |
+| 符号详情 | **CodeGraph** | 自动列出 35 个成员方法 |
+| 调用图 | Atlas | 7 callees vs 2，边类型更丰富 |
+| 路径追踪 | **Atlas** | 成功追踪 main→print，CodeGraph 失败 |
+| 影响分析 | Atlas | 25 vs 13 节点 |
+| 深度追踪 | **Atlas 独有** | trace_callers 跨 5 跳追踪 |
+| 文件依赖 | Atlas 独有 | use 依赖分析 |
+| 任务上下文 | **CodeGraph 独有** | codegraph_context |
+| 文件浏览 | **CodeGraph 独有** | codegraph_files |
+| 探索 | CodeGraph | 含 verbatim 源码，免 Read |
+
+**特别注意**: Atlas 在 Rust 中方法查找需要使用带 lifetime 的 qualified name（如 `PrettyPrinter<'a>::print_with_writer`），对用户不友好。CodeGraph 使用简化名称即可。
 
 ---
 
-## 7. TypeScript 语言 (typescript_example)
+## 4. TypeScript (opencode)
 
-**项目**: opencode (AI 编程助手，Atlas 自身项目)
-
-### 7.1 索引统计
-
+### 项目概况
 | 指标 | Atlas | CodeGraph |
 |------|-------|-----------|
-| 文件数 | 1,931 | 1,931 |
-| 符号/节点数 | **35,080** | 28,865 |
-| 边数 | 65,400 | **66,375** |
-| 引用数 | 315,356 | — |
-| 未解析引用 | 55,741 | — |
-| 索引模式 | full | full |
-| 语言能力 | TypeScript: dataflow_full, confidence 0.60 | — |
+| 文件数 | 1,931 | 1,966 |
+| 符号数 | 35,080 | 28,865 |
+| 边数 | 65,350 | 66,375 |
+| 引用数 | 315,356 | - |
+| Atlas 语言置信度 | **0.60** (较低) | - |
+| CodeGraph 节点类型 | - | class 402, function 5961, interface 508 |
+| 数据库大小 | - | 52.19 MB |
 
-**差异分析**:
-- 两者边数基本持平：CodeGraph (66,375) 仅以 **1.5%** 优势领先 Atlas (65,400)
-- Atlas 符号数 (35,080) 明显多于 CodeGraph (28,865)，多出 **21.5%**
-- Atlas 引用数 (315,356) 非常庞大，说明其关系建模极其详尽
-- TypeScript 是 Atlas confidence 最低的语言之一 (0.60)，反映了动态类型带来的分析挑战
-- 两者文件数完全一致 (1,931)
+### 工具全面测试
 
-### 7.2 TypeScript 语言总结
+#### 4.1 atlas_search / codegraph_search
 
-| 指标 | 胜出方 | 说明 |
-|------|--------|------|
-| 索引边数 | **CodeGraph** | 66,375 vs 65,400 (仅差 1.5%) |
-| 符号数 | **Atlas** | 35,080 vs 28,865 (+21.5%) |
-| 引用数 | **Atlas** | 315,356 引用，深度领先 |
-| 文件覆盖面 | **持平** | 两者均索引 1,931 文件 |
+**场景**: 搜索 `ToolDefinition`
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 结果 | 2 个: class (messages.ts:151), type_alias (tool.ts:54) | 10 个结果含 func 引用 |
+| Score | 1.06 / 1.0 | 无评分 |
+| 额外 | - | 显示引用该符号的函数 |
+
+**场景**: 搜索 `Config` — Atlas 找到 5 个 interface
+
+**场景**: 搜索 `startServer`, `invokeModel` — Atlas 均无结果，CodeGraph 也无
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 覆盖 | 部分符号无法搜索到 | 搜索正常 |
+| 可能原因 | TypeScript 置信度 0.60 导致索引不全 | - |
+
+#### 4.2 atlas_symbol / codegraph_node
+
+**场景**: 查看 `ToolDefinition` (class) 详情
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 定位 | messages.ts:151 | tool.ts:54 (type_alias) |
+| 源码 | ✅ 含完整类定义 | ✅ 含完整 type 定义 |
+| 歧义处理 | 返回特定 class | 聚合 2 个 ToolDefinition |
+| Callers | 0 (class 级别) | 无 |
+
+**结论**: CodeGraph 在有同名符号时聚合结果显示，可能导致混淆
+
+#### 4.3 atlas_calls / codegraph_callees
+
+**场景**: `ToolDefinition` 调用关系
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| Callees | 0 (class 级别) | 0 (aggregated) |
+| Callers | 0 | aggregated 2 符号 |
+| 边类型 | 仅 `references` (通过 explore) | 仅 `calls` |
+
+#### 4.4 atlas_explore / codegraph_explore
+
+**场景**: 探索 `ToolDefinition` 的邻居
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| Incoming | 8 references (Tool, make, fromPlugin 等) | **182 符号/48 文件** |
+| Outgoing | 10 references | 关系图 + verbatim 源码 |
+| 边类型 | `references` | `references`, `calls`, `instantiates`, `extends` |
+| 源码 | 无 | ✅ 含 messages.ts, tool.ts, plugin/tool.ts 等 verbatim 源码 |
+
+**CodeGraph explore 优势**: 一次性返回多个相关文件的 verbatim 源码，相当于完成了多次 Read 调用
+
+#### 4.5 atlas_impact / codegraph_impact
+
+**场景**: `ToolDefinition` 变更影响分析
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 影响节点数 | **1** (仅有自身) | **33** (含 14 个文件) |
+| 覆盖 | 极有限 | 覆盖: markLastTool, make, toDefinitions 等 LLM 协议层 |
+| 歧义 | - | 聚合 2 个 ToolDefinition |
+
+**结论**: CodeGraph 在 TS 的影响分析远超 Atlas，Atlas 的 TS 支持明显不足
+
+#### 4.6 atlas_file_dependencies (Atlas 特有)
+
+**场景**: `packages/llm/src/schema/messages.ts` 的 imports
+
+- **13 个 import 依赖** (effect, ./ids, ./options 等)
+- 0 个被依赖
+
+#### 4.7 codegraph_context (CodeGraph 特有)
+
+**场景**: "How does opencode start and invoke LLM models?"
+
+- 返回 `Entry Points`: `Entry` (instance-store.ts), `Model` type_aliases
+- `getConfiguredAgentVariant` 关键函数
+- Atlas 无此功能
+
+#### 4.8 codegraph_files (CodeGraph 特有)
+
+**场景**: 项目文件结构
+
+- **1,966 个文件**
+- 语言分布: javascript 9, tsx 405, typescript 1517, yaml 35
+- 可限制路径范围 (如 `packages/llm/src`)
+
+### TypeScript 总结
+
+| 维度 | 胜出 | 说明 |
+|------|------|------|
+| 符号搜索 | CodeGraph | Atlas 0.60 置信度导致搜索覆盖不全 |
+| 符号详情 | 平手 | 各有侧重 |
+| 调用图 | 平手 | 均不完全 |
+| 影响分析 | **CodeGraph** | 33 vs 1 节点，差距巨大 |
+| 深度追踪 | Atlas 独有 | trace_callers |
+| 文件依赖 | Atlas 独有 | import 分析 |
+| 任务上下文 | **CodeGraph 独有** | codegraph_context |
+| 文件浏览 | **CodeGraph 独有** | codegraph_files 分组 |
+| 探索 | **CodeGraph** | 182 符号/48 文件 + verbatim 源码 |
+
+**核心发现**: Atlas 的 TypeScript 置信度仅 0.60，显著影响搜索和分析质量。CodeGraph 在 TS 上表现更好。
 
 ---
 
-## 8. 仓颉语言 (cangjie_example)
+## 5. Java (apktool)
 
-**项目**: cjvs — 仓颉语言版本管理工具（类似 nvm），真实开源的仓颉项目（24 个 `.cj` 源文件）
-
-### 8.1 支持情况对比
-
+### 项目概况
 | 指标 | Atlas | CodeGraph |
 |------|-------|-----------|
-| 语言解析 | ✅ **支持** — 24 个 `.cj` 文件成功索引 | ❌ 不支持（仅索引 1 个 YAML） |
-| 符号/节点数 | **190** | 0 |
-| 边数 | **160** | 0 |
-| 索引模式 | full（3 个 partial） | 完全不识别 .cj 文件 |
-| 语言能力 | **dataflow_full**, confidence 0.65 | 无 |
+| 文件数 | 152 | 179 |
+| 符号数 | 3,019 | 3,186 |
+| 边数 | 10,763 | 7,296 |
+| 引用数 | 15,385 | - |
+| Atlas 语言置信度 | 0.75 | - |
 
-**结论**: Atlas 的仓颉支持是本次对比中最具决定性的差异。Atlas 对 Cangjie 的 13 项分析功能已实际验证可用。
+### 工具全面测试
 
-### 8.2 Atlas 深度测试
+#### 5.1 atlas_search / codegraph_search
 
-**项目**: cjvs — 仓颉语言版本管理工具（类似 nvm），真实开源的仓颉项目。
+**场景**: 搜索 `ApkDecoder`
 
-**结论重写**: Atlas **实质性支持**仓颉语言，CodeGraph **完全不支持**。
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 结果 | 2 个: class + constructor | **10 个**: 含 decode, decodeResources, decodeSources 等方法 |
+| Score | 1.06 (class) / 1.08 (constructor) | 无评分 |
 
-#### Atlas 索引统计
+#### 5.2 atlas_symbol / codegraph_node
 
+**场景**: 查看 `ApkDecoder` 类详情
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 源码 | ✅ **500+ 行完整源码** | ✅ (通过 codegraph_node decode 显示) |
+| Callers | 1 callee (class 级别: getName) | **7 个 callers** (含测试) |
+| 内容 | 完整类定义，所有方法体 | 仅特定方法 |
+| 方法签名 | 含所有方法返回类型 | 含 return 类型 |
+
+**结论**: Atlas 返回整个类的全部源码，CodeGraph 按方法为单位
+
+#### 5.3 atlas_calls / codegraph_callees
+
+**场景**: `ApkDecoder.decode` 的 callees
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| Callees 数量 | **23** | **14** |
+| 覆盖 | 全: writeApkInfo, getVersion, rmdir, mkdir, OS 等 | 同类但更少 |
+| 调用者 | 0 (class 级别查询) | **7 个** (含测试) |
+
+**结论**: Atlas 在 Java 上 callees 更丰富 (23 vs 14)
+
+#### 5.4 atlas_path / codegraph_trace
+
+**场景**: `ApkDecoder.decode → decodeResources` 路径
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| **路径成功** | ✅ **成功** | ✅ **成功** |
+| 路径质量 | "direct", score 0.925 | 2 hops, 完整内联 |
+| 路径展示 | hop-by-hop + score | **每个 hop 的函数体都内联展示** |
+| 目标调用 | 仅路径 | **目标函数的 callees 也显示** |
+
+**CodeGraph trace 特点**: 路径上的每个函数都显示完整源码，且终点函数的 callees 也一并展示，无需额外查询。
+
+#### 5.5 atlas_impact / codegraph_impact
+
+**场景**: `ApkDecoder.decode` 变更影响
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 影响节点数 | **30** | 30+ |
+
+**结论**: 两者在 Java 上影响分析能力相近
+
+#### 5.6 atlas_trace (callers) — Atlas 特有
+
+**场景**: 反向追踪 `ApkDecoder.decode` (depth=2)
+
+- 触发 CFG 分析
+- CodeGraph 无此功能
+
+### Java 总结
+
+| 维度 | 胜出 | 说明 |
+|------|------|------|
+| 符号搜索 | 平手 | CodeGraph 显示更多方法 |
+| 符号详情 | Atlas | 500+ 行完整源码 |
+| 调用图 | Atlas | 23 vs 14 callees |
+| 路径追踪 | **平手** | 两者均成功追踪 |
+| 影响分析 | 平手 | 30 节点相近 |
+| 深度追踪 | Atlas 独有 | trace_callers |
+
+---
+
+## 6. C# (shadowsocks-windows)
+
+### 项目概况
 | 指标 | Atlas | CodeGraph |
 |------|-------|-----------|
-| 文件数 | **24** | 1（仅 YAML 配置文件） |
-| 符号/节点数 | **190** | 0 |
-| 边数 | **160** | 0 |
-| 引用数 | **667** | — |
-| 部分解析文件 | 3（env/paths.cj, model/model.cj, tools/tools.cj） | — |
-| 语言能力 | **dataflow_full**, confidence 0.65 | 不支持 |
+| 文件数 | 90 | 91 |
+| 符号数 | 2,493 | 2,612 |
+| 边数 | 39,093 | 4,374 |
+| 引用数 | 36,247 | - |
+| Atlas 语言置信度 | 0.72 | - |
 
-#### Atlas 工具在 Cangjie 上的实际表现
+### 工具全面测试
 
-逐一验证了所有核心 MCP 工具，均正常工作：
+#### 6.1 atlas_search / codegraph_search
 
-| 工具 | 测试内容 | 结果 |
-|------|---------|------|
-| `atlas_status` | 项目概览 | ✅ 显示 24 文件/190 符号/160 边/667 引用 |
-| `atlas_language_capabilities` | 能力矩阵 | ✅ 详细列出 Cangjie 的 13 项功能支持（含 CFG 不支持标注） |
-| `atlas_files` | 文件列表 | ✅ 24 个 `.cj` 文件列出（3 个 partial） |
-| `atlas_search` | 搜索 `install` (函数) | ✅ 精确命中 `src/command_install.cj:9`，分数 1.08 |
-| `atlas_search` | 搜索 `printVersion` | ✅ 精确命中 `src/main.cj:55` |
-| `atlas_search` | 搜索 `check` | ✅ 精确命中 `src/main.cj:97` |
-| `atlas_search` | 搜索 `defaultConfig` | ✅ 精确命中 `src/config/config.cj:5`，分数 0.75 |
-| `atlas_search` | 搜索 `Version` (变量) | ✅ 20 个带 `version` 的变量跨 12 个文件 |
-| `atlas_search` | 搜索 `main` (函数) | ⚠️ 未找到 — Cangjie 入口函数 `main()` 不被索引为符号 |
-| `atlas_symbol` | 函数 `install` | ✅ 完整源码（40 行）+ 4 个 callees（doinstall, defaultVersion, getVersions, doinstallLocal） |
-| `atlas_symbol` | 函数 `printVersion` | ✅ 源码 + 0 callees（正确） |
-| `atlas_symbol` | 函数 `check` | ✅ 源码 + 2 callees（getAppConfigDir, getAppConfigFile） |
-| `atlas_context` | 函数 `install` | ✅ 完整上下文：全源码 + 4 个调用点代码片段 + 12 个文件同行符号 |
-| `atlas_callers` | `doinstall` 的调用者 | ✅ 1 个调用者：`install` (正确) |
-| `atlas_callees` | `install` 的被调者 | ✅ 4 个 callees 全部正确 |
-| `atlas_callgraph` | `install` depth=3 | ✅ 17 节点 BFS 扩展，涵盖完整调用链 |
-| `atlas_path` | `install → doinstall` | ✅ 直接路径，quality: "direct", score: 0.925 |
-| `atlas_neighbors` | `install` depth=1 | ✅ 7 个邻居符号（函数+变量），跨多个文件 |
-| `atlas_explore` | `doinstall` | ✅ 1 incoming + 12 outgoing 边（含 calls + references） |
-| `atlas_usages` | `getAppConfigDir` | ✅ 2 处引用：main.cj:100 + tools.cj:36 |
-| `atlas_dependencies` | `command_install.cj` | ✅ 解析出对 `config` 和 `model` 模块的 import |
+**场景**: 搜索 `ShadowsocksController`
 
-#### 关键发现
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 结果 | 2 个: class + constructor | **10 个**（含 Start, Stop, Reload, SaveConfig 等方法） |
+| 命名方式 | `Shadowsocks.Controller.ShadowsocksController` (全命名空间) | `ShadowsocksController` (简单名) |
+| Atlas 搜索 | ✅ 找到 (简单名也可搜到) | ✅ 搜索正常 |
 
-1. **Atlas 是唯一支持 Cangjie 的 MCP 代码分析工具** — CodeGraph 完全无法解析 `.cj` 文件
-2. **Atlas 的 Cangjie 支持是** `dataflow_full` **级别**（confidence 0.65），支持 13 项功能的详细能力矩阵
-3. **所有核心工具均正常工作**：搜索、符号详情、调用图、路径追踪、邻居、引用、依赖分析
-4. **少数限制**：
-   - `main()` 入口函数不作为索引符号（Cangjie 语言的特殊入口处理）
-   - 3 个文件为 partial 解析（含 `@Derive` 宏标注的类文件）
-   - CFG 构建器未实现
-   - 词法绑定为基本级别（scope-chain-aware 未实现）
-5. **Cangjie 是 Atlas 对比 CodeGraph 的"王牌"语言** — Atlas 有实质支持，CodeGraph 完全为零
+**关键发现**: Atlas C# 内部使用全命名空间限定名，但搜索时简单名也有效
 
----
+#### 6.2 atlas_symbol / codegraph_node
 
-## 全景对比总结
+**场景**: 查看 `ShadowsocksController` 详情
 
-### 边数对比（核心）
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 简单名查询 | ❌ "Symbol not found" | ✅ 返回构造函数源码 |
+| **全限定名查询** | ✅ 返回 **300+ 行完整源码** | - |
+| 源码完整度 | 完整类定义（所有字段、方法、事件） | 仅构造函数 |
 
-```
-C        ████████████████████████████████████████████████████████ 51,416  Atlas
-         ████████████████████████████████                       25,600  CodeGraph
-         
-C#       ████████████████████████████████████████████████████████████████████████████ 39,311  Atlas
-         ████████████                                             4,374  CodeGraph
+**核心发现**: Atlas C# 需要全限定名 (`Shadowsocks.Controller.ShadowsocksController`)，简单名搜索可用但在 symbol 查询时失败。CodeGraph 使用简单名即可但仅返回构造函数而非完整类。
 
-Go       ██████████████████████████████████████████████████     17,540  Atlas
-         ████████████████████                                    7,196  CodeGraph
+#### 6.3 atlas_calls / codegraph_callees
 
-Java     ███████████████████████████████████████                10,729  Atlas
-         ██████████████████████████                              7,296  CodeGraph
+**场景**: `ShadowsocksController()` 构造函数的 callees
 
-Python   ███████████████████                                    3,113  Atlas
-         ████████████████████████████████████                   5,214  CodeGraph
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| 全限定名查询 | ✅ **3 个 callees**: StartTrafficStatistics, Process, Load | ✅ **3 个 callees** (同类) |
+| 简单名查询 | ❌ Symbol not found | ✅ 成功 |
+| 额外 | - | 还有 17 个 import callees |
 
-Rust     ████████████████████████████████████████████████████   15,035  Atlas
-         ███████████████████                                    5,160  CodeGraph
+**结论**: 两者在构造函数调用关系上能力相当
 
-TS       ██████████████████████████████████████████████████████████████████████████████████████ 65,400  Atlas
-         █████████████████████████████████████████████████████████████████████████████████████████ 66,375  CodeGraph
+#### 6.4 atlas_path / codegraph_trace
 
-Cangjie  ████████                                             160  Atlas
-         0                                                     0    CodeGraph
-```
+**场景**: 构造函数 → `Configuration.Load` 路径
 
-> 注：Cangjie 的 Atlas 边数 (160) 远小于主流语言，因为 cangjie 项目的代码量远小于其他对比项目（24 文件 vs 数百至数千），但关键差异在于 CodeGraph 边数为 0。
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| **路径成功** | ✅ **成功** | ✅ **成功** |
+| 路径质量 | "indirect" (含动态分派) | 直接追踪 |
+| 路径长度 | 4 hops | 同 |
+| 阻断节点 | 5 个动态分派节点 (GetDefaultServer, CheckConfig 等) | - |
 
-### 综合排名
+### C# 总结
 
-| 维度 | 最佳工具 | 说明 |
-|------|---------|------|
-| **Cangjie 支持** | **Atlas（独占）** | CodeGraph 完全无法解析仓颉代码 |
-| **边/粒度 (C/C#/Go/Java/Rust)** | **Atlas** | 5/8 语言领先，部分高达 9x |
-| **边/粒度 (Python/TypeScript)** | **CodeGraph** | 2/8 语言略微领先 |
-| **符号搜索覆盖面** | **CodeGraph** | 返回更多相似结果，适合探索 |
-| **符号搜索精确度** | **Atlas** | scope 限定 + 精确匹配 |
-| **符号详情** | **持平** | 均支持源码+调用关系 |
-| **状态信息** | **Atlas** | 含语言能力矩阵和 confidence |
-| **影响分析** | **CodeGraph** | 专用 impact 工具，更直观 |
-| **跨项目搜索** | **CodeGraph** | 原生支持 projectPath 参数 |
-| **输出格式** | **Atlas** | JSON 结构化，适合程序化处理 |
-| **未解析引用追踪** | **Atlas** | 独家能力，揭示依赖边界 |
-
-### 关键洞察
-
-1. **Cangjie 是 Atlas 的独占优势**：Atlas 是**唯一**能实质性分析仓颉代码的 MCP 代码分析工具（24 文件/190 符号/160 边），CodeGraph 完全无法解析 `.cj` 文件。
-
-2. **Atlas 边更细**：在 C (2x)、C# (9x)、Go (2.4x)、Java (1.5x)、Rust (2.9x) 上，Atlas 建立了更丰富的关系图。这说明 Atlas 的静态分析引擎在这些语言上捕获了更多粒度的代码关系。
-
-3. **CodeGraph 搜索更强**：CodeGraph 的符号搜索返回更广泛的结果，适合代码探索场景。Atlas 的 scope 限定搜索更适合精确定位。
-
-4. **Python 是弱点**：Python 是 Atlas 表现最弱的语言（113 vs 214 边，98 vs 159 符号）。Python 的动态特性对基于树解析的静态分析构成挑战。
-
-5. **TypeScript 接近平手**：两者在最大项目 (opencode, 1,931 文件) 上的边数几乎相同。Atlas 符号数多 21.5%，CodeGraph 边数多 1.5%。
-
-6. **Atlas 语言能力矩阵**：Atlas 独有的 `language_capabilities` 信息（含 confidence 分数）为评估分析质量提供了有用参考。
-
-7. **重要的使用提示**：使用 `atlas_open_project` 时须使用 `storage="persistent"` 以加载索引数据，memory 模式默认创建空索引。
+| 维度 | 胜出 | 说明 |
+|------|------|------|
+| 符号搜索 | 平手 | Atlas 要求全限定名 |
+| 符号详情 | **Atlas** (全限定名) / CodeGraph (简单名) | 取决于使用方式 |
+| 调用图 | 平手 | 均 3 个 callees |
+| 路径追踪 | 平手 | 均成功 |
+| 代码完整度 | Atlas | 全限定名时返回完整类 |
 
 ---
 
-## 9. 逐工具行为对比分析
+## 7. Python (scrapy example)
 
-> 本节基于在 4 个代表性语言（TypeScript/opencode, C/curl, Go/gin, Python/scrapy）上对每个 MCP 工具的逐一测试。
-
-### 9.1 符号搜索: `atlas_search` vs `codegraph_search`
-
-**测试场景 1: 精确符号查找 — TypeScript (`getUserPrompt`)**
-
-| 方面 | Atlas | CodeGraph |
+### 项目概况
+| 指标 | Atlas | CodeGraph |
 |------|-------|-----------|
-| 结果数 | 3 个 | 4 个 |
-| 结果内容 | `getUserPrompt`, `getUserShell`, `getUserEmail` — 精确函数名匹配 | `getUserPrompt`, `getUserShell`, `getUserEmail` + 一个 `getUserPrompt` 的 import 引用 |
-| 结果格式 | 结构化 JSON，含 `score`、`kind`、`file`、`line` | Markdown 列表，按文件路径分组 |
-| 精确度 | 高 — 仅返回实际定义的符号 | 中等 — import 引用也作为符号返回 |
-| 排序 | 按分数降序 (0.97, 0.82, 0.78) | 按字母/分组顺序 |
+| 文件数 | 11 | 11 |
+| 符号数 | 98 | 159 |
+| 边数 | 113 | 214 |
+| 引用数 | 692 | - |
+| Atlas 语言置信度 | 0.72 | - |
 
-**测试场景 2: 通用符号搜索 — C (`curl_easy_perform`)**
+### 测试结果
 
-| 方面 | Atlas | CodeGraph |
-|------|-------|-----------|
-| 结果数 | 1 个（精确匹配） | 5 个（含相近符号） |
-| 额外结果 | 无 | `curl_easy_perform_ev`, `curl_easy_send`, `curl_easy_recv`, `Curl_close` |
-| 使用场景 | 已知符号精确定位 | 探索性搜索，了解相关 API |
+- 项目仅 **11 个文件**，为 scrapy 示例项目而非完整 scrapy 框架
+- 搜索 `ScrapySpider` 两个工具均无结果
+- 搜索 `Spider` 两个工具均无结果
+- CodeGraph: 11 文件, 159 nodes, 214 edges
 
-**测试场景 3: 外部库符号 — Python (`CrawlerProcess`)**
-
-| 方面 | Atlas | CodeGraph |
-|------|-------|-----------|
-| 结果数 | **0 个** | 7 个 |
-| 搜索方式 | 仅索引项目内符号 | 也捕获 import 引用和变量赋值中的名称 |
-| 原因 | `CrawlerProcess` 来自外部 scrapy 包 | CodeGraph 搜索也扫描导入声明和引用文本 |
-
-**测试场景 4: 歧义文本搜索 — TypeScript (`Engine`)**
-
-| 方面 | Atlas | CodeGraph |
-|------|-------|-----------|
-| 结果 | 仅返回符号名含 "Engine" 的类型/类 | 返回了字符串数组中的值 `"engine"`（假阳性） |
-| 解释 | Atlas 搜索仅遍历 AST 符号层 | CodeGraph 搜索扫描文件所有文本，将字符串字面量也匹配 |
-
-**小结**: CodeGraph 搜索覆盖面更广（适合探索），但偶有假阳性。Atlas 搜索更精确（适合已知符号定位），且 JSON 输出含 score 便于排序。Python 上 Atlas 搜索受限于动态类型，对外部符号支持弱。
+**结论**: Python 示例项目过小，无法进行有意义的对比测试。需要更大的 Python 代码库（如完整 scrapy 或 django）。
 
 ---
 
-### 9.2 符号详情: `atlas_symbol` vs `codegraph_node`
+## 8. Cangjie (cjvs)
 
-**测试: TypeScript — `getUserPrompt` (opencode 项目)**
-
-| 方面 | Atlas `atlas_symbol` | CodeGraph `codegraph_node` |
-|------|----------------------|---------------------------|
-| 基本信息 | `{kind, language, file, range, signature}` | Markdown 含 `name`, `kind`, `file`, `location` |
-| 源码 (includeCode=true) | 完整函数体（约 40 行） | 完整函数体（约 40 行） |
-| 被调者 (callees) | JSON 数组: `[{name, file, line}]` | Markdown 段落: 函数名 + file:line |
-| 调用者 (callers) | JSON 数组（前 10 个默认） | Markdown 段落（全部列出，+more 表示） |
-| 调用者数量限制 | 10 (默认), 可通过 limit 调整 | 20 (默认), 可通过 limit 调整 |
-| 调用点代码片段 | 无（`atlas_context` 提供） | `codegraph_node` 不提供 |
-| 额外信息 | 无注释文档 | 含函数注释 (JSDoc) |
-| 输出格式优劣势 | JSON 结构化，适合程序消费 | Markdown 一目了然，适合人读 |
-
-**测试: C — `curl_easy_perform` (curl 项目)**
-
-| 方面 | Atlas | CodeGraph |
+### 项目概况
+| 指标 | Atlas | CodeGraph |
 |------|-------|-----------|
-| 源码 | 完整（含 #ifdef 预处理块） | 完整（含 #ifdef 预处理块） |
-| 被调者 | 1 个 — `easy_perform` (lib/easy.c:644) | 1 个 — `easy_perform` (lib/easy.c:645) |
-| 行号差异 | 644 | 645 |
-| 调用者 | 190 个（显示前 100） | 全部列出（+179 more） |
+| 文件数 | **24** | **1** |
+| 符号数 | **191** | **0** |
+| 边数 | **176** | **0** |
+| 引用数 | 667 | 0 |
+| Atlas 语言置信度 | 0.65 | - |
 
-**行号差异解释**: 644 vs 645 的差异源于定义行 vs 函数体实现体起点的计数方式不同 — Atlas 计打开 `{` 的行，CodeGraph 计函数签名行。
+### 测试结果
+
+| 对比项 | Atlas | CodeGraph |
+|--------|-------|-----------|
+| **索引能力** | ✅ **完整索引 24 个文件，191 符号** | ❌ **仅索引 1 个 yaml 文件，0 代码符号** |
+| `main` 函数 | ✅ 找到 (src/main.cj:14) | ❌ 不支持 Cangjie 语言 |
+| 符号搜索 | ✅ 正常运作 | ❌ 不运作 |
+| 边数 | 176 条边 | 0 |
+
+**核心发现**: Cangjie 是 Atlas **独有的语言支持**。CodeGraph 完全不支持 Cangjie。Atlas v1.3.1 对 Cangjie 的置信度为 0.65，能进行基本的符号提取和引用分析。
 
 ---
 
-### 9.3 上下文工具: `atlas_context` vs `codegraph_context`
+## 综合排名
 
-**测试: TypeScript — `getUserPrompt`**
+### Atlas 优势领域
+| 工具/能力 | 说明 | 支持语言 |
+|-----------|------|----------|
+| **atlas_path** | 路径追踪，处理歧义强 | C, Java, Rust, C# (Go 接口除外) |
+| **atlas_trace (callers)** | 深度调用链追踪 | C, Go, Rust, TS, Java |
+| **atlas_calls** | 边类型区分 (calls/references/instantiates) | 所有语言 |
+| **atlas_file_dependencies** | 文件级依赖分析 | C (38 includes), TS (13 imports) |
+| **atlas_explore** | 边类型精确标注 | 所有语言 |
+| **Cangjie 支持** | 唯一支持 Cangjie 的工具 | Cangjie |
+| **歧义处理** | score 排序 + scope 过滤 | 所有语言 |
 
-| 方面 | Atlas `atlas_context` | CodeGraph `codegraph_context` |
-|------|----------------------|-------------------------------|
-| 调用方式 | `{symbol: "getUserPrompt"}` | `{task: "...相关描述..."}` |
-| 输出风格 | 结构化 Markdown（含符号概述、源码、调用者片段、文件同行符号） | 任务导向，自动搜索相关入口点 |
-| 源码包含 | 完整源码（多个文件汇总） | 关键符号的代码片段 |
-| 调用者上下文 | 每个调用点的代码片段（3-5 行） | 调用者列表，不含代码片段 |
-| 文件同行符号 | 列出同一文件中的其他符号（含行号） | 不提供 |
-| 使用方式 | 符号 ID 驱动 | 自然语言任务描述驱动 |
+### CodeGraph 优势领域
+| 工具/能力 | 说明 | 支持语言 |
+|-----------|------|----------|
+| **codegraph_context** | 任务导向的上下文汇总 | 所有语言 |
+| **codegraph_explore** | 返回 verbatim 源码，免 Read | 所有语言 |
+| **codegraph_impact** | 影响分析更全面 | C (390 vs 30), TS (33 vs 1) |
+| **codegraph_files** | 文件浏览和统计 | 所有语言 |
+| **codegraph_node** (Rust) | 自动列出成员方法 | Rust (35 方法) |
+| **搜索便利性** | 简化命名，无需 lifetime/namespace | Rust, C# |
 
-**测试: Python — `main` (scrapy)**
+### 各语言置信度对比
+| 语言 | Atlas 置信度 | Atlas 优势 | CodeGraph 优势 |
+|------|-------------|-----------|----------------|
+| **Go** | **0.78** | ✅ 精准符号解析 | ❌ 符号名解析弱 |
+| **Java** | 0.75 | ✅ 完整类源码 | 调用者显示更清晰 |
+| **C** | 0.73 | ✅ 路径追踪 | ❌ 歧义处理弱 |
+| **C#** | 0.72 | ✅ 全限定名完整源码 | 简单名更易用 |
+| **Python** | 0.72 | - | - (示例过小) |
+| **Rust** | 0.70 | 调用图丰富 | ✅ 简化命名+成员方法展示 |
+| **TS** | **0.60** | ❌ 覆盖不全 | ✅ 影响分析强大 |
+| **Cangjie** | 0.65 | ✅ **唯一支持** | ❌ 完全不支持 |
 
-| 方面 | Atlas | CodeGraph |
-|------|-------|-----------|
-| 源码 | 完整显示（含 3 个被调者详情） | 显示函数体（简单/中等复杂度） |
-| 被调者 | 3 个 (execute, CrawlerProcess, CrawlerRunner) | 3 个 |
-| 同行符号 | 列出了同一文件的其他符号 | 无此概念 |
-| 错误处理 | 按符号名精确索引 | 任务导向，描述模糊时可能不精确 |
-
-**小结**: 
-- `atlas_context` 更全面（源码 + 调用点片段 + 同行符号），适合深度理解一个符号的上下文
-- `codegraph_context` 更灵活（自然语言任务描述），适合快速理解一个功能区域
-- Atlas 使用文件哈希引用（可追踪），CodeGraph 直接内联显示
-
----
-
-### 9.4 调用关系: Callers / Callees
-
-**测试**: `getUserPrompt` (TypeScript)
-
-| 方面 | Atlas | CodeGraph |
-|------|-------|-----------|
-| `atlas_callers` / `codegraph_callers` | 结构化 JSON，含 name/file/line/column | Markdown 列表 |
-| `atlas_callees` / `codegraph_callees` | 结构化 JSON | Markdown 列表 |
-| 限制 | limit 参数控制 | limit 参数控制 |
-| 行号精确度 | 含列号 (column) | 仅行号 |
-| 结果延伸 | 单一目标 | 单一目标 |
-
-两者在调用关系追踪上功能对等，输出格式是主要区别。
-
----
-
-### 9.5 调用图 vs 影响分析: `atlas_callgraph` vs `codegraph_impact`
-
-**测试**: TypeScript — `getUserPrompt`，depth=2
-
-| 方面 | Atlas `atlas_callgraph` | CodeGraph `codegraph_impact` |
-|------|------------------------|------------------------------|
-| 算法 | BFS 双向遍历 | 影响分析（双向可达集） |
-| 输出格式 | 分层 JSON（按 depth 分组） | 按文件分组的符号列表 |
-| 信息量 | depth0: 1 个, depth1: 3 个, depth2: 16 个 | 影响符号按文件组织，每符号附带 file:line |
-| 用途 | 调用链追踪（清晰分层） | 变更影响分析（文件维度） |
-| 可视化 | JSON 结构易程序化处理 | 易懂的 Markdown |
-
-两者目的不同：`callgraph` 适合理解调用网络，`impact` 适合评估变更风险。
-
----
-
-### 9.6 路径追踪: `atlas_path` vs `codegraph_trace`
-
-**测试 1**: TypeScript — `getUserPrompt` → `sort`
-
-| 方面 | Atlas `atlas_path` | CodeGraph `codegraph_trace` |
-|------|--------------------|----------------------------|
-| 调用方式 | `{from: ..., to: ...}` | `{from: ..., to: ...}` |
-| 路径 | 直接调用: `getUserPrompt → sort` | 直接调用: `getUserPrompt → sort` |
-| 路径质量 | quality: "direct", score: 0.925 | 不提供质量指标 |
-| 内联代码 | 不内联 | 每个 hop 的源码片段内联 |
-| 特殊功能 | prefer_production（优先生产代码路径） | 无 |
-
-**测试 2**: C — `main` → `curl_easy_perform`
-
-| 方面 | Atlas | CodeGraph |
-|------|-------|-----------|
-| 路径 | 跨 4 个源文件: `main → operate → curl_easy_perform` | 同路径 |
-| 断点信息 | 含 indirect hop 标记、边界信息 | 不提供 |
-| 方向控制 | 支持 incoming/outgoing/both | 仅 forward |
-
-**测试 3**: Go — `main` → `Engine` (gin 项目)
-
-| 方面 | Atlas | CodeGraph |
-|------|-------|-----------|
-| 路径 | 0 条边 — Go 索引未建立调用关系（实际有 17,540 条边但路径追踪未覆盖 main→Engine） | 找到完整调用链 |
-| 原因 | 路径追踪算法可能需要特定 scope 或索引后的额外处理步骤 | BFS 更能捕获 indirect 关系 |
-
-**小结**: 
-- 两者在直接调用路径上表现一致
-- Atlas 提供质量分数（quality + score），有助于过滤间接路径
-- CodeGraph 的 trace 内联源码，阅读体验好
-- Go 项目中 Atlas 的路径追踪在 main→Engine 上失败，说明路径算法在复杂图上可能需要调优
-
----
-
-### 9.7 文件级依赖: `atlas_dependencies` / `atlas_dependents`
-
-**测试**: TypeScript — opencode 项目的一个模块文件
-
-| 方面 | Atlas `atlas_dependencies` | CodeGraph 对应 |
-|------|---------------------------|----------------|
-| 功能 | 基于 include/import 的文件级依赖追踪 | 无直接对应 |
-| 依赖方向 | 出向（该文件导入/包含哪些文件） | 无 |
-| 被依赖 | `atlas_dependents` 逆向追踪 | 无 |
-| 文件引用 | 使用文件 ID（hex 格式） | 无 |
-
-这是 Atlas **独有的文件级依赖追踪工具**，CodeGraph 无对应功能。
-
----
-
-### 9.8 符号邻居: `atlas_neighbors`
-
-**测试 1**: TypeScript — `getUserPrompt`
-
-| 方面 | Atlas | CodeGraph |
-|------|-------|-----------|
-| 邻居数 | 26 个 | 无对应工具 |
-| 邻居类型 | 变量、函数、方法（分类显示） | — |
-| 关系类型 | 所有边种类混合 | — |
-| 遍历深度 | 支持 depth 参数 (1-3) | — |
-
-**测试 2**: C — `curl_easy_perform`
-
-| 方面 | Atlas | CodeGraph |
-|------|-------|-----------|
-| 邻居数 | 193 个 | 无对应工具 |
-| 信息丰富度 | 显示邻居符号的 name, kind, file, line | — |
-
-**小结**: `atlas_neighbors` 是 Atlas 独有的快速图遍历工具，适合在 IDE 中快速查看一个符号的周边关系。CodeGraph 无直接对应。
-
----
-
-### 9.9 符号引用: `atlas_usages`
-
-**测试**: TypeScript — `getUserPrompt`
-
-| 方面 | Atlas | CodeGraph |
-|------|-------|-----------|
-| 引用数 | 1 处引用 | 无直接对应（codegraph_impact 间接显示） |
-| 结果 | 精确的引用点（文件 + 行号 + 列号） | — |
-
-`atlas_usages` 精确查找一个符号的所有引用位置，是 Atlas 的独特能力。
-
----
-
-### 9.10 按语言的表现汇总
-
-| 工具 | TypeScript | C | Go | Python |
-|------|-----------|----|----|--------|
-| **search** (覆盖) | CodeGraph > Atlas | CodeGraph > Atlas | 未测试 | **CodeGraph >> Atlas** |
-| **search** (精确) | Atlas > CodeGraph | Atlas > CodeGraph | 未测试 | Atlas = 0 搜索结果 |
-| **symbol** | 持平 | 持平 | 未测试 | 未测试 |
-| **context** | 各有优势 | 未测试 | 未测试 | Atlas 略优 |
-| **callers/callees** | 功能对等 | 功能对等 | 未测试 | 未测试 |
-| **path/trace** | 功能对等（Atlas 有质量分数） | 功能对等 | CodeGraph > Atlas | 未测试 |
-| **callgraph/impact** | 目的不同 | 未测试 | 未测试 | 未测试 |
-| **neighbors** | Atlas 独占 | Atlas 独占 | — | — |
-| **usages** | Atlas 独占 | 未测试 | — | — |
-| **dependencies** | Atlas 独占 | 未测试 | — | — |
-
-**关键发现**: 
-- **C 语言上 Atlas 功能最完整**（边数领先、路径追踪正常、邻居工具效果最好）
-- **Cangjie 是 Atlas 独占优势**（唯一支持此语言的 MCP 代码分析工具，全部工具已验证可用）
-- **Python 是 Atlas 最大弱点**（搜索返回空，边数落后）
-- **CodeGraph 搜索跨语言一致性更好**（所有语言搜索结果模式相似）
-- **Atlas 独占工具**（`neighbors`/`usages`/`dependencies`/`dependents`）为代码分析提供了独特价值
+*（报告结束）*
