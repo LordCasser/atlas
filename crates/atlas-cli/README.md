@@ -6,15 +6,12 @@ CLI binary for Atlas. Command dispatch, logging, and integration tests.
 
 | Command | Purpose |
 |---------|---------|
-| `atlas init` | Create `.atlas/` directory and initialize SQLite schema |
-| `atlas index` | Discover and index source files |
+| `atlas` (no subcommand) | Launch interactive TUI (search, symbol detail, caller trace) |
+| `atlas index` | Auto-initialize `.atlas/` schema and index source files |
 | `atlas sync` | Incrementally update index after file changes |
 | `atlas status` | Show index statistics and project health |
 | `atlas doctor` | Check schema, SQLite, grammar, capability readiness |
 | `atlas files` | List indexed files with language and parse status |
-| `atlas search` | Search symbols (FTS5 + fuzzy) |
-| `atlas context` | Build Markdown context for a symbol |
-| `atlas trace` | Subcommands: `point`, `variable`, `caller-path` |
 | `atlas mcp` | Start MCP server (requires `mcp` feature) |
 
 ## Build features

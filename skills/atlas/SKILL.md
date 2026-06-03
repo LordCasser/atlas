@@ -33,7 +33,7 @@ A compiled Atlas binary (`atlas`) or an Atlas MCP server, plus a local source ch
 1. **Confirm the index exists**
    - CLI: `atlas status --project <repo>` or `atlas doctor --project <repo>`
    - MCP: call `project(action="status")`
-   - If no `.atlas/atlas.db`, run `atlas init --project <repo>` then `atlas index --project <repo>`, or use MCP `project(action="open", project_path="<repo>", storage="persistent")` followed by `index`
+   - If no `.atlas/atlas.db`, run `atlas index --project <repo>` (auto-initializes schema), or use MCP `project(action="open", project_path="<repo>", storage="persistent")` followed by `index`
 
 2. **Pick the narrowest query**
    - Symbol lookup: `search` → `symbol`
@@ -56,15 +56,11 @@ A compiled Atlas binary (`atlas`) or an Atlas MCP server, plus a local source ch
 ## CLI quick reference
 
 ```bash
-atlas init --project <repo>
-atlas index --project <repo>
-atlas sync --project <repo>
+atlas index --project <repo>        # auto-initializes schema + indexes
+atlas sync --project <repo>         # incremental update
 atlas status --project <repo>
 atlas doctor --project <repo>
-atlas search "UserService" --project <repo> --limit 20
-atlas context "qualified.symbol.Name" --project <repo>
-atlas trace point --project <repo> --file src/app.ts --line 12 --column 18 --json
-atlas trace variable --project <repo> --file src/app.ts --line 12 --column 18 --max-depth 30 --json
+atlas                               # launch interactive TUI (from project root)
 ```
 
 ## MCP tools

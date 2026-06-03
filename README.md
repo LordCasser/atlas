@@ -11,11 +11,11 @@
   <img src="https://img.shields.io/badge/MCP-ready-green" alt="MCP ready">
 </p>
 
-Atlas parses source code with tree-sitter, stores deterministic code facts in a local SQLite database, and exposes those facts through a CLI and an MCP server. It is built for agents that need reliable codebase context: symbol search, callers/callees, dependency edges, impact analysis, point inspection, bounded variable and caller tracing, forward call-chain queries, and C/C++ function-pointer dispatch annotations.
+Atlas parses source code with tree-sitter, stores deterministic code facts in a local SQLite database, and exposes those facts through an interactive TUI, a CLI, and an MCP server. It is built for agents and developers that need reliable codebase context: symbol search, callers/callees, dependency edges, impact analysis, point inspection, bounded variable and caller tracing, forward call-chain queries, and C/C++ function-pointer dispatch annotations.
 
 ```text
-source code ──parse/extract──▶ .atlas/atlas.db ──query──▶ CLI / MCP tools
-            tree-sitter facts     SQLite source of truth      agent context
+source code ──parse/extract──▶ .atlas/atlas.db ──query──▶ TUI / CLI / MCP
+            tree-sitter facts     SQLite source of truth      agent & developer context
 ```
 
 ## Table of contents
@@ -37,6 +37,7 @@ source code ──parse/extract──▶ .atlas/atlas.db ──query──▶ CL
 - **Local-first**: writes all index data to `<project>/.atlas/atlas.db`; no cloud service required.
 - **Deterministic extraction**: tree-sitter AST queries and stable blake3-based IDs instead of model guesses.
 - **Incremental sync**: content-hash based dirty-file detection with Git-aware file discovery.
+- **Interactive TUI**: keyboard-driven terminal UI with symbol search, detail view (Overview / Callers / Callees / Source tabs), and caller trace — launched via bare `atlas` with auto-indexing on empty databases.
 - **Agent-native MCP**: stdio MCP server exposing 18 bounded tools for search, graph, dependencies, trace, semantic analysis, background tasks, and project management.
 - **Graph + trace queries**: callers, callees, shortest path, impact, source-position lookup, variable origin tracing, and caller-path tracing.
 - **Explicit capability boundaries**: language capability metadata and trace diagnostics report partial results instead of silently overclaiming precision.
@@ -68,19 +69,19 @@ cargo install --path crates/atlas-cli --features "all-languages,mcp"
 
 ```bash
 # Run from your project root
-# Auto initialize the SQLite schema and build the index
+
+# Auto-initialize the SQLite schema and build the index
 atlas index
 
-# Inspect index health and database statistics
+# Check project health
 atlas status
 atlas doctor
 
-# Query symbols and context
-atlas search "UserService"
-atlas context "my.module.UserService"
+# Launch the interactive TUI (search, symbol detail, caller trace)
+atlas
 ```
 
-Non-MCP CLI commands accept `--project <path>` when running from outside the
+All commands accept `--project <path>` when running from outside the
 project directory (supports both relative and absolute paths). The MCP server
 uses the client's current working directory.
 
@@ -88,37 +89,23 @@ uses the client's current working directory.
 
 | Command | Purpose |
 | --- | --- |
-| `atlas init` | Create `.atlas/` and initialize the database schema. |
-| `atlas index` | Discover and index source files. Supports `--include` and `--exclude` globs. |
-| `atlas sync` | Incrementally update the index after file changes. |
+| `atlas` (no subcommand) | Launch the interactive TUI: symbol search, detail view (Overview/Callers/Callees/Source), and caller trace. Auto-indexes on first run. |
+| `atlas index` | Auto-initialize `.atlas/` schema, then discover and index source files. Supports `--include`, `--exclude`, `--scope`, and `--analysis` (manifest \| structural \| full). |
+| `atlas sync` | Incrementally update the index after file changes. Supports `--analysis`. |
 | `atlas status` | Show file, symbol, edge, database, and capability statistics. |
 | `atlas doctor` | Check schema, SQLite/FTS5, grammar, and capability readiness. |
 | `atlas files` | List indexed files with language and parse status. |
-| `atlas search <query>` | Search symbols with FTS5, LIKE fallback, fuzzy prefix matching, kind/language filters, and optional JSON output. |
-| `atlas context <symbol>` | Build Markdown context around a symbol: callers, callees, imports, and file peers. |
-| `atlas trace point` | Resolve a source position to references, symbols, scopes, bindings, and nearby dataflow facts. |
-| `atlas trace variable` | Walk backward through dataflow edges from a source position to value origins. |
-| `atlas trace caller-path` | Walk backward through call edges to find a caller chain for a function. |
 | `atlas mcp` | Start the stdio MCP server. Requires the `mcp` Cargo feature. |
-
-Examples:
-
-```bash
-atlas search "kind:function lang:typescript handle*" --limit 20
-atlas files
-atlas trace point --file src/app.ts --line 12 --column 18 --json
-atlas trace variable --file src/app.ts --line 12 --column 18 --max-depth 30 --json
-```
 
 ## MCP server
 
-Start the server after indexing the target project:
+The MCP server auto-initializes the database when starting from a fresh project,
+so you only need to ensure files are indexed:
 
 ```bash
 # From your project root:
-atlas init
-atlas index
-atlas mcp
+atlas index    # (first time) OR atlas sync (incremental)
+atlas mcp      # auto-creates .atlas/ if missing
 ```
 
 > MCP reads an existing `.atlas/atlas.db`. Re-run `atlas sync` or `atlas index` after code changes.
@@ -204,12 +191,12 @@ Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/tra
 
 ## Architecture
 
-Atlas is a Rust workspace with 14 Cargo packages. The public entry points are `atlas-cli`, `atlas-mcp`, and the `atlas-engine` facade. Engine internals are split by responsibility so extraction, persistence, graph construction, search, context, and trace can evolve independently.
+Atlas is a Rust workspace with 15 Cargo packages. The public entry points are `atlas-cli` (CLI + TUI), `atlas-mcp`, and the `atlas-engine` facade. Engine internals are split by responsibility so extraction, persistence, graph construction, search, context, and trace can evolve independently.
 
 ```text
 atlas/
 ├── crates/
-│   ├── atlas-cli                 # CLI binary, command dispatch, logging, integration tests
+│   ├── atlas-cli                 # CLI binary + TUI (ratatui) + command dispatch
 │   ├── atlas-mcp                 # stdio MCP server powered by rmcp + Atlas tool router
 │   └── atlas-engine              # public facade crate re-exporting core APIs
 │       └── crates/
@@ -245,7 +232,7 @@ atlas/
 5. Build graph
    └─ resolved refs and callsites become symbol_edges; GraphSnapshot accelerates read-only traversal
 6. Serve queries
-   └─ CLI commands and MCP tools call SearchEngine, GraphEngine, ContextBuilder, and TraceEngine
+   └─ TUI, CLI commands, and MCP tools call SearchEngine, GraphEngine, ContextBuilder, and TraceEngine
 ```
 
 ### Dependency direction

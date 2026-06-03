@@ -10,10 +10,9 @@ cargo build --release -p atlas-cli --features "all-languages,mcp"
 
 > `all-languages` includes TypeScript, JavaScript, Python, Java, C, C++, Go, C#, Rust, PHP, Ruby, Kotlin, ArkTS, and Cangjie.
 
-Initialize and index a project before starting MCP:
+Initialize and index a project before starting MCP (`atlas index` auto-initializes the schema):
 
 ```bash
-atlas init --project /path/to/project
 atlas index --project /path/to/project
 cd /path/to/project
 atlas mcp
@@ -96,7 +95,7 @@ When `partial_result` is true or diagnostics are non-empty, summarize the eviden
 
 ## Troubleshooting
 
-- **No database**: run `atlas init` and `atlas index` for the project.
+- **No database**: run `atlas index` for the project (auto-initializes schema).
 - **Stale result**: run `atlas sync`; restart MCP only if the client does not reconnect or refresh its server process.
 - **No symbol found**: retry `search` with shorter names, no kind filter, or larger `limit`.
 - **Trace is empty**: check `project(action="status")` and trace capability metadata; the language or construct may have a documented limitation.

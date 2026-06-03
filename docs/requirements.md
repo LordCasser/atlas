@@ -246,16 +246,11 @@ MCP 使用 JSON-RPC over stdio。V1 核心公开工具名使用无 `atlas_` 前�
 
 核心命令：
 
-- `atlas init`
-- `atlas index`
-- `atlas sync`
-- `atlas search`
-- `atlas status`
-- `atlas files`
-- `atlas context`
-- `atlas mcp`
-- `atlas doctor`
-- `atlas trace` where analysis feature is available
+- `atlas index` (auto-init schema) / `atlas sync` (incremental)
+- `atlas status` / `atlas doctor` / `atlas files`
+- `atlas mcp` (MCP server, 18 tools)
+- `atlas` (no subcommand: launch interactive TUI with search/detail/trace)
+- Search, context, and trace: via TUI or MCP `search`/`symbol`/`trace` tools
 
 ## 5. 非功能需求
 
@@ -271,7 +266,7 @@ MVP 完成标准：
 
 1. 全部 14 种语言能进入解析路径，均达到 DataflowFull 级别；Cangjie 已提升至 DataflowFull。
 2. `atlas index` 能生成 `.atlas/atlas.db`（Schema V1）。
-3. `atlas search` 能检索符号。
+3. TUI / MCP `search` 工具能检索符号。
 4. CLI 或 MCP 能查询基本 callers/callees。
 5. 所有语言 import/include resolution 可用。
 6. C/C++ include-aware best-effort resolution 可用。

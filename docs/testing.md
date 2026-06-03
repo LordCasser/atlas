@@ -50,7 +50,7 @@
 
 ### 2.4 CLI 测试
 
-适用范围：`atlas init/index/sync/search/status/files/context/trace/doctor`。
+适用范围：`atlas index/sync/status/files/doctor` CLI 命令。
 
 要求：
 - 对用户可见能力，至少要有一个真实临时项目测试实际命令路径。
