@@ -162,7 +162,7 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
             ],
             return_kinds: &["jump_expression"],
             throw_kinds: &[],
-            stmt_kinds: &["property_declaration", "assignment", "variable_declaration"],
+            stmt_kinds: &["property_declaration", "assignment", "variable_declaration", "call_expression"],
         },
         Language::Cangjie => CfgLanguageConfig {
             block_kinds: &["block"],
@@ -171,6 +171,14 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
             return_kinds: &["jumpExpression"], // jumpExpression covers return/break/continue
             throw_kinds: &[],
             stmt_kinds: &["variableDeclaration", "expressionStatement"],
+        },
+        Language::Ruby => CfgLanguageConfig {
+            block_kinds: &["body_statement"],
+            if_kinds: &["if", "unless", "elsif"],
+            loop_kinds: &["while", "until", "for"],
+            return_kinds: &["return"],
+            throw_kinds: &["raise"],
+            stmt_kinds: &["call", "assignment", "break", "next"],
         },
         _ => CfgLanguageConfig {
             // Default: TS/JS config (best-effort for unknown languages)
@@ -216,6 +224,11 @@ struct CfgContext<'a> {
     /// Pending call-site context for the next emitted statement node
     /// (Python with, Go go/defer, etc.).
     pending_call_context: CallContext,
+    /// Persistent scope-level call context (applies to ALL nodes until reset).
+    /// Used for React cleanup arrow bodies where every statement
+    /// shares the same context.  When `pending_call_context` is `None`,
+    /// `add_node` falls back to this value.
+    scope_call_context: CallContext,
 }
 
 impl CfgBuilder {
@@ -229,6 +242,17 @@ impl CfgBuilder {
         source_bytes: &[u8],
     ) -> CfgResult {
         let config = cfg_config(language);
+
+        // Detect React cleanup arrow: an arrow_function that is the direct
+        // child of a return_statement (e.g., `return () => cleanup()`).
+        // When true, all CFG nodes inside this function inherit
+        // ReactEffectCleanup context so compose_effects marks their
+        // Free effects as Deferred.
+        let is_cleanup_return = function_node
+            .parent()
+            .map(|p| p.kind() == "return_statement")
+            .unwrap_or(false);
+
         let mut ctx = CfgContext {
             function_id: *function_id,
             nodes: Vec::new(),
@@ -238,6 +262,11 @@ impl CfgBuilder {
             language,
             config,
             pending_call_context: CallContext::None,
+            scope_call_context: if is_cleanup_return {
+                CallContext::ReactEffectCleanup
+            } else {
+                CallContext::None
+            },
         };
 
         // 1. Create Entry node
@@ -333,8 +362,13 @@ impl CfgContext<'_> {
             }
         };
         let mut node = CfgNode::new(&self.function_id, kind, range);
-        node.call_context = self.pending_call_context;
-        self.pending_call_context = CallContext::None;
+        node.call_context = if self.pending_call_context != CallContext::None {
+            let ctx = self.pending_call_context;
+            self.pending_call_context = CallContext::None;
+            ctx
+        } else {
+            self.scope_call_context
+        };
         let id = node.id;
         self.nodes.push(node);
         id
@@ -351,6 +385,89 @@ impl CfgContext<'_> {
 
     fn is_c_or_cpp(&self) -> bool {
         matches!(self.language, Language::C | Language::Cpp)
+    }
+
+    fn is_ruby(&self) -> bool {
+        matches!(self.language, Language::Ruby)
+    }
+
+    fn is_kotlin(&self) -> bool {
+        matches!(self.language, Language::Kotlin)
+    }
+
+    /// Check whether a `call` node has a `block` or `do_block` child.
+    fn has_block_child(&self, call_node: &Node) -> bool {
+        let mut cursor = call_node.walk();
+        call_node
+            .named_children(&mut cursor)
+            .any(|c| c.kind() == "do_block" || c.kind() == "block")
+    }
+
+    /// Check whether a `call_expression` node has a `lambda_literal` child
+    /// (indicating a trailing lambda like `.use { ... }`).
+    /// Search recursively for a `lambda_literal` descendant of the given node.
+    /// In Kotlin tree-sitter, trailing lambdas are nested inside `call_suffix`,
+    /// not as direct children of `call_expression`.
+    fn find_lambda_literal<'a>(&self, node: &Node<'a>) -> Option<Node<'a>> {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "lambda_literal" {
+                return Some(child);
+            }
+            if child.child_count() > 0 {
+                if let Some(found) = self.find_lambda_literal(&child) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
+    fn has_lambda_child(&self, call_node: &Node) -> bool {
+        self.find_lambda_literal(call_node).is_some()
+    }
+
+    /// Check whether a Kotlin `call_expression`'s callee name ends with `.use`.
+    /// Scans named children (skipping `call_suffix` children) and checks if any
+    /// child's text ends with `.use`. This avoids matching `list.map { }`,
+    /// `run { }`, etc.
+    fn is_kotlin_use_call(&self, call_node: &Node) -> bool {
+        let mut cursor = call_node.walk();
+        for child in call_node.named_children(&mut cursor) {
+            if child.kind() == "call_suffix" {
+                continue;
+            }
+            if let Ok(text) = child.utf8_text(self.source) {
+                if text.ends_with(".use") {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Check whether a Ruby `call` node's callee name matches a known
+    /// resource-managing method (e.g. `File.open`, `Dir.chdir`).
+    /// Filters out non-resource block calls like `[1,2,3].map { }`,
+    /// `5.times { }`, `users.each { }`.
+    fn is_ruby_resource_block_call(&self, call_node: &Node) -> bool {
+        if let Some(name) = self.extract_callee_name(call_node) {
+            matches!(
+                name.as_str(),
+                "File.open" | "File.new" | "IO.open" | "IO.new" | "open"
+                | "Tempfile.create" | "Dir.chdir" | "Dir.open" | "Dir.new"
+                | "TCPServer.new" | "UDPSocket.new"
+            )
+        } else {
+            // Fallback: scan node text for known patterns
+            if let Ok(text) = call_node.utf8_text(self.source) {
+                text.starts_with("File.open") || text.starts_with("File.new")
+                    || text.starts_with("IO.open") || text.starts_with("IO.new")
+                    || text.starts_with("open(")
+            } else {
+                false
+            }
+        }
     }
 
     /// Infer the effect of a C/C++ CFG node. Returns (effect_kind, target_field).
@@ -580,10 +697,86 @@ impl CfgContext<'_> {
                 i = self.walk_loop(&children, i, stmt_range.start_byte);
             } else if self.config.return_kinds.contains(&kind) {
                 self.emit_stmt(CfgNodeKind::Return, stmt_range.start_byte, &stmt);
+                // React cleanup return: `return () => { ... }` or `return () => expr`
+                // Walk the arrow body with ReactEffectCleanup scope context, so
+                // frees inside the cleanup callback get Deferred consumption style.
+                let mut return_cursor = stmt.walk();
+                for child in stmt.named_children(&mut return_cursor) {
+                    if child.kind() == "arrow_function" {
+                        self.walk_react_cleanup_arrow(&child, stmt_range.start_byte);
+                        break;
+                    }
+                }
                 i += 1;
             } else if self.config.throw_kinds.contains(&kind) {
                 self.emit_stmt(CfgNodeKind::Throw, stmt_range.start_byte, &stmt);
                 i += 1;
+            } else if self.is_ruby()
+                && kind == "call"
+                && self.has_block_child(&stmt)
+                && self.is_ruby_resource_block_call(&stmt)
+            {
+                // Ruby block-managed resource: File.open(...) { |f| ... }
+                // Set RubyBlock context, walk the call (Alloc), walk the block body,
+                // and emit BlockExit for scope-exit auto-free.
+                self.pending_call_context = CallContext::RubyBlock;
+                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
+
+                // Walk the block body (find do_block/block child → body_statement)
+                let mut child_cursor = stmt.walk();
+                for child in stmt.named_children(&mut child_cursor) {
+                    if child.kind() == "do_block" || child.kind() == "block" {
+                        if let Some(body) = find_function_body(child, self.config.block_kinds) {
+                            self.walk_block(body, stmt_range.start_byte);
+                        } else {
+                            // Fallback: walk the block node directly
+                            self.walk_block(child, stmt_range.start_byte);
+                        }
+                        break;
+                    }
+                }
+
+                // Emit BlockExit node (zero-length range at end of block call)
+                let block_exit_id =
+                    self.add_node(CfgNodeKind::BlockExit, stmt.end_byte() as u32, None);
+                if let Some(last_id) = self.prev_node_id.take() {
+                    self.add_edge(&last_id, &block_exit_id, CfgEdgeKind::Normal);
+                }
+                self.prev_node_id = Some(block_exit_id);
+
+                i += 1;
+                continue;
+            } else if self.is_kotlin()
+                && kind == "call_expression"
+                && self.has_lambda_child(&stmt)
+                && self.is_kotlin_use_call(&stmt)
+            {
+                // Kotlin `.use {}` block-managed resource: File(...).use { ... }
+                // Set KotlinUse context, walk the call (Alloc), walk the lambda body,
+                // and emit BlockExit for scope-exit auto-free.
+                self.pending_call_context = CallContext::KotlinUse;
+                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
+
+                // Walk the lambda body (recursively find lambda_literal → function_body/statements)
+                if let Some(lambda) = self.find_lambda_literal(&stmt) {
+                    if let Some(body) = find_function_body(lambda, self.config.block_kinds) {
+                        self.walk_block(body, stmt_range.start_byte);
+                    } else {
+                        // Fallback: walk the lambda node directly
+                        self.walk_block(lambda, stmt_range.start_byte);
+                    }
+                }
+
+                // Emit BlockExit node (zero-length range at end of `.use {}` block)
+                let block_exit_id =
+                    self.add_node(CfgNodeKind::BlockExit, stmt.end_byte() as u32, None);
+                if let Some(last_id) = self.prev_node_id.take() {
+                    self.add_edge(&last_id, &block_exit_id, CfgEdgeKind::Normal);
+                }
+                self.prev_node_id = Some(block_exit_id);
+
+                i += 1;
+                continue;
             } else if self.config.stmt_kinds.contains(&kind) {
                 self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
                 i += 1;
@@ -593,6 +786,12 @@ impl CfgContext<'_> {
                 i += 1;
             } else if kind == "statement_list" {
                 // Go block wrapper: recurse through statement_list body
+                self.walk_block(stmt, stmt_range.start_byte);
+                i += 1;
+            } else if self.is_kotlin() && kind == "statements" {
+                // Kotlin block wrapper: function_body contains a `statements`
+                // group that wraps the actual call_expression/property_declaration
+                // children. Recurse through to process them.
                 self.walk_block(stmt, stmt_range.start_byte);
                 i += 1;
             } else if kind == "expression_statement" {
@@ -976,6 +1175,40 @@ impl CfgContext<'_> {
             self.emit_stmt(CfgNodeKind::Statement, start_byte, inner);
         }
     }
+
+    /// Walk the body of a React cleanup arrow function with
+    /// `ReactEffectCleanup` scope context.  All CFG nodes generated inside
+    /// the body will inherit this context so that `compose_effects` can mark
+    /// their `Free` effects as `Deferred`.
+    ///
+    /// Arrow bodies are walked disconnected from the parent CFG chain —
+    /// `prev_node_id` is saved/restored so the cleanup nodes form their own
+    /// isolated subgraph.
+    fn walk_react_cleanup_arrow(&mut self, arrow_fn: &Node, start_byte: u32) {
+        let saved_prev = self.prev_node_id;
+        let saved_scope = self.scope_call_context;
+        self.scope_call_context = CallContext::ReactEffectCleanup;
+
+        // Find the arrow function body (skip formal_parameters).
+        let body = find_function_body(*arrow_fn, self.config.block_kinds);
+        if let Some(body_node) = body {
+            if self.config.block_kinds.contains(&body_node.kind()) {
+                // Block body `{ ... }` — walk each statement.
+                // Start with no prev_node_id so these nodes are
+                // disconnected from the parent chain (they sit after a
+                // Return, which terminates the parent path).
+                self.prev_node_id = None;
+                self.walk_block(body_node, start_byte);
+            } else {
+                // Expression body `expr` — emit as single statement.
+                self.prev_node_id = None;
+                self.emit_stmt(CfgNodeKind::Statement, start_byte, &body_node);
+            }
+        }
+
+        self.scope_call_context = saved_scope;
+        self.prev_node_id = saved_prev;
+    }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -1105,6 +1338,8 @@ const FUNCTION_NODE_KINDS: &[&str] = &[
     "method_declaration",
     "constructor_declaration",
     "function_item", // tree-sitter-rust
+    "method", // tree-sitter-ruby
+    "singleton_method", // tree-sitter-ruby
 ];
 
 /// Build per-function control-flow graphs by matching function symbols

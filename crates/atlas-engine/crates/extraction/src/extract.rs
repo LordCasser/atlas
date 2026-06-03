@@ -724,7 +724,7 @@ pub fn extract_file_with_mode_cancellable(
         budget_exceeded,
         lexical_failed,
         dataflow_failed,
-        layer: if matches!(mode, ExtractionMode::LazyDataflow { .. }) {
+        layer: if mode.produces_dataflow() {
             "dataflow"
         } else {
             "structural"
@@ -1886,6 +1886,61 @@ int main() {
         assert!(
             facts_lazy.symbols.is_empty(),
             "LazyDataflow mode should clear structural fields"
+        );
+    }
+
+    /// Regression: Full mode produces layer "dataflow" (not "structural").
+    ///
+    /// Bug: the layer decision only matched `LazyDataflow` before the fix.
+    /// After using `produces_dataflow()`, Full mode correctly returns "dataflow".
+    #[test]
+    #[cfg(feature = "typescript")]
+    fn full_mode_layer_is_dataflow() {
+        let frontend = ts_frontend();
+        let source = "let x = 1;\n";
+        let file_id = FileId::generate("test_full_layer.ts");
+        let path = std::path::Path::new("test_full_layer.ts");
+
+        let facts = extract_file_with_mode(
+            &frontend,
+            file_id,
+            path,
+            source,
+            "abc",
+            ExtractionMode::Full,
+        )
+        .unwrap();
+
+        assert_eq!(
+            facts.layer, "dataflow",
+            "Full mode must have layer 'dataflow'"
+        );
+    }
+
+    /// Regression: Structural mode produces layer "structural".
+    ///
+    /// Complements `full_mode_layer_is_dataflow` to verify the non-dataflow path.
+    #[test]
+    #[cfg(feature = "typescript")]
+    fn structural_mode_layer_is_structural() {
+        let frontend = ts_frontend();
+        let source = "let x = 1;\n";
+        let file_id = FileId::generate("test_structural_layer.ts");
+        let path = std::path::Path::new("test_structural_layer.ts");
+
+        let facts = extract_file_with_mode(
+            &frontend,
+            file_id,
+            path,
+            source,
+            "abc",
+            ExtractionMode::Structural,
+        )
+        .unwrap();
+
+        assert_eq!(
+            facts.layer, "structural",
+            "Structural mode must have layer 'structural'"
         );
     }
 }

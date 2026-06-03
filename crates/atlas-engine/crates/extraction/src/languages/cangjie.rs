@@ -891,8 +891,8 @@ mod tests {
         );
         assert!(
             cap.supported_features
-                .contains(&"local_dataflow".to_string()),
-            "should list local_dataflow as supported, got: {:?}",
+                .contains(&"intra_statement_dataflow".to_string()),
+            "should list intra_statement_dataflow as supported, got: {:?}",
             cap.supported_features
         );
     }

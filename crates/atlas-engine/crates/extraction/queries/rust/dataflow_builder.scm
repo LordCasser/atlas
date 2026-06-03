@@ -46,6 +46,10 @@
 (call_expression
   function: (identifier) @df.call_target)
 
+;; --- Qualified calls: Path::to::func(args) ---
+(call_expression
+  function: (scoped_identifier) @df.call_target)
+
 ;; --- Method calls: obj.method(args) ---
 (call_expression
   function: (field_expression

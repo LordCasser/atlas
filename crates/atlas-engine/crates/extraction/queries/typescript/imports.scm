@@ -33,7 +33,44 @@
   (export_specifier
     alias: (identifier) @export.alias))
 
-; Standalone export — marks a symbol as exported but no re-export chain:
+; ── CommonJS require imports ───────────────────────────────────────
+
+; const / let / var x = require('./foo')
+(variable_declarator
+  name: (identifier) @import.require_name
+  value: (call_expression
+    function: (identifier) @_require_fn
+    arguments: (arguments (string) @import.require_module))
+  (#eq? @_require_fn "require"))
+
+; Bare require('./foo') without assignment (side-effect import)
+(expression_statement
+  (call_expression
+    function: (identifier) @_require_fn2
+    arguments: (arguments (string) @import.require_module))
+  (#eq? @_require_fn2 "require"))
+
+; ── CommonJS module.exports / exports.foo ──────────────────────────
+
+; module.exports = expr
+(expression_statement
+  (assignment_expression
+    left: (member_expression
+      object: (identifier) @_cjs_mod
+      property: (property_identifier) @_cjs_mod_prop)
+    right: (identifier) @export.cjs_default)
+  (#eq? @_cjs_mod "module")
+  (#eq? @_cjs_mod_prop "exports"))
+
+; exports.foo = expr
+(expression_statement
+  (assignment_expression
+    left: (member_expression
+      object: (identifier) @_cjs_exports
+      property: (property_identifier) @export.cjs_name))
+  (#eq? @_cjs_exports "exports"))
+
+; ── Standalone export ───────────────────────────────────────────────
 ; `export const x = 1` / `export function f() {}` / `export default class C {}`
 ; These are already handled by the `exported` flag on SymbolDef.
 ; No separate query needed.

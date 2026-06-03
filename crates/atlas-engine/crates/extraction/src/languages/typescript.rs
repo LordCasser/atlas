@@ -828,6 +828,19 @@ fn ts_import_info(
             let module = extract_module_from_ancestor(node, source);
             Some((ImportKind::Import, module, name))
         }
+        // ── CommonJS require ───────────────────────────────────────────
+        "import.require_module" => {
+            let module_path = node_text(node, source)?;
+            let cleaned = module_path
+                .trim_matches(|c| c == '"' || c == '\'')
+                .to_string();
+            Some((ImportKind::Import, cleaned, String::new()))
+        }
+        "import.require_name" => {
+            let name = node_text(node, source)?;
+            let module = extract_require_module_from_variable_declarator(node, source);
+            Some((ImportKind::Import, module, name))
+        }
         // ── Barrel re-exports ──────────────────────────────────────────
         "export.module" => {
             let module_path = node_text(node, source)?;
@@ -842,6 +855,17 @@ fn ts_import_info(
             // Walk up to the enclosing export_statement to find the module source
             let module = extract_export_module_from_ancestor(node, source);
             Some((ImportKind::ExportFrom, module, name))
+        }
+        // ── CommonJS exports ────────────────────────────────────────────
+        // module.exports = x  → default export, self-referential (no module)
+        "export.cjs_default" => {
+            let name = node_text(node, source)?;
+            Some((ImportKind::ExportFrom, String::new(), name))
+        }
+        // exports.foo = x  → named export, self-referential
+        "export.cjs_name" => {
+            let name = node_text(node, source)?;
+            Some((ImportKind::ExportFrom, String::new(), name))
         }
         _ => None,
     }
@@ -882,6 +906,42 @@ fn extract_export_module_from_ancestor(node: tree_sitter::Node, source: &str) ->
             break;
         }
         current = parent;
+    }
+    String::new()
+}
+
+/// Walk up from a node inside a `variable_declarator` whose value is a
+/// `require()` call to find the module path (the first string argument).
+fn extract_require_module_from_variable_declarator(
+    node: tree_sitter::Node,
+    source: &str,
+) -> String {
+    // The node is an `identifier` (the variable name). Walk up to the
+    // enclosing `variable_declarator`, then descend into value → call_expression
+    // → arguments → string.
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "variable_declarator" {
+            if let Some(value) = parent.child_by_field_name("value") {
+                if let Some(args) = value.child_by_field_name("arguments") {
+                    // Find the first string child of the arguments node
+                    let count = args.child_count();
+                    for i in 0..count {
+                        if let Some(child) = args.child(i as u32) {
+                            if child.kind() == "string" {
+                                if let Some(text) = node_text(child, source) {
+                                    return text
+                                        .trim_matches(|c| c == '"' || c == '\'')
+                                        .to_string();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        current = parent.parent();
     }
     String::new()
 }
@@ -1087,5 +1147,244 @@ export { add as plus } from './math';
         }
         assert!(found_export_module, "should capture `export * from` module");
         assert!(found_export_name, "should capture named re-export");
+    }
+
+    /// Verify that CommonJS `require()` patterns are captured as imports.
+    #[test]
+    fn test_cjs_require_extraction() {
+        use tree_sitter::StreamingIterator;
+
+        let spec = TypeScriptFrontendSpec;
+        let ts_lang = spec.tree_sitter_language();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+
+        let source = r#"
+const fs = require('fs');
+let path = require("path");
+require('./side-effect');
+"#;
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        let bytes = source.as_bytes();
+
+        let query = tree_sitter::Query::new(&ts_lang, spec.import_query())
+            .expect("import query (with CJS patterns) must compile");
+        let capture_names: Vec<String> = query
+            .capture_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut captures = cursor.captures(&query, root, bytes);
+        let mut require_modules = Vec::new();
+        let mut require_names = Vec::new();
+
+        while let Some((m, capture_index)) = captures.next() {
+            if let Some(cap) = m.captures.get(*capture_index) {
+                let name = &capture_names[cap.index as usize];
+                match name.as_str() {
+                    "import.require_module" => {
+                        let text = cap.node.utf8_text(bytes).unwrap();
+                        require_modules.push(text.to_string());
+                    }
+                    "import.require_name" => {
+                        let text = cap.node.utf8_text(bytes).unwrap();
+                        require_names.push(text.to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // Module paths: 'fs', "path", './side-effect'
+        assert!(
+            require_modules.iter().any(|m| m.contains("fs")),
+            "should capture require('fs') module path"
+        );
+        assert!(
+            require_modules.iter().any(|m| m.contains("path")),
+            "should capture require(\"path\") module path"
+        );
+        assert!(
+            require_modules.iter().any(|m| m.contains("side-effect")),
+            "should capture bare require('./side-effect') module path"
+        );
+        // Variable names from assigned requires: 'fs', 'path'
+        assert!(require_names.contains(&"fs".to_string()), "should capture 'fs' variable name");
+        assert!(require_names.contains(&"path".to_string()), "should capture 'path' variable name");
+    }
+
+    /// Verify that CommonJS `require()` captures normalize into correct
+    /// ImportDef entries.
+    #[test]
+    fn test_cjs_require_normalize() {
+        use tree_sitter::StreamingIterator;
+
+        let spec = TypeScriptFrontendSpec;
+        let ts_lang = spec.tree_sitter_language();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+
+        let source = "const helper = require('./helper');";
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        let bytes = source.as_bytes();
+
+        let query = tree_sitter::Query::new(&ts_lang, spec.import_query())
+            .expect("import query must compile");
+        let capture_names: Vec<String> = query
+            .capture_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let file_id = FileId::generate("test.js");
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut captures = cursor.captures(&query, root, bytes);
+        let mut imports = Vec::new();
+
+        while let Some((m, capture_index)) = captures.next() {
+            if let Some(cap) = m.captures.get(*capture_index) {
+                let capture_name = &capture_names[cap.index as usize];
+                if let Some(import_def) = normalize_ts_import(
+                    capture_name,
+                    cap.node,
+                    source,
+                    file_id,
+                ) {
+                    imports.push(import_def);
+                }
+            }
+        }
+        // Should produce at least one ImportDef for the require
+        assert!(!imports.is_empty(), "should produce ImportDef for require()");
+        // Find the require_module-derived ImportDef (with module path)
+        let module_import = imports
+            .iter()
+            .find(|i| i.module == "./helper")
+            .expect("should have an import with module './helper'");
+        assert_eq!(module_import.kind, ImportKind::Import);
+        assert!(module_import.is_relative, "require('./helper') should be relative");
+        // Find the require_name-derived ImportDef (with variable name)
+        let name_import = imports
+            .iter()
+            .find(|i| i.imported_name == "helper")
+            .expect("should have an import with imported_name 'helper'");
+        assert_eq!(name_import.kind, ImportKind::Import);
+        assert_eq!(name_import.module, "./helper");
+    }
+
+    /// Verify that CommonJS `module.exports` and `exports.foo` patterns are
+    /// captured as export-related imports.
+    #[test]
+    fn test_cjs_exports_extraction() {
+        use tree_sitter::StreamingIterator;
+
+        let spec = TypeScriptFrontendSpec;
+        let ts_lang = spec.tree_sitter_language();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+
+        let source = r#"
+module.exports = main;
+exports.helper = helperFn;
+"#;
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        let bytes = source.as_bytes();
+
+        let query = tree_sitter::Query::new(&ts_lang, spec.import_query())
+            .expect("import query (with CJS export patterns) must compile");
+        let capture_names: Vec<String> = query
+            .capture_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut captures = cursor.captures(&query, root, bytes);
+        let mut cjs_defaults = Vec::new();
+        let mut cjs_names = Vec::new();
+
+        while let Some((m, capture_index)) = captures.next() {
+            if let Some(cap) = m.captures.get(*capture_index) {
+                let name = &capture_names[cap.index as usize];
+                match name.as_str() {
+                    "export.cjs_default" => {
+                        let text = cap.node.utf8_text(bytes).unwrap();
+                        cjs_defaults.push(text.to_string());
+                    }
+                    "export.cjs_name" => {
+                        let text = cap.node.utf8_text(bytes).unwrap();
+                        cjs_names.push(text.to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(cjs_defaults.contains(&"main".to_string()), "should capture module.exports = main");
+        assert!(cjs_names.contains(&"helper".to_string()), "should capture exports.helper = helperFn");
+    }
+
+    /// Verify that CJS export captures normalize into correct ImportDef entries.
+    #[test]
+    fn test_cjs_exports_normalize() {
+        use tree_sitter::StreamingIterator;
+
+        let spec = TypeScriptFrontendSpec;
+        let ts_lang = spec.tree_sitter_language();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+
+        let source = r#"
+module.exports = handler;
+exports.util = doUtil;
+"#;
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        let bytes = source.as_bytes();
+
+        let query = tree_sitter::Query::new(&ts_lang, spec.import_query())
+            .expect("import query must compile");
+        let capture_names: Vec<String> = query
+            .capture_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let file_id = FileId::generate("test.cjs");
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut captures = cursor.captures(&query, root, bytes);
+        let mut imports = Vec::new();
+
+        while let Some((m, capture_index)) = captures.next() {
+            if let Some(cap) = m.captures.get(*capture_index) {
+                let capture_name = &capture_names[cap.index as usize];
+                if let Some(import_def) = normalize_ts_import(
+                    capture_name,
+                    cap.node,
+                    source,
+                    file_id,
+                ) {
+                    imports.push(import_def);
+                }
+            }
+        }
+        assert!(!imports.is_empty(), "should produce ImportDef for CJS exports");
+
+        // module.exports → export.cjs_default with imported_name = "handler"
+        let default_export = imports
+            .iter()
+            .find(|i| i.imported_name == "handler" && i.kind == ImportKind::ExportFrom)
+            .expect("should have ExportFrom for module.exports = handler");
+        assert!(default_export.module.is_empty(), "cjs default export has no source module");
+
+        // exports.util → export.cjs_name with imported_name = "util"
+        let named_export = imports
+            .iter()
+            .find(|i| i.imported_name == "util" && i.kind == ImportKind::ExportFrom)
+            .expect("should have ExportFrom for exports.util = doUtil");
+        assert!(named_export.module.is_empty(), "cjs named export has no source module");
     }
 }

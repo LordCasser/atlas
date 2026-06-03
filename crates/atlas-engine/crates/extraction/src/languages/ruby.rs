@@ -592,34 +592,56 @@ fn normalize_ruby_dataflow_builder(
                 None,
             )
         }
-        "df.call_target" => node_text(node, source)
-            .map(|name| {
-                let access_path = name.clone();
-                let callsite_id = find_call_expression_ruby(node).map(|ce| {
-                    types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+        "df.call_target" => {
+            // The captured node is the `identifier` child of a `call` node.
+            // Walk up to the parent `call` node and check for a `receiver`
+            // to build a qualified name (e.g. "File.open").
+            let terminal_text = node_text(node, source).unwrap_or_default();
+            let (name, access_path) = node
+                .parent()
+                .filter(|p| p.kind() == "call")
+                .and_then(|call_node| {
+                    // Find the receiver text from the call node
+                    let mut cursor = call_node.walk();
+                    let receiver_text = call_node
+                        .named_children(&mut cursor)
+                        .find(|c| c.kind() == "constant" || c.kind() == "identifier"
+                            || c.kind() == "instance_variable" || c.kind() == "class_variable"
+                            || c.kind() == "global_variable")
+                        .and_then(|r| node_text(r, source));
+                    receiver_text.map(|recv| {
+                        let qualified = format!("{}.{}", recv, terminal_text);
+                        (qualified.clone(), qualified)
+                    })
+                })
+                .unwrap_or_else(|| {
+                    let t = terminal_text.clone();
+                    (t.clone(), t)
                 });
-                let node_id = DataNodeId::generate(
-                    &file_id,
-                    None::<&SymbolId>,
-                    "call_target",
-                    Some(&name),
-                    Some(&access_path),
-                    range.start_byte,
-                );
-                (
-                    Some(DataNode::call_target(
-                        node_id,
-                        file_id,
-                        None,
-                        callsite_id,
-                        &name,
-                        &access_path,
-                        range,
-                    )),
+            let callsite_id = find_call_expression_ruby(node).map(|ce| {
+                types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+            });
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "call_target",
+                Some(&name),
+                Some(&access_path),
+                range.start_byte,
+            );
+            (
+                Some(DataNode::call_target(
+                    node_id,
+                    file_id,
                     None,
-                )
-            })
-            .unwrap_or((None, None)),
+                    callsite_id,
+                    &name,
+                    &access_path,
+                    range,
+                )),
+                None,
+            )
+        }
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
             let callsite_id = find_call_expression_ruby(node)
@@ -644,34 +666,49 @@ fn normalize_ruby_dataflow_builder(
                 None,
             )
         }
-        "df.field_name" => node_text(node, source)
-            .map(|name| {
-                let access_path = node
-                    .parent()
-                    .filter(|p| p.kind() == "call")
-                    .and_then(|p| node_text(p, source))
-                    .unwrap_or_else(|| name.clone());
-                let node_id = DataNodeId::generate(
-                    &file_id,
-                    None::<&SymbolId>,
-                    "field",
-                    Some(&name),
-                    Some(&access_path),
-                    range.start_byte,
-                );
-                (
-                    Some(DataNode::field(
-                        node_id,
-                        file_id,
-                        None,
-                        &name,
-                        &access_path,
-                        range,
-                    )),
+        "df.field_name" => {
+            // Build qualified access_path from receiver.method like df.call_target
+            let terminal_text = node_text(node, source).unwrap_or_default();
+            let (name, access_path) = node
+                .parent()
+                .filter(|p| p.kind() == "call")
+                .and_then(|call_node| {
+                    let mut cursor = call_node.walk();
+                    let receiver_text = call_node
+                        .named_children(&mut cursor)
+                        .find(|c| c.kind() == "constant" || c.kind() == "identifier"
+                            || c.kind() == "instance_variable" || c.kind() == "class_variable"
+                            || c.kind() == "global_variable")
+                        .and_then(|r| node_text(r, source));
+                    receiver_text.map(|recv| {
+                        let qualified = format!("{}.{}", recv, terminal_text);
+                        (qualified.clone(), qualified)
+                    })
+                })
+                .unwrap_or_else(|| {
+                    let t = terminal_text.clone();
+                    (t.clone(), t)
+                });
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "field",
+                Some(&name),
+                Some(&access_path),
+                range.start_byte,
+            );
+            (
+                Some(DataNode::field(
+                    node_id,
+                    file_id,
                     None,
-                )
-            })
-            .unwrap_or((None, None)),
+                    &name,
+                    &access_path,
+                    range,
+                )),
+                None,
+            )
+        }
         "df.receiver" | "df.literal" => {
             let text = node_text(node, source).unwrap_or_default();
             let node_id = DataNodeId::generate(
