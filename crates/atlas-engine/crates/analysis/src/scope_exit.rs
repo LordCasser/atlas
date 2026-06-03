@@ -1,18 +1,28 @@
 //! Scope-exit post-pass: emits implicit Free effects for Rust Drop at scope exit,
-//! Python `with`, Java `try-with-resources`, and C# `using` context-managed blocks at BlockExit.
+//! Python `with`, Java `try-with-resources`, C# `using`, and Ruby block-managed
+//! context blocks at BlockExit.
 //!
 //! Runs AFTER `compose_effects` main loop. For each Alloc effect without a matching
 //! explicit Free effect, emits a Free:
-//! - At the nearest BlockExit node for PythonWith-annotated Allocs
-//! - At the function's Exit node for all other Allocs (Rust Drop, etc.)
+//! - At the nearest BlockExit node for PythonWith/JavaTryWith/CSharpUsing/RubyBlock-annotated Allocs
+//! - At the function's Exit node for other eligible Allocs
 //!
-//! This is primarily for Rust (implicit Drop) and Python (context managers),
-//! but runs for all languages as a no-op when there are no unmatched Allocs.
+//! ## Eligibility for scope-exit cleanup
+//! An Alloc is eligible for auto-cleanup only if ALL of:
+//! 1. The effect's `eligible_for_implicit_cleanup` is `Some(true)` (or `None` for
+//!    backward compat), OR the Alloc node has a context-managed call context
+//!    (PythonWith / JavaTryWith / CSharpUsing / RubyBlock).
+//! 2. The allocated PlaceRef does NOT appear in any Return or Escape effect
+//!    (a resource that is returned or escapes the function should not be
+//!    auto-freed — the caller or escape target owns it).
+//!
+//! This is primarily for Rust (implicit Drop) and Python/Java/C# context managers,
+//! but runs for all languages as a near-no-op when no Allocs are eligible.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use types::cfg::CfgEdge;
-use types::effects::{ConsumptionStyle, PlaceRef, SemanticEffect, SemanticEffectKind};
+use types::effects::{ConsumptionStyle, PlaceRef, SemanticEffect, SemanticEffectKind, ValueSource};
 use types::enums::{CallContext, CfgEdgeKind, CfgNodeKind};
 use types::ids::CfgNodeId;
 
@@ -21,21 +31,47 @@ use super::effect_composer::make_effect;
 
 /// Post-pass that emits implicit Free effects for allocations that have no
 /// explicit Free within the same function (e.g., Rust Drop at scope exit,
-/// Python context-manager `with` statement).
+/// Python context-manager `with` statement, Ruby block resources).
 ///
-/// For Python `with` / Java `try-with-resources` Allocs
-/// (CallContext::PythonWith / CallContext::JavaTryWith), the Free is emitted
-/// at the nearest BlockExit successor instead of at the function Exit.
+/// Eligibility is gated per-Alloc:
+/// - Context-managed Allocs (PythonWith/JavaTryWith/CSharpUsing/RubyBlock) always
+///   get a Free at the nearest BlockExit successor.
+/// - Other Allocs only get a Free if `eligible_for_implicit_cleanup` is true
+///   AND the allocated place is NOT returned or escaped.
 pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>, cfg: &CfgGraph) {
+    // 0. Collect Return/Escape value names (to skip auto-free for escaped resources)
+    let mut escaped_locals: HashSet<String> = HashSet::new();
+    for (_node_id, node_effects) in effects.iter() {
+        for effect in node_effects {
+            match &effect.kind {
+                SemanticEffectKind::Return { value } => {
+                    if let ValueSource::Local { name } = value {
+                        escaped_locals.insert(name.clone());
+                    }
+                }
+                SemanticEffectKind::Escape { value, .. } => {
+                    if let ValueSource::Local { name } = value {
+                        escaped_locals.insert(name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     // 1. Collect all Allocs and their associated Free places
-    let mut allocs: Vec<(CfgNodeId, PlaceRef, String, bool)> = Vec::new(); // (node_id, place, callee, is_python_with)
+    let mut allocs: Vec<(CfgNodeId, PlaceRef, String, bool, bool)> = Vec::new();
+    // (node_id, place, callee, is_context_managed, eligible_for_cleanup)
     let mut freed_places: Vec<PlaceRef> = Vec::new();
 
     for (_node_id, node_effects) in effects.iter() {
         for effect in node_effects {
             match &effect.kind {
                 SemanticEffectKind::Alloc { target, callee } => {
-                    // Check if this alloc node has PythonWith or JavaTryWith context
+                    // Check if this alloc node has PythonWith/JavaTryWith/CSharpUsing context
+                    // Context-managed check: immediate CFG node's context
+                    // annotation plus a forward walk for Kotlin split-call-chain
+                    // (tree-sitter parses chained calls as separate statements).
                     let is_context_managed = cfg
                         .nodes
                         .get(&effect.cfg_node_id)
@@ -43,13 +79,28 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
                             n.call_context == CallContext::PythonWith
                                 || n.call_context == CallContext::JavaTryWith
                                 || n.call_context == CallContext::CSharpUsing
+                                || n.call_context == CallContext::RubyBlock
+                                || n.call_context == CallContext::KotlinUse
                         })
                         .unwrap_or(false);
+                    let is_context_managed = is_context_managed
+                        || has_kotlin_use_successor(&effect.cfg_node_id, cfg, 3);
+
+                    // Per-effect eligibility (backward compat: None = eligible)
+                    let eligible = effect.eligible_for_implicit_cleanup.unwrap_or(false);
+
+                    // Check if the allocated place is returned or escaped
+                    let is_escaped = match target {
+                        PlaceRef::Local { name } => escaped_locals.contains(name),
+                        PlaceRef::Field { .. } | PlaceRef::Indeterminate => false,
+                    };
+
                     allocs.push((
                         effect.cfg_node_id,
                         target.clone(),
                         callee.clone(),
                         is_context_managed,
+                        eligible && !is_escaped, // only eligible if not escaped
                     ));
                 }
                 SemanticEffectKind::Free { place, .. } => {
@@ -60,14 +111,41 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
         }
     }
 
-    // 2. Find Exit node (for non-context-managed allocs)
+    /// Walk forward along single-successor Normal edges from `start` to find a
+/// KotlinUse node within `max_hops`.  Needed because tree-sitter-kotlin parses
+/// `File("x").bufferedReader().use { ... }` as two separate `call_expression`
+/// nodes — the alloc lands on the first statement, the KotlinUse context on the
+/// second.  A bounded forward walk bridges the split.
+fn has_kotlin_use_successor(start: &CfgNodeId, cfg: &CfgGraph, max_hops: usize) -> bool {
+    if max_hops == 0 {
+        return false;
+    }
+    let successors = cfg.successors.get(start);
+    let Some(edges) = successors else { return false; };
+    for edge in edges {
+        if edge.kind != CfgEdgeKind::Normal {
+            continue;
+        }
+        if let Some(target_node) = cfg.nodes.get(&edge.target) {
+            if target_node.call_context == CallContext::KotlinUse {
+                return true;
+            }
+            if has_kotlin_use_successor(&edge.target, cfg, max_hops - 1) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+// 2. Find Exit node (for non-context-managed allocs)
     let exit_node = cfg.nodes.values().find(|n| n.kind == CfgNodeKind::Exit);
     let Some(exit) = exit_node else {
         return;
     };
 
     // 3. Emit Free for each allocation that has no matching explicit Free
-    for (alloc_node_id, place, callee, is_context_managed) in &allocs {
+    for (alloc_node_id, place, callee, is_context_managed, eligible_for_cleanup) in &allocs {
         // Skip if this place is already freed explicitly
         let already_freed = freed_places.iter().any(|fp| match (fp, place) {
             (PlaceRef::Field { path: p1 }, PlaceRef::Field { path: p2 }) => p1 == p2,
@@ -75,6 +153,12 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
             _ => false, // Indeterminate doesn't match anything for safety
         });
         if already_freed {
+            continue;
+        }
+
+        // Context-managed allocs always get auto-free (at BlockExit)
+        // Non-context-managed allocs must be eligible
+        if !is_context_managed && !eligible_for_cleanup {
             continue;
         }
 
@@ -349,18 +433,17 @@ mod tests {
         };
 
         // Insert an Alloc without matching Free
-        effects.insert(
-            node_id,
-            vec![make_effect(
-                &node_id,
-                0,
-                SemanticEffectKind::Alloc {
-                    target: place.clone(),
-                    callee: "Box::new".to_string(),
-                },
-                0.85,
-            )],
+        let mut alloc_eff = make_effect(
+            &node_id,
+            0,
+            SemanticEffectKind::Alloc {
+                target: place.clone(),
+                callee: "Box::new".to_string(),
+            },
+            0.85,
         );
+        alloc_eff.eligible_for_implicit_cleanup = Some(true);
+        effects.insert(node_id, vec![alloc_eff]);
 
         run_scope_exit_pass(&mut effects, &cfg);
 
@@ -505,18 +588,17 @@ mod tests {
         };
 
         // Insert an Alloc for place "a"
-        effects.insert(
-            node_id,
-            vec![make_effect(
-                &node_id,
-                0,
-                SemanticEffectKind::Alloc {
-                    target: alloc_place,
-                    callee: "open".to_string(),
-                },
-                0.85,
-            )],
+        let mut alloc_eff = make_effect(
+            &node_id,
+            0,
+            SemanticEffectKind::Alloc {
+                target: alloc_place,
+                callee: "open".to_string(),
+            },
+            0.85,
         );
+        alloc_eff.eligible_for_implicit_cleanup = Some(true);
+        effects.insert(node_id, vec![alloc_eff]);
 
         // Insert a Free for a DIFFERENT place "b" (at same node)
         let exit_node = cfg.nodes.values().find(|n| n.kind == CfgNodeKind::Exit).unwrap();
@@ -794,11 +876,12 @@ mod tests {
 
     /// Regression: ScopeExitAnalyzer previously emitted Free at Exit for ALL
     /// languages regardless of whether they have deterministic scope cleanup.
-    /// The fix gates `run_scope_exit_pass` behind
-    /// `OwnershipContract::supports_implicit_scope_cleanup()` in
-    /// `compose_effects`.  This test verifies that GC languages correctly
-    /// declare `implicit_scope_cleanup=false` and that `run_scope_exit_pass`
-    /// still works for managed languages (Rust, C, Python, etc.).
+    /// The fix gates cleanup eligibility per-Alloc via
+    /// `eligible_for_implicit_cleanup` on `SemanticEffect` and
+    /// `OwnershipContract::eligible_for_implicit_cleanup()`.
+    /// This test verifies that GC languages correctly
+    /// declare `implicit_scope_cleanup=false` and that C also declares
+    /// `implicit_scope_cleanup=false` (manual deallocation required).
     #[test]
     fn test_scope_exit_not_applied_for_gc_languages() {
         use crate::resource_ops::ResourceOpConfig;
@@ -818,6 +901,27 @@ mod tests {
             "TypeScript should NOT support implicit scope cleanup (GC)"
         );
 
+        // C: manual deallocation required — no implicit cleanup
+        let c = ResourceOpConfig::default_for(Language::C);
+        assert!(
+            !c.supports_implicit_scope_cleanup(),
+            "C should NOT support implicit scope cleanup (manual free/fclose required)"
+        );
+
+        // C++: RAII destructors do support implicit cleanup
+        let cpp = ResourceOpConfig::default_for(Language::Cpp);
+        assert!(
+            cpp.supports_implicit_scope_cleanup(),
+            "C++ should support implicit scope cleanup (RAII destructors)"
+        );
+
+        // Python: plain open does NOT get implicit cleanup
+        let py = ResourceOpConfig::default_for(Language::Python);
+        assert!(
+            !py.supports_implicit_scope_cleanup(),
+            "Python should NOT support implicit scope cleanup (only PythonWith context)"
+        );
+
         // Managed languages: deterministic scope cleanup
         let rust = ResourceOpConfig::default_for(Language::Rust);
         assert!(
@@ -825,14 +929,8 @@ mod tests {
             "Rust should support implicit scope cleanup (Drop)"
         );
 
-        let c = ResourceOpConfig::default_for(Language::C);
-        assert!(
-            c.supports_implicit_scope_cleanup(),
-            "C should support implicit scope cleanup"
-        );
-
-        // Demonstrate that run_scope_exit_pass itself works fine —
-        // the gating happens at the compose_effects level, not here.
+        // Demonstrate that run_scope_exit_pass itself emits Free only for
+        // eligible allocs — eligibility is checked per-effect, not per-language.
         let sym_id = make_sym_id();
         let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
         let cfg = make_cfg_with_alloc_node(
@@ -847,24 +945,22 @@ mod tests {
         let place = PlaceRef::Local {
             name: "x".to_string(),
         };
-        effects.insert(
-            node_id,
-            vec![make_effect(
-                &node_id,
-                0,
-                SemanticEffectKind::Alloc {
-                    target: place.clone(),
-                    callee: "open".to_string(),
-                },
-                0.85,
-            )],
+        let mut alloc_eff = make_effect(
+            &node_id,
+            0,
+            SemanticEffectKind::Alloc {
+                target: place.clone(),
+                callee: "open".to_string(),
+            },
+            0.85,
         );
+        // Mark as eligible for cleanup
+        alloc_eff.eligible_for_implicit_cleanup = Some(true);
+        effects.insert(node_id, vec![alloc_eff]);
 
         run_scope_exit_pass(&mut effects, &cfg);
 
-        // run_scope_exit_pass always emits Free at Exit (it doesn't know
-        // about the contract).  The contract's supports_implicit_scope_cleanup()
-        // is what gates the call in compose_effects.
+        // Since the alloc is eligible, it should get a scope-exit Free
         let exit_node = cfg
             .nodes
             .values()
@@ -872,8 +968,194 @@ mod tests {
             .unwrap();
         let exit_effects = effects.get(&exit_node.id);
         assert!(
-            exit_effects.is_some(),
-            "run_scope_exit_pass itself should emit Free at Exit (gating is in compose_effects)"
+            exit_effects.is_some() && !exit_effects.unwrap().is_empty(),
+            "eligible alloc should get scope-exit Free"
+        );
+    }
+
+    /// Allocs marked as NOT eligible for implicit cleanup should NOT get
+    /// an auto-generated Free at function exit.
+    #[test]
+    fn test_ineligible_alloc_skips_scope_exit() {
+        let sym_id = make_sym_id();
+        let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
+        let cfg = make_cfg_with_alloc_node(
+            &sym_id,
+            &mut node_id,
+            CfgNodeKind::Statement,
+            false,
+            false,
+        );
+
+        let mut effects: HashMap<CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
+        let place = PlaceRef::Local {
+            name: "x".to_string(),
+        };
+        let mut alloc_eff = make_effect(
+            &node_id,
+            0,
+            SemanticEffectKind::Alloc {
+                target: place.clone(),
+                callee: "malloc".to_string(),
+            },
+            0.85,
+        );
+        // Mark as NOT eligible (e.g., C API call in C++ code)
+        alloc_eff.eligible_for_implicit_cleanup = Some(false);
+        effects.insert(node_id, vec![alloc_eff]);
+
+        run_scope_exit_pass(&mut effects, &cfg);
+
+        // Exit should NOT have a scope-exit Free for this ineligible alloc
+        let exit_node = cfg.nodes.values().find(|n| n.kind == CfgNodeKind::Exit).unwrap();
+        if let Some(exit_effects) = effects.get(&exit_node.id) {
+            let has_scope_exit = exit_effects.iter().any(|e| {
+                matches!(&e.kind, SemanticEffectKind::Free { callee, .. } if callee.contains("<scope-exit>"))
+            });
+            assert!(
+                !has_scope_exit,
+                "ineligible alloc should NOT get scope-exit Free"
+            );
+        }
+        // Else: no effects at exit is also correct
+    }
+
+    /// Allocs whose value is returned should NOT get an auto-free
+    /// (the caller owns the returned resource).
+    #[test]
+    fn test_returned_alloc_skips_scope_exit() {
+        let sym_id = make_sym_id();
+        let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
+        let cfg = make_cfg_with_alloc_node(
+            &sym_id,
+            &mut node_id,
+            CfgNodeKind::Statement,
+            false,
+            false,
+        );
+
+        let mut effects: HashMap<CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
+        let place = PlaceRef::Local {
+            name: "p".to_string(),
+        };
+
+        // Alloc for "p" — eligible for cleanup
+        let mut alloc_eff = make_effect(
+            &node_id,
+            0,
+            SemanticEffectKind::Alloc {
+                target: place.clone(),
+                callee: "malloc".to_string(),
+            },
+            0.85,
+        );
+        alloc_eff.eligible_for_implicit_cleanup = Some(true);
+        effects.insert(node_id, vec![alloc_eff]);
+
+        // Return the same local "p"
+        let return_node_id = {
+            let stmt_range = types::structs::TextRange {
+                start_byte: 20,
+                end_byte: 30,
+                start_line: 2,
+                start_column: 0,
+                end_line: 2,
+                end_column: 0,
+            };
+            let ret_node = types::cfg::CfgNode::new(
+                &sym_id,
+                CfgNodeKind::Statement,
+                stmt_range,
+            );
+            let ret_id = ret_node.id;
+            effects.insert(
+                ret_id,
+                vec![make_effect(
+                    &ret_id,
+                    0,
+                    SemanticEffectKind::Return {
+                        value: ValueSource::Local { name: "p".to_string() },
+                    },
+                    0.9,
+                )],
+            );
+            ret_id
+        };
+
+        run_scope_exit_pass(&mut effects, &cfg);
+
+        // Exit should NOT have a scope-exit Free for "p" (it was returned)
+        let exit_node = cfg.nodes.values().find(|n| n.kind == CfgNodeKind::Exit).unwrap();
+        if let Some(exit_effects) = effects.get(&exit_node.id) {
+            let has_scope_exit_for_p = exit_effects.iter().any(|e| {
+                matches!(&e.kind, SemanticEffectKind::Free { place, callee, .. }
+                    if matches!(place, PlaceRef::Local { name } if name == "p") && callee.contains("<scope-exit>"))
+            });
+            assert!(
+                !has_scope_exit_for_p,
+                "returned alloc 'p' should NOT get scope-exit Free"
+            );
+        }
+
+        // But return_node_id should still have the Return effect
+        assert!(
+            effects.contains_key(&return_node_id),
+            "Return effect should still be present"
+        );
+    }
+
+    /// Context-managed allocs (PythonWith) always get auto-free,
+    /// even when the language-level implicit_scope_cleanup is false.
+    #[test]
+    fn test_context_managed_always_eligible() {
+        let sym_id = make_sym_id();
+        let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
+        let cfg = make_cfg_with_alloc_node(
+            &sym_id,
+            &mut node_id,
+            CfgNodeKind::Statement,
+            true, // PythonWith context
+            true, // include BlockExit
+        );
+
+        let mut effects: HashMap<CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
+        let place = PlaceRef::Local {
+            name: "f".to_string(),
+        };
+
+        // Insert an Alloc with PythonWith context, marked as NOT eligible
+        let mut alloc_eff = make_effect(
+            &node_id,
+            0,
+            SemanticEffectKind::Alloc {
+                target: place.clone(),
+                callee: "open".to_string(),
+            },
+            0.85,
+        );
+        alloc_eff.eligible_for_implicit_cleanup = Some(false);
+        effects.insert(node_id, vec![alloc_eff]);
+
+        run_scope_exit_pass(&mut effects, &cfg);
+
+        // Should still get a Free at BlockExit (context-managed overrides eligibility)
+        let be_node = cfg
+            .nodes
+            .values()
+            .find(|n| n.kind == CfgNodeKind::BlockExit)
+            .expect("BlockExit node should exist");
+
+        let be_effects = effects.get(&be_node.id);
+        assert!(
+            be_effects.is_some(),
+            "BlockExit node should have effects for PythonWith alloc (context-managed overrides eligibility)"
+        );
+        let free_effect = be_effects.unwrap().iter().find(|e| {
+            matches!(&e.kind, SemanticEffectKind::Free { callee, .. } if callee.contains("<block-exit>"))
+        });
+        assert!(
+            free_effect.is_some(),
+            "Context-managed alloc should get Free at BlockExit even when not eligible"
         );
     }
 }

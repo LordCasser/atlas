@@ -180,67 +180,102 @@ pub fn compose_effects(
         // Find overlapping DataNodes to discover calls and store patterns
         let overlapping = find_overlapping_data_nodes(&node.stmt_range, &dfi);
 
-        // Collect callee names from CallTarget DataNodes in this node's range
-        let callee_names: Vec<&str> = overlapping
+        // Collect CallTarget DataNodes with candidate callee identities.
+        // For each CallTarget we try access_path first (receiver-qualified
+        // canonical path, e.g. "obj.close"), then fall back to name
+        // (terminal method name, e.g. "close").  The first candidate that
+        // matches any resource rule wins; subsequent candidates are skipped.
+        let call_targets: Vec<(&DataNode, Vec<&str>)> = overlapping
             .iter()
             .filter(|dn| dn.kind == DataNodeKind::CallTarget)
-            .filter_map(|dn| dn.name.as_deref())
+            .filter_map(|dn| {
+                let mut candidates = Vec::new();
+                if let Some(ap) = dn.access_path.as_deref() {
+                    if !ap.is_empty() {
+                        candidates.push(ap);
+                    }
+                }
+                if let Some(n) = dn.name.as_deref() {
+                    if !n.is_empty() {
+                        candidates.push(n);
+                    }
+                }
+                if candidates.is_empty() {
+                    None
+                } else {
+                    Some((*dn, candidates))
+                }
+            })
             .collect();
 
-        for callee_name in &callee_names {
-            // Step 1a: Check if this call allocates a resource
-            if let Some(return_contract) = contract.classify_return(callee_name) {
-                match return_contract {
-                    ReturnContract::NewOwned | ReturnContract::MaybeOwned => {
-                        let target = find_return_receiver(node_id, &dfi);
-                        let confidence = match return_contract {
-                            ReturnContract::NewOwned => 0.85,
-                            ReturnContract::MaybeOwned => 0.6,
-                            _ => 0.85,
-                        };
-                        effects.push(make_effect(
-                            node_id,
-                            effects.len() as u32,
-                            SemanticEffectKind::Alloc {
-                                target,
-                                callee: (*callee_name).to_string(),
-                            },
-                            confidence,
-                        ));
+        for (_call_target, candidates) in &call_targets {
+            for candidate in candidates {
+                let mut hit_any = false;
+
+                // Step 1a: Check if this call allocates a resource
+                if let Some(return_contract) = contract.classify_return(candidate) {
+                    match return_contract {
+                        ReturnContract::NewOwned | ReturnContract::MaybeOwned => {
+                            let target = find_return_receiver(node_id, &dfi);
+                            let confidence = match return_contract {
+                                ReturnContract::NewOwned => 0.85,
+                                ReturnContract::MaybeOwned => 0.6,
+                                _ => 0.85,
+                            };
+                            let eligible = contract.eligible_for_implicit_cleanup(candidate);
+                            let mut eff = make_effect(
+                                node_id,
+                                effects.len() as u32,
+                                SemanticEffectKind::Alloc {
+                                    target,
+                                    callee: (*candidate).to_string(),
+                                },
+                                confidence,
+                            );
+                            eff.eligible_for_implicit_cleanup = Some(eligible);
+                            effects.push(eff);
+                            hit_any = true;
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
-            }
 
-            // Step 1b: Check if this call frees a resource
-            if let Some(mut cc) = contract.classify_consumption(callee_name) {
-                // Go defer: set Deferred consumption style
-                if node.call_context == CallContext::GoDefer {
-                    cc.style = ConsumptionStyle::Deferred;
+                // Step 1b: Check if this call frees a resource
+                if let Some(mut cc) = contract.classify_consumption(candidate) {
+                    // Go defer: set Deferred consumption style
+                    if node.call_context == CallContext::GoDefer {
+                        cc.style = ConsumptionStyle::Deferred;
+                    }
+                    let mut free_effects =
+                        resolve_free_effect(node_id, candidate, &cc, &node.stmt_range, &dfi);
+                    // Propagate consumption style to each free effect
+                    for eff in &mut free_effects {
+                        eff.consumption_style = Some(cc.style.clone());
+                    }
+                    effects.extend(free_effects);
+                    hit_any = true;
                 }
-                let mut free_effects =
-                    resolve_free_effect(node_id, callee_name, &cc, &node.stmt_range, &dfi);
-                // Propagate consumption style to each free effect
-                for eff in &mut free_effects {
-                    eff.consumption_style = Some(cc.style.clone());
-                }
-                effects.extend(free_effects);
-            }
 
-            // Step 1c: Check if this call causes resource escape
-            if let Some(escape_target) = contract.classify_escape(callee_name, node.call_context) {
-                let source = ValueSource::CallReturn {
-                    callee: (*callee_name).to_string(),
-                };
-                effects.push(make_effect(
-                    node_id,
-                    effects.len() as u32,
-                    SemanticEffectKind::Escape {
-                        value: source,
-                        to: escape_target,
-                    },
-                    0.85,
-                ));
+                // Step 1c: Check if this call causes resource escape
+                if let Some(escape_target) = contract.classify_escape(candidate, node.call_context) {
+                    let source = ValueSource::CallReturn {
+                        callee: (*candidate).to_string(),
+                    };
+                    effects.push(make_effect(
+                        node_id,
+                        effects.len() as u32,
+                        SemanticEffectKind::Escape {
+                            value: source,
+                            to: escape_target,
+                        },
+                        0.85,
+                    ));
+                    hit_any = true;
+                }
+
+                if hit_any {
+                    break; // first candidate for this CallTarget that hits any rule wins
+                }
             }
         }
 
@@ -248,32 +283,52 @@ pub fn compose_effects(
         let store_effects = resolve_store_effect(node_id, node, &dfi, contract);
         effects.extend(store_effects);
 
-        if !effects.is_empty() {
-            node_effects.insert(*node_id, effects);
-        }
-    }
-
-    // Step 2.5: React cleanup return detection — mark consumer Free effects
-    // as Deferred when the enclosing function has a `return () => cleanup()` pattern.
-    let has_cleanup_return = data_nodes
-        .iter()
-        .any(|dn| matches!(dn.kind, DataNodeKind::CleanupReturn));
-    if has_cleanup_return {
-        for (_node_id, node_effects) in node_effects.iter_mut() {
-            for eff in node_effects.iter_mut() {
+        // Step 2.5: Per-node React cleanup — mark all Free effects on this
+        // node as Deferred when the node belongs to a React useEffect cleanup
+        // arrow body (annotated by the CFG builder).
+        if node.call_context == CallContext::ReactEffectCleanup {
+            for eff in &mut effects {
                 if matches!(eff.kind, SemanticEffectKind::Free { .. }) {
                     eff.consumption_style = Some(ConsumptionStyle::Deferred);
                     eff.description = Some("React effect cleanup return".to_string());
                 }
             }
         }
+
+        if !effects.is_empty() {
+            node_effects.insert(*node_id, effects);
+        }
+    }
+
+    // Step 2.6: Fallback for when CFG builder did not annotate cleanup scope
+    // (e.g., arrow functions whose CFG is inlined in the parent function).
+    // If ANY CFG node has ReactEffectCleanup context, per-node logic already
+    // handled Deferred marking.  If NO node has it, but a CleanupReturn
+    // DataNode exists, fall back to function-wide Deferred.
+    let any_node_has_react_ctx = cfg
+        .nodes
+        .values()
+        .any(|n| n.call_context == CallContext::ReactEffectCleanup);
+    if !any_node_has_react_ctx {
+        let has_cleanup_return = data_nodes
+            .iter()
+            .any(|dn| matches!(dn.kind, DataNodeKind::CleanupReturn));
+        if has_cleanup_return {
+            for (_node_id, node_effects) in node_effects.iter_mut() {
+                for eff in node_effects.iter_mut() {
+                    if matches!(eff.kind, SemanticEffectKind::Free { .. }) {
+                        eff.consumption_style = Some(ConsumptionStyle::Deferred);
+                        eff.description = Some("React effect cleanup return (function-wide fallback)".to_string());
+                    }
+                }
+            }
+        }
     }
 
     // Step 3: Run scope-exit post-pass (implicit Drop for Rust, Python with, etc.)
-    // Only for languages with deterministic implicit scope cleanup.
-    if contract.supports_implicit_scope_cleanup() {
-        run_scope_exit_pass(&mut node_effects, cfg);
-    }
+    // Always run — eligibility is gated per-Alloc via `eligible_for_implicit_cleanup`
+    // and per-context (PythonWith / JavaTryWith / CSharpUsing).
+    run_scope_exit_pass(&mut node_effects, cfg);
 
     // Step 4: Build TransferGraph
     let transfer_graph = build_transfer_graph(&node_effects, cfg);
@@ -309,11 +364,14 @@ fn resolve_free_effect(
             continue;
         }
 
-        // Check that this CallArg's callsite effectively matches this call
-        // We use callee_name matching as a proxy for the correct call
-        let callee_match = overlapping
-            .iter()
-            .any(|n| n.kind == DataNodeKind::CallTarget && n.name.as_deref() == Some(callee_name));
+        // Check that this CallArg's callsite effectively matches this call.
+        // callee_name may come from access_path or name (see candidate list
+        // in compose_effects); compare against both fields.
+        let callee_match = overlapping.iter().any(|n| {
+            n.kind == DataNodeKind::CallTarget
+                && (n.access_path.as_deref() == Some(callee_name)
+                    || n.name.as_deref() == Some(callee_name))
+        });
         if !callee_match {
             continue;
         }
@@ -431,7 +489,8 @@ fn resolve_store_effect(
                                     ReturnContract::MaybeOwned => 0.6,
                                     _ => 0.85,
                                 };
-                                effects.push(make_effect(
+                                let eligible = contract.eligible_for_implicit_cleanup(callee);
+                                let mut eff = make_effect(
                                     cfg_node_id,
                                     effects.len() as u32,
                                     SemanticEffectKind::Alloc {
@@ -439,7 +498,9 @@ fn resolve_store_effect(
                                         callee: callee.clone(),
                                     },
                                     confidence,
-                                ));
+                                );
+                                eff.eligible_for_implicit_cleanup = Some(eligible);
+                                effects.push(eff);
                             }
                         }
                     }
@@ -624,7 +685,11 @@ fn trace_to_value_source(
         match dn.kind {
             DataNodeKind::CallReturn => {
                 return ValueSource::CallReturn {
-                    callee: dn.name.clone().unwrap_or_else(|| "?".to_string()),
+                    callee: dn
+                        .access_path
+                        .clone()
+                        .or_else(|| dn.name.clone())
+                        .unwrap_or_else(|| "?".to_string()),
                 };
             }
             DataNodeKind::Parameter => {
@@ -737,6 +802,7 @@ pub(crate) fn make_effect(
         confidence,
         consumption_style: None,
         description: None,
+        eligible_for_implicit_cleanup: None,
     }
 }
 

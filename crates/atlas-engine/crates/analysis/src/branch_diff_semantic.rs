@@ -627,6 +627,7 @@ mod tests {
             confidence: 0.9,
             consumption_style: None,
             description: None,
+            eligible_for_implicit_cleanup: None,
         }
     }
 

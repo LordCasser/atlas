@@ -58,6 +58,10 @@ pub struct ResourceOpPattern {
     /// For Consume: which parameter index is the resource (0-based).
     /// For Produce: not used (return value is always parameter index 0 conceptually).
     pub resource_param_index: usize,
+    /// For Produce patterns: whether this alloc is eligible for implicit
+    /// scope-exit cleanup. Default `true`; set `false` for allocs that
+    /// require explicit free (e.g., C API calls in C++ code).
+    pub implicit_cleanup: bool,
 }
 
 impl ResourceOpPattern {
@@ -66,7 +70,14 @@ impl ResourceOpPattern {
             kind,
             matcher,
             resource_param_index,
+            implicit_cleanup: true,
         }
+    }
+
+    /// Builder: set `implicit_cleanup` and return self.
+    pub fn with_implicit_cleanup(mut self, val: bool) -> Self {
+        self.implicit_cleanup = val;
+        self
     }
 }
 
@@ -92,7 +103,8 @@ impl ResourceOpConfig {
     /// Return built-in defaults for each supported language.
     pub fn default_for(lang: Language) -> Self {
         match lang {
-            Language::C | Language::Cpp => Self::default_c_like(),
+            Language::C => Self::default_c(),
+            Language::Cpp => Self::default_cpp(),
             Language::TypeScript | Language::JavaScript => Self::default_ts_js(),
             Language::Python => Self::default_python(),
             Language::Java => Self::default_java(),
@@ -106,11 +118,9 @@ impl ResourceOpConfig {
         }
     }
 
-    /// C and C++ — rich built-in alloc/free patterns.
-    fn default_c_like() -> Self {
+    /// C — no implicit scope cleanup (manual free/fclose required).
+    fn default_c() -> Self {
         use CalleeMatcher::{Exact, Prefix, Suffix};
-        let language = None; // covers both C and Cpp
-        // Producers — functions that return an allocated resource handle
         let producers = vec![
             ResourceOpPattern::new(ResourceOpKind::Produce, Exact("malloc".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Produce, Exact("calloc".into()), 0),
@@ -127,7 +137,6 @@ impl ResourceOpConfig {
             ),
             ResourceOpPattern::new(ResourceOpKind::Produce, Prefix("curl_copy_".into()), 0),
         ];
-        // Consumers — functions that take a resource handle as argument
         let consumers = vec![
             ResourceOpPattern::new(ResourceOpKind::Consume, Exact("free".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Consume, Exact("fclose".into()), 0),
@@ -137,11 +146,59 @@ impl ResourceOpConfig {
             ResourceOpPattern::new(ResourceOpKind::Consume, Suffix("_free".into()), 0),
         ];
         Self {
-            language,
+            language: Some(Language::C),
             producers,
             consumers,
             escapes: vec![],
-            implicit_scope_cleanup: true, // C/C++ destructors
+            implicit_scope_cleanup: false, // C: manual deallocation required
+        }
+    }
+
+    /// C++ — RAII destructors provide implicit cleanup, but C API allocs
+    /// (malloc, fopen, etc.) require explicit free.
+    fn default_cpp() -> Self {
+        use CalleeMatcher::{Exact, Prefix, Suffix};
+        // C API producers — NOT eligible for implicit cleanup (require explicit free)
+        let producers = vec![
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("malloc".into()), 0)
+                .with_implicit_cleanup(false),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("calloc".into()), 0)
+                .with_implicit_cleanup(false),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("realloc".into()), 0)
+                .with_implicit_cleanup(false),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("strdup".into()), 0)
+                .with_implicit_cleanup(false),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("strndup".into()), 0)
+                .with_implicit_cleanup(false),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("fopen".into()), 0)
+                .with_implicit_cleanup(false),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("asprintf".into()), 0)
+                .with_implicit_cleanup(false),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("aprintf".into()), 0)
+                .with_implicit_cleanup(false),
+            ResourceOpPattern::new(
+                ResourceOpKind::Produce,
+                Exact("Curl_copy_header_value".into()),
+                0,
+            )
+            .with_implicit_cleanup(false),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Prefix("curl_copy_".into()), 0)
+                .with_implicit_cleanup(false),
+        ];
+        let consumers = vec![
+            ResourceOpPattern::new(ResourceOpKind::Consume, Exact("free".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Consume, Exact("fclose".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Consume, Exact("closedir".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Consume, Exact("safefree".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Consume, Exact("Curl_safefree".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Consume, Suffix("_free".into()), 0),
+        ];
+        Self {
+            language: Some(Language::Cpp),
+            producers,
+            consumers,
+            escapes: vec![],
+            implicit_scope_cleanup: true, // C++ RAII destructors
         }
     }
 
@@ -225,7 +282,7 @@ impl ResourceOpConfig {
             producers,
             consumers,
             escapes: vec![],
-            implicit_scope_cleanup: true, // Python __del__, with statement
+            implicit_scope_cleanup: false, // PythonWith context handles cleanup separately
         }
     }
 
@@ -378,10 +435,26 @@ impl ResourceOpConfig {
         use CalleeMatcher::{Exact, Suffix};
         let language = None;
         let producers = vec![
+            // File I/O
             ResourceOpPattern::new(ResourceOpKind::Produce, Exact("File.open".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Produce, Exact("File.new".into()), 0),
+            // Sockets
             ResourceOpPattern::new(ResourceOpKind::Produce, Exact("TCPSocket.new".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("TCPServer.new".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("UDPSocket.new".into()), 0),
+            // HTTP
             ResourceOpPattern::new(ResourceOpKind::Produce, Exact("Net::HTTP.start".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("Net.HTTP.start".into()), 0),
+            // IO
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("IO.open".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("IO.new".into()), 0),
+            // Tempfile
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("Tempfile.create".into()), 0),
+            // Dir
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("Dir.chdir".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("Dir.open".into()), 0),
+            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("Dir.new".into()), 0),
+            // Generic suffix patterns (catch-all for custom open/new class methods)
             ResourceOpPattern::new(ResourceOpKind::Produce, Suffix(".open".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Produce, Suffix(".new".into()), 0),
         ];
@@ -396,7 +469,7 @@ impl ResourceOpConfig {
             producers,
             consumers,
             escapes: vec![],
-            implicit_scope_cleanup: false, // GC, no CFG
+            implicit_scope_cleanup: false, // GC; block-managed resources via RubyBlock context
         }
     }
 
@@ -452,7 +525,7 @@ impl ResourceOpConfig {
 
     /// Merge another config into self (non-language-specific fields only).
     pub fn merge_defaults(&mut self) {
-        let default = Self::default_c_like();
+        let default = Self::default_c();
         // Add any default producers/consumers not already present
         for p in default.producers {
             let already = self.producers.iter().any(|existing| {
@@ -533,6 +606,19 @@ impl OwnershipContract for ResourceOpConfig {
 
     fn supports_implicit_scope_cleanup(&self) -> bool {
         self.implicit_scope_cleanup
+    }
+
+    /// Per-callee cleanup eligibility: if the language supports implicit
+    /// cleanup overall, check the matching producer pattern's per-pattern flag.
+    fn eligible_for_implicit_cleanup(&self, callee: &str) -> bool {
+        if !self.implicit_scope_cleanup {
+            return false;
+        }
+        self.producers
+            .iter()
+            .find(|p| p.matcher.matches(callee))
+            .map(|p| p.implicit_cleanup)
+            .unwrap_or(self.implicit_scope_cleanup)
     }
 }
 
