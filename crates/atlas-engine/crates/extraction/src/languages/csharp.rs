@@ -166,6 +166,9 @@ impl SymbolExtractorSpec for CSharpAdapter {
     fn definition_query(&self) -> &str {
         include_str!("../../queries/csharp/definitions.scm")
     }
+    fn manifest_query(&self) -> &str {
+        include_str!("../../queries/csharp/manifest.scm")
+    }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported()
     }

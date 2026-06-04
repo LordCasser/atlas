@@ -174,6 +174,9 @@ impl SymbolExtractorSpec for KotlinAdapter {
     fn definition_query(&self) -> &str {
         include_str!("../../queries/kotlin/definitions.scm")
     }
+    fn manifest_query(&self) -> &str {
+        include_str!("../../queries/kotlin/manifest.scm")
+    }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported()
     }

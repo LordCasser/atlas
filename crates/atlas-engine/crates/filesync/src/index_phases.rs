@@ -380,7 +380,35 @@ pub fn phase_build_summaries(store: &Arc<Store>) -> Result<usize> {
         analysis::summary::SummaryBuilder::build(s, fid, None)
     })
     .context("Failed to build summaries")?;
+
+    // Record "summaries" layer in extraction_state so get_capability_mask()
+    // returns the SUMMARIES bit for files that have function summaries.
+    if stats.functions_summarized > 0 {
+        record_summaries_extraction_state(store)?;
+    }
+
     Ok(stats.functions_summarized)
+}
+
+/// Write extraction_state rows for the "summaries" layer so capability
+/// queries can detect that inter-procedural summaries are available.
+///
+/// Only records files that are still content-fresh (content_hash matches
+/// `files`), since stale summaries are not trustworthy.
+fn record_summaries_extraction_state(store: &Arc<Store>) -> Result<()> {
+    use types::structs::CapabilityMask;
+
+    let files = db::summary::SummaryStore::files_with_summaries(store)?;
+    for (file_id, content_hash) in &files {
+        store.upsert_file_extraction_state(
+            file_id,
+            "summaries",
+            content_hash,
+            "complete",
+            CapabilityMask::new(CapabilityMask::SUMMARIES),
+        )?;
+    }
+    Ok(())
 }
 
 /// Commit the current path-alias config hash baseline.

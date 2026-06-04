@@ -174,6 +174,9 @@ impl SymbolExtractorSpec for PhpAdapter {
     fn definition_query(&self) -> &str {
         include_str!("../../queries/php/definitions.scm")
     }
+    fn manifest_query(&self) -> &str {
+        include_str!("../../queries/php/manifest.scm")
+    }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported()
     }

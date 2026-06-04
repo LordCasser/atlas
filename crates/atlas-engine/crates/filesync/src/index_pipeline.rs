@@ -8,15 +8,16 @@
 //! Internally the pipeline delegates to the composable phase functions in
 //! [`crate::index_phases`].
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use db::Store;
 use extraction::ExtractionMode;
 
 use crate::index_phases::{
-    phase_cleanup_stale, phase_discover, phase_extract_serial, phase_init_frontends,
-    phase_materialize_annotations, phase_resolve_and_build,
+    phase_build_summaries, phase_cleanup_stale, phase_discover, phase_extract_serial,
+    phase_init_frontends, phase_materialize_annotations, phase_resolve_and_build,
 };
 
 /// Progress callback payload emitted by [`run_index_pipeline`].
@@ -108,6 +109,22 @@ pub fn run_index_pipeline(
             discovered.len()
         ),
     );
+
+    // ── Clean up stale files deleted from disk since last index ──
+    let db_file_paths: Vec<PathBuf> = store
+        .list_files()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|f| PathBuf::from(f.path))
+        .collect();
+    let discovered_set: HashSet<&PathBuf> = discovered.iter().collect();
+    let deleted: Vec<PathBuf> = db_file_paths
+        .into_iter()
+        .filter(|p| !discovered_set.contains(p))
+        .collect();
+    if !deleted.is_empty() {
+        phase_cleanup_stale(store, &deleted)?;
+    }
 
     // ── Phase 3: Init frontends + clean stale ──
     let frontend_cache = phase_init_frontends(&discovered)?;
@@ -204,6 +221,13 @@ pub fn run_index_pipeline(
     // ── Phase 8: Materialize annotations ──
     if let Err(e) = phase_materialize_annotations(store) {
         tracing::warn!("Failed to materialize annotations: {:#}", e);
+    }
+
+    // ── Phase 9: Build summaries (Full mode only) ──
+    if options.mode.produces_dataflow() {
+        if let Err(e) = phase_build_summaries(store) {
+            tracing::warn!("Failed to build summaries: {:#}", e);
+        }
     }
 
     emit(

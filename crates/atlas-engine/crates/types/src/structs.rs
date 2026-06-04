@@ -669,6 +669,12 @@ pub struct FileFacts {
     #[serde(default)]
     pub dataflow_failed: bool,
 
+    /// Whether the CFG builder encountered an error during extraction.
+    /// When true, `cfg_nodes` / `cfg_edges` may be absent or incomplete
+    /// because the builder crashed, not because there are genuinely none.
+    #[serde(default)]
+    pub cfg_failed: bool,
+
     /// Extraction layer: "manifest" (top-level only), "structural" (full symbols+refs),
     /// or "dataflow". Defaults to "structural" for backward compatibility.
     #[serde(default = "default_layer")]
@@ -771,7 +777,9 @@ impl CapabilityMask {
 
     /// Human-readable name for the best capability
     pub fn best_capability_name(&self) -> &'static str {
-        if self.has(Self::DATAFLOW) {
+        if self.has(Self::SUMMARIES) {
+            "summaries"
+        } else if self.has(Self::DATAFLOW) {
             "dataflow"
         } else if self.has(Self::CFG) {
             "cfg"
@@ -992,12 +1000,20 @@ mod tests {
         mask.set(CapabilityMask::STRUCTURAL);
         mask.set(CapabilityMask::CFG);
         mask.set(CapabilityMask::DATAFLOW);
-        assert_eq!(mask.best_capability_name(), "dataflow");
+        mask.set(CapabilityMask::SUMMARIES);
+        assert_eq!(mask.best_capability_name(), "summaries");
 
         let mut mask2 = CapabilityMask::default();
         mask2.set(CapabilityMask::MANIFEST);
+        mask2.set(CapabilityMask::STRUCTURAL);
         mask2.set(CapabilityMask::CFG);
-        assert_eq!(mask2.best_capability_name(), "cfg");
+        mask2.set(CapabilityMask::DATAFLOW);
+        assert_eq!(mask2.best_capability_name(), "dataflow");
+
+        let mut mask3 = CapabilityMask::default();
+        mask3.set(CapabilityMask::MANIFEST);
+        mask3.set(CapabilityMask::CFG);
+        assert_eq!(mask3.best_capability_name(), "cfg");
     }
 
     #[test]

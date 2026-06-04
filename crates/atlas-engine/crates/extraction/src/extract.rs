@@ -192,6 +192,7 @@ pub fn extract_file_with_mode_cancellable(
             budget_exceeded: false,
             lexical_failed: false,
             dataflow_failed: false,
+            cfg_failed: false,
             layer: "manifest".to_string(),
         });
     }
@@ -317,6 +318,7 @@ pub fn extract_file_with_mode_cancellable(
             budget_exceeded: false,
             lexical_failed: false,
             dataflow_failed: false,
+            cfg_failed: false,
             layer: "resolution_symbols".to_string(),
         });
     }
@@ -409,6 +411,7 @@ pub fn extract_file_with_mode_cancellable(
         };
 
     // 7e. Build per-function control-flow graphs (P7: skip in Structural mode)
+    let mut cfg_failed = false;
     let (cfg_nodes, cfg_edges) = if mode.produces_cfg()
         && frontend
             .capability
@@ -425,6 +428,7 @@ pub fn extract_file_with_mode_cancellable(
                         message: format!("CFG builder failed: {e}"),
                         range: None,
                     });
+                    cfg_failed = true;
                     CfgResult::default()
                 });
         (cfg_result.nodes, cfg_result.edges)
@@ -699,6 +703,18 @@ pub fn extract_file_with_mode_cancellable(
         )
     };
 
+    // Log extraction degradation flags — callers can inspect FileFacts fields
+    // directly, but a warn-level trace ensures operators see these in logs.
+    if lexical_failed {
+        tracing::warn!(file = %file_path_str, "lexical binding extraction failed for this file");
+    }
+    if dataflow_failed {
+        tracing::warn!(file = %file_path_str, "dataflow extraction failed for this file");
+    }
+    if cfg_failed {
+        tracing::warn!(file = %file_path_str, "CFG extraction failed for this file");
+    }
+
     Ok(FileFacts {
         file: FileInfo {
             file_id,
@@ -724,6 +740,7 @@ pub fn extract_file_with_mode_cancellable(
         budget_exceeded,
         lexical_failed,
         dataflow_failed,
+        cfg_failed,
         layer: if mode.produces_dataflow() {
             "dataflow"
         } else {

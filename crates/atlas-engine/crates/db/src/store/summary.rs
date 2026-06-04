@@ -216,6 +216,33 @@ impl SummaryStore {
 
     // ── Query ────────────────────────────────────────────────────────────
 
+    /// Return the set of distinct file_ids that have at least one function
+    /// summary, paired with the file's current content_hash.
+    ///
+    /// Used by the indexing pipeline to record the "summaries" layer in
+    /// extraction_state so capability queries can detect SUMMARIES.
+    pub fn files_with_summaries(
+        store: &Store,
+    ) -> anyhow::Result<Vec<(types::ids::FileId, String)>> {
+        let conn = store.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT s.file_id, f.content_hash
+             FROM function_summaries fs
+             JOIN symbols s ON s.symbol_id = fs.function_id
+             JOIN files f ON f.file_id = s.file_id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, types::ids::FileId>(0)?,
+                    row.get::<_, String>(1)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
     /// Query all `summary_param_reaches` rows for a given parameter node.
     pub fn query_param_reaches(
         store: &Store,

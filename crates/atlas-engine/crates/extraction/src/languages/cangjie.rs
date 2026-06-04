@@ -171,6 +171,9 @@ impl SymbolExtractorSpec for CangjieAdapter {
     fn definition_query(&self) -> &str {
         include_str!("../../queries/cangjie/definitions.scm")
     }
+    fn manifest_query(&self) -> &str {
+        include_str!("../../queries/cangjie/manifest.scm")
+    }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported()
     }

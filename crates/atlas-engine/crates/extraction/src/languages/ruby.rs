@@ -176,6 +176,9 @@ impl SymbolExtractorSpec for RubyAdapter {
     fn definition_query(&self) -> &str {
         include_str!("../../queries/ruby/definitions.scm")
     }
+    fn manifest_query(&self) -> &str {
+        include_str!("../../queries/ruby/manifest.scm")
+    }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported()
     }

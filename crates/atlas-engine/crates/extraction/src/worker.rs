@@ -11,6 +11,7 @@
 
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use types::ExtractionError;
@@ -19,7 +20,9 @@ use types::FileFacts;
 use types::IndexReport;
 use types::ids::FileId;
 
-use super::extract_file_with_mode;
+use super::CancelCheck;
+use super::cancel::NeverCancel;
+use super::extract_file_with_mode_cancellable;
 use super::frontend::LanguageFrontend;
 use crate::mode::ExtractionMode;
 
@@ -30,7 +33,7 @@ use crate::error::{ExtractionFailure, ExtractionFailureKind};
 // ---------------------------------------------------------------------------
 
 /// Configuration for the parse worker pool.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WorkerConfig {
     /// Skip files larger than this (bytes). `None` = no limit.
     pub max_file_size_bytes: Option<u64>,
@@ -39,6 +42,21 @@ pub struct WorkerConfig {
     /// Maximum number of Rayon worker threads. 0 = use Rayon default
     /// (typically number of CPU cores).
     pub max_workers: usize,
+    /// Optional cancellation token for interruptible extraction.
+    /// `None` (default) means extractions run to completion with no
+    /// cancellation checks — identical to pre-cancellable behaviour.
+    pub cancel_token: Option<Arc<dyn CancelCheck + Send + Sync>>,
+}
+
+impl std::fmt::Debug for WorkerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkerConfig")
+            .field("max_file_size_bytes", &self.max_file_size_bytes)
+            .field("parse_timeout_secs", &self.parse_timeout_secs)
+            .field("max_workers", &self.max_workers)
+            .field("cancel_token", &self.cancel_token.as_ref().map(|_| ".."))
+            .finish()
+    }
 }
 
 impl Default for WorkerConfig {
@@ -47,6 +65,7 @@ impl Default for WorkerConfig {
             max_file_size_bytes: Some(4 * 1024 * 1024), // 4 MiB
             parse_timeout_secs: 30,
             max_workers: 0,
+            cancel_token: None,
         }
     }
 }
@@ -116,14 +135,20 @@ impl ParseWorkerPool {
         }
 
         // 2. Extract with panic isolation
+        let token: &dyn CancelCheck = self
+            .config
+            .cancel_token
+            .as_deref()
+            .map_or(&NeverCancel, |t| t);
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            extract_file_with_mode(
+            extract_file_with_mode_cancellable(
                 frontend,
                 file_id,
                 file_path,
                 source,
                 content_hash,
                 mode.clone(),
+                token,
             )
         }));
 
