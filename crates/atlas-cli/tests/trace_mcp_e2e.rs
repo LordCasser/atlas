@@ -1384,7 +1384,11 @@ fn open_project_background_activates_on_wait_for_task() {
     assert_eq!(completed["activation"], "activated");
     assert_eq!(completed["activated_project"], expected);
 
-    let status = router.call_tool(&ToolCallContext::empty(), "project", &json!({"action": "status"}));
+    let status = router.call_tool(
+        &ToolCallContext::empty(),
+        "project",
+        &json!({"action": "status"}),
+    );
     let status_text = match &status.content[0] {
         atlas_mcp::protocol::ContentBlock::Text { text } => text,
     };

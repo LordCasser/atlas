@@ -106,7 +106,7 @@ impl GraphSession {
 
     /// Rebuild the graph unconditionally, regardless of signature.
     ///
-    /// Called after `AutoIndex` completes so the fresh database is loaded
+    /// Called after an external index write so the fresh database is loaded
     /// immediately.
     pub fn force_refresh(&mut self) -> anyhow::Result<()> {
         self.rebuild()
@@ -172,10 +172,8 @@ impl GraphSession {
 
         // Create SourceExtractor for AST-aware source snippet extraction
         // (tree-sitter re-parsing), matching the MCP pattern.
-        let source_extractor = SourceExtractor::new(
-            Arc::clone(&self.store),
-            self.project_root.clone(),
-        );
+        let source_extractor =
+            SourceExtractor::new(Arc::clone(&self.store), self.project_root.clone());
         let context = ContextBuilder::new(Arc::clone(&self.store), Arc::clone(&graph))
             .with_project_root(self.project_root.clone())
             .with_source_fn(Arc::new(move |id| source_extractor.extract_source(id)));

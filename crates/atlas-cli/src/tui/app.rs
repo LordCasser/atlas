@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use atlas_engine::{CallerChain, ContextView, SearchResult, Store};
@@ -12,10 +12,9 @@ use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style},
-    widgets::{Block, Borders, Clear, Gauge, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 
-use super::auto_index::AutoIndexHandle;
 use super::event::{Event, EventHandler};
 use super::jobs::{JobManager, JobResult, TuiJob};
 use super::search_session::{ParsedSearch, SearchSession};
@@ -40,7 +39,6 @@ enum Screen {
     SearchHome,
     SymbolDetail,
     TraceView,
-    AutoIndexing,
 }
 
 /// Main TUI application state.
@@ -69,8 +67,6 @@ pub struct App {
     trace_selected: usize,
     trace_scroll: usize,
 
-    // ── Auto-index (Phase 6) ──────────────────────────────────────────
-    auto_index: Option<AutoIndexHandle>,
     exit_confirm_until: Option<Instant>,
 
     // ── Job system ────────────────────────────────────────────────────
@@ -84,6 +80,7 @@ pub struct App {
     file_count: i64,
     symbol_count: i64,
     edge_count: i64,
+    index_mode: String,
 }
 
 impl App {
@@ -92,24 +89,16 @@ impl App {
         let (file_count, symbol_count, edge_count) = stats
             .map(|s| (s.total_files, s.total_symbols, s.total_edges))
             .unwrap_or_default();
+        let index_mode = detect_index_mode(&store, file_count);
 
         let session = GraphSession::new(Arc::clone(&store), project_root.clone());
         let job_manager = JobManager::new(Arc::clone(&store), project_root.clone());
-
-        let (screen, auto_index) = if file_count == 0 {
-            let handle =
-                super::auto_index::spawn_auto_index(Arc::clone(&store), project_root.clone());
-            (Screen::AutoIndexing, Some(handle))
-        } else {
-            (Screen::SearchHome, None)
-        };
 
         Self {
             should_quit: false,
             store,
             project_root,
             session,
-            auto_index,
             exit_confirm_until: None,
             job_manager,
             pending_search: None,
@@ -119,7 +108,7 @@ impl App {
             search_results: Vec::new(),
             selected_index: 0,
             focus: Focus::SearchBar,
-            screen,
+            screen: Screen::SearchHome,
             detail_tab: DetailTab::Overview,
             detail_context: None,
             detail_selected: 0,
@@ -130,6 +119,7 @@ impl App {
             file_count,
             symbol_count,
             edge_count,
+            index_mode,
         }
     }
 
@@ -168,57 +158,6 @@ impl App {
             self.exit_confirm_until = None;
         }
 
-        if self.screen != Screen::AutoIndexing {
-            return;
-        }
-        if let Some(ref ai) = self.auto_index {
-            if ai.done.load(Ordering::SeqCst) || ai.cancel.load(Ordering::SeqCst) {
-                let mut ai_handle = self.auto_index.take().unwrap();
-                // If cancellation was requested but worker hasn't set done yet,
-                // wait briefly for the worker to detect cancellation and exit.
-                if !ai_handle.done.load(Ordering::SeqCst)
-                    && ai_handle.cancel.load(Ordering::SeqCst)
-                {
-                    // Worker is still running but cancel was set — poll briefly.
-                    // The worker checks cancel between phases and will exit soon.
-                    let deadline = Instant::now() + Duration::from_secs(2);
-                    while Instant::now() < deadline
-                        && !ai_handle.done.load(Ordering::SeqCst)
-                    {
-                        std::thread::sleep(Duration::from_millis(50));
-                    }
-                }
-                match ai_handle.take_result() {
-                    Some(Ok(())) => {
-                        // Refresh DB stats from the now-populated store.
-                        if let Ok(stats) = self.store.get_stats() {
-                            self.file_count = stats.total_files;
-                            self.symbol_count = stats.total_symbols;
-                            self.edge_count = stats.total_edges;
-                        }
-                        if let Err(e) = self.session.force_refresh() {
-                            tracing::error!("Failed to refresh graph after auto-index: {e}");
-                        }
-                        self.screen = Screen::SearchHome;
-                    }
-                    Some(Err(e)) => {
-                        tracing::error!("Auto-index failed: {e:?}");
-                        self.screen = Screen::SearchHome;
-                    }
-                    None => {
-                        // Result already taken (should not happen), or cancelled.
-                        // Refresh stats with whatever partial data exists.
-                        if let Ok(stats) = self.store.get_stats() {
-                            self.file_count = stats.total_files;
-                            self.symbol_count = stats.total_symbols;
-                            self.edge_count = stats.total_edges;
-                        }
-                        self.screen = Screen::SearchHome;
-                    }
-                }
-            }
-        }
-
         // ── Job polling (search / trace / lazy structural) ────────────────
         match self.job_manager.poll() {
             Some(super::jobs::JobStatus::Completed { result }) => {
@@ -247,15 +186,6 @@ impl App {
             Screen::SearchHome => self.handle_search_key(code),
             Screen::SymbolDetail => self.handle_detail_key(code),
             Screen::TraceView => self.handle_trace_key(code),
-            Screen::AutoIndexing => {
-                // Esc cancels auto-index (user can explore partial data).
-                if code == KeyCode::Esc {
-                    if let Some(ref ai) = self.auto_index {
-                        ai.cancel.store(true, Ordering::SeqCst);
-                        tracing::info!("Auto-index cancellation requested by user");
-                    }
-                }
-            }
         }
     }
 
@@ -629,15 +559,14 @@ impl App {
                 files_built,
                 files_cached,
             } => {
-                tracing::info!(
-                    "Lazy structural: {files_built} built, {files_cached} cached"
-                );
+                tracing::info!("Lazy structural: {files_built} built, {files_cached} cached");
                 // Refresh the graph on the main thread so it picks up the
                 // newly extracted symbols.
                 self.session.mark_stale();
                 if let Err(e) = self.session.maybe_refresh() {
                     tracing::error!("Failed to refresh graph after lazy structural: {e}");
                 }
+                self.refresh_cached_status();
                 // Push refreshed graph to the job manager.
                 self.job_manager
                     .set_graph(self.session.graph_engine().clone());
@@ -711,56 +640,50 @@ impl App {
             frame.render_widget(p, centered_in(body_cols[0], hint.len() as u16, 1));
         }
 
-        // Body content.
-        if self.screen == Screen::AutoIndexing {
-            render_auto_index_progress(frame, body_area, &self.auto_index);
-        } else {
-            // Right panel.
-            match (&self.screen, &self.detail_context, &self.trace_chain) {
-                (Screen::SymbolDetail, Some(ctx), _) => {
-                    // Clamp scroll before render so selected stays visible.
-                    let available_height = body_cols[1].height.saturating_sub(2) as usize;
-                    if self.detail_selected < self.detail_scroll {
-                        self.detail_scroll = self.detail_selected;
-                    } else if self.detail_selected >= self.detail_scroll + available_height {
-                        self.detail_scroll =
-                            self.detail_selected.saturating_sub(available_height - 1);
-                    }
-                    let active_tab = self.detail_tab;
-                    context_view::render(
-                        frame,
-                        body_cols[1],
-                        ctx,
-                        active_tab,
-                        self.detail_selected,
-                        self.detail_scroll,
-                    );
+        // Right panel.
+        match (&self.screen, &self.detail_context, &self.trace_chain) {
+            (Screen::SymbolDetail, Some(ctx), _) => {
+                // Clamp scroll before render so selected stays visible.
+                let available_height = body_cols[1].height.saturating_sub(2) as usize;
+                if self.detail_selected < self.detail_scroll {
+                    self.detail_scroll = self.detail_selected;
+                } else if self.detail_selected >= self.detail_scroll + available_height {
+                    self.detail_scroll = self.detail_selected.saturating_sub(available_height - 1);
                 }
-                (Screen::TraceView, _, Some(chain)) => {
-                    // Clamp trace scroll before render.
-                    let chain_height = body_cols[1].height.saturating_sub(2) as usize;
-                    if self.trace_selected < self.trace_scroll {
-                        self.trace_scroll = self.trace_selected;
-                    } else if self.trace_selected >= self.trace_scroll + chain_height {
-                        self.trace_scroll = self.trace_selected.saturating_sub(chain_height - 1);
-                    }
-                    trace_view::render(
-                        frame,
-                        body_cols[1],
-                        chain,
-                        self.trace_selected,
-                        self.trace_scroll,
-                    );
+                let active_tab = self.detail_tab;
+                context_view::render(
+                    frame,
+                    body_cols[1],
+                    ctx,
+                    active_tab,
+                    self.detail_selected,
+                    self.detail_scroll,
+                );
+            }
+            (Screen::TraceView, _, Some(chain)) => {
+                // Clamp trace scroll before render.
+                let chain_height = body_cols[1].height.saturating_sub(2) as usize;
+                if self.trace_selected < self.trace_scroll {
+                    self.trace_scroll = self.trace_selected;
+                } else if self.trace_selected >= self.trace_scroll + chain_height {
+                    self.trace_scroll = self.trace_selected.saturating_sub(chain_height - 1);
                 }
-                _ => {
-                    let hint = if self.session.is_initialized() {
-                        "Select a result (Enter) to view details"
-                    } else {
-                        "Graph loading..."
-                    };
-                    let p = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
-                    frame.render_widget(p, centered_in(body_cols[1], hint.len() as u16, 1));
-                }
+                trace_view::render(
+                    frame,
+                    body_cols[1],
+                    chain,
+                    self.trace_selected,
+                    self.trace_scroll,
+                );
+            }
+            _ => {
+                let hint = if self.session.is_initialized() {
+                    "Select a result (Enter) to view details"
+                } else {
+                    "Graph loading..."
+                };
+                let p = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
+                frame.render_widget(p, centered_in(body_cols[1], hint.len() as u16, 1));
             }
         }
 
@@ -772,7 +695,7 @@ impl App {
             self.symbol_count,
             self.edge_count,
             self.session.is_initialized(),
-            "",
+            &format!("Index: {}", self.index_mode),
         );
 
         if self.exit_confirmation_active() {
@@ -781,76 +704,43 @@ impl App {
             self.clear_exit_confirmation();
         }
     }
+
+    fn refresh_cached_status(&mut self) {
+        if let Ok(stats) = self.store.get_stats() {
+            self.file_count = stats.total_files;
+            self.symbol_count = stats.total_symbols;
+            self.edge_count = stats.total_edges;
+            self.index_mode = detect_index_mode(&self.store, stats.total_files);
+        }
+    }
+}
+
+fn detect_index_mode(store: &Store, total_files: i64) -> String {
+    if total_files <= 0 {
+        return "empty".into();
+    }
+    let counts = store
+        .count_fresh_file_extraction_state()
+        .unwrap_or_default();
+    let complete_count = |layer: &str| -> i64 {
+        counts
+            .iter()
+            .filter(|(l, s, _)| l == layer && s == "complete")
+            .map(|(_, _, c)| *c)
+            .sum()
+    };
+    if complete_count("dataflow") >= total_files {
+        "full".into()
+    } else if complete_count("structural") >= total_files {
+        "structural".into()
+    } else if complete_count("manifest") >= total_files {
+        "manifest".into()
+    } else {
+        "partial".into()
+    }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
-
-/// Render the auto-index progress screen.
-fn render_auto_index_progress(frame: &mut Frame, area: Rect, handle: &Option<AutoIndexHandle>) {
-    let progress = handle.as_ref().map(|h| h.progress.lock().unwrap().clone());
-
-    let (phase, current, total, message) = match &progress {
-        Some(p) => (p.phase.clone(), p.current, p.total, p.message.clone()),
-        None => ("Initializing".into(), 0, 0, String::new()),
-    };
-
-    // Vertical layout: title, gap, phase label, gauge, message, gap.
-    let inner = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2), // title
-            Constraint::Length(1), // gap
-            Constraint::Length(2), // phase label
-            Constraint::Length(1), // gauge
-            Constraint::Length(1), // message
-            Constraint::Length(1), // subtitle
-            Constraint::Min(0),    // fill
-        ])
-        .split(centered_in(area, 64, 8));
-
-    // Title
-    let title = Paragraph::new("Auto-indexing project...")
-        .style(Style::default().fg(Color::Cyan))
-        .alignment(Alignment::Center);
-    frame.render_widget(title, inner[0]);
-
-    // Phase label
-    let phase_text = format!(
-        "  {:<14} {}/{}",
-        phase,
-        current,
-        if total > 0 {
-            total.to_string()
-        } else {
-            "?".to_string()
-        }
-    );
-    let phase_para = Paragraph::new(phase_text).style(Style::default().fg(Color::White));
-    frame.render_widget(phase_para, inner[2]);
-
-    // Gauge progress bar
-    let ratio = if total > 0 {
-        (current as f64 / total as f64).min(1.0)
-    } else {
-        0.0
-    };
-    let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
-        .ratio(ratio);
-    frame.render_widget(gauge, inner[3]);
-
-    // Message
-    if !message.is_empty() {
-        let msg = Paragraph::new(message).style(Style::default().fg(Color::Gray));
-        frame.render_widget(msg, inner[4]);
-    }
-
-    // Subtitle
-    let subtitle = Paragraph::new("Building initial knowledge graph...")
-        .style(Style::default().fg(Color::DarkGray))
-        .alignment(Alignment::Center);
-    frame.render_widget(subtitle, inner[5]);
-}
 
 fn render_exit_confirmation(frame: &mut Frame, area: Rect) {
     let popup = centered_in(area, 28, 3);
@@ -926,11 +816,11 @@ mod tests {
             trace_chain: None,
             trace_selected: 0,
             trace_scroll: 0,
-            auto_index: None,
             exit_confirm_until: None,
             file_count: 0,
             symbol_count: 0,
             edge_count: 0,
+            index_mode: "empty".into(),
         }
     }
 

@@ -190,9 +190,7 @@ mod tests {
         let store = Arc::new(Store::open_in_memory().expect("in-memory store"));
         store.init_schema().expect("schema init");
 
-        let graph = Arc::new(
-            GraphEngine::from_store(&store, 0.0_f32).expect("graph from store"),
-        );
+        let graph = Arc::new(GraphEngine::from_store(&store, 0.0_f32).expect("graph from store"));
         let search = SearchEngine::new(Arc::clone(&store), Arc::clone(&graph));
 
         let engine = Engine::from_store(Arc::clone(&store), None);

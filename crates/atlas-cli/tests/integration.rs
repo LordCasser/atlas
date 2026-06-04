@@ -1540,14 +1540,20 @@ fn test_ts_react_cleanup() {
     let mut all_effects: Vec<atlas_engine::effects::SemanticEffect> = Vec::new();
 
     for sym in &fn_syms {
-        let cfg_nodes = store.find_cfg_nodes_by_function(&sym.id).unwrap_or_default();
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .unwrap_or_default();
         if cfg_nodes.is_empty() {
             continue;
         }
-        let cfg_edges = store.find_cfg_edges_by_function(&sym.id).unwrap_or_default();
+        let cfg_edges = store
+            .find_cfg_edges_by_function(&sym.id)
+            .unwrap_or_default();
         let cfg_graph =
             CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
-        let data_nodes = store.find_data_nodes_by_function(&sym.id).unwrap_or_default();
+        let data_nodes = store
+            .find_data_nodes_by_function(&sym.id)
+            .unwrap_or_default();
         let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
             vec![]
         } else {
@@ -1562,13 +1568,7 @@ fn test_ts_react_cleanup() {
         }
 
         let composition = compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
-        all_effects.extend(
-            composition
-                .node_effects
-                .values()
-                .flatten()
-                .cloned(),
-        );
+        all_effects.extend(composition.node_effects.values().flatten().cloned());
     }
 
     // Assert useEffect → Alloc (MaybeOwned at 0.6 confidence)
@@ -1646,22 +1646,16 @@ func main() {
         .expect("main function not found");
 
     // Load CFG
-    let cfg_nodes = store
-        .find_cfg_nodes_by_function(&main_sym.id)
-        .unwrap();
+    let cfg_nodes = store.find_cfg_nodes_by_function(&main_sym.id).unwrap();
     assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
 
-    let cfg_edges = store
-        .find_cfg_edges_by_function(&main_sym.id)
-        .unwrap();
+    let cfg_edges = store.find_cfg_edges_by_function(&main_sym.id).unwrap();
 
     // Build CfgGraph
     let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
 
     // Load DataFlow
-    let data_nodes = store
-        .find_data_nodes_by_function(&main_sym.id)
-        .unwrap();
+    let data_nodes = store.find_data_nodes_by_function(&main_sym.id).unwrap();
     let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
         vec![]
     } else {
@@ -1680,7 +1674,13 @@ func main() {
     // Assert that an Escape effect with EscapeTarget::Thread is produced
     // (the goroutine context causes resource escape)
     let has_thread_escape = all_effects.iter().any(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Escape { to: EscapeTarget::Thread, .. })
+        matches!(
+            &eff.kind,
+            SemanticEffectKind::Escape {
+                to: EscapeTarget::Thread,
+                ..
+            }
+        )
     });
     assert!(
         has_thread_escape,
@@ -1732,23 +1732,16 @@ func main() {
         .expect("main function not found");
 
     // Load CFG
-    let cfg_nodes = store
-        .find_cfg_nodes_by_function(&main_sym.id)
-        .unwrap();
+    let cfg_nodes = store.find_cfg_nodes_by_function(&main_sym.id).unwrap();
     assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
 
-    let cfg_edges = store
-        .find_cfg_edges_by_function(&main_sym.id)
-        .unwrap();
+    let cfg_edges = store.find_cfg_edges_by_function(&main_sym.id).unwrap();
 
     // Build CfgGraph
-    let cfg_graph =
-        CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+    let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
 
     // Load DataFlow
-    let data_nodes = store
-        .find_data_nodes_by_function(&main_sym.id)
-        .unwrap();
+    let data_nodes = store.find_data_nodes_by_function(&main_sym.id).unwrap();
     let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
         vec![]
     } else {
@@ -1827,14 +1820,10 @@ fn test_rust_scope_exit() {
         .expect("main function not found");
 
     // Load CFG
-    let cfg_nodes = store
-        .find_cfg_nodes_by_function(&main_sym.id)
-        .unwrap();
+    let cfg_nodes = store.find_cfg_nodes_by_function(&main_sym.id).unwrap();
     assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
 
-    let cfg_edges = store
-        .find_cfg_edges_by_function(&main_sym.id)
-        .unwrap();
+    let cfg_edges = store.find_cfg_edges_by_function(&main_sym.id).unwrap();
 
     // Build CfgGraph
     let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
@@ -1887,7 +1876,7 @@ fn test_rust_scope_exit() {
         has_scope_exit_free,
         "Expected a scope-exit Free effect at Exit node for unfreed allocation. \
          Exit node effects: {:?}",
-         exit_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
+        exit_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
     );
 }
 
@@ -1929,30 +1918,32 @@ class ResourceTest {
         .expect("readFile method not found");
 
     // Load CFG
-    let cfg_nodes = store
-        .find_cfg_nodes_by_function(&method_sym.id)
-        .unwrap();
+    let cfg_nodes = store.find_cfg_nodes_by_function(&method_sym.id).unwrap();
     assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
 
     // Verify there is a BlockExit node
     let has_block_exit = cfg_nodes
         .iter()
         .any(|n| n.kind == atlas_engine::CfgNodeKind::BlockExit);
-    assert!(has_block_exit, "CFG should have a BlockExit node for try-with-resources");
+    assert!(
+        has_block_exit,
+        "CFG should have a BlockExit node for try-with-resources"
+    );
 
-    let cfg_edges = store
-        .find_cfg_edges_by_function(&method_sym.id)
-        .unwrap();
+    let cfg_edges = store.find_cfg_edges_by_function(&method_sym.id).unwrap();
 
     // Build CfgGraph
     let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
 
     // Find a Statement node with JavaTryWith context and the BlockExit node
-    let stmt_node = cfg_nodes
-        .iter()
-        .find(|n| n.kind == atlas_engine::CfgNodeKind::Statement
-            && n.call_context == atlas_engine::enums::CallContext::JavaTryWith);
-    assert!(stmt_node.is_some(), "Should find a Statement with JavaTryWith context");
+    let stmt_node = cfg_nodes.iter().find(|n| {
+        n.kind == atlas_engine::CfgNodeKind::Statement
+            && n.call_context == atlas_engine::enums::CallContext::JavaTryWith
+    });
+    assert!(
+        stmt_node.is_some(),
+        "Should find a Statement with JavaTryWith context"
+    );
     let stmt_node = stmt_node.unwrap();
 
     let be_node = cfg_nodes
@@ -2012,9 +2003,9 @@ class ResourceTest {
     );
 
     // Verify the ConsumptionStyle is ContextManaged
-    let block_exit_free = be_effects.iter().find(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Free { .. })
-    });
+    let block_exit_free = be_effects
+        .iter()
+        .find(|eff| matches!(&eff.kind, SemanticEffectKind::Free { .. }));
     assert!(block_exit_free.is_some(), "Should have a Free effect");
     assert_eq!(
         block_exit_free.unwrap().consumption_style,
@@ -2083,30 +2074,33 @@ class ResourceDemo
             .expect("ReadFile method not found");
 
         // Load CFG
-        let cfg_nodes = store
-            .find_cfg_nodes_by_function(&method_sym.id)
-            .unwrap();
+        let cfg_nodes = store.find_cfg_nodes_by_function(&method_sym.id).unwrap();
         assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
 
         // Verify there is a BlockExit node
         let has_block_exit = cfg_nodes
             .iter()
             .any(|n| n.kind == atlas_engine::CfgNodeKind::BlockExit);
-        assert!(has_block_exit, "CFG should have a BlockExit node for using statement");
+        assert!(
+            has_block_exit,
+            "CFG should have a BlockExit node for using statement"
+        );
 
-        let cfg_edges = store
-            .find_cfg_edges_by_function(&method_sym.id)
-            .unwrap();
+        let cfg_edges = store.find_cfg_edges_by_function(&method_sym.id).unwrap();
 
         // Build CfgGraph
-        let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+        let cfg_graph =
+            CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
 
         // Find a Statement node with CSharpUsing context and the BlockExit node
-        let stmt_node = cfg_nodes
-            .iter()
-            .find(|n| n.kind == atlas_engine::CfgNodeKind::Statement
-                && n.call_context == atlas_engine::enums::CallContext::CSharpUsing);
-        assert!(stmt_node.is_some(), "Should find a Statement with CSharpUsing context");
+        let stmt_node = cfg_nodes.iter().find(|n| {
+            n.kind == atlas_engine::CfgNodeKind::Statement
+                && n.call_context == atlas_engine::enums::CallContext::CSharpUsing
+        });
+        assert!(
+            stmt_node.is_some(),
+            "Should find a Statement with CSharpUsing context"
+        );
         let stmt_node = stmt_node.unwrap();
 
         let be_node = cfg_nodes
@@ -2141,7 +2135,8 @@ class ResourceDemo
             description: None,
             eligible_for_implicit_cleanup: None,
         };
-        let mut effects: HashMap<atlas_engine::ids::CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
+        let mut effects: HashMap<atlas_engine::ids::CfgNodeId, Vec<SemanticEffect>> =
+            HashMap::new();
         effects.insert(stmt_node.id, vec![alloc_effect]);
 
         // Run scope_exit_pass — should add a Free at BlockExit for the CSharpUsing alloc
@@ -2164,9 +2159,9 @@ class ResourceDemo
         );
 
         // Verify the ConsumptionStyle is ContextManaged
-        let block_exit_free = be_effects.iter().find(|eff| {
-            matches!(&eff.kind, SemanticEffectKind::Free { .. })
-        });
+        let block_exit_free = be_effects
+            .iter()
+            .find(|eff| matches!(&eff.kind, SemanticEffectKind::Free { .. }));
         assert!(block_exit_free.is_some(), "Should have a Free effect");
         assert_eq!(
             block_exit_free.unwrap().consumption_style,
@@ -2240,29 +2235,31 @@ class MultiDemo
             .expect("ProcessFiles method not found");
 
         // Load CFG
-        let cfg_nodes = store
-            .find_cfg_nodes_by_function(&method_sym.id)
-            .unwrap();
+        let cfg_nodes = store.find_cfg_nodes_by_function(&method_sym.id).unwrap();
         assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
 
         // Verify there is a BlockExit node
         let has_block_exit = cfg_nodes
             .iter()
             .any(|n| n.kind == atlas_engine::CfgNodeKind::BlockExit);
-        assert!(has_block_exit, "CFG should have a BlockExit node for using statement");
+        assert!(
+            has_block_exit,
+            "CFG should have a BlockExit node for using statement"
+        );
 
-        let cfg_edges = store
-            .find_cfg_edges_by_function(&method_sym.id)
-            .unwrap();
+        let cfg_edges = store.find_cfg_edges_by_function(&method_sym.id).unwrap();
 
         use atlas_engine::analysis::cfg_graph::CfgGraph;
-        let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+        let cfg_graph =
+            CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
 
         // Find Statement nodes with CSharpUsing context
         let using_stmts: Vec<_> = cfg_nodes
             .iter()
-            .filter(|n| n.kind == atlas_engine::CfgNodeKind::Statement
-                && n.call_context == atlas_engine::enums::CallContext::CSharpUsing)
+            .filter(|n| {
+                n.kind == atlas_engine::CfgNodeKind::Statement
+                    && n.call_context == atlas_engine::enums::CallContext::CSharpUsing
+            })
             .collect();
         assert!(
             !using_stmts.is_empty(),
@@ -2277,11 +2274,14 @@ class MultiDemo
 
         // Manually construct Alloc effects for both resources on the same statement node
         use atlas_engine::analysis::scope_exit::run_scope_exit_pass;
-        use atlas_engine::effects::{ConsumptionStyle, PlaceRef, SemanticEffect, SemanticEffectKind};
+        use atlas_engine::effects::{
+            ConsumptionStyle, PlaceRef, SemanticEffect, SemanticEffectKind,
+        };
         use atlas_engine::ids::EffectId;
         use std::collections::HashMap;
 
-        let mut effects: HashMap<atlas_engine::ids::CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
+        let mut effects: HashMap<atlas_engine::ids::CfgNodeId, Vec<SemanticEffect>> =
+            HashMap::new();
 
         // Both `using` resources are on the same statement (multi-declaration using)
         let stmt = &using_stmts[0];
@@ -2332,9 +2332,10 @@ class MultiDemo
         );
         let be_effects = be_effects.unwrap();
 
-        let free_count = be_effects.iter().filter(|eff| {
-            matches!(&eff.kind, SemanticEffectKind::Free { .. })
-        }).count();
+        let free_count = be_effects
+            .iter()
+            .filter(|eff| matches!(&eff.kind, SemanticEffectKind::Free { .. }))
+            .count();
         assert!(
             free_count >= 2,
             "Expected >= 2 Free effects at BlockExit for multiple using resources, got {}",
@@ -2353,7 +2354,10 @@ class MultiDemo
         }
 
         // Exit node should NOT have these Frees
-        if let Some(exit_node) = cfg_nodes.iter().find(|n| n.kind == atlas_engine::CfgNodeKind::Exit) {
+        if let Some(exit_node) = cfg_nodes
+            .iter()
+            .find(|n| n.kind == atlas_engine::CfgNodeKind::Exit)
+        {
             if let Some(exit_effects) = effects.get(&exit_node.id) {
                 let has_scope_exit_free = exit_effects.iter().any(|eff| {
                     matches!(&eff.kind, SemanticEffectKind::Free { callee, .. }
@@ -2406,22 +2410,17 @@ fun readFile() {
             .expect("readFile function not found");
 
         // Verify that CFG nodes were extracted
-        let cfg_nodes = store
-            .find_cfg_nodes_by_function(&func_sym.id)
-            .unwrap();
+        let cfg_nodes = store.find_cfg_nodes_by_function(&func_sym.id).unwrap();
         assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
 
-        let cfg_edges = store
-            .find_cfg_edges_by_function(&func_sym.id)
-            .unwrap();
+        let cfg_edges = store.find_cfg_edges_by_function(&func_sym.id).unwrap();
 
         use atlas_engine::analysis::cfg_graph::CfgGraph;
-        let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+        let cfg_graph =
+            CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
 
         // Load DataFlow
-        let data_nodes = store
-            .find_data_nodes_by_function(&func_sym.id)
-            .unwrap();
+        let data_nodes = store.find_data_nodes_by_function(&func_sym.id).unwrap();
         let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
             vec![]
         } else {
@@ -2439,8 +2438,8 @@ fun readFile() {
 
         let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
 
-        use atlas_engine::enums::CfgNodeKind;
         use atlas_engine::enums::CallContext;
+        use atlas_engine::enums::CfgNodeKind;
 
         // Verify BlockExit node exists (emitted for Kotlin .use {} blocks)
         let has_block_exit = cfg_graph
@@ -2467,7 +2466,11 @@ fun readFile() {
         for (id, node) in &cfg_graph.nodes {
             eprintln!(
                 "CFG node id={:?} kind={:?} call_context={:?} stmt_range=({},{})",
-                id, node.kind, node.call_context, node.stmt_range.start_byte, node.stmt_range.end_byte
+                id,
+                node.kind,
+                node.call_context,
+                node.stmt_range.start_byte,
+                node.stmt_range.end_byte
             );
         }
         eprintln!("=== DIAGNOSTIC: All DataNodes ===");
@@ -2483,7 +2486,9 @@ fun readFile() {
                 let cfg_node = cfg_graph.nodes.get(&eff.cfg_node_id);
                 eprintln!(
                     "Alloc callee={} target={:?} cfg_node_id={:?} cfg_kind={:?} call_context={:?}",
-                    callee, target, eff.cfg_node_id,
+                    callee,
+                    target,
+                    eff.cfg_node_id,
                     cfg_node.map(|n| n.kind),
                     cfg_node.map(|n| n.call_context)
                 );
@@ -2494,9 +2499,9 @@ fun readFile() {
         // Assert: at least one Alloc effect exists for the resource producer.
         // Kotlin .use {} is now modeled as a context-managed block (like Python with,
         // Java try-with-resources), so ScopeExitAnalyzer DOES produce a BlockExit Free.
-        let has_alloc = all_effects.iter().any(|eff| {
-            matches!(&eff.kind, SemanticEffectKind::Alloc { .. })
-        });
+        let has_alloc = all_effects
+            .iter()
+            .any(|eff| matches!(&eff.kind, SemanticEffectKind::Alloc { .. }));
         assert!(
             has_alloc,
             "Expected at least one Alloc effect for Kotlin .use resource. \
@@ -2559,14 +2564,10 @@ fun readFile() {
             .expect("process function not found");
 
         // Verify CFG nodes were extracted
-        let cfg_nodes = store
-            .find_cfg_nodes_by_function(&func_sym.id)
-            .unwrap();
+        let cfg_nodes = store.find_cfg_nodes_by_function(&func_sym.id).unwrap();
         assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
 
-        let cfg_edges = store
-            .find_cfg_edges_by_function(&func_sym.id)
-            .unwrap();
+        let cfg_edges = store.find_cfg_edges_by_function(&func_sym.id).unwrap();
 
         use atlas_engine::analysis::cfg_graph::CfgGraph;
         let cfg_graph =
@@ -2615,9 +2616,9 @@ fun readFile() {
         let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
 
         // Verify NO Alloc effects — .map is not a resource producer
-        let has_alloc = all_effects.iter().any(|eff| {
-            matches!(&eff.kind, SemanticEffectKind::Alloc { .. })
-        });
+        let has_alloc = all_effects
+            .iter()
+            .any(|eff| matches!(&eff.kind, SemanticEffectKind::Alloc { .. }));
         assert!(
             !has_alloc,
             "Expected NO Alloc effects for Kotlin .map. Found {:?}",
@@ -2644,9 +2645,9 @@ fun readFile() {
 mod ruby_tests {
     use super::*;
     use atlas_engine::analysis::cfg_graph::CfgGraph;
-    use atlas_engine::analysis::resource_ops::ResourceOpConfig;
     use atlas_engine::analysis::compose_effects;
-    use atlas_engine::effects::{SemanticEffectKind};
+    use atlas_engine::analysis::resource_ops::ResourceOpConfig;
+    use atlas_engine::effects::SemanticEffectKind;
     use atlas_engine::enums::CallContext;
     use atlas_engine::enums::CfgNodeKind;
 
@@ -2682,14 +2683,18 @@ end
         let cfg_nodes = store.find_cfg_nodes_by_function(&func_sym.id).unwrap();
         assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
         let cfg_edges = store.find_cfg_edges_by_function(&func_sym.id).unwrap();
-        let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+        let cfg_graph =
+            CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
 
         // Verify BlockExit node exists (emitted for Ruby block calls)
         let has_block_exit = cfg_graph
             .nodes
             .values()
             .any(|n| n.kind == CfgNodeKind::BlockExit);
-        assert!(has_block_exit, "CFG should have a BlockExit node for Ruby block call");
+        assert!(
+            has_block_exit,
+            "CFG should have a BlockExit node for Ruby block call"
+        );
 
         // Verify a Statement node has RubyBlock context
         let has_ruby_block_ctx = cfg_graph
@@ -2702,7 +2707,9 @@ end
         );
 
         // Run compose_effects to verify resource operation detection
-        let data_nodes = store.find_data_nodes_by_function(&func_sym.id).unwrap_or_default();
+        let data_nodes = store
+            .find_data_nodes_by_function(&func_sym.id)
+            .unwrap_or_default();
         let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
             vec![]
         } else {
@@ -2786,13 +2793,9 @@ end
         assert!(!func_sym.id.to_string().is_empty());
 
         // Load CFG
-        let cfg_nodes = store
-            .find_cfg_nodes_by_function(&func_sym.id)
-            .unwrap();
+        let cfg_nodes = store.find_cfg_nodes_by_function(&func_sym.id).unwrap();
         assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
-        let cfg_edges = store
-            .find_cfg_edges_by_function(&func_sym.id)
-            .unwrap();
+        let cfg_edges = store.find_cfg_edges_by_function(&func_sym.id).unwrap();
         let cfg_graph =
             CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
 
@@ -2830,8 +2833,7 @@ end
         };
 
         let contract = ResourceOpConfig::default_for(Language::Ruby);
-        let composition =
-            compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
+        let composition = compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
 
         let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
 
@@ -2881,20 +2883,13 @@ fn test_python_open_without_with_no_auto_free() {
         .expect("read_file function not found");
 
     // Load CFG
-    let cfg_nodes = store
-        .find_cfg_nodes_by_function(&func_sym.id)
-        .unwrap();
+    let cfg_nodes = store.find_cfg_nodes_by_function(&func_sym.id).unwrap();
     assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
-    let cfg_edges = store
-        .find_cfg_edges_by_function(&func_sym.id)
-        .unwrap();
-    let cfg_graph =
-        CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+    let cfg_edges = store.find_cfg_edges_by_function(&func_sym.id).unwrap();
+    let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
 
     // Load DataFlow
-    let data_nodes = store
-        .find_data_nodes_by_function(&func_sym.id)
-        .unwrap();
+    let data_nodes = store.find_data_nodes_by_function(&func_sym.id).unwrap();
     let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
         vec![]
     } else {
@@ -2911,9 +2906,9 @@ fn test_python_open_without_with_no_auto_free() {
     let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
 
     // Assert that open() produces an Alloc effect
-    let has_alloc_for_open = all_effects.iter().any(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "open")
-    });
+    let has_alloc_for_open = all_effects.iter().any(
+        |eff| matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "open"),
+    );
     assert!(
         has_alloc_for_open,
         "Expected an Alloc effect for open() in Python without 'with'. \
@@ -2924,9 +2919,9 @@ fn test_python_open_without_with_no_auto_free() {
 
     // Assert NO Free effect is generated — Python open() without 'with'
     // should NOT get implicit scope-exit cleanup (implicit_scope_cleanup=false).
-    let has_free = all_effects.iter().any(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Free { .. })
-    });
+    let has_free = all_effects
+        .iter()
+        .any(|eff| matches!(&eff.kind, SemanticEffectKind::Free { .. }));
     assert!(
         !has_free,
         "Expected NO implicit Free effect for open() without with-block. \
@@ -2940,9 +2935,9 @@ fn test_python_open_without_with_no_auto_free() {
     );
 
     // Verify the Alloc effect is marked as NOT eligible for implicit cleanup
-    let open_alloc = all_effects.iter().find(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "open")
-    });
+    let open_alloc = all_effects.iter().find(
+        |eff| matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "open"),
+    );
     assert!(
         open_alloc.is_some_and(|e| e.eligible_for_implicit_cleanup == Some(false)),
         "Alloc for open() should have eligible_for_implicit_cleanup == Some(false), \
@@ -2977,20 +2972,13 @@ fn test_c_malloc_without_free_no_auto_free() {
         .expect("function f not found");
 
     // Load CFG
-    let cfg_nodes = store
-        .find_cfg_nodes_by_function(&func_sym.id)
-        .unwrap();
+    let cfg_nodes = store.find_cfg_nodes_by_function(&func_sym.id).unwrap();
     assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
-    let cfg_edges = store
-        .find_cfg_edges_by_function(&func_sym.id)
-        .unwrap();
-    let cfg_graph =
-        CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+    let cfg_edges = store.find_cfg_edges_by_function(&func_sym.id).unwrap();
+    let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
 
     // Load DataFlow
-    let data_nodes = store
-        .find_data_nodes_by_function(&func_sym.id)
-        .unwrap();
+    let data_nodes = store.find_data_nodes_by_function(&func_sym.id).unwrap();
     let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
         vec![]
     } else {
@@ -3007,9 +2995,9 @@ fn test_c_malloc_without_free_no_auto_free() {
     let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
 
     // Assert that malloc() produces an Alloc effect
-    let has_alloc_for_malloc = all_effects.iter().any(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc")
-    });
+    let has_alloc_for_malloc = all_effects.iter().any(
+        |eff| matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc"),
+    );
     assert!(
         has_alloc_for_malloc,
         "Expected an Alloc effect for malloc() in C. \
@@ -3020,9 +3008,9 @@ fn test_c_malloc_without_free_no_auto_free() {
 
     // Assert NO Free effect — C should NOT auto-free unfreed malloc()
     // (manual deallocation required, implicit_scope_cleanup=false).
-    let has_free = all_effects.iter().any(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Free { .. })
-    });
+    let has_free = all_effects
+        .iter()
+        .any(|eff| matches!(&eff.kind, SemanticEffectKind::Free { .. }));
     assert!(
         !has_free,
         "Expected NO implicit Free effect for malloc() without free() in C. \
@@ -3036,9 +3024,9 @@ fn test_c_malloc_without_free_no_auto_free() {
     );
 
     // Verify the Alloc is explicitly ineligible
-    let malloc_alloc = all_effects.iter().find(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc")
-    });
+    let malloc_alloc = all_effects.iter().find(
+        |eff| matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc"),
+    );
     assert!(
         malloc_alloc.is_some_and(|e| e.eligible_for_implicit_cleanup == Some(false)),
         "Alloc for malloc() should have eligible_for_implicit_cleanup == Some(false), \
@@ -3075,20 +3063,13 @@ fn test_cpp_malloc_without_free_no_auto_free() {
         .expect("function f not found");
 
     // Load CFG
-    let cfg_nodes = store
-        .find_cfg_nodes_by_function(&func_sym.id)
-        .unwrap();
+    let cfg_nodes = store.find_cfg_nodes_by_function(&func_sym.id).unwrap();
     assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
-    let cfg_edges = store
-        .find_cfg_edges_by_function(&func_sym.id)
-        .unwrap();
-    let cfg_graph =
-        CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+    let cfg_edges = store.find_cfg_edges_by_function(&func_sym.id).unwrap();
+    let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
 
     // Load DataFlow
-    let data_nodes = store
-        .find_data_nodes_by_function(&func_sym.id)
-        .unwrap();
+    let data_nodes = store.find_data_nodes_by_function(&func_sym.id).unwrap();
     let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
         vec![]
     } else {
@@ -3105,9 +3086,9 @@ fn test_cpp_malloc_without_free_no_auto_free() {
     let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
 
     // Assert that malloc() produces an Alloc effect
-    let has_alloc_for_malloc = all_effects.iter().any(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc")
-    });
+    let has_alloc_for_malloc = all_effects.iter().any(
+        |eff| matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc"),
+    );
     assert!(
         has_alloc_for_malloc,
         "Expected an Alloc effect for malloc() in C++. \
@@ -3118,9 +3099,9 @@ fn test_cpp_malloc_without_free_no_auto_free() {
 
     // Assert NO implicit Free — even though C++ has RAII at the language
     // level, malloc() is a C API pattern explicitly marked ineligible.
-    let has_free = all_effects.iter().any(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Free { .. })
-    });
+    let has_free = all_effects
+        .iter()
+        .any(|eff| matches!(&eff.kind, SemanticEffectKind::Free { .. }));
     assert!(
         !has_free,
         "Expected NO implicit Free effect for malloc() without free() in C++. \
@@ -3136,9 +3117,9 @@ fn test_cpp_malloc_without_free_no_auto_free() {
 
     // The Alloc must carry eligible_for_implicit_cleanup == Some(false)
     // — the per-pattern flag overrides the language-level default.
-    let malloc_alloc = all_effects.iter().find(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc")
-    });
+    let malloc_alloc = all_effects.iter().find(
+        |eff| matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc"),
+    );
     assert!(
         malloc_alloc.is_some_and(|e| e.eligible_for_implicit_cleanup == Some(false)),
         "Alloc for malloc() in C++ should have eligible_for_implicit_cleanup == Some(false). \
@@ -3224,10 +3205,7 @@ fn test_c_parse_to_effects_no_auto_free() {
     use atlas_engine::effects::SemanticEffectKind;
 
     let _ = tracing_subscriber::fmt::try_init();
-    let files = &[(
-        "test.c",
-        "void f() {\n    void* p = malloc(16);\n}\n",
-    )];
+    let files = &[("test.c", "void f() {\n    void* p = malloc(16);\n}\n")];
 
     let (store, _stats) = index_files(files);
     let file_id = FileId::generate("test.c");
@@ -3271,19 +3249,13 @@ fn test_c_parse_to_effects_no_auto_free() {
         }
 
         let composition = compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
-        all_effects.extend(
-            composition
-                .node_effects
-                .values()
-                .flatten()
-                .cloned(),
-        );
+        all_effects.extend(composition.node_effects.values().flatten().cloned());
     }
 
     // Assert: Alloc effect EXISTS for malloc
-    let has_alloc_for_malloc = all_effects.iter().any(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc")
-    });
+    let has_alloc_for_malloc = all_effects.iter().any(
+        |eff| matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc"),
+    );
     assert!(
         has_alloc_for_malloc,
         "Expected an Alloc effect for malloc() in C. \
@@ -3293,9 +3265,9 @@ fn test_c_parse_to_effects_no_auto_free() {
     );
 
     // Assert: NO Free effect is produced (no implicit cleanup in C)
-    let has_free = all_effects.iter().any(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Free { .. })
-    });
+    let has_free = all_effects
+        .iter()
+        .any(|eff| matches!(&eff.kind, SemanticEffectKind::Free { .. }));
     assert!(
         !has_free,
         "Expected NO implicit Free effect for malloc() without free() in C. \
@@ -3309,9 +3281,9 @@ fn test_c_parse_to_effects_no_auto_free() {
     );
 
     // Assert: Alloc has eligible_for_implicit_cleanup == Some(false)
-    let malloc_alloc = all_effects.iter().find(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc")
-    });
+    let malloc_alloc = all_effects.iter().find(
+        |eff| matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc"),
+    );
     assert!(
         malloc_alloc.is_some_and(|e| e.eligible_for_implicit_cleanup == Some(false)),
         "Alloc for malloc() should have eligible_for_implicit_cleanup == Some(false), \
@@ -3346,20 +3318,13 @@ fn test_c_parse_to_effects_with_explicit_free() {
         .expect("function f not found");
 
     // Load CFG
-    let cfg_nodes = store
-        .find_cfg_nodes_by_function(&func_sym.id)
-        .unwrap();
+    let cfg_nodes = store.find_cfg_nodes_by_function(&func_sym.id).unwrap();
     assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
-    let cfg_edges = store
-        .find_cfg_edges_by_function(&func_sym.id)
-        .unwrap();
-    let cfg_graph =
-        CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+    let cfg_edges = store.find_cfg_edges_by_function(&func_sym.id).unwrap();
+    let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
 
     // Load DataFlow
-    let data_nodes = store
-        .find_data_nodes_by_function(&func_sym.id)
-        .unwrap();
+    let data_nodes = store.find_data_nodes_by_function(&func_sym.id).unwrap();
     let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
         vec![]
     } else {
@@ -3376,9 +3341,9 @@ fn test_c_parse_to_effects_with_explicit_free() {
     let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
 
     // Assert: Alloc exists for malloc
-    let has_alloc_for_malloc = all_effects.iter().any(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc")
-    });
+    let has_alloc_for_malloc = all_effects.iter().any(
+        |eff| matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "malloc"),
+    );
     assert!(
         has_alloc_for_malloc,
         "Expected an Alloc effect for malloc(). \
@@ -3388,9 +3353,9 @@ fn test_c_parse_to_effects_with_explicit_free() {
     );
 
     // Assert: Free exists for free(p)
-    let free_effect = all_effects.iter().find(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Free { callee, .. } if callee == "free")
-    });
+    let free_effect = all_effects.iter().find(
+        |eff| matches!(&eff.kind, SemanticEffectKind::Free { callee, .. } if callee == "free"),
+    );
     assert!(
         free_effect.is_some(),
         "Expected a Free effect for free(p). \
@@ -3435,20 +3400,13 @@ fn test_cpp_c_api_no_auto_free() {
         .expect("function f not found");
 
     // Load CFG
-    let cfg_nodes = store
-        .find_cfg_nodes_by_function(&func_sym.id)
-        .unwrap();
+    let cfg_nodes = store.find_cfg_nodes_by_function(&func_sym.id).unwrap();
     assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
-    let cfg_edges = store
-        .find_cfg_edges_by_function(&func_sym.id)
-        .unwrap();
-    let cfg_graph =
-        CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+    let cfg_edges = store.find_cfg_edges_by_function(&func_sym.id).unwrap();
+    let cfg_graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
 
     // Load DataFlow
-    let data_nodes = store
-        .find_data_nodes_by_function(&func_sym.id)
-        .unwrap();
+    let data_nodes = store.find_data_nodes_by_function(&func_sym.id).unwrap();
     let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
         vec![]
     } else {
@@ -3465,9 +3423,9 @@ fn test_cpp_c_api_no_auto_free() {
     let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
 
     // Assert: Alloc exists for fopen
-    let has_alloc_for_fopen = all_effects.iter().any(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "fopen")
-    });
+    let has_alloc_for_fopen = all_effects.iter().any(
+        |eff| matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "fopen"),
+    );
     assert!(
         has_alloc_for_fopen,
         "Expected an Alloc effect for fopen() in C++. \
@@ -3477,9 +3435,9 @@ fn test_cpp_c_api_no_auto_free() {
     );
 
     // Assert: NO Free for fclose (C API pattern excluded from C++ auto-free)
-    let has_free = all_effects.iter().any(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Free { .. })
-    });
+    let has_free = all_effects
+        .iter()
+        .any(|eff| matches!(&eff.kind, SemanticEffectKind::Free { .. }));
     assert!(
         !has_free,
         "Expected NO implicit Free effect for fopen() without fclose() in C++. \
@@ -3493,9 +3451,9 @@ fn test_cpp_c_api_no_auto_free() {
     );
 
     // Assert: Alloc has eligible_for_implicit_cleanup == Some(false)
-    let fopen_alloc = all_effects.iter().find(|eff| {
-        matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "fopen")
-    });
+    let fopen_alloc = all_effects.iter().find(
+        |eff| matches!(&eff.kind, SemanticEffectKind::Alloc { callee, .. } if callee == "fopen"),
+    );
     assert!(
         fopen_alloc.is_some_and(|e| e.eligible_for_implicit_cleanup == Some(false)),
         "Alloc for fopen() should have eligible_for_implicit_cleanup == Some(false), \

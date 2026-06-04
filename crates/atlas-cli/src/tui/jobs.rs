@@ -23,8 +23,8 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
 use atlas_engine::{
@@ -295,7 +295,15 @@ fn execute_job(
             scope,
             language,
             ..
-        } => run_search(&query, &scope, &language, store, graph, project_root, cancel),
+        } => run_search(
+            &query,
+            &scope,
+            &language,
+            store,
+            graph,
+            project_root,
+            cancel,
+        ),
         TuiJob::LazyStructural { search_term, .. } => {
             run_lazy_structural(&search_term, store, project_root, cancel)
         }
@@ -382,7 +390,10 @@ fn run_lazy_structural(
         };
     }
 
-    match engine.lazy_structural().ensure_structural_for_symbol(search_term) {
+    match engine
+        .lazy_structural()
+        .ensure_structural_for_symbol(search_term)
+    {
         Ok(ensured) => JobResult::LazyComplete {
             files_built: ensured.files_built,
             files_cached: ensured.files_cached,
@@ -431,9 +442,7 @@ mod tests {
     fn test_job_manager() -> JobManager {
         let store = Arc::new(Store::open_in_memory().expect("in-memory store"));
         store.init_schema().expect("init schema");
-        let graph = Arc::new(
-            GraphEngine::from_store(&store, 0.0).expect("graph from store"),
-        );
+        let graph = Arc::new(GraphEngine::from_store(&store, 0.0).expect("graph from store"));
         let mut jm = JobManager::new(store, PathBuf::from("."));
         jm.set_graph(graph);
         jm

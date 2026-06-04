@@ -6,8 +6,8 @@
 
 use atlas_cli::commands::index;
 use atlas_cli::runtime::{CommandContext, DbMode};
-use atlas_engine::enums::DataNodeKind;
 use atlas_engine::Store;
+use atlas_engine::enums::DataNodeKind;
 use atlas_engine::{layer, status};
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -536,13 +536,13 @@ fn p2_lazy_dataflow_callsite_id_remap() {
 
     // Step 2: Trigger lazy dataflow for the 'caller' function
     let symbols = store.find_symbols_by_name("caller").unwrap();
-    assert!(!symbols.is_empty(), "'caller' symbol not found after structural index");
+    assert!(
+        !symbols.is_empty(),
+        "'caller' symbol not found after structural index"
+    );
     let caller_sym_id = symbols[0].id;
 
-    let svc = atlas_engine::LazyDataflowService::new(
-        store.clone(),
-        Some(tmp.path().to_path_buf()),
-    );
+    let svc = atlas_engine::LazyDataflowService::new(store.clone(), Some(tmp.path().to_path_buf()));
     let _window = svc
         .ensure_for_function(&caller_sym_id, None)
         .expect("lazy dataflow ensure_for_function");

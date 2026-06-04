@@ -14,9 +14,7 @@ use anyhow::Context;
 use atlas_engine::ExtractionMode;
 use atlas_engine::FileLock;
 use atlas_engine::progress::{ProgressPhase, ProgressState};
-use atlas_engine::{
-    IndexPipeline, IndexPipelineOptions, PhaseName, ProgressEvent, ProgressSink,
-};
+use atlas_engine::{IndexPipeline, IndexPipelineOptions, PhaseName, ProgressEvent, ProgressSink};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -215,9 +213,7 @@ impl ProgressSink for CliProgressSink {
                 state.set_current(completed);
             }
             ProgressEvent::PhaseFinished {
-                phase: _,
-                detail,
-                ..
+                phase: _, detail, ..
             } => {
                 if let Some(msg) = detail {
                     state.set_message(msg);

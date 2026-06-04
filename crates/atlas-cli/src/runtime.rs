@@ -150,7 +150,7 @@ impl CommandContext {
 
 /// Read a source file, hash it, and extract facts using the given language frontend.
 ///
-/// Shared by `commands::index` and `tui::auto_index` to avoid duplicating the
+/// Shared by indexing entry points to avoid duplicating the
 /// file-read → hash → `pool.extract_one` pipeline.
 pub fn extract_one(
     pool: &ParseWorkerPool,
