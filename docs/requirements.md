@@ -103,6 +103,15 @@ tree-sitter queries + LanguageAdapter -> FileFacts
 - `LazyDataflow`：按需为查询窗口产出 dataflow/CFG facts，并暴露 partial/pending diagnostics。
 - `Full`：产出 structural + dataflow + CFG（语言支持时）+ persistent summaries；summary capability 只能在 summary tables 成功构建后对用户可见。
 
+索引重跑必须按请求的 analysis mode 判断是否已满足目标能力，不能只比较文件 hash：
+
+- `Manifest` run：hash 未变但缺 fresh complete manifest capability 的文件仍需重抽。
+- `Structural` run：hash 未变但缺 fresh complete structural capability 的文件仍需重抽；已有 dataflow/full capability 可满足 structural。
+- `Full` run：hash 未变但缺 fresh complete dataflow capability 的文件仍需重抽；summary capability 只能在 summary build 成功后出现。
+- 文件只有在 `files.content_hash` 与当前磁盘 hash 一致，且 file-level `extraction_state` 的 complete capability 覆盖请求 mode 时，才可视为 clean。
+- 缺失 `last_index_time`、`last_sync_time` 等可选 metadata 是正常状态，不得产生 warning；真正的查询错误才应报警。
+- 当前版本尚未发布，不为旧 DB schema 增加运行时兼容 fallback；schema、DDL 和读写代码必须保持同步。
+
 ### 符号与引用
 
 MVP 至少抽取：

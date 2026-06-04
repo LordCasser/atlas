@@ -14,6 +14,19 @@ This directory keeps the release-facing documentation that should remain current
 - The TUI must visibly show the current project index mode at the edge/status
   area: `empty`, `manifest`, `structural`, `full`, or `partial`.
 
+## Baseline indexing contracts
+
+- Dirty-check for `IndexPipeline` is not hash-only. A discovered file is clean
+  only when its on-disk hash matches the DB file hash and the DB has fresh,
+  complete file-level `extraction_state` for the requested analysis capability.
+- `manifest`, `structural`, and `full` index runs must upgrade hash-clean files
+  whose persisted capability is below the requested mode; they must not skip a
+  file just because `files.content_hash` is unchanged.
+- Missing optional metadata such as `last_index_time` or `last_sync_time` is a
+  normal empty-project/fresh-index state and must not produce warnings.
+- Atlas V1 is pre-release. Do not add runtime compatibility fallbacks for old
+  DB schemas; keep the current schema and code contract aligned instead.
+
 ## Reading order
 
 1. [Architecture](./architecture.md) — authoritative architecture: constraints, modules, schema, dataflow, capability profiles, design decisions.

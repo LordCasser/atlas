@@ -540,7 +540,11 @@ discover files
 - full-index 共享管线必须执行 dirty/deleted-file 检测并清理 DB 中已不存在的文件；仅清理本次 discover 到的文件不足以保证索引权威性。
 - `Full` 共享管线必须在 graph/annotation 阶段后构建 persistent function summaries，并把 summary capability 反映到持久化状态。
 - 新增索引阶段时优先进入共享管线，再由入口层决定是否暴露配置。
-- `filesync::build_dirty_set` 是 full index 的 hash-check 边界；CLI 不直接实现 DB hash diff。
+- `filesync::build_dirty_set_for_mode` 是 `IndexPipeline` 的 HashCheck 边界；CLI/MCP/TUI 不直接实现 DB hash diff 或 capability upgrade 判断。
+- HashCheck 的 clean 定义是“content hash 相同 + fresh complete file-level `extraction_state` 覆盖本次 `ExtractionMode` 所需 capability”。hash 相同但缺目标 capability 的文件必须进入 dirty set，以支持 manifest → structural → full 的无源码变更升级。
+- 目标 capability 映射为：`Manifest`/`ResolutionSymbols` 需要 manifest，`Structural` 需要 structural，`Full` 需要 dataflow；更高层 capability 可满足低层要求。
+- `project_metadata` 中 `last_index_time`、`last_sync_time` 等可选键不存在时表示未知/尚未发生，不是错误，不得产生 warning；只有表/列/SQL 等真实查询失败才记录 warning/error。
+- 当前版本未发布，不做旧 schema 运行时兼容 fallback；如果 schema contract 改变，应更新 DDL 和调用方，并要求重新建库/重索引。
 - `filesync::clean_stale_file_*` 是 stale facts 清理边界；所有入口必须先清理 incoming refs 和 outgoing edges，再删除旧 facts。
 - path alias 配置文件集合由 `resolution::PATH_ALIAS_CONFIG_FILES` 定义，当前为 `tsconfig.json` 和 `jsconfig.json`；检测、提交 hash、加载 resolver 必须使用同一来源。
 - 此契约（入口管参数/锁/UI/进度，管线管索引机制）是核心架构不变式，由 `pipeline_equivalence` 集成测试验证：同一项目通过不同入口索引必须产生相同 DB 状态（files/symbols/edges/summaries）。`IndexPipeline`（全量）与 `IncrementalPipeline`（增量）是仅有的 DB 变更编排路径；CLI/TUI 不得复制 phase 逻辑。
