@@ -16,6 +16,7 @@ pub mod search_session;
 pub mod session;
 pub mod widgets;
 
+use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -40,10 +41,19 @@ pub use progress::TuiProgress;
 pub fn run_tui(project_root: PathBuf) -> anyhow::Result<()> {
     // ── Open database store ──────────────────────────────────────────────
     let db_path = project_root.join(".atlas").join("atlas.db");
+
+    // Ensure .atlas directory exists (first-run: rusqlite creates the file
+    // but does not create parent directories).
+    fs::create_dir_all(db_path.parent().unwrap())
+        .with_context(|| format!("Failed to create directory at {}", db_path.parent().unwrap().display()))?;
+
     let store = Arc::new(
         Store::open_db(&db_path)
             .with_context(|| format!("Failed to open database at {}", db_path.display()))?,
     );
+
+    // Initialise schema (idempotent — safe on both new and existing DBs).
+    store.init_schema()?;
 
     // ── Set up ratatui terminal ──────────────────────────────────────────
     let mut stdout = io::stdout();

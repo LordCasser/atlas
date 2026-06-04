@@ -224,7 +224,7 @@ impl ToolRouter {
         });
 
         // Backward-compat fields for existing MCP consumers.
-        response["scope_file_count"] = json!(hits.len()); // approximate
+        response["scope_file_count"] = json!(engine_resp.scope_file_count);
         if engine_resp.triggered_lazy {
             response["parse_level"] = json!("structural");
             response["precise"] = json!(true);
@@ -329,7 +329,7 @@ impl ToolRouter {
                 "analysis_contract": ToolRouter::coverage_to_json(&engine_resp.coverage),
             });
 
-            response["scope_file_count"] = json!(hits.len());
+            response["scope_file_count"] = json!(engine_resp.scope_file_count);
             if engine_resp.triggered_lazy {
                 response["parse_level"] = json!("structural");
                 response["precise"] = json!(true);

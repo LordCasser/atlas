@@ -117,6 +117,8 @@ pub struct ScopedSearchResponse {
     pub results: Vec<search::SearchResult>,
     /// Total results available (may exceed `results.len()`).
     pub total: usize,
+    /// Number of indexed files in the resolved search scope.
+    pub scope_file_count: usize,
     /// Coverage level.
     pub coverage: SearchCoverage,
     /// Whether lazy structural was triggered on this request.
@@ -211,6 +213,7 @@ impl ScopedSearchService {
             return Ok(ScopedSearchResponse {
                 results: Vec::new(),
                 total: 0,
+                scope_file_count: 0,
                 coverage: SearchCoverage::Partial {
                     reason: "No indexed files in scope".to_string(),
                 },
@@ -223,11 +226,38 @@ impl ScopedSearchService {
 
         // 3. Decide whether to attempt lazy structural on empty results.
         const AUTO_STRUCTURAL_THRESHOLD: usize = 30;
-        let should_trigger_lazy = match req.analysis {
+        let mut should_trigger_lazy = match req.analysis {
             SearchAnalysis::Manifest => false,
             SearchAnalysis::Structural => true,
             SearchAnalysis::Auto => scope_file_count <= AUTO_STRUCTURAL_THRESHOLD,
         };
+
+        // If the DB already has full structural data (e.g. after
+        // `atlas index --analysis full`), skip lazy extraction — there is
+        // nothing to gain from re-extracting.
+        if should_trigger_lazy {
+            let file_ids = if normalized_scope.is_empty() {
+                self.store
+                    .list_files()?
+                    .into_iter()
+                    .take(200)
+                    .map(|f| f.file_id)
+                    .collect()
+            } else {
+                self.store
+                    .list_file_ids_in_scope(&normalized_scope, 200)?
+            };
+            if !file_ids.is_empty() {
+                let capability = self.store.derive_capability_for_files(&file_ids);
+                if capability.has(CapabilityMask::STRUCTURAL) {
+                    should_trigger_lazy = false;
+                    warnings.push(
+                        "Full structural index already present; skipping lazy extraction"
+                            .to_string(),
+                    );
+                }
+            }
+        }
 
         // 4. Manifest search.
         let candidate_multiplier = 4;
@@ -330,6 +360,7 @@ impl ScopedSearchService {
         Ok(ScopedSearchResponse {
             results,
             total,
+            scope_file_count,
             coverage,
             triggered_lazy,
             capability_mask,
@@ -456,7 +487,7 @@ mod tests {
     use types::{FileInfo, Language, ParseStatus};
 
     /// Seed a TypeScript file with a known symbol into the store.
-    fn seed_ts_file(store: &Store, path: &str, source: &str) {
+    fn seed_ts_file(store: &Store, path: &str, source: &str) -> types::FileId {
         let file_id = types::FileId::generate(path);
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
         store
@@ -499,6 +530,7 @@ mod tests {
             layer: "manifest".to_string(),
         };
         store.insert_symbols(&[sym]).unwrap();
+        file_id
     }
 
     fn test_service() -> ScopedSearchService {
@@ -531,6 +563,7 @@ mod tests {
         assert_eq!(resp.results[0].symbol.name, "handleRequest");
         assert!(!resp.triggered_lazy, "manifest mode should not trigger lazy");
         assert_eq!(resp.total, 1);
+        assert_eq!(resp.scope_file_count, 1);
         assert!(matches!(resp.coverage, SearchCoverage::Full));
     }
 
@@ -559,6 +592,7 @@ mod tests {
             .expect("execute should succeed");
 
         assert!(resp.results.is_empty(), "no results for nonexistent symbol");
+        assert_eq!(resp.scope_file_count, 1);
         // Structural mode should report that lazy was triggered even though
         // extraction may not have produced results (no project root).
         assert!(resp.triggered_lazy, "structural mode should trigger lazy");
@@ -583,9 +617,89 @@ mod tests {
             .expect("execute should succeed");
 
         assert!(resp.results.is_empty());
+        assert_eq!(resp.scope_file_count, 1);
         assert!(
             !resp.triggered_lazy,
             "manifest mode should not trigger lazy"
         );
+    }
+
+    // ── execute_auto_skips_lazy_when_structural_present ──────────────
+    //
+    // Verifies that Auto mode skips lazy extraction when the DB already
+    // contains full structural data (e.g. after `atlas index --analysis full`).
+    #[test]
+    fn execute_auto_skips_lazy_when_structural_present() {
+        let svc = test_service();
+
+        // Seed a file with a symbol and mark it as structurally extracted.
+        let file_id = seed_ts_file(
+            &svc.store,
+            "src/handler.ts",
+            "function handleRequest() {}",
+        );
+        let content_hash = svc
+            .store
+            .get_file(&file_id)
+            .expect("get_file")
+            .expect("file should exist")
+            .content_hash;
+        svc.store
+            .upsert_file_extraction_state(
+                &file_id,
+                "structural",
+                &content_hash,
+                "complete",
+                CapabilityMask::from_layers(&["manifest", "structural"]),
+            )
+            .unwrap();
+
+        let resp = svc
+            .execute(ScopedSearchRequest {
+                query: "nonexistent".into(),
+                scope: Some("src".into()),
+                analysis: SearchAnalysis::Auto,
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("execute should succeed");
+
+        assert!(
+            !resp.triggered_lazy,
+            "Auto should skip lazy when structural data is already present"
+        );
+        assert_eq!(resp.scope_file_count, 1);
+        assert!(
+            resp.warnings
+                .iter()
+                .any(|w| w.contains("structural index already present")),
+            "should warn about existing structural data"
+        );
+    }
+
+    // ── execute_auto_triggers_lazy_when_only_manifest ─────────────────
+    //
+    // Verifies that Auto mode still triggers lazy extraction when only
+    // manifest data exists in the DB.
+    #[test]
+    fn execute_auto_triggers_lazy_when_only_manifest() {
+        let svc = test_service();
+        seed_ts_file(&svc.store, "src/utils.ts", "function helper() {}");
+
+        let resp = svc
+            .execute(ScopedSearchRequest {
+                query: "nonexistent".into(),
+                scope: Some("src".into()),
+                analysis: SearchAnalysis::Auto,
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("execute should succeed");
+
+        assert!(
+            resp.triggered_lazy,
+            "Auto should trigger lazy when only manifest data exists"
+        );
+        assert_eq!(resp.scope_file_count, 1);
     }
 }

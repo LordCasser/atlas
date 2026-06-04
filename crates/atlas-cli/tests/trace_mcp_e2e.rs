@@ -24,7 +24,7 @@ use atlas_engine::GraphEngine;
 use atlas_engine::SearchEngine;
 use atlas_engine::Store;
 use atlas_engine::ids::{FileId, SymbolId};
-use atlas_mcp::tools::ToolRouter;
+use atlas_mcp::tools::{ToolCallContext, ToolRouter};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
@@ -90,7 +90,7 @@ fn call_tool(router: &mut ToolRouter, name: &str, args: Value) -> (Value, bool) 
             return (err, true);
         }
     }
-    let result = router.call_tool(name, &args);
+    let result = router.call_tool(&ToolCallContext::empty(), name, &args);
     // Parse the first content block as JSON
     let text = match result.content.first() {
         Some(atlas_mcp::protocol::ContentBlock::Text { text }) => text.clone(),
@@ -564,7 +564,7 @@ fn p2_mcp_output_truncation_safety() {
     let args = json!({ "kind": "point", "file_id": file_id.to_hex(), "line": 1, "column": 10 });
 
     // trace(point)
-    let result = router.call_tool("trace", &args);
+    let result = router.call_tool(&ToolCallContext::empty(), "trace", &args);
     assert!(
         !result.content.is_empty(),
         "trace(point) must return content"
@@ -573,7 +573,7 @@ fn p2_mcp_output_truncation_safety() {
     // trace(variable)
     let var_args =
         json!({ "kind": "variable", "file_id": file_id.to_hex(), "line": 1, "column": 10 });
-    let result = router.call_tool("trace", &var_args);
+    let result = router.call_tool(&ToolCallContext::empty(), "trace", &var_args);
     assert!(
         !result.content.is_empty(),
         "trace(variable) must return content"
@@ -583,7 +583,7 @@ fn p2_mcp_output_truncation_safety() {
     let syms = store.find_symbols_by_file(&file_id).expect("find symbols");
     if let Some(sym) = syms.first() {
         let caller_args = json!({ "kind": "callers", "symbol": sym.id.to_hex(), "max_depth": 5 });
-        let result = router.call_tool("trace", &caller_args);
+        let result = router.call_tool(&ToolCallContext::empty(), "trace", &caller_args);
         assert!(
             !result.content.is_empty(),
             "trace(callers) must return content"
@@ -1312,27 +1312,25 @@ fn index_schema_supports_background_and_include() {
         "index schema must expose background"
     );
     assert!(
-        props.get("analysis").is_none(),
-        "index schema must not expose analysis; MCP index is always manifest"
+        props.get("analysis").is_some(),
+        "index schema must expose analysis"
     );
 }
 
 #[test]
-fn index_rejects_analysis_parameter() {
+fn index_accepts_structural_analysis_parameter() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[("app.ts", "export const x = 1;\n")];
     let (_tmp, mut router) = build_router(files);
 
     let (json, is_error) = call_tool(&mut router, "index", json!({ "analysis": "structural" }));
 
-    assert!(is_error, "index must reject analysis parameter");
-    let errors = json["errors"].as_array().expect("errors array");
     assert!(
-        errors
-            .iter()
-            .any(|e| e.as_str().unwrap_or("").contains("analysis")),
-        "error should mention unsupported analysis: {json:?}"
+        !is_error,
+        "index should accept structural analysis: {json:?}"
     );
+    assert_eq!(json["ok"].as_bool(), Some(true));
+    assert!(json["files_discovered"].as_u64().unwrap_or(0) >= 1);
 }
 
 #[test]
@@ -1352,6 +1350,7 @@ fn open_project_background_activates_on_wait_for_task() {
         .to_string();
 
     let result = router.call_tool(
+        &ToolCallContext::empty(),
         "project",
         &json!({
             "action": "open",
@@ -1368,6 +1367,7 @@ fn open_project_background_activates_on_wait_for_task() {
     let task_id = started["task_id"].as_str().expect("task_id").to_string();
 
     let wait = router.call_tool(
+        &ToolCallContext::empty(),
         "wait_for_task",
         &json!({
             "task_id": task_id,
@@ -1384,7 +1384,7 @@ fn open_project_background_activates_on_wait_for_task() {
     assert_eq!(completed["activation"], "activated");
     assert_eq!(completed["activated_project"], expected);
 
-    let status = router.call_tool("project", &json!({"action": "status"}));
+    let status = router.call_tool(&ToolCallContext::empty(), "project", &json!({"action": "status"}));
     let status_text = match &status.content[0] {
         atlas_mcp::protocol::ContentBlock::Text { text } => text,
     };
@@ -1400,6 +1400,7 @@ fn index_background_completes_via_wait_for_task() {
     let (_tmp, mut router) = build_router(files);
 
     let started = router.call_tool(
+        &ToolCallContext::empty(),
         "index",
         &json!({
             "background": true
@@ -1416,6 +1417,7 @@ fn index_background_completes_via_wait_for_task() {
         .to_string();
 
     let wait = router.call_tool(
+        &ToolCallContext::empty(),
         "wait_for_task",
         &json!({
             "task_id": task_id,
@@ -1431,8 +1433,11 @@ fn index_background_completes_via_wait_for_task() {
     assert_eq!(completed["status"], "completed");
     assert_eq!(completed["result"]["ok"], true);
     assert!(
-        completed["result"]["files_indexed"].as_u64().unwrap_or(0) >= 1,
-        "background index should report indexed files"
+        completed["result"]["files_discovered"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 1,
+        "background index should report discovered files"
     );
 }
 
