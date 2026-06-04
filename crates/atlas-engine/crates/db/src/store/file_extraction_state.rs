@@ -114,6 +114,40 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Return true when a file has fresh, complete file-level extraction state
+    /// covering every bit in `required`.
+    pub fn file_has_fresh_complete_capability(
+        &self,
+        file_id: &FileId,
+        content_hash: &str,
+        required: CapabilityMask,
+    ) -> anyhow::Result<bool> {
+        if required.is_zero() {
+            return Ok(true);
+        }
+
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT layer, capability_mask FROM extraction_state
+             WHERE file_id = ?1
+               AND unit_id IS NULL
+               AND content_hash = ?2
+               AND status = 'complete'",
+        )?;
+        let rows = stmt.query_map(params![file_id, content_hash], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+
+        let mut bits = 0u16;
+        for row in rows {
+            let (layer, capability_mask) = row?;
+            bits |= capability_mask as u16;
+            bits |= CapabilityMask::from_layers(&[layer.as_str()]).bits();
+        }
+
+        Ok(CapabilityMask::from_bits(bits).has_all(required.bits()))
+    }
+
     /// Query the aggregate capability mask for a file across all layers.
     /// Returns the bitwise OR of all `capability_mask` values for the file.
     pub fn get_capability_mask(&self, file_id: &FileId) -> anyhow::Result<CapabilityMask> {

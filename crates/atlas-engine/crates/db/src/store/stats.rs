@@ -1,6 +1,6 @@
 //! Stats, metadata, schema version, and path resolution.
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use std::path::Path;
 use types::*;
 
@@ -58,22 +58,14 @@ impl Store {
                 [],
                 |r| r.get(0),
             )
-            .map_err(|e| {
-                tracing::warn!(?e, "Failed to query last_index_time metadata");
-                e
-            })
-            .ok();
+            .optional()?;
         let last_sync_time: Option<String> = conn
             .query_row(
                 "SELECT value FROM project_metadata WHERE key = 'last_sync_time'",
                 [],
                 |r| r.get(0),
             )
-            .map_err(|e| {
-                tracing::warn!(?e, "Failed to query last_sync_time metadata");
-                e
-            })
-            .ok();
+            .optional()?;
 
         Ok(format!(
             "files={total_files};symbols={total_symbols};refs={total_references};edges={total_edges};max_index_time={};last_index_time={};last_sync_time={}",
