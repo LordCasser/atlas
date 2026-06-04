@@ -600,6 +600,26 @@ discover files
 ### 11.4 CLI
 核心命令：`status`, `doctor`, `index`, `sync`, `files`, `mcp`。
 
+裸 `atlas` 启动交互式 TUI，使用当前目录的 `.atlas/atlas.db`。如果没有可用 DB
+或 schema 初始化失败，`atlas` 会先保留不可用 DB 为 `.corrupt.<timestamp>` 备份，
+创建新 schema，并运行与 `atlas index` 默认值一致的 structural index；
+索引完成后才启动 TUI。已有基础 index 或更高等级 index 时直接进入 TUI。
+TUI 状态栏必须显示当前
+index mode（empty/manifest/structural/full/partial）。
+
+TUI 首跑索引属于 CLI 入口前置步骤，不属于 TUI 内交互状态机：
+
+- “基础 index”定义为所有已索引文件至少有 fresh `manifest:complete` extraction state；
+  `structural:complete` 和 `dataflow:complete` 均满足直接进入 TUI 的条件。
+- `empty`、`partial`、无法打开 DB、schema init 失败都不能直接进入 TUI；必须先恢复/创建 DB
+  并完成默认 structural index。
+- 入口层只能调用共享 `IndexPipeline` 完成默认 structural index；不得在 TUI 模块内复制 discovery、
+  hash check、cleanup、extraction、resolution 或 graph build phase。
+- 损坏 DB 的主文件、WAL、SHM 文件应尽量一起保留为 `.corrupt.<timestamp>`，再重新创建
+  `.atlas/atlas.db`。
+- TUI 应只消费已存在的 Store/Graph/Search 能力，并在状态栏展示 index mode；lazy structural
+  仍可在搜索无结果时按既有规则触发，并在完成后刷新状态栏 mode。
+
 ## 12. Analysis / Trace
 
 Atlas 不包含污点分析（taint analysis）。产品主线为变量来源追踪与调用路径查询：

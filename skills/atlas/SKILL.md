@@ -14,7 +14,10 @@ Use Atlas as the deterministic code-facts layer before reasoning about a reposit
 
 ## Language support
 
-14 languages, all at **DataflowFull** level:
+14 languages compile under `all-languages`. Their capability profiles currently
+report **DataflowFull** as the overall level, but individual feature support
+still varies by language; always check `project(action="status")`,
+`atlas doctor`, or trace capability metadata before making precision claims.
 
 | Language | Key capabilities |
 |----------|-----------------|
@@ -60,17 +63,17 @@ atlas index --project <repo>        # auto-initializes schema + indexes
 atlas sync --project <repo>         # incremental update
 atlas status --project <repo>
 atlas doctor --project <repo>
-atlas                               # launch interactive TUI (from project root)
+atlas                               # from project root: index first if needed, then launch TUI
 ```
 
 ## MCP tools
 
-All 18 tools use short names (no `atlas_` prefix):
+The 18 MCP tools use short names (no `atlas_` prefix):
 
 | Tool | Purpose | Key arguments |
 |------|---------|---------------|
 | `project` | Open, inspect, or list files | `action="open\|status\|files"` |
-| `index` | Index/re-index active project | optional `include`, `exclude`, `background` |
+| `index` | Index/re-index active project | optional `include`, `exclude`, `analysis`, `background` |
 | `search` | Symbol search by name | `query` (required), optional `scope`, `kind`, `limit`, `background` |
 | `symbol` | Symbol details, context, or usages | `symbol` (required), `view="detail\|context\|usages"`, optional `includeCode`, `limit` |
 | `calls` | Call graph queries (callers, callees, multi-hop) | `symbol` (required), `direction="incoming\|outgoing\|both"`, optional `depth`, `limit`, `edge_kinds` |
@@ -114,7 +117,7 @@ When `partial_result: true` or diagnostics present, summarize the evidence and s
 - Cite Atlas evidence: symbol names, qualified names, file paths, edge kinds, trace diagnostics.
 - Atlas is best-effort static analysis with explicit language capability boundaries. Never claim compiler-grade certainty.
 - If Atlas returns nothing, try broader search (shorter name, no kind filter, larger `limit`), then state no indexed fact matched.
-- All 14 languages have DataflowFull capability; specific features (CFG, interprocedural) vary — check `project(action="status")` or trace capability metadata.
+- Treat `DataflowFull` as an overall capability tier, not a promise that every feature bit is present for every language. Specific features such as CFG and summaries vary; check `project(action="status")` or trace capability metadata.
 
 ## References
 

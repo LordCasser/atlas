@@ -44,13 +44,14 @@ enabled = true
 
 ## MCP tools
 
-All 18 tools use short names (no `atlas_` prefix):
+The 18 MCP tools use short names (no `atlas_` prefix). The table below is a
+task-oriented view, so several rows intentionally share the same tool:
 
 | Task | Tool | Key arguments |
 | --- | --- | --- |
 | Project overview | `project(action="status")` | none |
 | Indexed files | `project(action="files")` | optional `limit`, `language`, `path_prefix` |
-| Symbol search | `search` | `query` (required), optional `scope`, `kind`, `limit`, `background` |
+| Symbol search | `search` | `query` (required), `scope` required for manifest-only indexes, optional `kind`, `limit`, `background` |
 | Symbol details | `symbol(view="detail")` | `symbol` (required), optional `includeCode` |
 | Agent context | `symbol(view="context")` | `symbol` (required), optional `includeCode` |
 | Symbol usages | `symbol(view="usages")` | `symbol` (required), optional `limit` |
@@ -63,7 +64,7 @@ All 18 tools use short names (no `atlas_` prefix):
 | Variable origin | `trace(kind="variable")` | `file_path` or `file_id`, `line`, `column`, optional `max_depth` |
 | Caller chain | `trace(kind="callers")` | `symbol` (qualified name or hex ID), optional `max_depth` |
 | Forward call trace | `trace(kind="forward")` | `from`, `to` (qualified name or hex ID), optional `max_depth` |
-| Index project | `index` | optional `include`, `exclude`, `background` |
+| Index project | `index` | optional `include`, `exclude`, `analysis`, `background` |
 | Open project | `project(action="open")` | `project_path` (required), optional `storage`, `scan_files`, `background` |
 | FP dispatch annotations | `fp_dispatches` | `action="add\|list\|delete"` |
 | Domain rules | `domain_rules` | `action="add\|list\|delete\|learn"` |

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # xtask/examples-smoke.sh — Examples regression smoke test.
 #
-# Cleans old databases, re-indexes all examples, and reports a matrix
-# with minimum gate thresholds.  Designed for manual or nightly CI use.
+# Cleans old databases, re-indexes all checked-in examples, and reports a
+# matrix with minimum gate thresholds. Designed for manual or nightly CI use.
 #
 # Usage:
 #   ./xtask/examples-smoke.sh              # full clean + index + report
 #   ./xtask/examples-smoke.sh --report     # report only (DBs must exist)
 #   ATLAS=./target/release/atlas ./xtask/examples-smoke.sh
 #
-# Minimum gates per DataflowBasic language example:
+# Minimum gates per full-analysis language example:
 #   - files > 0
 #   - data_nodes > 0
 #   - dataflow_edges > 0
@@ -23,12 +23,15 @@ ATLAS="${ATLAS:-$ROOT/target/debug/atlas}"
 MODE="${1:-full}"
 
 EXAMPLES=(
+    arkts_example
+    c_example
+    c_sharp_example
+    cangjie_example
+    go_example
     python_example
     java_example
-    c_sharp_example
     rust_example
-    gin
-    c_example
+    typescript_example
 )
 
 # ── Build if needed ──
@@ -48,8 +51,11 @@ if [ "$MODE" != "--report" ]; then
     echo "=== Indexing examples ==="
     for d in "${EXAMPLES[@]}"; do
         echo "  $d ..."
-        "$ATLAS" init -p "$ROOT/examples/$d" >/dev/null 2>&1 || true
-        timeout 120 "$ATLAS" index -p "$ROOT/examples/$d" 2>&1 | grep -E "Files indexed|error|Batch insert" || echo "  (index may be incomplete)"
+        if [ ! -d "$ROOT/examples/$d" ]; then
+            echo "  missing example directory: $ROOT/examples/$d"
+            continue
+        fi
+        timeout 120 "$ATLAS" index --analysis full --project "$ROOT/examples/$d"
     done
 fi
 

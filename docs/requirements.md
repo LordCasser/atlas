@@ -264,9 +264,22 @@ MCP 使用 JSON-RPC over stdio。V1 核心公开工具名使用无 `atlas_` 前�
 - `atlas index` (auto-init schema) / `atlas sync` (incremental)
 - `atlas status` / `atlas doctor` / `atlas files`
 - `atlas mcp` (MCP server, 18 tools)
-- `atlas` (no subcommand: launch interactive TUI)
+- `atlas` (no subcommand: from the project root, create/recover a usable DB and run the default structural index first if no basic-or-better index exists, then launch the interactive TUI)
 
 CLI 参数必须失败得明确。`--analysis` 只允许 `manifest`、`structural`、`full`；未知值必须返回错误，不能静默降级为 Structural。
+
+#### 裸 `atlas` TUI 首跑 UX
+
+裸 `atlas` 是 TUI 入口，不接受 `--project`，使用当前工作目录作为 project root。
+首跑行为必须满足：
+
+- 已提前跑过 index，且持久化状态显示所有已索引文件至少有完整 `manifest` 层时，直接进入 TUI。
+- 已有 `structural` 或 `full` index 时同样直接进入 TUI，不得重复默认索引。
+- 完全没有 `.atlas/atlas.db`、数据库为空、数据库无法打开，或 schema 初始化失败时，先创建/恢复可用 DB。
+- 损坏 DB 不直接覆盖；应保留为 `.corrupt.<timestamp>` 备份后再创建新 DB。
+- 恢复出可用 DB 后，先运行与命令行 `atlas index` 默认值一致的 `structural` index。
+- 默认 index 完成后才启动 TUI 交互界面。
+- TUI 边缘/状态栏必须明确显示当前 index mode：`empty`、`manifest`、`structural`、`full` 或 `partial`。
 
 ## 5. 非功能需求
 
@@ -291,7 +304,7 @@ MVP 完成标准：
 9. 关系结果暴露 confidence/provenance。
 10. 语言 fixtures 和集成测试覆盖主链路。
 11. 持久化跨函数摘要层（Schema V1）已实现。
-12. MCP/shared pipeline、CLI index、CLI sync、TUI 初始索引在同一分析等级下语义一致；删除文件、Full summaries、lazy diagnostics 和 capability mask 都有发布前验证。
+12. MCP/shared pipeline、CLI index、CLI sync、以及裸 `atlas` 首跑 structural index 在各自声明的分析等级下语义一致；删除文件、Full summaries、lazy diagnostics、capability mask 和 TUI index-mode 状态栏都有发布前验证。
 
 ## 7. 当前阶段验收焦点
 
