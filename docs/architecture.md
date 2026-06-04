@@ -543,6 +543,23 @@ discover files
 - `filesync::build_dirty_set` 是 full index 的 hash-check 边界；CLI 不直接实现 DB hash diff。
 - `filesync::clean_stale_file_*` 是 stale facts 清理边界；所有入口必须先清理 incoming refs 和 outgoing edges，再删除旧 facts。
 - path alias 配置文件集合由 `resolution::PATH_ALIAS_CONFIG_FILES` 定义，当前为 `tsconfig.json` 和 `jsconfig.json`；检测、提交 hash、加载 resolver 必须使用同一来源。
+- 此契约（入口管参数/锁/UI/进度，管线管索引机制）是核心架构不变式，由 `pipeline_equivalence` 集成测试验证：同一项目通过不同入口索引必须产生相同 DB 状态（files/symbols/edges/summaries）。`IndexPipeline`（全量）与 `IncrementalPipeline`（增量）是仅有的 DB 变更编排路径；CLI/TUI 不得复制 phase 逻辑。
+
+### 10.3 引擎服务层
+
+入口通过服务层编排能力，不直接组合低层 API：
+
+- `ScopedSearchService`：scope 感知搜索 + 定向 lazy structural。
+- Tracing 经 `Engine` facade；`Engine` 负责触发 lazy dataflow，raw `TraceEngine` 仅消费已有 facts。
+- 约束：入口组合服务；服务组合 `Store`、extraction、graph 等；入口绝不对低层 API 做 ad-hoc 组合。
+
+### 10.4 长操作进度与取消
+
+跨 CLI/TUI/MCP 的长操作（index、sync、search、trace）使用统一模式：
+
+- `ProgressSink` trait：入口注入终端进度、MCP notification 或 no-op。
+- `CancelToken`：前台/后台均可中断执行，取消是正常降级路径。
+- `task_id`：所有异步操作注册到 `TaskManager`，通过 `tasks`/`task_status`/`wait_for_task` 可观测。
 
 ## 11. Search、Context、MCP、CLI
 

@@ -133,6 +133,20 @@ cargo check -p atlas-cli --features "all-languages,mcp"
 - 未受影响路径及理由。
 - 所有失败测试、跳过测试和 residual risk。
 
+### 2.8 管线等价性测试
+
+同一项目通过不同入口（CLI index、sync、shared `IndexPipeline`）索引后必须产生相同 DB 状态。
+测试使用 in-memory `Store` + 临时项目 + `ExtractionMode::Structural` / `Full`，
+断言 files、symbols、edges、summaries 及 `extraction_state` 等价。
+覆盖新增、修改、删除场景。
+
+### 2.9 多语言 Feature Matrix
+
+每种语言至少覆盖以下 compile-time / runtime 验证链：
+`from_extension` → `create_frontend` → manifest query → structural query →
+search `lang:` prefix → `CapabilityProfile::all_compiled()` → golden fixture smoke。
+非默认语言（Go、C#、Rust、PHP、Ruby、Kotlin、Cangjie）必须显式纳入矩阵。
+
 ## 3. 阶段测试要求
 
 ### P0-P4（已完成）
