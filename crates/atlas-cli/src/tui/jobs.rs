@@ -111,6 +111,16 @@ struct JobHandle {
     cancel: Arc<AtomicBool>,
 }
 
+impl Drop for JobHandle {
+    fn drop(&mut self) {
+        // If the handle is dropped while the job is still running,
+        // signal cancellation so the worker can exit.
+        if !self.done.load(Ordering::SeqCst) {
+            self.cancel.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
 // ── Job manager ──────────────────────────────────────────────────────────────
 
 /// Manages background TUI jobs.
@@ -178,9 +188,23 @@ impl JobManager {
         let result_w = Arc::clone(&result);
         let cancel_w = Arc::clone(&cancel);
 
-        // Drop any previously running job without joining (the old thread
-        // will exit when it polls its abandoned cancel token — which is
-        // already set because the old handle is dropped).
+        // Cancel any previously running job before replacing it.
+        let had_old = {
+            let guard = self.current.lock().unwrap();
+            if let Some(ref handle) = *guard {
+                handle.cancel.store(true, Ordering::SeqCst);
+                true
+            } else {
+                false
+            }
+        };
+        if had_old {
+            // Give the old worker a brief window to detect cancellation.
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        // Take ownership of the old handle (Drop will also signal cancel as
+        // a safety net if the worker hasn't exited yet).
         let _old = self.current.lock().unwrap().take();
 
         let handle = std::thread::spawn(move || {
@@ -524,5 +548,34 @@ mod tests {
             cancel,
         });
         assert!(ok);
+    }
+
+    #[test]
+    fn job_manager_submit_replaces_running_job() {
+        let jm = test_job_manager();
+        let cancel1 = Arc::new(AtomicBool::new(false));
+
+        // Submit the first job.
+        let ok = jm.submit(TuiJob::Search {
+            query: "first".into(),
+            scope: None,
+            language: None,
+            cancel: Arc::clone(&cancel1),
+        });
+        assert!(ok);
+        assert!(!cancel1.load(Ordering::SeqCst));
+
+        // Submit a second job — this should cancel the first.
+        let cancel2 = Arc::new(AtomicBool::new(false));
+        let ok = jm.submit(TuiJob::Search {
+            query: "second".into(),
+            scope: None,
+            language: None,
+            cancel: cancel2,
+        });
+        assert!(ok);
+
+        // Verify the first job's cancel token was signalled.
+        assert!(cancel1.load(Ordering::SeqCst));
     }
 }

@@ -59,7 +59,7 @@ impl IndexPipeline {
     pub fn run(
         &self,
         sink: &dyn ProgressSink,
-        interrupted: &mut dyn FnMut() -> bool,
+        interrupted: &mut (dyn FnMut() -> bool + Send),
     ) -> Result<IndexPipelineStats> {
         let mut stats = IndexPipelineStats::default();
         // Initial value: the first phase we'd attempt.  Updated to the last
@@ -67,15 +67,16 @@ impl IndexPipeline {
         // Cancelled events so consumers know how far we got.
         let mut last_phase = PhaseName::Discovery;
 
-        // Interrupt callable must be shared between inline checks and the
-        // closure we hand to `phase_write_batched`.  Wrap in a RefCell so
-        // we can invoke it from multiple places.
-        let int_cell = std::cell::RefCell::new(interrupted);
+        // Interrupt callable must be shared between inline checks, the
+        // on_file_progress callback (which runs inside rayon), and the
+        // closure we hand to `phase_write_batched`.  Wrap in a Mutex so
+        // we can invoke it from multiple threads safely.
+        let int_cell = std::sync::Arc::new(std::sync::Mutex::new(interrupted));
 
         // Convenience: check for cancellation before the next phase.
         macro_rules! check_cancelled {
             () => {
-                if (*int_cell.borrow_mut())() {
+                if (*int_cell.lock().unwrap())() {
                     sink.emit(ProgressEvent::Cancelled { last_phase });
                     return Ok(IndexPipelineStats::default());
                 }
@@ -248,16 +249,27 @@ impl IndexPipeline {
             // handlers (e.g. Ctrl-C) can stop the parallel extraction
             // loop early.  The phase-boundary check above already
             // handles pre-extraction cancellation.
-            let cancel_token = std::sync::atomic::AtomicBool::new(false);
+            let cancel_token = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
             // Per-file progress callback: emits ItemProgress every 50
             // files (throttled internally by phase_extract_parallel_cancellable).
-            let on_file_progress = |completed: usize, _total: usize| {
+            let ct = Arc::clone(&cancel_token);
+            let int_cell_for_progress = std::sync::Arc::clone(&int_cell);
+            let on_file_progress = move |completed: usize, _total: usize| {
+                if (*int_cell_for_progress.lock().unwrap())() {
+                    ct.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 sink.emit(ProgressEvent::ItemProgress {
                     phase: PhaseName::Extraction,
                     completed: completed as u64,
                 });
             };
+
+            // Propagate external interrupt to cancel token before extraction
+            // starts so the rayon loop can see it on the first file.
+            if (*int_cell.lock().unwrap())() {
+                cancel_token.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
 
             let extracted = phase_extract_parallel_cancellable(
                 &self.project_root,
@@ -305,7 +317,7 @@ impl IndexPipeline {
                 500,
                 500,
                 write_progress,
-                || (*int_cell.borrow_mut())(),
+                || (*int_cell.lock().unwrap())(),
             )?;
 
             stats.indexed = write_stats.written;

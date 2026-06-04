@@ -6,7 +6,6 @@
 //! Handler methods are organized by capability category in sub-modules:
 //!   status, search, graph, context, trace, lifecycle, branch_diff.
 
-use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
@@ -1700,11 +1699,21 @@ impl ToolRouter {
         let mut reason: Option<&str> = None;
 
         if !self.has_manual_full_index() {
+            let max_files = get_u64(args, "max_structural_files")
+                .or_else(|| get_u64(args, "limit"))
+                .unwrap_or(50) as usize;
             let file_ids = match direction {
-                "incoming" | "both" => match self.store.list_files() {
-                    Ok(files) => files.into_iter().map(|f| f.file_id).collect::<Vec<_>>(),
-                    Err(e) => return (format!("Failed to list indexed files: {e}"), true),
-                },
+                "incoming" | "both" => {
+                    let (candidates, truncated) =
+                        self.collect_edge_dependent_file_ids(&[file_id], max_files);
+                    let mut result = vec![file_id];
+                    result.extend(candidates);
+                    if truncated {
+                        coverage = "partial";
+                        reason = Some("candidate_limit_exceeded");
+                    }
+                    result
+                }
                 _ => vec![file_id],
             };
             let outcome = self.ensure_structural_for_files(file_ids, vec![], None, None);
@@ -1914,6 +1923,77 @@ impl ToolRouter {
             }
             _ => unreachable!("direction was validated above"),
         }
+    }
+
+    /// Collect candidate file IDs for incoming structural file_dependencies.
+    ///
+    /// Uses manifest symbol edges to discover files whose symbols have edges
+    /// targeting symbols in the given `target_file_ids`.  This is the bounded
+    /// candidate-discovery counterpart of `manifest_edge_dependents` (which
+    /// returns JSON rows); here we only collect the unique `FileId`s and cap at
+    /// `max_files`.
+    ///
+    /// Returns `(file_ids, truncated)` where `truncated` is `true` when there
+    /// were more unique source-file candidates than `max_files`.
+    fn collect_edge_dependent_file_ids(
+        &self,
+        target_file_ids: &[FileId],
+        max_files: usize,
+    ) -> (Vec<FileId>, bool) {
+        if max_files == 0 || target_file_ids.is_empty() {
+            return (Vec::new(), false);
+        }
+
+        // Gather all symbols in the target file(s).
+        let mut our_ids: HashSet<SymbolId> = HashSet::new();
+        for fid in target_file_ids {
+            let syms = match self.store.find_symbols_by_file(fid) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            for sym in &syms {
+                our_ids.insert(sym.id);
+            }
+        }
+        if our_ids.is_empty() {
+            return (Vec::new(), false);
+        }
+
+        // Edges whose target is in `our_ids` and whose source is NOT → that
+        // source's file is a candidate dependent.
+        let edges = match self.store.find_edges_for_files(target_file_ids) {
+            Ok(e) => e,
+            Err(_) => return (Vec::new(), false),
+        };
+
+        let mut source_ids: HashSet<SymbolId> = HashSet::new();
+        for edge in &edges {
+            if our_ids.contains(&edge.target) && !our_ids.contains(&edge.source) {
+                source_ids.insert(edge.source);
+            }
+        }
+
+        if source_ids.is_empty() {
+            return (Vec::new(), false);
+        }
+
+        let ids_vec: Vec<SymbolId> = source_ids.into_iter().collect();
+        let symbols = match self.store.find_symbols_by_ids(&ids_vec) {
+            Ok(s) => s,
+            Err(_) => return (Vec::new(), false),
+        };
+
+        let mut file_ids: HashSet<FileId> = HashSet::new();
+        let mut truncated = false;
+        for sym in &symbols {
+            if file_ids.len() >= max_files {
+                truncated = true;
+                break;
+            }
+            file_ids.insert(sym.file_id);
+        }
+
+        (file_ids.into_iter().collect(), truncated)
     }
 
     /// Query symbol_edges for incoming file dependencies (manifest mode).
