@@ -314,10 +314,7 @@ pub fn phase_extract_parallel_cancellable(
                 let frontend = frontends.get(&lang)?;
                 match extract_one_index_file(&pool, &abs_path, root, frontend, &mode) {
                     Ok(file) => {
-                        symbol_count.fetch_add(
-                            file.facts.symbols.len(),
-                            Ordering::Relaxed,
-                        );
+                        symbol_count.fetch_add(file.facts.symbols.len(), Ordering::Relaxed);
                         succeeded.fetch_add(1, Ordering::Relaxed);
                         Some(file)
                     }
@@ -343,10 +340,7 @@ pub fn phase_extract_parallel_cancellable(
 
     // Call on_progress once at the end if provided (backward-compat hook)
     if let Some(cb) = on_progress {
-        cb(
-            succeeded.load(Ordering::Relaxed),
-            total,
-        );
+        cb(succeeded.load(Ordering::Relaxed), total);
     }
 
     ExtractedFiles {
@@ -698,16 +692,20 @@ mod tests {
             ExtractionMode::Manifest,
             None,
         );
-        assert_eq!(extracted.items.len(), 2, "expected both files to be extracted");
+        assert_eq!(
+            extracted.items.len(),
+            2,
+            "expected both files to be extracted"
+        );
 
         // Run batched write with a small batch size so both files land in
         // the batch path.
         let stats = phase_write_batched(
             &store,
             &extracted,
-            2,   // batch_size
-            100, // checkpoint_interval
-            |_| {},  // on_progress (no-op)
+            2,        // batch_size
+            100,      // checkpoint_interval
+            |_| {},   // on_progress (no-op)
             || false, // interrupted (never)
         )
         .unwrap();
@@ -724,9 +722,7 @@ mod tests {
         // For in-memory databases the BulkWriteGuard sets synchronous=NORMAL(1)
         // and foreign_keys=ON(1) on drop.
         let sync_val: i32 = store
-            .with_transaction(|tx| {
-                Ok(tx.query_row("PRAGMA synchronous", [], |row| row.get(0))?)
-            })
+            .with_transaction(|tx| Ok(tx.query_row("PRAGMA synchronous", [], |row| row.get(0))?))
             .expect("query PRAGMA synchronous");
         assert_eq!(
             sync_val, 1,
@@ -735,9 +731,7 @@ mod tests {
         );
 
         let fk_val: i32 = store
-            .with_transaction(|tx| {
-                Ok(tx.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?)
-            })
+            .with_transaction(|tx| Ok(tx.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?))
             .expect("query PRAGMA foreign_keys");
         assert_eq!(
             fk_val, 1,

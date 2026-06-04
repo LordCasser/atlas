@@ -37,7 +37,7 @@ source code ──parse/extract──▶ .atlas/atlas.db ──query──▶ TU
 - **Local-first**: writes all index data to `<project>/.atlas/atlas.db`; no cloud service required.
 - **Deterministic extraction**: tree-sitter AST queries and stable blake3-based IDs instead of model guesses.
 - **Incremental sync**: content-hash based dirty-file detection with Git-aware file discovery.
-- **Interactive TUI**: keyboard-driven terminal UI with symbol search, detail view (Overview / Callers / Callees / Source tabs), and caller trace — launched via bare `atlas` with auto-indexing on empty databases.
+- **Interactive TUI**: keyboard-driven terminal UI with symbol search, detail view (Overview / Callers / Callees / Source tabs), caller trace, and visible index-mode status — launched via bare `atlas`. If no usable database exists, `atlas` creates one, runs the same default structural index used by `atlas index`, then starts the TUI.
 - **Agent-native MCP**: stdio MCP server exposing 18 bounded tools for search, graph, dependencies, trace, semantic analysis, background tasks, and project management.
 - **Graph + trace queries**: callers, callees, shortest path, impact, source-position lookup, variable origin tracing, and caller-path tracing.
 - **Explicit capability boundaries**: language capability metadata and trace diagnostics report partial results instead of silently overclaiming precision.
@@ -81,15 +81,16 @@ atlas doctor
 atlas
 ```
 
-All commands accept `--project <path>` when running from outside the
-project directory (supports both relative and absolute paths). The MCP server
-uses the client's current working directory.
+All subcommands accept `--project <path>` when running from outside the
+project directory (supports both relative and absolute paths). Bare `atlas`
+uses the current directory and does not accept `--project`; run it from the
+project root. The MCP server uses the client's current working directory.
 
 ## CLI
 
 | Command | Purpose |
 | --- | --- |
-| `atlas` (no subcommand) | Launch the interactive TUI: symbol search, detail view (Overview/Callers/Callees/Source), and caller trace. Auto-indexes on first run. |
+| `atlas` (no subcommand) | Launch the interactive TUI: symbol search, detail view (Overview/Callers/Callees/Source), caller trace, and index-mode status. If no usable `.atlas/atlas.db` exists, creates one, runs the default structural index, then starts the TUI. |
 | `atlas index` | Auto-initialize `.atlas/` schema, then discover and index source files. Supports `--include`, `--exclude`, `--scope`, and `--analysis` (manifest \| structural \| full). |
 | `atlas sync` | Incrementally update the index after file changes. Supports `--analysis`. |
 | `atlas status` | Show file, symbol, edge, database, and capability statistics. |
@@ -99,13 +100,14 @@ uses the client's current working directory.
 
 ## MCP server
 
-The MCP server auto-initializes the database when starting from a fresh project,
-so you only need to ensure files are indexed:
+The MCP server auto-creates `.atlas/atlas.db` when starting from a fresh
+project, but an empty database still has no indexed facts. Use `atlas index` or
+the MCP `index` tool before relying on search, graph, or trace results:
 
 ```bash
 # From your project root:
 atlas index    # (first time) OR atlas sync (incremental)
-atlas mcp      # auto-creates .atlas/ if missing
+atlas mcp      # auto-creates .atlas/ if missing, but does not index files
 ```
 
 > MCP reads an existing `.atlas/atlas.db`. Re-run `atlas sync` or `atlas index` after code changes.

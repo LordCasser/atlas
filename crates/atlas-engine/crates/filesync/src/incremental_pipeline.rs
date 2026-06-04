@@ -10,19 +10,18 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
 use analysis::summary::SummaryBuilder;
-use db::summary::SummaryStore;
+use anyhow::{Context, Result};
 use db::Store;
+use db::summary::SummaryStore;
 use extraction::ExtractionMode;
 use types::SymbolKind;
 
 use crate::cleanup::source_file_id;
 use crate::index_phases::{
     phase_build_summaries, phase_cleanup_file_ids, phase_cleanup_stale,
-    phase_commit_path_alias_config, phase_extract_parallel_cancellable,
-    phase_init_frontends, phase_materialize_annotations, phase_resolve_and_build,
-    phase_write_batched,
+    phase_commit_path_alias_config, phase_extract_parallel_cancellable, phase_init_frontends,
+    phase_materialize_annotations, phase_resolve_and_build, phase_write_batched,
 };
 use crate::progress::{PhaseName, ProgressEvent, ProgressSink};
 use crate::sync_engine::SyncStats;
@@ -69,10 +68,8 @@ impl IncrementalPipeline {
 
         let changed = match crate::detector::detect_git_changes(&self.project_root) {
             Some(changes) => changes,
-            None => {
-                crate::detector::detect_db_hash_changes(&self.project_root, &self.store)
-                    .context("Failed to detect changes via DB hash comparison")?
-            }
+            None => crate::detector::detect_db_hash_changes(&self.project_root, &self.store)
+                .context("Failed to detect changes via DB hash comparison")?,
         };
 
         sink.emit(ProgressEvent::PhaseFinished {
@@ -98,17 +95,16 @@ impl IncrementalPipeline {
         }
         sink.emit(ProgressEvent::PhaseStarted { phase, total: 0 });
 
-        let alias_changed = resolution::PathAliasConfig::has_changed(
-            &self.store,
-            &self.project_root,
-        )
-        .map_err(|e| {
-            sink.emit(ProgressEvent::Warning {
-                phase,
-                message: format!("{:#}", e),
-            });
-            e
-        })?;
+        let alias_changed =
+            resolution::PathAliasConfig::has_changed(&self.store, &self.project_root).map_err(
+                |e| {
+                    sink.emit(ProgressEvent::Warning {
+                        phase,
+                        message: format!("{:#}", e),
+                    });
+                    e
+                },
+            )?;
 
         if alias_changed {
             sink.emit(ProgressEvent::Warning {
@@ -280,7 +276,7 @@ impl IncrementalPipeline {
                 &to_extract_rel,
                 &frontends,
                 self.mode.clone(),
-                None,                       // on_progress (once at end) — unused
+                None, // on_progress (once at end) — unused
                 Some(&on_file_progress),
                 Some(&cancel_token),
             );

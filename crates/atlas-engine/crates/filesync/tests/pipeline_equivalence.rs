@@ -11,7 +11,7 @@ use std::sync::Arc;
 use db::Store;
 use extraction::ExtractionMode;
 use filesync::{
-    run_index_pipeline, IndexPipeline, IndexPipelineOptions, IncrementalPipeline, NoopSink,
+    IncrementalPipeline, IndexPipeline, IndexPipelineOptions, NoopSink, run_index_pipeline,
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -191,7 +191,10 @@ fn full_index_pipelines_produce_equivalent_db_state() {
 
     // Sanity — we indexed real TypeScript files and should have real data.
     assert!(snap_a.file_count > 0, "expected at least one file in DB");
-    assert!(snap_a.symbol_count > 0, "expected at least one symbol in DB");
+    assert!(
+        snap_a.symbol_count > 0,
+        "expected at least one symbol in DB"
+    );
 }
 
 // ── Test 2: incremental equivalence ────────────────────────────────────────
@@ -353,7 +356,10 @@ fn incremental_pipeline_detects_deleted_files() {
         "expected 3 files after deletion, got {}",
         snap_inc.file_count,
     );
-    assert!(snap_inc.symbol_count > 0, "expected symbols after deletion cleanup");
+    assert!(
+        snap_inc.symbol_count > 0,
+        "expected symbols after deletion cleanup"
+    );
 }
 
 // ── Test 4: path alias config change ───────────────────────────────────────
@@ -432,7 +438,10 @@ fn incremental_pipeline_handles_alias_config_change() {
     );
 
     assert!(snap_inc.file_count > 0, "expected files after alias change");
-    assert!(snap_inc.symbol_count > 0, "expected symbols after alias change");
+    assert!(
+        snap_inc.symbol_count > 0,
+        "expected symbols after alias change"
+    );
 }
 
 // ── Test 5: cancellation ───────────────────────────────────────────────────
@@ -444,8 +453,8 @@ fn incremental_pipeline_handles_alias_config_change() {
 #[test]
 fn index_pipeline_cancellation_leaves_partial_db() {
     use std::sync::Arc as StdArc;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use filesync::{PhaseName, ProgressEvent, ProgressSink};
 
@@ -495,8 +504,14 @@ fn index_pipeline_cancellation_leaves_partial_db() {
         .unwrap();
 
     // ── Cancellation returns default (zero) stats ──
-    assert_eq!(stats.discovered, 0, "cancelled pipeline should return default stats");
-    assert_eq!(stats.indexed, 0, "cancelled pipeline should return default stats");
+    assert_eq!(
+        stats.discovered, 0,
+        "cancelled pipeline should return default stats"
+    );
+    assert_eq!(
+        stats.indexed, 0,
+        "cancelled pipeline should return default stats"
+    );
 
     // ── Cancelled event emitted with correct last_phase ──
     let events = sink.events.lock().unwrap();
@@ -639,6 +654,12 @@ export function multiply(a: number, b: number): number {\n\
     }
 
     // Sanity — Full mode produces more data than Structural
-    assert!(snap_a.file_count > 0, "expected at least one file in Full mode");
-    assert!(snap_a.symbol_count > 0, "expected at least one symbol in Full mode");
+    assert!(
+        snap_a.file_count > 0,
+        "expected at least one file in Full mode"
+    );
+    assert!(
+        snap_a.symbol_count > 0,
+        "expected at least one symbol in Full mode"
+    );
 }

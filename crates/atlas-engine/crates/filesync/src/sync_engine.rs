@@ -65,7 +65,6 @@ impl SyncEngine {
             crate::detector::detect_db_hash_changes(&self.project_root, &self.store)
         }
     }
-
 }
 
 // -----------------------------------------------------------------------

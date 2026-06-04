@@ -174,10 +174,7 @@ impl ScopedSearchService {
     ///    - Re-search.
     /// 6. Return [`ScopedSearchResponse`] with results, scores, coverage,
     ///    capability mask, precision tier, and warnings.
-    pub fn execute(
-        &self,
-        req: ScopedSearchRequest,
-    ) -> anyhow::Result<ScopedSearchResponse> {
+    pub fn execute(&self, req: ScopedSearchRequest) -> anyhow::Result<ScopedSearchResponse> {
         // 1. Parse query — extract structured prefixes from the raw input.
         let parsed = parse_query(&req.query);
         let term = if !parsed.freetext.is_empty() {
@@ -206,9 +203,7 @@ impl ScopedSearchService {
         // No files at all — bail early.
         if scope_file_count == 0 {
             if !normalized_scope.is_empty() {
-                warnings.push(format!(
-                    "Scope '{normalized_scope}' has no indexed files"
-                ));
+                warnings.push(format!("Scope '{normalized_scope}' has no indexed files"));
             }
             return Ok(ScopedSearchResponse {
                 results: Vec::new(),
@@ -244,8 +239,7 @@ impl ScopedSearchService {
                     .map(|f| f.file_id)
                     .collect()
             } else {
-                self.store
-                    .list_file_ids_in_scope(&normalized_scope, 200)?
+                self.store.list_file_ids_in_scope(&normalized_scope, 200)?
             };
             if !file_ids.is_empty() {
                 let capability = self.store.derive_capability_for_files(&file_ids);
@@ -287,8 +281,7 @@ impl ScopedSearchService {
                     .map(|f| f.file_id)
                     .collect()
             } else {
-                self.store
-                    .list_file_ids_in_scope(&normalized_scope, 100)?
+                self.store.list_file_ids_in_scope(&normalized_scope, 100)?
             };
 
             if !file_ids.is_empty() {
@@ -430,8 +423,12 @@ fn search_symbols_scoped(
         }
         symbols.truncate(limit);
         if symbols.is_empty() && query.len() >= 2 {
-            symbols =
-                store.search_symbols_by_name_like(query, language.as_ref(), limit, kind_filter.as_ref())?;
+            symbols = store.search_symbols_by_name_like(
+                query,
+                language.as_ref(),
+                limit,
+                kind_filter.as_ref(),
+            )?;
         }
         if let Some(kind) = kind_filter {
             symbols.retain(|s| s.kind == kind);
@@ -449,17 +446,10 @@ fn search_symbols_scoped(
     let mut symbols =
         store.find_symbols_by_name_in_scope(query, scope, limit, kind_filter.as_ref())?;
     if symbols.is_empty() {
-        symbols = store.search_symbols_in_scope_with_limit(
-            query,
-            scope,
-            limit,
-            kind_filter.as_ref(),
-        )?;
+        symbols =
+            store.search_symbols_in_scope_with_limit(query, scope, limit, kind_filter.as_ref())?;
     }
-    if symbols.is_empty()
-        && query.len() >= 2
-        && scope_file_count <= LIKE_FALLBACK_SCOPE_LIMIT
-    {
+    if symbols.is_empty() && query.len() >= 2 && scope_file_count <= LIKE_FALLBACK_SCOPE_LIMIT {
         symbols = store.search_symbols_by_name_like_in_scope(
             query,
             scope,
@@ -501,13 +491,7 @@ mod tests {
             .unwrap();
 
         // Manually insert a symbol so the store has manifest data to search.
-        let sid = types::SymbolId::generate(
-            &file_id,
-            "ts",
-            "handleRequest",
-            "function",
-            None,
-        );
+        let sid = types::SymbolId::generate(&file_id, "ts", "handleRequest", "function", None);
         let sym = types::SymbolDef {
             id: sid,
             kind: SymbolKind::Function,
@@ -561,7 +545,10 @@ mod tests {
 
         assert!(!resp.results.is_empty(), "should find handleRequest");
         assert_eq!(resp.results[0].symbol.name, "handleRequest");
-        assert!(!resp.triggered_lazy, "manifest mode should not trigger lazy");
+        assert!(
+            !resp.triggered_lazy,
+            "manifest mode should not trigger lazy"
+        );
         assert_eq!(resp.total, 1);
         assert_eq!(resp.scope_file_count, 1);
         assert!(matches!(resp.coverage, SearchCoverage::Full));
@@ -633,11 +620,7 @@ mod tests {
         let svc = test_service();
 
         // Seed a file with a symbol and mark it as structurally extracted.
-        let file_id = seed_ts_file(
-            &svc.store,
-            "src/handler.ts",
-            "function handleRequest() {}",
-        );
+        let file_id = seed_ts_file(&svc.store, "src/handler.ts", "function handleRequest() {}");
         let content_hash = svc
             .store
             .get_file(&file_id)

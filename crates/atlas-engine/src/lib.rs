@@ -46,10 +46,10 @@ mod lazy_coordinator;
 mod lazy_orchestrator;
 mod lazy_structural;
 mod linux_augment;
-/// Scoped search service: shared search orchestration with lazy structural fallback.
-pub mod scoped_search;
 /// Precision tier computation for lazy extraction transparency.
 pub mod precision;
+/// Scoped search service: shared search orchestration with lazy structural fallback.
+pub mod scoped_search;
 mod source_extractor;
 
 /// Closure planner: dependency-closure-aware lazy extraction planning.
@@ -68,8 +68,6 @@ pub use source_extractor::SourceExtractor;
 
 // ─── Re-exports ────────────────────────────────────────────────────────────
 
-/// Job context: shared cancellation token and progress sink for long operations.
-pub use job_context::JobContext;
 /// Analysis: lifecycle and branch diff engines.
 pub use analysis;
 /// Analysis: domain rules, lifecycle proof, and rule learning.
@@ -106,9 +104,9 @@ pub use extraction::{
 /// Sync layer: incremental sync engine, file lock, file discovery.
 pub use filesync::{
     DirtySet, ExtractedFile, ExtractedFiles, ExtractionPhaseStats, FileLock, GraphResult,
-    IndexPipeline, IndexPipelineOptions, IndexPipelineStats, IndexProgress,
-    IndexProgressCallback, PhaseName, ProgressEvent, ProgressSink, SyncEngine, SyncStats,
-    WriteBatchStats, build_dirty_set, clean_stale_file_ids, clean_stale_file_paths, discovery,
+    IndexPipeline, IndexPipelineOptions, IndexPipelineStats, IndexProgress, IndexProgressCallback,
+    PhaseName, ProgressEvent, ProgressSink, SyncEngine, SyncStats, WriteBatchStats,
+    build_dirty_set, clean_stale_file_ids, clean_stale_file_paths, discovery,
     phase_build_summaries, phase_cleanup_file_ids, phase_cleanup_stale,
     phase_commit_path_alias_config, phase_dirty_check, phase_discover, phase_extract_serial,
     phase_finalize, phase_init_frontends, phase_materialize_annotations, phase_resolve_and_build,
@@ -123,6 +121,8 @@ pub use graph::{
 };
 /// Investigation context types: focus, related symbols/files, desired capabilities.
 pub use investigation::{Investigation, InvestigationFocus};
+/// Job context: shared cancellation token and progress sink for long operations.
+pub use job_context::JobContext;
 /// Unified lazy extraction orchestration: policy presets, outcomes, orchestrator.
 pub use lazy_orchestrator::{LazyOrchestrator, LazyOutcome, LazyPolicy};
 /// Resolution layer: reference resolver, path aliases, config hashing.
@@ -130,14 +130,13 @@ pub use resolution::{
     PATH_ALIAS_CONFIG_FILES, PathAliasConfig, PathAliasResolver, ReferenceResolver,
     ResolutionSession, ResolutionStats, commit_config_hashes, detect_config_change,
 };
-/// Search layer: FTS5 + fuzzy search engine.
-pub use search::{SearchEngine, SearchOptions, SearchResult};
-pub use search::query_parser::{ParsedQuery, parse_query, searchable_languages};
 /// Scoped search: shared orchestration for MCP/TUI search with lazy structural fallback.
 pub use scoped_search::{
-    ScopedSearchRequest, ScopedSearchResponse, ScopedSearchService, SearchAnalysis,
-    SearchCoverage,
+    ScopedSearchRequest, ScopedSearchResponse, ScopedSearchService, SearchAnalysis, SearchCoverage,
 };
+pub use search::query_parser::{ParsedQuery, parse_query, searchable_languages};
+/// Search layer: FTS5 + fuzzy search engine.
+pub use search::{SearchEngine, SearchOptions, SearchResult};
 /// Progress protocol (for CLI TUI integration).
 pub use types::progress;
 /// All core IR types (SymbolDef, ReferenceUse, FileFacts, etc.).
@@ -241,10 +240,8 @@ impl Engine {
             store.clone(),
             project_root.map(|p| p.to_path_buf()),
         );
-        let lazy_structural = LazyStructuralService::new(
-            store.clone(),
-            project_root.map(|p| p.to_path_buf()),
-        );
+        let lazy_structural =
+            LazyStructuralService::new(store.clone(), project_root.map(|p| p.to_path_buf()));
         let trace = if let Some(root) = project_root {
             analysis::trace::TraceEngine::new_with_root(store.clone(), root.to_path_buf())
         } else {

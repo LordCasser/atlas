@@ -19,6 +19,7 @@ pub mod sync_engine;
 pub use cleanup::{clean_stale_file_ids, clean_stale_file_paths, source_file_id};
 pub use dirty::{DirtySet, build_dirty_set};
 pub use file_lock::FileLock;
+pub use incremental_pipeline::IncrementalPipeline;
 pub use index_phases::{
     ExtractedFile, ExtractedFiles, ExtractionPhaseStats, GraphResult, WriteBatchStats,
     phase_build_summaries, phase_cleanup_file_ids, phase_cleanup_stale,
@@ -31,10 +32,7 @@ pub use index_pipeline::{
     run_index_pipeline,
 };
 pub use index_pipeline_orchestrator::IndexPipeline;
-pub use incremental_pipeline::IncrementalPipeline;
-pub use progress::{
-    CallbackSink, MultiplexSink, NoopSink, PhaseName, ProgressEvent, ProgressSink,
-};
+pub use progress::{CallbackSink, MultiplexSink, NoopSink, PhaseName, ProgressEvent, ProgressSink};
 pub use sync_engine::{SyncEngine, SyncStats, load_graph, load_snapshot};
 
 #[cfg(feature = "sync")]

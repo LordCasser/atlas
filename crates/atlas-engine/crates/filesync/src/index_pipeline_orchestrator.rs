@@ -37,11 +37,7 @@ pub struct IndexPipeline {
 
 impl IndexPipeline {
     /// Create a new orchestrator bound to a store and project root.
-    pub fn new(
-        store: Arc<Store>,
-        project_root: PathBuf,
-        options: IndexPipelineOptions,
-    ) -> Self {
+    pub fn new(store: Arc<Store>, project_root: PathBuf, options: IndexPipelineOptions) -> Self {
         Self {
             store,
             project_root,
@@ -123,11 +119,7 @@ impl IndexPipeline {
             phase: PhaseName::HashCheck,
             total: discovered.len() as u64,
         });
-        let dirty_set = match phase_dirty_check(
-            &self.store,
-            &discovered,
-            &self.project_root,
-        ) {
+        let dirty_set = match phase_dirty_check(&self.store, &discovered, &self.project_root) {
             Ok(ds) => ds,
             Err(e) => {
                 sink.emit(ProgressEvent::Warning {
@@ -231,10 +223,7 @@ impl IndexPipeline {
                 phase: PhaseName::LanguageInit,
                 succeeded: lang_count as u64,
                 failed: 0,
-                detail: Some(format!(
-                    "{} language frontends initialized",
-                    lang_count,
-                )),
+                detail: Some(format!("{} language frontends initialized", lang_count,)),
             });
             last_phase = PhaseName::LanguageInit;
 
@@ -277,7 +266,7 @@ impl IndexPipeline {
                 &files_to_extract,
                 &frontend_cache,
                 self.options.mode.clone(),
-                None,                       // on_progress (once at end) — unused
+                None, // on_progress (once at end) — unused
                 Some(&on_file_progress),
                 Some(&cancel_token),
             );
@@ -288,9 +277,7 @@ impl IndexPipeline {
                 failed: extracted.stats.failed as u64,
                 detail: Some(format!(
                     "{} succeeded, {} failed, {} symbols found",
-                    extracted.stats.succeeded,
-                    extracted.stats.failed,
-                    extracted.stats.symbols,
+                    extracted.stats.succeeded, extracted.stats.failed, extracted.stats.symbols,
                 )),
             });
             last_phase = PhaseName::Extraction;
@@ -312,27 +299,20 @@ impl IndexPipeline {
                 });
             };
 
-            let write_stats = phase_write_batched(
-                &self.store,
-                &extracted,
-                500,
-                500,
-                write_progress,
-                || (*int_cell.lock().unwrap())(),
-            )?;
+            let write_stats =
+                phase_write_batched(&self.store, &extracted, 500, 500, write_progress, || {
+                    (*int_cell.lock().unwrap())()
+                })?;
 
             stats.indexed = write_stats.written;
 
             sink.emit(ProgressEvent::PhaseFinished {
                 phase: PhaseName::DbWrite,
                 succeeded: write_stats.written as u64,
-                failed: (write_stats.batch_failures + write_stats.single_failures)
-                    as u64,
+                failed: (write_stats.batch_failures + write_stats.single_failures) as u64,
                 detail: Some(format!(
                     "{} written, {} batch failures, {} single failures",
-                    write_stats.written,
-                    write_stats.batch_failures,
-                    write_stats.single_failures,
+                    write_stats.written, write_stats.batch_failures, write_stats.single_failures,
                 )),
             });
             last_phase = PhaseName::DbWrite;
@@ -345,10 +325,7 @@ impl IndexPipeline {
                 phase: PhaseName::Resolution,
                 total: 0,
             });
-            let graph_result = match phase_resolve_and_build(
-                &self.store,
-                &self.project_root,
-            ) {
+            let graph_result = match phase_resolve_and_build(&self.store, &self.project_root) {
                 Ok(gr) => gr,
                 Err(e) => {
                     sink.emit(ProgressEvent::Warning {
@@ -430,9 +407,7 @@ impl IndexPipeline {
             phase: PhaseName::Finalize,
             total: 0,
         });
-        if let Err(e) =
-            phase_commit_path_alias_config(&self.store, &self.project_root)
-        {
+        if let Err(e) = phase_commit_path_alias_config(&self.store, &self.project_root) {
             sink.emit(ProgressEvent::Warning {
                 phase: PhaseName::Finalize,
                 message: format!("{:#}", e),
@@ -512,9 +487,7 @@ mod tests {
         );
 
         let sink = RecordingSink::new();
-        let stats = pipeline
-            .run(&sink, &mut || false)
-            .unwrap();
+        let stats = pipeline.run(&sink, &mut || false).unwrap();
 
         assert_eq!(stats.discovered, 1);
         assert!(stats.indexed > 0);
@@ -523,14 +496,29 @@ mod tests {
         let events = sink.events();
         // Assert that Discovery and HashCheck PhaseStarted + PhaseFinished exist.
         let has_discovery_started = events.iter().any(|e| {
-            matches!(e, ProgressEvent::PhaseStarted { phase: PhaseName::Discovery, .. })
+            matches!(
+                e,
+                ProgressEvent::PhaseStarted {
+                    phase: PhaseName::Discovery,
+                    ..
+                }
+            )
         });
         assert!(has_discovery_started, "should emit Discovery PhaseStarted");
 
         let has_discovery_finished = events.iter().any(|e| {
-            matches!(e, ProgressEvent::PhaseFinished { phase: PhaseName::Discovery, .. })
+            matches!(
+                e,
+                ProgressEvent::PhaseFinished {
+                    phase: PhaseName::Discovery,
+                    ..
+                }
+            )
         });
-        assert!(has_discovery_finished, "should emit Discovery PhaseFinished");
+        assert!(
+            has_discovery_finished,
+            "should emit Discovery PhaseFinished"
+        );
     }
 
     #[test]
@@ -546,26 +534,22 @@ mod tests {
 
         let sink = RecordingSink::new();
         // Interrupt immediately
-        let stats = pipeline
-            .run(&sink, &mut || true)
-            .unwrap();
+        let stats = pipeline.run(&sink, &mut || true).unwrap();
 
         assert_eq!(stats.discovered, 0);
         assert_eq!(stats.indexed, 0);
 
         let events = sink.events();
-        let has_cancelled = events.iter().any(|e| matches!(e, ProgressEvent::Cancelled { .. }));
+        let has_cancelled = events
+            .iter()
+            .any(|e| matches!(e, ProgressEvent::Cancelled { .. }));
         assert!(has_cancelled, "should emit Cancelled event");
     }
 
     #[test]
     fn pipeline_handles_noop_sink() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("hello.ts"),
-            "export const x = 1;\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("hello.ts"), "export const x = 1;\n").unwrap();
 
         let store = Arc::new(Store::open_in_memory().unwrap());
         store.init_schema().unwrap();
@@ -576,9 +560,7 @@ mod tests {
             IndexPipelineOptions::new(ExtractionMode::Manifest),
         );
 
-        let stats = pipeline
-            .run(&NoopSink, &mut || false)
-            .unwrap();
+        let stats = pipeline.run(&NoopSink, &mut || false).unwrap();
 
         assert!(stats.indexed > 0);
     }

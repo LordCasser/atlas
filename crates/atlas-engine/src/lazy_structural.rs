@@ -788,8 +788,7 @@ mod tests {
             store.upsert_file(&file_info).unwrap();
         }
 
-        let provider =
-            DefaultCandidateProvider::new(store.clone(), Some(root.clone()));
+        let provider = DefaultCandidateProvider::new(store.clone(), Some(root.clone()));
         (store, root, provider)
     }
 
@@ -867,10 +866,8 @@ mod tests {
             return;
         }
 
-        let (store, root, provider) = setup_ripgrep_test(
-            &[("src/unique_name.rs", "uniqueterm")],
-            None,
-        );
+        let (store, root, provider) =
+            setup_ripgrep_test(&[("src/unique_name.rs", "uniqueterm")], None);
 
         let candidates = provider.candidates_for_symbol("uniqueterm").unwrap();
         cleanup_ripgrep_test(&root);

@@ -382,7 +382,8 @@ impl LazyCoordinator {
                 let _clear = ClearFlag(thread_flag);
 
                 use types::enums::SymbolKind;
-                let lazy_dataflow = LazyDataflowService::new(Arc::clone(&store), Some(project_root));
+                let lazy_dataflow =
+                    LazyDataflowService::new(Arc::clone(&store), Some(project_root));
                 let mut attempted = 0usize;
                 let mut built = 0usize;
                 for file_id in &file_ids {
@@ -1420,19 +1421,27 @@ mod tests {
         let flag2 = Arc::new(AtomicBool::new(false));
 
         // flag1 can be claimed independently of flag2
-        assert!(flag1
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok());
-        assert!(flag2
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok());
+        assert!(
+            flag1
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+        );
+        assert!(
+            flag2
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+        );
 
         // flag1 should still be true, flag2 independently true
-        assert!(flag1
-            .compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok());
-        assert!(flag2
-            .compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok());
+        assert!(
+            flag1
+                .compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+        );
+        assert!(
+            flag2
+                .compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+        );
     }
 }

@@ -14,8 +14,8 @@
 //!   is managed through a separate `FnMut() -> bool` interrupt closure,
 //!   keeping progress reporting and control flow orthogonal.
 
-use std::fmt;
 use crate::index_pipeline::{IndexProgress, IndexProgressCallback};
+use std::fmt;
 
 // ── ProgressEvent ──────────────────────────────────────────────────────────
 
@@ -53,10 +53,7 @@ pub enum ProgressEvent {
         detail: Option<String>,
     },
     /// Non-fatal condition (e.g. parse warning, deprecated feature).
-    Warning {
-        phase: PhaseName,
-        message: String,
-    },
+    Warning { phase: PhaseName, message: String },
     /// Pipeline was cancelled before completion.
     Cancelled {
         /// Last phase that produced partial results.
@@ -209,8 +206,8 @@ pub fn from_callback(cb: IndexProgressCallback) -> Box<dyn ProgressSink> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
     use crate::index_pipeline::IndexProgress;
@@ -306,7 +303,10 @@ mod tests {
         assert_eq!(PhaseName::Discovery.to_string(), "Discovery");
         assert_eq!(PhaseName::HashCheck.to_string(), "HashCheck");
         assert_eq!(PhaseName::SummaryBuild.to_string(), "SummaryBuild");
-        assert_eq!(PhaseName::Custom("IncrementalDetect").to_string(), "IncrementalDetect");
+        assert_eq!(
+            PhaseName::Custom("IncrementalDetect").to_string(),
+            "IncrementalDetect"
+        );
     }
 
     #[test]
