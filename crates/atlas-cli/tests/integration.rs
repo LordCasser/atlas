@@ -2532,6 +2532,106 @@ fun readFile() {
         assert!(!config.is_producer("free"));
         assert_eq!(config.is_consumer("open"), None);
     }
+
+    #[test]
+    fn test_kotlin_map_not_use() {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        let files = &[(
+            "map_not_use.kt",
+            r#"fun process(): List<String> {
+    val items = listOf("a", "b")
+    return items.map { it.uppercase() }
+}
+"#,
+        )];
+
+        let (store, _stats) = index_files(files);
+        let file_id = FileId::generate("map_not_use.kt");
+
+        // Find the process function
+        let syms = store.find_symbols_by_file(&file_id).unwrap();
+        let func_sym = syms
+            .iter()
+            .find(|s| s.name == "process" && s.kind.as_str() == "function")
+            .expect("process function not found");
+
+        // Verify CFG nodes were extracted
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&func_sym.id)
+            .unwrap();
+        assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
+
+        let cfg_edges = store
+            .find_cfg_edges_by_function(&func_sym.id)
+            .unwrap();
+
+        use atlas_engine::analysis::cfg_graph::CfgGraph;
+        let cfg_graph =
+            CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+
+        // Key negative assertion: NO node should have KotlinUse call context
+        use atlas_engine::enums::CallContext;
+        let has_kotlin_use_ctx = cfg_graph
+            .nodes
+            .values()
+            .any(|n| n.call_context == CallContext::KotlinUse);
+        assert!(
+            !has_kotlin_use_ctx,
+            "CFG should NOT have a node with KotlinUse call context for .map {{}} lambda"
+        );
+
+        // Key negative assertion: NO BlockExit node should be present
+        use atlas_engine::enums::CfgNodeKind;
+        let has_block_exit = cfg_graph
+            .nodes
+            .values()
+            .any(|n| n.kind == CfgNodeKind::BlockExit);
+        assert!(
+            !has_block_exit,
+            "CFG should NOT have a BlockExit node for .map {{}} lambda"
+        );
+
+        // Run compose_effects to verify NO <block-exit> Free and NO Alloc effects
+        let data_nodes = store
+            .find_data_nodes_by_function(&func_sym.id)
+            .unwrap_or_default();
+        let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
+            vec![]
+        } else {
+            let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
+            store
+                .find_dataflow_edges_by_sources(&all_ids)
+                .unwrap_or_default()
+        };
+
+        use atlas_engine::analysis::{ResourceOpConfig, compose_effects};
+        use atlas_engine::effects::SemanticEffectKind;
+        let contract = ResourceOpConfig::default_for(atlas_engine::Language::Kotlin);
+        let composition = compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
+
+        let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
+
+        // Verify NO Alloc effects — .map is not a resource producer
+        let has_alloc = all_effects.iter().any(|eff| {
+            matches!(&eff.kind, SemanticEffectKind::Alloc { .. })
+        });
+        assert!(
+            !has_alloc,
+            "Expected NO Alloc effects for Kotlin .map. Found {:?}",
+            all_effects.iter().map(|e| &e.kind).collect::<Vec<_>>()
+        );
+
+        // Verify NO <block-exit> Free effect
+        let has_block_exit_free = all_effects.iter().any(|eff| {
+            matches!(&eff.kind, SemanticEffectKind::Free { callee, .. }
+                if callee.contains("<block-exit>"))
+        });
+        assert!(
+            !has_block_exit_free,
+            "Expected NO <block-exit> Free for Kotlin .map lambda"
+        );
+    }
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -2656,6 +2756,92 @@ end
         assert_eq!(config.is_consumer("obj.dispose"), Some(0));
         // Non-patterns
         assert!(!config.is_producer("free"));
+    }
+
+    #[test]
+    fn test_ruby_times_not_resource() {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        let files = &[(
+            "times_not_resource.rb",
+            r#"def greet
+  3.times { puts "hello" }
+end
+"#,
+        )];
+
+        let (store, _stats) = index_files(files);
+        let file_id = FileId::generate("times_not_resource.rb");
+
+        // Find the greet method
+        let syms = store.find_symbols_by_file(&file_id).unwrap();
+        let func_sym = syms
+            .iter()
+            .find(|s| s.name == "greet" && s.kind.as_str() == "method")
+            .expect("greet method not found");
+
+        // Verify symbols were extracted
+        assert!(!func_sym.id.to_string().is_empty());
+
+        // Load CFG
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&func_sym.id)
+            .unwrap();
+        assert!(!cfg_nodes.is_empty(), "CFG should have nodes");
+        let cfg_edges = store
+            .find_cfg_edges_by_function(&func_sym.id)
+            .unwrap();
+        let cfg_graph =
+            CfgGraph::build(&cfg_nodes, &cfg_edges).expect("CfgGraph build should succeed");
+
+        // Key negative assertion: NO node should have RubyBlock call context
+        let has_ruby_block_ctx = cfg_graph
+            .nodes
+            .values()
+            .any(|n| n.call_context == CallContext::RubyBlock);
+        assert!(
+            !has_ruby_block_ctx,
+            "CFG should NOT have a node with RubyBlock call context for .times {{}} block"
+        );
+
+        // Key negative assertion: NO BlockExit node should be present
+        let has_block_exit = cfg_graph
+            .nodes
+            .values()
+            .any(|n| n.kind == CfgNodeKind::BlockExit);
+        assert!(
+            !has_block_exit,
+            "CFG should NOT have a BlockExit node for .times {{}} block"
+        );
+
+        // Run compose_effects to verify NO <block-exit> Free effect
+        let data_nodes = store
+            .find_data_nodes_by_function(&func_sym.id)
+            .unwrap_or_default();
+        let dataflow_edges: Vec<_> = if data_nodes.is_empty() {
+            vec![]
+        } else {
+            let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
+            store
+                .find_dataflow_edges_by_sources(&all_ids)
+                .unwrap_or_default()
+        };
+
+        let contract = ResourceOpConfig::default_for(Language::Ruby);
+        let composition =
+            compose_effects(&cfg_graph, &data_nodes, &dataflow_edges, &contract);
+
+        let all_effects: Vec<_> = composition.node_effects.values().flatten().collect();
+
+        // Verify NO <block-exit> Free effect
+        let has_block_exit_free = all_effects.iter().any(|eff| {
+            matches!(&eff.kind, SemanticEffectKind::Free { callee, .. }
+                if callee.contains("<block-exit>"))
+        });
+        assert!(
+            !has_block_exit_free,
+            "Expected NO <block-exit> Free for Ruby .times block"
+        );
     }
 }
 

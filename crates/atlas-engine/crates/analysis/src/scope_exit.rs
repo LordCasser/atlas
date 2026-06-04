@@ -1104,6 +1104,122 @@ mod tests {
         );
     }
 
+    /// Known limitation: `ValueSource::CallReturn` is NOT tracked by
+    /// `escaped_locals`.  When a function returns a value via `CallReturn`
+    /// (e.g., `return fopen(...)`) instead of `ValueSource::Local`
+    /// (e.g., `return f`), the scope-exit pass does NOT recognize that the
+    /// allocated resource has been returned to the caller.  It therefore
+    /// incorrectly emits an auto-free at the exit node.
+    ///
+    /// This test asserts the IDEAL behavior (no auto-free), which currently
+    /// FAILS because `run_scope_exit_pass` only collects `ValueSource::Local`
+    /// names into `escaped_locals`.  When the alloc's `PlaceRef::Local` name
+    /// never appears in a Return/Escape with `ValueSource::Local`, the resource
+    /// looks unfreed from the pass's perspective.
+    ///
+    /// To fix, the pass would need to:
+    /// 1. Track which alloc callee produced which PlaceRef.
+    /// 2. When a Return has `ValueSource::CallReturn`, check whether that
+    ///    callee matches an Alloc in the function, and if so, mark the
+    ///    corresponding PlaceRef as escaped.
+    ///
+    /// Low priority: most real-world code assigns resources to local variables
+    /// before returning them (`let x = fopen(...); return x;`).
+    #[test]
+    fn test_returned_resource_via_callreturn_not_auto_freed() {
+        let sym_id = make_sym_id();
+        let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
+        let cfg = make_cfg_with_alloc_node(
+            &sym_id,
+            &mut node_id,
+            CfgNodeKind::Statement,
+            false,
+            false,
+        );
+
+        let mut effects: HashMap<CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
+        let place = PlaceRef::Local {
+            name: "handle".to_string(),
+        };
+
+        // Alloc for "handle" — eligible for implicit cleanup (C++/Java RAII)
+        let mut alloc_eff = make_effect(
+            &node_id,
+            0,
+            SemanticEffectKind::Alloc {
+                target: place.clone(),
+                callee: "open".to_string(),
+            },
+            0.85,
+        );
+        alloc_eff.eligible_for_implicit_cleanup = Some(true);
+        effects.insert(node_id, vec![alloc_eff]);
+
+        // Return via CallReturn (NOT ValueSource::Local) —
+        // simulates `return make_resource()` pattern
+        let return_node_id = {
+            let stmt_range = types::structs::TextRange {
+                start_byte: 20,
+                end_byte: 30,
+                start_line: 2,
+                start_column: 0,
+                end_line: 2,
+                end_column: 0,
+            };
+            let ret_node = types::cfg::CfgNode::new(
+                &sym_id,
+                CfgNodeKind::Statement,
+                stmt_range,
+            );
+            let ret_id = ret_node.id;
+            effects.insert(
+                ret_id,
+                vec![make_effect(
+                    &ret_id,
+                    0,
+                    SemanticEffectKind::Return {
+                        value: ValueSource::CallReturn {
+                            callee: "open".to_string(),
+                        },
+                    },
+                    0.9,
+                )],
+            );
+            ret_id
+        };
+
+        run_scope_exit_pass(&mut effects, &cfg);
+
+        // IDEAL: Exit should NOT have a scope-exit Free for "handle"
+        // (the resource was returned to the caller via CallReturn).
+        // CURRENTLY THIS ASSERTION FAILS — the pass does not track
+        // CallReturn in escaped_locals, so a Free IS emitted.
+        let exit_node = cfg
+            .nodes
+            .values()
+            .find(|n| n.kind == CfgNodeKind::Exit)
+            .unwrap();
+        if let Some(exit_effects) = effects.get(&exit_node.id) {
+            let has_scope_exit_for_handle = exit_effects.iter().any(|e| {
+                matches!(&e.kind, SemanticEffectKind::Free { place, callee, .. }
+                    if matches!(place, PlaceRef::Local { name } if name == "handle")
+                       && callee.contains("<scope-exit>"))
+            });
+            assert!(
+                !has_scope_exit_for_handle,
+                "KNOWN LIMITATION: scope-exit should NOT auto-free handle when \
+                 returned via CallReturn, but current code only tracks \
+                 ValueSource::Local in escaped_locals — Free IS emitted"
+            );
+        }
+
+        // Return effect should still be present
+        assert!(
+            effects.contains_key(&return_node_id),
+            "Return effect should still be present"
+        );
+    }
+
     /// Context-managed allocs (PythonWith) always get auto-free,
     /// even when the language-level implicit_scope_cleanup is false.
     #[test]

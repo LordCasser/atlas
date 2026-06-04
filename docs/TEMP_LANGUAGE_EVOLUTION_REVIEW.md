@@ -1051,3 +1051,373 @@ this pass used targeted source reads and `rg`.
 5. Add Full-mode file-state tests for CFG-unsupported languages such as PHP to
    ensure file-level masks do not claim CFG just because the layer is
    `"dataflow"`.
+
+## 2026-06-03 Review Pass 6: Post-Implementation Re-Audit
+
+Scope: re-review after the latest implementation pass that addressed Review
+Pass 5. This pass covers CLI index/sync, MCP trace/search/context/semantic
+tools, TUI, Full and Lazy dataflow paths, and all compiled language profiles.
+CodeGraph tools were still unavailable, so the review used targeted source
+reads and `rg`.
+
+Verification run during this pass:
+
+```text
+cargo test -p analysis test_context_managed_always_eligible --quiet
+```
+
+Result: passed. The run emitted non-fatal warnings, including
+`unused_mut` in `types/src/capability.rs:369` under the current feature set and
+an unused local in a scope-exit test.
+
+### Fixes Confirmed Since Pass 5
+
+1. **File-level dataflow no longer implies CFG by layer name alone.**
+   `CapabilityMask::from_layers("dataflow")` now sets MANIFEST, STRUCTURAL,
+   CALL_EDGES, and DATAFLOW, but not CFG
+   (`types/src/structs.rs:758-764`). `write_file_facts` adds CFG only when
+   `facts.cfg_nodes` is non-empty (`db/src/store_writers.rs:720-723`). This
+   addresses the previous Full-mode PHP/ArkTS file-level CFG overreporting
+   concern.
+
+2. **Cangjie capability metadata now derives from the typed matrix.**
+   Cangjie builds `supported_features` and `unsupported_features` from
+   `FeatureMatrix` (`types/src/capability.rs:913-970`), so the CFG matrix/list
+   consistency test should no longer fail for Cangjie
+   (`types/src/capability.rs:1684-1708`).
+
+3. **Ruby block classification is narrowed to resource block calls.**
+   Ruby now requires both a block child and `is_ruby_resource_block_call`
+   (`extraction/src/cfg_builder.rs:714-718`). The predicate checks known
+   resource block callees such as `File.open`, `IO.open`, `Dir.chdir`, and
+   socket constructors (`extraction/src/cfg_builder.rs:449-470`).
+
+4. **Kotlin `.use {}` classification is narrowed by callee text.**
+   Kotlin now requires `has_lambda_child` and `is_kotlin_use_call`
+   (`extraction/src/cfg_builder.rs:749-753`). The helper skips `call_suffix`
+   nodes and requires a non-suffix child text ending in `.use`
+   (`extraction/src/cfg_builder.rs:430-447`).
+
+5. **`sync --analysis manifest` no longer rebuilds summaries.**
+   The sync command computes `has_dataflow = mode.produces_dataflow()` and
+   only runs the changed-file summary rebuild when true
+   (`atlas-cli/src/commands/sync.rs:12-18`,
+   `atlas-cli/src/commands/sync.rs:110-148`).
+
+6. **Lazy unit capability masks are now CFG-gated.**
+   Lazy writes DATAFLOW unconditionally for successful unit dataflow, but sets
+   CFG only when the language profile supports CFG and actual CFG nodes exist
+   (`lazy/src/loader.rs:187-195`, `lazy/src/loader.rs:235-261`). The prebuilt
+   cache path uses the same profile/count gate (`lazy/src/loader.rs:303-352`).
+
+7. **Lazy frontend cache includes ArkTS and Cangjie.**
+   `get_cached_frontend` now includes both languages
+   (`lazy/src/loader.rs:491-508`), so the immediate lazy entry gap is closed.
+
+### Remaining Findings
+
+1. **[P1] MCP dataflow diagnostics still do not produce a correct combined
+   `analysis_contract`.** `handle_trace_variable` now converts an Engine
+   `LazySummary` into `diag.dataflow` (`atlas-mcp/src/tools/trace.rs:260-270`),
+   but it only creates `combined_lazy_diag` from `structural_lo`
+   (`atlas-mcp/src/tools/trace.rs:253-258`). If structural lazy extraction did
+   not run because the file was already structural, there is no
+   `lazy_diagnostics` block even though Engine may have triggered lazy
+   dataflow. If structural did run, `diag.analysis_contract` still comes from
+   `LazyDiagnostics::from_structural`, so its capability mask is not recomputed
+   after the dataflow summary is added (`atlas-mcp/src/tools/trace.rs:294-297`,
+   `lazy_response.rs:238-257`). This affects MCP `trace_variable` on the common
+   manifest/structural + lazy-dataflow path.
+
+2. **[P1] `LazyWindow.capability_mask` remains default in the service return
+   path, so MCP semantic tools can underreport dataflow/CFG capability.**
+   The planner initializes `LazyWindow.capability_mask` to default
+   (`lazy/src/planner.rs:155-166`, `lazy/src/planner.rs:234-245`), and
+   `LazyDataflowService::ensure_for_position` only fills counts, pending jobs,
+   and precision tier (`lazy/src/lib.rs:51-81`). `LazyDiagnostics::from_layers`
+   merges `dw.capability_mask` into `analysis_contract`
+   (`lazy_response.rs:238-247`). Tools that pass a real `LazyWindow`, such as
+   branch diff and lifecycle, therefore show dataflow-layer stats but a
+   capability contract with no dataflow/CFG bits
+   (`atlas-mcp/src/tools/branch_diff.rs:86-94`,
+   `atlas-mcp/src/tools/lifecycle.rs:100-108`).
+
+3. **[P1] Engine drops `LazySummary` when trace slicing returns no path.**
+   `Engine::trace_variable` always runs `ensure_for_position` first, but only
+   attaches the resulting `lazy_summary` inside `if let Some(ref mut path) =
+   resp.result` (`atlas-engine/src/lib.rs:437-443`). If the locator or slicer
+   returns a partial response with no `TracePath`, MCP cannot recover the
+   dataflow summary and cannot build truthful lazy diagnostics. This is a lazy
+   path observability bug, not an extraction bug.
+
+4. **[P2] Lazy callsite remap still soft-fails on store errors.** The P0
+   remap design is fixed: lazy data nodes are remapped against structural DB
+   callsites before `update_callsite_arg_data_nodes`
+   (`lazy/src/loader.rs:157-224`). However, `find_callsites_by_file` errors are
+   logged and replaced with an empty vector (`lazy/src/loader.rs:166-176`).
+   That prevents crashes, but it also silently degrades the core join that
+   summaries and trace bridges depend on. At minimum, this should surface in
+   `LazyWindow`/MCP diagnostics.
+
+5. **[P2] Kotlin/Ruby overbroad classifications are narrowed, but negative
+   coverage is still absent.** Current integration tests assert the positive
+   `KotlinUse` and `RubyBlock` cases
+   (`atlas-cli/tests/integration.rs:2453-2461`,
+   `atlas-cli/tests/integration.rs:2592-2600`). There is no fixture proving
+   `list.map {}`, `run {}`, `users.each {}`, or `transaction {}` do not create
+   `KotlinUse`/`RubyBlock`/`BlockExit`. Given how syntax-text based the new
+   filters are, negative tests are required before treating the lifecycle
+   boundary classification as stable.
+
+6. **[P2] Returned-resource suppression is still only proven with hand-built
+   effects.** `scope_exit` suppresses auto-free only when `Return` or `Escape`
+   effects carry `ValueSource::Local` (`analysis/src/scope_exit.rs:42-56`,
+   `analysis/src/scope_exit.rs:92-104`). The new tests manually construct a
+   `Return` effect, but the source parse -> dataflow -> compose path still does
+   not visibly synthesize `SemanticEffectKind::Return` for ordinary
+   `return local` statements. This affects Rust/C++/Java/C#/Python context
+   paths where ownership should transfer to the caller.
+
+7. **[P2] CLI `atlas index` still builds summaries in default structural mode.**
+   CLI index returns early only for manifest (`atlas-cli/src/commands/index.rs:312-325`).
+   Structural mode continues through resolution, graph building, and
+   `phase_build_summaries` (`atlas-cli/src/commands/index.rs:366-372`) even
+   though structural extraction does not produce dataflow. The per-file cleanup
+   before write removes stale facts for dirty files
+   (`atlas-cli/src/commands/index.rs:267-274`), so this is less severe than the
+   sync bug that was fixed. It is still a mismatched path: `sync` now gates
+   summaries on `produces_dataflow()`, while `index` does not.
+
+8. **[P3] Lazy frontend language registration is still duplicated.** ArkTS and
+   Cangjie are now included, but `get_cached_frontend` remains a hard-coded
+   list (`lazy/src/loader.rs:491-508`) separate from
+   `LanguageCapabilityProfile::all_compiled` (`types/src/capability.rs:366-400`).
+   Future languages can still drift between non-lazy and lazy entry points.
+
+9. **[P3] Some integration tests leave diagnostic `eprintln!` output in normal
+   runs.** The Kotlin resource integration test prints all CFG nodes,
+   DataNodes, and Alloc effects (`atlas-cli/tests/integration.rs:2463-2485`).
+   This is useful while debugging, but it makes normal test output noisy.
+
+### Path Coverage Summary
+
+1. **CLI index**
+   Manifest path is explicitly early-returned. Full path reaches dataflow/CFG
+   and summary build. Structural path reaches summary build despite not
+   producing dataflow; this remains the main CLI-index mismatch.
+
+2. **CLI sync**
+   Manifest now skips resolution/graph in `SyncEngine` and skips summary
+   rebuild in the CLI wrapper. Full still rebuilds summaries. Structural sync
+   skips summaries because `produces_dataflow()` is false.
+
+3. **MCP**
+   Search/context/caller/forward traces remain structural/call-graph oriented.
+   `trace_variable` correctly routes through high-level `Engine`, but
+   top-level lazy diagnostics and contracts are still not fully combined.
+   Lifecycle/branch-diff tools still rely on `LazyWindow.capability_mask`, which
+   is not filled.
+
+4. **TUI**
+   TUI still uses `RawTraceEngine::trace_callers`
+   (`atlas-cli/src/tui/app.rs:348-352`). It does not expose variable/dataflow
+   trace, so lazy dataflow is not a TUI path today.
+
+### Language Status After This Pass
+
+1. TypeScript/JavaScript/ArkTS:
+   Full and Lazy share dataflow/CFG implementation. ArkTS lazy entry exists.
+   MCP contract reporting remains the primary user-visible gap after lazy
+   dataflow.
+
+2. Python:
+   Plain implicit cleanup is disabled; context cleanup depends on CFG
+   `PythonWith`. Returned-resource handling still needs source-level proof.
+
+3. Java:
+   Full/Lazy CFG and try-with-resources share the same scope-exit path.
+   Returned-resource source-level proof is still missing.
+
+4. C:
+   Manual cleanup default is correct. Full/Lazy tests should focus on explicit
+   `free` and no false scope-exit cleanup.
+
+5. C++:
+   C API producer patterns are marked ineligible for implicit cleanup, while
+   the language default remains RAII. Unlisted producer patterns default to
+   implicit cleanup, so source-level negative coverage is still important.
+
+6. Go:
+   Full/Lazy share dataflow/CFG. No new Go-specific path regression found in
+   this pass.
+
+7. C#:
+   Full/Lazy share `CSharpUsing`. Constructor/resource normalization still
+   needs end-to-end fixture coverage beyond matcher-level confidence.
+
+8. Rust:
+   Full/Lazy share CFG and implicit Drop. `return local`/`mem::forget` behavior
+   should be verified from real source, not only constructed effects.
+
+9. PHP:
+   CFG is unsupported in the profile, and file/unit masks now avoid claiming
+   CFG unless nodes exist. Lazy dataflow remains available.
+
+10. Ruby:
+    Resource block classification is narrowed, but negative block fixtures are
+    still missing.
+
+11. Kotlin:
+    `.use` classification is narrowed, but negative trailing-lambda fixtures are
+    still missing. The bounded successor walk in `scope_exit` also still relies
+    on nearby CFG shape rather than a resource-chain identity.
+
+12. Cangjie:
+    Lazy entry and capability metadata are now aligned with the typed matrix.
+    No Cangjie-specific runtime regression found in this pass.
+
+### Recommended Next Verification
+
+1. Add MCP `trace_variable` tests where structural is already complete and lazy
+   dataflow runs; assert `lazy_diagnostics.dataflow` and
+   `analysis_contract.safe_conclusions` reflect DATAFLOW/CFG.
+2. Populate `LazyWindow.capability_mask` from unit extraction state after
+   `LazyDataflowLoader::ensure`, then assert branch diff/lifecycle diagnostics
+   include dataflow/CFG capability.
+3. Add negative Kotlin and Ruby lifecycle fixtures.
+4. Gate CLI index summary build on `mode.produces_dataflow()` or document why
+   structural summary build is intentional.
+5. Add source-level returned-resource tests for at least Rust, C++, Python
+   context manager, Java try-with-resources, and C# using.
+
+## 2026-06-04 Review Pass 7: External Pre-release Report Validation
+
+Scope: validate the pasted "Atlas v1.3.1 Comprehensive Pre-release Review
+Report" against the current repository. This is not a new full audit; it checks
+whether that report's concrete claims are true, false, or overstated.
+
+### Validation Verdict
+
+The pasted report is **partially true, but not fully reliable as written**.
+Several severe MCP issues are real. Some documentation claims are real but
+overstated. The CodeGraph recycle blocker and the CFG panic are not supported
+by the current code path.
+
+### Confirmed True / Actionable
+
+1. **MCP `wait_for_task` blocks the current-thread runtime.**
+   `McpServer::serve` uses `tokio::runtime::Builder::new_current_thread()`
+   (`atlas-mcp/src/lib.rs:50-54`). `wait_for_task` calls
+   `std::thread::sleep` inside a polling loop
+   (`atlas-mcp/src/tools/wait_for.rs:93-106`). Tool dispatch also holds the
+   router mutex while calling `router.call_tool`
+   (`atlas-mcp/src/lib.rs:219-249`), so `wait_for_task` blocks the runtime and
+   keeps the router unavailable for other tools until it returns.
+
+2. **The MCP `symbol` tool has a real `qname` vs `symbol` inconsistency.**
+   Current `crates/atlas-mcp/README.md` documents `symbol` as the required
+   argument for the `symbol` tool (`README.md:50-54`), but the actual schema
+   requires `qname` (`atlas-mcp/src/tools/mod.rs:1112-1128`) and the handler
+   returns `Missing required 'qname' parameter`
+   (`atlas-mcp/src/tools/mod.rs:1448-1453`). The report's "6+ docs" scope was
+   not confirmed, but the primary MCP README mismatch is real.
+
+3. **Poisoned MCP router mutex is not recovered.**
+   `lock_router` maps a poisoned lock to a permanent internal error instead of
+   recovering with `PoisonError::into_inner`
+   (`atlas-mcp/src/lib.rs:87-91`). The direct progress setup/cleanup locks use
+   the same non-recovering pattern (`atlas-mcp/src/lib.rs:185-189`,
+   `atlas-mcp/src/lib.rs:251-257`).
+
+4. **Progress sender cleanup is not panic-safe.**
+   `progress_sender` is installed before dispatch
+   (`atlas-mcp/src/lib.rs:175-190`) and cleared only after dispatch returns
+   (`atlas-mcp/src/lib.rs:251-257`). If dispatch panics, cleanup is skipped.
+   In practice this is coupled with the mutex-poison issue, so these should be
+   fixed together with a guard/catch-unwind strategy.
+
+5. **DB silent error swallowing exists, but the report's count/severity needs
+   triage.**
+   Confirmed examples include dropping semantic-effect serialization errors
+   (`db/src/store_writers.rs:523-527`), silently skipping malformed callsite
+   rows and defaulting malformed `args_json`
+   (`db/src/store/unit_extraction_state.rs:297-305`), and treating extraction
+   state query errors as "not found" (`db/src/store/file_extraction_state.rs:18-27`).
+   Some `.ok()` instances are compatibility paths, so this should be triaged by
+   data-loss risk rather than fixed mechanically.
+
+6. **MCP README `domain_rules` row is stale.**
+   The README lists `language`, `kind`, `patterns`, `status`
+   (`crates/atlas-mcp/README.md:63`), while the schema documents
+   `rule_kind`, `pattern`, `rule_id`, `source`, `confidence`, and
+   `min_confidence` (`atlas-mcp/src/tools/mod.rs:1325-1344`).
+
+7. **Several CLI/documentation mismatch claims are real.**
+   The CLI enum only exposes `status`, `doctor`, `index`, `sync`, `files`, and
+   `mcp` (`atlas-cli/src/lib.rs:68-119`), while `docs/trace-contract.md`
+   still documents `atlas trace ...` commands (`docs/trace-contract.md:326-329`).
+   `doctor` still recommends non-existent `atlas init`
+   (`atlas-cli/src/commands/doctor.rs:78-82`). TUI auto-index still calls
+   `index::run(".", ...)` instead of using the function's project root
+   (`atlas-cli/src/main.rs:83-86`). The Chinese exit prompt also remains
+   (`atlas-cli/src/tui/app.rs:739`).
+
+8. **MCP index include/exclude arrays are uncapped.**
+   `handle_index` parses `include` and `exclude` arrays without an entry-count
+   cap (`atlas-mcp/src/tools/index.rs:60-76`). `include_roots` has a dedicated
+   cap elsewhere, so this is a real consistency gap.
+
+9. **Summary `build_all` still calls a builder closure while holding a write
+   transaction/connection lock.**
+   `SummaryStore::build_all` locks and opens a transaction before invoking
+   `build_fn(store, &sym.id)` (`db/src/store/summary.rs:136-147`). Production
+   callers pass `SummaryBuilder::build`, which reads from the store. This
+   remains a credible deadlock/reentrancy risk unless Store lock behavior makes
+   that safe by construction.
+
+### False, Outdated, Or Overstated
+
+1. **CodeGraph `recycleWorker()` blocker is overstated for the current path.**
+   `recycleWorker` does not call `rejectAllPending`
+   (`codegraph/src/extraction/index.ts:747-754`), but bulk parsing awaits
+   `requestParse` sequentially (`codegraph/src/extraction/index.ts:834-893`).
+   The threshold recycle happens before the next parse starts
+   (`codegraph/src/extraction/index.ts:768-775`), so there should be no
+   in-flight parse promise to drop in the current implementation. The timeout
+   path also has only one active parse in this sequential loop. This could
+   become a bug if parsing is later made concurrent, but the pasted report's
+   "silently drops all in-flight parses" blocker is not proven today.
+
+2. **CFG `walk_if` index panic is outdated.**
+   Current code guards both branch-edge mutations with
+   `if self.edges.len() > saved_edge_count`
+   (`extraction/src/cfg_builder.rs:981-1003`). The report describes the old
+   unguarded indexing behavior.
+
+3. **"Every documentation file says symbol" is overstated.**
+   The MCP README mismatch is real, but a broad search did not confirm the
+   report's "all 6+ docs" wording. Treat the issue as a concrete MCP README /
+   schema inconsistency, not as a verified six-document drift.
+
+4. **`rebuild_in_progress` "can stick forever" needs narrower wording.**
+   On rebuild failure the code calls `mark_rebuild_finished` and reschedules
+   (`atlas-mcp/src/tools/mod.rs:482-485`). On success it intentionally keeps
+   `rebuild_in_progress` true until a later request applies the pending graph
+   (`atlas-mcp/src/tools/mod.rs:473-481`, `430-460`). That may be an
+   observability/latency concern, but it is not clearly a stuck-state bug.
+
+### Recommended Priority From This Validation
+
+1. Fix MCP runtime blocking: make `wait_for_task` async/non-blocking or move MCP
+   service to a multi-thread runtime, and avoid sleeping while holding the
+   router lock.
+2. Fix MCP panic/poison cleanup: recover or replace the poisoned router policy,
+   and clear `progress_sender` with a guard.
+3. Align `symbol` schema/docs. Prefer accepting both `qname` and `symbol` for
+   backward compatibility, then document one canonical name.
+4. Update stale docs: `domain_rules`, non-existent CLI commands, `atlas init`,
+   old trace tool names, and old `atlas_resume`/`atlas_jobs` names.
+5. Triage DB silent swallowing by data-loss risk, starting with semantic
+   effects, callsite args, extraction state, and summary build errors.
+6. Do not treat the CodeGraph recycle claim or CFG panic claim as current
+   release blockers unless new evidence appears.
