@@ -593,7 +593,10 @@ impl ToolRouter {
             "domain_rules" => self.handle_domain_rules(arguments),
             "tasks" => self.handle_tasks(arguments),
             "task_status" => self.handle_task_status(arguments),
-            "wait_for_task" => self.handle_wait_for_task(arguments),
+            "wait_for_task" => (
+                "wait_for_task is handled asynchronously by the MCP service layer".to_string(),
+                true,
+            ),
             "resume_task" => self.handle_resume_task(arguments),
             _ => (format!("Unknown tool: {name}"), true),
         };
@@ -1110,11 +1113,11 @@ fn make_symbol_tools() -> Vec<Tool> {
         },
         Tool {
             name: "symbol".into(),
-            description: "Get symbol information by qualified name (qname). view='detail' returns kind, location, signature, and caller/callee summaries (with optional source via includeCode). view='context' returns structured callers, callees, file peers, imports, dependencies, and precision tier. view='usages' returns reference usages. Default view is 'detail'.".into(),
+            description: "Get symbol information by qualified name (symbol). view='detail' returns kind, location, signature, and caller/callee summaries (with optional source via includeCode). view='context' returns structured callers, callees, file peers, imports, dependencies, and precision tier. view='usages' returns reference usages. Default view is 'detail'.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
-                    "qname": { "type": "string", "description": "Fully qualified symbol name (primary parameter)." },
+                    "symbol": { "type": "string", "description": "Fully qualified symbol name (primary parameter)." },
                     "view": {
                         "type": "string",
                         "enum": ["detail", "context", "usages"],
@@ -1124,7 +1127,7 @@ fn make_symbol_tools() -> Vec<Tool> {
                     "limit": { "type": "integer", "description": "Max results for view='usages' (default 50)." },
                     "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
-                required: Some(vec!["qname".into()]),
+                required: Some(vec!["symbol".into()]),
             },
         },
     ]
@@ -1444,17 +1447,17 @@ impl ToolRouter {
     // ── symbol (facade) ──────────────────────────────────────────────
 
     /// Handle `symbol` tool — dispatch by `view` to legacy handlers.
-    /// Remaps `qname` → `qualified_name` (detail) or `qname` → `symbol` (context/usages).
+    /// Remaps `symbol` → `qualified_name` (detail) or passes through as `symbol` (context/usages).
     pub(crate) fn handle_symbol(&mut self, args: &Value) -> (String, bool) {
         let view = get_str(args, "view");
-        let qname = get_str(args, "qname");
+        let qname = get_str(args, "symbol");
         if qname.is_empty() {
-            return ("Missing required 'qname' parameter".to_string(), true);
+            return ("Missing required 'symbol' parameter".to_string(), true);
         }
 
         match view {
             "detail" | "" => {
-                // Remap: qname → qualified_name for the legacy detail handler
+                // Remap: symbol → qualified_name for the legacy detail handler
                 let mut mapped = serde_json::Map::new();
                 mapped.insert("qualified_name".into(), Value::String(qname.to_string()));
                 if let Some(v) = args.get("includeCode") {
@@ -1466,7 +1469,7 @@ impl ToolRouter {
                 self.handle_symbol_detail(&Value::Object(mapped))
             }
             "context" => {
-                // Remap: qname → symbol for the legacy context handler
+                // Remap: symbol → symbol for the legacy context handler
                 let mut mapped = serde_json::Map::new();
                 mapped.insert("symbol".into(), Value::String(qname.to_string()));
                 if let Some(v) = args.get("includeCode") {
@@ -1478,7 +1481,7 @@ impl ToolRouter {
                 self.handle_context(&Value::Object(mapped))
             }
             "usages" => {
-                // Remap: qname → symbol for the legacy usages handler
+                // Remap: symbol → symbol for the legacy usages handler
                 let mut mapped = serde_json::Map::new();
                 mapped.insert("symbol".into(), Value::String(qname.to_string()));
                 if let Some(v) = args.get("limit") {
@@ -2014,7 +2017,7 @@ mod tests {
         router.ensure_graph_initialized().unwrap();
 
         let args = serde_json::json!({
-            "qname": "test_func.test_func",
+            "symbol": "test_func.test_func",
             "include_roots": ["/absolute/rejected"]
         });
 

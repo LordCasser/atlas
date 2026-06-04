@@ -262,10 +262,21 @@ impl ToolRouter {
         // LazyWindow from dataflow extraction — but Engine's response carries
         // the summary.  Convert it so the agent sees both structural AND
         // dataflow layer stats in the lazy_diagnostics block.
-        if let Some(ref mut diag) = combined_lazy_diag {
-            if let Some(ref path) = resp.result {
-                if let Some(ref summary) = path.lazy_summary {
-                    diag.dataflow = Some(LazyLayerDiagnostics::from_lazy_summary(summary));
+        //
+        // When structural_lo is None (already cached), the dataflow summary
+        // must still be surfaced on its own.  When structural_lo is Some, the
+        // dataflow layer is populated alongside the existing structural layer.
+        // This check runs independently of resp.result — dataflow extraction
+        // may succeed even when no trace path is found.
+        if let Some(ref summary) = resp.lazy_summary {
+            match combined_lazy_diag {
+                Some(ref mut diag) => {
+                    diag.dataflow =
+                        Some(LazyLayerDiagnostics::from_lazy_summary(summary));
+                }
+                None => {
+                    combined_lazy_diag =
+                        Some(LazyDiagnostics::from_dataflow_summary(summary));
                 }
             }
         }

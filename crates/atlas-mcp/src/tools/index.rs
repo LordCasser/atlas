@@ -14,6 +14,9 @@ use atlas_engine::{
 use super::ToolRouter;
 use serde_json::json;
 
+/// Maximum number of include/exclude glob patterns accepted per index request.
+const MAX_INDEX_PATTERNS: usize = 100;
+
 /// Result of an atlas_index invocation.
 #[derive(serde::Serialize, Clone)]
 pub(crate) struct IndexResult {
@@ -74,6 +77,27 @@ impl ToolRouter {
                     .collect()
             })
             .unwrap_or_default();
+
+        if exclude_patterns.len() > MAX_INDEX_PATTERNS {
+            return (
+                format!(
+                    "exclude patterns ({}) exceed maximum of {}",
+                    exclude_patterns.len(),
+                    MAX_INDEX_PATTERNS,
+                ),
+                true,
+            );
+        }
+        if include_patterns.len() > MAX_INDEX_PATTERNS {
+            return (
+                format!(
+                    "include patterns ({}) exceed maximum of {}",
+                    include_patterns.len(),
+                    MAX_INDEX_PATTERNS,
+                ),
+                true,
+            );
+        }
 
         let mut result = IndexResult {
             ok: false,
@@ -181,6 +205,27 @@ impl ToolRouter {
                     .collect()
             })
             .unwrap_or_default();
+
+        if exclude_patterns.len() > MAX_INDEX_PATTERNS {
+            return (
+                format!(
+                    "exclude patterns ({}) exceed maximum of {}",
+                    exclude_patterns.len(),
+                    MAX_INDEX_PATTERNS,
+                ),
+                true,
+            );
+        }
+        if include_patterns.len() > MAX_INDEX_PATTERNS {
+            return (
+                format!(
+                    "include patterns ({}) exceed maximum of {}",
+                    include_patterns.len(),
+                    MAX_INDEX_PATTERNS,
+                ),
+                true,
+            );
+        }
 
         std::thread::spawn(move || {
             let start = std::time::Instant::now();

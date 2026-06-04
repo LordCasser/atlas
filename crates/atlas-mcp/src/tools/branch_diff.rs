@@ -6,13 +6,19 @@
 
 use super::lazy_response::LazyDiagnostics;
 use super::query_snapshot::{QuerySnapshot, QueryStatus};
-use super::{ToolRouter, get_str};
+use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str};
 use serde_json::json;
 use std::time::Instant;
 
 impl ToolRouter {
     pub(crate) fn handle_branch_diff(&mut self, args: &serde_json::Value) -> (String, bool) {
         let symbol = get_str(args, "symbol");
+        if symbol.len() > MAX_SYMBOL_NAME_LENGTH {
+            return (
+                format!("symbol exceeds max length of {}", MAX_SYMBOL_NAME_LENGTH),
+                true,
+            );
+        }
 
         if symbol.is_empty() {
             return ("Missing required parameter: symbol".to_string(), true);

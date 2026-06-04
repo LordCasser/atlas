@@ -8,7 +8,7 @@ use atlas_engine::analysis;
 use atlas_engine::{EdgeKind, InvestigationFocus, Store, SymbolId, SymbolKind, TraversalDirection};
 
 use super::query_snapshot::{QuerySnapshot, QueryStatus};
-use super::{ToolRouter, get_str, get_str_opt, get_u64};
+use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str, get_str_opt, get_u64};
 
 use serde_json::json;
 
@@ -119,6 +119,12 @@ fn parse_edge_kind(s: &str) -> Result<EdgeKind, String> {
 impl ToolRouter {
     pub(crate) fn handle_callers(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "symbol");
+        if qname.len() > MAX_SYMBOL_NAME_LENGTH {
+            return (
+                format!("symbol exceeds max length of {}", MAX_SYMBOL_NAME_LENGTH),
+                true,
+            );
+        }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
 
         let sid = match self.resolve_qname(qname) {
@@ -196,6 +202,12 @@ impl ToolRouter {
 
     pub(crate) fn handle_callees(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "symbol");
+        if qname.len() > MAX_SYMBOL_NAME_LENGTH {
+            return (
+                format!("symbol exceeds max length of {}", MAX_SYMBOL_NAME_LENGTH),
+                true,
+            );
+        }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
 
         let sid = match self.resolve_qname(qname) {
@@ -266,6 +278,12 @@ impl ToolRouter {
 
     pub(crate) fn handle_callgraph(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "symbol");
+        if qname.len() > MAX_SYMBOL_NAME_LENGTH {
+            return (
+                format!("symbol exceeds max length of {}", MAX_SYMBOL_NAME_LENGTH),
+                true,
+            );
+        }
         let depth = get_u64(args, "depth").unwrap_or(3) as usize;
         let limit = get_u64(args, "limit").unwrap_or(100) as usize;
 
@@ -491,6 +509,18 @@ impl ToolRouter {
     pub(crate) fn handle_path(&mut self, args: &serde_json::Value) -> (String, bool) {
         let from_qname = get_str(args, "from");
         let to_qname = get_str(args, "to");
+        if from_qname.len() > MAX_SYMBOL_NAME_LENGTH {
+            return (
+                format!("from exceeds max length of {}", MAX_SYMBOL_NAME_LENGTH),
+                true,
+            );
+        }
+        if to_qname.len() > MAX_SYMBOL_NAME_LENGTH {
+            return (
+                format!("to exceeds max length of {}", MAX_SYMBOL_NAME_LENGTH),
+                true,
+            );
+        }
         let max_depth = get_u64(args, "max_depth").unwrap_or(5) as usize;
         let prefer_production = args
             .get("prefer_production")
@@ -986,6 +1016,12 @@ impl ToolRouter {
 
     pub(crate) fn handle_explore(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "symbol");
+        if qname.len() > MAX_SYMBOL_NAME_LENGTH {
+            return (
+                format!("symbol exceeds max length of {}", MAX_SYMBOL_NAME_LENGTH),
+                true,
+            );
+        }
         let include_code = args
             .get("includeCode")
             .and_then(|v| v.as_bool())
@@ -1126,6 +1162,12 @@ impl ToolRouter {
 
     pub(crate) fn handle_impact(&mut self, args: &serde_json::Value) -> (String, bool) {
         let qname = get_str(args, "symbol");
+        if qname.len() > MAX_SYMBOL_NAME_LENGTH {
+            return (
+                format!("symbol exceeds max length of {}", MAX_SYMBOL_NAME_LENGTH),
+                true,
+            );
+        }
         let depth = get_u64(args, "depth").unwrap_or(3) as usize;
         let semantic = args
             .get("semantic")

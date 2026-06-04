@@ -266,6 +266,38 @@ impl LazyDiagnostics {
             .expect("from_structural always has a structural outcome")
     }
 
+    /// Create diagnostics from only a dataflow [`LazySummary`].
+    /// Used when structural is already cached (no `LazyOutcome`) but the
+    /// Engine triggered lazy dataflow loading.
+    pub(crate) fn from_dataflow_summary(summary: &atlas_engine::LazySummary) -> Self {
+        let dataflow = LazyLayerDiagnostics::from_lazy_summary(summary);
+        let next_action = if dataflow.files_pending > 0 && !dataflow.pending_job_ids.is_empty() {
+            "poll_jobs"
+        } else if dataflow.budget_exceeded {
+            "narrow_scope"
+        } else {
+            "none"
+        };
+        Self {
+            structural: None,
+            dataflow: Some(dataflow),
+            next_action,
+            // Dataflow extraction always provides at least manifest, structural,
+            // call edges, and intra-procedural dataflow (but NOT CFG, which is
+            // language-specific).
+            analysis_contract: AnalysisContract::from_capability(
+                CapabilityMask::new(
+                    CapabilityMask::MANIFEST
+                        | CapabilityMask::STRUCTURAL
+                        | CapabilityMask::CALL_EDGES
+                        | CapabilityMask::DATAFLOW,
+                ),
+                None,
+                None,
+            ),
+        }
+    }
+
 }
 
 impl LazyLayerDiagnostics {
