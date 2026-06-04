@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use db::Store;
+use extraction::ExtractionMode;
 use rayon::prelude::*;
+use types::structs::CapabilityMask;
 use workspace::SourcePath;
 
 /// Files that require re-indexing compared with the store.
@@ -25,6 +27,35 @@ pub struct DirtySet {
 /// `discovered` must contain project-relative paths. Paths that cannot be
 /// normalized as [`SourcePath`] are ignored, matching extraction behavior.
 pub fn build_dirty_set(store: &Store, discovered: &[PathBuf], root: &Path) -> Result<DirtySet> {
+    build_dirty_set_with_required_capability(store, discovered, root, CapabilityMask::default())
+}
+
+/// Compute changed files for a target extraction mode.
+///
+/// A file is clean only when both its content hash matches and the database
+/// already has fresh, complete extraction state for the requested analysis
+/// capability. This lets `atlas index --analysis full` upgrade a hash-clean
+/// structural DB instead of incorrectly skipping unchanged files.
+pub fn build_dirty_set_for_mode(
+    store: &Store,
+    discovered: &[PathBuf],
+    root: &Path,
+    mode: &ExtractionMode,
+) -> Result<DirtySet> {
+    build_dirty_set_with_required_capability(
+        store,
+        discovered,
+        root,
+        required_capability_for_mode(mode),
+    )
+}
+
+fn build_dirty_set_with_required_capability(
+    store: &Store,
+    discovered: &[PathBuf],
+    root: &Path,
+    required: CapabilityMask,
+) -> Result<DirtySet> {
     let current_hashes: HashMap<String, String> = discovered
         .par_iter()
         .filter_map(|rel_path| {
@@ -41,6 +72,8 @@ pub fn build_dirty_set(store: &Store, discovered: &[PathBuf], root: &Path) -> Re
         .iter()
         .map(|f| (f.path.clone(), f.content_hash.clone()))
         .collect();
+    let db_file_by_path: HashMap<String, _> =
+        db_files.into_iter().map(|f| (f.path.clone(), f)).collect();
     let db_paths: HashSet<String> = db_hashes.keys().cloned().collect();
 
     let mut dirty = Vec::new();
@@ -57,7 +90,22 @@ pub fn build_dirty_set(store: &Store, discovered: &[PathBuf], root: &Path) -> Re
             Some(db_hash) => {
                 if let Some(curr_hash) = current_hashes.get(&key) {
                     if curr_hash == db_hash {
-                        clean_count += 1;
+                        let has_required = db_file_by_path
+                            .get(&key)
+                            .map(|file| {
+                                store.file_has_fresh_complete_capability(
+                                    &file.file_id,
+                                    curr_hash,
+                                    required,
+                                )
+                            })
+                            .transpose()?
+                            .unwrap_or(false);
+                        if has_required {
+                            clean_count += 1;
+                        } else {
+                            dirty.push(rel_path.clone());
+                        }
                     } else {
                         dirty.push(rel_path.clone());
                     }
@@ -80,9 +128,29 @@ pub fn build_dirty_set(store: &Store, discovered: &[PathBuf], root: &Path) -> Re
     })
 }
 
+fn required_capability_for_mode(mode: &ExtractionMode) -> CapabilityMask {
+    let mut mask = CapabilityMask::default();
+    match mode {
+        ExtractionMode::Manifest | ExtractionMode::ResolutionSymbols => {
+            mask.set(CapabilityMask::MANIFEST);
+        }
+        ExtractionMode::Structural => {
+            mask.set(CapabilityMask::STRUCTURAL);
+        }
+        ExtractionMode::Full => {
+            mask.set(CapabilityMask::DATAFLOW);
+        }
+        ExtractionMode::LazyDataflow { .. } => {
+            mask.set(CapabilityMask::DATAFLOW);
+        }
+    }
+    mask
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use types::{FileId, FileInfo, Language, ParseStatus};
 
     #[test]
     fn empty_store_marks_discovered_files_dirty() {
@@ -97,5 +165,93 @@ mod tests {
         assert_eq!(dirty.dirty, vec![PathBuf::from("main.ts")]);
         assert_eq!(dirty.clean_count, 0);
         assert!(dirty.deleted.is_empty());
+    }
+
+    #[test]
+    fn hash_clean_file_missing_target_capability_is_dirty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = PathBuf::from("main.ts");
+        let source = "const value = 1;\n";
+        std::fs::write(dir.path().join(&path), source).unwrap();
+        let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        let file_id = FileId::generate("main.ts");
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: "main.ts".into(),
+                language: Language::TypeScript,
+                content_hash: hash.clone(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "manifest",
+                &hash,
+                "complete",
+                CapabilityMask::from_layers(&["manifest"]),
+            )
+            .unwrap();
+
+        let dirty = build_dirty_set_for_mode(
+            &store,
+            &[path.clone()],
+            dir.path(),
+            &ExtractionMode::Structural,
+        )
+        .unwrap();
+
+        assert_eq!(dirty.dirty, vec![path]);
+        assert_eq!(dirty.clean_count, 0);
+    }
+
+    #[test]
+    fn dataflow_capability_satisfies_structural_and_full_dirty_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = PathBuf::from("main.ts");
+        let source = "const value = 1;\n";
+        std::fs::write(dir.path().join(&path), source).unwrap();
+        let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        let file_id = FileId::generate("main.ts");
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: "main.ts".into(),
+                language: Language::TypeScript,
+                content_hash: hash.clone(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "dataflow",
+                &hash,
+                "complete",
+                CapabilityMask::from_layers(&["dataflow"]),
+            )
+            .unwrap();
+
+        let structural = build_dirty_set_for_mode(
+            &store,
+            &[path.clone()],
+            dir.path(),
+            &ExtractionMode::Structural,
+        )
+        .unwrap();
+        let full =
+            build_dirty_set_for_mode(&store, &[path], dir.path(), &ExtractionMode::Full).unwrap();
+
+        assert!(structural.dirty.is_empty());
+        assert_eq!(structural.clean_count, 1);
+        assert!(full.dirty.is_empty());
+        assert_eq!(full.clean_count, 1);
     }
 }

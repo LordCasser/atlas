@@ -46,7 +46,7 @@ use resolution::{PathAliasConfig, ReferenceResolver};
 use types::{FileFacts, FileId, Language};
 
 use crate::cleanup::{clean_stale_file_ids, clean_stale_file_paths, source_file_id};
-use crate::dirty::{DirtySet, build_dirty_set};
+use crate::dirty::{DirtySet, build_dirty_set_for_mode};
 use crate::discovery::{DiscoveryConfig, discover_files};
 
 // ── Public types ───────────────────────────────────────────────────────
@@ -129,8 +129,9 @@ pub fn phase_dirty_check(
     store: &Arc<Store>,
     discovered: &[PathBuf],
     root: &Path,
+    mode: &ExtractionMode,
 ) -> Result<DirtySet> {
-    build_dirty_set(store, discovered, root)
+    build_dirty_set_for_mode(store, discovered, root, mode)
 }
 
 // ── Phase 3: Stale cleanup ─────────────────────────────────────────────

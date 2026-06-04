@@ -119,7 +119,12 @@ impl IndexPipeline {
             phase: PhaseName::HashCheck,
             total: discovered.len() as u64,
         });
-        let dirty_set = match phase_dirty_check(&self.store, &discovered, &self.project_root) {
+        let dirty_set = match phase_dirty_check(
+            &self.store,
+            &discovered,
+            &self.project_root,
+            &self.options.mode,
+        ) {
             Ok(ds) => ds,
             Err(e) => {
                 sink.emit(ProgressEvent::Warning {
