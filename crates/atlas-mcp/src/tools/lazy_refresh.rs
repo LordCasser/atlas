@@ -136,6 +136,19 @@ impl LazyRefreshQueue {
     pub(crate) fn has_background_writes(&self) -> bool {
         self.background_writes_pending.swap(false, Ordering::AcqRel)
     }
+
+    /// Drop all queued refresh state.
+    ///
+    /// Used when the active project changes.
+    pub(crate) fn clear(&self) {
+        if let Ok(mut pending) = self.pending_file_ids.lock() {
+            pending.clear();
+        }
+        self.cumulative_count.store(0, Ordering::Release);
+        self.rebuild_needed.store(false, Ordering::Release);
+        self.rebuild_in_progress.store(false, Ordering::Release);
+        self.background_writes_pending.store(false, Ordering::Release);
+    }
 }
 
 #[cfg(test)]

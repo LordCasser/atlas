@@ -23,7 +23,7 @@ impl ToolRouter {
         // Prune expired snapshots before lookup
         self.prune_expired_snapshots();
 
-        let snapshot = match self.query_snapshots.get(query_id).cloned() {
+        let snapshot = match self.query_snapshots.lock().unwrap().get(query_id).cloned() {
             Some(s) => s,
             None => {
                 return (
@@ -37,7 +37,7 @@ impl ToolRouter {
         };
 
         // Update snapshot status
-        if let Some(s) = self.query_snapshots.get_mut(query_id) {
+        if let Some(s) = self.query_snapshots.lock().unwrap().get_mut(query_id) {
             s.status = QueryStatus::Refining;
         }
 
@@ -202,7 +202,7 @@ impl ToolRouter {
             Self::patch_resume_response(&resp_str, &original_query_id).unwrap_or(resp_str);
 
         // Mark as Ready if the re-run completed successfully
-        if let Some(s) = self.query_snapshots.get_mut(&original_query_id) {
+        if let Some(s) = self.query_snapshots.lock().unwrap().get_mut(&original_query_id) {
             s.status = QueryStatus::Ready;
         }
 

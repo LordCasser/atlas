@@ -43,6 +43,7 @@ impl ImportResolver {
 
     /// Resolve an import definition into candidate symbols.
     pub fn resolve_import(&self, import: &ImportDef) -> anyhow::Result<Vec<SymbolDef>> {
+        let _timer = std::time::Instant::now();
         // ── P2: Path-alias-scoped file lookup ──
         // When a path alias rewrites the module path, resolve the imported name
         // in files matching the rewritten path. This gives priority to the
@@ -73,11 +74,13 @@ impl ImportResolver {
         let candidate_names = self.candidate_qnames(import);
 
         let mut results = Vec::new();
+        let db_start = std::time::Instant::now();
         for qname in &candidate_names {
             if let Ok(syms) = self.store.find_symbols_by_qname(qname) {
                 results.extend(syms);
             }
         }
+        let db_elapsed = db_start.elapsed();
 
         if results.is_empty() {
             // Fallback: prefer imported_name (actual symbol name) over local_name (alias).
@@ -87,6 +90,7 @@ impl ImportResolver {
                 Some(import.imported_name.clone())
             };
 
+            let mut fallback_used = false;
             if let Some(ref name) = fallback_name {
                 // Strategy A: module-path-aware lookup (constrains to import target)
                 if !import.module.is_empty() {
@@ -98,8 +102,35 @@ impl ImportResolver {
                 // Strategy B: global fallback as last resort
                 if results.is_empty() {
                     results.extend(self.store.search_symbols(name)?);
+                    fallback_used = true;
                 }
             }
+
+            let total = _timer.elapsed();
+            tracing::debug!(
+                target: "atlas::resolution",
+                "import resolve slow path: module='{}', name='{}', qname_candidates={}, \
+                 qname_db_lookup={:?}, fallback_used={}, total={:?}",
+                import.module,
+                import.imported_name,
+                candidate_names.len(),
+                db_elapsed,
+                fallback_used,
+                total,
+            );
+        } else if db_elapsed > std::time::Duration::from_millis(2) {
+            let total = _timer.elapsed();
+            tracing::debug!(
+                target: "atlas::resolution",
+                "import resolve: module='{}', name='{}', qname_candidates={}, \
+                 qname_db_lookup={:?}, results={}, total={:?}",
+                import.module,
+                import.imported_name,
+                candidate_names.len(),
+                db_elapsed,
+                results.len(),
+                total,
+            );
         }
 
         Ok(results)

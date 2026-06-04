@@ -141,3 +141,124 @@ pub(crate) async fn handle_wait_for_task(
         tokio::time::sleep(sleep_for).await;
     }
 }
+
+/// Synchronous version of [`handle_wait_for_task`] for use in tests and
+/// embedded callers that invoke `ToolRouter::call_tool` directly.
+pub(crate) fn handle_wait_for_task_sync(
+    task_manager: &crate::task_manager::TaskManager,
+    args: &serde_json::Value,
+) -> WaitForResult {
+    let task_id = get_str(args, "task_id");
+    if task_id.is_empty() {
+        return WaitForResult {
+            json_text: serde_json::to_string_pretty(&json!({
+                "error": "Missing task_id parameter"
+            }))
+            .unwrap_or_default(),
+            is_error: true,
+            task_is_project_completed: false,
+        };
+    }
+
+    let timeout_secs = args
+        .get("timeout_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(30)
+        .min(300);
+    let poll_interval_secs = args
+        .get("poll_interval_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(2)
+        .max(1)
+        .min(10);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        match task_manager.get_task(task_id) {
+            Some(info) => match info.status {
+                crate::task_manager::TaskStatus::Completed => {
+                    let result = info
+                        .result
+                        .clone()
+                        .unwrap_or_else(|| json!({"status": "completed"}));
+                    let mut response = serde_json::from_str::<serde_json::Value>(
+                        &serde_json::to_string(&result).unwrap_or_default(),
+                    )
+                    .unwrap_or(json!({"status": "completed"}));
+                    response["task_id"] = json!(task_id);
+                    response["status"] = json!("completed");
+                    response["elapsed_secs"] = json!(info.elapsed_secs());
+                    return WaitForResult {
+                        json_text: serde_json::to_string_pretty(&response).unwrap_or_default(),
+                        is_error: false,
+                        task_is_project_completed: info.method == "project",
+                    };
+                }
+                crate::task_manager::TaskStatus::Failed => {
+                    let msg = info.error.clone().unwrap_or_else(|| "unknown error".to_string());
+                    return WaitForResult {
+                        json_text: serde_json::to_string_pretty(&json!({
+                            "task_id": task_id,
+                            "status": "failed",
+                            "error": msg,
+                            "elapsed_secs": info.elapsed_secs(),
+                        }))
+                        .unwrap_or_default(),
+                        is_error: true,
+                        task_is_project_completed: false,
+                    };
+                }
+                crate::task_manager::TaskStatus::Running => {
+                    // Keep polling
+                }
+            },
+            None => {
+                return WaitForResult {
+                    json_text: serde_json::to_string_pretty(&json!({
+                        "error": format!("Task not found: {task_id}")
+                    }))
+                    .unwrap_or_default(),
+                    is_error: true,
+                    task_is_project_completed: false,
+                };
+            }
+        }
+
+        if std::time::Instant::now() >= deadline {
+            match task_manager.get_task(task_id) {
+                Some(info) => {
+                    let status_str = match info.status {
+                        crate::task_manager::TaskStatus::Running => "running",
+                        crate::task_manager::TaskStatus::Completed => "completed",
+                        crate::task_manager::TaskStatus::Failed => "failed",
+                    };
+                    return WaitForResult {
+                        json_text: serde_json::to_string_pretty(&json!({
+                            "task_id": task_id,
+                            "status": status_str,
+                            "progress": info.progress,
+                            "progress_message": info.progress_message,
+                            "elapsed_secs": info.elapsed_secs(),
+                            "timeout": true,
+                        }))
+                        .unwrap_or_default(),
+                        is_error: true,
+                        task_is_project_completed: false,
+                    };
+                }
+                None => {
+                    return WaitForResult {
+                        json_text: serde_json::to_string_pretty(&json!({
+                            "error": format!("Task not found: {task_id}")
+                        }))
+                        .unwrap_or_default(),
+                        is_error: true,
+                        task_is_project_completed: false,
+                    };
+                }
+            }
+        }
+
+        std::thread::sleep(Duration::from_secs(poll_interval_secs));
+    }
+}

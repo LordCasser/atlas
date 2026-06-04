@@ -124,12 +124,27 @@ impl GraphBuilder {
             };
         }
 
+        // Preload target symbols to eliminate DB queries in the parallel loop.
+        let symbol_cache: HashMap<SymbolId, SymbolDef> = {
+            let mut ids = HashSet::new();
+            for (_, target) in &scoped {
+                ids.insert(target.symbol_id);
+            }
+            let mut map = HashMap::with_capacity(ids.len());
+            for id in ids {
+                if let Ok(Some(sym)) = self.store.find_symbol_by_id(&id) {
+                    map.insert(id, sym);
+                }
+            }
+            map
+        };
+
         // Delegate to the same parallel edge-creation logic
         let warnings: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
         let edges: Vec<RawEdge> = scoped
             .par_iter()
             .filter_map(|(reference, target)| {
-                match self.create_edges_for_reference(reference, target, None) {
+                match self.create_edges_for_reference(reference, target, Some(&symbol_cache)) {
                     Ok(edges) => Some(edges),
                     Err(e) => {
                         if let Ok(mut w) = warnings.lock() {
@@ -340,6 +355,7 @@ fn try_resolve_function_pointer(
     store: &Arc<Store>,
     reference: &ReferenceUse,
 ) -> anyhow::Result<Option<SymbolId>> {
+    let fp_start = std::time::Instant::now();
     // 1. Find the CallTarget DataNode at this reference position
     let file_nodes = store.find_data_nodes_by_file(&reference.file_id)?;
     let call_target = match file_nodes.iter().find(|n| {
@@ -398,6 +414,11 @@ fn try_resolve_function_pointer(
                     for sym in &candidates {
                         if sym.kind == SymbolKind::Function && sym.file_id == reference.file_id {
                             // Found a function match in the same file
+                            tracing::debug!(
+                                target: "atlas::graph",
+                                "function pointer resolution took {:?}",
+                                fp_start.elapsed()
+                            );
                             return Ok(Some(sym.id));
                         }
                     }
@@ -409,6 +430,11 @@ fn try_resolve_function_pointer(
         }
     }
 
+    tracing::debug!(
+        target: "atlas::graph",
+        "function pointer resolution took {:?}",
+        fp_start.elapsed()
+    );
     Ok(None)
 }
 
