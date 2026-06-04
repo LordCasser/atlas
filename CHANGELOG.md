@@ -4,11 +4,157 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
-## [1.4.0] — 2026-06-04
+## [1.4.0] — 2026-06-05
 
 ### Breaking
 
-- Crate versions bumped to 1.4.0.
+- All 15 workspace crates bumped to 1.4.0.
+- `CapabilityMask`: CFG and DATAFLOW bits are now orthogonal. `from_layers("dataflow")`
+  no longer sets CFG. `best_capability_name()` returns "summaries" when SUMMARIES bit
+  is present.
+
+### Multi-language Semantics (M2–M6)
+
+Atlas now understands resource lifecycle and scope-managed cleanup across **11 languages**
+through language-specific domain rule registries and a unified scope-exit analyzer.
+
+- **New domain rule registries** for all 11 DataflowFull languages: Go, Rust, Python,
+  TypeScript, Java, C#, Kotlin, Ruby, PHP, C/C++, ArkTS, Cangjie. Each provides
+  `alloc_fn`, `free_fn`, `cleanup_fn`, and language-specific `owned_pattern` rules.
+- **`CallContext` enum**: language-agnostic call-site context annotations set by the CFG
+  builder — `GoGoroutine`, `GoDefer`, `PythonWith`, `JavaTryWith`, `CSharpUsing`,
+  `ReactEffectCleanup`, `RubyBlock`, `KotlinUse`.
+- **`ScopeExitAnalyzer`**: unified intra-procedural scope-exit analysis. Computes
+  `SemanticEffect` chains with Free at block boundaries for Rust `Drop`, C++
+  destructors, Python `with`/`__del__`, Java try-with-resources, C# `using`/IDisposable,
+  Kotlin `.use`, React `useEffect` cleanup returns, and Go `defer`.
+- **New CFG primitives**: `CfgNodeKind::BlockExit` (synthetic block-boundary nodes),
+  `DataNodeKind::CleanupReturn` (React effect cleanup return), `EscapeTarget::AsyncContext`
+  (goroutine/coroutine escape).
+- **`SemanticEffect` enriched**: `consumption_style` (explicit/deferred/context-managed),
+  `description` (human-readable origin), `eligible_for_implicit_cleanup` (per-callee
+  gating).
+- **`OwnershipContract` extended**: `classify_escape()` for goroutine/coroutine escapes,
+  `supports_implicit_scope_cleanup()`, `eligible_for_implicit_cleanup()`.
+- **CFG support uplift**: C# (was unsupported → 0.72), Kotlin (→ 0.67), Ruby (→ 0.65).
+  Cangjie CFG gap closed (was unsupported → 0.60 with body traversal). All languages
+  now report CFG status via `supported_with_limitations` with consistent "body traversal
+  implemented" annotation.
+- **Cangjie** promoted to DataflowFull with CFG, updated FeatureMatrix, and feature-gated
+  file extension registration.
+- **12 languages** had interprocedural summary confidence floors raised after ArgToParam
+  and ReturnToCall bridge verification.
+
+### Pipeline Convergence
+
+Index, sync, and auto-index now share a unified orchestrator pattern.
+
+- **`ProgressSink` trait**: typed progress event abstraction. Each entry point
+  (CLI/MCP/TUI) implements its own sink that translates pipeline events into
+  native progress displays. `Send + Sync` for rayon safety.
+- **`IndexPipeline`**: full index pipeline orchestrator. Replaces duplicated
+  phase logic across CLI index, TUI auto-index, and MCP index handlers.
+- **`IncrementalPipeline`**: incremental sync pipeline orchestrator. Replaces
+  duplicated sync logic across CLI sync and MCP sync handlers.
+- **`JobContext`**: unified context for long-running jobs — bundles ProgressSink,
+  cancellation token, and optional task ID. Used by CLI, MCP, and TUI.
+- **Size reduction**: CLI index 509→274 lines (−46%), TUI auto-index 394→181 lines
+  (−54%), SyncEngine 328→145 lines (−56%).
+- **Pipeline equivalence tests**: `pipeline_equivalence.rs` verifies that running
+  `IndexPipeline` and the CLI's `run_index_pipeline` produces identical DB state
+  (files/symbols/edges/summaries) for the same project.
+
+### Capability-Aware Indexing
+
+Dirty-check now respects the requested analysis mode.
+
+- `build_dirty_set_for_mode(store, discovered, root, mode)` replaces `build_dirty_set`.
+  A file is clean only when its content hash matches **and** the DB has fresh complete
+  file-level `extraction_state` covering the mode's required capability.
+- Hash-clean files with insufficient persisted capability are added to the dirty set —
+  this enables `atlas index --analysis full` to upgrade a hash-clean manifest/structural
+  DB without source changes.
+- `file_has_fresh_complete_capability()`: DB-level query checking whether a file at a
+  given content hash has all required capability bits.
+- `optional()` replaces `map_err(warn).ok()` for metadata key queries — missing
+  `last_index_time`/`last_sync_time` is normal empty-DB state, not an error.
+
+### TUI UX
+
+- **Background job system**: `JobManager` executes search and trace on a worker thread.
+  `Esc` cancels running jobs. The TUI input remains responsive during long operations.
+  Job results delivered via polling on each tick.
+- **Instant startup**: TUI no longer blocks on `ensure_index_before_tui`. Starts
+  immediately; auto-index runs in background.
+- **`SearchSession`**: wraps `Engine` for lazy structural retry on empty manifest
+  results, matching MCP `ScopedSearchService` semantics.
+- **Command polish**: `truncate_str`, `project_root`, `--analysis` validation, locale
+  fixes.
+
+### ScopedSearchService
+
+Shared search engine used by both MCP and TUI.
+
+- **3-tier search**: FTS5 → exact name → LIKE substring fallback.
+- **`SearchAnalysis` mode**: `Manifest` (no lazy), `Structural` (always trigger lazy
+  on empty), `Auto` (trigger lazy for scopes ≤30 files).
+- **Auto skips lazy** when structural data is already present — avoids redundant
+  re-extraction.
+- **Scope normalization**: strips `./`, `./`, trailing `/`, backslash normalization.
+- Returns structured response: results, coverage, triggered_lazy flag, capability mask,
+  precision tier, warnings.
+
+### MCP & Storage
+
+- **`storage='auto'`** (default): `open_project` reuses `.atlas/atlas.db` only when the
+  DB reports a reusable index (via `read_index_mode`); otherwise opens an in-memory
+  zero-footprint session.
+- **`ToolCallContext`**: per-tool context with progress sink, cancellation, and task
+  tracking. MCP handlers delegate to shared services.
+- **Bounded `file_deps`**: scope-limited queries prevent unbounded traversal.
+- **MCP router hardening**: `Cell→RwLock` for engine access, `Mutex<Engine>` for
+  graph snapshots.
+
+### Impact Analysis Fixes
+
+- **Lazy structural trigger**: `handle_callers`, `handle_callees`, `handle_callgraph`,
+  `handle_explore`, `handle_impact` now trigger lazy structural extraction before
+  accessing the graph snapshot — fixes empty results after manifest-only index.
+- **ArkTS extraction fix**: `@Component` decorator struct detection now uses
+  word-boundary-aware scanning instead of `strip_prefix("struct")`.
+- **Trace direction control**: `atlas_path` with `direction` parameter fixed for
+  reverse provenance queries.
+
+### Bug Fixes & Hardening
+
+- **DB instrumentation**: 20+ previously silent error swallowing sites now properly
+  logged via `tracing::warn`/`error`.
+- **MCP stability**: blocking event loop (`std::thread::sleep` → `tokio::time::sleep`),
+  poisoned `Mutex` recovery, cancellation panic-safety, input validation hardening.
+- **Release-blocking P1 fixes**: bounded candidates for impact analysis, cancel wiring
+  for async jobs, search delegation through `ScopedSearchService`, prewarm per-store
+  guard.
+- **Index reliability**: `build_all` deadlock fix, CLI sync `DoneGuard` lifetime fix,
+  `FileLock` ownership clarification, prewarm per-store (not global), ripgrep binary
+  path fixes, `scope_file_count` semantic fix.
+- **Lazy extraction**: BFS dedup, interleaved budget check, string constants fix,
+  `has_cfg` propagation, worker hang after budget exhaustion, lazy callsite remapping.
+- **CFG fixtures**: `cfg_if_else` + `cfg_loop` golden fixtures for 11 languages,
+  `with_lifecycle` for Python, `goroutine` for Go, `try_resource` for Java,
+  `use_resource` for Kotlin, `using_dispose` for C#, `procedural_resource` for PHP,
+  `scope_exit` for Rust.
+- **Type system alignment**: `FeatureMatrix.cfg` and `supported_features` list now
+  asserted consistent via compile-time tests. `CapabilityMask` layer → bit mapping
+  verified. `CfgNode.call_context` properly serialized/deserialized.
+
+### Documentation
+
+- Architecture docs: updated module boundaries (ProgressSink, JobContext,
+  ScopedSearchService, pipeline orchestrators), capability profiles, database schema,
+  tool references.
+- Requirements: re-index mode-awareness rules, optional metadata semantics.
+- Temporary language evolution documents deleted — content folded into core docs.
+- README and MCP skill definition synced with 18-tool API.
 
 ---
 
