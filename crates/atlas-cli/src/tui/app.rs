@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use atlas_engine::{CallerChain, ContextView, RawTraceEngine, SearchResult, Store};
+use atlas_engine::{CallerChain, ContextView, SearchOptions, SearchResult, Store};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -17,6 +17,7 @@ use ratatui::{
 
 use super::auto_index::AutoIndexHandle;
 use super::event::{Event, EventHandler};
+use super::search_session::SearchSession;
 use super::session::GraphSession;
 use super::widgets::context_view::DetailTab;
 use super::widgets::{context_view, results_list, search_bar, status_bar, trace_view};
@@ -159,8 +160,22 @@ impl App {
             return;
         }
         if let Some(ref ai) = self.auto_index {
-            if ai.done.load(Ordering::SeqCst) {
+            if ai.done.load(Ordering::SeqCst) || ai.cancel.load(Ordering::SeqCst) {
                 let mut ai_handle = self.auto_index.take().unwrap();
+                // If cancellation was requested but worker hasn't set done yet,
+                // wait briefly for the worker to detect cancellation and exit.
+                if !ai_handle.done.load(Ordering::SeqCst)
+                    && ai_handle.cancel.load(Ordering::SeqCst)
+                {
+                    // Worker is still running but cancel was set — poll briefly.
+                    // The worker checks cancel between phases and will exit soon.
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    while Instant::now() < deadline
+                        && !ai_handle.done.load(Ordering::SeqCst)
+                    {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
                 match ai_handle.take_result() {
                     Some(Ok(())) => {
                         // Refresh DB stats from the now-populated store.
@@ -169,8 +184,6 @@ impl App {
                             self.symbol_count = stats.total_symbols;
                             self.edge_count = stats.total_edges;
                         }
-                        // Force-rebuild the graph snapshot so search / context
-                        // engines are immediately usable.
                         if let Err(e) = self.session.force_refresh() {
                             tracing::error!("Failed to refresh graph after auto-index: {e}");
                         }
@@ -178,11 +191,16 @@ impl App {
                     }
                     Some(Err(e)) => {
                         tracing::error!("Auto-index failed: {e:?}");
-                        // Transition anyway — user sees empty SearchHome.
                         self.screen = Screen::SearchHome;
                     }
                     None => {
-                        // Result already taken (should not happen).
+                        // Result already taken (should not happen), or cancelled.
+                        // Refresh stats with whatever partial data exists.
+                        if let Ok(stats) = self.store.get_stats() {
+                            self.file_count = stats.total_files;
+                            self.symbol_count = stats.total_symbols;
+                            self.edge_count = stats.total_edges;
+                        }
                         self.screen = Screen::SearchHome;
                     }
                 }
@@ -206,8 +224,13 @@ impl App {
             Screen::SymbolDetail => self.handle_detail_key(code),
             Screen::TraceView => self.handle_trace_key(code),
             Screen::AutoIndexing => {
-                // Auto-index is not interruptible. Ignore all keys —
-                // the user must wait for the pipeline to finish.
+                // Esc cancels auto-index (user can explore partial data).
+                if code == KeyCode::Esc {
+                    if let Some(ref ai) = self.auto_index {
+                        ai.cancel.store(true, Ordering::SeqCst);
+                        tracing::info!("Auto-index cancellation requested by user");
+                    }
+                }
             }
         }
     }
@@ -346,21 +369,30 @@ impl App {
                 self.detail_scroll = 0;
             }
             KeyCode::Char('t') => {
-                // Phase 5: trigger callers trace.
+                // Navigate to callers trace view via high-level Engine.
+                // The high-level Engine may trigger lazy dataflow if needed.
                 if let Some(ctx) = &self.detail_context {
-                    let trace_engine = RawTraceEngine::new(Arc::clone(self.session.store()));
-                    match trace_engine.trace_callers(&ctx.subject.id, 20) {
-                        resp if resp.ok => {
-                            if let Some(chain) = resp.result {
-                                self.trace_chain = Some(chain);
-                                self.trace_selected = 0;
-                                self.trace_scroll = 0;
-                                self.screen = Screen::TraceView;
-                            }
+                    let resp = self
+                        .session
+                        .atlas_engine()
+                        .trace_callers(&ctx.subject.id, 20);
+                    if resp.ok {
+                        if let Some(chain) = resp.result {
+                            self.trace_chain = Some(chain);
+                            self.trace_selected = 0;
+                            self.trace_scroll = 0;
+                            self.screen = Screen::TraceView;
                         }
-                        _ => {
-                            tracing::error!("Trace callers failed for {}", ctx.subject.name);
+                        // Show partial/diagnostics indicator if applicable
+                        if resp.partial_result {
+                            tracing::info!(
+                                "Trace for {} returned partial result: {:?}",
+                                ctx.subject.name,
+                                resp.diagnostics
+                            );
                         }
+                    } else {
+                        tracing::error!("Trace callers failed for {}", ctx.subject.name);
                     }
                 }
             }
@@ -527,12 +559,88 @@ impl App {
             tracing::error!("Failed to refresh graph: {e}");
             return;
         }
-        let query = self.search_input.clone();
-        match self.session.search_engine().search_simple(&query, 100) {
+
+        // Parse scope prefix: "path/: query" → scope filter on file path.
+        let (scope_path, query) = match self.search_input.split_once('/') {
+            Some((prefix, rest)) if prefix.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.') => {
+                // Only treat as scope if '/' appears before a space (or no space exists)
+                if !rest.is_empty() && !prefix.contains(' ') {
+                    (Some(format!("{}/", prefix)), rest.trim().to_string())
+                } else {
+                    (None, self.search_input.clone())
+                }
+            }
+            _ => (None, self.search_input.clone()),
+        };
+
+        let search_query = if query.is_empty() {
+            self.search_input.clone()
+        } else {
+            query
+        };
+
+        // When a scope path is provided, use the filtered search;
+        // otherwise fall back to search_simple for backward compatibility.
+        let result = if let Some(ref path_pattern) = scope_path {
+            let options = SearchOptions::new().with_file_path(path_pattern.clone());
+            self.session
+                .search_engine()
+                .search(&search_query, 100, &options)
+        } else {
+            self.session
+                .search_engine()
+                .search_simple(&search_query, 100)
+        };
+
+        match result {
+            Ok(results) if results.is_empty() => {
+                // Phase 2: When manifest-only search returns empty, trigger
+                // lazy structural extraction for candidate files, then re-search.
+                let lazy_session = SearchSession::new(
+                    self.session.atlas_engine(),
+                    self.session.store(),
+                    self.session.search_engine(),
+                    self.session.graph_engine(),
+                    &self.project_root,
+                );
+                // Trigger lazy structural for the search query.
+                let _ = lazy_session.ensure_structural_for_search(&search_query);
+
+                // Refresh the graph to pick up new structural symbols.
+                self.session.mark_stale();
+                if let Err(e) = self.session.maybe_refresh() {
+                    tracing::error!("Failed to refresh graph after lazy structural: {e}");
+                }
+
+                // Re-search with the refreshed engine.
+                let retry = if let Some(ref path_pattern) = scope_path {
+                    let options = SearchOptions::new().with_file_path(path_pattern.clone());
+                    self.session.search_engine().search(&search_query, 100, &options)
+                } else {
+                    self.session
+                        .search_engine()
+                        .search_simple(&search_query, 100)
+                };
+                match retry {
+                    Ok(results) => {
+                        let count = results.len();
+                        self.search_results = results;
+                        self.selected_index = 0;
+                        self.focus = Focus::Results;
+                        tracing::info!("Search after lazy structural returned {count} results");
+                    }
+                    Err(e) => {
+                        tracing::error!("Search retry failed: {e}");
+                        self.search_results.clear();
+                    }
+                }
+            }
             Ok(results) => {
+                let count = results.len();
                 self.search_results = results;
                 self.selected_index = 0;
                 self.focus = Focus::Results;
+                tracing::info!("Search returned {count} results");
             }
             Err(e) => {
                 tracing::error!("Search failed: {e}");

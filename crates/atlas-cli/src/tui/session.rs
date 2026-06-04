@@ -1,5 +1,6 @@
 //! Graph session: manages the lifecycle of `GraphEngine`, `SearchEngine`,
-//! and `ContextBuilder` with lazy initialisation and signature-based refresh.
+//! `ContextBuilder`, and high-level `Engine` with lazy initialisation and
+//! signature-based refresh.
 //!
 //! Analogous to `ToolRouter`'s graph management in `atlas-mcp`, but
 //! decoupled from MCP protocol concerns.
@@ -10,13 +11,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use anyhow::Context;
-use atlas_engine::{ContextBuilder, GraphEngine, SearchEngine, Store};
+use atlas_engine::{ContextBuilder, Engine, GraphEngine, SearchEngine, SourceExtractor, Store};
 
 /// Manages the in-memory graph snapshot and derived engines for a single
 /// project session.  The graph is loaded lazily on first use and refreshed
 /// when the SQLite database signature changes.
+///
+/// Also holds a high-level [`Engine`] for trace-based queries (which may
+/// trigger lazy dataflow) and a [`SourceExtractor`] for AST-aware source
+/// snippet extraction.
 pub struct GraphSession {
     store: Arc<Store>,
+    /// High-level Atlas engine (trace, lazy dataflow, structural extraction).
+    atlas_engine: Engine,
     graph: Option<Arc<GraphEngine>>,
     search: Option<SearchEngine>,
     context: Option<ContextBuilder>,
@@ -29,9 +36,14 @@ pub struct GraphSession {
 
 impl GraphSession {
     /// Create a new session without building the graph.
+    ///
+    /// Constructs a high-level [`Engine`] from the store so that trace
+    /// queries go through the unified API (and may trigger lazy dataflow).
     pub fn new(store: Arc<Store>, project_root: PathBuf) -> Self {
+        let atlas_engine = Engine::from_store(store.clone(), Some(&project_root));
         Self {
             store,
+            atlas_engine,
             graph: None,
             search: None,
             context: None,
@@ -114,6 +126,14 @@ impl GraphSession {
         self.initialized
     }
 
+    /// Access the high-level Atlas [`Engine`] (always available).
+    ///
+    /// This is the unified API for trace queries — it may trigger lazy
+    /// dataflow/structural extraction when needed.
+    pub fn atlas_engine(&self) -> &Engine {
+        &self.atlas_engine
+    }
+
     pub fn search_engine(&self) -> &SearchEngine {
         self.search
             .as_ref()
@@ -126,7 +146,8 @@ impl GraphSession {
             .expect("graph not initialized; call ensure_initialized() first")
     }
 
-    pub fn engine(&self) -> &Arc<GraphEngine> {
+    /// Access the low-level [`GraphEngine`] for graph traversal queries.
+    pub fn graph_engine(&self) -> &Arc<GraphEngine> {
         self.graph
             .as_ref()
             .expect("graph not initialized; call ensure_initialized() first")
@@ -148,8 +169,16 @@ impl GraphSession {
         );
 
         let search = SearchEngine::new(Arc::clone(&self.store), Arc::clone(&graph));
+
+        // Create SourceExtractor for AST-aware source snippet extraction
+        // (tree-sitter re-parsing), matching the MCP pattern.
+        let source_extractor = SourceExtractor::new(
+            Arc::clone(&self.store),
+            self.project_root.clone(),
+        );
         let context = ContextBuilder::new(Arc::clone(&self.store), Arc::clone(&graph))
-            .with_project_root(self.project_root.clone());
+            .with_project_root(self.project_root.clone())
+            .with_source_fn(Arc::new(move |id| source_extractor.extract_source(id)));
 
         self.last_signature = self.store.index_signature().unwrap_or_default();
         self.graph = Some(graph);

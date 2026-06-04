@@ -71,6 +71,11 @@ pub trait CandidateProvider: Send + Sync {
     ///
     /// Default: treats `path` as a literal file path, generating a single
     /// [`FileId`] from it.  Providers that index by path can override this.
+    ///
+    /// The default implementation uses deterministic [`FileId::generate`];
+    /// it does not consult a [`Store`] because the trait does not require one.
+    /// Implementors that hold a store should resolve through
+    /// `Store::resolve_file_id` to return the canonical FileId.
     fn candidates_for_path(&self, path: &str) -> Result<Vec<FileId>> {
         Ok(vec![FileId::generate(path)])
     }
@@ -103,7 +108,13 @@ impl CandidateProvider for DefaultCandidateProvider {
     }
 
     fn candidates_for_path(&self, path: &str) -> Result<Vec<FileId>> {
-        Ok(vec![FileId::generate(path)])
+        match &self.project_root {
+            Some(root) => match self.store.resolve_file_id(root, path) {
+                Ok(Some(file_id)) => Ok(vec![file_id]),
+                _ => Ok(Vec::new()),
+            },
+            None => Ok(vec![FileId::generate(path)]),
+        }
     }
 }
 
@@ -132,6 +143,8 @@ impl DefaultCandidateProvider {
                 "--word-regexp",
                 "--fixed-strings",
                 "--max-count=1",
+                "--ignore-file",
+                ".atlasignore",
                 name,
             ])
             .current_dir(&project_root)
@@ -674,5 +687,34 @@ mod tests {
 
         // When structural layer exists, has_resolution_symbols_layer should return true
         assert!(svc.has_resolution_symbols_layer(&fid).unwrap());
+    }
+
+    #[test]
+    fn default_provider_resolves_path_through_store() {
+        use types::Language;
+
+        let store = test_store();
+        // project_root is only used for absolute-path fallback in resolve_file_id;
+        // a dummy path suffices since the test uses exact path match.
+        let root = std::path::Path::new(".").to_path_buf();
+
+        // Insert a file into the store with a known path
+        let fid = FileId::generate("lib/helper.rs");
+        let file_info = types::structs::FileInfo {
+            file_id: fid,
+            path: "lib/helper.rs".to_string(),
+            language: Language::Rust,
+            content_hash: "hash1".to_string(),
+            status: types::enums::ParseStatus::Success,
+        };
+        store.upsert_file(&file_info).unwrap();
+
+        let provider = DefaultCandidateProvider::new(store, Some(root));
+        let candidates = provider.candidates_for_path("lib/helper.rs").unwrap();
+        assert_eq!(candidates.len(), 1, "should find exactly one candidate");
+        assert_eq!(
+            candidates[0], fid,
+            "should return the store's canonical FileId, not a re-generated one"
+        );
     }
 }

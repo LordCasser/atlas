@@ -1,4 +1,3 @@
-use anyhow::Context;
 use atlas_cli::logging::LogFormat;
 use atlas_cli::{Cli, Commands, LogFormatArg};
 use clap::Parser;
@@ -22,11 +21,11 @@ fn main() -> anyhow::Result<()> {
     };
     atlas_cli::logging::init(verbosity, format);
 
-    // No subcommand → launch TUI.
+    // No subcommand → launch TUI immediately.
+    // Auto-index runs in background if DB is empty; the TUI starts right away.
     let command = match cli.command {
         None => {
             let project_root = PathBuf::from(".");
-            ensure_index_before_tui(&project_root)?;
             return atlas_cli::tui::run_tui(project_root);
         }
         Some(cmd) => cmd,
@@ -65,30 +64,6 @@ fn main() -> anyhow::Result<()> {
             let _span = tracing::info_span!("mcp", project = %project).entered();
             atlas_cli::commands::mcp::run(&project)?;
         }
-    }
-
-    Ok(())
-}
-
-fn ensure_index_before_tui(project_root: &std::path::Path) -> anyhow::Result<()> {
-    let db_path = project_root.join(".atlas").join("atlas.db");
-    let needs_index = if !db_path.is_file() {
-        true
-    } else {
-        let store = atlas_engine::Store::open_db(&db_path)
-            .with_context(|| format!("Failed to open database at {}", db_path.display()))?;
-        store.get_stats().map(|stats| stats.total_files == 0)?
-    };
-
-    if needs_index {
-        let empty: Vec<String> = Vec::new();
-        atlas_cli::commands::index::run(
-            &project_root.to_string_lossy(),
-            &empty,
-            &empty,
-            &empty,
-            "structural",
-        )?;
     }
 
     Ok(())

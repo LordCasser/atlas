@@ -43,17 +43,6 @@ use crate::lazy_structural::{
 };
 use types::structs::precision::PrecisionTier;
 
-/// Global flag: at most one prewarm thread runs at a time.
-static PREWARM_RUNNING: AtomicBool = AtomicBool::new(false);
-
-/// RAII guard that clears the global prewarm flag on drop.
-struct PrewarmGuard;
-impl Drop for PrewarmGuard {
-    fn drop(&mut self) {
-        PREWARM_RUNNING.store(false, Ordering::Release);
-    }
-}
-
 /// Coordinates lazy extraction with job tracking.
 ///
 /// Phase 1 provides:
@@ -70,6 +59,8 @@ pub struct LazyCoordinator {
     project_root: Option<std::path::PathBuf>,
     /// Request-scoped include roots for C/C++ angle-bracket resolution.
     include_roots: Vec<IncludeRoot>,
+    /// Per-instance flag: at most one prewarm thread per coordinator.
+    prewarm_running: Arc<AtomicBool>,
 }
 
 impl LazyCoordinator {
@@ -78,6 +69,7 @@ impl LazyCoordinator {
             store,
             project_root: None,
             include_roots: vec![],
+            prewarm_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -88,6 +80,7 @@ impl LazyCoordinator {
             store,
             project_root: Some(project_root),
             include_roots: vec![],
+            prewarm_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -280,7 +273,7 @@ impl LazyCoordinator {
         // files are prewarmed to avoid wasteful dataflow on dep-only files.
         if let Some(ref root) = self.project_root {
             if !structural_file_ids.is_empty() {
-                spawn_background_prewarm(
+                self.spawn_background_prewarm(
                     Arc::clone(&self.store),
                     root.clone(),
                     structural_file_ids.clone(),
@@ -345,92 +338,101 @@ impl LazyCoordinator {
         );
         Ok(total)
     }
-}
 
-/// Spawn a background thread to pre-build dataflow for files that just
-/// received structural or resolution_symbols extraction.
-///
-/// This is a speculative optimisation: after a `context` or `symbol` query
-/// triggers lazy structural extraction on a set of files, subsequent
-/// `trace_variable` calls on those same files will find pre-built dataflow
-/// and skip the lazy dataflow planner entirely, reducing latency.
-///
-/// The background thread creates its own `LazyDataflowService` and operates
-/// independently of the coordinator's job tracking.  Failures are logged
-/// but never propagated — any file that fails to prewarm will simply be
-/// built on-demand when actually queried.
-fn spawn_background_prewarm(
-    store: Arc<Store>,
-    project_root: std::path::PathBuf,
-    seed_file_ids: Vec<FileId>,
-) {
-    if seed_file_ids.is_empty() {
-        return;
-    }
+    /// Spawn a background thread to pre-build dataflow for files that just
+    /// received structural or resolution_symbols extraction.
+    ///
+    /// This is a speculative optimisation: after a `context` or `symbol` query
+    /// triggers lazy structural extraction on a set of files, subsequent
+    /// `trace_variable` calls on those same files will find pre-built dataflow
+    /// and skip the lazy dataflow planner entirely, reducing latency.
+    ///
+    /// The background thread creates its own `LazyDataflowService` and operates
+    /// independently of the coordinator's job tracking.  Failures are logged
+    /// but never propagated — any file that fails to prewarm will simply be
+    /// built on-demand when actually queried.
+    fn spawn_background_prewarm(
+        &self,
+        store: Arc<Store>,
+        project_root: std::path::PathBuf,
+        seed_file_ids: Vec<FileId>,
+    ) {
+        if seed_file_ids.is_empty() {
+            return;
+        }
 
-    const MAX_PREWARM_FILES: usize = 8;
-    const MAX_FUNCTIONS_PER_FILE: usize = 16;
+        const MAX_PREWARM_FILES: usize = 8;
+        const MAX_FUNCTIONS_PER_FILE: usize = 16;
 
-    if PREWARM_RUNNING
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
-        return; // another prewarm already running
-    }
+        let flag = Arc::clone(&self.prewarm_running);
+        if flag
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return; // another prewarm already running for this coordinator
+        }
 
-    let file_ids: Vec<FileId> = seed_file_ids.into_iter().take(MAX_PREWARM_FILES).collect();
+        let file_ids: Vec<FileId> = seed_file_ids.into_iter().take(MAX_PREWARM_FILES).collect();
 
-    match std::thread::Builder::new()
-        .name("atlas-prewarm".into())
-        .spawn(move || {
-            let _guard = PrewarmGuard;
-            use types::enums::SymbolKind;
-            let lazy_dataflow = LazyDataflowService::new(Arc::clone(&store), Some(project_root));
-            let mut attempted = 0usize;
-            let mut built = 0usize;
-            for file_id in &file_ids {
-                let symbols = match store.find_symbols_by_file(file_id) {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-                for sym in symbols
-                    .iter()
-                    .filter(|s| s.kind == SymbolKind::Function || s.kind == SymbolKind::Method)
-                    .take(MAX_FUNCTIONS_PER_FILE)
-                {
-                    attempted += 1;
-                    match lazy_dataflow.ensure_for_function(&sym.id, None) {
-                        Ok(w) => {
-                            if w.units_built > 0 {
-                                built += 1;
+        let thread_flag = Arc::clone(&flag);
+        match std::thread::Builder::new()
+            .name("atlas-prewarm".into())
+            .spawn(move || {
+                // Scope guard: clear per-instance flag on exit (normal + panic paths).
+                struct ClearFlag(Arc<AtomicBool>);
+                impl Drop for ClearFlag {
+                    fn drop(&mut self) {
+                        self.0.store(false, Ordering::Release);
+                    }
+                }
+                let _clear = ClearFlag(thread_flag);
+
+                use types::enums::SymbolKind;
+                let lazy_dataflow = LazyDataflowService::new(Arc::clone(&store), Some(project_root));
+                let mut attempted = 0usize;
+                let mut built = 0usize;
+                for file_id in &file_ids {
+                    let symbols = match store.find_symbols_by_file(file_id) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    for sym in symbols
+                        .iter()
+                        .filter(|s| s.kind == SymbolKind::Function || s.kind == SymbolKind::Method)
+                        .take(MAX_FUNCTIONS_PER_FILE)
+                    {
+                        attempted += 1;
+                        match lazy_dataflow.ensure_for_function(&sym.id, None) {
+                            Ok(w) => {
+                                if w.units_built > 0 {
+                                    built += 1;
+                                }
                             }
-                        }
-                        Err(e) => {
-                            tracing::debug!(
-                                "Prewarm skipped for {} ({}): {:#}",
-                                sym.qualified_name,
-                                sym.file_id.to_hex(),
-                                e
-                            );
+                            Err(e) => {
+                                tracing::debug!(
+                                    "Prewarm skipped for {} ({}): {:#}",
+                                    sym.qualified_name,
+                                    sym.file_id.to_hex(),
+                                    e
+                                );
+                            }
                         }
                     }
                 }
+                tracing::info!(
+                    attempted,
+                    built,
+                    files = file_ids.len(),
+                    "Background prewarm complete"
+                );
+            }) {
+            Ok(_) => {}
+            Err(_) => {
+                flag.store(false, Ordering::Release);
             }
-            tracing::info!(
-                attempted,
-                built,
-                files = file_ids.len(),
-                "Background prewarm complete"
-            );
-        }) {
-        Ok(_) => {}
-        Err(_) => {
-            PREWARM_RUNNING.store(false, Ordering::Release);
         }
     }
 }
-
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -1406,5 +1408,42 @@ mod tests {
         if let Some(n) = node {
             assert_eq!(n.name, "add_one");
         }
+    }
+
+    #[test]
+    fn prewarm_per_instance_isolated() {
+        // Two coordinators with different stores can both prewarm
+        // independently — the flag is per-instance, not process-global.
+        use std::sync::atomic::Ordering;
+
+        let store1 = Arc::new(db::Store::open_in_memory().unwrap());
+        let store2 = Arc::new(db::Store::open_in_memory().unwrap());
+
+        let coord1 = LazyCoordinator::new(store1);
+        let coord2 = LazyCoordinator::new(store2);
+
+        // Set coord1's prewarm flag
+        assert!(coord1
+            .prewarm_running
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok());
+
+        // coord2's flag should still be false (per-instance isolation)
+        assert!(coord2
+            .prewarm_running
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok());
+
+        // coord1's flag should still be true
+        assert!(coord1
+            .prewarm_running
+            .compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok());
+
+        // Clean up coord2
+        assert!(coord2
+            .prewarm_running
+            .compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok());
     }
 }

@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 
 /// Languages known to Atlas.
 ///
-/// Cangjie is intentionally retained as an opt-in experimental
-/// language and is not part of the MVP/default/all-languages compile set.
+/// Cangjie is available behind `#[cfg(feature = "cangjie")]`;
+/// it is included in the `all-languages` feature set.
 ///
 /// Go, C#, Rust, PHP, Ruby, and Kotlin are post-MVP languages at Symbolic
 /// capability level and are included by the `all-languages` feature.
@@ -125,9 +125,16 @@ impl Language {
     pub fn all_extensions() -> Vec<&'static str> {
         #[allow(unused_mut)]
         let mut extensions = vec![
-            "ts", "mts", "cts", "tsx", "js", "mjs", "cjs", "jsx", "py", "pyi", "pyx", "java", "c",
-            "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "ets", "sts",
+            "ts", "mts", "cts", "tsx", "js", "mjs", "cjs", "jsx", "py", "pyi", "pyx",
         ];
+        #[cfg(feature = "java")]
+        extensions.extend(["java"]);
+        #[cfg(feature = "c")]
+        extensions.extend(["c", "h"]);
+        #[cfg(feature = "cpp")]
+        extensions.extend(["cpp", "cc", "cxx", "hpp", "hh", "hxx"]);
+        #[cfg(feature = "arkts")]
+        extensions.extend(["ets", "sts"]);
         #[cfg(feature = "cangjie")]
         extensions.extend(["cj", "cangjie"]);
         #[cfg(feature = "go")]
