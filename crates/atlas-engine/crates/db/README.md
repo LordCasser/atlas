@@ -48,6 +48,7 @@ Callers are responsible for creating `.atlas/` and any parent directories
 | `project_metadata` | `key TEXT` | Project-level settings, exclusive lock state |
 | `extraction_state` | `(file_id, unit_id, layer)` | Unified file/unit extraction state |
 | `extraction_jobs` | `job_id TEXT` | Active/completed extraction jobs |
+| `domain_rules` | `rule_id BLOB(32)` | Domain lifecycle rules (alloc/free/owned/cleanup) |
 | `function_pointer_annotations` | `annotation_id BLOB(32)` | User-declared function-pointer dispatch mappings |
 | `function_summaries` | `summary_id BLOB(32)` | Per-function intra-procedural summary |
 | `summary_param_reaches` | `(summary_id, param_index)` | Which params reach which locals |

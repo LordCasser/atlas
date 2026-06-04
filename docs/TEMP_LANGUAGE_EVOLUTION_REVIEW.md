@@ -9,10 +9,6 @@ through language detection, grammar/frontend selection, query normalization,
 CFG/dataflow extraction, semantic effect composition, storage/consumer exposure,
 and per-language parsing depth.
 
-Note: the current Codex session did not expose the configured `codegraph_*`
-tools, so this pass uses local source inspection with `rg`, `sed`, and targeted
-test/source reads.
-
 ## 2026-06-03 Review Pass
 
 ### Initial Pipeline Map
@@ -350,10 +346,6 @@ test/source reads.
 Scope for this pass: re-review after the latest fixes from the user-facing
 entry points down to per-language parsing/dataflow/CFG/semantic composition,
 explicitly comparing non-lazy and lazy execution paths.
-
-CodeGraph note: the project instructions prefer CodeGraph for structural
-questions, but no `codegraph_*` tools were exposed in this session. This pass
-therefore used targeted file reads and `rg`.
 
 ### Global Path Map
 
@@ -822,8 +814,7 @@ levels.
 Scope: the implementation has been updated after the earlier review. This pass
 re-checks user-facing entry points and every language path from the entry to the
 deepest dataflow/CFG/resource parsing layer. It explicitly separates Full
-non-lazy and Lazy paths. CodeGraph was still unavailable in this session, so
-this pass used targeted source reads and `rg`.
+non-lazy and Lazy paths.
 
 ### Entry-Point Path Map
 
@@ -1057,8 +1048,6 @@ this pass used targeted source reads and `rg`.
 Scope: re-review after the latest implementation pass that addressed Review
 Pass 5. This pass covers CLI index/sync, MCP trace/search/context/semantic
 tools, TUI, Full and Lazy dataflow paths, and all compiled language profiles.
-CodeGraph tools were still unavailable, so the review used targeted source
-reads and `rg`.
 
 Verification run during this pass:
 
@@ -1300,8 +1289,7 @@ whether that report's concrete claims are true, false, or overstated.
 
 The pasted report is **partially true, but not fully reliable as written**.
 Several severe MCP issues are real. Some documentation claims are real but
-overstated. The CodeGraph recycle blocker and the CFG panic are not supported
-by the current code path.
+overstated. The CFG panic claim is not supported by the current code path.
 
 ### Confirmed True / Actionable
 
@@ -1377,29 +1365,18 @@ by the current code path.
 
 ### False, Outdated, Or Overstated
 
-1. **CodeGraph `recycleWorker()` blocker is overstated for the current path.**
-   `recycleWorker` does not call `rejectAllPending`
-   (`codegraph/src/extraction/index.ts:747-754`), but bulk parsing awaits
-   `requestParse` sequentially (`codegraph/src/extraction/index.ts:834-893`).
-   The threshold recycle happens before the next parse starts
-   (`codegraph/src/extraction/index.ts:768-775`), so there should be no
-   in-flight parse promise to drop in the current implementation. The timeout
-   path also has only one active parse in this sequential loop. This could
-   become a bug if parsing is later made concurrent, but the pasted report's
-   "silently drops all in-flight parses" blocker is not proven today.
-
-2. **CFG `walk_if` index panic is outdated.**
+1. **CFG `walk_if` index panic is outdated.**
    Current code guards both branch-edge mutations with
    `if self.edges.len() > saved_edge_count`
    (`extraction/src/cfg_builder.rs:981-1003`). The report describes the old
    unguarded indexing behavior.
 
-3. **"Every documentation file says symbol" is overstated.**
+2. **"Every documentation file says symbol" is overstated.**
    The MCP README mismatch is real, but a broad search did not confirm the
    report's "all 6+ docs" wording. Treat the issue as a concrete MCP README /
    schema inconsistency, not as a verified six-document drift.
 
-4. **`rebuild_in_progress` "can stick forever" needs narrower wording.**
+3. **`rebuild_in_progress` "can stick forever" needs narrower wording.**
    On rebuild failure the code calls `mark_rebuild_finished` and reschedules
    (`atlas-mcp/src/tools/mod.rs:482-485`). On success it intentionally keeps
    `rebuild_in_progress` true until a later request applies the pending graph
@@ -1419,5 +1396,242 @@ by the current code path.
    old trace tool names, and old `atlas_resume`/`atlas_jobs` names.
 5. Triage DB silent swallowing by data-loss risk, starting with semantic
    effects, callsite args, extraction state, and summary build errors.
-6. Do not treat the CodeGraph recycle claim or CFG panic claim as current
-   release blockers unless new evidence appears.
+6. Do not treat the CFG panic claim as a current release blocker unless new
+   evidence appears.
+
+## 2026-06-04 Review Pass 8: Post-Fix Scope-Correct Validation
+
+Scope: re-check the user's latest fixes for Atlas project code only. This pass
+updates the Pass 7 findings after the implementation changes and re-checks
+CLI, MCP, TUI, lazy/non-lazy, and language-facing paths.
+
+### Validation Verdict
+
+The latest fixes close several previously confirmed issues, especially MCP
+`wait_for_task`, `symbol` schema, index pattern caps, Cangjie/lazy entry
+coverage, and the testing/architecture path-coverage rule. Remaining issues are
+mostly MCP response-contract drift, stale docs/UI text, and a narrowed summary
+locking risk.
+
+### Confirmed Fixed
+
+1. **MCP `wait_for_task` no longer blocks the current-thread runtime.**
+   `handle_wait_for_task` is now async and uses `tokio::time::sleep`
+   (`crates/atlas-mcp/src/tools/wait_for.rs:31-60`,
+   `crates/atlas-mcp/src/tools/wait_for.rs:136-142`). The server special-cases
+   `wait_for_task`, clones `task_manager`, releases the router mutex, awaits the
+   poll loop, and only re-locks for project activation
+   (`crates/atlas-mcp/src/lib.rs:226-271`).
+
+2. **Actual MCP `symbol` schema and handler now agree on `symbol`.**
+   The tool schema requires `symbol`
+   (`crates/atlas-mcp/src/tools/mod.rs:1114-1131`), and the handler reads
+   `get_str(args, "symbol")` with a matching missing-argument error
+   (`crates/atlas-mcp/src/tools/mod.rs:1451-1456`).
+
+3. **MCP `index` include/exclude pattern caps are present in both paths.**
+   Foreground caps are checked at
+   `crates/atlas-mcp/src/tools/index.rs:81-98`; background caps are checked at
+   `crates/atlas-mcp/src/tools/index.rs:209-226`.
+
+4. **Doctor and no-subcommand TUI auto-index were corrected.**
+   `doctor` now recommends `atlas index`
+   (`crates/atlas-cli/src/commands/doctor.rs:78-82`). TUI auto-index passes the
+   function's `project_root` through to `index::run`
+   (`crates/atlas-cli/src/main.rs:73-90`), instead of hard-coding `"."`.
+
+5. **Cangjie capability metadata and lazy frontend entry are aligned.**
+   Cangjie now derives `supported_features` / `unsupported_features` from the
+   typed `FeatureMatrix`, including CFG
+   (`crates/atlas-engine/crates/types/src/capability.rs:913-970`). Lazy
+   frontend cache includes ArkTS and Cangjie plus the other compiled languages
+   (`crates/atlas-engine/crates/lazy/src/loader.rs:506-520`).
+
+6. **Lazy callsite remap and unit capability mask semantics improved.**
+   Lazy data nodes are remapped from provisional byte callsite IDs to structural
+   DB callsite IDs before writing
+   (`crates/atlas-engine/crates/lazy/src/loader.rs:157-224`). Unit-level
+   prebuilt and write paths gate CFG on both language support and actual CFG
+   nodes (`crates/atlas-engine/crates/lazy/src/loader.rs:235-270`,
+   `crates/atlas-engine/crates/lazy/src/loader.rs:340-360`).
+
+7. **The "verify every affected path" rule is now in base docs.**
+   `docs/testing.md` explicitly requires all affected analysis/user-entry paths
+   to be listed and verified, including lazy and non-lazy, file/unit state, and
+   database plus user-visible output (`docs/testing.md:7-35`). The same rule is
+   reflected in architecture principles (`docs/architecture.md:10-12`,
+   `docs/architecture.md:248-253`).
+
+### Remaining Findings
+
+1. **[P1] MCP `trace_variable` still loses lazy dataflow diagnostics on the
+   common structural-cache-hit path.**
+   `Engine::trace_variable` always triggers lazy dataflow and stores the summary
+   on the response envelope (`crates/atlas-engine/src/lib.rs:386-442`), but the
+   MCP layer only creates `combined_lazy_diag` from `structural_lo`
+   (`crates/atlas-mcp/src/tools/trace.rs:253-258`). If structural lazy did not
+   run because the file was already structural, there is no top-level
+   `lazy_diagnostics` or `analysis_contract` even though dataflow was built or
+   checked. In addition, the merge reads `path.lazy_summary`
+   (`crates/atlas-mcp/src/tools/trace.rs:265-269`), while the high-level Engine
+   writes `resp.lazy_summary` on the envelope. Result: MCP can still underreport
+   lazy dataflow state after a successful variable trace.
+
+2. **[P2] `LazyWindow.capability_mask` now reports DATAFLOW, but still
+   underreports CFG for CFG-backed semantic MCP tools.**
+   `LazyDataflowService` deliberately sets MANIFEST/STRUCTURAL/CALL_EDGES/
+   DATAFLOW and omits CFG from the returned window mask
+   (`crates/atlas-engine/crates/lazy/src/lib.rs:81-92`,
+   `crates/atlas-engine/crates/lazy/src/lib.rs:126-138`). This is conservative,
+   but `LazyDiagnostics::from_layers` builds the MCP `analysis_contract` by
+   merging that window mask. `branch_diff` and `lifecycle` can actually load CFG
+   via lazy dataflow, so their diagnostics may still say CFG is unavailable or
+   omit CFG-backed safe conclusions.
+
+3. **[P2] MCP router poison recovery is incomplete in progress setup.**
+   `lock_router` now recovers with `PoisonError::into_inner`, and
+   `ProgressGuard` clears `progress_sender` on drop
+   (`crates/atlas-mcp/src/lib.rs:87-88`,
+   `crates/atlas-mcp/src/lib.rs:217-223`). But progress setup still directly
+   calls `self.router.lock().map_err(...)`
+   (`crates/atlas-mcp/src/lib.rs:182-188`). A poisoned mutex before progress
+   setup still fails progress-enabled `index` / `project` / `search` calls
+   despite the new recovery policy.
+
+4. **[P2] MCP README still documents the wrong required parameter for
+   `symbol`.**
+   Code/schema now require `symbol`, but the README table still says
+   `qname` (`crates/atlas-mcp/README.md:49-53`). This is now a docs-only drift,
+   reversed from the earlier code/schema bug.
+
+5. **[P2] Trace contract docs still advertise a non-existent CLI trace
+   command.**
+   `docs/trace-contract.md` still shows `atlas trace --kind ...`
+   (`docs/trace-contract.md:15-18`, `docs/trace-contract.md:317-322`), while
+   the current CLI command set does not expose a `trace` subcommand.
+
+6. **[P3] TUI exit confirmation remains Chinese-only.**
+   `render_exit_confirmation` still renders `再次按esc确认退出`
+   (`crates/atlas-cli/src/tui/app.rs:735-742`). If the CLI/TUI UX target is
+   English-only, this previous finding remains unresolved.
+
+7. **[P3] Summary `build_all` locking risk is narrower, but not eliminated.**
+   `SummaryStore::build_all` still opens a write transaction before calling
+   `build_fn(store, &sym.id)` (`crates/atlas-engine/crates/db/src/store/summary.rs:112-140`).
+   The store now has a dedicated read connection for file-backed DBs
+   (`crates/atlas-engine/crates/db/src/store/mod.rs:57-85`), so the broad
+   "production full index deadlocks" wording should be downgraded. However,
+   in-memory stores still fall back to the write connection; any summary builder
+   closure that performs store reads in that mode remains reentrant-lock risky.
+
+### Recommended Next Verification
+
+1. Add MCP `trace(kind="variable")` tests for both structural-cache-hit and
+   structural-lazy-built cases; assert `lazy_diagnostics.dataflow` and
+   top-level `analysis_contract` are present and reflect `resp.lazy_summary`.
+2. Add MCP `branch_diff` / `lifecycle` tests where lazy CFG is built, then
+   assert the returned `analysis_contract` does not underreport CFG-backed
+   conclusions.
+3. Align `crates/atlas-mcp/README.md` and `docs/trace-contract.md` with the
+   actual public tool/CLI surface.
+4. Decide whether TUI text should be localized or English-only; then test the
+   user-facing prompt.
+5. If summary builders must support in-memory stores, add a regression test
+   where `build_all` closure performs a real store read.
+
+## 2026-06-04 Review Pass 9: Post-Pass-8 Fix Recheck
+
+Scope: re-check the fixes made after Pass 8, focusing on the exact remaining
+findings from that pass: MCP trace lazy diagnostics, lazy CFG capability
+contract, progress mutex recovery, MCP/trace docs, TUI prompt, and summary
+locking.
+
+### Confirmed Fixed
+
+1. **MCP README `symbol` row is now aligned.**
+   The `symbol` tool table now lists `symbol` as the required argument and keeps
+   `include_roots` / `limit` in optional arguments
+   (`crates/atlas-mcp/README.md:49-56`).
+
+2. **Progress setup now recovers poisoned router locks consistently.**
+   `lock_router` recovers with `PoisonError::into_inner`
+   (`crates/atlas-mcp/src/lib.rs:87-88`), progress setup now uses the same
+   recovery behavior (`crates/atlas-mcp/src/lib.rs:182-185`), and
+   `ProgressGuard` still clears `progress_sender` on drop
+   (`crates/atlas-mcp/src/lib.rs:215-220`).
+
+3. **TUI exit confirmation is now English.**
+   `render_exit_confirmation` renders `Press ESC again to confirm exit`
+   (`crates/atlas-cli/src/tui/app.rs:735-742`).
+
+4. **Trace usage examples were mostly corrected.**
+   The old CLI examples were removed from the usage section, and the document
+   now states that trace is MCP-only (`docs/trace-contract.md:313-318`).
+
+### Remaining Findings
+
+1. **[P1] MCP `trace_variable` still does not actually merge Engine lazy
+   dataflow summary.**
+   The attempted fix still reads `path.lazy_summary`
+   (`crates/atlas-mcp/src/tools/trace.rs:269-281`). But the slicer initializes
+   `TracePath.lazy_summary` to `None`
+   (`crates/atlas-engine/crates/analysis/src/trace/slicer.rs:264-275`), while
+   the high-level Engine writes the real lazy metadata to the response envelope
+   as `resp.lazy_summary` (`crates/atlas-engine/src/lib.rs:438-441`). Therefore
+   the new `from_dataflow_summary` branch will not run on the common path, and
+   top-level `lazy_diagnostics` / `analysis_contract` can still be absent after
+   lazy dataflow runs.
+
+2. **[P1] `from_dataflow_summary` builds an internally contradictory
+   analysis contract.**
+   Even if the branch above were reached, `from_dataflow_summary` stores
+   `dataflow: Some(...)` but constructs `analysis_contract` from
+   `CapabilityMask::default()` (`crates/atlas-mcp/src/tools/lazy_response.rs:272-290`).
+   That means the response can report dataflow layer stats while
+   `analysis_contract.safe_conclusions` still says dataflow is unavailable.
+   The contract needs a DATAFLOW-capable mask at minimum, and should include
+   CFG only when the actual lazy/window capability justifies it.
+
+3. **[P1] `LazyWindow.capability_mask` now overreports CFG.**
+   Pass 8's underreporting issue was changed by setting CFG unconditionally
+   whenever any lazy unit is built or cached
+   (`crates/atlas-engine/crates/lazy/src/lib.rs:81-95`,
+   `crates/atlas-engine/crates/lazy/src/lib.rs:128-141`). That is too broad:
+   ArkTS and PHP still explicitly mark CFG unsupported
+   (`crates/atlas-engine/crates/types/src/capability.rs:844-899`,
+   `crates/atlas-engine/crates/types/src/capability.rs:1169-1217`), and a lazy
+   window may have dataflow without actual CFG nodes. This can make
+   `analysis_contract` claim branch-level control-flow safety for languages or
+   windows where CFG is not available.
+
+4. **[P2] `docs/trace-contract.md` still has a stale CLI entry in its top
+   flow diagram.**
+   The examples section now correctly says there is no `atlas trace`, but the
+   diagram still lists `CLI: atlas trace --kind ...`
+   (`docs/trace-contract.md:15-18`). This is a small but direct user-facing
+   contradiction.
+
+5. **[P3] Summary `build_all` in-memory reentrancy risk remains unchanged.**
+   `build_all` still opens the write transaction before invoking
+   `build_fn(store, &sym.id)` (`crates/atlas-engine/crates/db/src/store/summary.rs:112-141`).
+   File-backed stores have a separate read connection, but in-memory stores
+   still fall back to the write connection for reads
+   (`crates/atlas-engine/crates/db/src/store/mod.rs:77-85`). `build_for_function`
+   is safer because it computes the summary before opening its transaction
+   (`crates/atlas-engine/crates/db/src/store/summary.rs:168-183`).
+
+### Recommended Fix Direction
+
+1. In MCP `handle_trace_variable`, read `resp.lazy_summary` from the envelope,
+   not `resp.result.as_ref().and_then(|path| path.lazy_summary.as_ref())`.
+2. Make `LazyDiagnostics::from_dataflow_summary` build its
+   `analysis_contract` from a mask that includes DATAFLOW and any proven CFG
+   capability, or pass the actual `LazyWindow` / capability mask instead of
+   down-converting to `LazySummary`.
+3. Rework `LazyDataflowService` window mask to aggregate persisted unit
+   extraction-state masks, or at least gate CFG by language support and actual
+   CFG node presence, mirroring `loader.rs`.
+4. Remove the stale CLI branch from `docs/trace-contract.md`'s top diagram.
+5. Add regression tests for MCP trace variable diagnostics in both structural
+   cache-hit and structural-lazy-built paths; static helper tests are not enough
+   for this contract.

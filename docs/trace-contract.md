@@ -14,8 +14,6 @@
 ```
 User Query
      │
-     ├─ CLI:  atlas trace --kind {point|variable|caller-path|forward} --json
-     │
      └─ MCP:  tools/call { "name": "trace", "arguments": { "kind": "point", ... } }
               │
               ▼
@@ -235,64 +233,56 @@ Each language has a `LanguageCapabilityProfile` with `FeatureMatrix` for fine-gr
 
 ### Capability gating
 
-- `trace_variable`: gated on `local_dataflow.is_supported()`.
-- `trace_caller_path`: gated on `call_graph.is_supported()`.
-- `trace_forward`: gated on `call_graph.is_supported()`.
-- `trace_point`: **always available**, regardless of capability.
+- `trace(kind="variable")`: gated on `local_dataflow.is_supported()`.
+- `trace(kind="callers")`: gated on `call_graph.is_supported()`.
+- `trace(kind="forward")`: gated on `call_graph.is_supported()`.
+- `trace(kind="point")`: **always available**, regardless of capability.
 
 ---
 
 ## 8. MCP Tool Contracts
 
-The V1 core MCP tools use short names (no `atlas_` prefix). This trace contract covers the four trace tools; newer `atlas_`-prefixed lazy/lifecycle/domain-rules tools are documented in [`architecture.md`](./architecture.md) until their stable contract is frozen.
+A single unified `trace` tool replaces the four pre-v1.3.1 tools
+(`trace_point`, `trace_variable`, `trace_caller_path`, `trace_forward`).
+The `kind` parameter selects the trace mode.
 
-| Tool | Purpose |
+| Kind | Purpose |
 |------|---------|
-| `trace_point` | Resolve a code position to full context |
-| `trace_variable` | Walk backward through dataflow edges to find value origins |
-| `trace_caller_path` | Walk backward through call edges to find caller chain |
-| `trace_forward` | Walk forward through call edges (how does A reach B?) |
+| `"point"` | Resolve a code position to full context |
+| `"variable"` | Walk backward through dataflow edges to find value origins |
+| `"callers"` | Walk backward through call edges to find caller chain |
+| `"forward"` | Walk forward through call edges (how does A reach B?) |
 
 ### tools/list returns:
 
 ```json
 {
-  "name": "trace_point",
-  "description": "Resolve a code position...",
+  "name": "trace",
+  "description": "Source-level trace queries...",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "file_id": { "type": "string", "description": "File ID hex from files" },
-      "file_path": { "type": "string", "description": "Relative file path" },
-      "line": { "type": "integer", "description": "1-based line number" },
-      "column": { "type": "integer", "description": "1-based column number" }
+      "kind": {
+        "type": "string",
+        "enum": ["point", "variable", "forward", "callers"],
+        "description": "Trace kind: 'point' for source position resolution, 'variable' for backward dataflow, 'forward' for forward call chain, 'callers' for backward call chain."
+      },
+      "file_path": { "type": "string", "description": "File path relative to project root (e.g. 'src/foo.ts')." },
+      "file_id": { "type": "string", "description": "File ID in hex (alternative to file_path)." },
+      "line": { "type": "integer", "description": "1-based line number." },
+      "column": { "type": "integer", "description": "1-based column number." },
+      "symbol": { "type": "string", "description": "Qualified symbol name OR hex SymbolId (required for kind='callers')." },
+      "from": { "type": "string", "description": "Source qualified symbol name OR hex SymbolId (required for kind='forward')." },
+      "to": { "type": "string", "description": "Target qualified symbol name OR hex SymbolId (required for kind='forward')." },
+      "max_depth": { "type": "integer", "description": "Maximum traversal depth (default varies by kind)." },
+      "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots." }
     },
-    "required": ["line", "column"]
+    "required": ["kind"]
   }
 }
 ```
 
-### `trace_forward` schema:
-
-```json
-{
-  "name": "trace_forward",
-  "description": "Trace the forward call chain from source to target...",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "from": { "type": "string", "description": "Source symbol ID in hex" },
-      "to": { "type": "string", "description": "Target symbol ID in hex" },
-      "from_name": { "type": "string", "description": "Source symbol name (alternative to 'from' hex ID, e.g. 'main')" },
-      "to_name": { "type": "string", "description": "Target symbol name (alternative to 'to' hex ID, e.g. 'processRequest')" },
-      "max_depth": { "type": "integer", "description": "Maximum forward call depth (default 10)" }
-    },
-    "required": ["from", "to"]
-  }
-}
-```
-
-### All trace tools return `CallToolResult`:
+### The `trace` tool returns `CallToolResult`:
 
 ```json
 {
@@ -320,26 +310,19 @@ The V1 core MCP tools use short names (no `atlas_` prefix). This trace contract 
 
 ## 10. Usage Examples
 
-### CLI
-
-```bash
-atlas trace point --file src/app.ts --line 10 --column 15 --json
-atlas trace variable --file src/app.ts --line 10 --column 15 --json
-atlas trace caller-path --symbol <symbol-hex> --json
-atlas trace forward --from <from-hex> --to <to-hex> --json
-```
+> **Note:** Trace functionality is only available via MCP tools. There is no `atlas trace` CLI command.
 
 ### MCP (from AI agent)
 
 ```json
 // Request
 { "method": "tools/call", "params": {
-    "name": "trace_variable",
-    "arguments": { "file_path": "src/app.ts", "line": 4, "column": 18, "max_depth": 20 }
+    "name": "trace",
+    "arguments": { "kind": "variable", "file_path": "src/app.ts", "line": 4, "column": 18, "max_depth": 20 }
 }}
 
 // Response — always parse the envelope first, then check result
-{ "content": [{"type": "text", "text": "{\"ok\":true,\"kind\":\"trace_variable\",...}"}],
+{ "content": [{"type": "text", "text": "{\"ok\":true,\"kind\":\"trace\",...}"}],
   "isError": false }
 ```
 

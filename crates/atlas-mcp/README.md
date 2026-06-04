@@ -50,7 +50,7 @@ names without the old `atlas_` prefix.
 | `project` | `action`: `"open"`\|`"status"`\|`"files"` | `project_path`, `storage`, `scan_files`, `background` |
 | `index` | — | `include`: string[], `exclude`: string[], `background`: boolean |
 | `search` | `query`: string | `scope`: string, `kind`: string, `limit`: integer (default 20), `background`: boolean |
-| `symbol` | `symbol`: qualified name | `view`: `"detail"`\|`"context"`\|`"usages"`, `includeCode`: boolean |
+| `symbol` | `symbol`: qualified name | `view`: `"detail"`\|`"context"`\|`"usages"`, `includeCode`: boolean, `include_roots`, `limit` |
 | `calls` | `symbol`: qualified name | `direction`: `"incoming"`\|`"outgoing"`\|`"both"`, `depth`: integer (default 1, max 5), `edge_kinds`: string[] (default `["calls","instantiates","implements"]`, `[]` or `["*"]` for all) |
 | `path` | `from`: qualified name, `to`: qualified name | `max_depth`: integer (default 5, max 10), `direction`, `edge_kinds`, `includeCode` |
 | `explore` | `symbol`: qualified name | `includeCode`: boolean (default `false`) |
@@ -60,7 +60,7 @@ names without the old `atlas_` prefix.
 | `lifecycle` | `symbol`: qualified name, `field`: string | `include_proof`: boolean |
 | `branch_diff` | `symbol`: qualified name | `semantic`: boolean (default `true`) |
 | `fp_dispatches` | `action`: `"add"`\|`"list"`\|`"delete"` | `field_qname`, `target_qname`, `annotation_id` |
-| `domain_rules` | `action`: `"add"`\|`"list"`\|`"delete"`\|`"learn"` | `language`, `kind`, `patterns`, `status` |
+| `domain_rules` | `action`: `"add"`\|`"list"`\|`"delete"`\|`"learn"` | `rule_kind`: string, `pattern`: string, `rule_id`: string, `source`: string, `confidence`: number, `min_confidence`: number |
 | `tasks` | — | — |
 | `task_status` | `task_id`: string | — |
 | `wait_for_task` | `task_id`: string | `timeout_secs`: integer (default 30, max 300), `poll_interval_secs`: integer (default 2) |

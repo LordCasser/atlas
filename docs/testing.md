@@ -128,8 +128,8 @@ Atlas 同时存在 extraction mode、capability level、lazy precision tier 和�
 要求：
 - 触发 lazy extraction 的 MCP 工具必须断言 `analysis_contract` 存在。
 - `safe_conclusions` 和 `unsafe_conclusions` 不能是泛泛提示，必须能对应到具体缺失或存在的 `CapabilityMask` bit。
-- `atlas_resume(query_id)` 必须覆盖：query snapshot 存储、TTL 内恢复、未知/过期 query_id 错误、恢复后返回完整结果。
-- `atlas_jobs(query_id)` 必须覆盖按查询过滤和 pending/complete/failed 状态展示。
+- `resume_task(query_id)` 必须覆盖：query snapshot 存储、TTL 内恢复、未知/过期 query_id 错误、恢复后返回完整结果。
+- `tasks(query_id)` 必须覆盖按查询过滤和 pending/complete/failed 状态展示。
 - Investigation state 必须测试 symbol、position、field focus 对 related files/symbols 和 desired capabilities 的更新。
 
 ### Domain Rules / Lifecycle ✅

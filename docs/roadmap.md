@@ -108,7 +108,7 @@ Continue expanding end-to-end smoke tests for all languages.
 
 - Keep all lazy-triggering MCP tools aligned on `analysis_contract`.
 - Ensure `safe_conclusions` and `unsafe_conclusions` map directly to `CapabilityMask`.
-- Keep `query_id`, `atlas_resume`, and `atlas_jobs` behavior documented and covered by tests.
+- Keep `query_id`, `resume_task`, and `tasks` behavior documented and covered by tests.
 
 ## 4. Graph and performance evolution
 

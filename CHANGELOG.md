@@ -246,8 +246,7 @@ source code with tree-sitter, stores deterministic code facts in SQLite, and exp
 - 10-stage reference resolution with confidence scoring.
 - In-memory graph snapshots with BFS/DFS traversal.
 - Cross-function bridging via persisted function summaries (4 tables).
-- CLI: `init`, `index`, `sync`, `status`, `doctor`, `files`, `search`, `context`,
-  `trace`, `mcp`.
+- CLI: `status`, `doctor`, `index`, `sync`, `files`, `mcp`.
 - MCP: 28 stdio tools with lazy graph init, background task support, progress
   notifications.
 - 14-Cargo-package Rust workspace, edition 2024, SQLite 22-table schema V1.

@@ -28,9 +28,9 @@ impl LazyDataflowService {
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `LAZY_DATAFLOW_BUDGET_MS` | 25,000 | Total wall-clock budget per lazy operation |
+| `LAZY_DATAFLOW_BUDGET_MS` | 20,000 | Total wall-clock budget per lazy operation |
 | `LAZY_DATAFLOW_MAX_DEPTH` | 2 | Max BFS expansion depth from seed function |
-| `LAZY_DATAFLOW_MAX_UNITS` | 64 | Max AnalysisUnits in a single window |
+| `LAZY_DATAFLOW_MAX_UNITS` | 32 | Max AnalysisUnits in a single window |
 
 Budget exceedance sets `LazyWindow.truncated = true` and `EnsureResult.budget_exceeded = true`, surfacing partial results with diagnostics.
 

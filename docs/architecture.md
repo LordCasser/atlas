@@ -564,7 +564,7 @@ discover files
 - 结果截断 25KB，额外 content block 标注截断信息。
 
 ### 11.4 CLI
-核心命令：`init`, `index`, `sync`, `status`, `doctor`, `files`, `search`, `context`, `trace`, `mcp`。
+核心命令：`status`, `doctor`, `index`, `sync`, `files`, `mcp`。
 
 ## 12. Analysis / Trace
 
@@ -662,7 +662,7 @@ branch_diff    lifecycle
 - Domain Rules 语言扩展指南：[`domain-rules-language-guide.md`](./domain-rules-language-guide.md)
 - 性能基线：[`performance.md`](./performance.md)
 
-## 17. 已知限制
+## 16. 已知限制
 
 ### Lazy Indexing
 
