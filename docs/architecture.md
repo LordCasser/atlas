@@ -252,6 +252,19 @@ analysis 层按需加载 dataflow facts（而非全量预加载），通过 `Laz
 - `Full` 必须在 facts、summary、extraction_state、capability mask 和用户可见 status 上都表现为完整分析；不能只在 facts 表中写入 dataflow/CFG。
 - lazy 路径必须复用或严格对齐 structural facts，尤其是 callsite、symbol、scope、content_hash 和 capability mask；不得重建一套会与 structural DB 状态漂移的事实解释。
 
+分析等级的长期语义如下，所有入口必须与此表保持一致：
+
+| 等级 | 写入事实 | 继续阶段 | 用户可见要求 |
+|------|----------|----------|--------------|
+| `Manifest` | 仅顶层 manifest symbols | 不做 references、resolution、graph、summaries | 不能暴露或暗示 structural/dataflow 已完整 |
+| `ResolutionSymbols` | symbols、imports、scopes、scope tree | 不做 references、dataflow、callsites | 仅作为 dependency/lazy resolution 目标层 |
+| `Structural` | symbols、references、imports、scopes、callsites、exports、call edges | resolution + graph build | 能回答结构性搜索、context、caller/callee；不能宣称 dataflow/CFG |
+| `LazyDataflow` | window 内 unit dataflow、binding uses、可用时 CFG | 不重写 structural facts | 必须记录 unit extraction state、pending/partial 诊断和 capability mask |
+| `Full` | Structural + 全文件 dataflow + 可用 CFG + summaries | resolution + graph + summary build | facts、summary、extraction_state、capability mask、status 必须全链路一致 |
+| Raw analysis | 不触发 extraction | 只消费已有 DB facts | 调用者必须先准备所需 facts，不能隐式依赖 lazy |
+
+Manifest 不是“低成本 definitions”。每个语言必须显式实现 top-level-only `manifest_query()`，或显式声明 Manifest 不支持该语言；禁止通过默认 `definition_query()` 把函数体内部符号写入 manifest 层。新增语言时，manifest、structural、lazy dataflow 三条路径必须一起登记。
+
 提取层能力集中通过 `extraction_state.capability_mask` 表达，不把 precision 字段扩散到每个 symbol/reference/edge：
 
 | Bit | Capability | 含义 |
@@ -264,6 +277,8 @@ analysis 层按需加载 dataflow facts（而非全量预加载），通过 `Laz
 | 5 | `summaries` | inter-procedural function summaries 可用 |
 
 `field_lifecycle`、`branch_diff`、`ownership_proof` 属于 analysis 结果能力，不进入 extraction mask。
+
+`summaries` bit 代表 summary tables 已针对相关函数构建完成；只有成功执行 summary build 后才能设置。不能仅因为 extraction mode 是 `Full` 就推断 summaries 可用。
 
 ### 7.2 跨函数桥接（DataflowFull）
 
@@ -522,6 +537,8 @@ discover files
 - CLI、MCP、sync 入口只负责参数解释、锁、UI/进度、后台任务和错误展示。
 - 共享管线不直接输出终端文本、不依赖 MCP transport，也不安装 Ctrl+C handler。
 - `ExtractionMode::Manifest` 在抽取后停止；`Structural` / `Full` 继续执行 resolution 和 graph build。
+- full-index 共享管线必须执行 dirty/deleted-file 检测并清理 DB 中已不存在的文件；仅清理本次 discover 到的文件不足以保证索引权威性。
+- `Full` 共享管线必须在 graph/annotation 阶段后构建 persistent function summaries，并把 summary capability 反映到持久化状态。
 - 新增索引阶段时优先进入共享管线，再由入口层决定是否暴露配置。
 - `filesync::build_dirty_set` 是 full index 的 hash-check 边界；CLI 不直接实现 DB hash diff。
 - `filesync::clean_stale_file_*` 是 stale facts 清理边界；所有入口必须先清理 incoming refs 和 outgoing edges，再删除旧 facts。
@@ -590,6 +607,12 @@ Atlas 不包含污点分析（taint analysis）。产品主线为变量来源追
 所有 trace 工具返回 `TraceQueryResponse<T>` envelope：
 - `ok`, `kind`, `capability`, `partial_result`, `diagnostics`, `result`。
 - 详见 [`trace-contract.md`](./trace-contract.md)。
+
+Trace/MCP lazy contract：
+- MCP trace 入口必须优先通过 high-level `Engine`，由 engine 触发必要的 lazy dataflow；raw analysis consumer 不负责触发 lazy。
+- 只要 lazy structural 或 lazy dataflow 被触发，响应就必须暴露 `lazy_diagnostics` 和 `analysis_contract`。即使 trace 没有找到 path，也必须说明已尝试的 lazy 层、partial/pending 状态和下一步动作。
+- CFG-consuming tools（如 `branch_diff`、`lifecycle`）如果已经 re-query 到 CFG 并基于 CFG 产出结果，`analysis_contract` 必须反映“本次工具已证明 CFG 可用”；不能同时返回 CFG 分析结果又声明 CFG 不可分析。
+- `analysis_contract.safe_conclusions` 和 `unsafe_conclusions` 必须直接来源于 capability mask 或本次工具已验证的事实，不允许使用推测性默认值。
 
 ### 12.3 Lifecycle、Branch Diff 与 Semantic Impact
 

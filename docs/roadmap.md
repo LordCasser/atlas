@@ -42,7 +42,20 @@ cargo test
 cargo test -p atlas-cli --features all-languages
 cargo test -p atlas-cli --features mcp
 cargo test -p atlas-cli --features "all-languages,mcp"
+cargo check -p atlas-cli --features "all-languages,mcp"
 ```
+
+### 1.6 V1 release blockers
+
+These items must be closed before V1 is considered releasable:
+
+- Fix any test compile failures caused by schema/type evolution; release validation cannot rely on a suite that does not compile.
+- Make shared `run_index_pipeline` authoritative for full-index cleanup: deleted files must be removed from DB state when MCP or other shared-pipeline callers re-index.
+- Make shared `run_index_pipeline(Full)` build persistent function summaries, matching CLI Full behavior.
+- Persist `summaries` capability after successful summary build so user-visible `analysis_contract` can prove inter-procedural summary availability.
+- Add explicit Manifest queries or explicit unsupported declarations for every language; Manifest must mean top-level symbols only.
+- Validate CLI `--analysis` values instead of silently falling back to Structural.
+- Align all lazy-triggering MCP tools on `analysis_contract`, including no-result trace responses and CFG-consuming tools.
 
 ## 2. Completed work
 
@@ -99,16 +112,24 @@ v1.3.1 完成 MCP 工具全面重构：33 个旧工具合并精简为 18 个。�
 - Keep `language_capabilities` and `atlas doctor` aligned with actual compiled features.
 - For each language, maintain explicit limitations and confidence floors.
 - Ensure unsupported or partial trace queries return diagnostics rather than silent empty results.
+- Keep `CapabilityMask` synchronized with persisted state: `cfg` requires actual CFG facts, `dataflow` requires dataflow facts, and `summaries` requires successfully built summary tables.
+- `analysis_contract` may only advertise capabilities proven by DB state or by facts verified during the current tool call.
 
 ### 3.2 Path-level validation
 
 Continue expanding end-to-end smoke tests for all languages.
+
+- Add per-language Manifest validation fixtures that include both top-level and local declarations.
+- Add shared-pipeline parity tests for Manifest, Structural, and Full against CLI index/sync behavior.
+- Add lazy dataflow tests for build, cache hit, full-index prebuilt cache, pending, partial, no-path trace, and CFG-consuming tool paths.
 
 ### 3.3 Analysis contract consistency
 
 - Keep all lazy-triggering MCP tools aligned on `analysis_contract`.
 - Ensure `safe_conclusions` and `unsafe_conclusions` map directly to `CapabilityMask`.
 - Keep `query_id`, `resume_task`, and `tasks` behavior documented and covered by tests.
+- No MCP response may return a semantic/CFG result while its contract says that same capability is unavailable.
+- No lazy-triggered query may omit `lazy_diagnostics` solely because the final trace/search result is empty.
 
 ## 4. Graph and performance evolution
 

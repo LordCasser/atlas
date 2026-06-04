@@ -34,6 +34,15 @@ Atlas 同时存在 extraction mode、capability level、lazy precision tier 和�
 - capability/status/precision 的测试必须验证数据库状态和用户可见输出，不能只检查内存对象。
 - 当某个路径确认不受影响时，PR 或 review 里必须写明理由。
 
+强制回归场景：
+- `run_index_pipeline(Manifest)` 和 MCP `index` 必须覆盖“文件已删除后再次索引”的场景，断言 stale file、symbol、reference、edge 和 extraction_state 均被清理。
+- `run_index_pipeline(Full)`、`atlas index --analysis full`、`atlas sync --analysis full` 必须分别断言 summary tables 已构建，并且 `summaries` capability 只在 summary build 成功后出现。
+- 每种语言的 Manifest 测试必须断言只产生顶层符号。不得仅测试 query parse 成功；fixture 必须包含函数/方法内部局部定义以证明不会过度索引。
+- `LazyDataflowService::ensure_for_position` 和 `ensure_for_function` 必须分别覆盖 fresh build、unit cache hit、full-index prebuilt cache hit、pending/already-building、budget partial。
+- MCP `trace(kind="variable")` 必须覆盖有 path 和无 path 两种结果；只要 lazy dataflow 被触发，两者都必须有 `lazy_diagnostics.dataflow` 和顶层 `analysis_contract`。
+- MCP `branch_diff` / `lifecycle` 必须覆盖 lazy CFG build 后成功分析的路径，断言 contract 不会同时声明 CFG 不可用。
+- CLI `--analysis` 必须覆盖合法值和非法值；非法值必须返回错误，不能静默 fallback。
+
 ## 2. 测试分层
 
 ### 2.1 单元测试
@@ -57,6 +66,7 @@ Atlas 同时存在 extraction mode、capability level、lazy precision tier 和�
 - fixture 必须是源码文件。
 - expected JSON 只保留可读、稳定、对架构有约束力的字段。
 - 新增语言至少包含 `simple`、`imports/includes`、`calls`、`class/method` fixtures。
+- 新增语言或新增 Manifest 模式时，必须包含 `manifest` fixture，且源码中同时包含顶层声明和非顶层局部声明。
 - 修改 golden expected 时，必须说明是修正旧错误、能力增强，还是语法覆盖变化。
 
 ### 2.3 集成测试
@@ -89,6 +99,8 @@ Atlas 同时存在 extraction mode、capability level、lazy precision tier 和�
 - 新增 MCP 工具必须测试注册名、required schema、正常调用和错误调用。
 - 输出必须断言 bounded 行为、confidence/provenance 暴露和结构化 JSON。
 - trace/query/context 工具必须断言顶层 `capability` 对象存在。
+- 触发 lazy extraction 的 MCP 工具必须断言 `lazy_diagnostics`、`analysis_contract`、`query_id`、partial/pending diagnostics 和 retry/next_action 语义。
+- 如果工具返回 `ok=false` 但已经触发 lazy，也必须断言 lazy diagnostics 不丢失。
 
 ### 2.6 端到端测试
 
@@ -100,6 +112,26 @@ Atlas 同时存在 extraction mode、capability level、lazy precision tier 和�
 - 必须经过用户入口：CLI、MCP 或等价 public API。
 - 必须断言最终用户可消费结果。
 - 必须覆盖"请求超出语言能力边界"的场景。
+
+### 2.7 发布前验证矩阵
+
+发布候选至少运行：
+
+```bash
+cargo test
+cargo test -p atlas-cli --features all-languages
+cargo test -p atlas-cli --features mcp
+cargo test -p atlas-cli --features "all-languages,mcp"
+cargo check -p atlas-cli --features "all-languages,mcp"
+```
+
+如果某个 crate 支持无语言 feature 编译，则默认 feature 的单测也必须通过；否则需要在 Cargo feature 或测试上明确表达“至少一个语言 feature 是前置条件”。
+
+发布前还必须保存一份路径级验证记录，至少列出：
+- 本次变更影响的 extraction modes、capability bits、lazy precision/status、用户入口。
+- 已验证的 CLI、MCP、TUI、shared pipeline、sync、lazy、raw analysis 路径。
+- 未受影响路径及理由。
+- 所有失败测试、跳过测试和 residual risk。
 
 ## 3. 阶段测试要求
 

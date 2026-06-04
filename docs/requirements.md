@@ -95,6 +95,14 @@ tree-sitter queries + LanguageAdapter -> FileFacts
 - CFG nodes and CFG edges where implemented
 - diagnostics
 
+分析等级必须有稳定的用户可见语义：
+
+- `Manifest`：只产出顶层声明符号，用于快速初始索引和 lazy structural 候选；不得写入函数体内部局部定义。
+- `ResolutionSymbols`：只作为 dependency/lazy resolution 目标层，不对用户宣称完整 structural。
+- `Structural`：产出 symbols/scopes/references/callsites/call graph，可支持结构性搜索、context、callers/callees。
+- `LazyDataflow`：按需为查询窗口产出 dataflow/CFG facts，并暴露 partial/pending diagnostics。
+- `Full`：产出 structural + dataflow + CFG（语言支持时）+ persistent summaries；summary capability 只能在 summary tables 成功构建后对用户可见。
+
 ### 符号与引用
 
 MVP 至少抽取：
@@ -242,6 +250,13 @@ MCP 使用 JSON-RPC over stdio。V1 核心公开工具名使用无 `atlas_` 前�
 
 工具输出必须 bounded、结构化，并在涉及启发式关系时暴露 confidence/provenance。
 
+触发 lazy structural、lazy dataflow 或 lazy CFG 的 MCP 工具必须返回可解释的能力状态：
+
+- `lazy_diagnostics`：说明 structural/dataflow 是否触发、built/cached/pending、budget/partial 状态。
+- `analysis_contract`：说明当前 facts 能安全支持哪些结论、哪些结论仍不安全、下一步 refinement action。
+- 空结果或 `ok=false` 不得吞掉 lazy diagnostics；如果工具已经做过 lazy 工作，响应必须解释该工作对结果的影响。
+- CFG/semantic 工具已经基于 CFG 产出结果时，不得同时声明 CFG 不可用。
+
 ### CLI
 
 核心命令：
@@ -250,6 +265,8 @@ MCP 使用 JSON-RPC over stdio。V1 核心公开工具名使用无 `atlas_` 前�
 - `atlas status` / `atlas doctor` / `atlas files`
 - `atlas mcp` (MCP server, 18 tools)
 - `atlas` (no subcommand: launch interactive TUI)
+
+CLI 参数必须失败得明确。`--analysis` 只允许 `manifest`、`structural`、`full`；未知值必须返回错误，不能静默降级为 Structural。
 
 ## 5. 非功能需求
 
@@ -274,6 +291,7 @@ MVP 完成标准：
 9. 关系结果暴露 confidence/provenance。
 10. 语言 fixtures 和集成测试覆盖主链路。
 11. 持久化跨函数摘要层（Schema V1）已实现。
+12. MCP/shared pipeline、CLI index、CLI sync、TUI 初始索引在同一分析等级下语义一致；删除文件、Full summaries、lazy diagnostics 和 capability mask 都有发布前验证。
 
 ## 7. 当前阶段验收焦点
 
