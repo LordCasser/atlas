@@ -188,11 +188,9 @@ impl LazyDataflowLoader {
                 .collect();
 
             // Step 4: Partition and write per uncached unit
-            let file_info = store
-                .get_file(&units[0].file_id)?
-                .ok_or_else(|| {
-                    anyhow::anyhow!("file not found during lazy write: {:?}", units[0].file_id)
-                })?;
+            let file_info = store.get_file(&units[0].file_id)?.ok_or_else(|| {
+                anyhow::anyhow!("file not found during lazy write: {:?}", units[0].file_id)
+            })?;
             let current_hash = file_info.content_hash.clone();
             let file_lang = file_info.language;
 
@@ -317,11 +315,9 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
     {
         let prebuilt = store.count_data_nodes_for_unit(unit).unwrap_or(0);
         if prebuilt > 0 {
-            let file = store
-                .get_file(&unit.file_id)?
-                .ok_or_else(|| {
-                    anyhow::anyhow!("file not found for prebuilt check: {:?}", unit.file_id)
-                })?;
+            let file = store.get_file(&unit.file_id)?.ok_or_else(|| {
+                anyhow::anyhow!("file not found for prebuilt check: {:?}", unit.file_id)
+            })?;
             let current_hash = file.content_hash;
             let file_lang = file.language;
 
@@ -648,10 +644,7 @@ mod tests {
             .as_ref()
             .map(|f| f.cfg.is_supported())
             .unwrap_or(false);
-        assert!(
-            !cfg_support,
-            "PHP profile must report CFG as unsupported"
-        );
+        assert!(!cfg_support, "PHP profile must report CFG as unsupported");
     }
 
     #[test]
@@ -662,10 +655,7 @@ mod tests {
             .as_ref()
             .map(|f| f.cfg.is_supported())
             .unwrap_or(false);
-        assert!(
-            cfg_support,
-            "Ruby profile must report CFG as supported"
-        );
+        assert!(cfg_support, "Ruby profile must report CFG as supported");
     }
 
     #[test]
@@ -691,7 +681,9 @@ mod tests {
         // Even with CFG nodes present, the CFG bit must NOT be set when the
         // language does not support CFG (the pre-fix behaviour was to
         // unconditionally set it).
-        let mask = compute_unit_mask(/* cfg_supported */ false, /* has_cfg_nodes */ true);
+        let mask = compute_unit_mask(
+            /* cfg_supported */ false, /* has_cfg_nodes */ true,
+        );
         assert!(
             !mask.has(CapabilityMask::CFG),
             "CFG bit must NOT be set for CFG-unsupported languages"
@@ -706,7 +698,9 @@ mod tests {
     fn mask_no_cfg_when_no_nodes_even_if_supported() {
         // Even when the language supports CFG, the bit must NOT be set when
         // the unit produced zero CFG nodes (e.g. an empty function body).
-        let mask = compute_unit_mask(/* cfg_supported */ true, /* has_cfg_nodes */ false);
+        let mask = compute_unit_mask(
+            /* cfg_supported */ true, /* has_cfg_nodes */ false,
+        );
         assert!(
             !mask.has(CapabilityMask::CFG),
             "CFG bit must NOT be set when no CFG nodes were produced"
@@ -735,7 +729,9 @@ mod tests {
     fn mask_always_has_dataflow_manifest_structural_call_edges() {
         // The base bits are unconditional — they represent capabilities that
         // are always produced by a successful lazy dataflow build.
-        let mask = compute_unit_mask(/* cfg_supported */ false, /* has_cfg_nodes */ false);
+        let mask = compute_unit_mask(
+            /* cfg_supported */ false, /* has_cfg_nodes */ false,
+        );
         assert!(mask.has(CapabilityMask::MANIFEST_BIT));
         assert!(mask.has(CapabilityMask::STRUCTURAL_BIT));
         assert!(mask.has(CapabilityMask::CALL_EDGES));

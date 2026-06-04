@@ -293,16 +293,8 @@ fn expand_frontier(
                 // Callers: functions that call this unit
                 if let Ok(edges) = store.find_edges_by_target(&sid) {
                     for edge in edges {
-                        if edge.kind == EdgeKind::Calls
-                            || edge.kind == EdgeKind::Instantiates
-                        {
-                            add_if_new_by_id(
-                                store,
-                                edge.source,
-                                units,
-                                seen,
-                                &mut next_frontier,
-                            );
+                        if edge.kind == EdgeKind::Calls || edge.kind == EdgeKind::Instantiates {
+                            add_if_new_by_id(store, edge.source, units, seen, &mut next_frontier);
                         }
                     }
                 }

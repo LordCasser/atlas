@@ -3,7 +3,7 @@
 use crate::schema::SCHEMA_DDL;
 use crate::store_fts::{chrono_now_ms, is_process_alive};
 
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, params};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 

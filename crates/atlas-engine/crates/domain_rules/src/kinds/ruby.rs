@@ -25,8 +25,7 @@ impl LanguageRuleKinds for RubyRegistry {
         &[
             RuleKindSpec {
                 name: "ruby/alloc_fn",
-                description:
-                    "Function that creates or opens a resource (e.g., File.open, File.new, TCPSocket.new, Net::HTTP.start)",
+                description: "Function that creates or opens a resource (e.g., File.open, File.new, TCPSocket.new, Net::HTTP.start)",
                 auto_learn_enabled: true,
                 allowed_pattern_kinds: &[
                     PatternKind::Exact,
@@ -39,8 +38,7 @@ impl LanguageRuleKinds for RubyRegistry {
             },
             RuleKindSpec {
                 name: "ruby/free_fn",
-                description:
-                    "Function that closes or releases a resource (e.g., .close, .dispose)",
+                description: "Function that closes or releases a resource (e.g., .close, .dispose)",
                 auto_learn_enabled: true,
                 allowed_pattern_kinds: &[
                     PatternKind::Exact,
@@ -52,20 +50,15 @@ impl LanguageRuleKinds for RubyRegistry {
             },
             RuleKindSpec {
                 name: "ruby/block_resource",
-                description:
-                    "Block-based resource management patterns (File.open with do...end block)",
+                description: "Block-based resource management patterns (File.open with do...end block)",
                 auto_learn_enabled: false,
-                allowed_pattern_kinds: &[
-                    PatternKind::Exact,
-                    PatternKind::Suffix,
-                ],
+                allowed_pattern_kinds: &[PatternKind::Exact, PatternKind::Suffix],
                 default_status: status_for_source,
                 meta_validator: None,
             },
             RuleKindSpec {
                 name: "ruby/cleanup_fn",
-                description:
-                    "General cleanup functions (e.g., ensure blocks, at_exit handlers)",
+                description: "General cleanup functions (e.g., ensure blocks, at_exit handlers)",
                 auto_learn_enabled: false,
                 allowed_pattern_kinds: &[PatternKind::Exact],
                 default_status: status_for_source,

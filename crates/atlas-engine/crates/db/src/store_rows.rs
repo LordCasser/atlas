@@ -312,28 +312,34 @@ pub(crate) fn row_to_callsite(row: &Row) -> rusqlite::Result<Callsite> {
     let args_str: String = row.get(5)?;
     let args: Vec<ArgumentFact> = serde_json::from_str(&args_str)
         .map_err(|e| parse_err(5, &args_str, &format!("Callsite args JSON: {e}")))?;
-    let callee_start_line: Option<u32> = row.get(12)
-        .map_err(|e| tracing::warn!(?e, col=12, "Callsite callee_start_line decode error"))
+    let callee_start_line: Option<u32> = row
+        .get(12)
+        .map_err(|e| tracing::warn!(?e, col = 12, "Callsite callee_start_line decode error"))
         .ok()
         .flatten();
-    let callee_start_column: Option<u32> = row.get(13)
-        .map_err(|e| tracing::warn!(?e, col=13, "Callsite callee_start_column decode error"))
+    let callee_start_column: Option<u32> = row
+        .get(13)
+        .map_err(|e| tracing::warn!(?e, col = 13, "Callsite callee_start_column decode error"))
         .ok()
         .flatten();
-    let callee_end_line: Option<u32> = row.get(14)
-        .map_err(|e| tracing::warn!(?e, col=14, "Callsite callee_end_line decode error"))
+    let callee_end_line: Option<u32> = row
+        .get(14)
+        .map_err(|e| tracing::warn!(?e, col = 14, "Callsite callee_end_line decode error"))
         .ok()
         .flatten();
-    let callee_end_column: Option<u32> = row.get(15)
-        .map_err(|e| tracing::warn!(?e, col=15, "Callsite callee_end_column decode error"))
+    let callee_end_column: Option<u32> = row
+        .get(15)
+        .map_err(|e| tracing::warn!(?e, col = 15, "Callsite callee_end_column decode error"))
         .ok()
         .flatten();
-    let callee_start_byte: Option<i64> = row.get(16)
-        .map_err(|e| tracing::warn!(?e, col=16, "Callsite callee_start_byte decode error"))
+    let callee_start_byte: Option<i64> = row
+        .get(16)
+        .map_err(|e| tracing::warn!(?e, col = 16, "Callsite callee_start_byte decode error"))
         .ok()
         .flatten();
-    let callee_end_byte: Option<i64> = row.get(17)
-        .map_err(|e| tracing::warn!(?e, col=17, "Callsite callee_end_byte decode error"))
+    let callee_end_byte: Option<i64> = row
+        .get(17)
+        .map_err(|e| tracing::warn!(?e, col = 17, "Callsite callee_end_byte decode error"))
         .ok()
         .flatten();
     let callee_range = match (
@@ -381,11 +387,15 @@ pub(crate) fn row_to_cfg_node(row: &Row) -> rusqlite::Result<CfgNode> {
     let semantic_effects: Vec<SemanticEffect> = {
         let json_str: Option<String> = row.get(11)?;
         match json_str {
-            Some(ref s) if !s.is_empty() && s != "[]" => serde_json::from_str(s)
-                .unwrap_or_else(|e| {
-                    tracing::error!(?e, "CFG node semantic_effects JSON corrupt, using empty vec");
+            Some(ref s) if !s.is_empty() && s != "[]" => {
+                serde_json::from_str(s).unwrap_or_else(|e| {
+                    tracing::error!(
+                        ?e,
+                        "CFG node semantic_effects JSON corrupt, using empty vec"
+                    );
                     Vec::new()
-                }),
+                })
+            }
             _ => Vec::new(),
         }
     };

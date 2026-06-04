@@ -150,7 +150,10 @@ impl Store {
             .filter_map(|r| match r {
                 Ok(v) => Some(v),
                 Err(e) => {
-                    tracing::warn!(?e, "Dependent import row decode error (LIKE path), skipping");
+                    tracing::warn!(
+                        ?e,
+                        "Dependent import row decode error (LIKE path), skipping"
+                    );
                     None
                 }
             })

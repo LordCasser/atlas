@@ -1192,7 +1192,10 @@ mod tests {
                 assert!(
                     result.is_some(),
                     "{} producer {:?} (registered as {:?}) failed to match its own name '{}' via classify_return",
-                    lang_name, pattern.kind, pattern.matcher, test_name
+                    lang_name,
+                    pattern.kind,
+                    pattern.matcher,
+                    test_name
                 );
                 // Must be NewOwned or MaybeOwned for producers
                 match result {
@@ -1214,7 +1217,10 @@ mod tests {
                 assert!(
                     result.is_some(),
                     "{} consumer {:?} (registered as {:?}) failed to match its own name '{}' via classify_consumption",
-                    lang_name, pattern.kind, pattern.matcher, test_name
+                    lang_name,
+                    pattern.kind,
+                    pattern.matcher,
+                    test_name
                 );
             }
         }

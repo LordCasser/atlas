@@ -1211,8 +1211,14 @@ require('./side-effect');
             "should capture bare require('./side-effect') module path"
         );
         // Variable names from assigned requires: 'fs', 'path'
-        assert!(require_names.contains(&"fs".to_string()), "should capture 'fs' variable name");
-        assert!(require_names.contains(&"path".to_string()), "should capture 'path' variable name");
+        assert!(
+            require_names.contains(&"fs".to_string()),
+            "should capture 'fs' variable name"
+        );
+        assert!(
+            require_names.contains(&"path".to_string()),
+            "should capture 'path' variable name"
+        );
     }
 
     /// Verify that CommonJS `require()` captures normalize into correct
@@ -1247,25 +1253,28 @@ require('./side-effect');
         while let Some((m, capture_index)) = captures.next() {
             if let Some(cap) = m.captures.get(*capture_index) {
                 let capture_name = &capture_names[cap.index as usize];
-                if let Some(import_def) = normalize_ts_import(
-                    capture_name,
-                    cap.node,
-                    source,
-                    file_id,
-                ) {
+                if let Some(import_def) =
+                    normalize_ts_import(capture_name, cap.node, source, file_id)
+                {
                     imports.push(import_def);
                 }
             }
         }
         // Should produce at least one ImportDef for the require
-        assert!(!imports.is_empty(), "should produce ImportDef for require()");
+        assert!(
+            !imports.is_empty(),
+            "should produce ImportDef for require()"
+        );
         // Find the require_module-derived ImportDef (with module path)
         let module_import = imports
             .iter()
             .find(|i| i.module == "./helper")
             .expect("should have an import with module './helper'");
         assert_eq!(module_import.kind, ImportKind::Import);
-        assert!(module_import.is_relative, "require('./helper') should be relative");
+        assert!(
+            module_import.is_relative,
+            "require('./helper') should be relative"
+        );
         // Find the require_name-derived ImportDef (with variable name)
         let name_import = imports
             .iter()
@@ -1323,8 +1332,14 @@ exports.helper = helperFn;
                 }
             }
         }
-        assert!(cjs_defaults.contains(&"main".to_string()), "should capture module.exports = main");
-        assert!(cjs_names.contains(&"helper".to_string()), "should capture exports.helper = helperFn");
+        assert!(
+            cjs_defaults.contains(&"main".to_string()),
+            "should capture module.exports = main"
+        );
+        assert!(
+            cjs_names.contains(&"helper".to_string()),
+            "should capture exports.helper = helperFn"
+        );
     }
 
     /// Verify that CJS export captures normalize into correct ImportDef entries.
@@ -1361,30 +1376,36 @@ exports.util = doUtil;
         while let Some((m, capture_index)) = captures.next() {
             if let Some(cap) = m.captures.get(*capture_index) {
                 let capture_name = &capture_names[cap.index as usize];
-                if let Some(import_def) = normalize_ts_import(
-                    capture_name,
-                    cap.node,
-                    source,
-                    file_id,
-                ) {
+                if let Some(import_def) =
+                    normalize_ts_import(capture_name, cap.node, source, file_id)
+                {
                     imports.push(import_def);
                 }
             }
         }
-        assert!(!imports.is_empty(), "should produce ImportDef for CJS exports");
+        assert!(
+            !imports.is_empty(),
+            "should produce ImportDef for CJS exports"
+        );
 
         // module.exports → export.cjs_default with imported_name = "handler"
         let default_export = imports
             .iter()
             .find(|i| i.imported_name == "handler" && i.kind == ImportKind::ExportFrom)
             .expect("should have ExportFrom for module.exports = handler");
-        assert!(default_export.module.is_empty(), "cjs default export has no source module");
+        assert!(
+            default_export.module.is_empty(),
+            "cjs default export has no source module"
+        );
 
         // exports.util → export.cjs_name with imported_name = "util"
         let named_export = imports
             .iter()
             .find(|i| i.imported_name == "util" && i.kind == ImportKind::ExportFrom)
             .expect("should have ExportFrom for exports.util = doUtil");
-        assert!(named_export.module.is_empty(), "cjs named export has no source module");
+        assert!(
+            named_export.module.is_empty(),
+            "cjs named export has no source module"
+        );
     }
 }

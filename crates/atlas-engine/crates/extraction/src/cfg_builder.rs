@@ -133,11 +133,7 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
             loop_kinds: &["for_expression", "while_expression", "loop_expression"],
             return_kinds: &["return_expression"],
             throw_kinds: &[], // Rust uses Result, not throw
-            stmt_kinds: &[
-                "let_declaration",
-                "continue_expression",
-                "break_expression",
-            ],
+            stmt_kinds: &["let_declaration", "continue_expression", "break_expression"],
         },
         Language::CSharp => CfgLanguageConfig {
             block_kinds: &["block"],
@@ -155,14 +151,15 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
         Language::Kotlin => CfgLanguageConfig {
             block_kinds: &["function_body"],
             if_kinds: &["if_expression"],
-            loop_kinds: &[
-                "for_statement",
-                "while_statement",
-                "do_while_statement",
-            ],
+            loop_kinds: &["for_statement", "while_statement", "do_while_statement"],
             return_kinds: &["jump_expression"],
             throw_kinds: &[],
-            stmt_kinds: &["property_declaration", "assignment", "variable_declaration", "call_expression"],
+            stmt_kinds: &[
+                "property_declaration",
+                "assignment",
+                "variable_declaration",
+                "call_expression",
+            ],
         },
         Language::Cangjie => CfgLanguageConfig {
             block_kinds: &["block"],
@@ -454,15 +451,25 @@ impl CfgContext<'_> {
         if let Some(name) = self.extract_callee_name(call_node) {
             matches!(
                 name.as_str(),
-                "File.open" | "File.new" | "IO.open" | "IO.new" | "open"
-                | "Tempfile.create" | "Dir.chdir" | "Dir.open" | "Dir.new"
-                | "TCPServer.new" | "UDPSocket.new"
+                "File.open"
+                    | "File.new"
+                    | "IO.open"
+                    | "IO.new"
+                    | "open"
+                    | "Tempfile.create"
+                    | "Dir.chdir"
+                    | "Dir.open"
+                    | "Dir.new"
+                    | "TCPServer.new"
+                    | "UDPSocket.new"
             )
         } else {
             // Fallback: scan node text for known patterns
             if let Ok(text) = call_node.utf8_text(self.source) {
-                text.starts_with("File.open") || text.starts_with("File.new")
-                    || text.starts_with("IO.open") || text.starts_with("IO.new")
+                text.starts_with("File.open")
+                    || text.starts_with("File.new")
+                    || text.starts_with("IO.open")
+                    || text.starts_with("IO.new")
                     || text.starts_with("open(")
             } else {
                 false
@@ -832,11 +839,7 @@ impl CfgContext<'_> {
                         for res in gc.named_children(&mut rc) {
                             if res.kind() == "resource" {
                                 // A resource has a variable_declarator; emit the whole resource as Statement
-                                self.emit_stmt(
-                                    CfgNodeKind::Statement,
-                                    stmt_range.start_byte,
-                                    &res,
-                                );
+                                self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &res);
                             }
                         }
                     }
@@ -1337,8 +1340,8 @@ const FUNCTION_NODE_KINDS: &[&str] = &[
     "async_function_definition",
     "method_declaration",
     "constructor_declaration",
-    "function_item", // tree-sitter-rust
-    "method", // tree-sitter-ruby
+    "function_item",    // tree-sitter-rust
+    "method",           // tree-sitter-ruby
     "singleton_method", // tree-sitter-ruby
 ];
 

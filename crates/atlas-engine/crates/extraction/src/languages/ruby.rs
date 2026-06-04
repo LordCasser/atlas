@@ -608,9 +608,13 @@ fn normalize_ruby_dataflow_builder(
                     let mut cursor = call_node.walk();
                     let receiver_text = call_node
                         .named_children(&mut cursor)
-                        .find(|c| c.kind() == "constant" || c.kind() == "identifier"
-                            || c.kind() == "instance_variable" || c.kind() == "class_variable"
-                            || c.kind() == "global_variable")
+                        .find(|c| {
+                            c.kind() == "constant"
+                                || c.kind() == "identifier"
+                                || c.kind() == "instance_variable"
+                                || c.kind() == "class_variable"
+                                || c.kind() == "global_variable"
+                        })
                         .and_then(|r| node_text(r, source));
                     receiver_text.map(|recv| {
                         let qualified = format!("{}.{}", recv, terminal_text);
@@ -621,9 +625,8 @@ fn normalize_ruby_dataflow_builder(
                     let t = terminal_text.clone();
                     (t.clone(), t)
                 });
-            let callsite_id = find_call_expression_ruby(node).map(|ce| {
-                types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
-            });
+            let callsite_id = find_call_expression_ruby(node)
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&SymbolId>,
@@ -679,9 +682,13 @@ fn normalize_ruby_dataflow_builder(
                     let mut cursor = call_node.walk();
                     let receiver_text = call_node
                         .named_children(&mut cursor)
-                        .find(|c| c.kind() == "constant" || c.kind() == "identifier"
-                            || c.kind() == "instance_variable" || c.kind() == "class_variable"
-                            || c.kind() == "global_variable")
+                        .find(|c| {
+                            c.kind() == "constant"
+                                || c.kind() == "identifier"
+                                || c.kind() == "instance_variable"
+                                || c.kind() == "class_variable"
+                                || c.kind() == "global_variable"
+                        })
                         .and_then(|r| node_text(r, source));
                     receiver_text.map(|recv| {
                         let qualified = format!("{}.{}", recv, terminal_text);

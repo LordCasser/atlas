@@ -83,8 +83,8 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
                                 || n.call_context == CallContext::KotlinUse
                         })
                         .unwrap_or(false);
-                    let is_context_managed = is_context_managed
-                        || has_kotlin_use_successor(&effect.cfg_node_id, cfg, 3);
+                    let is_context_managed =
+                        is_context_managed || has_kotlin_use_successor(&effect.cfg_node_id, cfg, 3);
 
                     // Per-effect eligibility (backward compat: None = eligible)
                     let eligible = effect.eligible_for_implicit_cleanup.unwrap_or(false);
@@ -112,33 +112,35 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
     }
 
     /// Walk forward along single-successor Normal edges from `start` to find a
-/// KotlinUse node within `max_hops`.  Needed because tree-sitter-kotlin parses
-/// `File("x").bufferedReader().use { ... }` as two separate `call_expression`
-/// nodes — the alloc lands on the first statement, the KotlinUse context on the
-/// second.  A bounded forward walk bridges the split.
-fn has_kotlin_use_successor(start: &CfgNodeId, cfg: &CfgGraph, max_hops: usize) -> bool {
-    if max_hops == 0 {
-        return false;
-    }
-    let successors = cfg.successors.get(start);
-    let Some(edges) = successors else { return false; };
-    for edge in edges {
-        if edge.kind != CfgEdgeKind::Normal {
-            continue;
+    /// KotlinUse node within `max_hops`.  Needed because tree-sitter-kotlin parses
+    /// `File("x").bufferedReader().use { ... }` as two separate `call_expression`
+    /// nodes — the alloc lands on the first statement, the KotlinUse context on the
+    /// second.  A bounded forward walk bridges the split.
+    fn has_kotlin_use_successor(start: &CfgNodeId, cfg: &CfgGraph, max_hops: usize) -> bool {
+        if max_hops == 0 {
+            return false;
         }
-        if let Some(target_node) = cfg.nodes.get(&edge.target) {
-            if target_node.call_context == CallContext::KotlinUse {
-                return true;
+        let successors = cfg.successors.get(start);
+        let Some(edges) = successors else {
+            return false;
+        };
+        for edge in edges {
+            if edge.kind != CfgEdgeKind::Normal {
+                continue;
             }
-            if has_kotlin_use_successor(&edge.target, cfg, max_hops - 1) {
-                return true;
+            if let Some(target_node) = cfg.nodes.get(&edge.target) {
+                if target_node.call_context == CallContext::KotlinUse {
+                    return true;
+                }
+                if has_kotlin_use_successor(&edge.target, cfg, max_hops - 1) {
+                    return true;
+                }
             }
         }
+        false
     }
-    false
-}
 
-// 2. Find Exit node (for non-context-managed allocs)
+    // 2. Find Exit node (for non-context-managed allocs)
     let exit_node = cfg.nodes.values().find(|n| n.kind == CfgNodeKind::Exit);
     let Some(exit) = exit_node else {
         return;
@@ -354,13 +356,8 @@ mod tests {
     fn test_alloc_with_explicit_free_no_scope_exit() {
         let sym_id = make_sym_id();
         let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
-        let cfg = make_cfg_with_alloc_node(
-            &sym_id,
-            &mut node_id,
-            CfgNodeKind::Statement,
-            false,
-            false,
-        );
+        let cfg =
+            make_cfg_with_alloc_node(&sym_id, &mut node_id, CfgNodeKind::Statement, false, false);
 
         let mut effects: HashMap<CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
         let place = PlaceRef::Local {
@@ -383,7 +380,11 @@ mod tests {
 
         // Insert a matching Free at the same node
         // (Entry node could also hold the Free — scope_exit only checks place equality)
-        let exit = cfg.nodes.values().find(|n| n.kind == CfgNodeKind::Exit).unwrap();
+        let exit = cfg
+            .nodes
+            .values()
+            .find(|n| n.kind == CfgNodeKind::Exit)
+            .unwrap();
         let exit_node_id = exit.id;
         effects.insert(
             exit_node_id,
@@ -419,13 +420,8 @@ mod tests {
     fn test_unfreed_alloc_gets_scope_exit_free() {
         let sym_id = make_sym_id();
         let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
-        let cfg = make_cfg_with_alloc_node(
-            &sym_id,
-            &mut node_id,
-            CfgNodeKind::Statement,
-            false,
-            false,
-        );
+        let cfg =
+            make_cfg_with_alloc_node(&sym_id, &mut node_id, CfgNodeKind::Statement, false, false);
 
         let mut effects: HashMap<CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
         let place = PlaceRef::Local {
@@ -448,7 +444,11 @@ mod tests {
         run_scope_exit_pass(&mut effects, &cfg);
 
         // The Exit node should now have a scope-exit Free
-        let exit_node = cfg.nodes.values().find(|n| n.kind == CfgNodeKind::Exit).unwrap();
+        let exit_node = cfg
+            .nodes
+            .values()
+            .find(|n| n.kind == CfgNodeKind::Exit)
+            .unwrap();
         let exit_effects = effects.get(&exit_node.id);
         assert!(
             exit_effects.is_some(),
@@ -488,8 +488,8 @@ mod tests {
             &sym_id,
             &mut node_id,
             CfgNodeKind::Statement,
-            true,  // PythonWith context
-            true,  // include BlockExit
+            true, // PythonWith context
+            true, // include BlockExit
         );
 
         let mut effects: HashMap<CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
@@ -553,7 +553,11 @@ mod tests {
         );
 
         // Exit node should NOT have this Free (it went to BlockExit instead)
-        let exit_node = cfg.nodes.values().find(|n| n.kind == CfgNodeKind::Exit).unwrap();
+        let exit_node = cfg
+            .nodes
+            .values()
+            .find(|n| n.kind == CfgNodeKind::Exit)
+            .unwrap();
         if let Some(exit_effects) = effects.get(&exit_node.id) {
             let has_our_free = exit_effects.iter().any(|e| {
                 matches!(&e.kind, SemanticEffectKind::Free { callee, .. } if callee.contains("<block-exit>") || callee.contains("<scope-exit>"))
@@ -571,13 +575,8 @@ mod tests {
     fn test_alloc_with_different_place_not_matched() {
         let sym_id = make_sym_id();
         let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
-        let cfg = make_cfg_with_alloc_node(
-            &sym_id,
-            &mut node_id,
-            CfgNodeKind::Statement,
-            false,
-            false,
-        );
+        let cfg =
+            make_cfg_with_alloc_node(&sym_id, &mut node_id, CfgNodeKind::Statement, false, false);
 
         let mut effects: HashMap<CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
         let alloc_place = PlaceRef::Local {
@@ -601,7 +600,11 @@ mod tests {
         effects.insert(node_id, vec![alloc_eff]);
 
         // Insert a Free for a DIFFERENT place "b" (at same node)
-        let exit_node = cfg.nodes.values().find(|n| n.kind == CfgNodeKind::Exit).unwrap();
+        let exit_node = cfg
+            .nodes
+            .values()
+            .find(|n| n.kind == CfgNodeKind::Exit)
+            .unwrap();
         let exit_id = exit_node.id;
         effects.insert(
             exit_id,
@@ -933,13 +936,8 @@ mod tests {
         // eligible allocs — eligibility is checked per-effect, not per-language.
         let sym_id = make_sym_id();
         let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
-        let cfg = make_cfg_with_alloc_node(
-            &sym_id,
-            &mut node_id,
-            CfgNodeKind::Statement,
-            false,
-            false,
-        );
+        let cfg =
+            make_cfg_with_alloc_node(&sym_id, &mut node_id, CfgNodeKind::Statement, false, false);
 
         let mut effects: HashMap<CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
         let place = PlaceRef::Local {
@@ -979,13 +977,8 @@ mod tests {
     fn test_ineligible_alloc_skips_scope_exit() {
         let sym_id = make_sym_id();
         let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
-        let cfg = make_cfg_with_alloc_node(
-            &sym_id,
-            &mut node_id,
-            CfgNodeKind::Statement,
-            false,
-            false,
-        );
+        let cfg =
+            make_cfg_with_alloc_node(&sym_id, &mut node_id, CfgNodeKind::Statement, false, false);
 
         let mut effects: HashMap<CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
         let place = PlaceRef::Local {
@@ -1007,7 +1000,11 @@ mod tests {
         run_scope_exit_pass(&mut effects, &cfg);
 
         // Exit should NOT have a scope-exit Free for this ineligible alloc
-        let exit_node = cfg.nodes.values().find(|n| n.kind == CfgNodeKind::Exit).unwrap();
+        let exit_node = cfg
+            .nodes
+            .values()
+            .find(|n| n.kind == CfgNodeKind::Exit)
+            .unwrap();
         if let Some(exit_effects) = effects.get(&exit_node.id) {
             let has_scope_exit = exit_effects.iter().any(|e| {
                 matches!(&e.kind, SemanticEffectKind::Free { callee, .. } if callee.contains("<scope-exit>"))
@@ -1026,13 +1023,8 @@ mod tests {
     fn test_returned_alloc_skips_scope_exit() {
         let sym_id = make_sym_id();
         let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
-        let cfg = make_cfg_with_alloc_node(
-            &sym_id,
-            &mut node_id,
-            CfgNodeKind::Statement,
-            false,
-            false,
-        );
+        let cfg =
+            make_cfg_with_alloc_node(&sym_id, &mut node_id, CfgNodeKind::Statement, false, false);
 
         let mut effects: HashMap<CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
         let place = PlaceRef::Local {
@@ -1062,11 +1054,7 @@ mod tests {
                 end_line: 2,
                 end_column: 0,
             };
-            let ret_node = types::cfg::CfgNode::new(
-                &sym_id,
-                CfgNodeKind::Statement,
-                stmt_range,
-            );
+            let ret_node = types::cfg::CfgNode::new(&sym_id, CfgNodeKind::Statement, stmt_range);
             let ret_id = ret_node.id;
             effects.insert(
                 ret_id,
@@ -1074,7 +1062,9 @@ mod tests {
                     &ret_id,
                     0,
                     SemanticEffectKind::Return {
-                        value: ValueSource::Local { name: "p".to_string() },
+                        value: ValueSource::Local {
+                            name: "p".to_string(),
+                        },
                     },
                     0.9,
                 )],
@@ -1085,7 +1075,11 @@ mod tests {
         run_scope_exit_pass(&mut effects, &cfg);
 
         // Exit should NOT have a scope-exit Free for "p" (it was returned)
-        let exit_node = cfg.nodes.values().find(|n| n.kind == CfgNodeKind::Exit).unwrap();
+        let exit_node = cfg
+            .nodes
+            .values()
+            .find(|n| n.kind == CfgNodeKind::Exit)
+            .unwrap();
         if let Some(exit_effects) = effects.get(&exit_node.id) {
             let has_scope_exit_for_p = exit_effects.iter().any(|e| {
                 matches!(&e.kind, SemanticEffectKind::Free { place, callee, .. }
@@ -1129,13 +1123,8 @@ mod tests {
     fn test_returned_resource_via_callreturn_not_auto_freed() {
         let sym_id = make_sym_id();
         let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
-        let cfg = make_cfg_with_alloc_node(
-            &sym_id,
-            &mut node_id,
-            CfgNodeKind::Statement,
-            false,
-            false,
-        );
+        let cfg =
+            make_cfg_with_alloc_node(&sym_id, &mut node_id, CfgNodeKind::Statement, false, false);
 
         let mut effects: HashMap<CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
         let place = PlaceRef::Local {
@@ -1166,11 +1155,7 @@ mod tests {
                 end_line: 2,
                 end_column: 0,
             };
-            let ret_node = types::cfg::CfgNode::new(
-                &sym_id,
-                CfgNodeKind::Statement,
-                stmt_range,
-            );
+            let ret_node = types::cfg::CfgNode::new(&sym_id, CfgNodeKind::Statement, stmt_range);
             let ret_id = ret_node.id;
             effects.insert(
                 ret_id,

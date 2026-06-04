@@ -25,8 +25,7 @@ impl LanguageRuleKinds for PhpRegistry {
         &[
             RuleKindSpec {
                 name: "php/alloc_fn",
-                description:
-                    "Function that creates or opens a resource (e.g., fopen, mysqli_connect, curl_init)",
+                description: "Function that creates or opens a resource (e.g., fopen, mysqli_connect, curl_init)",
                 auto_learn_enabled: true,
                 allowed_pattern_kinds: &[
                     PatternKind::Exact,
@@ -39,8 +38,7 @@ impl LanguageRuleKinds for PhpRegistry {
             },
             RuleKindSpec {
                 name: "php/free_fn",
-                description:
-                    "Function that closes or releases a resource (e.g., fclose, mysqli_close, curl_close)",
+                description: "Function that closes or releases a resource (e.g., fclose, mysqli_close, curl_close)",
                 auto_learn_enabled: true,
                 allowed_pattern_kinds: &[
                     PatternKind::Exact,
@@ -52,20 +50,15 @@ impl LanguageRuleKinds for PhpRegistry {
             },
             RuleKindSpec {
                 name: "php/procedural_resource",
-                description:
-                    "Procedural resource management patterns (fopen/fclose pairs, connection lifecycle)",
+                description: "Procedural resource management patterns (fopen/fclose pairs, connection lifecycle)",
                 auto_learn_enabled: false,
-                allowed_pattern_kinds: &[
-                    PatternKind::Exact,
-                    PatternKind::Suffix,
-                ],
+                allowed_pattern_kinds: &[PatternKind::Exact, PatternKind::Suffix],
                 default_status: status_for_source,
                 meta_validator: None,
             },
             RuleKindSpec {
                 name: "php/cleanup_fn",
-                description:
-                    "General cleanup functions (e.g., __destruct, register_shutdown_function)",
+                description: "General cleanup functions (e.g., __destruct, register_shutdown_function)",
                 auto_learn_enabled: false,
                 allowed_pattern_kinds: &[PatternKind::Exact],
                 default_status: status_for_source,

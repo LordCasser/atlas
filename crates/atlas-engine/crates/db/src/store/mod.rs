@@ -1608,13 +1608,7 @@ mod tests {
             layer: "structural".into(),
         };
         let callee = SymbolDef {
-            id: SymbolId::generate(
-                &file_id,
-                "typescript",
-                "callee.helper",
-                "function",
-                None,
-            ),
+            id: SymbolId::generate(&file_id, "typescript", "callee.helper", "function", None),
             kind: SymbolKind::Function,
             name: "helper".into(),
             qualified_name: "callee.helper".into(),
@@ -1634,7 +1628,9 @@ mod tests {
             namespace_path: vec![],
             layer: "structural".into(),
         };
-        store.insert_symbols(&[caller.clone(), callee.clone()]).unwrap();
+        store
+            .insert_symbols(&[caller.clone(), callee.clone()])
+            .unwrap();
 
         // Insert a call edge: caller -> callee
         let edge_id = EdgeId::generate(

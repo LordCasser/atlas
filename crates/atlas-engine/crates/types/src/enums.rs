@@ -183,11 +183,7 @@ impl Language {
     /// TypeScript, JavaScript, and Python are always enabled.
     pub fn enabled_languages() -> Vec<Language> {
         #[allow(unused_mut)]
-        let mut langs = vec![
-            Language::TypeScript,
-            Language::JavaScript,
-            Language::Python,
-        ];
+        let mut langs = vec![Language::TypeScript, Language::JavaScript, Language::Python];
         #[cfg(feature = "java")]
         {
             langs.push(Language::Java);

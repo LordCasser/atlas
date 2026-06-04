@@ -1278,7 +1278,9 @@ mod profiles {
                 returns_flow: FeatureSupport::supported_with_confidence(0.65),
                 cfg: FeatureSupport::supported_with_limitations(
                     0.65,
-                    vec!["CFG with block body traversal implemented for Ruby block-managed resources"],
+                    vec![
+                        "CFG with block body traversal implemented for Ruby block-managed resources",
+                    ],
                 ),
                 interprocedural_summaries: FeatureSupport::supported_with_limitations(
                     0.65,

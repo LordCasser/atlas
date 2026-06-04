@@ -810,11 +810,7 @@ mod tests {
         let engine = test_engine(store);
 
         let results = engine
-            .search(
-                "Logger",
-                10,
-                &SearchOptions::new().with_file_path("a.ts"),
-            )
+            .search("Logger", 10, &SearchOptions::new().with_file_path("a.ts"))
             .unwrap();
         assert!(
             !results.is_empty(),

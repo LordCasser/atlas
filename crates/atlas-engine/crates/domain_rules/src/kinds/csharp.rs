@@ -25,8 +25,7 @@ impl LanguageRuleKinds for CSharpRegistry {
         &[
             RuleKindSpec {
                 name: "csharp/alloc_fn",
-                description:
-                    "Function that creates or opens a resource (e.g., File.Open, new FileStream, SqlConnection)",
+                description: "Function that creates or opens a resource (e.g., File.Open, new FileStream, SqlConnection)",
                 auto_learn_enabled: true,
                 allowed_pattern_kinds: &[
                     PatternKind::Exact,
@@ -39,8 +38,7 @@ impl LanguageRuleKinds for CSharpRegistry {
             },
             RuleKindSpec {
                 name: "csharp/free_fn",
-                description:
-                    "Function that closes or releases a resource (e.g., .Dispose(), .Close())",
+                description: "Function that closes or releases a resource (e.g., .Dispose(), .Close())",
                 auto_learn_enabled: true,
                 allowed_pattern_kinds: &[
                     PatternKind::Exact,
@@ -52,20 +50,15 @@ impl LanguageRuleKinds for CSharpRegistry {
             },
             RuleKindSpec {
                 name: "csharp/idisposable",
-                description:
-                    "IDisposable pattern resources (using statement, Dispose method, IDisposable interface)",
+                description: "IDisposable pattern resources (using statement, Dispose method, IDisposable interface)",
                 auto_learn_enabled: false,
-                allowed_pattern_kinds: &[
-                    PatternKind::Exact,
-                    PatternKind::Suffix,
-                ],
+                allowed_pattern_kinds: &[PatternKind::Exact, PatternKind::Suffix],
                 default_status: status_for_source,
                 meta_validator: None,
             },
             RuleKindSpec {
                 name: "csharp/cleanup_fn",
-                description:
-                    "General cleanup functions (e.g., finalizers, ~ClassName destructors)",
+                description: "General cleanup functions (e.g., finalizers, ~ClassName destructors)",
                 auto_learn_enabled: false,
                 allowed_pattern_kinds: &[PatternKind::Exact],
                 default_status: status_for_source,
@@ -192,9 +185,7 @@ mod tests {
             .iter()
             .filter(|r| r.rule_kind == "csharp/free_fn")
             .collect();
-        assert!(alloc_rules
-            .iter()
-            .any(|r| r.pattern == "File.Open"));
+        assert!(alloc_rules.iter().any(|r| r.pattern == "File.Open"));
         assert!(free_rules.iter().any(|r| r.pattern == ".Dispose"));
         assert!(free_rules.iter().any(|r| r.pattern == ".Close"));
     }

@@ -25,8 +25,7 @@ impl LanguageRuleKinds for JavaRegistry {
         &[
             RuleKindSpec {
                 name: "java/alloc_fn",
-                description:
-                    "Function that creates or opens a resource (e.g., Files.newInputStream, DriverManager.getConnection)",
+                description: "Function that creates or opens a resource (e.g., Files.newInputStream, DriverManager.getConnection)",
                 auto_learn_enabled: true,
                 allowed_pattern_kinds: &[
                     PatternKind::Exact,
@@ -39,8 +38,7 @@ impl LanguageRuleKinds for JavaRegistry {
             },
             RuleKindSpec {
                 name: "java/free_fn",
-                description:
-                    "Function that closes or releases a resource (e.g., .close(), .dispose(), .destroy())",
+                description: "Function that closes or releases a resource (e.g., .close(), .dispose(), .destroy())",
                 auto_learn_enabled: true,
                 allowed_pattern_kinds: &[
                     PatternKind::Exact,
@@ -190,9 +188,11 @@ mod tests {
             .iter()
             .filter(|r| r.rule_kind == "java/free_fn")
             .collect();
-        assert!(alloc_rules
-            .iter()
-            .any(|r| r.pattern == "Files.newInputStream"));
+        assert!(
+            alloc_rules
+                .iter()
+                .any(|r| r.pattern == "Files.newInputStream")
+        );
         assert!(free_rules.iter().any(|r| r.pattern == ".close"));
         assert!(free_rules.iter().any(|r| r.pattern == ".dispose"));
     }

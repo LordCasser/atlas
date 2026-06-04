@@ -19,7 +19,7 @@ use anyhow::Result;
 use db::Store;
 use types::ids::{FileId, SymbolId};
 use types::lazy::LazyWindow;
-use types::structs::{precision, CapabilityMask};
+use types::structs::{CapabilityMask, precision};
 
 /// Public entry point for the `atlas-engine` facade.
 ///

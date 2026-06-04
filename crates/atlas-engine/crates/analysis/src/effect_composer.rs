@@ -257,7 +257,8 @@ pub fn compose_effects(
                 }
 
                 // Step 1c: Check if this call causes resource escape
-                if let Some(escape_target) = contract.classify_escape(candidate, node.call_context) {
+                if let Some(escape_target) = contract.classify_escape(candidate, node.call_context)
+                {
                     let source = ValueSource::CallReturn {
                         callee: (*candidate).to_string(),
                     };
@@ -318,7 +319,9 @@ pub fn compose_effects(
                 for eff in node_effects.iter_mut() {
                     if matches!(eff.kind, SemanticEffectKind::Free { .. }) {
                         eff.consumption_style = Some(ConsumptionStyle::Deferred);
-                        eff.description = Some("React effect cleanup return (function-wide fallback)".to_string());
+                        eff.description = Some(
+                            "React effect cleanup return (function-wide fallback)".to_string(),
+                        );
                     }
                 }
             }

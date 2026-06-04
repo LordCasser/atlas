@@ -225,8 +225,7 @@ impl RecoverySpec for ArkTsRecovery {
 
         // Walk all nodes looking for ERROR nodes containing "struct" keyword.
         // Deduplicate by struct name to avoid nested ERROR nodes producing duplicates.
-        let mut recovered: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut recovered: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut to_visit: Vec<tree_sitter::Node<'_>> = vec![root];
 
         while let Some(node) = to_visit.pop() {
@@ -237,8 +236,12 @@ impl RecoverySpec for ArkTsRecovery {
                             if let Some((def_range, name_range)) =
                                 find_struct_range(node, struct_name, struct_offset, source_bytes)
                             {
-                                let symbol =
-                                    build_struct_symbol(file_id, struct_name, def_range, name_range);
+                                let symbol = build_struct_symbol(
+                                    file_id,
+                                    struct_name,
+                                    def_range,
+                                    name_range,
+                                );
                                 let scope =
                                     build_struct_scope(file_id, struct_name, def_range, name_range);
 
@@ -290,10 +293,14 @@ fn extract_struct_name(error_text: &str) -> Option<(&str, usize)> {
         let abs_pos = offset + pos;
         // Check word boundary before: must be at start or preceded by whitespace
         let before_ok = abs_pos == 0
-            || error_text.as_bytes().get(abs_pos.wrapping_sub(1))
+            || error_text
+                .as_bytes()
+                .get(abs_pos.wrapping_sub(1))
                 .map_or(false, |b| b.is_ascii_whitespace());
         // Check word boundary after: must be end, whitespace, or `{`
-        let after_ok = error_text.as_bytes().get(abs_pos + "struct".len())
+        let after_ok = error_text
+            .as_bytes()
+            .get(abs_pos + "struct".len())
             .map_or(true, |b| b.is_ascii_whitespace() || *b == b'{');
         if before_ok && after_ok {
             let after_keyword = error_text[abs_pos + "struct".len()..].trim_start();
@@ -506,7 +513,10 @@ mod tests {
 
     #[test]
     fn test_extract_struct_name_multiline() {
-        assert_eq!(extract_struct_name("struct\nMyComp\n{\n"), Some(("MyComp", 0)));
+        assert_eq!(
+            extract_struct_name("struct\nMyComp\n{\n"),
+            Some(("MyComp", 0))
+        );
     }
 
     #[test]
@@ -532,7 +542,10 @@ mod tests {
     fn test_extract_struct_name_multiple_decorators() {
         // Multiple decorators before struct
         let result = extract_struct_name("@Entry @Component struct Index {");
-        assert!(result.is_some(), "should find struct with multiple decorators");
+        assert!(
+            result.is_some(),
+            "should find struct with multiple decorators"
+        );
         let (name, offset) = result.unwrap();
         assert_eq!(name, "Index");
         assert!(offset > 0, "offset should be after decorators");

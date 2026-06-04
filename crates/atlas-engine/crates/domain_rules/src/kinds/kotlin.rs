@@ -25,8 +25,7 @@ impl LanguageRuleKinds for KotlinRegistry {
         &[
             RuleKindSpec {
                 name: "kotlin/alloc_fn",
-                description:
-                    "Function that creates or opens a resource (e.g., File(), bufferedReader(), bufferedWriter())",
+                description: "Function that creates or opens a resource (e.g., File(), bufferedReader(), bufferedWriter())",
                 auto_learn_enabled: true,
                 allowed_pattern_kinds: &[
                     PatternKind::Exact,
@@ -39,8 +38,7 @@ impl LanguageRuleKinds for KotlinRegistry {
             },
             RuleKindSpec {
                 name: "kotlin/free_fn",
-                description:
-                    "Function that closes or releases a resource (e.g., .close(), .dispose(), .use())",
+                description: "Function that closes or releases a resource (e.g., .close(), .dispose(), .use())",
                 auto_learn_enabled: true,
                 allowed_pattern_kinds: &[
                     PatternKind::Exact,
@@ -52,20 +50,15 @@ impl LanguageRuleKinds for KotlinRegistry {
             },
             RuleKindSpec {
                 name: "kotlin/coroutine",
-                description:
-                    "Coroutine-scoped resource patterns (launch, async, withContext, coroutineScope)",
+                description: "Coroutine-scoped resource patterns (launch, async, withContext, coroutineScope)",
                 auto_learn_enabled: false,
-                allowed_pattern_kinds: &[
-                    PatternKind::Exact,
-                    PatternKind::Suffix,
-                ],
+                allowed_pattern_kinds: &[PatternKind::Exact, PatternKind::Suffix],
                 default_status: status_for_source,
                 meta_validator: None,
             },
             RuleKindSpec {
                 name: "kotlin/cleanup_fn",
-                description:
-                    "General cleanup functions",
+                description: "General cleanup functions",
                 auto_learn_enabled: false,
                 allowed_pattern_kinds: &[PatternKind::Exact],
                 default_status: status_for_source,

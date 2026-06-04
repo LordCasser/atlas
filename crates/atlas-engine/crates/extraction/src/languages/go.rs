@@ -682,9 +682,8 @@ fn normalize_go_dataflow_builder(
                 .and_then(|p| node_text(p, source))
                 .unwrap_or_else(|| terminal_text.clone());
             let access_path = name.clone();
-            let callsite_id = find_call_expression_go(node).map(|ce| {
-                types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
-            });
+            let callsite_id = find_call_expression_go(node)
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&SymbolId>,
