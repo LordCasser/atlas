@@ -9,7 +9,7 @@
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
@@ -166,8 +166,8 @@ pub(crate) struct StructuralEnsureOutcome {
 pub struct ToolRouter {
     pub(crate) store: Arc<Store>,
     /// High-level Engine wrapping the full extraction → trace pipeline.
-    /// Constructed once from the shared store and reused across trace calls.
-    pub(crate) engine: atlas_engine::Engine,
+    /// Wrapped in Mutex because Engine contains RefCell (Send but not Sync).
+    pub(crate) engine: Mutex<atlas_engine::Engine>,
     pub(crate) lazy_service: LazyDataflowService,
     /// Graph engines built lazily on first request (after MCP handshake).
     pub(crate) search: Option<SearchEngine>,
@@ -194,13 +194,13 @@ pub struct ToolRouter {
     /// (CLI) structural/full index vs MCP's automatic manifest-only index.
     /// `None` means not yet checked; checked lazily on first use.
     /// Uses Cell for interior mutability so &self methods (handle_index) can invalidate.
-    cached_manual_full_index: Cell<Option<bool>>,
+    cached_manual_full_index: RwLock<Option<bool>>,
     /// Background task manager for `background: true` mode.
     pub(crate) task_manager: Arc<crate::task_manager::TaskManager>,
     /// Project activations prepared by background `open_project` tasks.
     pub(crate) pending_project_activations: Arc<Mutex<HashMap<String, PendingProjectActivation>>>,
     /// In-memory query snapshots for `atlas_resume`.
-    pub(crate) query_snapshots: HashMap<String, QuerySnapshot>,
+    pub(crate) query_snapshots: Mutex<HashMap<String, QuerySnapshot>>,
     /// Per-store prewarm guard: at most one background dataflow prewarm
     /// thread per store, shared across all concurrent MCP requests.
     prewarm_running: Arc<AtomicBool>,
@@ -236,7 +236,7 @@ impl ToolRouter {
             Self::project_runtime(store.clone(), &project_root);
         Self {
             store: store.clone(),
-            engine,
+            engine: Mutex::new(engine),
             lazy_service,
             search: Some(search),
             context: Some(context),
@@ -251,8 +251,8 @@ impl ToolRouter {
             last_signature_check: std::time::Instant::now(),
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
             pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
-            cached_manual_full_index: Cell::new(None),
-            query_snapshots: HashMap::new(),
+            cached_manual_full_index: RwLock::new(None),
+            query_snapshots: Mutex::new(HashMap::new()),
             prewarm_running: Arc::new(AtomicBool::new(false)),
             investigation_state: InvestigationState::default(),
         }
@@ -266,7 +266,7 @@ impl ToolRouter {
             Self::project_runtime(store.clone(), &project_root);
         Self {
             store: store.clone(),
-            engine,
+            engine: Mutex::new(engine),
             lazy_service,
             search: None,
             context: None,
@@ -281,8 +281,8 @@ impl ToolRouter {
             last_signature_check: std::time::Instant::now(),
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
             pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
-            cached_manual_full_index: Cell::new(None),
-            query_snapshots: HashMap::new(),
+            cached_manual_full_index: RwLock::new(None),
+            query_snapshots: Mutex::new(HashMap::new()),
             prewarm_running: Arc::new(AtomicBool::new(false)),
             investigation_state: InvestigationState::default(),
         }
@@ -374,12 +374,12 @@ impl ToolRouter {
     /// trigger a re-index (MCP `index` tool) should invalidate this cache
     /// after completion.
     pub(crate) fn has_manual_full_index(&self) -> bool {
-        if let Some(cached) = self.cached_manual_full_index.get() {
+        if let Some(cached) = *self.cached_manual_full_index.read().unwrap() {
             return cached;
         }
         let total = self.store.count_files().unwrap_or(0);
         if total == 0 {
-            self.cached_manual_full_index.set(Some(false));
+            *self.cached_manual_full_index.write().unwrap() = Some(false);
             return false;
         }
         let layer_counts = self
@@ -394,7 +394,7 @@ impl ToolRouter {
         // More than half of indexed files have structural layer — this is a
         // manual full index, not MCP's manifest-only index.
         let result = structural_complete > total / 2;
-        self.cached_manual_full_index.set(Some(result));
+        *self.cached_manual_full_index.write().unwrap() = Some(result);
         result
     }
 
@@ -404,7 +404,7 @@ impl ToolRouter {
     /// index), so the next search/trace query re-checks the actual layer
     /// distribution.
     pub(crate) fn invalidate_manual_full_index_cache(&self) {
-        self.cached_manual_full_index.set(None);
+        *self.cached_manual_full_index.write().unwrap() = None;
     }
 
     /// Resolve a [`FileId`] to its human-readable file path.
@@ -432,7 +432,7 @@ impl ToolRouter {
             Self::project_runtime(store.clone(), &project_root);
         self.project_root = project_root.clone();
         self.store = store.clone();
-        self.engine = engine;
+        *self.engine.lock().unwrap() = engine;
         self.lazy_service = lazy_service;
         self.source_extractor = source_extractor;
         self.search = None;
@@ -441,8 +441,8 @@ impl ToolRouter {
         self.cached_signature.clear();
         self.last_graph_signature.clear();
         self.last_signature_check = std::time::Instant::now();
-        self.cached_manual_full_index.set(None);
-        self.query_snapshots.clear();
+        *self.cached_manual_full_index.write().unwrap() = None;
+        self.query_snapshots.lock().unwrap().clear();
         self.investigation_state = InvestigationState::default();
     }
 
@@ -515,7 +515,7 @@ impl ToolRouter {
             c.refresh_graph(graph);
         }
         self.last_graph_signature = self.store.index_signature().unwrap_or_default();
-        self.cached_manual_full_index.set(None);
+        *self.cached_manual_full_index.write().unwrap() = None;
     }
 
     /// Try to apply a background-built graph from the pending slot,
@@ -612,7 +612,7 @@ impl ToolRouter {
         }
 
         self.last_graph_signature = self.store.index_signature().unwrap_or_default();
-        self.cached_manual_full_index.set(None);
+        *self.cached_manual_full_index.write().unwrap() = None;
 
         Ok(())
     }
@@ -635,7 +635,7 @@ impl ToolRouter {
             self.last_graph_signature = current.clone();
             // Re-check whether a manual full index now exists (layer distribution
             // may have changed after external index/sync or lazy structural).
-            self.cached_manual_full_index.set(None);
+            *self.cached_manual_full_index.write().unwrap() = None;
         }
         self.cached_signature = current;
         Ok(())
@@ -1035,13 +1035,14 @@ impl ToolRouter {
     pub(crate) fn store_snapshot(&mut self, snapshot: QuerySnapshot) {
         self.prune_expired_snapshots();
         self.query_snapshots
+            .lock().unwrap()
             .insert(snapshot.query_id.clone(), snapshot);
     }
 
     /// Remove query snapshots older than TTL.
     pub(crate) fn prune_expired_snapshots(&mut self) {
         let cutoff = Instant::now() - std::time::Duration::from_secs(QUERY_SNAPSHOT_TTL_SECS);
-        self.query_snapshots.retain(|_, s| s.created_at > cutoff);
+        self.query_snapshots.lock().unwrap().retain(|_, s| s.created_at > cutoff);
     }
 
     /// Update or create investigation based on a tool call focus.

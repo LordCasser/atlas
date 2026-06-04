@@ -18,6 +18,18 @@
 //! phase_build_summaries(&store)?;
 //! phase_finalize(&store, root, &[])?;
 //! ```
+//!
+//! # Cancellable extraction (with per-file progress)
+//!
+//! ```ignore
+//! let cancel = AtomicBool::new(false);
+//! let extracted = phase_extract_parallel_cancellable(
+//!     root, &files, &frontends, mode,
+//!     None,                                      // on_progress (once at end)
+//!     Some(&|completed, total| { ... }),         // on_file_progress (every 50 files)
+//!     Some(&cancel),                             // cancel_token
+//! );
+//! ```
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -223,49 +235,116 @@ pub fn phase_extract_serial(
 /// Shares a single [`ParseWorkerPool`] across all rayon threads.  Atomic
 /// counters track per-file success/failure/symbol counts thread-safely.
 /// `on_progress` is called once at the end with `(succeeded, total)`.
+/// `on_file_progress` is called every 50 files with `(completed, total)`.
+///
+/// Delegates to [`phase_extract_parallel_cancellable`] with
+/// `cancel_token: None`.
 pub fn phase_extract_parallel(
     root: &Path,
     files: &[PathBuf],
     frontends: &HashMap<Language, LanguageFrontend>,
     mode: ExtractionMode,
     on_progress: Option<&dyn Fn(usize, usize)>,
+    on_file_progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> ExtractedFiles {
+    phase_extract_parallel_cancellable(
+        root,
+        files,
+        frontends,
+        mode,
+        on_progress,
+        on_file_progress,
+        None,
+    )
+}
+
+/// Extract facts from files in parallel using rayon — cancellable variant.
+///
+/// Identical to [`phase_extract_parallel`] but supports a cancel token
+/// (`AtomicBool`).  Before processing each file, the cancel token is
+/// checked with [`Ordering::Relaxed`]; if `true` the file is skipped.
+/// This allows external interrupt handlers (e.g. Ctrl-C) to stop extraction
+/// early without waiting for the current batch to complete.
+///
+/// # Safety / ordering
+///
+/// The cancel token uses [`Ordering::Relaxed`] because:
+/// - Rayon parallel iterators schedule work items on the same underlying
+///   thread pool, not on separate threads that need happens-before edges.
+/// - A false-negative (missing a just-set cancel) is harmless — the file
+///   will be processed as normal and the next file will see the flag.
+///
+/// `on_file_progress` is throttled to every 50 files to avoid contention
+/// on the shared [`AtomicUsize`] counter.
+pub fn phase_extract_parallel_cancellable(
+    root: &Path,
+    files: &[PathBuf],
+    frontends: &HashMap<Language, LanguageFrontend>,
+    mode: ExtractionMode,
+    on_progress: Option<&dyn Fn(usize, usize)>,
+    on_file_progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    cancel_token: Option<&std::sync::atomic::AtomicBool>,
 ) -> ExtractedFiles {
     use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     let pool = ParseWorkerPool::new(WorkerConfig::default());
     let total = files.len();
 
     // Atomic counters for thread-safe progress
-    let succeeded = std::sync::atomic::AtomicUsize::new(0);
-    let failed = std::sync::atomic::AtomicUsize::new(0);
-    let symbol_count = std::sync::atomic::AtomicUsize::new(0);
+    let succeeded = AtomicUsize::new(0);
+    let failed = AtomicUsize::new(0);
+    let symbol_count = AtomicUsize::new(0);
+    let completed = AtomicUsize::new(0);
 
     let items: Vec<ExtractedFile> = files
         .par_iter()
         .filter_map(|rel_path| {
-            let abs_path = root.join(rel_path);
-            let lang = Language::from_path(rel_path)?;
-            let frontend = frontends.get(&lang)?;
-            match extract_one_index_file(&pool, &abs_path, root, frontend, &mode) {
-                Ok(file) => {
-                    symbol_count.fetch_add(
-                        file.facts.symbols.len(),
-                        std::sync::atomic::Ordering::Relaxed,
-                    );
-                    succeeded.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    Some(file)
-                }
-                Err(_) => {
-                    failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    None
+            // Check cancel token before processing this file
+            if let Some(token) = cancel_token {
+                if token.load(Ordering::Relaxed) {
+                    return None;
                 }
             }
+
+            let abs_path = root.join(rel_path);
+
+            let result = (|| -> Option<ExtractedFile> {
+                let lang = Language::from_path(rel_path)?;
+                let frontend = frontends.get(&lang)?;
+                match extract_one_index_file(&pool, &abs_path, root, frontend, &mode) {
+                    Ok(file) => {
+                        symbol_count.fetch_add(
+                            file.facts.symbols.len(),
+                            Ordering::Relaxed,
+                        );
+                        succeeded.fetch_add(1, Ordering::Relaxed);
+                        Some(file)
+                    }
+                    Err(_) => {
+                        failed.fetch_add(1, Ordering::Relaxed);
+                        None
+                    }
+                }
+            })();
+
+            // Per-file progress: throttled to every 50 items to avoid
+            // AtomicUsize contention across rayon threads.
+            let c = completed.fetch_add(1, Ordering::Relaxed) + 1;
+            if let Some(cb) = on_file_progress {
+                if c % 50 == 0 || c == total {
+                    cb(c, total);
+                }
+            }
+
+            result
         })
         .collect();
 
-    // Call on_progress once at the end if provided
+    // Call on_progress once at the end if provided (backward-compat hook)
     if let Some(cb) = on_progress {
         cb(
-            succeeded.load(std::sync::atomic::Ordering::Relaxed),
+            succeeded.load(Ordering::Relaxed),
             total,
         );
     }
@@ -274,9 +353,9 @@ pub fn phase_extract_parallel(
         items,
         stats: ExtractionPhaseStats {
             attempted: total,
-            succeeded: succeeded.load(std::sync::atomic::Ordering::Relaxed),
-            failed: failed.load(std::sync::atomic::Ordering::Relaxed),
-            symbols: symbol_count.load(std::sync::atomic::Ordering::Relaxed),
+            succeeded: succeeded.load(Ordering::Relaxed),
+            failed: failed.load(Ordering::Relaxed),
+            symbols: symbol_count.load(Ordering::Relaxed),
         },
     }
 }
@@ -665,5 +744,100 @@ mod tests {
             "foreign_keys should be ON (1) after bulk-write guard drops, got {}",
             fk_val
         );
+    }
+
+    /// `phase_extract_parallel_cancellable` calls `on_file_progress` at least
+    /// once per 50 files (and once at the end for the total).  Writing >50
+    /// TypeScript files exercises the throttle logic and verifies the callback
+    /// fires.
+    #[test]
+    fn phase_extract_parallel_calls_on_file_progress() {
+        use std::sync::Mutex;
+
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create 60 TypeScript files — enough to cross the 50-file throttle
+        // boundary at least once.
+        let mut paths = Vec::new();
+        for i in 0..60 {
+            let name = format!("file_{:03}.ts", i);
+            std::fs::write(
+                dir.path().join(&name),
+                format!("export const x_{i} = {i};\n"),
+            )
+            .unwrap();
+            paths.push(PathBuf::from(name));
+        }
+
+        let frontends = phase_init_frontends(&paths).unwrap();
+        let calls: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+
+        let result = phase_extract_parallel_cancellable(
+            dir.path(),
+            &paths,
+            &frontends,
+            ExtractionMode::Manifest,
+            None, // on_progress — unused
+            Some(&|completed, total| {
+                calls.lock().unwrap().push((completed, total));
+            }),
+            None, // cancel_token — not used
+        );
+
+        assert_eq!(result.stats.succeeded, 60, "all 60 files should succeed");
+        assert_eq!(result.stats.failed, 0);
+
+        let records = calls.lock().unwrap();
+        // At minimum we expect: one call at 50 and one at 60.
+        assert!(
+            records.len() >= 2,
+            "expected at least 2 on_file_progress calls, got {}",
+            records.len()
+        );
+        // The last call should report total=60.
+        let last = records.last().unwrap();
+        assert_eq!(last.1, 60, "last progress call should report total=60");
+    }
+
+    /// `phase_extract_parallel_cancellable` skips files when the cancel token
+    /// is set, resulting in fewer extracted items than the input length.
+    #[test]
+    fn phase_extract_parallel_respects_cancel() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut paths = Vec::new();
+        for i in 0..20 {
+            let name = format!("file_{:03}.ts", i);
+            std::fs::write(
+                dir.path().join(&name),
+                format!("export const x_{i} = {i};\n"),
+            )
+            .unwrap();
+            paths.push(PathBuf::from(name));
+        }
+
+        let frontends = phase_init_frontends(&paths).unwrap();
+
+        // Set the cancel token from the start — every file should be skipped.
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+
+        let result = phase_extract_parallel_cancellable(
+            dir.path(),
+            &paths,
+            &frontends,
+            ExtractionMode::Manifest,
+            None,
+            None, // on_file_progress — unused
+            Some(&cancel),
+        );
+
+        assert_eq!(
+            result.items.len(),
+            0,
+            "no files should be extracted when cancel is true from the start"
+        );
+        assert_eq!(result.stats.succeeded, 0);
+        assert_eq!(result.stats.failed, 0);
+        assert_eq!(result.stats.attempted, 20);
     }
 }

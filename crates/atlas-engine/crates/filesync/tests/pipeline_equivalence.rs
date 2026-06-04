@@ -443,15 +443,15 @@ fn incremental_pipeline_handles_alias_config_change() {
 /// state (no resolution happened).
 #[test]
 fn index_pipeline_cancellation_leaves_partial_db() {
-    use std::cell::RefCell;
     use std::sync::Arc as StdArc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
 
     use filesync::{PhaseName, ProgressEvent, ProgressSink};
 
     /// A sink that records events and signals when HashCheck completes.
     struct HashCheckSignalSink {
-        events: RefCell<Vec<ProgressEvent>>,
+        events: Mutex<Vec<ProgressEvent>>,
         hashcheck_done: StdArc<AtomicBool>,
     }
 
@@ -466,7 +466,7 @@ fn index_pipeline_cancellation_leaves_partial_db() {
             ) {
                 self.hashcheck_done.store(true, Ordering::SeqCst);
             }
-            self.events.borrow_mut().push(event);
+            self.events.lock().unwrap().push(event);
         }
     }
 
@@ -478,7 +478,7 @@ fn index_pipeline_cancellation_leaves_partial_db() {
 
     let hashcheck_done = StdArc::new(AtomicBool::new(false));
     let sink = HashCheckSignalSink {
-        events: RefCell::new(Vec::new()),
+        events: Mutex::new(Vec::new()),
         hashcheck_done: StdArc::clone(&hashcheck_done),
     };
 
@@ -499,7 +499,7 @@ fn index_pipeline_cancellation_leaves_partial_db() {
     assert_eq!(stats.indexed, 0, "cancelled pipeline should return default stats");
 
     // ── Cancelled event emitted with correct last_phase ──
-    let events = sink.events.borrow();
+    let events = sink.events.lock().unwrap();
     let cancelled = events.iter().any(|e| {
         matches!(
             e,

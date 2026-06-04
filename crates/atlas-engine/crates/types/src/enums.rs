@@ -173,6 +173,67 @@ impl Language {
             Self::Kotlin => &["**/*.kt", "**/*.kts"],
         }
     }
+
+    /// Languages that are build-enabled in the current compilation.
+    ///
+    /// These languages have tree-sitter parsers compiled in and can be
+    /// discovered and extracted.  The returned set is static — it is
+    /// determined at compile time by Cargo feature flags.
+    ///
+    /// TypeScript, JavaScript, and Python are always enabled.
+    pub fn enabled_languages() -> Vec<Language> {
+        #[allow(unused_mut)]
+        let mut langs = vec![
+            Language::TypeScript,
+            Language::JavaScript,
+            Language::Python,
+        ];
+        #[cfg(feature = "java")]
+        {
+            langs.push(Language::Java);
+        }
+        #[cfg(feature = "c")]
+        {
+            langs.push(Language::C);
+        }
+        #[cfg(feature = "cpp")]
+        {
+            langs.push(Language::Cpp);
+        }
+        #[cfg(feature = "cangjie")]
+        {
+            langs.push(Language::Cangjie);
+        }
+        #[cfg(feature = "arkts")]
+        {
+            langs.push(Language::ArkTS);
+        }
+        #[cfg(feature = "go")]
+        {
+            langs.push(Language::Go);
+        }
+        #[cfg(feature = "csharp")]
+        {
+            langs.push(Language::CSharp);
+        }
+        #[cfg(feature = "rust")]
+        {
+            langs.push(Language::Rust);
+        }
+        #[cfg(feature = "php")]
+        {
+            langs.push(Language::Php);
+        }
+        #[cfg(feature = "ruby")]
+        {
+            langs.push(Language::Ruby);
+        }
+        #[cfg(feature = "kotlin")]
+        {
+            langs.push(Language::Kotlin);
+        }
+        langs
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1285,6 +1346,21 @@ mod tests {
     #[test]
     fn test_language_default_is_typescript() {
         assert_eq!(Language::default(), Language::TypeScript);
+    }
+
+    #[test]
+    fn enabled_languages_includes_defaults() {
+        let langs = Language::enabled_languages();
+        assert!(langs.contains(&Language::TypeScript));
+        assert!(langs.contains(&Language::JavaScript));
+        assert!(langs.contains(&Language::Python));
+    }
+
+    #[test]
+    #[cfg(not(feature = "cangjie"))]
+    fn enabled_languages_excludes_cangjie_by_default() {
+        let langs = Language::enabled_languages();
+        assert!(!langs.contains(&Language::Cangjie));
     }
 
     // --- SymbolKind ---

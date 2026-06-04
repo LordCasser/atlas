@@ -6,7 +6,7 @@
 //! [`crate::index_pipeline::run_index_pipeline`] with an object that
 //! supports interruption and fine-grained progress.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -17,7 +17,7 @@ use crate::cleanup::source_file_id;
 use crate::index_phases::{
     phase_build_summaries, phase_cleanup_file_ids, phase_cleanup_stale,
     phase_commit_path_alias_config, phase_dirty_check, phase_discover,
-    phase_extract_parallel, phase_finalize, phase_init_frontends,
+    phase_extract_parallel_cancellable, phase_finalize, phase_init_frontends,
     phase_materialize_annotations, phase_resolve_and_build, phase_write_batched,
 };
 use crate::index_pipeline::{IndexPipelineOptions, IndexPipelineStats};
@@ -244,27 +244,29 @@ impl IndexPipeline {
                 total: extract_total as u64,
             });
 
-            // Progress closure: forward completed counts to the sink,
-            // throttled to every 50 files to avoid overwhelming it.
-            let extraction_last = std::cell::Cell::new(0u64);
-            let progress_closure = |completed: usize, total: usize| {
-                let c = completed as u64;
-                let prev = extraction_last.get();
-                if c.saturating_sub(prev) >= 50 || c as usize == total {
-                    sink.emit(ProgressEvent::ItemProgress {
-                        phase: PhaseName::Extraction,
-                        completed: c,
-                    });
-                    extraction_last.set(c);
-                }
+            // Cancel token: shared AtomicBool so external interrupt
+            // handlers (e.g. Ctrl-C) can stop the parallel extraction
+            // loop early.  The phase-boundary check above already
+            // handles pre-extraction cancellation.
+            let cancel_token = std::sync::atomic::AtomicBool::new(false);
+
+            // Per-file progress callback: emits ItemProgress every 50
+            // files (throttled internally by phase_extract_parallel_cancellable).
+            let on_file_progress = |completed: usize, _total: usize| {
+                sink.emit(ProgressEvent::ItemProgress {
+                    phase: PhaseName::Extraction,
+                    completed: completed as u64,
+                });
             };
 
-            let extracted = phase_extract_parallel(
+            let extracted = phase_extract_parallel_cancellable(
                 &self.project_root,
                 &files_to_extract,
                 &frontend_cache,
                 self.options.mode.clone(),
-                Some(&progress_closure),
+                None,                       // on_progress (once at end) — unused
+                Some(&on_file_progress),
+                Some(&cancel_token),
             );
 
             sink.emit(ProgressEvent::PhaseFinished {
@@ -458,23 +460,23 @@ mod tests {
 
     /// A sink that records every event into a Vec for assertions.
     struct RecordingSink {
-        events: std::cell::RefCell<Vec<ProgressEvent>>,
+        events: std::sync::Mutex<Vec<ProgressEvent>>,
     }
 
     impl RecordingSink {
         fn new() -> Self {
             Self {
-                events: std::cell::RefCell::new(Vec::new()),
+                events: std::sync::Mutex::new(Vec::new()),
             }
         }
-        fn events(&self) -> std::cell::Ref<Vec<ProgressEvent>> {
-            self.events.borrow()
+        fn events(&self) -> std::sync::MutexGuard<'_, Vec<ProgressEvent>> {
+            self.events.lock().unwrap()
         }
     }
 
     impl ProgressSink for RecordingSink {
         fn emit(&self, event: ProgressEvent) {
-            self.events.borrow_mut().push(event);
+            self.events.lock().unwrap().push(event);
         }
     }
 

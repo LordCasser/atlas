@@ -39,11 +39,15 @@ pub use lazy_crate::LazyDataflowService;
 mod closure_planner;
 /// Investigation context: MCP-session-scoped analysis focus for lazy job prioritization.
 pub mod investigation;
+/// Unified job context: shared cancellation and progress for long-running operations.
+pub mod job_context;
 mod lazy_budget;
 mod lazy_coordinator;
 mod lazy_orchestrator;
 mod lazy_structural;
 mod linux_augment;
+/// Scoped search service: shared search orchestration with lazy structural fallback.
+pub mod scoped_search;
 /// Precision tier computation for lazy extraction transparency.
 pub mod precision;
 mod source_extractor;
@@ -64,6 +68,8 @@ pub use source_extractor::SourceExtractor;
 
 // ─── Re-exports ────────────────────────────────────────────────────────────
 
+/// Job context: shared cancellation token and progress sink for long operations.
+pub use job_context::JobContext;
 /// Analysis: lifecycle and branch diff engines.
 pub use analysis;
 /// Analysis: domain rules, lifecycle proof, and rule learning.
@@ -94,7 +100,8 @@ pub use domain_rules as rule_engine;
 /// Extraction layer: language frontends, parser pool, grammar registry.
 pub use extraction::{
     ExtractionMode, LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig,
-    create_frontend, extract_file, extract_file_with_mode, extract_file_with_mode_cancellable,
+    available_languages, create_frontend, extract_file, extract_file_with_mode,
+    extract_file_with_mode_cancellable,
 };
 /// Sync layer: incremental sync engine, file lock, file discovery.
 pub use filesync::{
@@ -125,7 +132,12 @@ pub use resolution::{
 };
 /// Search layer: FTS5 + fuzzy search engine.
 pub use search::{SearchEngine, SearchOptions, SearchResult};
-pub use search::query_parser::{ParsedQuery, parse_query};
+pub use search::query_parser::{ParsedQuery, parse_query, searchable_languages};
+/// Scoped search: shared orchestration for MCP/TUI search with lazy structural fallback.
+pub use scoped_search::{
+    ScopedSearchRequest, ScopedSearchResponse, ScopedSearchService, SearchAnalysis,
+    SearchCoverage,
+};
 /// Progress protocol (for CLI TUI integration).
 pub use types::progress;
 /// All core IR types (SymbolDef, ReferenceUse, FileFacts, etc.).

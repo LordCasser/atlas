@@ -125,3 +125,13 @@ pub fn create_frontend(lang: Language) -> Option<crate::frontend::LanguageFronte
         _ => None,
     }
 }
+
+/// Languages whose frontend can be created at runtime (subset of
+/// [`Language::enabled_languages`] where the tree-sitter grammar was
+/// successfully loaded).
+pub fn available_languages() -> Vec<Language> {
+    Language::enabled_languages()
+        .into_iter()
+        .filter(|&l| create_frontend(l).is_some())
+        .collect()
+}

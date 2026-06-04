@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use atlas_engine::{CallerChain, ContextView, SearchResult, Store};
@@ -17,7 +17,8 @@ use ratatui::{
 
 use super::auto_index::AutoIndexHandle;
 use super::event::{Event, EventHandler};
-use super::search_session::SearchSession;
+use super::jobs::{JobManager, JobResult, TuiJob};
+use super::search_session::{ParsedSearch, SearchSession};
 use super::session::GraphSession;
 use super::widgets::context_view::DetailTab;
 use super::widgets::{context_view, results_list, search_bar, status_bar, trace_view};
@@ -72,6 +73,13 @@ pub struct App {
     auto_index: Option<AutoIndexHandle>,
     exit_confirm_until: Option<Instant>,
 
+    // ── Job system ────────────────────────────────────────────────────
+    job_manager: JobManager,
+    /// Stashed parsed search for re-submission after lazy structural.
+    pending_search: Option<ParsedSearch>,
+    /// Whether lazy structural has been triggered for the current search.
+    search_lazy_triggered: bool,
+
     // ── DB stats (cached once) ────────────────────────────────────────
     file_count: i64,
     symbol_count: i64,
@@ -86,6 +94,7 @@ impl App {
             .unwrap_or_default();
 
         let session = GraphSession::new(Arc::clone(&store), project_root.clone());
+        let job_manager = JobManager::new(Arc::clone(&store), project_root.clone());
 
         let (screen, auto_index) = if file_count == 0 {
             let handle =
@@ -102,6 +111,9 @@ impl App {
             session,
             auto_index,
             exit_confirm_until: None,
+            job_manager,
+            pending_search: None,
+            search_lazy_triggered: false,
             search_input: String::new(),
             search_cursor: 0,
             search_results: Vec::new(),
@@ -206,6 +218,18 @@ impl App {
                 }
             }
         }
+
+        // ── Job polling (search / trace / lazy structural) ────────────────
+        match self.job_manager.poll() {
+            Some(super::jobs::JobStatus::Completed { result }) => {
+                self.handle_job_completion(result);
+            }
+            Some(super::jobs::JobStatus::Cancelled) => {
+                self.pending_search = None;
+                self.search_lazy_triggered = false;
+            }
+            _ => {}
+        }
     }
 
     fn handle_key_press(&mut self, key: KeyEvent) {
@@ -240,6 +264,11 @@ impl App {
     fn handle_search_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => {
+                // If a background job is running, cancel it.
+                if self.job_manager.is_running() {
+                    self.job_manager.cancel_current();
+                    return;
+                }
                 if self.focus == Focus::Results || !self.search_input.is_empty() {
                     self.reset_search_input();
                     self.clear_exit_confirmation();
@@ -369,31 +398,14 @@ impl App {
                 self.detail_scroll = 0;
             }
             KeyCode::Char('t') => {
-                // Navigate to callers trace view via high-level Engine.
-                // The high-level Engine may trigger lazy dataflow if needed.
+                // Submit a background trace job (non-blocking).
                 if let Some(ctx) = &self.detail_context {
-                    let resp = self
-                        .session
-                        .atlas_engine()
-                        .trace_callers(&ctx.subject.id, 20);
-                    if resp.ok {
-                        if let Some(chain) = resp.result {
-                            self.trace_chain = Some(chain);
-                            self.trace_selected = 0;
-                            self.trace_scroll = 0;
-                            self.screen = Screen::TraceView;
-                        }
-                        // Show partial/diagnostics indicator if applicable
-                        if resp.partial_result {
-                            tracing::info!(
-                                "Trace for {} returned partial result: {:?}",
-                                ctx.subject.name,
-                                resp.diagnostics
-                            );
-                        }
-                    } else {
-                        tracing::error!("Trace callers failed for {}", ctx.subject.name);
-                    }
+                    let cancel = Arc::new(AtomicBool::new(false));
+                    self.job_manager.submit(TuiJob::TraceCallers {
+                        symbol_id: ctx.subject.id.clone(),
+                        depth: 20,
+                        cancel,
+                    });
                 }
             }
             KeyCode::Char('/') => {
@@ -560,59 +572,91 @@ impl App {
             return;
         }
 
-        // Parse query for language/scope prefixes and extract the search term.
+        // Push current graph snapshot to the job manager so background
+        // workers can construct their own SearchEngine from it.
+        self.job_manager
+            .set_graph(self.session.graph_engine().clone());
+
         let parsed = SearchSession::parse_query(&self.search_input);
+        self.pending_search = Some(parsed.clone());
+        self.search_lazy_triggered = false;
 
-        let result =
-            SearchSession::do_search(self.session.search_engine(), &parsed, 100);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.job_manager.submit(TuiJob::Search {
+            query: self.search_input.clone(),
+            scope: parsed.scope_path.clone(),
+            language: parsed.language,
+            cancel,
+        });
+    }
 
+    /// Handle a completed background job.
+    fn handle_job_completion(&mut self, result: JobResult) {
         match result {
-            Ok(results) if results.is_empty() => {
-                // Phase 2: When manifest-only search returns empty, trigger
-                // lazy structural extraction for candidate files, then re-search.
-                let lazy_session = SearchSession::new(
-                    self.session.atlas_engine(),
-                    self.session.store(),
-                    self.session.search_engine(),
-                    self.session.graph_engine(),
-                    &self.project_root,
-                );
-                // Trigger lazy structural for the parsed search term (strips prefixes).
-                let _ = lazy_session.ensure_structural_for_search(&parsed);
-
-                // Refresh the graph to pick up new structural symbols.
-                self.session.mark_stale();
-                if let Err(e) = self.session.maybe_refresh() {
-                    tracing::error!("Failed to refresh graph after lazy structural: {e}");
-                }
-
-                // Re-search with the refreshed engine.
-                let retry =
-                    SearchSession::do_search(self.session.search_engine(), &parsed, 100);
-                match retry {
-                    Ok(results) => {
-                        let count = results.len();
-                        self.search_results = results;
-                        self.selected_index = 0;
-                        self.focus = Focus::Results;
-                        tracing::info!("Search after lazy structural returned {count} results");
-                    }
-                    Err(e) => {
-                        tracing::error!("Search retry failed: {e}");
-                        self.search_results.clear();
-                    }
-                }
-            }
-            Ok(results) => {
+            JobResult::SearchResults(results) => {
                 let count = results.len();
                 self.search_results = results;
                 self.selected_index = 0;
                 self.focus = Focus::Results;
+                self.pending_search = None;
+                self.search_lazy_triggered = false;
                 tracing::info!("Search returned {count} results");
             }
-            Err(e) => {
-                tracing::error!("Search failed: {e}");
-                self.search_results.clear();
+            JobResult::SearchEmpty => {
+                if self.search_lazy_triggered {
+                    // Already tried lazy structural — accept empty.
+                    self.search_results.clear();
+                    self.selected_index = 0;
+                    self.focus = Focus::Results;
+                    self.pending_search = None;
+                    self.search_lazy_triggered = false;
+                } else {
+                    // Trigger lazy structural extraction.
+                    let search_term = self
+                        .pending_search
+                        .as_ref()
+                        .map(|p| p.search_term.clone())
+                        .unwrap_or_default();
+                    let cancel = Arc::new(AtomicBool::new(false));
+                    self.job_manager.submit(TuiJob::LazyStructural {
+                        search_term,
+                        cancel,
+                    });
+                    self.search_lazy_triggered = true;
+                }
+            }
+            JobResult::LazyComplete {
+                files_built,
+                files_cached,
+            } => {
+                tracing::info!(
+                    "Lazy structural: {files_built} built, {files_cached} cached"
+                );
+                // Refresh the graph on the main thread so it picks up the
+                // newly extracted symbols.
+                self.session.mark_stale();
+                if let Err(e) = self.session.maybe_refresh() {
+                    tracing::error!("Failed to refresh graph after lazy structural: {e}");
+                }
+                // Push refreshed graph to the job manager.
+                self.job_manager
+                    .set_graph(self.session.graph_engine().clone());
+                // Re-submit the original search with the refreshed graph.
+                if let Some(ref parsed) = self.pending_search {
+                    let cancel = Arc::new(AtomicBool::new(false));
+                    self.job_manager.submit(TuiJob::Search {
+                        query: parsed.search_term.clone(),
+                        scope: parsed.scope_path.clone(),
+                        language: parsed.language,
+                        cancel,
+                    });
+                }
+            }
+            JobResult::TraceChain(chain) => {
+                self.trace_chain = chain;
+                self.trace_selected = 0;
+                self.trace_scroll = 0;
+                self.screen = Screen::TraceView;
             }
         }
     }
@@ -859,12 +903,16 @@ mod tests {
         let store = Arc::new(Store::open_in_memory().expect("in-memory store"));
         let project_root = PathBuf::from(".");
         let session = GraphSession::new(Arc::clone(&store), project_root.clone());
+        let job_manager = JobManager::new(Arc::clone(&store), project_root.clone());
 
         App {
             should_quit: false,
             store,
             project_root,
             session,
+            job_manager,
+            pending_search: None,
+            search_lazy_triggered: false,
             search_input: String::new(),
             search_cursor: 0,
             search_results: Vec::new(),

@@ -114,7 +114,7 @@ impl fmt::Display for PhaseName {
 /// feeding; it simply calls `emit()` at well-defined boundaries.
 ///
 /// The trait is object-safe by design — callers pass `Box<dyn ProgressSink>`.
-pub trait ProgressSink: Send {
+pub trait ProgressSink: Send + Sync {
     /// Receive a progress event.
     fn emit(&self, event: ProgressEvent);
 }

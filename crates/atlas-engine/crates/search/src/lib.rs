@@ -125,9 +125,10 @@ impl SearchEngine {
             limit.max(20),
             options.kind_filter.as_ref(),
         )?;
+        let mut fts_had_results = !raw_results.is_empty();
 
         // Stage 2: LIKE fallback if FTS5 returns nothing
-        let from_like = if raw_results.is_empty() && query.len() >= 2 {
+        let mut from_like = if raw_results.is_empty() && query.len() >= 2 {
             raw_results = self.store.search_symbols_by_name_like(
                 query,
                 options.language.as_ref(),
@@ -142,7 +143,15 @@ impl SearchEngine {
         // Stage 3: Fuzzy Levenshtein fallback if still nothing
         let from_fuzzy = if raw_results.is_empty() && query.len() >= 2 {
             // Load all symbols and compute Levenshtein distance to find close matches
+            let fuzzy_start = std::time::Instant::now();
             let all_symbols = self.store.get_all_symbols()?;
+            tracing::debug!(
+                target: "atlas::search",
+                "fuzzy fallback triggered: {} symbols loaded in {:?}, query='{}'",
+                all_symbols.len(),
+                fuzzy_start.elapsed(),
+                query
+            );
             let query_lower = query.to_lowercase();
             let query_norm_snake = to_snake_case(&normalize_name_for_search(query));
             let max_dist = (query.len() as f64 * 0.4).ceil() as usize; // allow ~40% edit distance
@@ -185,87 +194,110 @@ impl SearchEngine {
 
         // Normalize query for camelCase/snake_case matching
         let query_norm = normalize_name_for_search(query);
-
-        let matching_symbols = raw_results.len();
-        let max_degree = raw_results
-            .iter()
-            .map(|s| self.graph().degree(&s.id))
-            .max()
-            .unwrap_or(1);
-
-        let mut results: Vec<SearchResult> = Vec::with_capacity(raw_results.len());
         let weights = scoring::ScoreWeights::default();
-        for sym in raw_results {
-            let name_sim = compute_name_similarity(query, &sym.name, &query_norm);
-            let qualified_match = sym
-                .qualified_name
-                .to_lowercase()
-                .contains(&query.to_lowercase());
-            let degree = self.graph().degree(&sym.id);
-            let idf = scoring::idf_weight(total_symbols, matching_symbols);
 
-            // Resolve FileId → human-readable path
-            let file_path = self
-                .store
-                .get_file(&sym.file_id)
-                .ok()
-                .flatten()
-                .map(|info| info.path);
+        // Score → filter → (retry with LIKE if filters emptied FTS results)
+        let mut results: Vec<SearchResult> = loop {
+            let matching_symbols = raw_results.len();
+            let graph = self.graph();
+            let max_degree = raw_results
+                .iter()
+                .map(|s| graph.degree(&s.id))
+                .max()
+                .unwrap_or(1);
 
-            let score = SearchScore::new(
-                idf.clamp(0.0, 1.0),
-                degree,
-                max_degree,
-                name_sim,
-                qualified_match,
-                sym.kind,
-                file_path.as_deref(),
-                &weights,
-            );
+            let mut results = Vec::with_capacity(raw_results.len());
+            for sym in &raw_results {
+                let name_sim = compute_name_similarity(query, &sym.name, &query_norm);
+                let qualified_match = sym
+                    .qualified_name
+                    .to_lowercase()
+                    .contains(&query.to_lowercase());
+                let degree = graph.degree(&sym.id);
+                let idf = scoring::idf_weight(total_symbols, matching_symbols);
 
-            // Determine matched field for display
-            let matched_field = if from_like {
-                "name".to_string()
-            } else if from_fuzzy {
-                "fuzzy".to_string()
-            } else {
-                String::new()
-            };
+                // Resolve FileId → human-readable path
+                let file_path = self
+                    .store
+                    .get_file(&sym.file_id)
+                    .ok()
+                    .flatten()
+                    .map(|info| info.path);
 
-            results.push(SearchResult {
-                symbol: sym,
-                score,
-                matched_field,
-                snippet: None,
-                file_path: file_path.clone(),
-            });
-        }
+                let score = SearchScore::new(
+                    idf.clamp(0.0, 1.0),
+                    degree,
+                    max_degree,
+                    name_sim,
+                    qualified_match,
+                    sym.kind,
+                    file_path.as_deref(),
+                    &weights,
+                );
 
-        // Sort by total score descending
+                // Determine matched field for display
+                let matched_field = if from_like {
+                    "name".to_string()
+                } else if from_fuzzy {
+                    "fuzzy".to_string()
+                } else {
+                    String::new()
+                };
+
+                results.push(SearchResult {
+                    symbol: sym.clone(),
+                    score,
+                    matched_field,
+                    snippet: None,
+                    file_path: file_path.clone(),
+                });
+            }
+
+            // Apply post-filters BEFORE truncation (so all results, not just top N,
+            // are considered for filter matching).
+            if let Some(ref path_pat) = options.file_path_pattern {
+                let pat = path_pat.to_lowercase();
+                results.retain(|r| {
+                    r.file_path
+                        .as_ref()
+                        .map(|p| p.to_lowercase().contains(&pat))
+                        .unwrap_or(false)
+                });
+            }
+            if let Some(ref lang_filter) = options.language {
+                results.retain(|r| r.symbol.language == *lang_filter);
+            }
+            if let Some(min_c) = options.min_confidence {
+                results.retain(|r| r.score.total >= min_c);
+            }
+
+            // LIKE fallback: if FTS5 originally returned data but post-filters
+            // eliminated everything (e.g. all top-N were TypeScript but user
+            // filtered for lang:python), retry with LIKE substring search.
+            if results.is_empty() && fts_had_results && !from_like && query.len() >= 2 {
+                raw_results = self.store.search_symbols_by_name_like(
+                    query,
+                    options.language.as_ref(),
+                    limit.max(20),
+                    options.kind_filter.as_ref(),
+                )?;
+                if raw_results.is_empty() {
+                    break results;
+                }
+                from_like = true;
+                fts_had_results = false;
+                continue;
+            }
+            break results;
+        };
+
+        // Sort by total score descending, then truncate to limit
         results.sort_by(|a, b| {
             b.score
                 .total
                 .partial_cmp(&a.score.total)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        results.truncate(limit);
-
-        // Apply post-filters (kind filter is applied at SQL/query level for correct fallback)
-        if let Some(ref path_pat) = options.file_path_pattern {
-            let pat = path_pat.to_lowercase();
-            results.retain(|r| {
-                r.file_path
-                    .as_ref()
-                    .map(|p| p.to_lowercase().contains(&pat))
-                    .unwrap_or(false)
-            });
-        }
-        if let Some(ref lang_filter) = options.language {
-            results.retain(|r| r.symbol.language == *lang_filter);
-        }
-        if let Some(min_c) = options.min_confidence {
-            results.retain(|r| r.score.total >= min_c);
-        }
         results.truncate(limit);
 
         Ok(results)
@@ -626,5 +658,260 @@ mod tests {
         for r in &results {
             assert_eq!(r.symbol.language, Language::TypeScript);
         }
+    }
+
+    // ── helpers for multi-language / multi-file tests ──
+
+    fn mk_sym_lang(
+        fid: FileId,
+        name: &str,
+        qname: &str,
+        kind: SymbolKind,
+        lang: Language,
+    ) -> SymbolDef {
+        let sid = types::SymbolId::generate(&fid, "ts", qname, kind.as_str(), None);
+        SymbolDef {
+            id: sid,
+            kind,
+            name: name.into(),
+            qualified_name: qname.into(),
+            symbol_path: vec![],
+            file_id: fid,
+            language: lang,
+            range: Default::default(),
+            name_range: Default::default(),
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".to_string(),
+        }
+    }
+
+    fn seed_mixed_language_symbols(store: &Store) {
+        let ts_fid = types::FileId::generate("test.ts");
+        store
+            .upsert_file(&FileInfo {
+                file_id: ts_fid,
+                path: "test.ts".into(),
+                language: Language::TypeScript,
+                content_hash: "abc".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        let py_fid = types::FileId::generate("test.py");
+        store
+            .upsert_file(&FileInfo {
+                file_id: py_fid,
+                path: "test.py".into(),
+                language: Language::Python,
+                content_hash: "def".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        let syms = vec![
+            mk_sym_lang(
+                ts_fid,
+                "UserManager",
+                "UserManager",
+                SymbolKind::Class,
+                Language::TypeScript,
+            ),
+            mk_sym_lang(
+                ts_fid,
+                "UserValidator",
+                "UserValidator",
+                SymbolKind::Class,
+                Language::TypeScript,
+            ),
+            mk_sym_lang(
+                py_fid,
+                "UserConfig",
+                "UserConfig",
+                SymbolKind::Class,
+                Language::Python,
+            ),
+        ];
+        store.insert_symbols(&syms).unwrap();
+    }
+
+    fn seed_multi_file_symbols(store: &Store) {
+        let fid_a = types::FileId::generate("a.ts");
+        store
+            .upsert_file(&FileInfo {
+                file_id: fid_a,
+                path: "src/a.ts".into(),
+                language: Language::TypeScript,
+                content_hash: "aaa".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        let fid_b = types::FileId::generate("b.ts");
+        store
+            .upsert_file(&FileInfo {
+                file_id: fid_b,
+                path: "src/b.ts".into(),
+                language: Language::TypeScript,
+                content_hash: "bbb".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        let syms = vec![
+            mk_sym(fid_a, "LoggerA", "LoggerA", SymbolKind::Class),
+            mk_sym(fid_b, "LoggerB", "LoggerB", SymbolKind::Class),
+        ];
+        store.insert_symbols(&syms).unwrap();
+    }
+
+    // ── new tests ──
+
+    #[test]
+    fn test_lang_filter_with_mixed_languages() {
+        // When FTS5 returns results from multiple languages, the language
+        // post-filter should be applied to ALL results before truncation,
+        // not just the top N.
+        let store = test_store();
+        seed_mixed_language_symbols(&store);
+        let engine = test_engine(store);
+
+        let results = engine
+            .search(
+                "User",
+                10,
+                &SearchOptions::new().with_language(Language::Python),
+            )
+            .unwrap();
+        assert!(
+            !results.is_empty(),
+            "language filter should find Python results"
+        );
+        for r in &results {
+            assert_eq!(
+                r.symbol.language,
+                Language::Python,
+                "all results must be Python, got {:?}",
+                r.symbol.language
+            );
+        }
+    }
+
+    #[test]
+    fn test_path_filter_before_truncate() {
+        // Path filter must be applied to ALL scored results before
+        // truncation, so symbols in "b.ts" are not hiding behind the
+        // truncation barrier.
+        let store = test_store();
+        seed_multi_file_symbols(&store);
+        let engine = test_engine(store);
+
+        let results = engine
+            .search(
+                "Logger",
+                10,
+                &SearchOptions::new().with_file_path("a.ts"),
+            )
+            .unwrap();
+        assert!(
+            !results.is_empty(),
+            "path filter should find matches in a.ts"
+        );
+        for r in &results {
+            let path = r.file_path.as_deref().unwrap_or("");
+            assert!(
+                path.contains("a.ts"),
+                "all results must be from a.ts, got: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_like_fallback_when_fts_post_filter_empty() {
+        // Scenario: FTS5 returns TypeScript results for query "User",
+        // but user filters for lang:python. After post-filter, results
+        // are empty. The LIKE fallback should kick in and find the
+        // Python symbol ("PythonUserHelper") that FTS5 prefix matching
+        // missed (because "User*" does not match a token starting with
+        // "Python").
+        let store = test_store();
+        // Seed TS symbols that FTS will match, and a Python symbol
+        // that only LIKE can find.
+        let ts_fid = types::FileId::generate("test.ts");
+        store
+            .upsert_file(&FileInfo {
+                file_id: ts_fid,
+                path: "test.ts".into(),
+                language: Language::TypeScript,
+                content_hash: "ts1".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        let py_fid = types::FileId::generate("test.py");
+        store
+            .upsert_file(&FileInfo {
+                file_id: py_fid,
+                path: "test.py".into(),
+                language: Language::Python,
+                content_hash: "py1".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        let syms = vec![
+            // FTS "User*" matches these
+            mk_sym_lang(
+                ts_fid,
+                "UserManager",
+                "UserManager",
+                SymbolKind::Class,
+                Language::TypeScript,
+            ),
+            mk_sym_lang(
+                ts_fid,
+                "UserService",
+                "UserService",
+                SymbolKind::Class,
+                Language::TypeScript,
+            ),
+            // FTS "User*" does NOT match "PythonUserHelper"
+            // (token starts with "Python", not "User"),
+            // but LIKE "%User%" will find it.
+            mk_sym_lang(
+                py_fid,
+                "PythonUserHelper",
+                "PythonUserHelper",
+                SymbolKind::Class,
+                Language::Python,
+            ),
+        ];
+        store.insert_symbols(&syms).unwrap();
+
+        let engine = test_engine(store);
+        let results = engine
+            .search(
+                "User",
+                10,
+                &SearchOptions::new().with_language(Language::Python),
+            )
+            .unwrap();
+        assert!(
+            !results.is_empty(),
+            "LIKE fallback should find 'PythonUserHelper' after FTS-post-filter emptied results"
+        );
+        // Verify the result came from LIKE, not FTS
+        assert_eq!(
+            results[0].matched_field, "name",
+            "result should come from LIKE fallback, got matched_field='{}'",
+            results[0].matched_field
+        );
+        assert_eq!(
+            results[0].symbol.language,
+            Language::Python,
+            "result should be a Python symbol"
+        );
+        assert_eq!(results[0].symbol.name, "PythonUserHelper");
     }
 }

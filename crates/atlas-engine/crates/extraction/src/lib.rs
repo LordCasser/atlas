@@ -45,7 +45,7 @@ pub use frontend::{
     ReferenceExtractorSpec, ScopeExtractorSpec, SymbolExtractorSpec, UnsupportedSpec,
 };
 pub use grammar::LanguageRegistry;
-pub use languages::create_frontend;
+pub use languages::{available_languages, create_frontend};
 pub use lexical_binder::{LexicalBinder, LexicalBindingResult};
 pub use mode::ExtractionMode;
 pub use scope_tree::build_scope_tree;
