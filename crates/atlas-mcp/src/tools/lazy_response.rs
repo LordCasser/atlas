@@ -297,7 +297,6 @@ impl LazyDiagnostics {
             ),
         }
     }
-
 }
 
 impl LazyLayerDiagnostics {

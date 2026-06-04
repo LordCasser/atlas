@@ -36,8 +36,14 @@ mod default_build {
     /// When built with default features, all three core languages are enabled.
     #[test]
     fn core_languages_enabled() {
-        assert!(cfg!(feature = "typescript"), "typescript feature should be enabled");
-        assert!(cfg!(feature = "javascript"), "javascript feature should be enabled");
+        assert!(
+            cfg!(feature = "typescript"),
+            "typescript feature should be enabled"
+        );
+        assert!(
+            cfg!(feature = "javascript"),
+            "javascript feature should be enabled"
+        );
         assert!(cfg!(feature = "python"), "python feature should be enabled");
     }
 
@@ -45,21 +51,30 @@ mod default_build {
     #[test]
     fn typescript_frontend_available() {
         let frontend = atlas_engine::create_frontend(atlas_engine::Language::TypeScript);
-        assert!(frontend.is_some(), "TypeScript frontend should be available with default features");
+        assert!(
+            frontend.is_some(),
+            "TypeScript frontend should be available with default features"
+        );
     }
 
     /// The engine's frontend should be creatable for JavaScript.
     #[test]
     fn javascript_frontend_available() {
         let frontend = atlas_engine::create_frontend(atlas_engine::Language::JavaScript);
-        assert!(frontend.is_some(), "JavaScript frontend should be available with default features");
+        assert!(
+            frontend.is_some(),
+            "JavaScript frontend should be available with default features"
+        );
     }
 
     /// The engine's frontend should be creatable for Python.
     #[test]
     fn python_frontend_available() {
         let frontend = atlas_engine::create_frontend(atlas_engine::Language::Python);
-        assert!(frontend.is_some(), "Python frontend should be available with default features");
+        assert!(
+            frontend.is_some(),
+            "Python frontend should be available with default features"
+        );
     }
 }
 
@@ -84,8 +99,14 @@ mod default_build {
 mod zero_language_build {
     #[test]
     fn no_language_features_enabled() {
-        assert!(!cfg!(feature = "typescript"), "typescript should be disabled");
-        assert!(!cfg!(feature = "javascript"), "javascript should be disabled");
+        assert!(
+            !cfg!(feature = "typescript"),
+            "typescript should be disabled"
+        );
+        assert!(
+            !cfg!(feature = "javascript"),
+            "javascript should be disabled"
+        );
         assert!(!cfg!(feature = "python"), "python should be disabled");
         assert!(!cfg!(feature = "cangjie"), "cangjie should be disabled");
     }
@@ -126,14 +147,20 @@ mod zero_language_build {
 mod cangjie_build {
     #[test]
     fn cangjie_feature_enabled() {
-        assert!(cfg!(feature = "cangjie"), "cangjie feature should be enabled");
+        assert!(
+            cfg!(feature = "cangjie"),
+            "cangjie feature should be enabled"
+        );
     }
 
     /// Cangjie frontend should be available.
     #[test]
     fn cangjie_frontend_available() {
         let frontend = atlas_engine::create_frontend(atlas_engine::Language::Cangjie);
-        assert!(frontend.is_some(), "Cangjie frontend should be available with cangjie feature");
+        assert!(
+            frontend.is_some(),
+            "Cangjie frontend should be available with cangjie feature"
+        );
     }
 
     /// The search parser should recognize `lang:cj` when cangjie feature is enabled.

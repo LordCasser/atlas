@@ -137,7 +137,12 @@ impl ToolRouter {
         let query_id = Self::generate_query_id();
 
         // Lazy structural: ensure graph edges exist before querying
-        let file_id = self.store.find_symbol_by_id(&sid).ok().flatten().map(|s| s.file_id);
+        let file_id = self
+            .store
+            .find_symbol_by_id(&sid)
+            .ok()
+            .flatten()
+            .map(|s| s.file_id);
         let file_ids: Vec<atlas_engine::FileId> = file_id.into_iter().collect();
         let outcome_files = self.ensure_structural_for_files(
             file_ids,
@@ -220,7 +225,12 @@ impl ToolRouter {
         let query_id = Self::generate_query_id();
 
         // Lazy structural: ensure graph edges exist before querying
-        let file_id = self.store.find_symbol_by_id(&sid).ok().flatten().map(|s| s.file_id);
+        let file_id = self
+            .store
+            .find_symbol_by_id(&sid)
+            .ok()
+            .flatten()
+            .map(|s| s.file_id);
         let file_ids: Vec<atlas_engine::FileId> = file_id.into_iter().collect();
         let outcome = self.ensure_structural_for_files(
             file_ids,
@@ -305,7 +315,12 @@ impl ToolRouter {
         // Lazy structural: ensure graph edges exist before querying.
         // Direction-dependent: outgoing needs file edges, incoming needs
         // symbol-name candidate edges to find callers.
-        let file_id = self.store.find_symbol_by_id(&sid).ok().flatten().map(|s| s.file_id);
+        let file_id = self
+            .store
+            .find_symbol_by_id(&sid)
+            .ok()
+            .flatten()
+            .map(|s| s.file_id);
         let file_ids: Vec<atlas_engine::FileId> = file_id.into_iter().collect();
         let (lazy_warnings, tier) = match direction {
             "incoming" => {
@@ -1214,10 +1229,7 @@ impl ToolRouter {
                     for v in arr {
                         let s = v.as_str().unwrap_or("");
                         if s == "*" {
-                            return (
-                                "'*' must be the only value in edge_kinds".to_string(),
-                                true,
-                            );
+                            return ("'*' must be the only value in edge_kinds".to_string(), true);
                         }
                         kinds.push(match parse_edge_kind(s) {
                             Ok(k) => k,
@@ -1239,7 +1251,12 @@ impl ToolRouter {
         let query_id = Self::generate_query_id();
 
         // Lazy structural: ensure graph edges exist before impact analysis
-        let file_id = self.store.find_symbol_by_id(&sid).ok().flatten().map(|s| s.file_id);
+        let file_id = self
+            .store
+            .find_symbol_by_id(&sid)
+            .ok()
+            .flatten()
+            .map(|s| s.file_id);
         let file_ids: Vec<atlas_engine::FileId> = file_id.into_iter().collect();
         let outcome = self.ensure_structural_for_files(
             file_ids,
@@ -1258,10 +1275,7 @@ impl ToolRouter {
 
         // Determine which edge kinds were actually used for the response.
         let edge_kinds_used: Vec<&str> = match &edge_kinds {
-            None => DEFAULT_IMPACT_EDGES
-                .iter()
-                .map(|k| k.as_str())
-                .collect(),
+            None => DEFAULT_IMPACT_EDGES.iter().map(|k| k.as_str()).collect(),
             Some(kinds) if kinds.is_empty() => vec!["*"],
             Some(kinds) => kinds.iter().map(|k| k.as_str()).collect(),
         };
@@ -1367,17 +1381,17 @@ impl ToolRouter {
                         .unwrap_or_default()
                 };
 
-                let composition =
-                    match atlas_engine::analysis::cfg_graph::CfgGraph::build(&cfg_nodes, &cfg_edges)
-                    {
-                        Ok(cfg_graph) => atlas_engine::analysis::compose_effects(
-                            &cfg_graph,
-                            &data_nodes,
-                            &dataflow_edges,
-                            &contract,
-                        ),
-                        Err(_) => atlas_engine::analysis::EffectComposition::default(),
-                    };
+                let composition = match atlas_engine::analysis::cfg_graph::CfgGraph::build(
+                    &cfg_nodes, &cfg_edges,
+                ) {
+                    Ok(cfg_graph) => atlas_engine::analysis::compose_effects(
+                        &cfg_graph,
+                        &data_nodes,
+                        &dataflow_edges,
+                        &contract,
+                    ),
+                    Err(_) => atlas_engine::analysis::EffectComposition::default(),
+                };
 
                 let diffs = analysis::BranchDiffEngine::diff_branches_semantic(
                     &cfg_nodes,
@@ -1539,13 +1553,13 @@ impl ToolRouter {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_edge_kind;
     use super::EdgeKind;
+    use super::parse_edge_kind;
     use crate::tools::ToolRouter;
     use atlas_engine::Store;
     use atlas_engine::ids::FileId;
-    use std::sync::Arc;
     use serde_json::json;
+    use std::sync::Arc;
 
     // ── Helpers ─────────────────────────────────────────────────────────
     fn test_store() -> Arc<Store> {
@@ -1608,10 +1622,7 @@ mod tests {
 
     #[test]
     fn test_parse_edge_kind_instantiates() {
-        assert_eq!(
-            parse_edge_kind("instantiates"),
-            Ok(EdgeKind::Instantiates)
-        );
+        assert_eq!(parse_edge_kind("instantiates"), Ok(EdgeKind::Instantiates));
         assert_eq!(
             parse_edge_kind("registers_callback"),
             Ok(EdgeKind::RegistersCallback)
@@ -1647,7 +1658,10 @@ mod tests {
             "symbol": "anything",
             "edge_kinds": ["nonexistent_edge"]
         }));
-        assert!(is_error, "expected error for invalid edge kind, got: {resp}");
+        assert!(
+            is_error,
+            "expected error for invalid edge kind, got: {resp}"
+        );
         // Verify the error message mentions the invalid kind
         let resp_lower = resp.to_lowercase();
         assert!(
@@ -1679,7 +1693,10 @@ mod tests {
             "symbol": "anything",
             "edge_kinds": "calls"
         }));
-        assert!(is_error, "expected error for non-array edge_kinds, got: {resp}");
+        assert!(
+            is_error,
+            "expected error for non-array edge_kinds, got: {resp}"
+        );
     }
 
     #[test]
@@ -1735,7 +1752,10 @@ mod tests {
             "symbol": "anything",
             "direction": "sideways"
         }));
-        assert!(is_error, "expected error for invalid direction, got: {resp}");
+        assert!(
+            is_error,
+            "expected error for invalid direction, got: {resp}"
+        );
         assert!(
             resp.contains("direction must be"),
             "error should mention valid directions, got: {resp}"

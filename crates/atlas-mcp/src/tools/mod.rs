@@ -8,8 +8,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use atlas_engine::ContextBuilder;
@@ -652,7 +652,12 @@ impl ToolRouter {
     /// Graph initialization and signature-refresh are handled by the MCP
     /// server layer ([`AtlasMcpService::call_tool`]) before this method is
     /// called. The dispatcher itself only routes to handlers.
-    pub fn call_tool(&mut self, ctx: &ToolCallContext, name: &str, arguments: &Value) -> CallToolResult {
+    pub fn call_tool(
+        &mut self,
+        ctx: &ToolCallContext,
+        name: &str,
+        arguments: &Value,
+    ) -> CallToolResult {
         // Each handler returns (result_text, is_error).
         // is_error=true only for genuine failures (lookup errors, I/O errors, unknown tool).
         let (result, is_error) = match name {
@@ -1034,14 +1039,18 @@ impl ToolRouter {
     pub(crate) fn store_snapshot(&mut self, snapshot: QuerySnapshot) {
         self.prune_expired_snapshots();
         self.query_snapshots
-            .lock().unwrap()
+            .lock()
+            .unwrap()
             .insert(snapshot.query_id.clone(), snapshot);
     }
 
     /// Remove query snapshots older than TTL.
     pub(crate) fn prune_expired_snapshots(&mut self) {
         let cutoff = Instant::now() - std::time::Duration::from_secs(QUERY_SNAPSHOT_TTL_SECS);
-        self.query_snapshots.lock().unwrap().retain(|_, s| s.created_at > cutoff);
+        self.query_snapshots
+            .lock()
+            .unwrap()
+            .retain(|_, s| s.created_at > cutoff);
     }
 
     /// Update or create investigation based on a tool call focus.
@@ -1534,11 +1543,7 @@ impl ToolRouter {
 
     /// Handle `symbol` tool — dispatch by `view` to legacy handlers.
     /// Remaps `symbol` → `qualified_name` (detail) or passes through as `symbol` (context/usages).
-    pub(crate) fn handle_symbol(
-        &mut self,
-        ctx: &ToolCallContext,
-        args: &Value,
-    ) -> (String, bool) {
+    pub(crate) fn handle_symbol(&mut self, ctx: &ToolCallContext, args: &Value) -> (String, bool) {
         let view = get_str(args, "view");
         let qname = get_str(args, "symbol");
         let qname = if qname.is_empty() {
@@ -1827,13 +1832,15 @@ impl ToolRouter {
                 let err = out_err;
 
                 // Supplement with symbol_edges-based re-export / call dependencies
-                let edge_deps =
-                    self.manifest_edge_dependents(&file_id, limit.saturating_sub(
+                let edge_deps = self.manifest_edge_dependents(
+                    &file_id,
+                    limit.saturating_sub(
                         serde_json::from_str::<Value>(&out_str)
                             .ok()
                             .and_then(|v| v["total_dependents"].as_u64())
                             .unwrap_or(0) as usize,
-                    ));
+                    ),
+                );
                 let mut value =
                     serde_json::from_str::<Value>(&out_str).unwrap_or_else(|_| json!({}));
                 if let Some(arr) = edge_deps.as_array() {
@@ -1865,13 +1872,15 @@ impl ToolRouter {
                 let err = out_err;
 
                 // Supplement with symbol_edges-based export dependencies
-                let edge_deps =
-                    self.manifest_edge_dependencies(&file_id, limit.saturating_sub(
+                let edge_deps = self.manifest_edge_dependencies(
+                    &file_id,
+                    limit.saturating_sub(
                         serde_json::from_str::<Value>(&out_str)
                             .ok()
                             .and_then(|v| v["total_dependencies"].as_u64())
                             .unwrap_or(0) as usize,
-                    ));
+                    ),
+                );
                 let mut value =
                     serde_json::from_str::<Value>(&out_str).unwrap_or_else(|_| json!({}));
                 if let Some(arr) = edge_deps.as_array() {
@@ -1919,7 +1928,10 @@ impl ToolRouter {
                         "reason": Value::Null,
                     },
                 });
-                (serde_json::to_string_pretty(&result).unwrap_or_default(), err)
+                (
+                    serde_json::to_string_pretty(&result).unwrap_or_default(),
+                    err,
+                )
             }
             _ => unreachable!("direction was validated above"),
         }
@@ -2653,12 +2665,7 @@ mod tests {
     }
 
     /// Helper: insert an import from one file to another.
-    fn insert_test_import(
-        store: &Store,
-        from_file: FileId,
-        to_path: &str,
-        imported_name: &str,
-    ) {
+    fn insert_test_import(store: &Store, from_file: FileId, to_path: &str, imported_name: &str) {
         use atlas_engine::ImportKind;
         let range = atlas_engine::TextRange {
             start_byte: 0,
@@ -2727,7 +2734,10 @@ mod tests {
         // Should have at least the import-based dependent (b.ts)
         let deps = resp["dependents"].as_array().unwrap();
         let dep_files: Vec<&str> = deps.iter().filter_map(|d| d["file"].as_str()).collect();
-        assert!(dep_files.contains(&"b.ts"), "Expected b.ts in dependents, got: {dep_files:?}");
+        assert!(
+            dep_files.contains(&"b.ts"),
+            "Expected b.ts in dependents, got: {dep_files:?}"
+        );
 
         // The edge-based dependent should also be there (from symbol_edges)
         // Both import and edge point to b.ts, deduplication should result in one entry
@@ -2830,10 +2840,19 @@ mod tests {
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         // analysis_contract must be present
         let contract = &resp["analysis_contract"];
-        assert!(contract.get("coverage").is_some(), "analysis_contract missing coverage field: {resp_str}");
+        assert!(
+            contract.get("coverage").is_some(),
+            "analysis_contract missing coverage field: {resp_str}"
+        );
         // structural mode should have precision_tier and capability_mask
-        assert!(contract.get("precision_tier").is_some(), "analysis_contract missing precision_tier: {resp_str}");
-        assert!(contract.get("capability_mask").is_some(), "analysis_contract missing capability_mask: {resp_str}");
+        assert!(
+            contract.get("precision_tier").is_some(),
+            "analysis_contract missing precision_tier: {resp_str}"
+        );
+        assert!(
+            contract.get("capability_mask").is_some(),
+            "analysis_contract missing capability_mask: {resp_str}"
+        );
     }
 
     #[test]
@@ -2854,8 +2873,15 @@ mod tests {
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         let contract = &resp["analysis_contract"];
-        assert_eq!(contract["coverage"].as_str(), Some("full"), "manifest mode must have full coverage: {resp_str}");
-        assert!(contract["reason"].is_null(), "manifest mode reason must be null: {resp_str}");
+        assert_eq!(
+            contract["coverage"].as_str(),
+            Some("full"),
+            "manifest mode must have full coverage: {resp_str}"
+        );
+        assert!(
+            contract["reason"].is_null(),
+            "manifest mode reason must be null: {resp_str}"
+        );
     }
 
     #[test]
@@ -2876,7 +2902,11 @@ mod tests {
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         let contract = &resp["analysis_contract"];
-        assert_eq!(contract["coverage"].as_str(), Some("full"), "default mode (manifest) must have full coverage: {resp_str}");
+        assert_eq!(
+            contract["coverage"].as_str(),
+            Some("full"),
+            "default mode (manifest) must have full coverage: {resp_str}"
+        );
     }
 
     #[test]
@@ -2893,8 +2923,14 @@ mod tests {
             "analysis": "invalid",
         });
         let (resp_str, is_error) = router.handle_file_dependencies(&args);
-        assert!(is_error, "Expected error for unknown analysis mode, got: {resp_str}");
-        assert!(resp_str.contains("Unknown analysis mode"), "Expected error message, got: {resp_str}");
+        assert!(
+            is_error,
+            "Expected error for unknown analysis mode, got: {resp_str}"
+        );
+        assert!(
+            resp_str.contains("Unknown analysis mode"),
+            "Expected error message, got: {resp_str}"
+        );
     }
 
     #[test]

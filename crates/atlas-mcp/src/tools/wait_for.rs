@@ -55,8 +55,7 @@ pub(crate) async fn handle_wait_for_task(
         .unwrap_or(2)
         .clamp(1, 10);
 
-    let deadline =
-        tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
     let poll_duration = Duration::from_secs(poll_interval_secs);
 
     loop {
@@ -95,8 +94,7 @@ pub(crate) async fn handle_wait_for_task(
             if let Some(ref error) = info.error {
                 response["error"] = serde_json::Value::String(error.clone());
             }
-            let is_project_completed =
-                status_str == "completed" && info.method == "project";
+            let is_project_completed = status_str == "completed" && info.method == "project";
             return WaitForResult {
                 json_text: serde_json::to_string_pretty(&response)
                     .unwrap_or_else(|e| e.to_string()),
@@ -195,7 +193,10 @@ pub(crate) fn handle_wait_for_task_sync(
                     };
                 }
                 crate::task_manager::TaskStatus::Failed => {
-                    let msg = info.error.clone().unwrap_or_else(|| "unknown error".to_string());
+                    let msg = info
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "unknown error".to_string());
                     return WaitForResult {
                         json_text: serde_json::to_string_pretty(&json!({
                             "task_id": task_id,

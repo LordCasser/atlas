@@ -189,8 +189,10 @@ impl ToolRouter {
         // needs an Arc<Engine> but the router holds a Mutex<Engine>.
         // Engine::from_store is a lightweight constructor — all inner services
         // share the same Arc<Store>.
-        let engine: Arc<Engine> =
-            Arc::new(Engine::from_store(self.store.clone(), Some(&self.project_root)));
+        let engine: Arc<Engine> = Arc::new(Engine::from_store(
+            self.store.clone(),
+            Some(&self.project_root),
+        ));
         let svc = ScopedSearchService::new(self.store.clone(), engine, self.project_root.clone());
 
         let engine_resp = match svc.execute(req) {
@@ -233,10 +235,7 @@ impl ToolRouter {
             response["precise"] = json!(false);
         }
 
-        ctx.send_progress(
-            1.0,
-            &format!("Search complete ({} results)", hits.len()),
-        );
+        ctx.send_progress(1.0, &format!("Search complete ({} results)", hits.len()));
 
         (
             serde_json::to_string_pretty(&response).unwrap_or_else(|e| e.to_string()),
@@ -293,8 +292,7 @@ impl ToolRouter {
 
             let engine: Arc<Engine> =
                 Arc::new(Engine::from_store(store.clone(), Some(&project_root)));
-            let svc =
-                ScopedSearchService::new(store.clone(), engine.clone(), project_root.clone());
+            let svc = ScopedSearchService::new(store.clone(), engine.clone(), project_root.clone());
 
             let engine_resp = match svc.execute(req) {
                 Ok(r) => r,

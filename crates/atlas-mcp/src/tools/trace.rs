@@ -110,7 +110,11 @@ impl ToolRouter {
             .map(LazyDiagnostics::from_structural);
 
         ctx.send_progress(0.8, "Running trace point...");
-        let mut resp = self.engine.lock().unwrap().trace_point(&file_id, line, column);
+        let mut resp = self
+            .engine
+            .lock()
+            .unwrap()
+            .trace_point(&file_id, line, column);
         ctx.send_progress(1.0, "Trace complete");
 
         resp.diagnostics.extend(warnings_to_trace_diagnostics(
@@ -252,7 +256,11 @@ impl ToolRouter {
         // Engine::trace_variable handles lazy dataflow orchestration + trace
         // in a single call.  The response already carries lazy_summary,
         // diagnostics, and partial_result from the dataflow layer.
-        let mut resp = self.engine.lock().unwrap().trace_variable(&file_id, line, column, max_depth);
+        let mut resp = self
+            .engine
+            .lock()
+            .unwrap()
+            .trace_variable(&file_id, line, column, max_depth);
 
         // Build combined lazy diagnostics from the structural outcome.
         // Engine already injects dataflow-layer diagnostics into resp.diagnostics;
@@ -275,12 +283,10 @@ impl ToolRouter {
         if let Some(ref summary) = resp.lazy_summary {
             match combined_lazy_diag {
                 Some(ref mut diag) => {
-                    diag.dataflow =
-                        Some(LazyLayerDiagnostics::from_lazy_summary(summary));
+                    diag.dataflow = Some(LazyLayerDiagnostics::from_lazy_summary(summary));
                 }
                 None => {
-                    combined_lazy_diag =
-                        Some(LazyDiagnostics::from_dataflow_summary(summary));
+                    combined_lazy_diag = Some(LazyDiagnostics::from_dataflow_summary(summary));
                 }
             }
         }
@@ -446,7 +452,11 @@ impl ToolRouter {
                 lazy_diag = Some(LazyDiagnostics::from_structural(lo));
             }
         }
-        let resp = self.engine.lock().unwrap().trace_callers(&target_id, max_depth);
+        let resp = self
+            .engine
+            .lock()
+            .unwrap()
+            .trace_callers(&target_id, max_depth);
         let mut resp = resp;
         let is_error = !resp.ok;
 
@@ -629,7 +639,11 @@ impl ToolRouter {
             lazy_diag = Some(LazyDiagnostics::from_structural(lo));
         }
 
-        let mut resp = self.engine.lock().unwrap().trace_forward(&from_id, &to_id, max_depth);
+        let mut resp = self
+            .engine
+            .lock()
+            .unwrap()
+            .trace_forward(&from_id, &to_id, max_depth);
         let is_error = !resp.ok;
         resp.diagnostics.extend(warnings_to_trace_diagnostics(
             root_warnings,

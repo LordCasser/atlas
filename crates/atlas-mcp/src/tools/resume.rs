@@ -202,7 +202,12 @@ impl ToolRouter {
             Self::patch_resume_response(&resp_str, &original_query_id).unwrap_or(resp_str);
 
         // Mark as Ready if the re-run completed successfully
-        if let Some(s) = self.query_snapshots.lock().unwrap().get_mut(&original_query_id) {
+        if let Some(s) = self
+            .query_snapshots
+            .lock()
+            .unwrap()
+            .get_mut(&original_query_id)
+        {
             s.status = QueryStatus::Ready;
         }
 

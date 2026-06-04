@@ -37,10 +37,7 @@ impl ProgressSink for McpProgressSink {
                 detail,
                 ..
             } => {
-                self.send_progress(
-                    1.0,
-                    detail.or(Some(format!("{phase} done: {succeeded}"))),
-                );
+                self.send_progress(1.0, detail.or(Some(format!("{phase} done: {succeeded}"))));
             }
             ProgressEvent::Warning { phase, message } => {
                 tracing::warn!("[{phase}] {message}");

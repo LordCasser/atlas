@@ -174,36 +174,35 @@ impl ServerHandler for AtlasMcpService {
             // ── Build request-scoped context (replaces global progress_sender) ──
             // For long-running tools with a progress token, create a channel and
             // spawn a forwarder that converts ProgressReport → MCP notifications.
-            let (ctx, _progress_task) = if matches!(
-                tool_name.as_str(),
-                "index" | "project" | "search"
-            ) && has_progress_token
-            {
-                let (tx, mut rx) =
-                    tokio::sync::mpsc::unbounded_channel::<tools::ProgressReport>();
-                let token = progress_token.unwrap();
-                let peer = context.peer.clone();
+            let (ctx, _progress_task) =
+                if matches!(tool_name.as_str(), "index" | "project" | "search")
+                    && has_progress_token
+                {
+                    let (tx, mut rx) =
+                        tokio::sync::mpsc::unbounded_channel::<tools::ProgressReport>();
+                    let token = progress_token.unwrap();
+                    let peer = context.peer.clone();
 
-                let ctx = tools::ToolCallContext::with_progress_sender(tx);
+                    let ctx = tools::ToolCallContext::with_progress_sender(tx);
 
-                let forwarder = tokio::spawn(async move {
-                    while let Some((progress, total, message)) = rx.recv().await {
-                        let mut params =
-                            rmcp_model::ProgressNotificationParam::new(token.clone(), progress);
-                        if let Some(t) = total {
-                            params = params.with_total(t);
+                    let forwarder = tokio::spawn(async move {
+                        while let Some((progress, total, message)) = rx.recv().await {
+                            let mut params =
+                                rmcp_model::ProgressNotificationParam::new(token.clone(), progress);
+                            if let Some(t) = total {
+                                params = params.with_total(t);
+                            }
+                            if let Some(m) = message {
+                                params = params.with_message(m);
+                            }
+                            let _ = peer.notify_progress(params).await;
                         }
-                        if let Some(m) = message {
-                            params = params.with_message(m);
-                        }
-                        let _ = peer.notify_progress(params).await;
-                    }
-                });
+                    });
 
-                (ctx, Some(forwarder))
-            } else {
-                (tools::ToolCallContext::empty(), None)
-            };
+                    (ctx, Some(forwarder))
+                } else {
+                    (tools::ToolCallContext::empty(), None)
+                };
 
             let mut args = request
                 .arguments
@@ -218,10 +217,7 @@ impl ServerHandler for AtlasMcpService {
             if tool_name == "wait_for_task" {
                 let tm = {
                     let router = self.lock_router().map_err(|_| {
-                        rmcp::ErrorData::internal_error(
-                            "Atlas MCP router lock poisoned",
-                            None,
-                        )
+                        rmcp::ErrorData::internal_error("Atlas MCP router lock poisoned", None)
                     })?;
                     Arc::clone(&router.task_manager)
                 };
@@ -243,12 +239,10 @@ impl ServerHandler for AtlasMcpService {
                         val["activation"] = serde_json::Value::String("activated".into());
                         val["activated_project"] = serde_json::Value::String(proj);
                     } else {
-                        val["activation"] =
-                            serde_json::Value::String("already_activated".into());
+                        val["activation"] = serde_json::Value::String("already_activated".into());
                     }
                     (
-                        serde_json::to_string_pretty(&val)
-                            .unwrap_or_else(|e| e.to_string()),
+                        serde_json::to_string_pretty(&val).unwrap_or_else(|e| e.to_string()),
                         wfr.is_error,
                     )
                 } else {

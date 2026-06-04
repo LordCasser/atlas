@@ -147,7 +147,8 @@ impl LazyRefreshQueue {
         self.cumulative_count.store(0, Ordering::Release);
         self.rebuild_needed.store(false, Ordering::Release);
         self.rebuild_in_progress.store(false, Ordering::Release);
-        self.background_writes_pending.store(false, Ordering::Release);
+        self.background_writes_pending
+            .store(false, Ordering::Release);
     }
 }
 

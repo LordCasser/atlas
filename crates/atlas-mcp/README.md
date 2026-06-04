@@ -28,12 +28,12 @@ AtlasMcpService (ServerHandler)
 | `resume_task` | `resume.rs` | No — re-executes snapshotted query |
 | `search` | `search.rs` | No — scoped store query, optional bounded structural parsing |
 | `symbol` | `search.rs` | Yes |
-| `calls` | `mod.rs` | Partial — call graph required for multi-hop |
+| `calls` | `mod.rs` / `graph.rs` | Yes |
 | `path` | `graph.rs` | Yes |
 | `explore` | `graph.rs` | Yes |
 | `impact` | `graph.rs` | Yes |
 | `file_dependencies` | `mod.rs` | No — store queries |
-| `trace` | `trace.rs` | No — uses RawTraceEngine directly; lazy-loads dataflow internally |
+| `trace` | `trace.rs` | No — `kind="variable"` uses the high-level `Engine` facade so lazy dataflow can be loaded before tracing; other trace kinds use store/graph facts as needed |
 | `lifecycle` | `lifecycle.rs` | No — consumes CFG+DataFlow from store |
 | `branch_diff` | `branch_diff.rs` | No — consumes CFG+DataFlow from store |
 | `fp_dispatches` | `mod.rs` | No — store queries/writes |
@@ -52,8 +52,9 @@ Key notes that complement the code:
 - `index` supports `analysis`: `"manifest"` (fast, default), `"structural"`
   (imports/references/call graph), or `"full"` (also builds dataflow).
 - `trace` accepts a `kind` parameter: `"point"` (single location), `"variable"`
-  (dataflow trace), `"forward"` (path between two symbols), or `"callers"`
-  (caller chain). Each kind has different required args.
+  (dataflow trace with lazy dataflow orchestration), `"forward"` (path between
+  two symbols), or `"callers"` (caller chain). Each kind has different required
+  args.
 - `calls` with `direction="incoming"` or `"outgoing"` and `depth=1` replaces
   old `callers`/`callees`. Multi-hop uses `direction="both"` and `depth>1`.
 - `fp_dispatches` with `action: "add"|"list"|"delete"` replaces old
@@ -84,7 +85,7 @@ Example:
 
 ## Key design decisions
 
-- **Graph is lazily initialized**: `ToolRouter::ensure_graph_initialized()` is called by the MCP server layer before dispatching to graph-backed tools. Store-backed tools (`search`, `trace`, `project`, `file_dependencies`, `symbol(view="usages")`) skip graph construction entirely.
+- **Graph is lazily initialized**: `ToolRouter::ensure_graph_initialized()` is called by the MCP server layer before dispatching to graph-backed tools. Store-backed tools (`search`, `trace`, `project`, `file_dependencies`) skip graph construction entirely. The merged `symbol` tool is graph-backed at dispatch time because `detail` and `context` need the graph.
 - **Background tasks are the compatibility progress channel**: progress-aware MCP clients use protocol progress notifications; clients without that support use the background task API and poll `task_status`.
 - **Scope is mandatory for search**: `search` never performs global extraction. Scope size controls parsing depth: small scopes get bounded structural parsing; large scopes stay manifest-level with a narrowing warning.
 - **Active project switching**: `project(action="open")` can switch the active project at runtime. `activate_project()` atomically replaces the store, lazy service, and clears graph caches.
