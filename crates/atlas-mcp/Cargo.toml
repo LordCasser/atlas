@@ -9,7 +9,7 @@ homepage = "https://github.com/LordCasser/atlas"
 documentation = "https://github.com/LordCasser/atlas#readme"
 
 [dependencies]
-atlas-engine = { path = "../atlas-engine" }
+atlas-engine = { path = "../atlas-engine", default-features = false }
 domain-rules = { path = "../atlas-engine/crates/domain_rules" }
 anyhow = "1"
 blake3 = "1"
@@ -19,3 +19,24 @@ serde_json = "1"
 rmcp = { version = "=1.7.0", default-features = false, features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread"] }
 tracing = "0.1"
+
+[features]
+default = ["typescript", "javascript", "python"]
+typescript = ["atlas-engine/typescript"]
+javascript = ["atlas-engine/javascript"]
+python = ["atlas-engine/python"]
+java = ["atlas-engine/java"]
+c = ["atlas-engine/c"]
+cpp = ["atlas-engine/cpp"]
+arkts = ["atlas-engine/arkts"]
+cangjie = ["atlas-engine/cangjie"]
+go = ["atlas-engine/go"]
+csharp = ["atlas-engine/csharp"]
+rust = ["atlas-engine/rust"]
+php = ["atlas-engine/php"]
+ruby = ["atlas-engine/ruby"]
+kotlin = ["atlas-engine/kotlin"]
+all-languages = [
+    "typescript", "javascript", "python", "java",
+    "c", "cpp", "arkts", "cangjie", "go", "csharp", "rust", "php", "ruby", "kotlin",
+]

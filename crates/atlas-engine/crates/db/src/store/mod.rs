@@ -1469,4 +1469,309 @@ mod tests {
             "layer content_hash should match the new hash"
         );
     }
+
+    // ── derive_capability_for_files tests ────────────────────────────────
+
+    #[test]
+    fn derive_capability_empty_store_returns_empty_mask() {
+        let store = test_store();
+        let file_id = FileId::generate("src/nonexistent.ts");
+        let mask = store.derive_capability_for_files(&[file_id]);
+        assert!(mask.is_zero(), "empty store should return empty mask");
+    }
+
+    #[test]
+    fn derive_capability_empty_file_ids_returns_empty_mask() {
+        let store = test_store();
+        let mask = store.derive_capability_for_files(&[]);
+        assert!(mask.is_zero(), "empty file_ids should return empty mask");
+    }
+
+    #[test]
+    fn derive_capability_manifest_only_returns_manifest_bit() {
+        let store = test_store();
+        let file_id = FileId::generate("src/example.ts");
+        let file = FileInfo {
+            file_id,
+            path: "src/example.ts".into(),
+            language: Language::TypeScript,
+            content_hash: "abc".into(),
+            status: ParseStatus::Success,
+        };
+        store.upsert_file(&file).unwrap();
+
+        // Insert manifest extraction state
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "manifest",
+                "abc",
+                "complete",
+                CapabilityMask::from_bits(CapabilityMask::MANIFEST),
+            )
+            .unwrap();
+
+        let mask = store.derive_capability_for_files(&[file_id]);
+        assert!(
+            mask.has(CapabilityMask::MANIFEST),
+            "should have MANIFEST bit: {mask:?}"
+        );
+        assert!(
+            !mask.has(CapabilityMask::STRUCTURAL),
+            "should NOT have STRUCTURAL bit with only manifest data: {mask:?}"
+        );
+        assert!(
+            !mask.has(CapabilityMask::CALL_EDGES),
+            "should NOT have CALL_EDGES bit with only manifest data: {mask:?}"
+        );
+    }
+
+    #[test]
+    fn derive_capability_structural_no_edges_returns_manifest_and_structural() {
+        let store = test_store();
+        let file_id = FileId::generate("src/example.ts");
+        let file = FileInfo {
+            file_id,
+            path: "src/example.ts".into(),
+            language: Language::TypeScript,
+            content_hash: "abc".into(),
+            status: ParseStatus::Success,
+        };
+        store.upsert_file(&file).unwrap();
+
+        // Insert structural extraction state (implies manifest is also present)
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "structural",
+                "abc",
+                "complete",
+                CapabilityMask::from_bits(CapabilityMask::MANIFEST | CapabilityMask::STRUCTURAL),
+            )
+            .unwrap();
+
+        let mask = store.derive_capability_for_files(&[file_id]);
+        assert!(mask.has(CapabilityMask::MANIFEST));
+        assert!(mask.has(CapabilityMask::STRUCTURAL));
+        assert!(
+            !mask.has(CapabilityMask::CALL_EDGES),
+            "should NOT have CALL_EDGES with no edges in store"
+        );
+    }
+
+    #[test]
+    fn derive_capability_with_edges_returns_call_edges_bit() {
+        let store = test_store();
+        let file_id = FileId::generate("src/example.ts");
+
+        // Insert file
+        let file = FileInfo {
+            file_id,
+            path: "src/example.ts".into(),
+            language: Language::TypeScript,
+            content_hash: "abc".into(),
+            status: ParseStatus::Success,
+        };
+        store.upsert_file(&file).unwrap();
+
+        // Insert structural extraction state
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "structural",
+                "abc",
+                "complete",
+                CapabilityMask::from_bits(CapabilityMask::MANIFEST | CapabilityMask::STRUCTURAL),
+            )
+            .unwrap();
+
+        // Insert two symbols
+        let caller = SymbolDef {
+            id: SymbolId::generate(&file_id, "typescript", "caller.func", "function", None),
+            kind: SymbolKind::Function,
+            name: "func".into(),
+            qualified_name: "caller.func".into(),
+            symbol_path: vec!["caller".into(), "func".into()],
+            file_id,
+            language: Language::TypeScript,
+            range: Default::default(),
+            name_range: Default::default(),
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".into(),
+        };
+        let callee = SymbolDef {
+            id: SymbolId::generate(
+                &file_id,
+                "typescript",
+                "callee.helper",
+                "function",
+                None,
+            ),
+            kind: SymbolKind::Function,
+            name: "helper".into(),
+            qualified_name: "callee.helper".into(),
+            symbol_path: vec!["callee".into(), "helper".into()],
+            file_id,
+            language: Language::TypeScript,
+            range: Default::default(),
+            name_range: Default::default(),
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".into(),
+        };
+        store.insert_symbols(&[caller.clone(), callee.clone()]).unwrap();
+
+        // Insert a call edge: caller -> callee
+        let edge_id = EdgeId::generate(
+            &caller.id,
+            &callee.id,
+            EdgeKind::Calls.as_str(),
+            None,
+            Provenance::TreeSitter.as_str(),
+        );
+        let edge = RawEdge::new(
+            edge_id,
+            caller.id,
+            callee.id,
+            EdgeKind::Calls,
+            Confidence::certain(),
+            Provenance::TreeSitter,
+        );
+        store.insert_edges(&[edge]).unwrap();
+
+        let mask = store.derive_capability_for_files(&[file_id]);
+        assert!(mask.has(CapabilityMask::MANIFEST));
+        assert!(mask.has(CapabilityMask::STRUCTURAL));
+        assert!(
+            mask.has(CapabilityMask::CALL_EDGES),
+            "should have CALL_EDGES when edges exist in store: {mask:?}"
+        );
+        assert!(
+            !mask.has(CapabilityMask::CFG),
+            "CFG not built by lazy structural"
+        );
+        assert!(
+            !mask.has(CapabilityMask::DATAFLOW),
+            "DATAFLOW not built by lazy structural"
+        );
+        assert!(
+            !mask.has(CapabilityMask::SUMMARIES),
+            "SUMMARIES not built by lazy structural"
+        );
+    }
+
+    #[test]
+    fn derive_capability_multiple_files_aggregates_correctly() {
+        let store = test_store();
+
+        // File A: manifest only
+        let file_a = FileId::generate("src/a.ts");
+        let info_a = FileInfo {
+            file_id: file_a,
+            path: "src/a.ts".into(),
+            language: Language::TypeScript,
+            content_hash: "hash_a".into(),
+            status: ParseStatus::Success,
+        };
+        store.upsert_file(&info_a).unwrap();
+        store
+            .upsert_file_extraction_state(
+                &file_a,
+                "manifest",
+                "hash_a",
+                "complete",
+                CapabilityMask::from_bits(CapabilityMask::MANIFEST),
+            )
+            .unwrap();
+
+        // File B: structural + edges
+        let file_b = FileId::generate("src/b.ts");
+        let info_b = FileInfo {
+            file_id: file_b,
+            path: "src/b.ts".into(),
+            language: Language::TypeScript,
+            content_hash: "hash_b".into(),
+            status: ParseStatus::Success,
+        };
+        store.upsert_file(&info_b).unwrap();
+        store
+            .upsert_file_extraction_state(
+                &file_b,
+                "structural",
+                "hash_b",
+                "complete",
+                CapabilityMask::from_bits(CapabilityMask::MANIFEST | CapabilityMask::STRUCTURAL),
+            )
+            .unwrap();
+
+        let sym_b = SymbolDef {
+            id: SymbolId::generate(&file_b, "typescript", "b.Foo.fn", "function", None),
+            kind: SymbolKind::Function,
+            name: "fn".into(),
+            qualified_name: "b.Foo.fn".into(),
+            symbol_path: vec!["b".into(), "Foo".into(), "fn".into()],
+            file_id: file_b,
+            language: Language::TypeScript,
+            range: Default::default(),
+            name_range: Default::default(),
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".into(),
+        };
+        store.insert_symbols(&[sym_b.clone()]).unwrap();
+
+        // Self-edge (symbol calls itself) — verifies the query handles same source+target
+        let edge_id = EdgeId::generate(
+            &sym_b.id,
+            &sym_b.id,
+            EdgeKind::Calls.as_str(),
+            None,
+            Provenance::TreeSitter.as_str(),
+        );
+        let edge = RawEdge::new(
+            edge_id,
+            sym_b.id,
+            sym_b.id,
+            EdgeKind::Calls,
+            Confidence::certain(),
+            Provenance::TreeSitter,
+        );
+        store.insert_edges(&[edge]).unwrap();
+
+        let mask = store.derive_capability_for_files(&[file_a, file_b]);
+        assert!(
+            mask.has(CapabilityMask::MANIFEST),
+            "aggregate should have MANIFEST from file_a"
+        );
+        assert!(
+            mask.has(CapabilityMask::STRUCTURAL),
+            "aggregate should have STRUCTURAL from file_b"
+        );
+        assert!(
+            mask.has(CapabilityMask::CALL_EDGES),
+            "aggregate should have CALL_EDGES from file_b edges"
+        );
+    }
 }

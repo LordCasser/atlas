@@ -216,6 +216,71 @@ pub fn phase_extract_serial(
     ExtractedFiles { items, stats }
 }
 
+// ── Phase 5b: Extraction (parallel) ─────────────────────────────────────
+
+/// Extract facts from files in parallel using rayon — no DB writes.
+///
+/// Shares a single [`ParseWorkerPool`] across all rayon threads.  Atomic
+/// counters track per-file success/failure/symbol counts thread-safely.
+/// `on_progress` is called once at the end with `(succeeded, total)`.
+pub fn phase_extract_parallel(
+    root: &Path,
+    files: &[PathBuf],
+    frontends: &HashMap<Language, LanguageFrontend>,
+    mode: ExtractionMode,
+    on_progress: Option<&dyn Fn(usize, usize)>,
+) -> ExtractedFiles {
+    use rayon::prelude::*;
+    let pool = ParseWorkerPool::new(WorkerConfig::default());
+    let total = files.len();
+
+    // Atomic counters for thread-safe progress
+    let succeeded = std::sync::atomic::AtomicUsize::new(0);
+    let failed = std::sync::atomic::AtomicUsize::new(0);
+    let symbol_count = std::sync::atomic::AtomicUsize::new(0);
+
+    let items: Vec<ExtractedFile> = files
+        .par_iter()
+        .filter_map(|rel_path| {
+            let abs_path = root.join(rel_path);
+            let lang = Language::from_path(rel_path)?;
+            let frontend = frontends.get(&lang)?;
+            match extract_one_index_file(&pool, &abs_path, root, frontend, &mode) {
+                Ok(file) => {
+                    symbol_count.fetch_add(
+                        file.facts.symbols.len(),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    succeeded.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    Some(file)
+                }
+                Err(_) => {
+                    failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    None
+                }
+            }
+        })
+        .collect();
+
+    // Call on_progress once at the end if provided
+    if let Some(cb) = on_progress {
+        cb(
+            succeeded.load(std::sync::atomic::Ordering::Relaxed),
+            total,
+        );
+    }
+
+    ExtractedFiles {
+        items,
+        stats: ExtractionPhaseStats {
+            attempted: total,
+            succeeded: succeeded.load(std::sync::atomic::Ordering::Relaxed),
+            failed: failed.load(std::sync::atomic::Ordering::Relaxed),
+            symbols: symbol_count.load(std::sync::atomic::Ordering::Relaxed),
+        },
+    }
+}
+
 /// Internal: extract a single file.  Returns `Err(rel_path, message)` on
 /// failure so the caller can distinguish per-file errors from fatal errors.
 fn extract_one_index_file(
@@ -312,7 +377,7 @@ pub fn phase_write_batched(
         single_failures: 0,
     };
 
-    store.enter_bulk_write()?;
+    let _bulk = store.enter_bulk_write()?;
     let mut next_checkpoint = checkpoint_interval;
 
     for chunk in extracted.items.chunks(batch_size) {
@@ -351,11 +416,20 @@ pub fn phase_write_batched(
 // ── Phase 7: Resolution + edge building ────────────────────────────────
 
 /// Resolve symbol references and build graph edges.
+///
+/// Checks whether path alias config (`tsconfig.json` / `jsconfig.json`) has
+/// changed since the last index; if so, invalidates all resolved references
+/// and deletes all existing edges before re-resolving.  Resolution itself
+/// runs in parallel via [`ReferenceResolver::resolve_all_parallel`].
 pub fn phase_resolve_and_build(store: &Arc<Store>, root: &Path) -> Result<GraphResult> {
     let path_alias = PathAliasConfig::resolver(root);
+    if PathAliasConfig::has_changed(store, root)? {
+        store.invalidate_all_references()?;
+        store.delete_all_edges()?;
+    }
     let mut resolver = ReferenceResolver::with_path_alias(store.clone(), path_alias);
     let (resolved_refs, res_stats) = resolver
-        .resolve_all()
+        .resolve_all_parallel(store.clone(), None, None)
         .context("Reference resolution failed")?;
     let builder = GraphBuilder::new(store.clone());
     let build_stats = builder.build_all(&resolved_refs);
@@ -515,5 +589,81 @@ mod tests {
         let written = phase_write_single(&store, &extracted).unwrap();
         assert_eq!(written, 1);
         assert!(store.count_symbols().unwrap() > 0);
+    }
+
+    /// Verify that `phase_write_batched` holds the `BulkWriteGuard` for the
+    /// entire insert loop, then restores pragmas on return.
+    #[test]
+    fn phase_write_batched_guard_covers_inserts_and_restores_pragmas() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.ts"),
+            "export function fa() { return 1; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("b.ts"),
+            "export function fb() { return 2; }\n",
+        )
+        .unwrap();
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        let files = vec![PathBuf::from("a.ts"), PathBuf::from("b.ts")];
+        let frontends = phase_init_frontends(&files).unwrap();
+        let extracted = phase_extract_serial(
+            dir.path(),
+            &files,
+            &frontends,
+            ExtractionMode::Manifest,
+            None,
+        );
+        assert_eq!(extracted.items.len(), 2, "expected both files to be extracted");
+
+        // Run batched write with a small batch size so both files land in
+        // the batch path.
+        let stats = phase_write_batched(
+            &store,
+            &extracted,
+            2,   // batch_size
+            100, // checkpoint_interval
+            |_| {},  // on_progress (no-op)
+            || false, // interrupted (never)
+        )
+        .unwrap();
+
+        assert_eq!(stats.written, 2, "both files should be written");
+        assert_eq!(stats.batch_failures, 0);
+        assert_eq!(stats.single_failures, 0);
+
+        // Verify data actually landed.
+        let count = store.count_symbols().unwrap();
+        assert!(count > 0, "symbol count was {count}");
+
+        // Verify pragmas were restored after the guard dropped.
+        // For in-memory databases the BulkWriteGuard sets synchronous=NORMAL(1)
+        // and foreign_keys=ON(1) on drop.
+        let sync_val: i32 = store
+            .with_transaction(|tx| {
+                Ok(tx.query_row("PRAGMA synchronous", [], |row| row.get(0))?)
+            })
+            .expect("query PRAGMA synchronous");
+        assert_eq!(
+            sync_val, 1,
+            "synchronous should be NORMAL (1) after bulk-write guard drops, got {}",
+            sync_val
+        );
+
+        let fk_val: i32 = store
+            .with_transaction(|tx| {
+                Ok(tx.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?)
+            })
+            .expect("query PRAGMA foreign_keys");
+        assert_eq!(
+            fk_val, 1,
+            "foreign_keys should be ON (1) after bulk-write guard drops, got {}",
+            fk_val
+        );
     }
 }

@@ -1401,6 +1401,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tracing",
  "types",
  "workspace",
 ]
@@ -1538,6 +1539,7 @@ dependencies = [
  "graph",
  "serde",
  "tempfile",
+ "tracing",
  "types",
 ]
 

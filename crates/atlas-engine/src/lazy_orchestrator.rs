@@ -67,6 +67,7 @@ pub struct LazyOutcome {
 /// [`ensure_structural_for_symbol`] with a [`LazyPolicy`] — no direct
 /// `LazyBudget` or `LazyCoordinator` construction.
 pub struct LazyOrchestrator {
+    store: Arc<Store>,
     structural: LazyStructuralService,
     coordinator: LazyCoordinator,
 }
@@ -87,6 +88,7 @@ impl LazyOrchestrator {
             LazyCoordinator::new(store.clone()).with_include_roots(include_roots.clone())
         };
         Self {
+            store,
             structural,
             coordinator,
         }
@@ -160,11 +162,18 @@ impl LazyOrchestrator {
             outcome.pending_job_ids.extend(result.pending_job_ids);
         }
 
-        // After structural+manifest extraction, update capability_mask.
-        if outcome.files_built > 0 || outcome.files_cached > 0 {
-            outcome.capability_mask = CapabilityMask::from_bits(
-                CapabilityMask::MANIFEST_BIT | CapabilityMask::STRUCTURAL_BIT,
-            );
+        // Derive capability from actual persistent state instead of hardcoding.
+        // Include both the caller's requested files (which after the loop
+        // have structural data — either freshly built or cached) and the
+        // closure files that were built during the loop.
+        {
+            let mut all_ids: Vec<FileId> = ordered.clone();
+            for fid in &outcome.built_file_ids {
+                if !all_ids.contains(fid) {
+                    all_ids.push(*fid);
+                }
+            }
+            outcome.capability_mask = self.store.derive_capability_for_files(&all_ids);
         }
 
         // Compute final precision tier
@@ -201,11 +210,9 @@ impl LazyOrchestrator {
             query_id,
         )?;
 
-        let cap_mask = if result.files_built > 0 || result.files_cached > 0 {
-            CapabilityMask::from_bits(CapabilityMask::MANIFEST_BIT | CapabilityMask::STRUCTURAL_BIT)
-        } else {
-            CapabilityMask::default()
-        };
+        let cap_mask = self
+            .store
+            .derive_capability_for_files(&result.built_file_ids);
 
         // Map EnsureStructuralResult → LazyOutcome
         let precision_tier = crate::precision::structural_precision(

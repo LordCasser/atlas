@@ -42,46 +42,34 @@ AtlasMcpService (ServerHandler)
 ## Tool schema reference
 
 The source of truth for MCP input schemas is `make_all_tools()` in
-`crates/atlas-mcp/src/tools/mod.rs`. The current public tool names are short
-names without the old `atlas_` prefix.
+`crates/atlas-mcp/src/tools/mod.rs`. Each tool's parameters (names, types,
+enums, defaults, and descriptions) are defined there. A schema validation test
+in `tests/schema_validation.rs` catches regressions (missing `analysis`
+parameter on `index`, empty tool descriptions, etc.).
 
-| Tool | Required arguments | Optional arguments |
-|------|--------------------|--------------------|
-| `project` | `action`: `"open"`\|`"status"`\|`"files"` | `project_path`, `storage`, `scan_files`, `background` |
-| `index` | — | `include`: string[], `exclude`: string[], `background`: boolean |
-| `search` | `query`: string | `scope`: string, `kind`: string, `limit`: integer (default 20), `background`: boolean |
-| `symbol` | `symbol`: qualified name | `view`: `"detail"`\|`"context"`\|`"usages"`, `includeCode`: boolean, `include_roots`, `limit` |
-| `calls` | `symbol`: qualified name | `direction`: `"incoming"`\|`"outgoing"`\|`"both"`, `depth`: integer (default 1, max 5), `edge_kinds`: string[] (default `["calls","instantiates","implements"]`, `[]` or `["*"]` for all) |
-| `path` | `from`: qualified name, `to`: qualified name | `max_depth`: integer (default 5, max 10), `direction`, `edge_kinds`, `includeCode` |
-| `explore` | `symbol`: qualified name | `includeCode`: boolean (default `false`) |
-| `impact` | `symbol`: qualified name | `depth`: integer (default 3, max 5) |
-| `file_dependencies` | `file_path`: project-relative or absolute path | `direction`: `"incoming"`\|`"outgoing"`\|`"both"`, `limit`: integer |
-| `trace` | `kind`: `"point"`\|`"variable"`\|`"forward"`\|`"callers"` | `symbol`/`from`/`to`/`line`/`column`/`file_id` (depends on kind) |
-| `lifecycle` | `symbol`: qualified name, `field`: string | `include_proof`: boolean |
-| `branch_diff` | `symbol`: qualified name | `semantic`: boolean (default `true`) |
-| `fp_dispatches` | `action`: `"add"`\|`"list"`\|`"delete"` | `field_qname`, `target_qname`, `annotation_id` |
-| `domain_rules` | `action`: `"add"`\|`"list"`\|`"delete"`\|`"learn"` | `rule_kind`: string, `pattern`: string, `rule_id`: string, `source`: string, `confidence`: number, `min_confidence`: number |
-| `tasks` | — | — |
-| `task_status` | `task_id`: string | — |
-| `wait_for_task` | `task_id`: string | `timeout_secs`: integer (default 30, max 300), `poll_interval_secs`: integer (default 2) |
-| `resume_task` | `query_id`: string | — |
+Key notes that complement the code:
 
-Notes:
-
-- `trace` accepts a `kind` parameter: `"point"` (single location), `"variable"` (dataflow trace), `"forward"` (path between two symbols), or `"callers"` (caller chain). Each kind has different required args (`symbol`/`from`/`to`/`line`/`column`/`file_id`).
-- `calls` with `direction="incoming"` or `"outgoing"` and `depth=1` replaces old `callers`/`callees`. Multi-hop uses `direction="both"` and `depth>1`.
-- `fp_dispatches` with `action: "add"|"list"|"delete"` replaces old `annotate_fp_dispatch`, `list_fp_annotations`, `delete_fp_annotation`.
-- `project` with `action: "open"|"status"|"files"` replaces old `open_project`, `status`, `files`.
-- `lifecycle` and `branch_diff` are new analysis tools consuming CFG+DataFlow.
-- `background: true` is currently supported by `search`, `index`, and
-  `project`; use `task_status` or `wait_for_task` with the returned
-  `task_id`.
-- Clients that do not send MCP progress tokens are protected from long blocking
-  calls: `index` is auto-started as a background task, and
-  `project(scan_files=true)` is also auto-backgrounded.
-- `project` only activates a project. It never indexes. After activation, call `index`.
-- MCP `index` intentionally performs manifest indexing only.
-- `search` requires a `query` string; `scope` is required for manifest-only indexes.
+- `index` supports `analysis`: `"manifest"` (fast, default), `"structural"`
+  (imports/references/call graph), or `"full"` (also builds dataflow).
+- `trace` accepts a `kind` parameter: `"point"` (single location), `"variable"`
+  (dataflow trace), `"forward"` (path between two symbols), or `"callers"`
+  (caller chain). Each kind has different required args.
+- `calls` with `direction="incoming"` or `"outgoing"` and `depth=1` replaces
+  old `callers`/`callees`. Multi-hop uses `direction="both"` and `depth>1`.
+- `fp_dispatches` with `action: "add"|"list"|"delete"` replaces old
+  `annotate_fp_dispatch`, `list_fp_annotations`, `delete_fp_annotation`.
+- `project` with `action: "open"|"status"|"files"` replaces old `open_project`,
+  `status`, `files`.
+- `lifecycle` and `branch_diff` are analysis tools consuming CFG+DataFlow.
+- `background: true` is supported by `search`, `index`, and `project`; use
+  `task_status` or `wait_for_task` with the returned `task_id`.
+- Clients without MCP progress tokens get auto-background protection: `index`
+  is auto-started as a background task; `project(scan_files=true)` is also
+  auto-backgrounded.
+- `project` only activates a project. It never indexes. After activation, call
+  `index`.
+- `search` requires a `query` string; `scope` is required for manifest-only
+  indexes.
 - `project` does not walk the project tree by default. Use `scan_files=true`
   only when you need an approximate `file_count`.
 
