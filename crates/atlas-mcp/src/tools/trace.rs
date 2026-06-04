@@ -17,7 +17,11 @@ use super::{
 use serde_json::json;
 
 impl ToolRouter {
-    pub(crate) fn handle_trace_point(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_trace_point(
+        &mut self,
+        ctx: &super::ToolCallContext,
+        args: &serde_json::Value,
+    ) -> (String, bool) {
         let file_hex = get_str_opt(args, "file_id");
         let file_path = get_str_opt(args, "file_path");
         let line = get_u64(args, "line");
@@ -105,9 +109,9 @@ impl ToolRouter {
             .as_ref()
             .map(LazyDiagnostics::from_structural);
 
-        self.send_progress(0.8, "Running trace point...");
+        ctx.send_progress(0.8, "Running trace point...");
         let mut resp = self.engine.trace_point(&file_id, line, column);
-        self.send_progress(1.0, "Trace complete");
+        ctx.send_progress(1.0, "Trace complete");
 
         resp.diagnostics.extend(warnings_to_trace_diagnostics(
             root_warnings,

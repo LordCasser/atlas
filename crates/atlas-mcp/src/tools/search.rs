@@ -67,13 +67,11 @@ struct ScopedSearchResponse {
 }
 
 impl ToolRouter {
-    pub(crate) fn send_progress(&self, percent: f64, message: &str) {
-        if let Some(ref sender) = self.progress_sender {
-            let _ = sender.send((percent, Some(1.0), Some(message.to_string())));
-        }
-    }
-
-    pub(crate) fn handle_search(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_search(
+        &mut self,
+        ctx: &super::ToolCallContext,
+        args: &serde_json::Value,
+    ) -> (String, bool) {
         let query = get_str(args, "query");
         if query.len() > MAX_QUERY_LENGTH {
             return (
@@ -136,6 +134,7 @@ impl ToolRouter {
             );
         }
         let (result_str, is_err, built_file_ids) = self.handle_search_sync(
+            ctx,
             query,
             limit,
             kind,
@@ -152,6 +151,7 @@ impl ToolRouter {
     #[allow(clippy::too_many_arguments)]
     fn handle_search_sync(
         &self,
+        ctx: &super::ToolCallContext,
         query: &str,
         limit: usize,
         kind: Option<&str>,
@@ -160,7 +160,7 @@ impl ToolRouter {
         include_roots: Vec<atlas_engine::IncludeRoot>,
         root_warnings: Vec<String>,
     ) -> (String, bool, Vec<FileId>) {
-        self.send_progress(0.1, &format!("Searching for '{query}' in {scope}..."));
+        ctx.send_progress(0.1, &format!("Searching for '{query}' in {scope}..."));
         if !self.has_indexed_files() {
             return (
                 serde_json::to_string_pretty(&json!({
@@ -185,6 +185,7 @@ impl ToolRouter {
             );
         }
 
+        let progress_sender = ctx.progress_sender.clone();
         let response = match execute_scoped_search(
             self.task_manager.clone(),
             self.store.clone(),
@@ -197,7 +198,11 @@ impl ToolRouter {
             include_roots,
             root_warnings,
             Arc::clone(&self.lazy_refresh_queue),
-            Some(|percent, message: String| self.send_progress(percent, &message)),
+            Some(move |percent, message: String| {
+                if let Some(ref sender) = progress_sender {
+                    let _ = sender.send((percent, Some(1.0), Some(message)));
+                }
+            }),
         ) {
             Ok(r) => r,
             Err(err) => {
@@ -208,7 +213,7 @@ impl ToolRouter {
         };
 
         let built_file_ids = response.built_file_ids.clone();
-        self.send_progress(
+        ctx.send_progress(
             1.0,
             &format!("Search complete ({} results)", response.results.len()),
         );

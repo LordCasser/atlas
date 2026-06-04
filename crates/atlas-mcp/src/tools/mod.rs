@@ -10,6 +10,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use atlas_engine::ContextBuilder;
@@ -33,6 +34,65 @@ use crate::tools::query_snapshot::{InvestigationState, QUERY_SNAPSHOT_TTL_SECS, 
 pub(crate) type ProgressReport = (f64, Option<f64>, Option<String>);
 /// Channel sender for progress updates during long-running operations.
 pub(crate) type ProgressSender = tokio::sync::mpsc::UnboundedSender<ProgressReport>;
+
+// -------------------------------------------------------------------
+// ToolCallContext — request-scoped progress capabilities
+// -------------------------------------------------------------------
+
+/// Request-scoped context for a single tool call.
+///
+/// Carries the progress sender, task manager, and task id so that handlers
+/// do not rely on global mutable state on [`ToolRouter`].
+#[derive(Clone)]
+pub struct ToolCallContext {
+    /// MCP progress notification sender (None = no progress token).
+    pub progress_sender: Option<ProgressSender>,
+    /// Task manager for background task progress (None = foreground).
+    pub task_manager: Option<std::sync::Arc<crate::task_manager::TaskManager>>,
+    /// Task id for background task progress (None = foreground).
+    pub task_id: Option<String>,
+}
+
+impl ToolCallContext {
+    /// Create a context with no progress capabilities.
+    pub fn empty() -> Self {
+        Self {
+            progress_sender: None,
+            task_manager: None,
+            task_id: None,
+        }
+    }
+
+    /// Create a context from a progress sender.
+    pub fn with_progress_sender(sender: ProgressSender) -> Self {
+        Self {
+            progress_sender: Some(sender),
+            task_manager: None,
+            task_id: None,
+        }
+    }
+
+    /// Create a context for background tasks (task-manager-based progress).
+    pub fn with_task_manager(
+        task_manager: std::sync::Arc<crate::task_manager::TaskManager>,
+        task_id: String,
+    ) -> Self {
+        Self {
+            progress_sender: None,
+            task_manager: Some(task_manager),
+            task_id: Some(task_id),
+        }
+    }
+
+    /// Send progress via the MCP channel if a progress_sender is configured.
+    ///
+    /// This is a no-op when no progress token was provided by the client.
+    pub fn send_progress(&self, fraction: f64, message: &str) {
+        if let Some(ref sender) = self.progress_sender {
+            let _ = sender.send((fraction, None, Some(message.to_string())));
+        }
+    }
+}
 
 /// Prepared project state produced by `open_project(background=true)`.
 ///
@@ -135,19 +195,31 @@ pub struct ToolRouter {
     /// `None` means not yet checked; checked lazily on first use.
     /// Uses Cell for interior mutability so &self methods (handle_index) can invalidate.
     cached_manual_full_index: Cell<Option<bool>>,
-    /// Optional progress sender for long-running operations (set per-call in lib.rs).
-    pub(crate) progress_sender: Option<ProgressSender>,
     /// Background task manager for `background: true` mode.
     pub(crate) task_manager: Arc<crate::task_manager::TaskManager>,
     /// Project activations prepared by background `open_project` tasks.
     pub(crate) pending_project_activations: Arc<Mutex<HashMap<String, PendingProjectActivation>>>,
     /// In-memory query snapshots for `atlas_resume`.
     pub(crate) query_snapshots: HashMap<String, QuerySnapshot>,
+    /// Per-store prewarm guard: at most one background dataflow prewarm
+    /// thread per store, shared across all concurrent MCP requests.
+    prewarm_running: Arc<AtomicBool>,
     /// Investigation state (MCP session scoped) for lazy job prioritization.
     pub(crate) investigation_state: InvestigationState,
 }
 
 impl ToolRouter {
+    fn project_runtime(
+        store: Arc<Store>,
+        project_root: &std::path::Path,
+    ) -> (atlas_engine::Engine, LazyDataflowService, SourceExtractor) {
+        (
+            atlas_engine::Engine::from_store(store.clone(), Some(project_root)),
+            LazyDataflowService::new(store.clone(), Some(project_root.to_path_buf())),
+            SourceExtractor::new(store, project_root.to_path_buf()),
+        )
+    }
+
     /// Create a router with pre-built graph-backed engines.
     ///
     /// Integration tests use this constructor to exercise tool routing against a
@@ -160,9 +232,8 @@ impl ToolRouter {
         project_root: std::path::PathBuf,
     ) -> Self {
         let last_graph_signature = store.index_signature().unwrap_or_default();
-        let lazy_service = LazyDataflowService::new(store.clone(), Some(project_root.clone()));
-        let engine = atlas_engine::Engine::from_store(store.clone(), Some(&project_root));
-        let source_extractor = SourceExtractor::new(store.clone(), project_root.clone());
+        let (engine, lazy_service, source_extractor) =
+            Self::project_runtime(store.clone(), &project_root);
         Self {
             store: store.clone(),
             engine,
@@ -178,11 +249,11 @@ impl ToolRouter {
             pending_graph_rebuild: Arc::new(Mutex::new(None)),
             cached_signature: last_graph_signature,
             last_signature_check: std::time::Instant::now(),
-            progress_sender: None,
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
             pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
             cached_manual_full_index: Cell::new(None),
             query_snapshots: HashMap::new(),
+            prewarm_running: Arc::new(AtomicBool::new(false)),
             investigation_state: InvestigationState::default(),
         }
     }
@@ -191,9 +262,8 @@ impl ToolRouter {
     /// Graph is built lazily on the first request via `ensure_graph_initialized`.
     pub fn new_empty(store: Arc<Store>, project_root: std::path::PathBuf) -> Self {
         let tools = make_all_tools();
-        let lazy_service = LazyDataflowService::new(store.clone(), Some(project_root.clone()));
-        let engine = atlas_engine::Engine::from_store(store.clone(), Some(&project_root));
-        let source_extractor = SourceExtractor::new(store.clone(), project_root.clone());
+        let (engine, lazy_service, source_extractor) =
+            Self::project_runtime(store.clone(), &project_root);
         Self {
             store: store.clone(),
             engine,
@@ -209,11 +279,11 @@ impl ToolRouter {
             pending_graph_rebuild: Arc::new(Mutex::new(None)),
             cached_signature: String::new(),
             last_signature_check: std::time::Instant::now(),
-            progress_sender: None,
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
             pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
             cached_manual_full_index: Cell::new(None),
             query_snapshots: HashMap::new(),
+            prewarm_running: Arc::new(AtomicBool::new(false)),
             investigation_state: InvestigationState::default(),
         }
     }
@@ -354,16 +424,26 @@ impl ToolRouter {
     /// After activation, the next graph-backed tool call will lazily rebuild the
     /// snapshot from the new store.
     pub(crate) fn activate_project(&mut self, project_root: std::path::PathBuf, store: Arc<Store>) {
+        self.lazy_refresh_queue.clear();
+        self.lazy_refresh_queue = lazy_refresh::LazyRefreshQueue::new();
+        self.pending_graph_rebuild = Arc::new(Mutex::new(None));
+
+        let (engine, lazy_service, source_extractor) =
+            Self::project_runtime(store.clone(), &project_root);
         self.project_root = project_root.clone();
         self.store = store.clone();
-        self.lazy_service = LazyDataflowService::new(store.clone(), Some(project_root.clone()));
-        self.source_extractor = SourceExtractor::new(store, project_root);
+        self.engine = engine;
+        self.lazy_service = lazy_service;
+        self.source_extractor = source_extractor;
         self.search = None;
         self.context = None;
         self.graph_initialized = false;
         self.cached_signature.clear();
         self.last_graph_signature.clear();
         self.last_signature_check = std::time::Instant::now();
+        self.cached_manual_full_index.set(None);
+        self.query_snapshots.clear();
+        self.investigation_state = InvestigationState::default();
     }
 
     /// Activate a prepared background `open_project` result, if one exists.
@@ -573,30 +653,27 @@ impl ToolRouter {
     /// Graph initialization and signature-refresh are handled by the MCP
     /// server layer ([`AtlasMcpService::call_tool`]) before this method is
     /// called. The dispatcher itself only routes to handlers.
-    pub fn call_tool(&mut self, name: &str, arguments: &Value) -> CallToolResult {
+    pub fn call_tool(&mut self, ctx: &ToolCallContext, name: &str, arguments: &Value) -> CallToolResult {
         // Each handler returns (result_text, is_error).
         // is_error=true only for genuine failures (lookup errors, I/O errors, unknown tool).
         let (result, is_error) = match name {
             "project" => self.handle_project(arguments),
-            "index" => self.handle_index(arguments),
-            "search" => self.handle_search(arguments),
-            "symbol" => self.handle_symbol(arguments),
+            "index" => self.handle_index(ctx, arguments),
+            "search" => self.handle_search(ctx, arguments),
+            "symbol" => self.handle_symbol(ctx, arguments),
             "calls" => self.handle_calls(arguments),
             "explore" => self.handle_explore(arguments),
             "path" => self.handle_path(arguments),
             "impact" => self.handle_impact(arguments),
             "file_dependencies" => self.handle_file_dependencies(arguments),
-            "trace" => self.handle_trace(arguments),
+            "trace" => self.handle_trace(ctx, arguments),
             "lifecycle" => self.handle_lifecycle(arguments),
             "branch_diff" => self.handle_branch_diff(arguments),
             "fp_dispatches" => self.handle_fp_dispatches(arguments),
             "domain_rules" => self.handle_domain_rules(arguments),
             "tasks" => self.handle_tasks(arguments),
             "task_status" => self.handle_task_status(arguments),
-            "wait_for_task" => (
-                "wait_for_task is handled asynchronously by the MCP service layer".to_string(),
-                true,
-            ),
+            "wait_for_task" => self.handle_wait_for_task_sync(arguments),
             "resume_task" => self.handle_resume_task(arguments),
             _ => (format!("Unknown tool: {name}"), true),
         };
@@ -794,7 +871,8 @@ impl ToolRouter {
             self.store.clone(),
             Some(self.project_root.clone()),
             include_roots,
-        );
+        )
+        .with_prewarm_flag(self.prewarm_running.clone());
         let outcome = match orchestrator.ensure_structural_for_files(
             &file_vec,
             LazyPolicy::ForegroundStructural,
@@ -857,7 +935,8 @@ impl ToolRouter {
             self.store.clone(),
             Some(self.project_root.clone()),
             include_roots,
-        );
+        )
+        .with_prewarm_flag(self.prewarm_running.clone());
         let outcome = match orchestrator.ensure_structural_for_symbol(
             symbol_name,
             LazyPolicy::ForegroundStructural,
@@ -1077,12 +1156,13 @@ fn make_project_tools() -> Vec<Tool> {
         },
         Tool {
             name: "index".into(),
-            description: "Index/re-index the active project for MCP use. This tool always performs fast manifest indexing (files plus basic symbols/functions); deeper structural parsing happens through scoped search/trace on demand. Use background=true + wait_for_task for very large projects. Parameters: include/exclude glob patterns, background (default false).".into(),
+            description: "Index/re-index the active project for MCP use. Defaults to fast manifest indexing (files plus basic symbols/functions). Pass analysis='structural' for imports/references/call graph, or analysis='full' for dataflow too. Use background=true + wait_for_task for very large projects. Parameters: include/exclude glob patterns, analysis, background (default false).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns to restrict indexing to specific directories/files (e.g. [\"src/**\"])" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns for directories/files to skip (e.g. [\"**/test/**\", \"**/*.spec.ts\"])" },
+                    "analysis": { "type": "string", "enum": ["manifest", "structural", "full"], "description": "Index depth. manifest is fast and default; structural adds imports/references/call graph; full also builds dataflow." },
                     "background": { "type": "boolean", "description": "Run indexing as a background task (returns task_id for task_status/wait_for_task)" },
                 })),
                 required: None,
@@ -1231,6 +1311,12 @@ fn make_file_graph_tools() -> Vec<Tool> {
                         "description": "Direction: 'outgoing' (default) for imports by this file, 'incoming' for files importing this file, 'both' for both directions."
                     },
                     "limit": { "type": "integer", "description": "Max results (default 50)." },
+                    "analysis": {
+                        "type": "string",
+                        "enum": ["manifest", "structural"],
+                        "description": "Analysis mode: 'manifest' (default, fast — uses existing DB facts, no lazy extraction) vs 'structural' (bounded lazy refinement for better coverage).",
+                        "default": "manifest"
+                    },
                 })),
                 required: Some(vec!["file_path".into()]),
             },
@@ -1448,9 +1534,18 @@ impl ToolRouter {
 
     /// Handle `symbol` tool — dispatch by `view` to legacy handlers.
     /// Remaps `symbol` → `qualified_name` (detail) or passes through as `symbol` (context/usages).
-    pub(crate) fn handle_symbol(&mut self, args: &Value) -> (String, bool) {
+    pub(crate) fn handle_symbol(
+        &mut self,
+        ctx: &ToolCallContext,
+        args: &Value,
+    ) -> (String, bool) {
         let view = get_str(args, "view");
         let qname = get_str(args, "symbol");
+        let qname = if qname.is_empty() {
+            get_str(args, "qname")
+        } else {
+            qname
+        };
         if qname.is_empty() {
             return ("Missing required 'symbol' parameter".to_string(), true);
         }
@@ -1478,7 +1573,7 @@ impl ToolRouter {
                 if let Some(v) = args.get("include_roots") {
                     mapped.insert("include_roots".into(), v.clone());
                 }
-                self.handle_context(&Value::Object(mapped))
+                self.handle_context(ctx, &Value::Object(mapped))
             }
             "usages" => {
                 // Remap: symbol → symbol for the legacy usages handler
@@ -1563,6 +1658,25 @@ impl ToolRouter {
         if file_path.is_empty() {
             return ("Missing required 'file_path' parameter".to_string(), true);
         }
+        let direction = get_str(args, "direction");
+        if !matches!(direction, "incoming" | "outgoing" | "both" | "") {
+            return (
+                format!(
+                    "Unknown direction: '{direction}'. Must be one of: incoming, outgoing, both"
+                ),
+                true,
+            );
+        }
+        let analysis_mode = get_str(args, "analysis");
+        let is_manifest = analysis_mode.is_empty() || analysis_mode == "manifest";
+        if !is_manifest && analysis_mode != "structural" {
+            return (
+                format!(
+                    "Unknown analysis mode: '{analysis_mode}'. Must be one of: manifest, structural"
+                ),
+                true,
+            );
+        }
 
         // Resolve file_path to file_id for legacy handlers
         let clean = file_path.trim_start_matches("./").trim_start_matches('/');
@@ -1572,6 +1686,51 @@ impl ToolRouter {
             Err(e) => return (format!("Failed to resolve file: {e}"), true),
         };
 
+        if is_manifest {
+            return self.handle_file_dependencies_manifest(file_id, direction, args);
+        }
+
+        // ── structural mode ─────────────────────────────────────────────
+        let mut lazy_warnings = Vec::new();
+        let mut built_file_count = 0usize;
+        let mut structural_tier = atlas_engine::structs::precision::PrecisionTier::Exact;
+        let mut capability_mask = atlas_engine::structs::CapabilityMask::default();
+        let mut coverage = "full";
+        let mut reason: Option<&str> = None;
+
+        if !self.has_manual_full_index() {
+            let file_ids = match direction {
+                "incoming" | "both" => match self.store.list_files() {
+                    Ok(files) => files.into_iter().map(|f| f.file_id).collect::<Vec<_>>(),
+                    Err(e) => return (format!("Failed to list indexed files: {e}"), true),
+                },
+                _ => vec![file_id],
+            };
+            let outcome = self.ensure_structural_for_files(file_ids, vec![], None, None);
+            lazy_warnings = outcome.warnings;
+            built_file_count = outcome.built_file_ids.len();
+            structural_tier = outcome.precision_tier;
+
+            if let Some(ref lo) = outcome.lazy_outcome {
+                capability_mask = lo.capability_mask;
+                if lo.budget_exceeded {
+                    coverage = "partial";
+                    reason = Some("budget_exceeded");
+                } else if lo.precision_tier
+                    != atlas_engine::structs::precision::PrecisionTier::Exact
+                {
+                    coverage = "partial";
+                }
+            }
+
+            if structural_tier == atlas_engine::structs::precision::PrecisionTier::Unavailable {
+                reason = Some("no_structural_capability");
+                coverage = "partial";
+            }
+        } else {
+            capability_mask = self.store.derive_capability_for_files(&[file_id]);
+        }
+
         let file_id_hex = file_id.to_hex();
         let mut mapped = serde_json::Map::new();
         mapped.insert("file_id".into(), Value::String(file_id_hex));
@@ -1580,36 +1739,300 @@ impl ToolRouter {
         }
         let mapped_args = Value::Object(mapped);
 
-        let direction = get_str(args, "direction");
         match direction {
-            "incoming" => self.handle_dependents(&mapped_args),
-            "outgoing" | "" => self.handle_dependencies(&mapped_args),
+            "incoming" => {
+                let (out, err) = self.handle_dependents(&mapped_args);
+                (
+                    add_dependency_analysis_contract(
+                        out,
+                        structural_tier,
+                        built_file_count,
+                        lazy_warnings,
+                        coverage,
+                        reason,
+                        capability_mask,
+                    ),
+                    err,
+                )
+            }
+            "outgoing" | "" => {
+                let (out, err) = self.handle_dependencies(&mapped_args);
+                (
+                    add_dependency_analysis_contract(
+                        out,
+                        structural_tier,
+                        built_file_count,
+                        lazy_warnings,
+                        coverage,
+                        reason,
+                        capability_mask,
+                    ),
+                    err,
+                )
+            }
             "both" => {
                 let (out_str, out_err) = self.handle_dependencies(&mapped_args);
                 let (in_str, in_err) = self.handle_dependents(&mapped_args);
                 let result = json!({
                     "outgoing": serde_json::from_str::<Value>(&out_str).unwrap_or_default(),
                     "incoming": serde_json::from_str::<Value>(&in_str).unwrap_or_default(),
+                    "analysis": {
+                        "structural_precision_tier": structural_tier,
+                        "lazy_built_files": built_file_count,
+                        "warnings": lazy_warnings,
+                    },
+                    "analysis_contract": {
+                        "coverage": coverage,
+                        "reason": reason,
+                        "precision_tier": structural_tier,
+                        "capability_mask": capability_mask,
+                    },
                 });
                 (
                     serde_json::to_string_pretty(&result).unwrap_or_default(),
                     out_err || in_err,
                 )
             }
-            other => (
-                format!("Unknown direction: '{other}'. Must be one of: incoming, outgoing, both"),
-                true,
-            ),
+            _ => unreachable!("direction was validated above"),
         }
+    }
+
+    /// Manifest-mode file_dependencies — reads existing DB facts directly,
+    /// no lazy structural extraction.
+    fn handle_file_dependencies_manifest(
+        &self,
+        file_id: FileId,
+        direction: &str,
+        args: &Value,
+    ) -> (String, bool) {
+        let file_id_hex = file_id.to_hex();
+        let limit = get_u64(args, "limit").unwrap_or(50) as usize;
+
+        match direction {
+            "incoming" => {
+                let (out_str, out_err) = self.handle_dependents(&json!({
+                    "file_id": file_id_hex,
+                    "limit": limit,
+                }));
+                let err = out_err;
+
+                // Supplement with symbol_edges-based re-export / call dependencies
+                let edge_deps =
+                    self.manifest_edge_dependents(&file_id, limit.saturating_sub(
+                        serde_json::from_str::<Value>(&out_str)
+                            .ok()
+                            .and_then(|v| v["total_dependents"].as_u64())
+                            .unwrap_or(0) as usize,
+                    ));
+                let mut value =
+                    serde_json::from_str::<Value>(&out_str).unwrap_or_else(|_| json!({}));
+                if let Some(arr) = edge_deps.as_array() {
+                    if !arr.is_empty() {
+                        if let Some(deps) = value.get_mut("dependents") {
+                            if let Some(existing) = deps.as_array_mut() {
+                                for dep in arr {
+                                    existing.push(dep.clone());
+                                }
+                            }
+                        }
+                        if let Some(total) = value.get_mut("total_dependents") {
+                            if let Some(n) = total.as_u64() {
+                                *total = json!(n + arr.len() as u64);
+                            }
+                        }
+                    }
+                }
+                let resp = add_analysis_contract_manifest(
+                    serde_json::to_string_pretty(&value).unwrap_or_default(),
+                );
+                (resp, err)
+            }
+            "outgoing" | "" => {
+                let (out_str, out_err) = self.handle_dependencies(&json!({
+                    "file_id": file_id_hex,
+                    "limit": limit,
+                }));
+                let err = out_err;
+
+                // Supplement with symbol_edges-based export dependencies
+                let edge_deps =
+                    self.manifest_edge_dependencies(&file_id, limit.saturating_sub(
+                        serde_json::from_str::<Value>(&out_str)
+                            .ok()
+                            .and_then(|v| v["total_dependencies"].as_u64())
+                            .unwrap_or(0) as usize,
+                    ));
+                let mut value =
+                    serde_json::from_str::<Value>(&out_str).unwrap_or_else(|_| json!({}));
+                if let Some(arr) = edge_deps.as_array() {
+                    if !arr.is_empty() {
+                        if let Some(deps) = value.get_mut("dependencies") {
+                            if let Some(existing) = deps.as_array_mut() {
+                                for dep in arr {
+                                    existing.push(dep.clone());
+                                }
+                            }
+                        }
+                        if let Some(total) = value.get_mut("total_dependencies") {
+                            if let Some(n) = total.as_u64() {
+                                *total = json!(n + arr.len() as u64);
+                            }
+                        }
+                    }
+                }
+                let resp = add_analysis_contract_manifest(
+                    serde_json::to_string_pretty(&value).unwrap_or_default(),
+                );
+                (resp, err)
+            }
+            "both" => {
+                let (out_str, out_err) = self.handle_dependencies(&json!({
+                    "file_id": file_id_hex,
+                    "limit": limit,
+                }));
+                let (in_str, in_err) = self.handle_dependents(&json!({
+                    "file_id": file_id_hex,
+                    "limit": limit,
+                }));
+                let err = out_err || in_err;
+
+                let edge_out = self.manifest_edge_dependencies(&file_id, limit);
+                let edge_in = self.manifest_edge_dependents(&file_id, limit);
+
+                let result = json!({
+                    "outgoing": serde_json::from_str::<Value>(&out_str).unwrap_or_default(),
+                    "incoming": serde_json::from_str::<Value>(&in_str).unwrap_or_default(),
+                    "edge_dependencies": edge_out,
+                    "edge_dependents": edge_in,
+                    "analysis_contract": {
+                        "coverage": "full",
+                        "reason": Value::Null,
+                    },
+                });
+                (serde_json::to_string_pretty(&result).unwrap_or_default(), err)
+            }
+            _ => unreachable!("direction was validated above"),
+        }
+    }
+
+    /// Query symbol_edges for incoming file dependencies (manifest mode).
+    /// Returns files whose symbols have edges targeting symbols in `file_id`.
+    fn manifest_edge_dependents(&self, file_id: &FileId, max_results: usize) -> Value {
+        if max_results == 0 {
+            return json!([]);
+        }
+        let our_symbols = match self.store.find_symbols_by_file(file_id) {
+            Ok(s) => s,
+            Err(_) => return json!([]),
+        };
+        if our_symbols.is_empty() {
+            return json!([]);
+        }
+
+        let our_ids: Vec<SymbolId> = our_symbols.iter().map(|s| s.id).collect();
+        let our_set: HashSet<SymbolId> = our_ids.iter().copied().collect();
+
+        let edges = match self.store.find_edges_for_files(&[*file_id]) {
+            Ok(e) => e,
+            Err(_) => return json!([]),
+        };
+
+        // Incoming: edges where target is in our file → source's file depends on us
+        let mut source_ids: HashSet<SymbolId> = HashSet::new();
+        for edge in &edges {
+            if our_set.contains(&edge.target) && !our_set.contains(&edge.source) {
+                source_ids.insert(edge.source);
+            }
+        }
+
+        if source_ids.is_empty() {
+            return json!([]);
+        }
+        let ids_vec: Vec<SymbolId> = source_ids.into_iter().collect();
+        let symbols = match self.store.find_symbols_by_ids(&ids_vec) {
+            Ok(s) => s,
+            Err(_) => return json!([]),
+        };
+        let mut file_paths: HashSet<String> = HashSet::new();
+        let mut results: Vec<Value> = Vec::new();
+        for sym in &symbols {
+            if file_paths.len() >= max_results {
+                break;
+            }
+            let path = self.resolve_file_path(&sym.file_id);
+            if file_paths.insert(path.clone()) {
+                results.push(json!({
+                    "file": path,
+                    "import": "symbol_edge",
+                }));
+            }
+        }
+        json!(results)
+    }
+
+    /// Query symbol_edges for outgoing file dependencies (manifest mode).
+    /// Returns files whose symbols are targeted by symbols in `file_id`.
+    fn manifest_edge_dependencies(&self, file_id: &FileId, max_results: usize) -> Value {
+        if max_results == 0 {
+            return json!([]);
+        }
+        let our_symbols = match self.store.find_symbols_by_file(file_id) {
+            Ok(s) => s,
+            Err(_) => return json!([]),
+        };
+        if our_symbols.is_empty() {
+            return json!([]);
+        }
+
+        let our_ids: Vec<SymbolId> = our_symbols.iter().map(|s| s.id).collect();
+        let our_set: HashSet<SymbolId> = our_ids.iter().copied().collect();
+
+        let edges = match self.store.find_edges_for_files(&[*file_id]) {
+            Ok(e) => e,
+            Err(_) => return json!([]),
+        };
+
+        // Outgoing: edges where source is in our file → target's file is our dependency
+        let mut target_ids: HashSet<SymbolId> = HashSet::new();
+        for edge in &edges {
+            if our_set.contains(&edge.source) && !our_set.contains(&edge.target) {
+                target_ids.insert(edge.target);
+            }
+        }
+
+        if target_ids.is_empty() {
+            return json!([]);
+        }
+        let ids_vec: Vec<SymbolId> = target_ids.into_iter().collect();
+        let symbols = match self.store.find_symbols_by_ids(&ids_vec) {
+            Ok(s) => s,
+            Err(_) => return json!([]),
+        };
+        let mut file_paths: HashSet<String> = HashSet::new();
+        let mut results: Vec<Value> = Vec::new();
+        for sym in &symbols {
+            if file_paths.len() >= max_results {
+                break;
+            }
+            let path = self.resolve_file_path(&sym.file_id);
+            if file_paths.insert(path.clone()) {
+                results.push(json!({
+                    "module": path,
+                    "imported_name": sym.name,
+                    "kind": "symbol_edge",
+                }));
+            }
+        }
+        json!(results)
     }
 
     // ── trace ────────────────────────────────────────────────────────
 
     /// Handle `trace` tool — dispatch by `kind`.
-    pub(crate) fn handle_trace(&mut self, args: &Value) -> (String, bool) {
+    pub(crate) fn handle_trace(&mut self, ctx: &ToolCallContext, args: &Value) -> (String, bool) {
         let kind = get_str(args, "kind");
         match kind {
-            "point" => self.handle_trace_point(args),
+            "point" => self.handle_trace_point(ctx, args),
             "variable" => self.handle_trace_variable(args),
             "forward" => self.handle_trace_forward(args),
             "callers" => self.handle_trace_caller_path(args),
@@ -1685,11 +2108,83 @@ impl ToolRouter {
             jobs_err || atlas_err,
         )
     }
+
+    /// Synchronous direct-call wrapper for `wait_for_task`.
+    ///
+    /// The MCP service layer uses the async implementation so it does not block
+    /// the runtime. This path exists for tests and embedded callers that invoke
+    /// `ToolRouter::call_tool` directly.
+    pub(crate) fn handle_wait_for_task_sync(&mut self, args: &Value) -> (String, bool) {
+        let wfr = wait_for::handle_wait_for_task_sync(&self.task_manager, args);
+        if !wfr.task_is_project_completed {
+            return (wfr.json_text, wfr.is_error);
+        }
+
+        let task_id = get_str(args, "task_id");
+        let mut val: Value = serde_json::from_str(&wfr.json_text).unwrap_or_default();
+        if let Some(project) = self.activate_pending_project_for_task(task_id) {
+            val["activation"] = Value::String("activated".into());
+            val["activated_project"] = Value::String(project);
+        } else {
+            val["activation"] = Value::String("already_activated".into());
+        }
+        (
+            serde_json::to_string_pretty(&val).unwrap_or_else(|e| e.to_string()),
+            wfr.is_error,
+        )
+    }
 }
 
 // -------------------------------------------------------------------
 // Shared arg-parsing helpers
 // -------------------------------------------------------------------
+
+fn add_dependency_analysis_contract(
+    response: String,
+    structural_tier: atlas_engine::structs::precision::PrecisionTier,
+    built_file_count: usize,
+    warnings: Vec<String>,
+    coverage: &str,
+    reason: Option<&str>,
+    capability_mask: atlas_engine::structs::CapabilityMask,
+) -> String {
+    let mut value = serde_json::from_str::<Value>(&response).unwrap_or_else(|_| json!({}));
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "analysis".into(),
+            json!({
+                "structural_precision_tier": structural_tier,
+                "lazy_built_files": built_file_count,
+                "warnings": warnings,
+            }),
+        );
+        obj.insert(
+            "analysis_contract".into(),
+            json!({
+                "coverage": coverage,
+                "reason": reason,
+                "precision_tier": structural_tier,
+                "capability_mask": capability_mask,
+            }),
+        );
+    }
+    serde_json::to_string_pretty(&value).unwrap_or(response)
+}
+
+/// Add a minimal analysis_contract for manifest-mode responses.
+fn add_analysis_contract_manifest(response: String) -> String {
+    let mut value = serde_json::from_str::<Value>(&response).unwrap_or_else(|_| json!({}));
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "analysis_contract".into(),
+            json!({
+                "coverage": "full",
+                "reason": Value::Null,
+            }),
+        );
+    }
+    serde_json::to_string_pretty(&value).unwrap_or(response)
+}
 
 /// Resolve a file_id from either a hex string or a file_path string.
 /// Returns `Ok(None)` when neither is provided; `Err` on lookup failure.
@@ -1961,7 +2456,7 @@ mod tests {
             "include_roots": ["/absolute/rejected"]
         });
 
-        let (resp_str, _is_error) = router.handle_trace_point(&args);
+        let (resp_str, _is_error) = router.handle_trace_point(&ToolCallContext::empty(), &args);
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         let diags = resp["diagnostics"].as_array().unwrap();
         assert!(
@@ -2021,9 +2516,8 @@ mod tests {
             "include_roots": ["/absolute/rejected"]
         });
 
-        let (resp_str, is_error) = router.handle_symbol(&args);
+        let (resp_str, is_error) = router.handle_symbol(&ToolCallContext::empty(), &args);
         assert!(!is_error, "Expected success, got: {resp_str}");
-
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         let warns = resp["warnings"].as_array();
         assert!(warns.is_some(), "Expected 'warnings' field in: {resp_str}");
@@ -2047,7 +2541,7 @@ mod tests {
             "include_roots": ["/absolute/rejected"]
         });
 
-        let (resp_str, is_error) = router.handle_context(&args);
+        let (resp_str, is_error) = router.handle_context(&ToolCallContext::empty(), &args);
         assert!(!is_error, "Expected success, got: {resp_str}");
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
@@ -2057,5 +2551,343 @@ mod tests {
             !warns.unwrap().is_empty(),
             "Expected non-empty warnings in: {resp_str}"
         );
+    }
+
+    // ── file_dependencies tests ──────────────────────────────────────────
+
+    /// Helper: insert a symbol edge between two symbols.
+    fn insert_test_edge(store: &Store, source: SymbolId, target: SymbolId) {
+        use atlas_engine::Confidence;
+        use atlas_engine::EdgeKind;
+        use atlas_engine::Provenance;
+        let edge = atlas_engine::RawEdge::new(
+            atlas_engine::EdgeId::generate(&source, &target, "calls", None, "tree_sitter"),
+            source,
+            target,
+            EdgeKind::Calls,
+            Confidence::new(1.0),
+            Provenance::TreeSitter,
+        );
+        store.insert_edges(&[edge]).unwrap();
+    }
+
+    /// Helper: insert an import from one file to another.
+    fn insert_test_import(
+        store: &Store,
+        from_file: FileId,
+        to_path: &str,
+        imported_name: &str,
+    ) {
+        use atlas_engine::ImportKind;
+        let range = atlas_engine::TextRange {
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 11,
+        };
+        let import = atlas_engine::ImportDef {
+            id: atlas_engine::ImportId::generate(
+                &from_file,
+                "import",
+                to_path,
+                Some(imported_name),
+                0,
+            ),
+            file_id: from_file,
+            kind: ImportKind::Import,
+            module: to_path.to_string(),
+            imported_name: imported_name.to_string(),
+            local_name: None,
+            is_wildcard: false,
+            is_relative: false,
+            range,
+            alias: None,
+        };
+        store.insert_imports(&[import]).unwrap();
+    }
+
+    #[test]
+    fn manifest_incoming_returns_correct_deps() {
+        let store = test_store();
+        let file_a = register_test_file(&store, "a.ts");
+        let file_b = register_test_file(&store, "b.ts");
+
+        // File B imports from A, and has a call edge to A's symbol
+        let sym_a = SymbolId::generate(&file_a, "typescript", "foo", "function", None);
+        let sym_b = SymbolId::generate(&file_b, "typescript", "bar", "function", None);
+        insert_test_symbol(&store, file_a, "foo");
+        insert_test_symbol(&store, file_b, "bar");
+
+        // Edge: B's bar calls A's foo → B depends on A
+        insert_test_edge(&store, sym_b, sym_a);
+
+        // Import: B imports from a.ts
+        insert_test_import(&store, file_b, "a.ts", "foo");
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let args = serde_json::json!({
+            "file_path": "a.ts",
+            "direction": "incoming",
+            "analysis": "manifest",
+        });
+        let (resp_str, is_error) = router.handle_file_dependencies(&args);
+        assert!(!is_error, "Expected success, got: {resp_str}");
+
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        // Should have the analysis_contract with coverage=full
+        let contract = &resp["analysis_contract"];
+        assert_eq!(contract["coverage"].as_str(), Some("full"));
+        assert!(contract["reason"].is_null());
+
+        // Should have at least the import-based dependent (b.ts)
+        let deps = resp["dependents"].as_array().unwrap();
+        let dep_files: Vec<&str> = deps.iter().filter_map(|d| d["file"].as_str()).collect();
+        assert!(dep_files.contains(&"b.ts"), "Expected b.ts in dependents, got: {dep_files:?}");
+
+        // The edge-based dependent should also be there (from symbol_edges)
+        // Both import and edge point to b.ts, deduplication should result in one entry
+        assert!(
+            dep_files.len() >= 1,
+            "Expected at least one dependent, got: {resp_str}"
+        );
+    }
+
+    #[test]
+    fn manifest_outgoing_returns_correct_deps() {
+        let store = test_store();
+        let file_a = register_test_file(&store, "a.ts");
+        let file_b = register_test_file(&store, "b.ts");
+
+        let sym_a = SymbolId::generate(&file_a, "typescript", "foo", "function", None);
+        let sym_b = SymbolId::generate(&file_b, "typescript", "bar", "function", None);
+        insert_test_symbol(&store, file_a, "foo");
+        insert_test_symbol(&store, file_b, "bar");
+
+        // Edge: A's foo calls B's bar → A depends on B
+        insert_test_edge(&store, sym_a, sym_b);
+
+        // Import: A imports from b.ts
+        insert_test_import(&store, file_a, "b.ts", "bar");
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let args = serde_json::json!({
+            "file_path": "a.ts",
+            "direction": "outgoing",
+            "analysis": "manifest",
+        });
+        let (resp_str, is_error) = router.handle_file_dependencies(&args);
+        assert!(!is_error, "Expected success, got: {resp_str}");
+
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let contract = &resp["analysis_contract"];
+        assert_eq!(contract["coverage"].as_str(), Some("full"));
+        assert!(contract["reason"].is_null());
+
+        let deps = resp["dependencies"].as_array().unwrap();
+        let dep_modules: Vec<&str> = deps.iter().filter_map(|d| d["module"].as_str()).collect();
+        assert!(
+            dep_modules.contains(&"b.ts"),
+            "Expected b.ts in dependencies, got: {dep_modules:?}"
+        );
+    }
+
+    #[test]
+    fn manifest_both_returns_analysis_contract() {
+        let store = test_store();
+        let file_a = register_test_file(&store, "a.ts");
+        let file_b = register_test_file(&store, "b.ts");
+
+        let sym_a = SymbolId::generate(&file_a, "typescript", "foo", "function", None);
+        let sym_b = SymbolId::generate(&file_b, "typescript", "bar", "function", None);
+        insert_test_symbol(&store, file_a, "foo");
+        insert_test_symbol(&store, file_b, "bar");
+
+        insert_test_edge(&store, sym_b, sym_a); // B → A: incoming
+        insert_test_edge(&store, sym_a, sym_b); // A → B: outgoing
+        insert_test_import(&store, file_b, "a.ts", "foo");
+        insert_test_import(&store, file_a, "b.ts", "bar");
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let args = serde_json::json!({
+            "file_path": "a.ts",
+            "direction": "both",
+            "analysis": "manifest",
+        });
+        let (resp_str, is_error) = router.handle_file_dependencies(&args);
+        assert!(!is_error, "Expected success, got: {resp_str}");
+
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let contract = &resp["analysis_contract"];
+        assert_eq!(contract["coverage"].as_str(), Some("full"));
+        assert!(contract["reason"].is_null());
+    }
+
+    #[test]
+    fn structural_returns_analysis_contract() {
+        let store = test_store();
+        let _file_a = register_test_file(&store, "a.ts");
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let args = serde_json::json!({
+            "file_path": "a.ts",
+            "direction": "incoming",
+            "analysis": "structural",
+        });
+        let (resp_str, is_error) = router.handle_file_dependencies(&args);
+        assert!(!is_error, "Expected success, got: {resp_str}");
+
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        // analysis_contract must be present
+        let contract = &resp["analysis_contract"];
+        assert!(contract.get("coverage").is_some(), "analysis_contract missing coverage field: {resp_str}");
+        // structural mode should have precision_tier and capability_mask
+        assert!(contract.get("precision_tier").is_some(), "analysis_contract missing precision_tier: {resp_str}");
+        assert!(contract.get("capability_mask").is_some(), "analysis_contract missing capability_mask: {resp_str}");
+    }
+
+    #[test]
+    fn analysis_contract_manifest_full_coverage() {
+        let store = test_store();
+        let _file_a = register_test_file(&store, "a.ts");
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let args = serde_json::json!({
+            "file_path": "a.ts",
+            "direction": "incoming",
+            "analysis": "manifest",
+        });
+        let (resp_str, is_error) = router.handle_file_dependencies(&args);
+        assert!(!is_error, "Expected success, got: {resp_str}");
+
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let contract = &resp["analysis_contract"];
+        assert_eq!(contract["coverage"].as_str(), Some("full"), "manifest mode must have full coverage: {resp_str}");
+        assert!(contract["reason"].is_null(), "manifest mode reason must be null: {resp_str}");
+    }
+
+    #[test]
+    fn manifest_default_when_analysis_omitted() {
+        let store = test_store();
+        let _file_a = register_test_file(&store, "a.ts");
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        // Omit analysis parameter — should default to manifest
+        let args = serde_json::json!({
+            "file_path": "a.ts",
+            "direction": "incoming",
+        });
+        let (resp_str, is_error) = router.handle_file_dependencies(&args);
+        assert!(!is_error, "Expected success, got: {resp_str}");
+
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let contract = &resp["analysis_contract"];
+        assert_eq!(contract["coverage"].as_str(), Some("full"), "default mode (manifest) must have full coverage: {resp_str}");
+    }
+
+    #[test]
+    fn unknown_analysis_mode_returns_error() {
+        let store = test_store();
+        let _file_a = register_test_file(&store, "a.ts");
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let args = serde_json::json!({
+            "file_path": "a.ts",
+            "direction": "incoming",
+            "analysis": "invalid",
+        });
+        let (resp_str, is_error) = router.handle_file_dependencies(&args);
+        assert!(is_error, "Expected error for unknown analysis mode, got: {resp_str}");
+        assert!(resp_str.contains("Unknown analysis mode"), "Expected error message, got: {resp_str}");
+    }
+
+    #[test]
+    fn manifest_edge_dependencies_via_calls() {
+        let store = test_store();
+        let file_a = register_test_file(&store, "a.ts");
+        let file_b = register_test_file(&store, "b.ts");
+        let file_c = register_test_file(&store, "c.ts");
+
+        let sym_a = SymbolId::generate(&file_a, "typescript", "target", "function", None);
+        let sym_b = SymbolId::generate(&file_b, "typescript", "caller_b", "function", None);
+        let sym_c = SymbolId::generate(&file_c, "typescript", "caller_c", "function", None);
+        insert_test_symbol(&store, file_a, "target");
+        insert_test_symbol(&store, file_b, "caller_b");
+        insert_test_symbol(&store, file_c, "caller_c");
+
+        // Both B and C call A
+        insert_test_edge(&store, sym_b, sym_a);
+        insert_test_edge(&store, sym_c, sym_a);
+
+        // No imports — edge-based deps only
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let args = serde_json::json!({
+            "file_path": "a.ts",
+            "direction": "incoming",
+            "analysis": "manifest",
+        });
+        let (resp_str, is_error) = router.handle_file_dependencies(&args);
+        assert!(!is_error, "Expected success, got: {resp_str}");
+
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let deps = resp["dependents"].as_array().unwrap();
+        let dep_files: Vec<&str> = deps.iter().filter_map(|d| d["file"].as_str()).collect();
+        assert!(
+            dep_files.contains(&"b.ts"),
+            "Expected edge-based dependent b.ts, got: {dep_files:?}"
+        );
+        assert!(
+            dep_files.contains(&"c.ts"),
+            "Expected edge-based dependent c.ts, got: {dep_files:?}"
+        );
+    }
+
+    // ── ToolCallContext tests ────────────────────────────────────────────
+
+    #[test]
+    fn tool_call_context_is_send_sync() {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+        assert_send::<ToolCallContext>();
+        assert_sync::<ToolCallContext>();
+    }
+
+    #[test]
+    fn tool_call_context_empty_does_not_panic_on_send_progress() {
+        let ctx = ToolCallContext::empty();
+        // Should be a no-op — no panic when no progress_sender is set.
+        ctx.send_progress(0.5, "test message");
+        ctx.send_progress(1.0, "final message");
+    }
+
+    #[test]
+    fn tool_call_context_with_progress_sender_forwards() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ProgressReport>();
+        let ctx = ToolCallContext::with_progress_sender(tx);
+        ctx.send_progress(0.5, "halfway");
+
+        // Drop ctx to close the sender, then drain
+        drop(ctx);
+        let reports: Vec<ProgressReport> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(reports.len(), 1, "Expected exactly 1 progress report");
+        assert_eq!(reports[0].0, 0.5);
+        assert_eq!(reports[0].2.as_deref(), Some("halfway"));
     }
 }

@@ -19,6 +19,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use anyhow::Result;
 use db::Store;
@@ -68,6 +69,11 @@ pub struct LazyOutcome {
 /// `LazyBudget` or `LazyCoordinator` construction.
 pub struct LazyOrchestrator {
     store: Arc<Store>,
+    project_root: Option<PathBuf>,
+    /// Per-store prewarm guard: at most one background dataflow prewarm
+    /// thread per store.  Injected by MCP's ToolRouter so concurrent
+    /// requests to the same store share a single guard.
+    prewarm_running: Arc<AtomicBool>,
     structural: LazyStructuralService,
     coordinator: LazyCoordinator,
 }
@@ -89,9 +95,22 @@ impl LazyOrchestrator {
         };
         Self {
             store,
+            project_root,
+            prewarm_running: Arc::new(AtomicBool::new(false)),
             structural,
             coordinator,
         }
+    }
+
+    /// Inject a shared prewarm guard.
+    ///
+    /// When set, the orchestrator will use this flag to deduplicate
+    /// background dataflow prewarm threads across concurrent requests
+    /// to the same store.  If not set, a fresh per-orchestrator guard
+    /// is created in [`new`].
+    pub fn with_prewarm_flag(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.prewarm_running = flag;
+        self
     }
 
     /// Ensure structural extraction for a list of files.
@@ -141,6 +160,8 @@ impl LazyOrchestrator {
             });
         }
 
+        let mut cached_file_ids: Vec<FileId> = Vec::new();
+
         for file_id in &ordered {
             // Request-level budget check
             if !budget.can_continue() {
@@ -159,16 +180,37 @@ impl LazyOrchestrator {
             outcome.files_cached += result.files_cached;
             outcome.files_pending += result.files_pending;
             outcome.built_file_ids.extend(result.built_file_ids);
+            cached_file_ids.extend(result.cached_file_ids);
             outcome.pending_job_ids.extend(result.pending_job_ids);
+        }
+
+        // Spawn background prewarm for files that just received structural
+        // extraction, so subsequent trace queries hit pre-built dataflow.
+        // The prewarm_running flag (injected via with_prewarm_flag) prevents
+        // duplicate prewarm threads across concurrent MCP requests.
+        if let Some(ref root) = self.project_root {
+            if !outcome.built_file_ids.is_empty() {
+                self.coordinator.spawn_background_prewarm(
+                    &self.prewarm_running,
+                    Arc::clone(&self.store),
+                    root.clone(),
+                    outcome.built_file_ids.clone(),
+                );
+            }
         }
 
         // Derive capability from actual persistent state instead of hardcoding.
         // Include both the caller's requested files (which after the loop
         // have structural data — either freshly built or cached) and the
-        // closure files that were built during the loop.
+        // closure files that were built or cached during the loop.
         {
             let mut all_ids: Vec<FileId> = ordered.clone();
             for fid in &outcome.built_file_ids {
+                if !all_ids.contains(fid) {
+                    all_ids.push(*fid);
+                }
+            }
+            for fid in &cached_file_ids {
                 if !all_ids.contains(fid) {
                     all_ids.push(*fid);
                 }
@@ -210,9 +252,25 @@ impl LazyOrchestrator {
             query_id,
         )?;
 
-        let cap_mask = self
-            .store
-            .derive_capability_for_files(&result.built_file_ids);
+        let mut ids = result.built_file_ids.clone();
+        for fid in &result.cached_file_ids {
+            if !ids.contains(fid) {
+                ids.push(*fid);
+            }
+        }
+        let cap_mask = self.store.derive_capability_for_files(&ids);
+
+        // Spawn background prewarm — same rationale as ensure_structural_for_files.
+        if let Some(ref root) = self.project_root {
+            if !result.built_file_ids.is_empty() {
+                self.coordinator.spawn_background_prewarm(
+                    &self.prewarm_running,
+                    Arc::clone(&self.store),
+                    root.clone(),
+                    result.built_file_ids.clone(),
+                );
+            }
+        }
 
         // Map EnsureStructuralResult → LazyOutcome
         let precision_tier = crate::precision::structural_precision(

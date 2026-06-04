@@ -59,8 +59,6 @@ pub struct LazyCoordinator {
     project_root: Option<std::path::PathBuf>,
     /// Request-scoped include roots for C/C++ angle-bracket resolution.
     include_roots: Vec<IncludeRoot>,
-    /// Per-instance flag: at most one prewarm thread per coordinator.
-    prewarm_running: Arc<AtomicBool>,
 }
 
 impl LazyCoordinator {
@@ -69,7 +67,6 @@ impl LazyCoordinator {
             store,
             project_root: None,
             include_roots: vec![],
-            prewarm_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -80,7 +77,6 @@ impl LazyCoordinator {
             store,
             project_root: Some(project_root),
             include_roots: vec![],
-            prewarm_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -140,6 +136,7 @@ impl LazyCoordinator {
                     files_cached: 1, // treated as cached since another job handles it
                     budget_exceeded: false,
                     built_file_ids: vec![],
+                    cached_file_ids: vec![],
                     precision_tier: PrecisionTier::DegradedStructural,
                     files_pending: 0,
                     pending_job_ids: vec![],
@@ -191,6 +188,7 @@ impl LazyCoordinator {
             files_cached: 0,
             budget_exceeded: false,
             built_file_ids: vec![],
+            cached_file_ids: vec![],
             precision_tier: PrecisionTier::Unavailable,
             files_pending: 0,
             pending_job_ids: vec![],
@@ -240,6 +238,7 @@ impl LazyCoordinator {
                             result.files_cached += r.files_cached;
                             result.budget_exceeded = result.budget_exceeded || r.budget_exceeded;
                             result.built_file_ids.extend(r.built_file_ids);
+                            result.cached_file_ids.extend(r.cached_file_ids);
                             if is_seed && r.files_built > 0 {
                                 structural_file_ids.push(*file_id);
                             }
@@ -267,20 +266,6 @@ impl LazyCoordinator {
             );
         }
 
-        // Spawn background prewarm: pre-build dataflow for files that
-        // just received structural extraction, so subsequent trace
-        // queries are instant.  Only structural (not resolution_symbols)
-        // files are prewarmed to avoid wasteful dataflow on dep-only files.
-        if let Some(ref root) = self.project_root {
-            if !structural_file_ids.is_empty() {
-                self.spawn_background_prewarm(
-                    Arc::clone(&self.store),
-                    root.clone(),
-                    structural_file_ids.clone(),
-                );
-            }
-        }
-
         Ok((result, last_job_id))
     }
 
@@ -305,6 +290,7 @@ impl LazyCoordinator {
                 files_cached: 0,
                 budget_exceeded: false,
                 built_file_ids: vec![],
+                cached_file_ids: vec![],
                 precision_tier: PrecisionTier::Unavailable,
                 files_pending: 0,
                 pending_job_ids: vec![],
@@ -315,6 +301,7 @@ impl LazyCoordinator {
             files_cached: 0,
             budget_exceeded: false,
             built_file_ids: vec![],
+            cached_file_ids: vec![],
             precision_tier: PrecisionTier::Unavailable,
             files_pending: 0,
             pending_job_ids: vec![],
@@ -329,6 +316,7 @@ impl LazyCoordinator {
         total.files_cached += r.0.files_cached;
         total.budget_exceeded |= r.0.budget_exceeded;
         total.built_file_ids.extend(r.0.built_file_ids);
+        total.cached_file_ids.extend(r.0.cached_file_ids);
         total.files_pending += r.0.files_pending;
         total.pending_job_ids.extend(r.0.pending_job_ids);
         total.precision_tier = crate::precision::structural_precision(
@@ -351,8 +339,14 @@ impl LazyCoordinator {
     /// independently of the coordinator's job tracking.  Failures are logged
     /// but never propagated — any file that fails to prewarm will simply be
     /// built on-demand when actually queried.
-    fn spawn_background_prewarm(
+    ///
+    /// The `prewarm` flag is an external guard injected by the caller
+    /// (typically `LazyOrchestrator` or MCP `ToolRouter`), allowing a single
+    /// shared flag to deduplicate prewarm threads across concurrent MCP
+    /// requests to the same store.
+    pub(crate) fn spawn_background_prewarm(
         &self,
+        prewarm: &Arc<AtomicBool>,
         store: Arc<Store>,
         project_root: std::path::PathBuf,
         seed_file_ids: Vec<FileId>,
@@ -364,12 +358,12 @@ impl LazyCoordinator {
         const MAX_PREWARM_FILES: usize = 8;
         const MAX_FUNCTIONS_PER_FILE: usize = 16;
 
-        let flag = Arc::clone(&self.prewarm_running);
+        let flag = Arc::clone(prewarm);
         if flag
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            return; // another prewarm already running for this coordinator
+            return; // another prewarm already running for this scope
         }
 
         let file_ids: Vec<FileId> = seed_file_ids.into_iter().take(MAX_PREWARM_FILES).collect();
@@ -440,6 +434,7 @@ mod tests {
     // Implementations will be filled in as the coordinator evolves.
 
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     use crate::CapabilityMask;
     use crate::closure_planner::IncludeRoot;
@@ -675,6 +670,7 @@ mod tests {
             files_cached: 0,
             budget_exceeded: false,
             built_file_ids: vec![],
+            cached_file_ids: vec![],
             precision_tier: PrecisionTier::Unavailable,
             files_pending: 0,
             pending_job_ids: vec![],
@@ -687,6 +683,7 @@ mod tests {
             files_cached: 0,
             budget_exceeded: false,
             built_file_ids: vec![fid],
+            cached_file_ids: vec![],
             precision_tier: PrecisionTier::Unavailable,
             files_pending: 0,
             pending_job_ids: vec![],
@@ -710,6 +707,7 @@ mod tests {
             files_cached: 0,
             budget_exceeded: false,
             built_file_ids: vec![],
+            cached_file_ids: vec![],
             precision_tier: PrecisionTier::DegradedStructural,
             files_pending: 2,
             pending_job_ids: vec!["job-aaa".into(), "job-bbb".into()],
@@ -1412,37 +1410,28 @@ mod tests {
 
     #[test]
     fn prewarm_per_instance_isolated() {
-        // Two coordinators with different stores can both prewarm
-        // independently — the flag is per-instance, not process-global.
+        // Two separate Arc<AtomicBool> flags are independent.
+        // When injected into different LazyOrchestrator instances (via
+        // with_prewarm_flag), each orchestrator gets its own prewarm guard —
+        // the flag is per-store scope, not process-global.
         use std::sync::atomic::Ordering;
 
-        let store1 = Arc::new(db::Store::open_in_memory().unwrap());
-        let store2 = Arc::new(db::Store::open_in_memory().unwrap());
+        let flag1 = Arc::new(AtomicBool::new(false));
+        let flag2 = Arc::new(AtomicBool::new(false));
 
-        let coord1 = LazyCoordinator::new(store1);
-        let coord2 = LazyCoordinator::new(store2);
-
-        // Set coord1's prewarm flag
-        assert!(coord1
-            .prewarm_running
+        // flag1 can be claimed independently of flag2
+        assert!(flag1
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok());
+        assert!(flag2
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok());
 
-        // coord2's flag should still be false (per-instance isolation)
-        assert!(coord2
-            .prewarm_running
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok());
-
-        // coord1's flag should still be true
-        assert!(coord1
-            .prewarm_running
+        // flag1 should still be true, flag2 independently true
+        assert!(flag1
             .compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed)
             .is_ok());
-
-        // Clean up coord2
-        assert!(coord2
-            .prewarm_running
+        assert!(flag2
             .compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed)
             .is_ok());
     }

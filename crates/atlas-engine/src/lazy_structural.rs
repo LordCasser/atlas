@@ -136,19 +136,24 @@ impl DefaultCandidateProvider {
             Some(r) => r.clone(),
             None => return Ok(Vec::new()),
         };
-        let output = std::process::Command::new("rg")
-            .args([
-                "--files-with-matches",
-                "--no-heading",
-                "--word-regexp",
-                "--fixed-strings",
-                "--max-count=1",
-                "--ignore-file",
-                ".atlasignore",
-                name,
-            ])
-            .current_dir(&project_root)
-            .output();
+
+        let atlasignore = project_root.join(".atlasignore");
+        let has_atlasignore = atlasignore.exists();
+
+        let mut cmd = std::process::Command::new("rg");
+        cmd.args([
+            "--files-with-matches",
+            "--no-heading",
+            "--word-regexp",
+            "--fixed-strings",
+            "--max-count=1",
+        ]);
+        if has_atlasignore {
+            cmd.args(["--ignore-file", ".atlasignore"]);
+        }
+        cmd.arg(name).current_dir(&project_root);
+
+        let output = cmd.output();
         let output = match output {
             Ok(o) if o.status.success() => o,
             _ => return Ok(Vec::new()),
@@ -162,7 +167,10 @@ impl DefaultCandidateProvider {
             if line.is_empty() {
                 continue;
             }
-            file_ids.push(FileId::generate(line));
+            match self.store.resolve_file_id(&project_root, line) {
+                Ok(Some(file_id)) => file_ids.push(file_id),
+                _ => {} // skip files unknown to the store
+            }
         }
         Ok(file_ids)
     }
@@ -189,6 +197,8 @@ pub struct EnsureStructuralResult {
     /// FileIds that were actually built (not cached).
     /// Used by delta graph refresh to scope the in-memory graph rebuild.
     pub built_file_ids: Vec<FileId>,
+    /// FileIds that were found to already have up-to-date extraction (cached).
+    pub cached_file_ids: Vec<FileId>,
     /// Precision tier reflecting data quality after this lazy operation.
     pub precision_tier: PrecisionTier,
     /// Files that are being built by another job (ClaimResult::AlreadyBuilding).
@@ -241,6 +251,7 @@ impl LazyStructuralService {
                 files_cached: 0,
                 budget_exceeded: false,
                 built_file_ids: vec![],
+                cached_file_ids: vec![],
                 precision_tier: PrecisionTier::Unavailable,
                 files_pending: 0,
                 pending_job_ids: vec![],
@@ -323,6 +334,7 @@ impl LazyStructuralService {
             files_cached: 0,
             budget_exceeded: false,
             built_file_ids: vec![],
+            cached_file_ids: vec![],
             precision_tier: PrecisionTier::Unavailable,
             files_pending: 0,
             pending_job_ids: vec![],
@@ -335,6 +347,7 @@ impl LazyStructuralService {
             }
             if self.has_resolution_symbols_layer(file_id)? {
                 result.files_cached += 1;
+                result.cached_file_ids.push(*file_id);
                 continue;
             }
             match self.reindex_file_resolution_symbols(file_id) {
@@ -442,6 +455,7 @@ impl LazyStructuralService {
             files_cached: 0,
             budget_exceeded: false,
             built_file_ids: vec![],
+            cached_file_ids: vec![],
             precision_tier: PrecisionTier::Unavailable,
             files_pending: 0,
             pending_job_ids: vec![],
@@ -454,6 +468,7 @@ impl LazyStructuralService {
             }
             if self.has_structural_layer(file_id)? {
                 result.files_cached += 1;
+                result.cached_file_ids.push(*file_id);
                 continue;
             }
             match self.reindex_file_structural(file_id, token) {
@@ -715,6 +730,165 @@ mod tests {
         assert_eq!(
             candidates[0], fid,
             "should return the store's canonical FileId, not a re-generated one"
+        );
+    }
+
+    // ── ripgrep candidate provider tests ──────────────────────────────────
+
+    /// Check whether `rg` is available on this system.
+    fn rg_available() -> bool {
+        std::process::Command::new("rg")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
+    /// Counter for unique temp directories across test invocations.
+    /// Avoids collisions when tests run in the same process.
+    fn next_test_counter() -> usize {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Helper: create a temp project dir, insert files into the store,
+    /// and return (store, project_root, provider).
+    fn setup_ripgrep_test(
+        files: &[(&str, &str)], // (path, content)
+        atlasignore: Option<&str>,
+    ) -> (Arc<Store>, PathBuf, DefaultCandidateProvider) {
+        let store = test_store();
+        let root = std::env::temp_dir().join(format!(
+            "atlas_rg_test_{}_{}",
+            std::process::id(),
+            next_test_counter(),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        if let Some(content) = atlasignore {
+            std::fs::write(root.join(".atlasignore"), content).unwrap();
+        }
+
+        for (path, content) in files {
+            let full = root.join(path);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&full, content).unwrap();
+
+            // Insert into store so resolve_file_id works
+            let fid = FileId::generate(path);
+            let file_info = types::structs::FileInfo {
+                file_id: fid,
+                path: path.to_string(),
+                language: types::Language::Rust,
+                content_hash: "test_hash".to_string(),
+                status: types::enums::ParseStatus::Success,
+            };
+            store.upsert_file(&file_info).unwrap();
+        }
+
+        let provider =
+            DefaultCandidateProvider::new(store.clone(), Some(root.clone()));
+        (store, root, provider)
+    }
+
+    /// Clean up a temp project dir.
+    fn cleanup_ripgrep_test(root: &PathBuf) {
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn candidates_from_ripgrep_respects_atlasignore() {
+        if !rg_available() {
+            eprintln!("skipping test: rg not available");
+            return;
+        }
+
+        let (_store, root, provider) = setup_ripgrep_test(
+            &[
+                ("src/lib.rs", "somecontent"),
+                ("src/generated.rs", "somecontent"),
+                ("build/output.rs", "somecontent"),
+            ],
+            Some("generated.rs\nbuild/"),
+        );
+
+        // "somecontent" exists in all three files.
+        // .atlasignore excludes generated.rs and build/
+        let candidates = provider.candidates_for_symbol("somecontent").unwrap();
+        cleanup_ripgrep_test(&root);
+
+        let expected_included = FileId::generate("src/lib.rs");
+        let expected_excluded_generated = FileId::generate("src/generated.rs");
+        let expected_excluded_build = FileId::generate("build/output.rs");
+        assert!(
+            candidates.contains(&expected_included),
+            "src/lib.rs should be a candidate (not excluded), got: {candidates:?}"
+        );
+        assert!(
+            !candidates.contains(&expected_excluded_generated),
+            "src/generated.rs should be excluded by .atlasignore, got: {candidates:?}"
+        );
+        assert!(
+            !candidates.contains(&expected_excluded_build),
+            "build/output.rs should be excluded by .atlasignore, got: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn candidates_from_ripgrep_works_without_atlasignore() {
+        if !rg_available() {
+            eprintln!("skipping test: rg not available");
+            return;
+        }
+
+        let (_store, root, provider) = setup_ripgrep_test(
+            &[
+                ("src/main.rs", "myfunction"),
+                ("tests/test.rs", "myfunction"),
+            ],
+            None, // no .atlasignore
+        );
+
+        let candidates = provider.candidates_for_symbol("myfunction").unwrap();
+        cleanup_ripgrep_test(&root);
+
+        assert!(
+            !candidates.is_empty(),
+            "should return results when .atlasignore does not exist"
+        );
+    }
+
+    #[test]
+    fn candidates_from_ripgrep_returns_store_file_ids() {
+        if !rg_available() {
+            eprintln!("skipping test: rg not available");
+            return;
+        }
+
+        let (store, root, provider) = setup_ripgrep_test(
+            &[("src/unique_name.rs", "uniqueterm")],
+            None,
+        );
+
+        let candidates = provider.candidates_for_symbol("uniqueterm").unwrap();
+        cleanup_ripgrep_test(&root);
+
+        assert_eq!(
+            candidates.len(),
+            1,
+            "expected exactly one candidate, got: {candidates:?}"
+        );
+
+        // The returned FileId should match what the store resolves
+        let resolved = store
+            .resolve_file_id(&root, "src/unique_name.rs")
+            .unwrap()
+            .expect("store should resolve the file");
+        assert_eq!(
+            candidates[0], resolved,
+            "ripgrep result FileId should match store.resolve_file_id"
         );
     }
 }

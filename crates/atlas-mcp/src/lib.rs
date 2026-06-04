@@ -171,22 +171,22 @@ impl ServerHandler for AtlasMcpService {
         let has_progress_token = progress_token.is_some();
 
         async move {
-            // ── For long-running tools with progress token, set up progress channel ─
-            let _progress_task = if matches!(tool_name.as_str(), "index" | "project" | "search")
-                && has_progress_token
+            // ── Build request-scoped context (replaces global progress_sender) ──
+            // For long-running tools with a progress token, create a channel and
+            // spawn a forwarder that converts ProgressReport → MCP notifications.
+            let (ctx, _progress_task) = if matches!(
+                tool_name.as_str(),
+                "index" | "project" | "search"
+            ) && has_progress_token
             {
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<tools::ProgressReport>();
+                let (tx, mut rx) =
+                    tokio::sync::mpsc::unbounded_channel::<tools::ProgressReport>();
                 let token = progress_token.unwrap();
                 let peer = context.peer.clone();
 
-                // Store the sender on the router so handle_index can use it.
-                {
-                    let mut router = self.router.lock().unwrap_or_else(|e| e.into_inner());
-                    router.progress_sender = Some(tx);
-                }
+                let ctx = tools::ToolCallContext::with_progress_sender(tx);
 
-                // Spawn a task that forwards progress reports to MCP notifications.
-                Some(tokio::spawn(async move {
+                let forwarder = tokio::spawn(async move {
                     while let Some((progress, total, message)) = rx.recv().await {
                         let mut params =
                             rmcp_model::ProgressNotificationParam::new(token.clone(), progress);
@@ -198,9 +198,11 @@ impl ServerHandler for AtlasMcpService {
                         }
                         let _ = peer.notify_progress(params).await;
                     }
-                }))
+                });
+
+                (ctx, Some(forwarder))
             } else {
-                None
+                (tools::ToolCallContext::empty(), None)
             };
 
             let mut args = request
@@ -210,15 +212,6 @@ impl ServerHandler for AtlasMcpService {
             if should_auto_background_without_progress(&tool_name, &args, has_progress_token) {
                 ensure_object_bool(&mut args, "background", true);
                 ensure_object_bool(&mut args, "_auto_background", true);
-            }
-
-            // ── Panic-safe guard: clears progress_sender on scope exit. ────
-            struct ProgressGuard<'a>(&'a Mutex<ToolRouter>);
-            impl<'a> Drop for ProgressGuard<'a> {
-                fn drop(&mut self) {
-                    let mut router = self.0.lock().unwrap_or_else(|e| e.into_inner());
-                    router.progress_sender = None;
-                }
             }
 
             // ── wait_for_task: async poll loop (must not hold std Mutex) ──
@@ -271,11 +264,6 @@ impl ServerHandler for AtlasMcpService {
 
             // ── Standard tool dispatch ────────────────────────────────────
             let result = {
-                let _guard = if has_progress_token {
-                    Some(ProgressGuard(&self.router))
-                } else {
-                    None
-                };
                 self.lock_router().and_then(|mut router| {
                     if ToolRouter::tool_call_requires_graph(&tool_name, &args) {
                         router.ensure_graph_initialized().map_err(|err| {
@@ -292,7 +280,7 @@ impl ServerHandler for AtlasMcpService {
                         })?;
                     }
 
-                    let tool_result = router.call_tool(&tool_name, &args);
+                    let tool_result = router.call_tool(&ctx, &tool_name, &args);
                     let tool_error = tool_result.is_error.unwrap_or(false);
                     let duration_ms = start.elapsed().as_millis() as u64;
                     let _span = tracing::info_span!(
@@ -306,7 +294,7 @@ impl ServerHandler for AtlasMcpService {
                     tracing::info!(parent: &_span, "request handled");
                     Ok(Self::to_rmcp_result(tool_result))
                 })
-            }; // _guard drops here, clearing progress_sender
+            };
 
             // Wait for the progress notification task to finish (receiver dropped).
             if let Some(handle) = _progress_task {

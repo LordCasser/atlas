@@ -17,7 +17,11 @@ use atlas_engine::structs::precision::PrecisionTier;
 use serde_json::json;
 
 impl ToolRouter {
-    pub(crate) fn handle_context(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_context(
+        &mut self,
+        ctx: &super::ToolCallContext,
+        args: &serde_json::Value,
+    ) -> (String, bool) {
         let qname = get_str(args, "symbol");
         if qname.len() > MAX_SYMBOL_NAME_LENGTH {
             return (
@@ -31,7 +35,7 @@ impl ToolRouter {
             .get("includeCode")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        self.send_progress(0.2, &format!("Building context for '{qname}'..."));
+        ctx.send_progress(0.2, &format!("Building context for '{qname}'..."));
 
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
         for w in &root_warnings {
@@ -52,6 +56,7 @@ impl ToolRouter {
         let investigation = self.investigation_state.active_investigation.clone();
 
         let (sid, lazy_warnings, tier, lazy_diag) = match self.resolve_context_symbol(
+            ctx,
             qname,
             include_roots,
             investigation.as_ref(),
@@ -72,10 +77,10 @@ impl ToolRouter {
             return (format!("Graph refresh error: {e:#}"), true);
         }
 
-        self.send_progress(0.7, "Building context view...");
+        ctx.send_progress(0.7, "Building context view...");
         match self.context_builder().build_context_for_symbol(&sid) {
             Ok(view) => {
-                self.send_progress(1.0, "Context complete");
+                ctx.send_progress(1.0, "Context complete");
 
                 // ── subject ────────────────────────────────────────────────
                 let subject = serde_json::to_value(&view.subject).unwrap_or(json!(null));
@@ -245,6 +250,7 @@ impl ToolRouter {
     /// built from the most recent structural extraction.
     fn resolve_context_symbol(
         &mut self,
+        ctx: &super::ToolCallContext,
         qname: &str,
         include_roots: Vec<atlas_engine::IncludeRoot>,
         investigation: Option<&atlas_engine::Investigation>,
@@ -353,7 +359,7 @@ impl ToolRouter {
         // message when lazy work is a no-op.
         let is_manual_full = self.has_manual_full_index();
         if !is_manual_full {
-            self.send_progress(0.5, "Extracting structural data...");
+            ctx.send_progress(0.5, "Extracting structural data...");
             let outcome = self.ensure_structural_for_symbol_name(
                 qname,
                 include_roots.clone(),

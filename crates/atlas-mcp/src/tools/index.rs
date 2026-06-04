@@ -93,11 +93,15 @@ impl ToolRouter {
     ///   exclude: list of glob patterns to skip (e.g. ["**/test/**", "**/*.test.ts"])
     ///   analysis: "manifest" (default), "structural", or "full"
     ///
-    /// If [`Self::progress_sender`] is set, progress notifications are sent at each
+    /// If [`ToolCallContext::progress_sender`] is set, progress notifications are sent at each
     /// pipeline phase (discovery, extraction, resolution, graph build).
     ///
     /// Returns a JSON IndexResult with indexing statistics.
-    pub(crate) fn handle_index(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_index(
+        &self,
+        ctx: &super::ToolCallContext,
+        args: &serde_json::Value,
+    ) -> (String, bool) {
         let mode = match parse_analysis_mode(args) {
             Ok(mode) => mode,
             Err(err) => return (index_error_result(err), true),
@@ -185,7 +189,7 @@ impl ToolRouter {
 
         // Run the index pipeline
         let sink = McpProgressSink {
-            progress_sender: self.progress_sender.clone(),
+            progress_sender: ctx.progress_sender.clone(),
             task_manager: None,
             task_id: None,
         };

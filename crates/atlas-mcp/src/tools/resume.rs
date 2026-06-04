@@ -87,7 +87,7 @@ impl ToolRouter {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 match kind {
-                    "point" => self.handle_trace_point(&snapshot.tool_args),
+                    "point" => self.handle_trace_point(&super::ToolCallContext::empty(), &snapshot.tool_args),
                     "variable" => self.handle_trace_variable(&snapshot.tool_args),
                     "forward" => self.handle_trace_forward(&snapshot.tool_args),
                     "callers" => self.handle_trace_caller_path(&snapshot.tool_args),
@@ -169,7 +169,7 @@ impl ToolRouter {
                     .unwrap_or("");
                 match view {
                     "detail" | "" => self.handle_symbol_detail(&snapshot.tool_args),
-                    "context" => self.handle_context(&snapshot.tool_args),
+                    "context" => self.handle_context(&super::ToolCallContext::empty(), &snapshot.tool_args),
                     "usages" => self.handle_usages(&snapshot.tool_args),
                     _ => return (
                         serde_json::to_string(
@@ -179,7 +179,7 @@ impl ToolRouter {
                     ),
                 }
             }
-            "search" => self.handle_search(&snapshot.tool_args),
+            "search" => self.handle_search(&super::ToolCallContext::empty(), &snapshot.tool_args),
             "path" => self.handle_path(&snapshot.tool_args),
             "explore" => self.handle_explore(&snapshot.tool_args),
             "impact" => self.handle_impact(&snapshot.tool_args),
