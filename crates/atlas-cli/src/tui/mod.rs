@@ -10,6 +10,7 @@ pub mod app;
 pub mod auto_index;
 pub mod event;
 pub mod fallback;
+pub mod jobs;
 pub mod progress;
 pub mod search_session;
 pub mod session;
