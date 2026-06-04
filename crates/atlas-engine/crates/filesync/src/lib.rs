@@ -9,8 +9,11 @@ pub mod detector;
 pub mod dirty;
 pub mod discovery;
 pub mod file_lock;
+pub mod incremental_pipeline;
 pub mod index_phases;
 pub mod index_pipeline;
+pub mod index_pipeline_orchestrator;
+pub mod progress;
 pub mod sync_engine;
 
 pub use cleanup::{clean_stale_file_ids, clean_stale_file_paths, source_file_id};
@@ -26,6 +29,11 @@ pub use index_phases::{
 pub use index_pipeline::{
     IndexPipelineOptions, IndexPipelineStats, IndexProgress, IndexProgressCallback,
     run_index_pipeline,
+};
+pub use index_pipeline_orchestrator::IndexPipeline;
+pub use incremental_pipeline::IncrementalPipeline;
+pub use progress::{
+    CallbackSink, MultiplexSink, NoopSink, PhaseName, ProgressEvent, ProgressSink,
 };
 pub use sync_engine::{SyncEngine, SyncStats, load_graph, load_snapshot};
 

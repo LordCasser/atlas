@@ -1,18 +1,70 @@
 //! `atlas_index` MCP tool — trigger project indexing from MCP clients.
 //!
-//! MCP indexing always performs fast manifest extraction against the project
-//! root. Structural/full parsing is intentionally handled by scoped query tools
-//! on demand so MCP clients do not block on large repositories.
+//! MCP indexing defaults to fast manifest extraction against the project root.
+//! Clients that need complete file dependencies, graph impact, or unscoped
+//! search can opt into structural/full analysis explicitly.
 
 use std::sync::Arc;
 
 use atlas_engine::{
-    ExtractionMode, FileLock, IndexPipelineOptions, IndexPipelineStats, IndexProgress,
-    IndexProgressCallback, run_index_pipeline,
+    ExtractionMode, FileLock, IndexPipeline, IndexPipelineOptions, IndexPipelineStats,
+    ProgressEvent, ProgressSink,
 };
 
 use super::ToolRouter;
 use serde_json::json;
+
+/// Progress sink that translates pipeline events into MCP progress
+/// notifications over the active progress sender and/or background task manager.
+struct McpProgressSink {
+    progress_sender: Option<super::ProgressSender>,
+    task_manager: Option<Arc<crate::task_manager::TaskManager>>,
+    task_id: Option<String>,
+}
+
+impl ProgressSink for McpProgressSink {
+    fn emit(&self, event: ProgressEvent) {
+        match event {
+            ProgressEvent::PhaseStarted { phase, .. } => {
+                self.send_progress(0.0, Some(format!("{phase}...")));
+            }
+            ProgressEvent::ItemProgress { phase, completed } => {
+                self.send_progress(0.5, Some(format!("{phase}: {completed} items")));
+            }
+            ProgressEvent::PhaseFinished {
+                phase,
+                succeeded,
+                detail,
+                ..
+            } => {
+                self.send_progress(
+                    1.0,
+                    detail.or(Some(format!("{phase} done: {succeeded}"))),
+                );
+            }
+            ProgressEvent::Warning { phase, message } => {
+                tracing::warn!("[{phase}] {message}");
+            }
+            ProgressEvent::Cancelled { last_phase } => {
+                tracing::info!("Index cancelled at {last_phase}");
+            }
+        }
+    }
+}
+
+impl McpProgressSink {
+    fn send_progress(&self, fraction: f64, message: Option<String>) {
+        if let Some(ref sender) = self.progress_sender {
+            let _ = sender.send((fraction, None, message.clone()));
+        }
+        if let Some(ref tm) = self.task_manager {
+            if let Some(ref tid) = self.task_id {
+                let pct = (fraction * 100.0).clamp(0.0, 100.0);
+                tm.update_progress(tid, pct, &message.unwrap_or_default());
+            }
+        }
+    }
+}
 
 /// Maximum number of include/exclude glob patterns accepted per index request.
 const MAX_INDEX_PATTERNS: usize = 100;
@@ -39,26 +91,28 @@ impl ToolRouter {
     /// Parameters:
     ///   include: list of glob patterns to restrict indexing to
     ///   exclude: list of glob patterns to skip (e.g. ["**/test/**", "**/*.test.ts"])
+    ///   analysis: "manifest" (default), "structural", or "full"
     ///
     /// If [`Self::progress_sender`] is set, progress notifications are sent at each
     /// pipeline phase (discovery, extraction, resolution, graph build).
     ///
     /// Returns a JSON IndexResult with indexing statistics.
     pub(crate) fn handle_index(&self, args: &serde_json::Value) -> (String, bool) {
-        if args.get("analysis").is_some() {
-            return (reject_analysis_result(), true);
-        }
+        let mode = match parse_analysis_mode(args) {
+            Ok(mode) => mode,
+            Err(err) => return (index_error_result(err), true),
+        };
 
         let background = args
             .get("background")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         if background {
-            return self.handle_index_background(args);
+            self.invalidate_manual_full_index_cache();
+            return self.handle_index_background(args, mode);
         }
 
         let start = std::time::Instant::now();
-        let mode = ExtractionMode::Manifest;
 
         let exclude_patterns: Vec<String> = args["exclude"]
             .as_array()
@@ -130,14 +184,18 @@ impl ToolRouter {
         };
 
         // Run the index pipeline
-        let progress_sender = self.progress_sender.clone();
+        let sink = McpProgressSink {
+            progress_sender: self.progress_sender.clone(),
+            task_manager: None,
+            task_id: None,
+        };
         match run_mcp_index(
             &self.store,
             &self.project_root,
             mode,
             include_patterns,
             exclude_patterns,
-            progress_sender.map(progress_callback_from_sender),
+            &sink,
         ) {
             Ok(stats) => {
                 result.ok = true;
@@ -146,9 +204,7 @@ impl ToolRouter {
                 result.files_failed = stats.failed;
                 result.symbols_found = stats.symbols;
                 result.references_resolved = stats.resolved;
-                // MCP index always produces manifest-only; invalidate any
-                // cached "manual full index" flag so the next search/trace
-                // re-detects the actual layer distribution.
+                // Re-check layer distribution after any explicit MCP index.
                 self.invalidate_manual_full_index_cache();
             }
             Err(e) => {
@@ -177,7 +233,11 @@ impl ToolRouter {
         (json, !result.ok)
     }
 
-    fn handle_index_background(&self, args: &serde_json::Value) -> (String, bool) {
+    fn handle_index_background(
+        &self,
+        args: &serde_json::Value,
+        mode: ExtractionMode,
+    ) -> (String, bool) {
         let task_id = self.task_manager.create_task("index", "index");
         let auto_background = args
             .get("_auto_background")
@@ -188,7 +248,6 @@ impl ToolRouter {
         let store = self.store.clone();
         let project_root = self.project_root.clone();
 
-        let mode = ExtractionMode::Manifest;
         let exclude_patterns: Vec<String> = args["exclude"]
             .as_array()
             .map(|arr| {
@@ -249,17 +308,10 @@ impl ToolRouter {
                 None
             };
 
-            task_manager.update_progress(&tid, 5.0, "Discovering and indexing files...");
-            let progress = {
-                let task_manager = task_manager.clone();
-                let tid = tid.clone();
-                Arc::new(move |progress: IndexProgress| {
-                    task_manager.update_progress(
-                        &tid,
-                        (progress.fraction * 100.0).clamp(0.0, 100.0),
-                        progress.message.as_deref().unwrap_or("Indexing..."),
-                    );
-                }) as IndexProgressCallback
+            let sink = McpProgressSink {
+                progress_sender: None,
+                task_manager: Some(task_manager.clone()),
+                task_id: Some(tid.clone()),
             };
 
             match run_mcp_index(
@@ -268,7 +320,7 @@ impl ToolRouter {
                 mode,
                 include_patterns,
                 exclude_patterns,
-                Some(progress),
+                &sink,
             ) {
                 Ok(stats) => {
                     let mut result = IndexResult {
@@ -335,24 +387,33 @@ fn run_mcp_index(
     mode: ExtractionMode,
     include_patterns: Vec<String>,
     exclude_patterns: Vec<String>,
-    progress: Option<IndexProgressCallback>,
+    sink: &dyn ProgressSink,
 ) -> anyhow::Result<IndexPipelineStats> {
-    let mut options = IndexPipelineOptions::new(mode)
+    let options = IndexPipelineOptions::new(mode)
         .with_include_patterns(include_patterns)
         .with_exclude_patterns(exclude_patterns);
-    if let Some(progress) = progress {
-        options = options.with_progress(progress);
+
+    let pipeline = IndexPipeline::new(Arc::clone(store), project_root.to_path_buf(), options);
+
+    pipeline.run(sink, &mut || false)
+}
+
+fn parse_analysis_mode(args: &serde_json::Value) -> Result<ExtractionMode, String> {
+    match args
+        .get("analysis")
+        .and_then(|v| v.as_str())
+        .unwrap_or("manifest")
+    {
+        "manifest" => Ok(ExtractionMode::Manifest),
+        "structural" => Ok(ExtractionMode::Structural),
+        "full" => Ok(ExtractionMode::Full),
+        other => Err(format!(
+            "Unsupported analysis mode '{other}'. Must be one of: manifest, structural, full."
+        )),
     }
-    run_index_pipeline(store, project_root, options)
 }
 
-fn progress_callback_from_sender(sender: super::ProgressSender) -> IndexProgressCallback {
-    Arc::new(move |progress: IndexProgress| {
-        let _ = sender.send((progress.fraction, progress.total, progress.message));
-    })
-}
-
-fn reject_analysis_result() -> String {
+fn index_error_result(error: String) -> String {
     serde_json::to_string(&IndexResult {
         ok: false,
         files_discovered: 0,
@@ -360,10 +421,7 @@ fn reject_analysis_result() -> String {
         files_failed: 0,
         symbols_found: 0,
         references_resolved: 0,
-        errors: vec![
-            "Unsupported index parameter 'analysis'. The MCP index tool always builds the manifest layer for the active project. Use scoped search/trace for deeper on-demand parsing."
-                .into(),
-        ],
+        errors: vec![error],
         duration_ms: 0,
         warning: None,
     })

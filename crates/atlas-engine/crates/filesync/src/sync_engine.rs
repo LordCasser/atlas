@@ -4,19 +4,17 @@
 //! `SyncEngine` is the primary entry point for incremental index updates.
 //! For full-index pipelines, prefer [`crate::index_pipeline::run_index_pipeline`].
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use db::Store;
 use extraction::ExtractionMode;
-use extraction::LanguageRegistry;
-use extraction::create_frontend;
-use extraction::extract_file_with_mode;
-use graph::{GraphBuilder, GraphEngine, GraphSnapshot};
-use std::path::{Path, PathBuf};
+use graph::{GraphEngine, GraphSnapshot};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
-use types::{PhaseTimer, PhaseTimings};
+use types::PhaseTimings;
 
-use crate::cleanup::{clean_stale_file_paths, source_file_id};
+use crate::FileLock;
+use crate::incremental_pipeline::IncrementalPipeline;
+use crate::progress::NoopSink;
 
 /// Incremental sync engine.
 pub struct SyncEngine {
@@ -44,158 +42,17 @@ impl SyncEngine {
         }
     }
 
-    /// Perform a full incremental sync:
-    /// 1. Detect changed files (git status → DB content-hash fallback)
-    /// 2. Delete stale data for removed/changed files
-    /// 3. Re-extract changed/added files
-    /// 4. Re-resolve all unresolved references
+    /// Perform a full incremental sync via the composable [`IncrementalPipeline`].
     pub fn sync(&self) -> Result<SyncStats> {
-        let start = Instant::now();
-        let mut phase_timings = PhaseTimings::new();
-
-        // 1. Detect changes
-        let det_timer = PhaseTimer::start("Detection");
-        let changed = self.detect_changes()?;
-        let mut stats = SyncStats {
-            files_changed: changed.total(),
-            ..Default::default()
-        };
-        let det_timing = det_timer
-            .items(changed.total() as u64)
-            .note(format!(
-                "{} added, {} modified, {} deleted",
-                changed.added.len(),
-                changed.modified.len(),
-                changed.deleted.len()
-            ))
-            .finish();
-        phase_timings.push(det_timing);
-
-        // P2: path alias config change detection (independent of file changes)
-        let path_alias_config_changed =
-            resolution::PathAliasConfig::has_changed(&self.store, &self.project_root)?;
-
-        // If neither file changes nor config changes, nothing to do.
-        if changed.is_empty() && !path_alias_config_changed {
-            stats.duration = start.elapsed();
-            phase_timings.set_total(stats.duration);
-            stats.phase_timings = phase_timings;
-            return Ok(stats);
-        }
-
-        // 2. Delete stale data for deleted and modified files (only when files changed)
-        if !changed.is_empty() {
-            tracing::info!("cleaning stale index data");
-            let del_timer = PhaseTimer::start("Delete stale");
-            let deleted_rel = project_relative_paths(&changed.deleted, &self.project_root);
-            let modified_rel = project_relative_paths(&changed.modified, &self.project_root);
-            clean_stale_file_paths(&self.store, &deleted_rel)
-                .context("failed to clean deleted files")?;
-            clean_stale_file_paths(&self.store, &modified_rel)
-                .context("failed to clean modified files")?;
-            stats.files_removed += changed.deleted.len();
-            let del_count = changed.deleted.len() + changed.modified.len();
-            let del_timing = del_timer.items(del_count as u64).finish();
-            phase_timings.push(del_timing);
-        }
-
-        // 3. Path alias config change invalidation (independent of file changes)
-        if path_alias_config_changed {
-            let inv_timer = PhaseTimer::start("Path alias invalidation");
-            let inv_refs = self
-                .store
-                .invalidate_all_references()
-                .context("Failed to invalidate references for path alias config change")?;
-            let inv_edges = self
-                .store
-                .delete_all_edges()
-                .context("Failed to delete edges for path alias config change")?;
-            tracing::info!(
-                "path alias config changed — invalidated {} references and {} edges",
-                inv_refs,
-                inv_edges
-            );
-            let inv_timing = inv_timer
-                .note(format!("{inv_refs} refs + {inv_edges} edges"))
-                .finish();
-            phase_timings.push(inv_timing);
-        }
-
-        // 4. Re-extract modified and new files
-        let ext_timer = PhaseTimer::start("Re-extract");
-        let to_reindex: Vec<&PathBuf> = changed
-            .added
-            .iter()
-            .chain(changed.modified.iter())
-            .collect();
-
-        tracing::info!("re-extracting {} files", to_reindex.len());
-
-        let before_symbols = self
-            .store
-            .count_symbols()
-            .context("failed to count symbols before re-extract")?;
-
-        for path in &to_reindex {
-            if let Err(e) = self.reindex_file(path) {
-                tracing::warn!("Failed to reindex {}: {}", path.display(), e);
-            } else {
-                stats.files_reindexed += 1;
-            }
-        }
-
-        let after_symbols = self
-            .store
-            .count_symbols()
-            .context("failed to count symbols after re-extract")?;
-        stats.new_nodes = after_symbols.saturating_sub(before_symbols);
-        let ext_timing = ext_timer.items(stats.files_reindexed as u64).finish();
-        phase_timings.push(ext_timing);
-
-        // 4. Re-resolve all unresolved references (P2: two-step pipeline)
-        if self.mode.produces_references() {
-            tracing::info!("resolving symbol references");
-            let res_timer = PhaseTimer::start("Resolution");
-            // P2: Load path aliases if present
-            let path_alias = resolution::PathAliasConfig::resolver(&self.project_root);
-            let mut resolver =
-                resolution::ReferenceResolver::with_path_alias(self.store.clone(), path_alias);
-            let (resolved, res_stats) = resolver.resolve_all()?;
-            let res_timing = res_timer
-                .items(res_stats.total_refs as u64)
-                .note(format!("{} resolved", res_stats.resolved))
-                .finish();
-            phase_timings.push(res_timing);
-
-            // 4b. Build edges from resolved references
-            tracing::info!("building symbol graph");
-            let edge_timer = PhaseTimer::start("Graph build");
-            let builder = GraphBuilder::new(self.store.clone());
-            let build_stats = builder.build_all(&resolved);
-            stats.new_edges = build_stats.edges_built;
-            let edge_timing = edge_timer.items(build_stats.edges_built as u64).finish();
-            phase_timings.push(edge_timing);
-
-            // 4c. Materialize user annotations as edges
-            if let Err(e) = graph::materialize_annotations(&self.store) {
-                tracing::warn!("failed to materialize annotations: {}", e);
-            }
-        } else {
-            tracing::debug!("skipping resolution/graph/annotations (mode produces no references)");
-            stats.new_edges = 0;
-        }
-
-        // Commit path alias config hash baseline AFTER the full pipeline succeeded.
-        // Committing earlier means a partial failure would leave the hash
-        // updated, preventing retry on the next sync.
-        if path_alias_config_changed {
-            resolution::PathAliasConfig::commit(&self.store, &self.project_root)?;
-        }
-
-        stats.duration = start.elapsed();
-        phase_timings.set_total(stats.duration);
-        stats.phase_timings = phase_timings;
-        Ok(stats)
+        let _lock = FileLock::acquire(&self.store)?;
+        let pipeline = IncrementalPipeline::new(
+            Arc::clone(&self.store),
+            self.project_root.clone(),
+            self.mode.clone(),
+        );
+        let sink = NoopSink;
+        let mut interrupted = || false;
+        pipeline.sync(&sink, &mut interrupted)
     }
 
     /// Detect changed files: tries git status first, falls back to DB content-hash comparison.
@@ -209,35 +66,6 @@ impl SyncEngine {
         }
     }
 
-    // --- internal ---
-
-    fn reindex_file(&self, path: &Path) -> Result<()> {
-        let relative = path.strip_prefix(&self.project_root).unwrap_or(path);
-
-        let lang = LanguageRegistry::detect_language(relative)
-            .context("Cannot detect language for file")?;
-
-        let frontend = create_frontend(lang).context("Language frontend not available")?;
-
-        let source = std::fs::read_to_string(path)
-            .with_context(|| format!("Cannot read {}", path.display()))?;
-
-        let file_id = source_file_id(relative)
-            .with_context(|| format!("invalid file path: {}", relative.display()))?;
-        let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
-
-        let facts = extract_file_with_mode(
-            &frontend,
-            file_id,
-            relative,
-            &source,
-            &content_hash,
-            self.mode.clone(),
-        )?;
-
-        self.store.insert_file_facts(&facts)?;
-        Ok(())
-    }
 }
 
 // -----------------------------------------------------------------------
@@ -252,13 +80,6 @@ pub fn load_graph(store: &Arc<Store>, confidence_threshold: f32) -> Result<Graph
 /// Create a new GraphSnapshot from the store.
 pub fn load_snapshot(store: &Arc<Store>, confidence_threshold: f32) -> Result<GraphSnapshot> {
     GraphSnapshot::from_store(store, confidence_threshold)
-}
-
-fn project_relative_paths(paths: &[PathBuf], root: &Path) -> Vec<PathBuf> {
-    paths
-        .iter()
-        .map(|path| path.strip_prefix(root).unwrap_or(path).to_path_buf())
-        .collect()
 }
 
 /// Statistics from a sync operation.

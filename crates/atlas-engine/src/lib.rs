@@ -99,9 +99,10 @@ pub use extraction::{
 /// Sync layer: incremental sync engine, file lock, file discovery.
 pub use filesync::{
     DirtySet, ExtractedFile, ExtractedFiles, ExtractionPhaseStats, FileLock, GraphResult,
-    IndexPipelineOptions, IndexPipelineStats, IndexProgress, IndexProgressCallback, SyncEngine,
-    SyncStats, WriteBatchStats, build_dirty_set, clean_stale_file_ids, clean_stale_file_paths,
-    discovery, phase_build_summaries, phase_cleanup_file_ids, phase_cleanup_stale,
+    IndexPipeline, IndexPipelineOptions, IndexPipelineStats, IndexProgress,
+    IndexProgressCallback, PhaseName, ProgressEvent, ProgressSink, SyncEngine, SyncStats,
+    WriteBatchStats, build_dirty_set, clean_stale_file_ids, clean_stale_file_paths, discovery,
+    phase_build_summaries, phase_cleanup_file_ids, phase_cleanup_stale,
     phase_commit_path_alias_config, phase_dirty_check, phase_discover, phase_extract_serial,
     phase_finalize, phase_init_frontends, phase_materialize_annotations, phase_resolve_and_build,
     phase_write_batched, phase_write_single, run_index_pipeline, source_file_id,
@@ -124,6 +125,7 @@ pub use resolution::{
 };
 /// Search layer: FTS5 + fuzzy search engine.
 pub use search::{SearchEngine, SearchOptions, SearchResult};
+pub use search::query_parser::{ParsedQuery, parse_query};
 /// Progress protocol (for CLI TUI integration).
 pub use types::progress;
 /// All core IR types (SymbolDef, ReferenceUse, FileFacts, etc.).
