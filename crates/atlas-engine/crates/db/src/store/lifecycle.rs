@@ -3,7 +3,7 @@
 use crate::schema::SCHEMA_DDL;
 use crate::store_fts::{chrono_now_ms, is_process_alive};
 
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{params, Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -148,29 +148,29 @@ impl Store {
         let pid = std::process::id();
         let now = chrono_now_ms();
 
-        let existing: Option<(i64, i64)> = tx
-            .query_row(
-                "SELECT value FROM project_metadata WHERE key = 'exclusive_lock_pid'",
-                [],
-                |row| {
-                    let v: String = row.get(0)?;
-                    let parts: Vec<&str> = v.splitn(2, ':').collect();
-                    if parts.len() == 2 {
-                        Ok(Some((
-                            parts[0].parse().unwrap_or(0),
-                            parts[1].parse().unwrap_or(0),
-                        )))
-                    } else {
-                        Ok(None)
-                    }
-                },
-            )
-            .map_err(|e| {
+        let existing: Option<(i64, i64)> = match tx.query_row(
+            "SELECT value FROM project_metadata WHERE key = 'exclusive_lock_pid'",
+            [],
+            |row| {
+                let v: String = row.get(0)?;
+                let parts: Vec<&str> = v.splitn(2, ':').collect();
+                if parts.len() == 2 {
+                    Ok(Some((
+                        parts[0].parse().unwrap_or(0),
+                        parts[1].parse().unwrap_or(0),
+                    )))
+                } else {
+                    Ok(None)
+                }
+            },
+        ) {
+            Ok(existing) => existing,
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
                 tracing::warn!(?e, "Failed to query exclusive lock PID");
-                e
-            })
-            .ok()
-            .flatten();
+                None
+            }
+        };
 
         if let Some((existing_pid, _ts)) = existing {
             if existing_pid != pid as i64 && is_process_alive(existing_pid) {
@@ -198,26 +198,28 @@ impl Store {
     pub fn release_exclusive_lock(&self) -> anyhow::Result<()> {
         let conn = self.lock();
         let pid = std::process::id();
-        let existing: Option<i64> = conn
-            .query_row(
-                "SELECT value FROM project_metadata WHERE key = 'exclusive_lock_pid'",
-                [],
-                |row| {
-                    let v: String = row.get(0)?;
-                    Ok(v.split(':').next().and_then(|s| {
-                        s.parse().map_err(|e| {
+        let existing: Option<i64> = match conn.query_row(
+            "SELECT value FROM project_metadata WHERE key = 'exclusive_lock_pid'",
+            [],
+            |row| {
+                let v: String = row.get(0)?;
+                Ok(v.split(':').next().and_then(|s| {
+                    s.parse()
+                        .map_err(|e| {
                             tracing::warn!(?e, pid_value = %v, "Failed to parse lock PID from metadata");
                             e
-                        }).ok()
-                    }))
-                },
-            )
-            .map_err(|e| {
+                        })
+                        .ok()
+                }))
+            },
+        ) {
+            Ok(existing) => existing,
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
                 tracing::warn!(?e, "Failed to query exclusive lock PID for release");
-                e
-            })
-            .ok()
-            .flatten();
+                None
+            }
+        };
 
         if let Some(existing_pid) = existing {
             if existing_pid == pid as i64 {
