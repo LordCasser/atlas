@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use db::Store;
+#[cfg(test)]
 use extraction::ExtractionMode;
 
 use crate::cleanup::source_file_id;
