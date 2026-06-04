@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use atlas_engine::{CallerChain, ContextView, SearchOptions, SearchResult, Store};
+use atlas_engine::{CallerChain, ContextView, SearchResult, Store};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -560,37 +560,11 @@ impl App {
             return;
         }
 
-        // Parse scope prefix: "path/: query" → scope filter on file path.
-        let (scope_path, query) = match self.search_input.split_once('/') {
-            Some((prefix, rest)) if prefix.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.') => {
-                // Only treat as scope if '/' appears before a space (or no space exists)
-                if !rest.is_empty() && !prefix.contains(' ') {
-                    (Some(format!("{}/", prefix)), rest.trim().to_string())
-                } else {
-                    (None, self.search_input.clone())
-                }
-            }
-            _ => (None, self.search_input.clone()),
-        };
+        // Parse query for language/scope prefixes and extract the search term.
+        let parsed = SearchSession::parse_query(&self.search_input);
 
-        let search_query = if query.is_empty() {
-            self.search_input.clone()
-        } else {
-            query
-        };
-
-        // When a scope path is provided, use the filtered search;
-        // otherwise fall back to search_simple for backward compatibility.
-        let result = if let Some(ref path_pattern) = scope_path {
-            let options = SearchOptions::new().with_file_path(path_pattern.clone());
-            self.session
-                .search_engine()
-                .search(&search_query, 100, &options)
-        } else {
-            self.session
-                .search_engine()
-                .search_simple(&search_query, 100)
-        };
+        let result =
+            SearchSession::do_search(self.session.search_engine(), &parsed, 100);
 
         match result {
             Ok(results) if results.is_empty() => {
@@ -603,8 +577,8 @@ impl App {
                     self.session.graph_engine(),
                     &self.project_root,
                 );
-                // Trigger lazy structural for the search query.
-                let _ = lazy_session.ensure_structural_for_search(&search_query);
+                // Trigger lazy structural for the parsed search term (strips prefixes).
+                let _ = lazy_session.ensure_structural_for_search(&parsed);
 
                 // Refresh the graph to pick up new structural symbols.
                 self.session.mark_stale();
@@ -613,14 +587,8 @@ impl App {
                 }
 
                 // Re-search with the refreshed engine.
-                let retry = if let Some(ref path_pattern) = scope_path {
-                    let options = SearchOptions::new().with_file_path(path_pattern.clone());
-                    self.session.search_engine().search(&search_query, 100, &options)
-                } else {
-                    self.session
-                        .search_engine()
-                        .search_simple(&search_query, 100)
-                };
+                let retry =
+                    SearchSession::do_search(self.session.search_engine(), &parsed, 100);
                 match retry {
                     Ok(results) => {
                         let count = results.len();
