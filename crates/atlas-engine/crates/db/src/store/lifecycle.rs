@@ -165,6 +165,10 @@ impl Store {
                     }
                 },
             )
+            .map_err(|e| {
+                tracing::warn!(?e, "Failed to query exclusive lock PID");
+                e
+            })
             .ok()
             .flatten();
 
@@ -200,9 +204,18 @@ impl Store {
                 [],
                 |row| {
                     let v: String = row.get(0)?;
-                    Ok(v.split(':').next().and_then(|s| s.parse().ok()))
+                    Ok(v.split(':').next().and_then(|s| {
+                        s.parse().map_err(|e| {
+                            tracing::warn!(?e, pid_value = %v, "Failed to parse lock PID from metadata");
+                            e
+                        }).ok()
+                    }))
                 },
             )
+            .map_err(|e| {
+                tracing::warn!(?e, "Failed to query exclusive lock PID for release");
+                e
+            })
             .ok()
             .flatten();
 

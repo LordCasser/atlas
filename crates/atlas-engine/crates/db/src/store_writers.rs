@@ -523,6 +523,14 @@ pub(crate) fn write_cfg_nodes(conn: &Connection, nodes: &[CfgNode]) -> anyhow::R
             None::<&str>,
             None::<&str>,
             serde_json::to_string(&n.semantic_effects)
+                .map_err(|e| {
+                    tracing::error!(
+                        ?e,
+                        fn_id = %n.function_id,
+                        "CFG node semantic_effects serialization failed, storing NULL"
+                    );
+                    e
+                })
                 .ok()
                 .and_then(|s| if s == "[]" { None } else { Some(s) }),
             None::<&str>,

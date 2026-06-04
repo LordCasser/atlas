@@ -119,6 +119,15 @@ impl Store {
                     params![file_id, unit_blob, layer],
                     |row| row.get(0),
                 )
+                .map_err(|e| {
+                    tracing::warn!(
+                        ?e,
+                        %file_id,
+                        %layer,
+                        "Failed to query existing extraction job (unit-level)"
+                    );
+                    e
+                })
                 .ok()
             } else {
                 tx.query_row(
@@ -129,6 +138,15 @@ impl Store {
                     params![file_id, layer],
                     |row| row.get(0),
                 )
+                .map_err(|e| {
+                    tracing::warn!(
+                        ?e,
+                        %file_id,
+                        %layer,
+                        "Failed to query existing extraction job (file-level)"
+                    );
+                    e
+                })
                 .ok()
             };
 
@@ -197,6 +215,15 @@ impl Store {
         )?;
         let result = stmt
             .query_row(params![file_id, layer], row_to_extraction_job)
+            .map_err(|e| {
+                tracing::warn!(
+                    ?e,
+                    %file_id,
+                    %layer,
+                    "Failed to read back started extraction job"
+                );
+                e
+            })
             .ok();
         Ok(result)
     }
@@ -243,6 +270,15 @@ impl Store {
         )?;
         let result = stmt
             .query_row(params![file_id, layer], row_to_extraction_job)
+            .map_err(|e| {
+                tracing::warn!(
+                    ?e,
+                    %file_id,
+                    %layer,
+                    "Failed to query active file extraction job"
+                );
+                e
+            })
             .ok();
         Ok(result)
     }
@@ -256,7 +292,17 @@ impl Store {
              FROM extraction_jobs
              WHERE job_id = ?1",
         )?;
-        let result = stmt.query_row(params![job_id], row_to_extraction_job).ok();
+        let result = stmt
+            .query_row(params![job_id], row_to_extraction_job)
+            .map_err(|e| {
+                tracing::warn!(
+                    ?e,
+                    %job_id,
+                    "Failed to query extraction job by ID"
+                );
+                e
+            })
+            .ok();
         Ok(result)
     }
 

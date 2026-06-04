@@ -109,8 +109,11 @@ where
                 // entire allowlist.  A malformed BLOB in the DB (e.g. wrong
                 // length for the ID type) is a data-integrity concern that
                 // callers should address separately.
-                eprintln!(
-                    "WARNING [fk_guards] Failed to decode existing ID from {table}.{column}: {e}"
+                tracing::warn!(
+                    ?e,
+                    %table,
+                    %column,
+                    "Failed to decode existing ID in FK allowlist query"
                 );
                 None
             }

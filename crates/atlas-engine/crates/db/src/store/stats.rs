@@ -58,6 +58,10 @@ impl Store {
                 [],
                 |r| r.get(0),
             )
+            .map_err(|e| {
+                tracing::warn!(?e, "Failed to query last_index_time metadata");
+                e
+            })
             .ok();
         let last_sync_time: Option<String> = conn
             .query_row(
@@ -65,6 +69,10 @@ impl Store {
                 [],
                 |r| r.get(0),
             )
+            .map_err(|e| {
+                tracing::warn!(?e, "Failed to query last_sync_time metadata");
+                e
+            })
             .ok();
 
         Ok(format!(
@@ -106,7 +114,13 @@ impl Store {
             .prepare("SELECT kind, COUNT(*) FROM symbols GROUP BY kind ORDER BY COUNT(*) DESC")?;
         let symbols_by_kind: Vec<(String, i64)> = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(?e, "Symbols-by-kind row decode error, skipping");
+                    None
+                }
+            })
             .collect();
 
         // Files grouped by language
@@ -115,7 +129,13 @@ impl Store {
         )?;
         let files_by_language: Vec<(String, i64)> = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(?e, "Files-by-language row decode error, skipping");
+                    None
+                }
+            })
             .collect();
 
         Ok(StoreStats {
@@ -155,7 +175,13 @@ impl Store {
             .query_map(params![&pattern], |row| {
                 Ok((row.get::<_, FileId>(0)?, row.get::<_, String>(1)?))
             })?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(?e, "Path suffix match row decode error, skipping");
+                    None
+                }
+            })
             .collect();
 
         for (fid, db_path) in &rows {

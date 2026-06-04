@@ -23,6 +23,15 @@ impl Store {
             .query_row(params![file_id, layer], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })
+            .map_err(|e| {
+                tracing::warn!(
+                    ?e,
+                    %file_id,
+                    %layer,
+                    "Failed to query file extraction state, returning None"
+                );
+                e
+            })
             .ok();
         Ok(result)
     }
@@ -113,7 +122,13 @@ impl Store {
             conn.prepare("SELECT capability_mask FROM extraction_state WHERE file_id = ?1")?;
         let rows: Vec<i64> = stmt
             .query_map(params![file_id], |row| row.get(0))?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(?e, %file_id, "Capability mask row decode error, skipping");
+                    None
+                }
+            })
             .collect();
         let mask = rows.iter().fold(0u16, |acc, &m| acc | (m as u16));
         Ok(CapabilityMask::new(mask))
@@ -134,6 +149,14 @@ impl Store {
                 params![file_id, unit_blob],
                 |row| row.get(0),
             )
+            .map_err(|e| {
+                tracing::warn!(
+                    ?e,
+                    %file_id,
+                    "Unit capability mask query failed, defaulting to 0"
+                );
+                e
+            })
             .ok()
             .flatten();
         Ok(CapabilityMask::new(mask.unwrap_or(0) as u16))

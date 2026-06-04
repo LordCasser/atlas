@@ -570,7 +570,13 @@ mod tests {
             .unwrap()
             .query_map([], |row| row.get(0))
             .unwrap()
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(?e, "Schema verification: row decode error, skipping");
+                    None
+                }
+            })
             .collect();
 
         assert!(tables.contains(&"files".to_string()));

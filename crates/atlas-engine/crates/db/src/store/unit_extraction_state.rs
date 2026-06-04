@@ -129,11 +129,23 @@ impl Store {
                 };
                 let dn_ids: Vec<DataNodeId> = if let Some(ref func_id) = unit.symbol_id {
                     stmt.query_map(params![func_id], |row| row.get::<_, DataNodeId>(0))?
-                        .filter_map(|r| r.ok())
+                        .filter_map(|r| match r {
+                            Ok(v) => Some(v),
+                            Err(e) => {
+                                tracing::warn!(?e, "DataNode ID decode error (by function), skipping");
+                                None
+                            }
+                        })
                         .collect()
                 } else {
                     stmt.query_map(params![unit.file_id], |row| row.get::<_, DataNodeId>(0))?
-                        .filter_map(|r| r.ok())
+                        .filter_map(|r| match r {
+                            Ok(v) => Some(v),
+                            Err(e) => {
+                                tracing::warn!(?e, "DataNode ID decode error (by file), skipping");
+                                None
+                            }
+                        })
                         .collect()
                 };
 
@@ -170,11 +182,23 @@ impl Store {
                 };
                 let cn_ids: Vec<CfgNodeId> = if let Some(ref func_id) = unit.symbol_id {
                     stmt.query_map(params![func_id], |row| row.get::<_, CfgNodeId>(0))?
-                        .filter_map(|r| r.ok())
+                        .filter_map(|r| match r {
+                            Ok(v) => Some(v),
+                            Err(e) => {
+                                tracing::warn!(?e, "CfgNode ID decode error (by function), skipping");
+                                None
+                            }
+                        })
                         .collect()
                 } else {
                     stmt.query_map(params![unit.file_id], |row| row.get::<_, CfgNodeId>(0))?
-                        .filter_map(|r| r.ok())
+                        .filter_map(|r| match r {
+                            Ok(v) => Some(v),
+                            Err(e) => {
+                                tracing::warn!(?e, "CfgNode ID decode error (by file), skipping");
+                                None
+                            }
+                        })
                         .collect()
                 };
 
@@ -204,14 +228,26 @@ impl Store {
                         "SELECT binding_id FROM bindings WHERE function_id = ?1",
                     )?;
                     stmt.query_map(params![func_id], |row| row.get::<_, BindingId>(0))?
-                        .filter_map(|r| r.ok())
+                        .filter_map(|r| match r {
+                            Ok(v) => Some(v),
+                            Err(e) => {
+                                tracing::warn!(?e, "Binding ID decode error (by function), skipping");
+                                None
+                            }
+                        })
                         .collect()
                 } else {
                     let mut stmt = tx.prepare(
                         "SELECT binding_id FROM bindings WHERE file_id = ?1 AND function_id IS NULL",
                     )?;
                     stmt.query_map(params![unit.file_id], |row| row.get::<_, BindingId>(0))?
-                        .filter_map(|r| r.ok())
+                        .filter_map(|r| match r {
+                            Ok(v) => Some(v),
+                            Err(e) => {
+                                tracing::warn!(?e, "Binding ID decode error (by file), skipping");
+                                None
+                            }
+                        })
                         .collect()
                 };
 
@@ -298,11 +334,25 @@ impl Store {
             .query_map(params![caller], |row| {
                 Ok((row.get::<_, CallsiteId>(0)?, row.get::<_, String>(1)?))
             })?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(?e, "Callsite row decode error, skipping");
+                    None
+                }
+            })
             .collect();
 
         for (cs_id, args_json) in cs_rows {
-            let mut args: Vec<ArgumentFact> = serde_json::from_str(&args_json).unwrap_or_default();
+            let mut args: Vec<ArgumentFact> =
+                serde_json::from_str(&args_json).unwrap_or_else(|e| {
+                    tracing::error!(
+                        ?e,
+                        callsite_id = %cs_id,
+                        "Callsite args JSON corrupt, using empty vec"
+                    );
+                    Vec::new()
+                });
 
             // Find CallArg data nodes for this callsite
             let arg_nodes: Vec<&DataNode> = data_nodes
@@ -385,7 +435,10 @@ impl Store {
                 r.get::<_, i64>(0)
             })
             .map(|c| c > 0)
-            .unwrap_or(false);
+            .unwrap_or_else(|e| {
+                tracing::warn!(?e, "Failed to query data_nodes count, assuming false");
+                false
+            });
         Ok(LazyDataflowStats {
             total_unit_states,
             partial_unit_states,

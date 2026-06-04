@@ -244,11 +244,20 @@ pub struct BulkWriteGuard<'s> {
 impl Drop for BulkWriteGuard<'_> {
     fn drop(&mut self) {
         if let Ok(conn) = self.store.reader.conn.lock() {
-            let _ = conn.execute_batch(
+            if let Err(e) = conn.execute_batch(
                 "PRAGMA synchronous = NORMAL;
                  PRAGMA foreign_keys = ON;
                  PRAGMA cache_size = -65536;     -- 64 MB
                  PRAGMA mmap_size = 268435456;   -- 256 MB",
+            ) {
+                tracing::error!(
+                    ?e,
+                    "BulkWriteGuard: failed to restore PRAGMA defaults after bulk write"
+                );
+            }
+        } else {
+            tracing::error!(
+                "BulkWriteGuard: mutex poisoned, cannot restore PRAGMA defaults after bulk write"
             );
         }
     }

@@ -27,10 +27,15 @@ impl Store {
              FROM scopes WHERE file_id = ?1",
         )?;
         let rows = stmt.query_map(params![file_id], |row| {
+            let kind_str: String = row.get(2)?;
+            let kind = ScopeKind::from_str(&kind_str).unwrap_or_else(|| {
+                tracing::warn!(%kind_str, "Unknown ScopeKind, defaulting to default");
+                Default::default()
+            });
             Ok(ScopeDef {
                 id: row.get(0)?,
                 file_id: row.get(1)?,
-                kind: ScopeKind::from_str(row.get::<_, String>(2)?.as_str()).unwrap_or_default(),
+                kind,
                 name: row.get(3)?,
                 scope_path: row.get(4)?,
                 parent_id: row.get(5)?,
@@ -68,10 +73,15 @@ impl Store {
              FROM imports WHERE file_id = ?1",
         )?;
         let rows = stmt.query_map(params![file_id], |row| {
+            let kind_str: String = row.get(2)?;
+            let kind = ImportKind::from_str(&kind_str).unwrap_or_else(|| {
+                tracing::warn!(%kind_str, "Unknown ImportKind, defaulting to default");
+                Default::default()
+            });
             Ok(ImportDef {
                 id: row.get(0)?,
                 file_id: row.get(1)?,
-                kind: ImportKind::from_str(row.get::<_, String>(2)?.as_str()).unwrap_or_default(),
+                kind,
                 module: row.get(3)?,
                 imported_name: row.get(4)?,
                 local_name: row.get(5)?,
@@ -137,7 +147,13 @@ impl Store {
             stmt.query_map(params![pattern], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(?e, "Dependent import row decode error (LIKE path), skipping");
+                    None
+                }
+            })
             .collect()
         };
 
@@ -172,7 +188,13 @@ impl Store {
                         row.get::<_, String>(2)?,
                     ))
                 })?
-                .filter_map(|r| r.ok())
+                .filter_map(|r| match r {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        tracing::warn!(?e, "Include-import row decode error, skipping");
+                        None
+                    }
+                })
                 .collect();
 
             for (_importing_fid, importing_path, module) in candidate_rows {
