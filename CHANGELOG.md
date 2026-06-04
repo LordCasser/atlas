@@ -4,6 +4,14 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
+## [1.4.0] — 2026-06-04
+
+### Breaking
+
+- Crate versions bumped to 1.4.0.
+
+---
+
 ## [1.3.1] — 2026-06-03
 
 ### BREAKING: MCP tool refactor (33 → 18 tools)

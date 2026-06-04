@@ -4,7 +4,7 @@ description: Semantic code graph engine for local repositories. Indexes 14 langu
 license: MIT
 compatibility: Requires Rust toolchain. Build with `cargo build --release -p atlas-cli --features "all-languages,mcp"`.
 metadata:
-  version: "1.3.1"
+  version: "1.4.0"
   repository: https://github.com/lordcasser/atlas
 ---
 
