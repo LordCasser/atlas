@@ -90,62 +90,7 @@ impl LazyDataflowPlanner {
         let mut seen: HashSet<[u8; 16]> = HashSet::new();
         seen.insert(seed_unit.unit_id);
         let mut frontier: Vec<AnalysisUnit> = vec![seed_unit.clone()];
-        let mut broke_on_cap = false;
-
-        for _depth in 1..=LAZY_DATAFLOW_MAX_DEPTH {
-            if frontier.is_empty() {
-                break;
-            }
-            {
-                let mut next_frontier: Vec<AnalysisUnit> = Vec::new();
-                for unit in &frontier {
-                    if let Some(sid) = unit.symbol_id {
-                        // Callees: functions called by this unit
-                        if let Ok(callsites) = store.find_callsites_by_file(&unit.file_id) {
-                            for cs in callsites {
-                                if cs.caller == sid {
-                                    if let Some(callee) = cs.callee {
-                                        if let Ok(Some(callee_sym)) =
-                                            store.find_symbol_by_id(&callee)
-                                        {
-                                            add_if_new(
-                                                &callee_sym,
-                                                &mut units,
-                                                &mut seen,
-                                                &mut next_frontier,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Callers: functions that call this unit (Calls edges only)
-                        if let Ok(edges) = store.find_edges_by_target(&sid) {
-                            for edge in edges {
-                                if edge.kind == EdgeKind::Calls
-                                    || edge.kind == EdgeKind::Instantiates
-                                {
-                                    add_if_new_by_id(
-                                        store,
-                                        edge.source,
-                                        &mut units,
-                                        &mut seen,
-                                        &mut next_frontier,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-                frontier = next_frontier;
-            }
-
-            if units.len() >= LAZY_DATAFLOW_MAX_UNITS {
-                broke_on_cap = true;
-                break;
-            }
-        }
+        let broke_on_cap = expand_frontier(store, &mut units, &mut seen, &mut frontier);
 
         let truncated = units.len() > LAZY_DATAFLOW_MAX_UNITS || broke_on_cap;
         if truncated && units.len() > LAZY_DATAFLOW_MAX_UNITS {
@@ -178,53 +123,7 @@ impl LazyDataflowPlanner {
         let mut seen: HashSet<[u8; 16]> = HashSet::new();
         seen.insert(seed_unit.unit_id);
         let mut frontier: Vec<AnalysisUnit> = vec![seed_unit.clone()];
-        let mut broke_on_cap = false;
-
-        for _depth in 1..=LAZY_DATAFLOW_MAX_DEPTH {
-            {
-                let mut next_frontier: Vec<AnalysisUnit> = Vec::new();
-                for unit in &frontier {
-                    if let Some(sid) = unit.symbol_id {
-                        if let Ok(callsites) = store.find_callsites_by_file(&unit.file_id) {
-                            for cs in callsites {
-                                if cs.caller == sid {
-                                    if let Some(callee) = cs.callee {
-                                        if let Ok(Some(sym)) = store.find_symbol_by_id(&callee) {
-                                            add_if_new(
-                                                &sym,
-                                                &mut units,
-                                                &mut seen,
-                                                &mut next_frontier,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if let Ok(edges) = store.find_edges_by_target(&sid) {
-                            for edge in edges {
-                                if edge.kind == EdgeKind::Calls
-                                    || edge.kind == EdgeKind::Instantiates
-                                {
-                                    add_if_new_by_id(
-                                        store,
-                                        edge.source,
-                                        &mut units,
-                                        &mut seen,
-                                        &mut next_frontier,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-                frontier = next_frontier;
-            }
-            if units.len() >= LAZY_DATAFLOW_MAX_UNITS {
-                broke_on_cap = true;
-                break;
-            }
-        }
+        let broke_on_cap = expand_frontier(store, &mut units, &mut seen, &mut frontier);
 
         let truncated = units.len() > LAZY_DATAFLOW_MAX_UNITS || broke_on_cap;
         if truncated && units.len() > LAZY_DATAFLOW_MAX_UNITS {
@@ -359,6 +258,62 @@ fn add_if_new_by_id(
     if let Ok(Some(sym)) = store.find_symbol_by_id(&source_id) {
         add_if_new(&sym, units, seen, frontier);
     }
+}
+
+/// BFS expansion: iterates the frontier up to [`LAZY_DATAFLOW_MAX_DEPTH`],
+/// discovering callers and callees, adding new units, and truncating at
+/// [`LAZY_DATAFLOW_MAX_UNITS`].
+///
+/// Returns `true` if expansion was truncated by the unit cap.
+fn expand_frontier(
+    store: &Store,
+    units: &mut Vec<AnalysisUnit>,
+    seen: &mut HashSet<[u8; 16]>,
+    frontier: &mut Vec<AnalysisUnit>,
+) -> bool {
+    for _depth in 1..=LAZY_DATAFLOW_MAX_DEPTH {
+        if frontier.is_empty() {
+            break;
+        }
+        let mut next_frontier: Vec<AnalysisUnit> = Vec::new();
+        for unit in frontier.iter() {
+            if let Some(sid) = unit.symbol_id {
+                // Callees: functions called by this unit
+                if let Ok(callsites) = store.find_callsites_by_file(&unit.file_id) {
+                    for cs in callsites {
+                        if cs.caller == sid {
+                            if let Some(callee) = cs.callee {
+                                if let Ok(Some(sym)) = store.find_symbol_by_id(&callee) {
+                                    add_if_new(&sym, units, seen, &mut next_frontier);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Callers: functions that call this unit
+                if let Ok(edges) = store.find_edges_by_target(&sid) {
+                    for edge in edges {
+                        if edge.kind == EdgeKind::Calls
+                            || edge.kind == EdgeKind::Instantiates
+                        {
+                            add_if_new_by_id(
+                                store,
+                                edge.source,
+                                units,
+                                seen,
+                                &mut next_frontier,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        *frontier = next_frontier;
+        if units.len() >= LAZY_DATAFLOW_MAX_UNITS {
+            return true;
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------

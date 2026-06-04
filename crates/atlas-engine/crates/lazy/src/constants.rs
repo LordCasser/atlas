@@ -19,6 +19,15 @@ pub(crate) const LAZY_DATAFLOW_MAX_UNITS: usize = 32;
 /// Wall-clock time budget for a single lazy-load operation (milliseconds).
 pub(crate) const LAZY_DATAFLOW_BUDGET_MS: u64 = 20_000;
 
+/// Layer identifier for dataflow extraction state.
+pub(crate) const LAYER_DATAFLOW: &str = "dataflow";
+
+/// Status for a unit whose extraction completed within budget.
+pub(crate) const STATUS_COMPLETE: &str = "complete";
+
+/// Status for a unit whose extraction exceeded budget (partial result).
+pub(crate) const STATUS_PARTIAL: &str = "partial";
+
 // Note: per-unit node/edge caps (LAZY_MAX_NODES_PER_UNIT, LAZY_MAX_EDGES_PER_UNIT)
 // are defined in extraction/src/mode.rs because extraction cannot depend on this
 // crate.  Keep the two versions in sync when adjusting.

@@ -80,16 +80,20 @@ impl LazyDataflowService {
 
         // Compute capability mask from ensure result.
         // If any dataflow was produced (built or cached), set the base
-        // dataflow-implying bits.  CFG is omitted here because per-unit
-        // CFG support varies by language; the summary window mask is
-        // conservative.
+        // dataflow-implying bits.
+        //
+        // CFG is included when at least one unit produced CFG data —
+        // the loader tracks this per-unit via the language capability
+        // profile and per-function CFG node counts.
         if result.units_built > 0 || result.units_cached > 0 {
-            window.capability_mask = CapabilityMask::from_bits(
-                CapabilityMask::MANIFEST
-                    | CapabilityMask::STRUCTURAL
-                    | CapabilityMask::CALL_EDGES
-                    | CapabilityMask::DATAFLOW,
-            );
+            let mut mask_bits = CapabilityMask::MANIFEST
+                | CapabilityMask::STRUCTURAL
+                | CapabilityMask::CALL_EDGES
+                | CapabilityMask::DATAFLOW;
+            if result.has_cfg {
+                mask_bits |= CapabilityMask::CFG;
+            }
+            window.capability_mask = CapabilityMask::from_bits(mask_bits);
         }
 
         Ok(window)
@@ -125,16 +129,20 @@ impl LazyDataflowService {
 
         // Compute capability mask from ensure result.
         // If any dataflow was produced (built or cached), set the base
-        // dataflow-implying bits.  CFG is omitted here because per-unit
-        // CFG support varies by language; the summary window mask is
-        // conservative.
+        // dataflow-implying bits.
+        //
+        // CFG is included when at least one unit produced CFG data —
+        // the loader tracks this per-unit via the language capability
+        // profile and per-function CFG node counts.
         if result.units_built > 0 || result.units_cached > 0 {
-            window.capability_mask = CapabilityMask::from_bits(
-                CapabilityMask::MANIFEST
-                    | CapabilityMask::STRUCTURAL
-                    | CapabilityMask::CALL_EDGES
-                    | CapabilityMask::DATAFLOW,
-            );
+            let mut mask_bits = CapabilityMask::MANIFEST
+                | CapabilityMask::STRUCTURAL
+                | CapabilityMask::CALL_EDGES
+                | CapabilityMask::DATAFLOW;
+            if result.has_cfg {
+                mask_bits |= CapabilityMask::CFG;
+            }
+            window.capability_mask = CapabilityMask::from_bits(mask_bits);
         }
 
         Ok(window)

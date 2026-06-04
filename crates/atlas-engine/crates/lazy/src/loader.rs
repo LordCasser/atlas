@@ -20,7 +20,7 @@ use types::ids::{BindingId, CallsiteId, CfgNodeId, DataNodeId, FileId};
 use types::lazy::{AnalysisUnit, LazyWindow};
 use types::structs::CapabilityMask;
 
-use crate::constants::LAZY_DATAFLOW_BUDGET_MS;
+use crate::constants::{LAYER_DATAFLOW, LAZY_DATAFLOW_BUDGET_MS, STATUS_COMPLETE, STATUS_PARTIAL};
 use crate::planner::estimate_unit_cost;
 
 /// Data produced by a single lazy dataflow build.
@@ -32,6 +32,7 @@ struct DataflowPayload {
     cfg_nodes: Vec<types::CfgNode>,
     cfg_edges: Vec<types::CfgEdge>,
     budget_exceeded: bool,
+    has_cfg: bool,
 }
 
 impl DataflowPayload {
@@ -44,6 +45,7 @@ impl DataflowPayload {
             cfg_nodes: vec![],
             cfg_edges: vec![],
             budget_exceeded: false,
+            has_cfg: false,
         }
     }
 }
@@ -56,6 +58,7 @@ pub(crate) struct EnsureResult {
     pub units_pending: usize,
     pub pending_job_ids: Vec<String>,
     pub budget_exceeded: bool,
+    pub has_cfg: bool,
 }
 
 /// Thread-safe, process-lifetime cache for LanguageFrontend instances.
@@ -112,6 +115,7 @@ impl LazyDataflowLoader {
                 let (cached, payload) = check_cache(store, unit)?;
                 if cached {
                     result.budget_exceeded |= payload.budget_exceeded;
+                    result.has_cfg |= payload.has_cfg;
                     cached_count += 1;
                 } else {
                     uncached.push(unit);
@@ -203,6 +207,14 @@ impl LazyDataflowLoader {
                 .unwrap_or(false);
 
             for (unit, job_id) in &claimed {
+                // Interleaved budget guard: exit early if over budget
+                // mid-group, so remaining units in this file group are
+                // skipped without waiting for the next file-group check.
+                if start.elapsed().as_millis() > LAZY_DATAFLOW_BUDGET_MS as u128 {
+                    result.budget_exceeded = true;
+                    break;
+                }
+
                 let mut unit_payload = partition_payload_for_unit(&payload, unit);
 
                 // Remap provisional byte-based callsite_ids to real
@@ -231,9 +243,9 @@ impl LazyDataflowLoader {
                     store.update_callsite_arg_data_nodes(unit, &unit_payload.data_nodes)?;
 
                     let status = if payload.budget_exceeded {
-                        "partial"
+                        STATUS_PARTIAL
                     } else {
-                        "complete"
+                        STATUS_COMPLETE
                     };
 
                     // Build capability mask: base bits are always present.
@@ -247,12 +259,13 @@ impl LazyDataflowLoader {
                         | CapabilityMask::DATAFLOW;
                     if cfg_supported && !unit_payload.cfg_nodes.is_empty() {
                         mask_bits |= CapabilityMask::CFG;
+                        result.has_cfg = true;
                     }
 
                     store.upsert_unit_extraction_state(&UnitExtractionStateRecord {
                         file_id: unit.file_id,
                         unit_id: unit.unit_id,
-                        layer: "dataflow".to_string(),
+                        layer: LAYER_DATAFLOW.to_string(),
                         content_hash: current_hash.clone(),
                         status: status.to_string(),
                         node_count: Some(unit_payload.data_nodes.len() as i64),
@@ -286,7 +299,7 @@ impl LazyDataflowLoader {
 fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayload)> {
     // 1. Check unit extraction state.
     if let Some(unit_state) =
-        store.get_unit_extraction_state(&unit.file_id, &unit.unit_id, "dataflow")?
+        store.get_unit_extraction_state(&unit.file_id, &unit.unit_id, LAYER_DATAFLOW)?
     {
         let current_hash = store
             .get_file(&unit.file_id)?
@@ -295,6 +308,7 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
         if unit_state.content_hash == current_hash {
             let mut payload = DataflowPayload::empty();
             payload.budget_exceeded = unit_state.budget_exceeded;
+            payload.has_cfg = unit_state.capability_mask.has(CapabilityMask::CFG);
             return Ok((true, payload));
         }
     }
@@ -325,7 +339,7 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
                 | CapabilityMask::STRUCTURAL_BIT
                 | CapabilityMask::CALL_EDGES
                 | CapabilityMask::DATAFLOW;
-            if cfg_supported
+            let unit_has_cfg = cfg_supported
                 && unit
                     .symbol_id
                     .as_ref()
@@ -335,24 +349,26 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
                             .map(|nodes| !nodes.is_empty())
                             .unwrap_or(false)
                     })
-                    .unwrap_or(false)
-            {
+                    .unwrap_or(false);
+            if unit_has_cfg {
                 mask_bits |= CapabilityMask::CFG;
             }
 
             store.upsert_unit_extraction_state(&UnitExtractionStateRecord {
                 file_id: unit.file_id,
                 unit_id: unit.unit_id,
-                layer: "dataflow".to_string(),
+                layer: LAYER_DATAFLOW.to_string(),
                 content_hash: current_hash,
-                status: "complete".to_string(),
+                status: STATUS_COMPLETE.to_string(),
                 node_count: Some(prebuilt as i64),
                 edge_count: None,
                 budget_exceeded: false,
                 capability_mask: CapabilityMask::from_bits(mask_bits),
                 built_at: String::new(),
             })?;
-            return Ok((true, DataflowPayload::empty()));
+            let mut payload = DataflowPayload::empty();
+            payload.has_cfg = unit_has_cfg;
+            return Ok((true, payload));
         }
     }
 
@@ -421,6 +437,7 @@ fn build_dataflow_for_file(
         cfg_nodes: facts.cfg_nodes,
         cfg_edges: facts.cfg_edges,
         budget_exceeded: facts.budget_exceeded,
+        has_cfg: false,
     })
 }
 
@@ -493,6 +510,7 @@ fn partition_payload_for_unit(payload: &DataflowPayload, unit: &AnalysisUnit) ->
         cfg_nodes,
         cfg_edges,
         budget_exceeded: payload.budget_exceeded,
+        has_cfg: false,
     }
 }
 
