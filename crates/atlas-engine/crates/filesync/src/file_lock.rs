@@ -1,15 +1,20 @@
 //! File lock: prevents concurrent atlas processes from writing the same database.
 //!
-//! Uses SQLite's own `BEGIN EXCLUSIVE` transaction as the locking mechanism.
-//! No OS-level flock or external dependency — SQLite already guarantees
-//! cross-process mutual exclusion for writes.
+//! Uses a PID-based metadata row (`project_metadata.exclusive_lock_pid`) as the
+//! locking mechanism. The lock value stores `{pid}:{timestamp_ms}`. A process can
+//! re-acquire the lock because the check compares by PID — the same process is
+//! allowed to take the lock. A stale lock (PID no longer alive) is silently stolen.
+//!
+//! The underlying acquire/release is atomic via a short-lived `BEGIN IMMEDIATE`
+//! transaction, but the lock is **not** a held SQLite transaction — it is a
+//! metadata row that persists after commit.
 //!
 //! ## Usage
 //!
 //! ```ignore
 //! let guard = FileLock::acquire(&store)?;
 //! // ... exclusive write access to the database ...
-//! drop(guard); // transaction rolled back, lock released
+//! drop(guard); // metadata row deleted, lock released
 //! ```
 
 use db::Store;
@@ -19,8 +24,8 @@ use std::sync::Arc;
 // FileLockGuard
 // ---------------------------------------------------------------------------
 
-/// RAII guard that holds an exclusive SQLite transaction.
-/// The lock is released (transaction rolled back) when this guard is dropped.
+/// RAII guard that holds the exclusive lock metadata row.
+/// On drop, deletes the `exclusive_lock_pid` metadata row (if still held by this PID).
 pub struct FileLockGuard {
     store: Arc<Store>,
 }
@@ -34,7 +39,7 @@ impl FileLockGuard {
 
 impl Drop for FileLockGuard {
     fn drop(&mut self) {
-        // Roll back the exclusive transaction to release the lock.
+        // Delete the exclusive_lock_pid metadata row to release the lock.
         // Errors are logged but not propagated — by the time we drop,
         // the caller is done with the database anyway.
         if let Err(e) = self.store.release_exclusive_lock() {
@@ -47,14 +52,15 @@ impl Drop for FileLockGuard {
 // FileLock
 // ---------------------------------------------------------------------------
 
-/// Acquire an exclusive write lock on the Atlas database via SQLite.
+/// Acquire an exclusive write lock on the Atlas database.
 ///
-/// Internally this executes `BEGIN EXCLUSIVE`, which:
-/// - Blocks until no other connection is reading or writing
-/// - Prevents all other connections from reading or writing until committed/rolled back
+/// Uses a PID-based metadata row (`project_metadata.exclusive_lock_pid`)
+/// wrapped in a short `BEGIN IMMEDIATE` transaction for atomic check-and-set.
+/// The lock row persists after the transaction commits and is only deleted by
+/// `release_exclusive_lock` when the guard drops.
 ///
-/// This is the correct way to prevent concurrent atlas processes — SQLite
-/// already handles cross-process locking internally.
+/// Same-process re-acquisition is allowed (PID check passes); only a different
+/// live process is blocked.
 pub struct FileLock;
 
 impl FileLock {

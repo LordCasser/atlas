@@ -8,17 +8,14 @@
 //! Internally the pipeline delegates to the composable phase functions in
 //! [`crate::index_phases`].
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use db::Store;
 use extraction::ExtractionMode;
 
-use crate::index_phases::{
-    phase_build_summaries, phase_cleanup_stale, phase_discover, phase_extract_serial,
-    phase_init_frontends, phase_materialize_annotations, phase_resolve_and_build,
-};
+use crate::index_pipeline_orchestrator::IndexPipeline;
+use crate::progress::{CallbackSink, NoopSink, ProgressSink};
 
 /// Progress callback payload emitted by [`run_index_pipeline`].
 #[derive(Debug, Clone)]
@@ -90,168 +87,25 @@ pub fn run_index_pipeline(
     project_root: &Path,
     options: IndexPipelineOptions,
 ) -> anyhow::Result<IndexPipelineStats> {
-    // ── Phase 1: Discover ──
-    let discovered = phase_discover(
-        project_root,
-        &options.include_patterns,
-        &options.exclude_patterns,
-    )?;
-    if discovered.is_empty() {
-        return Ok(IndexPipelineStats::default());
-    }
-
-    emit(
-        &options,
-        0.10,
-        Some(1.0),
-        format!(
-            "Discovered {} files, starting extraction...",
-            discovered.len()
-        ),
-    );
-
-    // ── Clean up stale files deleted from disk since last index ──
-    let db_file_paths: Vec<PathBuf> = store
-        .list_files()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|f| PathBuf::from(f.path))
-        .collect();
-    let discovered_set: HashSet<&PathBuf> = discovered.iter().collect();
-    let deleted: Vec<PathBuf> = db_file_paths
-        .into_iter()
-        .filter(|p| !discovered_set.contains(p))
-        .collect();
-    if !deleted.is_empty() {
-        phase_cleanup_stale(store, &deleted)?;
-    }
-
-    // ── Phase 3: Init frontends + clean stale ──
-    let frontend_cache = phase_init_frontends(&discovered)?;
-    phase_cleanup_stale(store, &discovered)?;
-
-    // ── Phase 5: Extract (with progress) ──
-    let total_files = discovered.len() as f64;
-    let processed = std::cell::Cell::new(0usize);
-
-    let extract_progress: &dyn Fn(usize, usize) = &|current, _total| {
-        let prev = processed.get();
-        if current > prev {
-            processed.set(current);
-            if prev % 50 == 0 || current == discovered.len() {
-                let fraction = 0.10 + 0.50 * current as f64 / total_files.max(1.0);
-                emit(
-                    &options,
-                    fraction.min(0.60),
-                    Some(1.0),
-                    format!("Extracting files... {}/{}", current, discovered.len()),
-                );
-            }
-        }
+    // Route progress through the new ProgressSink / CallbackSink mechanism,
+    // then delegate entirely to IndexPipeline::run.
+    let sink: Box<dyn ProgressSink> = match &options.progress {
+        Some(cb) => Box::new(CallbackSink::new(Arc::clone(cb))),
+        None => Box::new(NoopSink),
     };
 
-    let extracted = phase_extract_serial(
-        project_root,
-        &discovered,
-        &frontend_cache,
-        options.mode.clone(),
-        Some(extract_progress),
+    let pipeline = IndexPipeline::new(
+        Arc::clone(store),
+        project_root.to_path_buf(),
+        IndexPipelineOptions {
+            mode: options.mode,
+            include_patterns: options.include_patterns,
+            exclude_patterns: options.exclude_patterns,
+            progress: None,
+        },
     );
 
-    // ── Phase 6a: Write facts one-at-a-time ──
-    let mut stats = IndexPipelineStats {
-        discovered: discovered.len(),
-        ..Default::default()
-    };
-    for file in &extracted.items {
-        match store.insert_file_facts(&file.facts) {
-            Ok(_) => stats.indexed += 1,
-            Err(e) => {
-                stats.failed += 1;
-                tracing::warn!("Insert failed for {}: {:#}", file.rel_path.display(), e);
-            }
-        }
-    }
-    stats.failed += extracted.stats.failed;
-    stats.symbols = extracted.stats.symbols;
-
-    emit(
-        &options,
-        0.65,
-        Some(1.0),
-        format!(
-            "Extraction complete: {} indexed, {} failed ({} symbols found)",
-            stats.indexed, stats.failed, stats.symbols
-        ),
-    );
-
-    // ── Manifest mode: stop here ──
-    if matches!(options.mode, ExtractionMode::Manifest) {
-        emit(
-            &options,
-            1.0,
-            Some(1.0),
-            format!(
-                "Manifest indexing complete: {} files indexed ({} failed), {} symbols",
-                stats.indexed, stats.failed, stats.symbols
-            ),
-        );
-        return Ok(stats);
-    }
-
-    // ── Phase 7: Resolve + build graph ──
-    emit(
-        &options,
-        0.75,
-        Some(1.0),
-        "Resolving symbol references...".to_string(),
-    );
-
-    let graph_result = phase_resolve_and_build(store, project_root)?;
-    stats.resolved = graph_result.resolved;
-    stats.edges_built = graph_result.edges_built;
-
-    emit(
-        &options,
-        0.90,
-        Some(1.0),
-        "Building symbol graph...".to_string(),
-    );
-
-    // ── Phase 8: Materialize annotations ──
-    if let Err(e) = phase_materialize_annotations(store) {
-        tracing::warn!("Failed to materialize annotations: {:#}", e);
-    }
-
-    // ── Phase 9: Build summaries (Full mode only) ──
-    if options.mode.produces_dataflow() {
-        if let Err(e) = phase_build_summaries(store) {
-            tracing::warn!("Failed to build summaries: {:#}", e);
-        }
-    }
-
-    emit(
-        &options,
-        1.0,
-        Some(1.0),
-        format!(
-            "Indexing complete: {} files indexed ({} failed), {} symbols, {} resolved",
-            stats.indexed, stats.failed, stats.symbols, stats.resolved
-        ),
-    );
-    Ok(stats)
-}
-
-// ── Private helpers ────────────────────────────────────────────────────
-
-fn emit(options: &IndexPipelineOptions, fraction: f64, total: Option<f64>, message: String) {
-    if let Some(progress) = &options.progress {
-        progress(IndexProgress {
-            fraction,
-            total,
-            message: Some(message),
-        });
-    }
+    pipeline.run(&*sink, &mut || false)
 }
 
 #[cfg(test)]

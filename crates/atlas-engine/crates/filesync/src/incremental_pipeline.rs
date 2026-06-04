@@ -11,13 +11,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use analysis::summary::SummaryBuilder;
+use db::summary::SummaryStore;
 use db::Store;
 use extraction::ExtractionMode;
+use types::SymbolKind;
 
 use crate::cleanup::source_file_id;
 use crate::index_phases::{
     phase_build_summaries, phase_cleanup_file_ids, phase_cleanup_stale,
-    phase_commit_path_alias_config, phase_dirty_check, phase_extract_parallel,
+    phase_commit_path_alias_config, phase_extract_parallel_cancellable,
     phase_init_frontends, phase_materialize_annotations, phase_resolve_and_build,
     phase_write_batched,
 };
@@ -261,21 +264,25 @@ impl IncrementalPipeline {
                 total: to_extract_rel.len() as u64,
             });
 
-            let progress_closure = |succeeded: usize, total: usize| {
-                // phase_extract_parallel calls on_progress once at end with (succeeded, total).
+            // Cancel token for mid-extraction interrupt (see IndexPipeline
+            // for the same pattern).
+            let cancel_token = std::sync::atomic::AtomicBool::new(false);
+
+            let on_file_progress = |completed: usize, _total: usize| {
                 sink.emit(ProgressEvent::ItemProgress {
                     phase,
-                    completed: succeeded as u64,
+                    completed: completed as u64,
                 });
-                let _ = total; // suppress unused warning
             };
 
-            let extracted = phase_extract_parallel(
+            let extracted = phase_extract_parallel_cancellable(
                 &self.project_root,
                 &to_extract_rel,
                 &frontends,
                 self.mode.clone(),
-                Some(&progress_closure),
+                None,                       // on_progress (once at end) — unused
+                Some(&on_file_progress),
+                Some(&cancel_token),
             );
 
             sink.emit(ProgressEvent::PhaseFinished {
@@ -413,45 +420,78 @@ impl IncrementalPipeline {
                         changed_count, total_indexed
                     ),
                 });
-                phase_build_summaries(&self.store).map_err(|e| {
+                let full_summaries = phase_build_summaries(&self.store).map_err(|e| {
                     sink.emit(ProgressEvent::Warning {
                         phase,
                         message: format!("Failed to build summaries: {:#}", e),
                     });
                     e
                 })?;
-            } else {
-                // Scoped summary rebuild: only changed files.
-                //
-                // `analysis::build_function_summary` (standalone function) does
-                // not exist in the current analysis crate.  The scoped path
-                // would use `db::summary::SummaryStore::build_for_function` with
-                // `analysis::summary::SummaryBuilder::build` for each function
-                // in the changed files, but per the pipeline spec we fall back
-                // to a full rebuild when the standalone function is unavailable.
-                sink.emit(ProgressEvent::Warning {
-                    phase,
-                    message: concat!(
-                        "`analysis::build_function_summary` not available; ",
-                        "falling back to full summary rebuild"
-                    )
-                    .into(),
-                });
-                phase_build_summaries(&self.store).map_err(|e| {
-                    sink.emit(ProgressEvent::Warning {
-                        phase,
-                        message: format!("Failed to build summaries: {:#}", e),
-                    });
-                    e
-                })?;
-            }
+                stats.summaries_updated = full_summaries;
+                stats.summaries_skipped = 0;
 
-            sink.emit(ProgressEvent::PhaseFinished {
-                phase,
-                succeeded: 1,
-                failed: 0,
-                detail: None,
-            });
+                sink.emit(ProgressEvent::PhaseFinished {
+                    phase,
+                    succeeded: full_summaries as u64,
+                    failed: 0,
+                    detail: Some(format!("{full_summaries} summaries rebuilt (full)")),
+                });
+            } else {
+                // Scoped: rebuild summaries only for changed functions.
+                let changed_rel: Vec<PathBuf> = modified_rel
+                    .iter()
+                    .chain(added_rel.iter())
+                    .cloned()
+                    .collect();
+
+                let changed_file_ids: Vec<types::FileId> = changed_rel
+                    .iter()
+                    .filter_map(|p| source_file_id(p).ok())
+                    .collect();
+
+                let mut updated = 0usize;
+                let mut skipped = 0usize;
+
+                if !changed_file_ids.is_empty() {
+                    if let Ok(symbols) = self.store.find_symbols_by_files(&changed_file_ids) {
+                        let function_symbols: Vec<_> = symbols
+                            .iter()
+                            .filter(|s| s.kind == SymbolKind::Function)
+                            .collect();
+
+                        for sym in &function_symbols {
+                            match SummaryStore::build_for_function(
+                                &self.store,
+                                &sym.id,
+                                |s, fid| SummaryBuilder::build(s, fid, None),
+                            ) {
+                                Ok(s) if !s.is_empty() => updated += 1,
+                                Ok(_) => skipped += 1,
+                                Err(e) => {
+                                    skipped += 1;
+                                    sink.emit(ProgressEvent::Warning {
+                                        phase,
+                                        message: format!(
+                                            "Failed to build summary for {}: {:#}",
+                                            sym.qualified_name, e
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                stats.summaries_updated = updated;
+                stats.summaries_skipped = skipped;
+
+                sink.emit(ProgressEvent::PhaseFinished {
+                    phase,
+                    succeeded: updated as u64,
+                    failed: skipped as u64,
+                    detail: Some(format!("{updated} updated, {skipped} skipped / empty")),
+                });
+            }
         }
 
         // ── Phase 10: ConfigCommit ────────────────────────────────

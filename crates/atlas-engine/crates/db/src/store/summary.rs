@@ -133,18 +133,26 @@ impl SummaryStore {
             return Ok(stats);
         }
 
-        let conn = store.lock();
-        let tx = conn.unchecked_transaction()?;
-
+        // ── Phase 1: Build summaries WITHOUT holding the write lock ─────
+        //
+        // We must NOT hold store.lock() while calling build_fn because
+        // SummaryBuilder::build internally calls TraceStore methods that
+        // acquire lock_read().  For in-memory databases (open_in_memory),
+        // lock_read() falls back to the same std::sync::Mutex as lock(),
+        // causing a reentrant deadlock on the same thread.
+        //
+        // By building summaries first and collecting results, we can then
+        // acquire the write lock in Phase 2 solely for persisting them —
+        // without any nested lock_read() calls.
+        let mut results: Vec<(SymbolId, FunctionSummary)> = Vec::with_capacity(total);
         for sym in &function_symbols {
             match build_fn(store, &sym.id) {
                 Ok(summary) => {
                     if summary.is_empty() {
                         stats.functions_skipped += 1;
-                        continue;
+                    } else {
+                        results.push((sym.id, summary));
                     }
-                    write_one_summary(&tx, &sym.id, &summary, &mut stats)?;
-                    stats.functions_summarized += 1;
                 }
                 Err(_) => {
                     stats.functions_skipped += 1;
@@ -152,7 +160,21 @@ impl SummaryStore {
             }
         }
 
-        tx.commit()?;
+        // ── Phase 2: Write summaries inside a single transaction ────────
+        //
+        // Now we hold the write lock exclusively for persistence — no
+        // nested store reads happen inside write_one_summary, so there
+        // is no risk of reentrant locking.
+        if !results.is_empty() {
+            let conn = store.lock();
+            let tx = conn.unchecked_transaction()?;
+            for (id, summary) in &results {
+                write_one_summary(&tx, id, summary, &mut stats)?;
+                stats.functions_summarized += 1;
+            }
+            tx.commit()?;
+        }
+
         stats.elapsed_ms = start.elapsed().as_millis() as u64;
         Ok(stats)
     }
@@ -806,6 +828,72 @@ mod tests {
         let rows = SummaryStore::query_param_reaches(&store, &summary_a.param_flows[0].param_id)?;
         assert!(!rows.is_empty(), "fnA should have param_reach rows");
 
+        Ok(())
+    }
+
+    /// `build_all` must not deadlock on in-memory databases when the
+    /// builder closure reads from the store.
+    ///
+    /// In-memory databases use a single `std::sync::Mutex` for both
+    /// `lock()` (write) and `lock_read()` (read).  The old single-phase
+    /// `build_all` held `store.lock()` while calling `build_fn`, which
+    /// internally calls `lock_read()` — a reentrant deadlock on the same
+    /// thread.  The two-phase design (build without lock, then write with
+    /// lock) avoids this.
+    #[test]
+    fn build_all_no_deadlock_in_memory() -> anyhow::Result<()> {
+        let store = test_store();
+
+        let file_id = types::ids::FileId::generate("src/deadlock_test.ts");
+        store.upsert_file(&types::structs::FileInfo {
+            file_id,
+            path: "src/deadlock_test.ts".into(),
+            language: types::enums::Language::TypeScript,
+            content_hash: "abc".into(),
+            status: types::enums::ParseStatus::Success,
+        })?;
+
+        let range = types::structs::TextRange {
+            start_byte: 0,
+            end_byte: 100,
+            start_line: 1,
+            start_column: 1,
+            end_line: 10,
+            end_column: 1,
+        };
+        let func_sym = types::structs::SymbolDef {
+            id: SymbolId::generate(&file_id, "typescript", "deadlockFn", "function", None),
+            kind: SymbolKind::Function,
+            name: "deadlockFn".into(),
+            qualified_name: "deadlockFn".into(),
+            symbol_path: vec!["deadlockFn".into()],
+            file_id,
+            language: types::enums::Language::TypeScript,
+            range,
+            name_range: range,
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".into(),
+        };
+        store.insert_symbols(&[func_sym.clone()])?;
+
+        // build_fn reads from the store via &dyn TraceStore — internally
+        // calls lock_read().  On in-memory DBs this would deadlock if the
+        // write lock were already held.
+        let stats = SummaryStore::build_all(&store, |ts, _fid| {
+            let _sym = ts.find_symbol_by_id(_fid)?;
+            Ok(test_summary(_fid, &file_id))
+        })?;
+
+        assert_eq!(stats.functions_processed, 1);
+        assert_eq!(stats.functions_summarized, 1);
         Ok(())
     }
 }

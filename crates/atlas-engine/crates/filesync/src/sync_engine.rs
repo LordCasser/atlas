@@ -90,6 +90,8 @@ pub struct SyncStats {
     pub files_removed: usize,
     pub new_nodes: usize,
     pub new_edges: usize,
+    pub summaries_updated: usize,
+    pub summaries_skipped: usize,
     pub duration: std::time::Duration,
     /// Per-phase timing breakdown (P0: performance observability).
     pub phase_timings: PhaseTimings,
@@ -126,6 +128,8 @@ mod tests {
         assert_eq!(stats.files_removed, 0);
         assert_eq!(stats.new_nodes, 0);
         assert_eq!(stats.new_edges, 0);
+        assert_eq!(stats.summaries_updated, 0);
+        assert_eq!(stats.summaries_skipped, 0);
     }
 
     #[test]
