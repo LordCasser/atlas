@@ -27,7 +27,7 @@ pub struct Cli {
     pub debug: bool,
 
     /// Log format: "json" for structured JSON, default is compact.
-    #[arg(long, global = true, default_value = "compact")]
+    #[arg(long, global = true, default_value = "compact", value_parser = ["compact", "json"])]
     pub log_format: String,
 
     #[command(subcommand)]
@@ -94,7 +94,7 @@ pub enum Commands {
         #[arg(long)]
         exclude: Vec<String>,
         /// Analysis depth: "manifest" (fastest, top-level symbols only), "structural" (default, symbols+references+callgraph), or "full" (slower, complete dataflow/CFG)
-        #[arg(long, default_value = "structural")]
+        #[arg(long, default_value = "structural", value_parser = ["manifest", "structural", "full"])]
         analysis: String,
     },
     /// Incremental sync
@@ -102,7 +102,7 @@ pub enum Commands {
         #[arg(short, long, default_value = ".")]
         project: String,
         /// Analysis depth: "structural" (default) | "manifest" (top-level only) | "full"
-        #[arg(long, default_value = "structural")]
+        #[arg(long, default_value = "structural", value_parser = ["manifest", "structural", "full"])]
         analysis: String,
     },
     /// List indexed files

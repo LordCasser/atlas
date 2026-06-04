@@ -1865,8 +1865,8 @@ fn test_rust_scope_exit() {
         confidence: 0.85,
         consumption_style: None,
         description: None,
+        eligible_for_implicit_cleanup: None,
     };
-
     let mut effects: HashMap<atlas_engine::ids::CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
     effects.insert(stmt_node.id, vec![alloc_effect]);
 
@@ -1987,8 +1987,8 @@ class ResourceTest {
         confidence: 0.85,
         consumption_style: None,
         description: None,
+        eligible_for_implicit_cleanup: None,
     };
-
     let mut effects: HashMap<atlas_engine::ids::CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
     effects.insert(stmt_node.id, vec![alloc_effect]);
 
@@ -2139,8 +2139,8 @@ class ResourceDemo
             confidence: 0.85,
             consumption_style: None,
             description: None,
+            eligible_for_implicit_cleanup: None,
         };
-
         let mut effects: HashMap<atlas_engine::ids::CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
         effects.insert(stmt_node.id, vec![alloc_effect]);
 
@@ -2300,6 +2300,7 @@ class MultiDemo
             confidence: 0.85,
             consumption_style: None,
             description: None,
+            eligible_for_implicit_cleanup: None,
         };
         stmt_effects.push(alloc_input);
 
@@ -2316,6 +2317,7 @@ class MultiDemo
             confidence: 0.85,
             consumption_style: None,
             description: None,
+            eligible_for_implicit_cleanup: None,
         };
         stmt_effects.push(alloc_output);
 

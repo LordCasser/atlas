@@ -12,8 +12,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub fn run(project: &str, analysis: &str) -> Result<()> {
     let mode = match analysis {
         "manifest" => ExtractionMode::Manifest,
+        "structural" => ExtractionMode::Structural,
         "full" => ExtractionMode::Full,
-        _ => ExtractionMode::Structural,
+        other => anyhow::bail!(
+            "Unknown analysis mode: '{other}'. Must be 'manifest', 'structural', or 'full'."
+        ),
     };
     let has_dataflow = mode.produces_dataflow();
 

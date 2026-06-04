@@ -78,7 +78,7 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     if all_ok {
         println!("All checks passed. Atlas is ready!");
     } else {
-        println!("Some checks failed. Run `atlas init` to fix database issues.");
+        println!("Some checks failed. Run `atlas index` to fix database issues.");
     }
 
     Ok(())
@@ -191,11 +191,12 @@ fn truncate_str(s: &str, max_len: usize) -> String {
         s.to_string()
     } else {
         let mut end = 0;
-        for (idx, _) in s.char_indices() {
-            if idx >= max_len {
+        for (idx, ch) in s.char_indices() {
+            let char_end = idx + ch.len_utf8();
+            if char_end > max_len {
                 break;
             }
-            end = idx;
+            end = char_end;
         }
         format!("{}…", &s[..end])
     }

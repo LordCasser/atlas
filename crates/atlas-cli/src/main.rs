@@ -82,7 +82,13 @@ fn ensure_index_before_tui(project_root: &std::path::Path) -> anyhow::Result<()>
 
     if needs_index {
         let empty: Vec<String> = Vec::new();
-        atlas_cli::commands::index::run(".", &empty, &empty, &empty, "structural")?;
+        atlas_cli::commands::index::run(
+            &project_root.to_string_lossy(),
+            &empty,
+            &empty,
+            &empty,
+            "structural",
+        )?;
     }
 
     Ok(())

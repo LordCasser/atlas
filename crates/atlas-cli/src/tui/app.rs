@@ -736,7 +736,7 @@ fn render_exit_confirmation(frame: &mut Frame, area: Rect) {
     let popup = centered_in(area, 28, 3);
     frame.render_widget(Clear, popup);
 
-    let prompt = Paragraph::new("再次按esc确认退出")
+    let prompt = Paragraph::new("Press ESC again to confirm exit")
         .block(Block::default().borders(Borders::ALL))
         .style(Style::default().fg(Color::Yellow))
         .alignment(Alignment::Center);

@@ -38,8 +38,11 @@ pub fn run(
 ) -> anyhow::Result<()> {
     let mode = match analysis {
         "manifest" => ExtractionMode::Manifest,
+        "structural" => ExtractionMode::Structural,
         "full" => ExtractionMode::Full,
-        _ => ExtractionMode::Structural,
+        other => anyhow::bail!(
+            "Unknown analysis mode: '{other}'. Must be 'manifest', 'structural', or 'full'."
+        ),
     };
 
     // ── Configure rayon thread pool (once, idempotent) ──────────────────
