@@ -15,17 +15,21 @@ mod builder;
 
 pub use builder::{CalleeDetail, CallerDetail, ContextSlice, ContextView, SourceSnippet};
 
-pub type SourceLookupFn = dyn Fn(&SymbolId) -> Option<String> + Send + Sync;
+/// Trait for looking up source code for a symbol.
+/// Implementations may use AST-based extraction, range-based slicing, or any other strategy.
+pub trait SourceReader: Send + Sync {
+    fn read_source(&self, symbol_id: &SymbolId) -> Option<String>;
+}
 
 /// AI context builder: constructs symbol-rich context from the codebase graph.
 pub struct ContextBuilder {
     store: Arc<Store>,
     graph: RwLock<Arc<GraphEngine>>,
     project_root: Option<PathBuf>,
-    /// Optional callback for extracting symbol source via AST-aware parsing.
-    /// When set, `read_source_snippet` delegates to this callback; when `None`,
+    /// Optional reader for extracting symbol source via AST-aware parsing.
+    /// When set, `read_source_snippet` delegates to this reader; when `None`,
     /// falls back to `TextRange`-based line extraction.
-    source_fn: Option<Arc<SourceLookupFn>>,
+    source_fn: Option<Arc<dyn SourceReader>>,
 }
 
 impl ContextBuilder {
@@ -46,13 +50,13 @@ impl ContextBuilder {
         self
     }
 
-    /// Set an optional AST-aware source extraction function.
+    /// Set an optional AST-aware source reader.
     ///
-    /// When provided, `read_source_snippet` delegates to this callback
-    /// instead of using `TextRange`-based line extraction.  The callback
+    /// When provided, `read_source_snippet` delegates to this reader
+    /// instead of using `TextRange`-based line extraction.  The reader
     /// receives a `SymbolId` and returns the exact source text for that
     /// symbol (usually via tree-sitter re-parsing).
-    pub fn with_source_fn(mut self, f: Arc<SourceLookupFn>) -> Self {
+    pub fn with_source_fn(mut self, f: Arc<dyn SourceReader>) -> Self {
         self.source_fn = Some(f);
         self
     }
@@ -273,9 +277,9 @@ impl ContextBuilder {
     /// When `source_fn` is set, delegates to AST-aware extraction (tree-sitter
     /// re-parsing). Otherwise falls back to `TextRange`-based line extraction.
     fn read_source_snippet(&self, sym: &SymbolDef) -> Option<SourceSnippet> {
-        // Primary path: AST-aware extraction via the injected callback.
+        // Primary path: AST-aware extraction via the injected reader.
         if let Some(ref source_fn) = self.source_fn {
-            if let Some(text) = source_fn(&sym.id) {
+            if let Some(text) = source_fn.read_source(&sym.id) {
                 let all_lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
                 let total_lines = all_lines.len() as u32;
                 const MAX_CONTEXT_LINES: usize = 60;

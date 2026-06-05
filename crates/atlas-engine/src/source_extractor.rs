@@ -148,6 +148,12 @@ impl SourceExtractor {
     }
 }
 
+impl context::SourceReader for SourceExtractor {
+    fn read_source(&self, symbol_id: &SymbolId) -> Option<String> {
+        self.extract_source(symbol_id)
+    }
+}
+
 // ─── CST navigation helpers ───────────────────────────────────────────────
 
 /// Walk up the CST from `node` to find the enclosing definition node

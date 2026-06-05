@@ -176,7 +176,7 @@ impl GraphSession {
             SourceExtractor::new(Arc::clone(&self.store), self.project_root.clone());
         let context = ContextBuilder::new(Arc::clone(&self.store), Arc::clone(&graph))
             .with_project_root(self.project_root.clone())
-            .with_source_fn(Arc::new(move |id| source_extractor.extract_source(id)));
+            .with_source_fn(Arc::new(source_extractor));
 
         self.last_signature = self.store.index_signature().unwrap_or_default();
         self.graph = Some(graph);

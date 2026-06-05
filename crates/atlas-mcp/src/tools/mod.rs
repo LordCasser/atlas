@@ -326,10 +326,10 @@ impl ToolRouter {
             ContextBuilder::new(Arc::clone(&self.store), graph)
                 .with_project_root(self.project_root.clone()),
         );
-        // Register AST-aware source extraction callback.
+        // Register AST-aware source extraction reader.
         let ext = self.source_extractor.clone();
         if let Some(ctx) = self.context.take() {
-            self.context = Some(ctx.with_source_fn(Arc::new(move |id| ext.extract_source(id))));
+            self.context = Some(ctx.with_source_fn(Arc::new(ext)));
         }
         self.last_graph_signature = self.store.index_signature().unwrap_or_default();
         self.graph_initialized = true;
