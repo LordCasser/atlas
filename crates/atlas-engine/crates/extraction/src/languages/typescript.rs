@@ -7,7 +7,7 @@
 //! DataflowSpec) via shared private normalize helpers.
 
 use crate::languages::{node_range, node_text};
-use crate::languages::shared::{make_binding_def, make_reference_use, make_scope_def_auto_name};
+use crate::languages::shared::{make_binding_def, make_df_assign_field_target, make_df_assign_target, make_df_parameter, make_df_return_value, make_reference_use, make_scope_def_auto_name};
 
 use crate::frontend::{
     Capture, DataflowSpec, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, NoOpRecovery,
@@ -307,34 +307,8 @@ pub(crate) fn normalize_ts_dataflow_builder(
     let range = node_range(node);
 
     match capture_name {
-        "df.parameter" => node_text(node, source)
-            .map(|name| {
-                let node_id = DataNodeId::generate(
-                    &file_id,
-                    None::<&types::ids::SymbolId>,
-                    "parameter",
-                    Some(&name),
-                    Some(&name),
-                    range.start_byte,
-                );
-                let dn = DataNode::parameter(node_id, file_id, None, None, &name, range);
-                (Some(dn), None)
-            })
-            .unwrap_or((None, None)),
-        "df.assign_target" => node_text(node, source)
-            .map(|name| {
-                let node_id = DataNodeId::generate(
-                    &file_id,
-                    None::<&types::ids::SymbolId>,
-                    "local",
-                    Some(&name),
-                    Some(&name),
-                    range.start_byte,
-                );
-                let dn = DataNode::local(node_id, file_id, None, None, &name, range);
-                (Some(dn), None)
-            })
-            .unwrap_or((None, None)),
+        "df.parameter" => make_df_parameter(file_id, node, source, range),
+        "df.assign_target" => make_df_assign_target(file_id, node, source, range),
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
             let callsite_id = crate::languages::shared::find_call_expression(
@@ -364,30 +338,7 @@ pub(crate) fn normalize_ts_dataflow_builder(
             };
             (Some(dn), None)
         }
-        "df.return_value" => {
-            let text = node_text(node, source).unwrap_or_default();
-            let node_id = DataNodeId::generate(
-                &file_id,
-                None::<&types::ids::SymbolId>,
-                "return",
-                Some(&text),
-                None,
-                range.start_byte,
-            );
-            let dn = DataNode {
-                id: node_id,
-                file_id,
-                function_id: None,
-                kind: types::enums::DataNodeKind::Return,
-                binding_id: None,
-                callsite_id: None,
-                name: Some(text),
-                access_path: None,
-                arg_index: None,
-                range,
-            };
-            (Some(dn), None)
-        }
+        "df.return_value" => make_df_return_value(file_id, node, source, range),
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
             let callsite_id = crate::languages::shared::find_call_expression(
@@ -542,17 +493,7 @@ pub(crate) fn normalize_ts_dataflow_builder(
         }
         "df.assign_field_target" => {
             let text = node_text(node, source).unwrap_or_default();
-            let name = text.clone();
-            let node_id = DataNodeId::generate(
-                &file_id,
-                None::<&types::ids::SymbolId>,
-                "field",
-                Some(&name),
-                Some(&text),
-                range.start_byte,
-            );
-            let dn = DataNode::field(node_id, file_id, None, &name, &text, range);
-            (Some(dn), None)
+            make_df_assign_field_target(file_id, &text, range)
         }
         "df.identifier_use" => {
             // Filter out identifiers that are declaration names, property names,

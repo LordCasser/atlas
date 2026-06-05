@@ -3,7 +3,7 @@
 //! Uses tree-sitter-python grammar and embedded query files.
 
 use crate::languages::{node_range, node_text};
-use crate::languages::shared::{make_binding_def, make_reference_use, make_scope_def_auto_name};
+use crate::languages::shared::{make_binding_def, make_df_assign_field_target, make_df_assign_target, make_df_parameter, make_reference_use, make_scope_def_auto_name};
 use types::*;
 
 use crate::frontend::{
@@ -154,34 +154,8 @@ fn normalize_py_dataflow_builder(
     let range = node_range(node);
 
     match capture_name {
-        "df.parameter" => node_text(node, source)
-            .map(|name| {
-                let node_id = DataNodeId::generate(
-                    &file_id,
-                    None::<&types::ids::SymbolId>,
-                    "parameter",
-                    Some(&name),
-                    Some(&name),
-                    range.start_byte,
-                );
-                let dn = DataNode::parameter(node_id, file_id, None, None, &name, range);
-                (Some(dn), None)
-            })
-            .unwrap_or((None, None)),
-        "df.assign_target" => node_text(node, source)
-            .map(|name| {
-                let node_id = DataNodeId::generate(
-                    &file_id,
-                    None::<&types::ids::SymbolId>,
-                    "local",
-                    Some(&name),
-                    Some(&name),
-                    range.start_byte,
-                );
-                let dn = DataNode::local(node_id, file_id, None, None, &name, range);
-                (Some(dn), None)
-            })
-            .unwrap_or((None, None)),
+        "df.parameter" => make_df_parameter(file_id, node, source, range),
+        "df.assign_target" => make_df_assign_target(file_id, node, source, range),
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
             let callsite_id = crate::languages::shared::find_call_expression(node, &["call"])
@@ -367,16 +341,7 @@ fn normalize_py_dataflow_builder(
         }
         "df.assign_field_target" => {
             let text = node_text(node, source).unwrap_or_default();
-            let node_id = DataNodeId::generate(
-                &file_id,
-                None::<&SymbolId>,
-                "field",
-                Some(&text),
-                Some(&text),
-                range.start_byte,
-            );
-            let dn = DataNode::field(node_id, file_id, None, &text, &text, range);
-            (Some(dn), None)
+            make_df_assign_field_target(file_id, &text, range)
         }
         _ => (None, None),
     }

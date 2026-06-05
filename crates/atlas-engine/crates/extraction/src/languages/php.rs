@@ -15,7 +15,7 @@ use crate::frontend::{
     LexicalBindingSpec, NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec,
     ScopeExtractorSpec, SymbolExtractorSpec,
 };
-use crate::languages::shared::{make_binding_def, make_reference_use, make_scope_def_auto_name, SymbolDefBuilder};
+use crate::languages::shared::{make_binding_def, make_df_assign_field_target, make_df_return_value, make_reference_use, make_scope_def_auto_name, SymbolDefBuilder};
 use types::capability::FeatureSupport;
 use types::*;
 
@@ -471,32 +471,7 @@ fn normalize_php_dataflow_builder(
                 None,
             )
         }
-        "df.return_value" => {
-            let text = node_text(node, source).unwrap_or_default();
-            let node_id = DataNodeId::generate(
-                &file_id,
-                None::<&SymbolId>,
-                "return",
-                Some(&text),
-                None,
-                range.start_byte,
-            );
-            (
-                Some(DataNode {
-                    id: node_id,
-                    file_id,
-                    function_id: None,
-                    kind: DataNodeKind::Return,
-                    binding_id: None,
-                    callsite_id: None,
-                    name: Some(text),
-                    access_path: None,
-                    arg_index: None,
-                    range,
-                }),
-                None,
-            )
-        }
+        "df.return_value" => make_df_return_value(file_id, node, source, range),
         "df.call_target" => node_text(node, source)
             .map(|raw_name| {
                 // Strip $ sigil from variable_name nodes (dynamic method calls)
@@ -661,18 +636,7 @@ fn normalize_php_dataflow_builder(
         "df.assign_field_target" => {
             // Array assignment LHS: $arr[$key] = value → Field DataNode
             let text = node_text(node, source).unwrap_or_default();
-            let node_id = DataNodeId::generate(
-                &file_id,
-                None::<&SymbolId>,
-                "field",
-                Some(&text),
-                Some(&text),
-                range.start_byte,
-            );
-            (
-                Some(DataNode::field(node_id, file_id, None, &text, &text, range)),
-                None,
-            )
+            make_df_assign_field_target(file_id, &text, range)
         }
         "df.superglobal" => {
             // $_GET, $_POST, etc. → Global DataNode

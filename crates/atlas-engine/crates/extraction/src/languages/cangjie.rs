@@ -9,7 +9,7 @@ use crate::frontend::{
     LexicalBindingSpec, NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec,
     ScopeExtractorSpec, SymbolExtractorSpec,
 };
-use crate::languages::shared::{make_binding_def, make_reference_use, make_scope_def, SymbolDefBuilder};
+use crate::languages::shared::{make_binding_def, make_df_assign_target, make_df_parameter, make_reference_use, make_scope_def, SymbolDefBuilder};
 use types::bindings::BindingDef;
 use types::capability::FeatureSupport;
 use types::dataflow::{DataFlowEdge, DataNode};
@@ -395,34 +395,8 @@ fn normalize_cangjie_dataflow(
 ) -> (Option<DataNode>, Option<DataFlowEdge>) {
     let range = node_range(node);
     match capture_name {
-        "df.parameter" => node_text(node, source)
-            .map(|name| {
-                let node_id = DataNodeId::generate(
-                    &file_id,
-                    None::<&SymbolId>,
-                    "parameter",
-                    Some(&name),
-                    Some(&name),
-                    range.start_byte,
-                );
-                let dn = DataNode::parameter(node_id, file_id, None, None, &name, range);
-                (Some(dn), None)
-            })
-            .unwrap_or((None, None)),
-        "df.assign_target" => node_text(node, source)
-            .map(|name| {
-                let node_id = DataNodeId::generate(
-                    &file_id,
-                    None::<&SymbolId>,
-                    "local",
-                    Some(&name),
-                    Some(&name),
-                    range.start_byte,
-                );
-                let dn = DataNode::local(node_id, file_id, None, None, &name, range);
-                (Some(dn), None)
-            })
-            .unwrap_or((None, None)),
+        "df.parameter" => make_df_parameter(file_id, node, source, range),
+        "df.assign_target" => make_df_assign_target(file_id, node, source, range),
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
             let callsite_id = find_call_expression_cangjie(node)
