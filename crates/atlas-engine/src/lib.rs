@@ -60,8 +60,8 @@ pub use lazy_coordinator::LazyCoordinator;
 
 /// Index precision helpers shared by CLI/MCP/TUI entry points.
 pub use index_precision::{
-    extraction_mode_name, is_rich_index_mode, recommended_analysis_for,
-    would_downgrade_index_precision,
+    extraction_mode_name, guard_against_precision_downgrade, is_rich_index_mode,
+    recommended_analysis_for, would_downgrade_index_precision,
 };
 
 /// Lazy structural service: on-demand full structural extraction.

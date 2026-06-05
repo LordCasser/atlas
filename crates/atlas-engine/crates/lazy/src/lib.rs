@@ -55,48 +55,9 @@ impl LazyDataflowService {
         column: u32,
         trigger_query: Option<&str>,
     ) -> Result<LazyWindow> {
-        let mut window =
+        let window =
             planner::LazyDataflowPlanner::plan_for_position(&self.store, file_id, line, column)?;
-        let result = loader::LazyDataflowLoader::ensure(
-            &self.store,
-            &window,
-            self.project_root.as_deref(),
-            trigger_query,
-        )?;
-        window.truncated = window.truncated || result.budget_exceeded;
-        window.units_built = result.units_built;
-        window.units_cached = result.units_cached;
-        window.units_pending = result.units_pending;
-        window.pending_job_ids = result.pending_job_ids;
-
-        // Compute dataflow precision tier
-        {
-            let planned = window.units.len();
-            let available = result.units_built + result.units_cached;
-            let incomplete = result.budget_exceeded || result.units_pending > 0;
-            let tier = precision::dataflow_precision(available, planned, incomplete);
-            window.precision_tier = Some(tier);
-        }
-
-        // Compute capability mask from ensure result.
-        // If any dataflow was produced (built or cached), set the base
-        // dataflow-implying bits.
-        //
-        // CFG is included when at least one unit produced CFG data —
-        // the loader tracks this per-unit via the language capability
-        // profile and per-function CFG node counts.
-        if result.units_built > 0 || result.units_cached > 0 {
-            let mut mask_bits = CapabilityMask::MANIFEST
-                | CapabilityMask::STRUCTURAL
-                | CapabilityMask::CALL_EDGES
-                | CapabilityMask::DATAFLOW;
-            if result.has_cfg {
-                mask_bits |= CapabilityMask::CFG;
-            }
-            window.capability_mask = CapabilityMask::from_bits(mask_bits);
-        }
-
-        Ok(window)
+        self.ensure_window(window, trigger_query)
     }
 
     /// Plan a window for a known symbol and ensure all units have dataflow.
@@ -105,7 +66,16 @@ impl LazyDataflowService {
         symbol_id: &SymbolId,
         trigger_query: Option<&str>,
     ) -> Result<LazyWindow> {
-        let mut window = planner::LazyDataflowPlanner::plan_for_function(&self.store, symbol_id)?;
+        let window = planner::LazyDataflowPlanner::plan_for_function(&self.store, symbol_id)?;
+        self.ensure_window(window, trigger_query)
+    }
+
+    /// Shared post-plan logic: load, compute precision tier & capability mask.
+    fn ensure_window(
+        &self,
+        mut window: LazyWindow,
+        trigger_query: Option<&str>,
+    ) -> Result<LazyWindow> {
         let result = loader::LazyDataflowLoader::ensure(
             &self.store,
             &window,

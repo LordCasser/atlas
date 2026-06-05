@@ -354,27 +354,38 @@ impl ReferenceResolver {
     pub fn resolve_all(
         &mut self,
     ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
-        // P4: Build global index once
-        if self.global_index.is_none() {
-            self.global_index = Some(GlobalSymbolIndex::build(&self.store)?);
-        }
         let unresolved = self.store.find_unresolved_references()?;
         let total_refs = unresolved.len();
-        let mut stats = ResolutionStats {
-            total_refs,
-            ..Default::default()
-        };
 
-        // Group references by file for efficient context loading
         let mut by_file: HashMap<FileId, Vec<ReferenceUse>> = HashMap::new();
         for r in &unresolved {
             by_file.entry(r.file_id).or_default().push(r.clone());
         }
 
-        // Accumulate resolutions for batched writes
+        self.resolve_grouped_refs(by_file, total_refs)
+    }
+
+    /// Resolve a pre-grouped map of references (file_id → references).
+    ///
+    /// Shared by [`resolve_all`] and [`resolve_for_files`] — the only
+    /// difference between the two is how references are collected.
+    fn resolve_grouped_refs(
+        &mut self,
+        by_file: HashMap<FileId, Vec<ReferenceUse>>,
+        total_refs: usize,
+    ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
+        if self.global_index.is_none() {
+            self.global_index = Some(GlobalSymbolIndex::build(&self.store)?);
+        }
+
+        let mut stats = ResolutionStats {
+            total_refs,
+            ..Default::default()
+        };
+
         let mut pending_resolutions: Vec<(ReferenceId, ResolvedTarget)> = Vec::new();
         let mut all_resolved: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
-        let batch_size = 500; // Flush every N resolutions
+        let batch_size = 500;
 
         for (file_id, refs) in &by_file {
             let ctx = match ResolutionContext::build(&self.store, *file_id) {
@@ -408,7 +419,6 @@ impl ReferenceResolver {
         }
 
         self.flush_resolutions(&mut pending_resolutions, &mut stats);
-
         Ok((all_resolved, stats))
     }
 
@@ -582,11 +592,6 @@ impl ReferenceResolver {
         &mut self,
         file_ids: &[FileId],
     ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
-        if self.global_index.is_none() {
-            self.global_index = Some(GlobalSymbolIndex::build(&self.store)?);
-        }
-
-        // Collect references from all target files, grouped by file_id
         let mut by_file: HashMap<FileId, Vec<ReferenceUse>> = HashMap::new();
         for fid in file_ids {
             for r in self.store.find_references_by_file(fid)? {
@@ -595,48 +600,7 @@ impl ReferenceResolver {
         }
 
         let total_refs: usize = by_file.values().map(|v| v.len()).sum();
-        let mut stats = ResolutionStats {
-            total_refs,
-            ..Default::default()
-        };
-
-        let mut pending_resolutions: Vec<(ReferenceId, ResolvedTarget)> = Vec::new();
-        let mut all_resolved: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
-        let batch_size = 500;
-
-        for (file_id, refs) in &by_file {
-            let ctx = match ResolutionContext::build(&self.store, *file_id) {
-                Ok(c) => c,
-                Err(e) => {
-                    stats.add_warning(format!("failed to build context: {e}"));
-                    continue;
-                }
-            };
-
-            for reference in refs {
-                match self.resolve_one(reference, &ctx) {
-                    Some(target) => {
-                        pending_resolutions.push((reference.id, target.clone()));
-                        all_resolved.push((reference.clone(), target.clone()));
-                        stats.resolved += 1;
-                        *stats
-                            .by_strategy
-                            .entry(target.strategy.as_str().to_string())
-                            .or_default() += 1;
-                    }
-                    None => {
-                        stats.unresolved += 1;
-                    }
-                }
-            }
-
-            if pending_resolutions.len() >= batch_size {
-                self.flush_resolutions(&mut pending_resolutions, &mut stats);
-            }
-        }
-
-        self.flush_resolutions(&mut pending_resolutions, &mut stats);
-        Ok((all_resolved, stats))
+        self.resolve_grouped_refs(by_file, total_refs)
     }
 
     /// Flush pending resolution updates to the store in batch.

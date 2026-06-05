@@ -8,10 +8,11 @@
 //! The IndexPipeline emits ProgressEvent items.  CliProgressSink translates
 //! them into ProgressState updates consumed by the TUI render loop.
 
-use crate::runtime::{CommandContext, DbMode, guard_against_precision_downgrade};
+use crate::runtime::{CommandContext, DbMode};
 use crate::tui::{TextFallback, TuiProgress};
 use anyhow::Context;
 use atlas_engine::FileLock;
+use atlas_engine::guard_against_precision_downgrade;
 use atlas_engine::progress::{ProgressPhase, ProgressState};
 use atlas_engine::{IndexPipeline, IndexPipelineOptions, PhaseName, ProgressEvent, ProgressSink};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

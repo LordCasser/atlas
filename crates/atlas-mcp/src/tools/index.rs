@@ -8,8 +8,7 @@ use std::sync::Arc;
 
 use atlas_engine::{
     ExtractionMode, FileLock, IndexPipeline, IndexPipelineOptions, IndexPipelineStats,
-    ProgressEvent, ProgressSink, extraction_mode_name, recommended_analysis_for,
-    would_downgrade_index_precision,
+    ProgressEvent, ProgressSink, guard_against_precision_downgrade,
 };
 
 use super::ToolRouter;
@@ -116,6 +115,7 @@ impl ToolRouter {
         if background {
             if let Err(err) =
                 guard_against_precision_downgrade(&self.store, &mode, force_reindex, "MCP index")
+                    .map_err(|e| e.to_string())
             {
                 return (index_error_result(err), true);
             }
@@ -195,6 +195,7 @@ impl ToolRouter {
         };
         if let Err(err) =
             guard_against_precision_downgrade(&self.store, &mode, force_reindex, "MCP index")
+                .map_err(|e| e.to_string())
         {
             result.errors.push(err);
             let json = serde_json::to_string(&result).unwrap_or_else(|e| e.to_string());
@@ -328,6 +329,7 @@ impl ToolRouter {
             };
             if let Err(err) =
                 guard_against_precision_downgrade(&store, &mode, force_reindex, "MCP index")
+                    .map_err(|e| e.to_string())
             {
                 task_manager.fail_task(&tid, &err);
                 return;
@@ -429,30 +431,6 @@ fn parse_analysis_mode(args: &serde_json::Value) -> Result<ExtractionMode, Strin
         .and_then(|v| v.as_str())
         .unwrap_or("manifest");
     atlas_engine::parse_analysis_mode(analysis).map_err(|e| e.to_string())
-}
-
-fn guard_against_precision_downgrade(
-    store: &atlas_engine::Store,
-    requested: &ExtractionMode,
-    force_reindex: bool,
-    operation: &str,
-) -> Result<(), String> {
-    if force_reindex {
-        return Ok(());
-    }
-
-    let current = store
-        .read_index_mode()
-        .unwrap_or_else(|_| "unknown".to_string());
-    if !would_downgrade_index_precision(&current, requested) {
-        return Ok(());
-    }
-
-    Err(format!(
-        "Refusing to run {operation} with analysis='{}' because the existing fresh index is {current}. This would discard higher-precision facts for changed files. Use analysis='{}' or pass force_reindex=true to allow the downgrade explicitly.",
-        extraction_mode_name(requested),
-        recommended_analysis_for(&current),
-    ))
 }
 
 fn index_error_result(error: String) -> String {

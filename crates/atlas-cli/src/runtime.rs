@@ -17,8 +17,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use atlas_engine::{
-    ExtractionMode, Store, Workspace, extraction_mode_name, recommended_analysis_for,
-    would_downgrade_index_precision,
+    ExtractionMode, Language, Store, Workspace, guard_against_precision_downgrade,
 };
 
 /// Controls DB creation and schema-initialisation behaviour.
@@ -146,35 +145,6 @@ impl CommandContext {
     }
 }
 
-/// Prevent accidental precision downgrade of an existing rich index.
-///
-/// Default CLI flows should never replace fresh structural/full facts with a
-/// lower analysis depth because an agent picked a low-information default.
-/// Callers can still opt in explicitly with `--force-reindex`.
-pub fn guard_against_precision_downgrade(
-    store: &Store,
-    requested: &ExtractionMode,
-    force_reindex: bool,
-    operation: &str,
-) -> anyhow::Result<()> {
-    if force_reindex {
-        return Ok(());
-    }
-
-    let current = store
-        .read_index_mode()
-        .unwrap_or_else(|_| "unknown".to_string());
-    if !would_downgrade_index_precision(&current, requested) {
-        return Ok(());
-    }
-
-    anyhow::bail!(
-        "Refusing to run {operation} with --analysis {} because the existing fresh index is {current}. This would discard higher-precision facts for changed files. Use --analysis {} or pass --force-reindex to allow the downgrade explicitly.",
-        extraction_mode_name(requested),
-        recommended_analysis_for(&current),
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,7 +238,7 @@ mod tests {
         )
         .expect_err("manifest should not downgrade a structural index");
         assert!(
-            err.to_string().contains("--force-reindex"),
+            err.to_string().contains("force_reindex=true"),
             "error should point to explicit override: {err:#}"
         );
 
@@ -295,7 +265,7 @@ mod tests {
         )
         .expect_err("structural should not downgrade a full index");
         assert!(
-            err.to_string().contains("--analysis full"),
+            err.to_string().contains("analysis='full'"),
             "error should recommend preserving full precision: {err:#}"
         );
     }

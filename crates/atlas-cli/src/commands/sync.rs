@@ -1,7 +1,8 @@
 //! `atlas sync` — incremental sync for changed files.
 
-use crate::runtime::{CommandContext, DbMode, guard_against_precision_downgrade};
+use crate::runtime::{CommandContext, DbMode};
 use anyhow::Result;
+use atlas_engine::guard_against_precision_downgrade;
 use atlas_engine::progress::{ProgressPhase, ProgressState};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
