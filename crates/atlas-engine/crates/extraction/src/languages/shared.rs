@@ -18,6 +18,45 @@
 
 use types::*;
 
+/// Construct a `ScopeDef` with ID generation and default optional fields, reducing
+/// boilerplate in language adapters' scope normalize functions.
+///
+/// Parameters:
+/// - `file_id`: The file's `FileId`
+/// - `kind`: The `ScopeKind` determined by the per-language mapping
+/// - `name`: The scope name (language-specific)
+/// - `scope_path`: The scope path (often same as name, or empty for C/C++)
+/// - `range`: The node's `TextRange`
+pub fn make_scope_def(
+    file_id: FileId,
+    kind: ScopeKind,
+    name: String,
+    scope_path: String,
+    range: TextRange,
+) -> ScopeDef {
+    let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
+    ScopeDef {
+        id: scope_id,
+        file_id,
+        kind,
+        name,
+        scope_path,
+        parent_id: None,
+        range,
+    }
+}
+
+/// Construct a `ScopeDef` with auto-generated name (`"{kind}#{start_byte}"`)
+/// and scope_path mirroring the name. Used by most language adapters.
+pub fn make_scope_def_auto_name(
+    file_id: FileId,
+    kind: ScopeKind,
+    range: TextRange,
+) -> ScopeDef {
+    let name = format!("{:?}#{}", kind, range.start_byte);
+    make_scope_def(file_id, kind, name.clone(), name, range)
+}
+
 /// Construct a `BindingDef` with default fields, reducing boilerplate in
 /// language adapters' dataflow normalize functions.
 ///

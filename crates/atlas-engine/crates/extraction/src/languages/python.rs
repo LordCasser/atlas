@@ -3,7 +3,7 @@
 //! Uses tree-sitter-python grammar and embedded query files.
 
 use crate::languages::{node_range, node_text};
-use crate::languages::shared::{make_binding_def, make_reference_use};
+use crate::languages::shared::{make_binding_def, make_reference_use, make_scope_def_auto_name};
 use types::*;
 
 use crate::frontend::{
@@ -111,20 +111,8 @@ fn normalize_py_scope(
         _ => return None,
     };
     let range = node_range(node);
-    let name = format!("{:?}#{}", kind, range.start_byte);
-    let scope_path = name.clone();
 
-    let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
-
-    Some(ScopeDef {
-        id: scope_id,
-        file_id,
-        kind,
-        name,
-        scope_path,
-        parent_id: None,
-        range,
-    })
+    Some(make_scope_def_auto_name(file_id, kind, range))
 }
 
 /// Check if an identifier is a declaration name or property name in Python AST.

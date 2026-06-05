@@ -7,7 +7,7 @@
 //! DataflowSpec) via shared private normalize helpers.
 
 use crate::languages::{node_range, node_text};
-use crate::languages::shared::{make_binding_def, make_reference_use};
+use crate::languages::shared::{make_binding_def, make_reference_use, make_scope_def_auto_name};
 
 use crate::frontend::{
     Capture, DataflowSpec, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, NoOpRecovery,
@@ -241,20 +241,8 @@ pub(crate) fn normalize_ts_scope(
         _ => return None,
     };
     let range = node_range(node);
-    let name = format!("{:?}#{}", kind, range.start_byte);
-    let scope_path = name.clone();
 
-    let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
-
-    Some(ScopeDef {
-        id: scope_id,
-        file_id,
-        kind,
-        name,
-        scope_path,
-        parent_id: None,
-        range,
-    })
+    Some(make_scope_def_auto_name(file_id, kind, range))
 }
 
 pub(crate) fn normalize_ts_lexical(

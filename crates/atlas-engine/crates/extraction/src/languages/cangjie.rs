@@ -9,12 +9,12 @@ use crate::frontend::{
     LexicalBindingSpec, NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec,
     ScopeExtractorSpec, SymbolExtractorSpec,
 };
-use crate::languages::shared::{make_binding_def, make_reference_use, SymbolDefBuilder};
+use crate::languages::shared::{make_binding_def, make_reference_use, make_scope_def, SymbolDefBuilder};
 use types::bindings::BindingDef;
 use types::capability::FeatureSupport;
 use types::dataflow::{DataFlowEdge, DataNode};
 use types::enums::{BindingKind, DataNodeKind};
-use types::ids::{CallsiteId, DataNodeId, ScopeId};
+use types::ids::{CallsiteId, DataNodeId};
 use types::*;
 
 /// Cangjie frontend spec.
@@ -118,17 +118,8 @@ fn normalize_cangjie_scope(
         _ => node_text(node, source).unwrap_or_default(),
     };
     let range = node_range(node);
-    let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
 
-    Some(ScopeDef {
-        id: scope_id,
-        file_id,
-        kind,
-        name,
-        scope_path: String::new(),
-        parent_id: None,
-        range,
-    })
+    Some(make_scope_def(file_id, kind, name, String::new(), range))
 }
 
 // ── Slot trait implementations ──────────────────────────────────────────
