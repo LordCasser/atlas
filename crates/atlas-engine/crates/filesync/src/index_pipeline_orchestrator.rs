@@ -53,7 +53,6 @@ impl IndexPipeline {
     /// `interrupted()` returns `true` before a phase starts) is not an error
     /// — it returns `Ok(IndexPipelineStats::default())` with a
     /// [`ProgressEvent::Cancelled`] event.
-    #[allow(dead_code)]
     pub fn run(
         &self,
         sink: &dyn ProgressSink,
