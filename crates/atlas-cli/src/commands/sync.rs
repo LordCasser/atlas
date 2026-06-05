@@ -73,7 +73,7 @@ pub fn run_with_options(project: &str, analysis: &str, force_reindex: bool) -> R
         let _done = DoneGuard(done_clone);
         let sink = CliProgressSink { progress: ps };
         let mut interrupted = || stop_w.load(Ordering::SeqCst);
-        let stats = engine.sync_with_sink(&sink, &mut interrupted)?;
+        let stats = engine.sync(&sink, &mut interrupted)?;
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

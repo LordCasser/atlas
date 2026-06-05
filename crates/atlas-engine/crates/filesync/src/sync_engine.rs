@@ -14,7 +14,7 @@ use types::PhaseTimings;
 
 use crate::FileLock;
 use crate::incremental_pipeline::IncrementalPipeline;
-use crate::progress::{NoopSink, ProgressSink};
+use crate::progress::ProgressSink;
 
 /// Incremental sync engine.
 pub struct SyncEngine {
@@ -42,15 +42,8 @@ impl SyncEngine {
         }
     }
 
-    /// Perform a full incremental sync via the composable [`IncrementalPipeline`].
-    pub fn sync(&self) -> Result<SyncStats> {
-        let sink = NoopSink;
-        let mut interrupted = || false;
-        self.sync_with_sink(&sink, &mut interrupted)
-    }
-
     /// Perform incremental sync while emitting structured progress events.
-    pub fn sync_with_sink(
+    pub fn sync(
         &self,
         sink: &dyn ProgressSink,
         interrupted: &mut dyn FnMut() -> bool,

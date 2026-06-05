@@ -4,7 +4,7 @@
 //! them through [`ProgressSink`] events, interrupt checks, and scoped summary
 //! rebuilding instead of full rebuilds.
 //!
-//! This replaces the ad-hoc `SyncEngine::sync()` with a pipeline that is
+//! `SyncEngine::sync()` drives this pipeline so incremental sync remains
 //! observable, cancellable, and consistent with the full-index pipeline.
 
 use std::path::{Path, PathBuf};
