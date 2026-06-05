@@ -12,7 +12,6 @@
 //! Requires the `mcp` feature.
 //!
 //! Run: `cargo test --test trace_mcp_e2e --features mcp`
-//!      `cargo test --test trace_mcp_e2e --features all-languages,mcp`
 
 // The entire test suite is feature-gated on `mcp`.
 #![cfg(feature = "mcp")]

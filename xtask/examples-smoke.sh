@@ -36,8 +36,8 @@ EXAMPLES=(
 
 # ── Build if needed ──
 if [ ! -x "$ATLAS" ]; then
-    echo "Building atlas-cli (all-languages)..."
-    cargo build -p atlas-cli --features all-languages --manifest-path "$ROOT/Cargo.toml"
+    echo "Building atlas-cli..."
+    cargo build -p atlas-cli --manifest-path "$ROOT/Cargo.toml"
 fi
 
 # ── Clean + Index (skip if --report) ──

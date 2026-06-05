@@ -36,8 +36,7 @@ extract_file_with_mode() → FileFacts
 
 Each language implements a `LanguageFrontend` via slot-based composition:
 
-- **14 languages** with DataflowFull capability (Cangjie requires `cangjie` feature)
-- TypeScript, JavaScript, Python by default; Java, C, C++, ArkTS, Go, C#, Rust, PHP, Ruby, Kotlin, Cangjie with `all-languages` feature
+- **14 languages** with DataflowFull capability (all compiled by default)
 - All languages support full structural analysis (symbols, references, call graph) and dataflow tracing
 
 For detailed capability profiles, see `types::LanguageCapabilityProfile`.

@@ -33,9 +33,9 @@ MVP 固定支持：
 | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | tree-sitter-cpp |
 | ArkTS | `.ets`, `.sts` | MVP 复用 TypeScript grammar，但 language 存为 `arkts` |
 
-Cangjie 已完全接入 `all-languages` 编译集合，现为 **DataflowFull** 级别：基础定义/引用/导入、词法绑定、局部数据流、调用图和跨函数 summary 均已实现，CFG 暂未支持。不进入默认 features，需显式启用 `cangjie` feature 或 `all-languages`。
+Cangjie 已实现 **DataflowFull** 级别：基础定义/引用/导入、词法绑定、局部数据流、调用图和跨函数 summary 均已实现，CFG 暂未支持。现为默认编译语言之一。
 
-当前代码已接入 Go、Rust、C#、PHP、Ruby、Kotlin 的 **DataflowFull** frontends，并纳入 `all-languages` 编译集合。所有 14 种语言均为 DataflowFull 级别，具备完整 dataflow 抽取能力（参数、赋值、调用、字段访问、返回）、跨函数 summary 桥接（ArgToParam/ReturnToCall）和 e2e 测试。部分语言的 CFG 和特定跨函数路径仍有个别 gap（见各语言 capability profile limitations）。
+当前代码已接入 Go、Rust、C#、PHP、Ruby、Kotlin 的 **DataflowFull** frontends。所有 14 种语言均为 DataflowFull 级别，具备完整 dataflow 抽取能力（参数、赋值、调用、字段访问、返回）、跨函数 summary 桥接（ArgToParam/ReturnToCall）和 e2e 测试。部分语言的 CFG 和特定跨函数路径仍有个别 gap（见各语言 capability profile limitations）。
 
 ## 3. 非目标
 
@@ -58,8 +58,8 @@ MVP 可以 best-effort：
 
 - C/C++ include-aware direct call graph。
 - ArkTS via TypeScript grammar。
-- Cangjie DataflowFull 抽取和调用图（启用 `all-languages` 或显式启用 `cangjie` feature 时可用）；CFG 暂未支持。
-- Go/Rust/C#/PHP/Ruby/Kotlin 的 DataflowFull 抽取和调用图（启用 `all-languages` 时）；具体 path-level 变量来源追踪、CFG 和跨函数 summary gap 以 capability limitations 和测试覆盖为准。
+- Cangjie DataflowFull 抽取和调用图；CFG 暂未支持。
+- Go/Rust/C#/PHP/Ruby/Kotlin 的 DataflowFull 抽取和调用图；具体 path-level 变量来源追踪、CFG 和跨函数 summary gap 以 capability limitations 和测试覆盖为准。
 - 低置信度 name-based resolution。
 
 ## 4. 功能需求

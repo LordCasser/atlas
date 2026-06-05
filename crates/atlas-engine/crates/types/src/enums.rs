@@ -12,11 +12,10 @@ use serde::{Deserialize, Serialize};
 
 /// Languages known to Atlas.
 ///
-/// Cangjie is available behind `#[cfg(feature = "cangjie")]`;
-/// it is included in the `all-languages` feature set.
+/// Cangjie is available behind `#[cfg(feature = "cangjie")]` and is compiled by default.
 ///
-/// Go, C#, Rust, PHP, Ruby, and Kotlin are post-MVP languages at Symbolic
-/// capability level and are included by the `all-languages` feature.
+/// Go, C#, Rust, PHP, Ruby, and Kotlin are now at DataflowFull capability level
+/// and are compiled by default.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
 )]

@@ -17,11 +17,11 @@ CLI binary for Atlas. Command dispatch, logging, and integration tests.
 ## Build features
 
 ```bash
-# Default: TypeScript, JavaScript, Python
+# All 14 languages are compiled by default
 cargo build -p atlas-cli
 
-# All languages + MCP
-cargo build -p atlas-cli --features "all-languages,mcp"
+# With MCP server
+cargo build -p atlas-cli --features mcp
 ```
 
 ## Test structure

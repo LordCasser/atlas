@@ -17,4 +17,6 @@ tracing = "0.1"
 tempfile = "3"
 
 [features]
+default = ["cangjie"]
+
 cangjie = []  # enables Cangjie-specific keyword search (language-specific)

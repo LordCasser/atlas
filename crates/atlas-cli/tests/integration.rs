@@ -4,7 +4,7 @@
 //! full extraction→storage→resolution→graph pipeline, and verify results.
 //!
 //! Run with default features:  `cargo test --test integration`
-//! Run with all languages:    `cargo test --test integration --features all-languages,mcp,sync`
+//! Run with MCP + sync:       `cargo test --test integration --features mcp,sync`
 
 use atlas_engine::GraphBuilder;
 use atlas_engine::Store;

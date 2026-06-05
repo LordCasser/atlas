@@ -2,7 +2,7 @@
 name: atlas
 description: Semantic code graph engine for local repositories. Indexes 14 languages (TypeScript, JavaScript, Python, Java, C, C++, Go, C#, Rust, PHP, Ruby, Kotlin, ArkTS, Cangjie) via tree-sitter 0.26 and exposes deterministic facts through CLI and MCP. Use for symbol search, call-graph traversal, callers/callees, dependency analysis, variable provenance tracing, caller-path exploration, barrel re-export resolution, or building AI context from indexed codebases.
 license: MIT
-compatibility: Requires Rust toolchain. Build with `cargo build --release -p atlas-cli --features "all-languages,mcp"`.
+compatibility: Requires Rust toolchain. Build with `cargo build --release -p atlas-cli --features mcp`.
 metadata:
   version: "1.4.0"
   repository: https://github.com/lordcasser/atlas
@@ -14,7 +14,7 @@ Use Atlas as the deterministic code-facts layer before reasoning about a reposit
 
 ## Language support
 
-14 languages compile under `all-languages`. Their capability profiles currently
+14 languages compile by default. Their capability profiles currently
 report **DataflowFull** as the overall level, but individual feature support
 still varies by language; always check `project(action="status")`,
 `atlas doctor`, or trace capability metadata before making precision claims.
@@ -25,7 +25,7 @@ still varies by language; always check `project(action="status")`,
 | Python, Java, C, C++, Go, Rust | Same as above; Python/Java/C/C++/Go/Rust have CFG; C function pointers limited depth 3; C++ templates/overloads not modeled; Rust ReturnToCall gap documented |
 | C#, PHP, Ruby, Kotlin, ArkTS, Cangjie | Symbols, references, imports, call graph, lexical bindings, local dataflow, use-def, interprocedural summaries; CFG varies by language (see `project(action="status")` and trace capability metadata) |
 
-All 14 languages compiled by `all-languages`.
+All 14 languages compiled by default.
 
 ## Requirements
 

@@ -5,10 +5,10 @@
 Build with all languages and MCP:
 
 ```bash
-cargo build --release -p atlas-cli --features "all-languages,mcp"
+cargo build --release -p atlas-cli --features mcp
 ```
 
-> `all-languages` includes TypeScript, JavaScript, Python, Java, C, C++, Go, C#, Rust, PHP, Ruby, Kotlin, ArkTS, and Cangjie.
+> All 14 languages are compiled by default. The `mcp` feature enables the MCP server.
 
 Initialize and index a project before starting MCP (`atlas index` auto-initializes the schema):
 

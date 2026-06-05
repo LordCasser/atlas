@@ -33,6 +33,8 @@ db = { path = "../db" }
 tempfile = "3"
 
 [features]
+default = ["typescript", "javascript", "python", "java", "c", "cpp", "arkts", "cangjie", "go", "csharp", "rust", "php", "ruby", "kotlin"]
+
 typescript = ["dep:tree-sitter-typescript", "types/typescript"]
 javascript = ["typescript", "dep:tree-sitter-typescript"]  # JS uses TS grammar + adapter
 python = ["dep:tree-sitter-python", "types/python"]

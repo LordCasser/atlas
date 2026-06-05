@@ -1,22 +1,19 @@
 //! Feature propagation tests for atlas-mcp.
 //!
 //! These tests verify that the MCP crate's feature flags correctly propagate
-//! to the atlas-engine dependency.  The conditional compilation tests below
+//! to the atlas-engine dependency. The conditional compilation tests below
 //! are designed to be run with different `--features` / `--no-default-features`
 //! flags:
 //!
 //! ```text
-//! # Default build (TS/JS/Python enabled)
+//! # Default build (all 14 languages enabled)
 //! cargo test -p atlas-mcp
 //!
 //! # Zero-language build (no default features)
 //! cargo test -p atlas-mcp --no-default-features
 //!
-//! # Cangjie enabled
+//! # Cangjie only
 //! cargo test -p atlas-mcp --no-default-features --features cangjie
-//!
-//! # All languages
-//! cargo test -p atlas-mcp --features all-languages
 //! ```
 //!
 //! ## Verifying zero-language builds
@@ -29,7 +26,7 @@
 //! # Expected: no output (tree-sitter parser crates are not in the dep tree)
 //! ```
 
-// ── Default build tests (TS/JS/Python) ─────────────────────────────────
+// ── Default build tests (core languages always present) ─────────────────
 
 #[cfg(all(feature = "typescript", feature = "javascript", feature = "python"))]
 mod default_build {

@@ -6,7 +6,7 @@
 
 1. 测试必须对应阶段目标。
 2. 单元测试可以使用手写 facts、mock data；端到端测试不得用手写 facts 替代 extraction、storage、resolution、graph 或 analysis 主链路。
-3. 默认 feature 和关键 feature 组合都必须可编译。`mcp`、`all-languages` 是验收矩阵的一部分。
+3. 所有 feature 组合都必须可编译。`mcp` 是验收矩阵的一部分。
 4. Golden fixture 用于锁定抽取输出，不用于证明产品能力已经端到端可用。
 5. 新增语言、新增 schema、新增 CLI/MCP 工具、新增 analysis 能力，都必须同时补测试和文档。
 6. 低置信度、启发式、fallback 行为必须在测试里显式断言 confidence、strategy 或 diagnostics。
@@ -119,10 +119,9 @@ Atlas 同时存在 extraction mode、capability level、lazy precision tier 和�
 
 ```bash
 cargo test
-cargo test -p atlas-cli --features all-languages
+cargo test --features mcp
 cargo test -p atlas-cli --features mcp
-cargo test -p atlas-cli --features "all-languages,mcp"
-cargo check -p atlas-cli --features "all-languages,mcp"
+cargo check -p atlas-cli --features mcp
 ```
 
 如果某个 crate 支持无语言 feature 编译，则默认 feature 的单测也必须通过；否则需要在 Cargo feature 或测试上明确表达“至少一个语言 feature 是前置条件”。
@@ -145,7 +144,7 @@ cargo check -p atlas-cli --features "all-languages,mcp"
 每种语言至少覆盖以下 compile-time / runtime 验证链：
 `from_extension` → `create_frontend` → manifest query → structural query →
 search `lang:` prefix → `CapabilityProfile::all_compiled()` → golden fixture smoke。
-非默认语言（Go、C#、Rust、PHP、Ruby、Kotlin、Cangjie）必须显式纳入矩阵。
+所有 14 种语言已默认编译，必须全部纳入矩阵。
 
 ## 3. 阶段测试要求
 
@@ -167,7 +166,7 @@ search `lang:` prefix → `CapabilityProfile::all_compiled()` → golden fixture
 - engine crate 有独立单元和集成测试。
 - CLI crate 有命令级 smoke/E2E 测试。
 - MCP crate 有 tool schema、routing、bounded output 测试。
-- 原有 default、all-languages、mcp 组合测试继续通过。
+- 原有 default、mcp 组合测试继续通过。
 
 ### Lazy UX / Analysis Contract ✅
 
@@ -194,9 +193,7 @@ search `lang:` prefix → `CapabilityProfile::all_compiled()` → golden fixture
 
 ```bash
 cargo test
-cargo test -p atlas-cli --features "all-languages"
 cargo test -p atlas-cli --features "mcp"
-cargo test -p atlas-cli --features "all-languages,mcp"
 ```
 
 ## 5. 禁止事项

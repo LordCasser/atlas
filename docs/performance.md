@@ -3,7 +3,7 @@
 ## Test Environment
 
 - **Machine**: Apple Silicon (aarch64), macOS
-- **Atlas build**: `cargo build --release -p atlas-cli --features all-languages`
+- **Atlas build**: `cargo build --release -p atlas-cli`
 - **Date**: 2026-05-23
 
 ## Baseline 1: TypeScript Project (project-graph)

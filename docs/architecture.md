@@ -105,7 +105,7 @@ tree-sitter 0.26 parser
 - 单文件失败必须结构化记录，不中断项目索引。
 - ArkTS 复用 TypeScript grammar，但 language 必须是 `arkts`。
 - C/C++ 是 best-effort，不承诺完整 preprocessing、模板、重载。
-- 所有 14 种语言均接入 `all-languages` feature set。
+- 所有 14 种语言均默认编译。
 
 ## 5. Fact 模型约束
 
@@ -705,9 +705,7 @@ branch_diff    lifecycle
 
 | 层级 | Features |
 |------|----------|
-| 默认 | `typescript`, `javascript`, `python` |
-| MVP | + `java`, `c`, `cpp`, `arkts` |
-| `all-languages` | + `go`, `csharp`, `rust`, `php`, `ruby`, `kotlin`, `cangjie` |
+| 默认 | `typescript`, `javascript`, `python`, `java`, `c`, `cpp`, `arkts`, `go`, `csharp`, `rust`, `php`, `ruby`, `kotlin`, `cangjie` |
 | MCP | `mcp` (independent of language features) |
 
 ## 14. 引擎拆分与 Corpus 边界

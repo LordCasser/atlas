@@ -21,9 +21,8 @@
 //!
 //! # Feature flags
 //!
-//! Language support is gated by Cargo features (e.g. `typescript`, `python`,
-//! `java`).  The `all-languages` feature enables every supported language,
-//! including Cangjie.
+//! All 14 languages are compiled by default. Individual languages can be
+//! disabled by opting out of default features (e.g. `--no-default-features`).
 
 use std::path::Path;
 use std::sync::Arc;

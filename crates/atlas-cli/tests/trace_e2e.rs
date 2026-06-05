@@ -10,7 +10,7 @@
 //! operations produce correct results.
 //!
 //! Run with default features:  `cargo test --test trace_e2e`
-//! Run with all languages:    `cargo test --test trace_e2e --features all-languages`
+//! All 14 languages are compiled by default.
 
 use atlas_engine::GraphBuilder;
 use atlas_engine::Store;

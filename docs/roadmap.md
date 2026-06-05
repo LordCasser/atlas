@@ -39,10 +39,8 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
 
 ```bash
 cargo test
-cargo test -p atlas-cli --features all-languages
 cargo test -p atlas-cli --features mcp
-cargo test -p atlas-cli --features "all-languages,mcp"
-cargo check -p atlas-cli --features "all-languages,mcp"
+cargo check -p atlas-cli --features mcp
 ```
 
 ### 1.6 V1 release blockers

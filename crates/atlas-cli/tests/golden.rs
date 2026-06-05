@@ -7,7 +7,7 @@
 //! ## Adding a new fixture
 //!
 //! 1. Create `tests/fixtures/<lang>/<name>.<ext>` with source code
-//! 2. Run `cargo test --test golden --features all-languages -- --nocapture`
+//! 2. Run `cargo test --test golden -- --nocapture`
 //! 3. Copy the printed JSON to `tests/fixtures/<lang>/<name>.expected.json`
 //!
 //! ## Expected JSON format

@@ -16,6 +16,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [features]
+default = ["typescript", "javascript", "python", "java", "c", "cpp", "arkts", "cangjie", "go", "csharp", "rust", "php", "ruby", "kotlin"]
+
 # Language features (boolean flags for capability profiles and enum variants)
 typescript = []
 javascript = []

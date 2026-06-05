@@ -36,7 +36,7 @@ atlas-mcp = { path = "../atlas-mcp" }
 tempfile = "3"
 
 [features]
-default = ["typescript", "javascript", "python"]
+default = ["typescript", "javascript", "python", "java", "c", "cpp", "arkts", "cangjie", "go", "csharp", "rust", "php", "ruby", "kotlin"]
 mcp = ["atlas-mcp", "dep:tokio"]
 typescript = ["atlas-engine/typescript"]
 javascript = ["atlas-engine/javascript"]
@@ -52,9 +52,3 @@ rust = ["atlas-engine/rust"]
 php = ["atlas-engine/php"]
 ruby = ["atlas-engine/ruby"]
 kotlin = ["atlas-engine/kotlin"]
-all-languages = [
-    # All supported languages with verified lexical/dataflow compilation.
-    # Cangjie (ABI 15) is now compatible with tree-sitter 0.26 (MAX_ABI ≥ 15).
-    "typescript", "javascript", "python", "java",
-    "c", "cpp", "arkts", "cangjie", "go", "csharp", "rust", "php", "ruby", "kotlin",
-]

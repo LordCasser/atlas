@@ -54,7 +54,7 @@ source code ──parse/extract──▶ .atlas/atlas.db ──query──▶ TU
 ```bash
 git clone https://github.com/LordCasser/atlas.git
 cd atlas
-cargo build --release -p atlas-cli --features "all-languages,mcp"
+cargo build --release -p atlas-cli --features mcp
 ```
 
 The binary is generated at `target/release/atlas`.
@@ -62,7 +62,7 @@ The binary is generated at `target/release/atlas`.
 You can also install the local binary into Cargo's bin directory:
 
 ```bash
-cargo install --path crates/atlas-cli --features "all-languages,mcp"
+cargo install --path crates/atlas-cli --features mcp
 ```
 
 ## Quick start
@@ -268,18 +268,13 @@ SQLite is the durable source of truth. In-memory graph snapshots are query accel
 
 ## Supported languages
 
-Default build:
+All 14 languages are compiled by default:
 
 | Language | Extensions | Capability level |
 | --- | --- | --- |
 | TypeScript | `.ts`, `.tsx` | DataflowFull |
 | JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` | DataflowFull |
 | Python | `.py`, `.pyi`, `.pyx` | DataflowFull |
-
-`all-languages` build:
-
-| Language | Extensions | Capability level |
-| --- | --- | --- |
 | Java | `.java` | DataflowFull |
 | C | `.c`, `.h` | DataflowFull |
 | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | DataflowFull |
@@ -295,9 +290,8 @@ Default build:
 Build variants:
 
 ```bash
-cargo build --release -p atlas-cli
-cargo build --release -p atlas-cli --features all-languages
-cargo build --release -p atlas-cli --features "all-languages,mcp"
+cargo build --release -p atlas-cli                  # all 14 languages
+cargo build --release -p atlas-cli --features mcp   # all languages + MCP server
 ```
 
 ## Documentation
@@ -315,14 +309,14 @@ Maintained documents:
 ## Development
 
 ```bash
-# Default tests: TypeScript, JavaScript, Python
+# Run all tests (all 14 languages by default)
 cargo test
 
-# Full CLI + MCP + all non-experimental language features
-cargo test -p atlas-cli --features "all-languages,mcp"
+# Run tests with MCP feature
+cargo test --features mcp
 
 # Build release binary with MCP
-cargo build --release -p atlas-cli --features "all-languages,mcp"
+cargo build --release -p atlas-cli --features mcp
 ```
 
 Conventions:

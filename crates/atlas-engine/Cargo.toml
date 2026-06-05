@@ -34,7 +34,7 @@ serde_json = "1"
 tempfile = "3"
 
 [features]
-default = ["typescript", "javascript", "python"]
+default = ["typescript", "javascript", "python", "java", "c", "cpp", "arkts", "cangjie", "go", "csharp", "rust", "php", "ruby", "kotlin"]
 
 # ── Language features (aggregated from sub-crates) ──
 typescript = ["types/typescript", "extraction/typescript", "analysis/typescript", "lazy/typescript"]
@@ -51,8 +51,3 @@ rust = ["types/rust", "extraction/rust"]
 php = ["types/php", "extraction/php", "analysis/php"]
 ruby = ["types/ruby", "extraction/ruby", "analysis/ruby"]
 kotlin = ["types/kotlin", "extraction/kotlin", "analysis/kotlin"]
-
-all-languages = [
-    "typescript", "javascript", "python", "java",
-    "c", "cpp", "arkts", "cangjie", "go", "csharp", "rust", "php", "ruby", "kotlin",
-]

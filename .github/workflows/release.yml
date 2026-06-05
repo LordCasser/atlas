@@ -86,7 +86,7 @@ jobs:
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
-        run: cargo build --release --target ${{ matrix.target }} -p atlas-cli --features "all-languages,mcp"
+        run: cargo build --release --target ${{ matrix.target }} -p atlas-cli --features mcp
 
       - name: Build (cross-compile)
         if: matrix.cross
@@ -94,11 +94,11 @@ jobs:
           cross build --release \
             --target ${{ matrix.target }} \
             -p atlas-cli \
-            --features "all-languages,mcp"
+            --features mcp
 
       - name: Build (xwin)
         if: matrix.xwin
-        run: cargo xwin build --release --target ${{ matrix.target }} -p atlas-cli --features "all-languages,mcp"
+        run: cargo xwin build --release --target ${{ matrix.target }} -p atlas-cli --features mcp
 
       - name: Verify Linux binary is static
         if: ${{ runner.os == 'Linux' && contains(matrix.target, 'linux-musl') }}

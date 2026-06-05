@@ -15,6 +15,8 @@ blake3 = "1"
 tracing = "0.1"
 
 [features]
+default = ["typescript", "arkts", "cangjie"]
+
 typescript = ["extraction/typescript"]
 arkts = ["extraction/arkts"]
 cangjie = ["extraction/cangjie"]

@@ -24,6 +24,8 @@ tempfile = "3"
 tree-sitter = "0.26"
 
 [features]
+default = ["typescript", "python", "java", "go", "rust", "csharp", "kotlin", "ruby", "php"]
+
 typescript = ["dep:tree-sitter-typescript", "types/typescript", "extraction/typescript"]
 python = ["types/python"]
 java = ["types/java"]
