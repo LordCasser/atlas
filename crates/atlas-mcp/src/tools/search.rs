@@ -13,7 +13,6 @@ use atlas_engine::SearchAnalysis;
 use atlas_engine::SearchCoverage;
 use atlas_engine::SearchResult;
 use atlas_engine::SymbolKind;
-use atlas_engine::structs::precision::PrecisionTier;
 
 use super::lazy_response::{LazyDiagnostics, LazyResponse};
 use super::{

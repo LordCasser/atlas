@@ -6,9 +6,7 @@
 //! newly parsed edges — closing the MCP call-flow gap where graph init
 //! happened before the handler's own structural extraction.
 
-use std::time::Instant;
-
-    use super::lazy_response::{LazyDiagnostics, LazyResponse};
+use super::lazy_response::{LazyDiagnostics, LazyResponse};
 use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str};
 
 use atlas_engine::InvestigationFocus;

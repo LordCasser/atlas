@@ -65,11 +65,7 @@ pub fn make_scope_def(
 
 /// Construct a `ScopeDef` with auto-generated name (`"{kind}#{start_byte}"`)
 /// and scope_path mirroring the name. Used by most language adapters.
-pub fn make_scope_def_auto_name(
-    file_id: FileId,
-    kind: ScopeKind,
-    range: TextRange,
-) -> ScopeDef {
+pub fn make_scope_def_auto_name(file_id: FileId, kind: ScopeKind, range: TextRange) -> ScopeDef {
     let name = format!("{:?}#{}", kind, range.start_byte);
     make_scope_def(file_id, kind, name.clone(), name, range)
 }
@@ -115,7 +111,14 @@ pub fn make_reference_use(
     name: String,
     range: TextRange,
 ) -> ReferenceUse {
-    let ref_id = ReferenceId::generate(&file_id, None::<&SymbolId>, range.start_byte, range.end_byte, &text, kind);
+    let ref_id = ReferenceId::generate(
+        &file_id,
+        None::<&SymbolId>,
+        range.start_byte,
+        range.end_byte,
+        &text,
+        kind,
+    );
     ReferenceUse {
         id: ref_id,
         file_id,

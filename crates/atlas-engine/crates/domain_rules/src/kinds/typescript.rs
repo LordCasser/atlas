@@ -137,8 +137,8 @@ impl RuleLearningStrategy for TypeScriptLearningStrategy {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::super::registry::RuleValidationResult;
+    use super::*;
 
     #[test]
     fn test_builtin_rules() {

@@ -9,7 +9,10 @@ use crate::frontend::{
     LexicalBindingSpec, NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec,
     ScopeExtractorSpec, SymbolExtractorSpec,
 };
-use crate::languages::shared::{make_binding_def, make_df_assign_field_target, make_df_assign_target, make_df_parameter, make_df_return_value, make_reference_use, make_scope_def, SymbolDefBuilder};
+use crate::languages::shared::{
+    SymbolDefBuilder, make_binding_def, make_df_assign_field_target, make_df_assign_target,
+    make_df_parameter, make_df_return_value, make_reference_use, make_scope_def,
+};
 use types::capability::FeatureSupport;
 use types::*;
 

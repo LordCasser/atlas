@@ -2,8 +2,11 @@
 //!
 //! Uses tree-sitter-python grammar and embedded query files.
 
+use crate::languages::shared::{
+    make_binding_def, make_df_assign_field_target, make_df_assign_target, make_df_parameter,
+    make_reference_use, make_scope_def_auto_name,
+};
 use crate::languages::{node_range, node_text};
-use crate::languages::shared::{make_binding_def, make_df_assign_field_target, make_df_assign_target, make_df_parameter, make_reference_use, make_scope_def_auto_name};
 use types::*;
 
 use crate::frontend::{

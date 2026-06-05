@@ -6,8 +6,11 @@
 //! `TypeScriptFrontendSpec` implements every slot trait (ParserSpec through
 //! DataflowSpec) via shared private normalize helpers.
 
+use crate::languages::shared::{
+    make_binding_def, make_df_assign_field_target, make_df_assign_target, make_df_parameter,
+    make_df_return_value, make_reference_use, make_scope_def_auto_name,
+};
 use crate::languages::{node_range, node_text};
-use crate::languages::shared::{make_binding_def, make_df_assign_field_target, make_df_assign_target, make_df_parameter, make_df_return_value, make_reference_use, make_scope_def_auto_name};
 
 use crate::frontend::{
     Capture, DataflowSpec, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, NoOpRecovery,

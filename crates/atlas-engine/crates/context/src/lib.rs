@@ -21,6 +21,17 @@ pub trait SourceReader: Send + Sync {
     fn read_source(&self, symbol_id: &SymbolId) -> Option<String>;
 }
 
+/// Blanket implementation: any compatible closure automatically implements SourceReader.
+/// Preserves backward compatibility with call sites that pass `Arc::new(|id| ...)`.
+impl<F> SourceReader for F
+where
+    F: Fn(&SymbolId) -> Option<String> + Send + Sync,
+{
+    fn read_source(&self, symbol_id: &SymbolId) -> Option<String> {
+        self(symbol_id)
+    }
+}
+
 /// AI context builder: constructs symbol-rich context from the codebase graph.
 pub struct ContextBuilder {
     store: Arc<Store>,

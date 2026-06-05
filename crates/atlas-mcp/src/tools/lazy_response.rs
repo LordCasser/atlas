@@ -455,15 +455,6 @@ impl LazyResponse {
         self
     }
 
-    /// Override the [`QueryStatus`] stored in the snapshot.
-    /// When not set, status is auto-derived from `precision_tier` and
-    /// `partial_result`.
-    #[allow(dead_code)]
-    pub fn with_status(mut self, status: QueryStatus) -> Self {
-        self.status = Some(status);
-        self
-    }
-
     /// Override the `is_error` flag in the returned tuple.
     /// When not set, `is_error` is derived from the body's `"ok"` or
     /// `"error"` field.
@@ -491,11 +482,7 @@ impl LazyResponse {
     /// - `analysis_contract` (when `inject_analysis_contract` is true and
     ///   lazy_diag is Some)
     /// - `query_id`
-pub fn build(
-        self,
-        body: serde_json::Value,
-        store: &mut impl SnapshotStore,
-    ) -> (String, bool) {
+    pub fn build(self, body: serde_json::Value, store: &mut impl SnapshotStore) -> (String, bool) {
         let args = self.tool_args.clone();
         self.build_with_args(body, &args, store)
     }

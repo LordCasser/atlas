@@ -22,7 +22,10 @@ use crate::frontend::{
     LexicalBindingSpec, NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec,
     ScopeExtractorSpec, SymbolExtractorSpec,
 };
-use crate::languages::shared::{make_binding_def, make_df_assign_field_target, make_df_parameter, make_df_return_value, make_reference_use, make_scope_def_auto_name, SymbolDefBuilder};
+use crate::languages::shared::{
+    SymbolDefBuilder, make_binding_def, make_df_assign_field_target, make_df_parameter,
+    make_df_return_value, make_reference_use, make_scope_def_auto_name,
+};
 use types::capability::FeatureSupport;
 use types::*;
 
@@ -399,7 +402,7 @@ fn normalize_ruby_dataflow_builder(
     use types::ids::DataNodeId;
     let range = node_range(node);
     match capture_name {
-"df.parameter" => make_df_parameter(file_id, node, source, range),
+        "df.parameter" => make_df_parameter(file_id, node, source, range),
         "df.assign_target" => {
             // Differentiate by AST node kind: identifier → Local,
             // instance_variable (@x) → Field, class_variable (@@x) → Field,

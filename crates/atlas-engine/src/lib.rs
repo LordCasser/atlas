@@ -58,7 +58,9 @@ mod source_extractor;
 // be signaled by a semver bump.
 
 /// Extraction: entry points and mode control.
-pub use extraction::{ExtractionMode, create_frontend, extract_file, extract_file_with_mode, parse_analysis_mode};
+pub use extraction::{
+    ExtractionMode, create_frontend, extract_file, extract_file_with_mode, parse_analysis_mode,
+};
 
 /// Sync layer: core indexing pipeline and progress protocol.
 pub use filesync::{
@@ -78,14 +80,14 @@ pub use graph::{
 /// Resolution layer: reference resolver and path aliases.
 pub use resolution::{PathAliasConfig, ReferenceResolver, ResolutionStats};
 
-/// Analysis: trace query responses.
-pub use analysis::trace::TraceQueryResponse;
 /// Analysis: trace engine (low-level, without lazy dataflow).
 ///
 /// [`RawTraceEngine`] does NOT automatically trigger lazy dataflow loading.
 /// Callers must run [`LazyDataflowService::ensure_for_position`] first, or
 /// use the high-level [`Engine::trace_variable`] which wraps both.
 pub use analysis::trace::TraceEngine as RawTraceEngine;
+/// Analysis: trace query responses.
+pub use analysis::trace::TraceQueryResponse;
 
 /// Context layer: AI context builder (callers, callees, peers).
 pub use context::ContextBuilder;
@@ -198,9 +200,9 @@ pub use resolution::{
     detect_config_change,
 };
 
+pub use search::SearchOptions;
 /// Search internals: query parser and options.
 pub use search::query_parser::{ParsedQuery, parse_query, searchable_languages};
-pub use search::SearchOptions;
 
 /// Workspace internals: project root and source path types.
 pub use workspace::{ProjectRoot, SourcePath};
