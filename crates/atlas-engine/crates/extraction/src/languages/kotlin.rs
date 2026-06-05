@@ -23,7 +23,7 @@ use types::capability::FeatureSupport;
 use types::dataflow::{DataFlowEdge, DataNode};
 use types::enums::{DataFlowKind, DataNodeKind};
 use types::ids::{DataFlowEdgeId, DataNodeId};
-use types::structs::{ScopeDef, TextRange};
+use types::structs::ScopeDef;
 use types::*;
 
 // ---------------------------------------------------------------------------
@@ -310,7 +310,7 @@ fn walk_kotlin_assign_edges(
                     sid,
                     tid,
                     DataFlowKind::Assign,
-                    kotlin_range(&name),
+                    node_range(name),
                     0.85,
                 ));
             }
@@ -358,7 +358,7 @@ fn walk_kotlin_assign_edges(
                     sid,
                     tid,
                     DataFlowKind::Assign,
-                    kotlin_range(&t),
+                    node_range(t),
                     0.85,
                 ));
             }
@@ -370,17 +370,6 @@ fn walk_kotlin_assign_edges(
         if let Some(child) = node.child(i as u32) {
             walk_kotlin_assign_edges(child, source, pos_map, edges);
         }
-    }
-}
-
-fn kotlin_range(ts_node: &tree_sitter::Node) -> TextRange {
-    TextRange {
-        start_byte: ts_node.start_byte() as u32,
-        end_byte: ts_node.end_byte() as u32,
-        start_line: ts_node.start_position().row as u32,
-        start_column: ts_node.start_position().column as u32,
-        end_line: ts_node.end_position().row as u32,
-        end_column: ts_node.end_position().column as u32,
     }
 }
 

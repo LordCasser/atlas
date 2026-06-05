@@ -47,7 +47,7 @@ pub use frontend::{
 pub use grammar::LanguageRegistry;
 pub use languages::{available_languages, create_frontend};
 pub use lexical_binder::{LexicalBinder, LexicalBindingResult};
-pub use mode::ExtractionMode;
+pub use mode::{ExtractionMode, parse_analysis_mode};
 pub use scope_tree::build_scope_tree;
 pub use semantic_binder::SemanticBinder;
 pub use symbol_registry::{SymbolRegistry, all_edge_sources_known, all_reference_sources_known};

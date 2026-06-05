@@ -21,7 +21,7 @@ use types::capability::FeatureSupport;
 use types::dataflow::{DataFlowEdge, DataNode};
 use types::enums::{DataFlowKind, DataNodeKind};
 use types::ids::{DataFlowEdgeId, DataNodeId};
-use types::structs::{ScopeDef, TextRange};
+use types::structs::ScopeDef;
 use types::*;
 
 // ---------------------------------------------------------------------------
@@ -302,7 +302,7 @@ fn walk_rust_assign_edges(
                             source_id,
                             target_id,
                             DataFlowKind::Assign,
-                            rust_range(&pattern_node),
+                            node_range(pattern_node),
                             0.90,
                         ));
                     }
@@ -329,7 +329,7 @@ fn walk_rust_assign_edges(
                                         source_id,
                                         target_id,
                                         DataFlowKind::Assign,
-                                        rust_range(&child),
+                                        node_range(child),
                                         0.90,
                                     ));
                                 }
@@ -344,17 +344,6 @@ fn walk_rust_assign_edges(
         if let Some(child) = node.child(i as u32) {
             walk_rust_assign_edges(child, pos_map, edges);
         }
-    }
-}
-
-fn rust_range(ts_node: &tree_sitter::Node) -> TextRange {
-    TextRange {
-        start_byte: ts_node.start_byte() as u32,
-        end_byte: ts_node.end_byte() as u32,
-        start_line: ts_node.start_position().row as u32,
-        start_column: ts_node.start_position().column as u32,
-        end_line: ts_node.end_position().row as u32,
-        end_column: ts_node.end_position().column as u32,
     }
 }
 

@@ -424,18 +424,11 @@ fn run_mcp_index(
 }
 
 fn parse_analysis_mode(args: &serde_json::Value) -> Result<ExtractionMode, String> {
-    match args
+    let analysis = args
         .get("analysis")
         .and_then(|v| v.as_str())
-        .unwrap_or("manifest")
-    {
-        "manifest" => Ok(ExtractionMode::Manifest),
-        "structural" => Ok(ExtractionMode::Structural),
-        "full" => Ok(ExtractionMode::Full),
-        other => Err(format!(
-            "Unsupported analysis mode '{other}'. Must be one of: manifest, structural, full."
-        )),
-    }
+        .unwrap_or("manifest");
+    atlas_engine::parse_analysis_mode(analysis).map_err(|e| e.to_string())
 }
 
 fn guard_against_precision_downgrade(

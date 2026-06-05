@@ -105,7 +105,7 @@ pub use domain_rules as rule_engine;
 pub use extraction::{
     ExtractionMode, LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig,
     available_languages, create_frontend, extract_file, extract_file_with_mode,
-    extract_file_with_mode_cancellable,
+    extract_file_with_mode_cancellable, parse_analysis_mode,
 };
 /// Sync layer: incremental sync engine, file lock, file discovery.
 pub use filesync::{

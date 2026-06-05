@@ -111,6 +111,21 @@ impl ExtractionMode {
     }
 }
 
+/// Parse an analysis mode string from CLI/MCP arguments.
+///
+/// Accepts `"manifest"`, `"structural"`, or `"full"` and returns an error
+/// with a descriptive message for any other value.
+pub fn parse_analysis_mode(s: &str) -> anyhow::Result<ExtractionMode> {
+    match s {
+        "manifest" => Ok(ExtractionMode::Manifest),
+        "structural" => Ok(ExtractionMode::Structural),
+        "full" => Ok(ExtractionMode::Full),
+        other => anyhow::bail!(
+            "Unknown analysis mode: '{other}'. Must be 'manifest', 'structural', or 'full'."
+        ),
+    }
+}
+
 // ── Lazy dataflow budget constants (internal, per-unit caps) ──────────────
 //
 // These mirror the constants in the `lazy` crate.  They are duplicated here

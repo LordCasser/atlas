@@ -11,7 +11,6 @@
 use crate::runtime::{CommandContext, DbMode, guard_against_precision_downgrade};
 use crate::tui::{TextFallback, TuiProgress};
 use anyhow::Context;
-use atlas_engine::ExtractionMode;
 use atlas_engine::FileLock;
 use atlas_engine::progress::{ProgressPhase, ProgressState};
 use atlas_engine::{IndexPipeline, IndexPipelineOptions, PhaseName, ProgressEvent, ProgressSink};
@@ -36,14 +35,7 @@ pub fn run_with_options(
     analysis: &str,
     force_reindex: bool,
 ) -> anyhow::Result<()> {
-    let mode = match analysis {
-        "manifest" => ExtractionMode::Manifest,
-        "structural" => ExtractionMode::Structural,
-        "full" => ExtractionMode::Full,
-        other => anyhow::bail!(
-            "Unknown analysis mode: '{other}'. Must be 'manifest', 'structural', or 'full'."
-        ),
-    };
+    let mode = atlas_engine::parse_analysis_mode(analysis)?;
 
     // ── Merge include/scope patterns ──
     let mut include_patterns: Vec<String> = includes.to_vec();

@@ -337,7 +337,7 @@ fn walk_go_assign_edges(
                                     source_id,
                                     target_id,
                                     DataFlowKind::Assign,
-                                    node_range_go(&name_node),
+                                    node_range(name_node),
                                     0.90,
                                 ));
                             }
@@ -353,17 +353,6 @@ fn walk_go_assign_edges(
         if let Some(child) = node.child(i as u32) {
             walk_go_assign_edges(child, pos_map, edges);
         }
-    }
-}
-
-fn node_range_go(ts_node: &tree_sitter::Node) -> types::structs::TextRange {
-    types::structs::TextRange {
-        start_byte: ts_node.start_byte() as u32,
-        end_byte: ts_node.end_byte() as u32,
-        start_line: ts_node.start_position().row as u32,
-        start_column: ts_node.start_position().column as u32,
-        end_line: ts_node.end_position().row as u32,
-        end_column: ts_node.end_position().column as u32,
     }
 }
 

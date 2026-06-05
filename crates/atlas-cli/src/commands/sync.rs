@@ -2,7 +2,6 @@
 
 use crate::runtime::{CommandContext, DbMode, guard_against_precision_downgrade};
 use anyhow::Result;
-use atlas_engine::ExtractionMode;
 use atlas_engine::progress::{ProgressPhase, ProgressState};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -23,14 +22,7 @@ pub fn run(project: &str, analysis: &str) -> Result<()> {
 }
 
 pub fn run_with_options(project: &str, analysis: &str, force_reindex: bool) -> Result<()> {
-    let mode = match analysis {
-        "manifest" => ExtractionMode::Manifest,
-        "structural" => ExtractionMode::Structural,
-        "full" => ExtractionMode::Full,
-        other => anyhow::bail!(
-            "Unknown analysis mode: '{other}'. Must be 'manifest', 'structural', or 'full'."
-        ),
-    };
+    let mode = atlas_engine::parse_analysis_mode(analysis)?;
     let has_dataflow = mode.produces_dataflow();
 
     let ctx = CommandContext::open(project, DbMode::ExistingReadWrite)?;
