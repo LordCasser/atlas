@@ -23,19 +23,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ── Linux (native) ───────────────────────────────────
-          - target: x86_64-unknown-linux-gnu
+          # ── Linux (musl/static, avoids runner glibc dependency) ───────
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             cross: false
             asset: atlas-linux-x86_64.tar.gz
 
-          - target: aarch64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
             cross: false
             asset: atlas-linux-arm64.tar.gz
 
           # ── Linux (cross-compile) ─────────────────────────────
-          - target: riscv64gc-unknown-linux-gnu
+          - target: riscv64gc-unknown-linux-musl
             os: ubuntu-latest
             cross: true
             asset: atlas-linux-riscv64.tar.gz
@@ -72,6 +72,10 @@ jobs:
         if: matrix.cross
         run: cargo install cross --locked
 
+      - name: Install musl tools (native Linux)
+        if: ${{ runner.os == 'Linux' && !matrix.cross && contains(matrix.target, 'linux-musl') }}
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
       - name: Install cargo-xwin
         if: matrix.xwin
         run: cargo install cargo-xwin --locked
@@ -82,6 +86,9 @@ jobs:
 
       - name: Build (native)
         if: ${{ !matrix.cross && !matrix.xwin }}
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
         run: cargo build --release --target ${{ matrix.target }} -p atlas-cli --features "all-languages,mcp"
 
       - name: Build (cross-compile)
@@ -95,6 +102,17 @@ jobs:
       - name: Build (xwin)
         if: matrix.xwin
         run: cargo xwin build --release --target ${{ matrix.target }} -p atlas-cli --features "all-languages,mcp"
+
+      - name: Verify Linux binary is static
+        if: ${{ runner.os == 'Linux' && contains(matrix.target, 'linux-musl') }}
+        run: |
+          BIN=target/${{ matrix.target }}/release/atlas
+          file "$BIN"
+          if readelf -d "$BIN" 2>/dev/null | grep -q 'NEEDED'; then
+            echo "Linux release binary has dynamic dependencies:"
+            readelf -d "$BIN"
+            exit 1
+          fi
 
       - name: Package (Linux / macOS / cross-compiled Windows)
         if: runner.os != 'Windows'
