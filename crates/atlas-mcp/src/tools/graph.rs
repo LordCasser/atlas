@@ -8,6 +8,7 @@ use atlas_engine::analysis;
 use atlas_engine::{EdgeKind, InvestigationFocus, Store, SymbolId, SymbolKind, TraversalDirection};
 
 use super::query_snapshot::{QuerySnapshot, QueryStatus};
+use super::lazy_response::{LazyDiagnostics, LazyResponse};
 use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str, get_str_opt, get_u64};
 
 use serde_json::json;
@@ -1233,7 +1234,8 @@ impl ToolRouter {
 
         self.update_investigation(InvestigationFocus::Symbol(sid));
         let investigation = self.investigation_state.active_investigation.clone();
-        let query_id = Self::generate_query_id();
+        let lr = LazyResponse::new("impact", args);
+        let query_id = lr.query_id().to_string();
 
         // Lazy structural: ensure graph edges exist before impact analysis
         let file_id = self
@@ -1249,6 +1251,10 @@ impl ToolRouter {
             investigation.as_ref(),
             Some(&query_id),
         );
+        let lazy_diag: Option<LazyDiagnostics> = outcome
+            .lazy_outcome
+            .as_ref()
+            .map(LazyDiagnostics::from_structural);
 
         let graph = self.context_builder().graph_snapshot();
         let sub = if include_children {
@@ -1506,33 +1512,14 @@ impl ToolRouter {
             );
         }
 
-        // Lazy structural response
         let lazy_warnings = outcome.warnings;
         let tier = outcome.precision_tier;
-        if !lazy_warnings.is_empty() {
-            resp["warnings"] = json!(lazy_warnings);
-        }
-        resp["precision_tier"] = serde_json::to_value(tier).unwrap_or(json!(null));
-        if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
-            if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
-                resp["hint"] = json!(hint);
-            }
-        }
 
-        self.store_snapshot(QuerySnapshot {
-            query_id: query_id.clone(),
-            tool_name: "impact".into(),
-            tool_args: args.clone(),
-            lazy_window: None,
-            created_at: Instant::now(),
-            status: QueryStatus::Ready,
-        });
-        resp["query_id"] = json!(query_id);
-
-        (
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
-            false,
-        )
+        lr.with_precision_tier(tier)
+            .with_root_warnings(Vec::new())
+            .with_lazy_warnings(lazy_warnings)
+            .with_lazy_diag(lazy_diag)
+            .build(resp, self)
     }
 }
 
