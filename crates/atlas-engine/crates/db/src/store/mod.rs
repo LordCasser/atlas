@@ -185,8 +185,7 @@ impl Store {
     /// Enter bulk-write mode for maximum throughput during rebuilds.
     ///
     /// Returns a [`BulkWriteGuard`] that restores safety defaults on drop,
-    /// even on panic.  Prefer this over manually calling `begin_bulk_write` /
-    /// `end_bulk_write`.
+    /// even on panic.
     ///
     /// **The database may be corrupted on power loss or crash while
     /// bulk-write mode is active.**  Only use during index rebuilds where
@@ -200,35 +199,6 @@ impl Store {
              PRAGMA mmap_size = 1073741824; -- 1 GB",
         )?;
         Ok(BulkWriteGuard { store: self })
-    }
-
-    /// Disable safety checks for maximum bulk-write throughput.
-    ///
-    /// Prefer [`Self::enter_bulk_write`] for RAII-guaranteed cleanup.
-    /// Only use this if the guard pattern is infeasible.
-    #[deprecated(note = "use enter_bulk_write() for RAII-guaranteed cleanup")]
-    pub fn begin_bulk_write(&self) -> anyhow::Result<()> {
-        let conn = self.lock();
-        conn.execute_batch(
-            "PRAGMA synchronous = OFF;
-             PRAGMA foreign_keys = OFF;
-             PRAGMA cache_size = -524288;   -- 512 MB
-             PRAGMA mmap_size = 1073741824; -- 1 GB",
-        )?;
-        Ok(())
-    }
-
-    /// Restore safety defaults after a bulk-write phase.
-    #[deprecated(note = "use enter_bulk_write() for RAII-guaranteed cleanup")]
-    pub fn end_bulk_write(&self) -> anyhow::Result<()> {
-        let conn = self.lock();
-        conn.execute_batch(
-            "PRAGMA synchronous = NORMAL;
-             PRAGMA foreign_keys = ON;
-             PRAGMA cache_size = -65536;     -- 64 MB
-             PRAGMA mmap_size = 268435456;   -- 256 MB",
-        )?;
-        Ok(())
     }
 }
 
