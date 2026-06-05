@@ -31,8 +31,8 @@ jobs:
             cross: false
             asset: atlas-linux-arm64.tar.gz
 
-          # ── Linux (cross-compile) ─────────────────────────────
-          - target: riscv64gc-unknown-linux-musl
+          # ── Linux (cross-compile; GNU until riscv64 musl C toolchain is available) ──
+          - target: riscv64gc-unknown-linux-gnu
             os: ubuntu-latest
             cross: true
             asset: atlas-linux-riscv64.tar.gz
