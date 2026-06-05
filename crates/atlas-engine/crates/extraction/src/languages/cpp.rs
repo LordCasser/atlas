@@ -449,8 +449,11 @@ fn normalize_cpp_dataflow_builder(
             .unwrap_or((None, None)),
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = crate::languages::shared::find_call_expression(node, &["call_expression", "new_expression"])
-                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let callsite_id = crate::languages::shared::find_call_expression(
+                node,
+                &["call_expression", "new_expression"],
+            )
+            .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&SymbolId>,
@@ -504,9 +507,11 @@ fn normalize_cpp_dataflow_builder(
         "df.call_target" => node_text(node, source)
             .map(|name| {
                 let access_path = name.clone();
-                let callsite_id = crate::languages::shared::find_call_expression(node, &["call_expression", "new_expression"]).map(|ce| {
-                    types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
-                });
+                let callsite_id = crate::languages::shared::find_call_expression(
+                    node,
+                    &["call_expression", "new_expression"],
+                )
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&SymbolId>,
@@ -531,8 +536,11 @@ fn normalize_cpp_dataflow_builder(
             .unwrap_or((None, None)),
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = crate::languages::shared::find_call_expression(node, &["call_expression", "new_expression"])
-                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let callsite_id = crate::languages::shared::find_call_expression(
+                node,
+                &["call_expression", "new_expression"],
+            )
+            .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&SymbolId>,

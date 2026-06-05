@@ -24,7 +24,13 @@ impl ProgressSink for CliProgressSink {
             ProgressEvent::ItemProgress { completed, .. } => {
                 state.set_current(completed);
             }
-            ProgressEvent::PhaseFinished { detail, .. } => {
+            ProgressEvent::PhaseFinished {
+                succeeded,
+                failed,
+                detail,
+                ..
+            } => {
+                state.set_current(succeeded + failed);
                 if let Some(msg) = detail {
                     state.set_message(msg);
                 }
@@ -58,5 +64,57 @@ pub(crate) fn phase_name_to_progress_phase(pn: PhaseName) -> ProgressPhase {
             ProgressPhase::Finalizing
         }
         PhaseName::Custom(_) => ProgressPhase::Finalizing,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_progress_sink_sets_total_and_current() {
+        let progress = Arc::new(Mutex::new(ProgressState::new()));
+        let sink = CliProgressSink {
+            progress: progress.clone(),
+        };
+
+        sink.emit(ProgressEvent::PhaseStarted {
+            phase: PhaseName::Extraction,
+            total: 7,
+        });
+        sink.emit(ProgressEvent::ItemProgress {
+            phase: PhaseName::Extraction,
+            completed: 3,
+        });
+
+        let snap = progress.lock().unwrap().read_snapshot();
+        assert_eq!(snap.current_phase, Some(ProgressPhase::Extraction));
+        assert_eq!(snap.total, Some(7));
+        assert_eq!(snap.current, 3);
+    }
+
+    #[test]
+    fn cli_progress_sink_sets_current_on_phase_finished() {
+        let progress = Arc::new(Mutex::new(ProgressState::new()));
+        let sink = CliProgressSink {
+            progress: progress.clone(),
+        };
+
+        sink.emit(ProgressEvent::PhaseStarted {
+            phase: PhaseName::DbWrite,
+            total: 3,
+        });
+        sink.emit(ProgressEvent::PhaseFinished {
+            phase: PhaseName::DbWrite,
+            succeeded: 2,
+            failed: 1,
+            detail: Some("2 written, 1 failed".into()),
+        });
+
+        let snap = progress.lock().unwrap().read_snapshot();
+        assert_eq!(snap.current_phase, Some(ProgressPhase::DbWrite));
+        assert_eq!(snap.total, Some(3));
+        assert_eq!(snap.current, 3);
+        assert_eq!(snap.message.as_deref(), Some("2 written, 1 failed"));
     }
 }

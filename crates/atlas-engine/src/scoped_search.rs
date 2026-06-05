@@ -146,10 +146,7 @@ pub struct ScopedSearchService {
 impl ScopedSearchService {
     /// Create a new service.
     pub fn new(store: Arc<Store>, engine: Arc<Engine>) -> Self {
-        Self {
-            store,
-            engine,
-        }
+        Self { store, engine }
     }
 
     /// Execute a scoped search.

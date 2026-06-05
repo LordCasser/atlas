@@ -80,6 +80,11 @@ impl TuiProgress {
         print_summary(files, symbols, edges);
     }
 
+    /// Clear the progress line without printing an index-specific summary.
+    pub fn clear(self) {
+        self.bar.finish_and_clear();
+    }
+
     /// Finish after Ctrl+C and print the interrupt summary below.
     pub fn interrupt(self, state: &ProgressState) {
         self.bar.finish_and_clear();

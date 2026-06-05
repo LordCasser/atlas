@@ -392,8 +392,11 @@ pub(crate) fn normalize_ts_dataflow_builder(
             .unwrap_or((None, None)),
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = crate::languages::shared::find_call_expression(node, &["call_expression", "new_expression"])
-                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let callsite_id = crate::languages::shared::find_call_expression(
+                node,
+                &["call_expression", "new_expression"],
+            )
+            .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&types::ids::SymbolId>,
@@ -442,8 +445,11 @@ pub(crate) fn normalize_ts_dataflow_builder(
         }
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = crate::languages::shared::find_call_expression(node, &["call_expression", "new_expression"])
-                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let callsite_id = crate::languages::shared::find_call_expression(
+                node,
+                &["call_expression", "new_expression"],
+            )
+            .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&types::ids::SymbolId>,
@@ -468,9 +474,11 @@ pub(crate) fn normalize_ts_dataflow_builder(
                 // Use the full qualified text as `name` so Suffix rules (".close")
                 // match against "conn.close" instead of just "close".
                 let name = access_path.clone();
-                let callsite_id = crate::languages::shared::find_call_expression(node, &["call_expression", "new_expression"]).map(|ce| {
-                    types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
-                });
+                let callsite_id = crate::languages::shared::find_call_expression(
+                    node,
+                    &["call_expression", "new_expression"],
+                )
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&types::ids::SymbolId>,
@@ -560,8 +568,11 @@ pub(crate) fn normalize_ts_dataflow_builder(
         }
         "df.await_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = crate::languages::shared::find_call_expression(node, &["call_expression", "new_expression"])
-                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let callsite_id = crate::languages::shared::find_call_expression(
+                node,
+                &["call_expression", "new_expression"],
+            )
+            .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&types::ids::SymbolId>,

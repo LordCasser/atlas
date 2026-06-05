@@ -483,8 +483,15 @@ fn normalize_php_dataflow_builder(
             .unwrap_or((None, None)),
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = crate::languages::shared::find_call_expression(node, &["function_call_expression", "member_call_expression", "object_creation_expression"])
-                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let callsite_id = crate::languages::shared::find_call_expression(
+                node,
+                &[
+                    "function_call_expression",
+                    "member_call_expression",
+                    "object_creation_expression",
+                ],
+            )
+            .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&SymbolId>,
@@ -541,9 +548,15 @@ fn normalize_php_dataflow_builder(
                 // and name nodes alike for consistent naming.
                 let name = strip_php_sigil(&raw_name).to_string();
                 let access_path = name.clone();
-                let callsite_id = crate::languages::shared::find_call_expression(node, &["function_call_expression", "member_call_expression", "object_creation_expression"]).map(|ce| {
-                    types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
-                });
+                let callsite_id = crate::languages::shared::find_call_expression(
+                    node,
+                    &[
+                        "function_call_expression",
+                        "member_call_expression",
+                        "object_creation_expression",
+                    ],
+                )
+                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&SymbolId>,
@@ -569,8 +582,15 @@ fn normalize_php_dataflow_builder(
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
             let name = strip_php_sigil(&text).to_string();
-            let callsite_id = crate::languages::shared::find_call_expression(node, &["function_call_expression", "member_call_expression", "object_creation_expression"])
-                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let callsite_id = crate::languages::shared::find_call_expression(
+                node,
+                &[
+                    "function_call_expression",
+                    "member_call_expression",
+                    "object_creation_expression",
+                ],
+            )
+            .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&SymbolId>,

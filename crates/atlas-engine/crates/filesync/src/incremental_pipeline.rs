@@ -353,11 +353,14 @@ impl IncrementalPipeline {
                 .find_unresolved_references()
                 .map(|refs| refs.len() as u64)
                 .unwrap_or(0);
-            sink.emit(ProgressEvent::PhaseStarted { phase, total: unresolved_total });
+            sink.emit(ProgressEvent::PhaseStarted {
+                phase,
+                total: unresolved_total,
+            });
 
             let ps = sink.progress_state();
-            let graph_result =
-                phase_resolve_and_build(&self.store, &self.project_root, ps).map_err(|e| {
+            let graph_result = phase_resolve_and_build(&self.store, &self.project_root, ps)
+                .map_err(|e| {
                     sink.emit(ProgressEvent::Warning {
                         phase,
                         message: format!("{:#}", e),
@@ -429,22 +432,23 @@ impl IncrementalPipeline {
                     .iter()
                     .filter(|s| s.kind == SymbolKind::Function)
                     .count() as u64;
-                sink.emit(ProgressEvent::PhaseStarted { phase, total: function_count });
+                sink.emit(ProgressEvent::PhaseStarted {
+                    phase,
+                    total: function_count,
+                });
 
                 let on_progress = |completed: u64| {
-                    sink.emit(ProgressEvent::ItemProgress {
-                        phase,
-                        completed,
-                    });
+                    sink.emit(ProgressEvent::ItemProgress { phase, completed });
                 };
 
-                let full_summaries = phase_build_summaries(&self.store, Some(&on_progress)).map_err(|e| {
-                    sink.emit(ProgressEvent::Warning {
-                        phase,
-                        message: format!("Failed to build summaries: {:#}", e),
-                    });
-                    e
-                })?;
+                let full_summaries = phase_build_summaries(&self.store, Some(&on_progress))
+                    .map_err(|e| {
+                        sink.emit(ProgressEvent::Warning {
+                            phase,
+                            message: format!("Failed to build summaries: {:#}", e),
+                        });
+                        e
+                    })?;
                 stats.summaries_updated = full_summaries;
                 stats.summaries_skipped = 0;
 

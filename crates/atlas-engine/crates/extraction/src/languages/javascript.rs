@@ -100,12 +100,7 @@ impl SymbolExtractorSpec for JavaScriptAdapter {
         FeatureSupport::supported()
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<SymbolDef> {
-        normalize_js_definition(
-            &capture.name,
-            capture.node,
-            ctx.source,
-            ctx.file_id,
-        )
+        normalize_js_definition(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
 }
 
@@ -117,12 +112,7 @@ impl ReferenceExtractorSpec for JavaScriptAdapter {
         FeatureSupport::supported()
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ReferenceUse> {
-        normalize_js_reference(
-            &capture.name,
-            capture.node,
-            ctx.source,
-            ctx.file_id,
-        )
+        normalize_js_reference(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
 }
 
@@ -134,12 +124,7 @@ impl ImportExtractorSpec for JavaScriptAdapter {
         FeatureSupport::supported()
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ImportDef> {
-        normalize_js_import(
-            &capture.name,
-            capture.node,
-            ctx.source,
-            ctx.file_id,
-        )
+        normalize_js_import(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
 }
 
@@ -151,12 +136,7 @@ impl ScopeExtractorSpec for JavaScriptAdapter {
         FeatureSupport::supported()
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<ScopeDef> {
-        normalize_js_scope(
-            &capture.name,
-            capture.node,
-            ctx.source,
-            ctx.file_id,
-        )
+        normalize_js_scope(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
 }
 
@@ -171,12 +151,7 @@ impl LexicalBindingSpec for JavaScriptAdapter {
         )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
-        normalize_js_lexical(
-            &capture.name,
-            capture.node,
-            ctx.source,
-            ctx.file_id,
-        )
+        normalize_js_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
 }
 
@@ -195,12 +170,7 @@ impl DataflowSpec for JavaScriptAdapter {
         ctx: NormalizeCtx<'_>,
         capture: Capture<'_>,
     ) -> (Option<DataNode>, Option<DataFlowEdge>) {
-        normalize_js_dataflow_builder(
-            &capture.name,
-            capture.node,
-            ctx.source,
-            ctx.file_id,
-        )
+        normalize_js_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
 }
 

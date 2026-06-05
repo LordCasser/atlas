@@ -8,13 +8,14 @@
 //! The IndexPipeline emits ProgressEvent items.  CliProgressSink translates
 //! them into ProgressState updates consumed by the TUI render loop.
 
+use crate::commands::progress::CliProgressSink;
 use crate::runtime::{CommandContext, DbMode};
 use crate::tui::{TextFallback, TuiProgress};
 use anyhow::Context;
 use atlas_engine::FileLock;
 use atlas_engine::guard_against_precision_downgrade;
-use atlas_engine::progress::{ProgressPhase, ProgressState};
-use atlas_engine::{IndexPipeline, IndexPipelineOptions, PhaseName, ProgressEvent, ProgressSink};
+use atlas_engine::progress::ProgressState;
+use atlas_engine::{IndexPipeline, IndexPipelineOptions};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -193,66 +194,6 @@ fn indexed_scope_json(patterns: &[String]) -> String {
         "[]".to_string()
     } else {
         serde_json::to_string(patterns).unwrap_or_else(|_| "[]".to_string())
-    }
-}
-
-// ── CliProgressSink ────────────────────────────────────────────────────────
-
-/// Translates [`ProgressEvent`] items from the index pipeline into
-/// [`ProgressState`] updates consumed by the TUI render loop.
-struct CliProgressSink {
-    progress: Arc<Mutex<ProgressState>>,
-}
-
-impl ProgressSink for CliProgressSink {
-    fn emit(&self, event: ProgressEvent) {
-        let mut state = self.progress.lock().unwrap();
-        match event {
-            ProgressEvent::PhaseStarted { phase, total } => {
-                state.start_phase(phase_name_to_progress_phase(phase), None);
-                if total > 0 {
-                    state.set_total(total);
-                }
-            }
-            ProgressEvent::ItemProgress { completed, .. } => {
-                state.set_current(completed);
-            }
-            ProgressEvent::PhaseFinished {
-                phase: _, detail, ..
-            } => {
-                if let Some(msg) = detail {
-                    state.set_message(msg);
-                }
-            }
-            ProgressEvent::Warning { phase, message } => {
-                tracing::warn!("{phase}: {message}");
-            }
-            ProgressEvent::Cancelled { last_phase } => {
-                tracing::info!("Index cancelled at {last_phase}");
-            }
-        }
-    }
-
-    fn progress_state(&self) -> Option<&Arc<Mutex<ProgressState>>> {
-        Some(&self.progress)
-    }
-}
-
-/// Map the pipeline's [`PhaseName`] to the TUI-facing [`ProgressPhase`].
-fn phase_name_to_progress_phase(pn: PhaseName) -> ProgressPhase {
-    match pn {
-        PhaseName::Discovery => ProgressPhase::Discovery,
-        PhaseName::HashCheck => ProgressPhase::HashCheck,
-        PhaseName::Cleanup => ProgressPhase::Cleanup,
-        PhaseName::LanguageInit => ProgressPhase::LanguageInit,
-        PhaseName::Extraction => ProgressPhase::Extraction,
-        PhaseName::DbWrite => ProgressPhase::DbWrite,
-        PhaseName::Resolution => ProgressPhase::Resolution,
-        PhaseName::EdgeBuild => ProgressPhase::EdgeBuilding,
-        PhaseName::AnnotationMaterialize | PhaseName::SummaryBuild | PhaseName::Finalize => {
-            ProgressPhase::Finalizing
-        }
-        PhaseName::Custom(_) => ProgressPhase::Finalizing,
     }
 }
 

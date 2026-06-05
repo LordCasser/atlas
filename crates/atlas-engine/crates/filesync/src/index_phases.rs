@@ -43,8 +43,8 @@ use extraction::{
 };
 use graph::GraphBuilder;
 use resolution::{PathAliasConfig, ReferenceResolver};
-use types::{FileFacts, FileId, Language};
 use types::progress::ProgressState;
+use types::{FileFacts, FileId, Language};
 
 use crate::cleanup::{clean_stale_file_ids, clean_stale_file_paths, source_file_id};
 use crate::dirty::{DirtySet, build_dirty_set_for_mode};
@@ -533,9 +533,11 @@ pub fn phase_build_summaries(
     store: &Arc<Store>,
     on_progress: Option<&(dyn Fn(u64) + Sync)>,
 ) -> Result<usize> {
-    let stats = db::summary::SummaryStore::build_all(store, |s, fid| {
-        analysis::summary::SummaryBuilder::build(s, fid, None)
-    }, on_progress)
+    let stats = db::summary::SummaryStore::build_all(
+        store,
+        |s, fid| analysis::summary::SummaryBuilder::build(s, fid, None),
+        on_progress,
+    )
     .context("Failed to build summaries")?;
 
     // Record "summaries" layer in extraction_state so get_capability_mask()

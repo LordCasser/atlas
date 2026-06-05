@@ -827,7 +827,8 @@ mod tests {
         };
         store.insert_symbols(&[fn_a.clone(), fn_b.clone(), not_a_fn])?;
 
-        let stats = SummaryStore::build_all(&store, |_s, fid| Ok(test_summary(fid, &file_id)), None)?;
+        let stats =
+            SummaryStore::build_all(&store, |_s, fid| Ok(test_summary(fid, &file_id)), None)?;
 
         // Should process exactly 2 functions, skipping the Class
         assert_eq!(
@@ -900,10 +901,14 @@ mod tests {
         // build_fn reads from the store via &dyn TraceStore — internally
         // calls lock_read().  On in-memory DBs this would deadlock if the
         // write lock were already held.
-        let stats = SummaryStore::build_all(&store, |ts, _fid| {
-            let _sym = ts.find_symbol_by_id(_fid)?;
-            Ok(test_summary(_fid, &file_id))
-        }, None)?;
+        let stats = SummaryStore::build_all(
+            &store,
+            |ts, _fid| {
+                let _sym = ts.find_symbol_by_id(_fid)?;
+                Ok(test_summary(_fid, &file_id))
+            },
+            None,
+        )?;
 
         assert_eq!(stats.functions_processed, 1);
         assert_eq!(stats.functions_summarized, 1);

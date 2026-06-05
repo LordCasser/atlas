@@ -1,12 +1,14 @@
 //! `atlas sync` — incremental sync for changed files.
 
+use crate::commands::progress::CliProgressSink;
 use crate::runtime::{CommandContext, DbMode};
+use crate::tui::{TextFallback, TuiProgress};
 use anyhow::Result;
 use atlas_engine::guard_against_precision_downgrade;
-use atlas_engine::progress::{ProgressPhase, ProgressState};
+use atlas_engine::progress::ProgressState;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// RAII guard that sets `done` to `true` on drop, guaranteeing the spinner
 /// exits even if the worker thread encounters an error.
@@ -54,12 +56,14 @@ pub fn run_with_options(project: &str, analysis: &str, force_reindex: bool) -> R
         println!("  Deleted ({})", changed.deleted.len());
     }
 
-    // ── Progress for sync (simplified: text-only for fast incremental ops) ──
+    // ── Progress for sync ───────────────────────────────────────────────
     let progress_state = Arc::new(Mutex::new(ProgressState::new()));
     let done = Arc::new(AtomicBool::new(false));
+    let stop_flag = Arc::new(AtomicBool::new(false));
 
     let ps = progress_state.clone();
     let done_clone = done.clone();
+    let stop_w = stop_flag.clone();
 
     // Clone store for thread (ctx owns the Arc)
     let store_for_thread = ctx.store.clone();
@@ -67,13 +71,9 @@ pub fn run_with_options(project: &str, analysis: &str, force_reindex: bool) -> R
     // Run sync in background thread with progress
     let handle = std::thread::spawn(move || -> Result<_> {
         let _done = DoneGuard(done_clone);
-        ps.lock()
-            .unwrap()
-            .start_phase(ProgressPhase::Extraction, Some("Syncing...".into()));
-        let stats = engine.sync()?;
-        ps.lock()
-            .unwrap()
-            .start_phase(ProgressPhase::Finalizing, None);
+        let sink = CliProgressSink { progress: ps };
+        let mut interrupted = || stop_w.load(Ordering::SeqCst);
+        let stats = engine.sync_with_sink(&sink, &mut interrupted)?;
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -85,28 +85,42 @@ pub fn run_with_options(project: &str, analysis: &str, force_reindex: bool) -> R
         Ok(stats)
     });
 
-    // Simple spinner while waiting
-    let spinner = ['|', '/', '-', '\\'];
-    let mut idx = 0;
-    while !done.load(Ordering::SeqCst) {
-        eprint!("\r  Syncing... {}", spinner[idx]);
-        idx = (idx + 1) % 4;
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    eprint!("\r  Syncing... done\n");
+    // Start TUI (or text fallback if non-TTY), same progress contract as index.
+    let mut tui = TuiProgress::try_init(progress_state.clone());
+    let has_tty = tui.is_some();
 
-    let stats = match handle.join() {
-        Ok(Ok(stats)) => stats,
-        Ok(Err(e)) => return Err(e),
+    if has_tty {
+        let _ = tui.as_mut().unwrap().draw_loop(&done, &stop_flag);
+    } else {
+        let mut fb = TextFallback::new(progress_state.clone());
+        loop {
+            fb.tick();
+            if done.load(Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        fb.finish();
+    }
+
+    let worker_result = match handle.join() {
+        Ok(Ok(stats)) => Ok(stats),
+        Ok(Err(e)) => Err(e),
         Err(panic) => {
             let msg = panic
                 .downcast_ref::<&str>()
                 .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".into());
-            return Err(anyhow::anyhow!("Sync worker panicked: {msg}"));
+            Err(anyhow::anyhow!("Sync worker panicked: {msg}"))
         }
     };
+
+    if has_tty {
+        tui.take().unwrap().clear();
+    }
+
+    let stats = worker_result?;
 
     println!("\nSync complete:");
     println!("  Files reindexed: {}", stats.files_reindexed);

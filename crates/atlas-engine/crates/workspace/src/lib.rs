@@ -476,5 +476,4 @@ mod tests {
         assert!(SourcePath::try_from_relative("C:\\foo\\bar").is_err());
         assert!(SourcePath::try_from_relative("D:/foo/bar").is_err());
     }
-
 }

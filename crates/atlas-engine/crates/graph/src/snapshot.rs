@@ -247,8 +247,6 @@ impl GraphSnapshot {
         Self::from_parts_with_paths(symbols, edges, confidence_threshold, &file_paths)
     }
 
-
-
     /// Build from already-loaded vectors (useful for testing).
     /// All files are treated as non-test (is_test_file = false).
     pub fn from_parts(
@@ -546,8 +544,6 @@ impl GraphSnapshot {
         self.edge_count = self.edges.len();
     }
 
-
-
     // ── lookups ──────────────────────────────────────────────────────────
 
     #[inline]
@@ -777,10 +773,6 @@ impl GraphSnapshot {
         }
         self.shortest_path_weighted(from, to, max_depth, edge_kind_filter, direction)
     }
-
-
-
-
 
     /// Reconstruct a GraphPath from BFS parent pointers.
     /// Walks from `to` backward to `from`, then reverses and computes
@@ -1640,8 +1632,6 @@ pub struct GraphPath {
     /// RegistersCallback edges).
     pub indirect_hops: usize,
 }
-
-
 
 /// Produce a stable identifier for a path's edge set for deduplication.
 fn primary_edge_id(path: &GraphPath) -> Vec<EdgeIx> {

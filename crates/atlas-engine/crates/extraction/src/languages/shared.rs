@@ -110,7 +110,10 @@ impl SymbolDefBuilder {
 
 /// Walk up the AST parent chain from `node` to find the first ancestor
 /// whose kind matches one of `call_kinds`. Checks `node` itself first.
-pub fn find_call_expression<'a>(node: tree_sitter::Node<'a>, call_kinds: &[&str]) -> Option<tree_sitter::Node<'a>> {
+pub fn find_call_expression<'a>(
+    node: tree_sitter::Node<'a>,
+    call_kinds: &[&str],
+) -> Option<tree_sitter::Node<'a>> {
     if call_kinds.contains(&node.kind()) {
         return Some(node);
     }

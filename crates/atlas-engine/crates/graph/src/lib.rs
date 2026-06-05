@@ -41,8 +41,6 @@ impl GraphEngine {
         })
     }
 
-
-
     /// Build from an already-constructed snapshot (for testing).
     pub fn from_snapshot(snapshot: GraphSnapshot) -> Self {
         Self {

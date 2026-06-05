@@ -275,9 +275,10 @@ fn normalize_py_dataflow_builder(
                     .filter(|p| p.kind() == "attribute")
                     .and_then(|p| node_text(p, source))
                     .unwrap_or_else(|| name.clone());
-                let callsite_id = crate::languages::shared::find_call_expression(node, &["call"]).map(|ce| {
-                    types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
-                });
+                let callsite_id = crate::languages::shared::find_call_expression(node, &["call"])
+                    .map(|ce| {
+                        types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+                    });
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&types::ids::SymbolId>,

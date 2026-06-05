@@ -16,9 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
-use atlas_engine::{
-    ExtractionMode, Language, Store, Workspace, guard_against_precision_downgrade,
-};
+use atlas_engine::{Store, Workspace};
 
 /// Controls DB creation and schema-initialisation behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,6 +147,7 @@ impl CommandContext {
 mod tests {
     use super::*;
     use atlas_engine::{CapabilityMask, FileInfo, ParseStatus, source_file_id};
+    use atlas_engine::{ExtractionMode, Language, guard_against_precision_downgrade};
     use tempfile::TempDir;
 
     /// A valid temp directory with no `.atlas/` should succeed with creator modes.
