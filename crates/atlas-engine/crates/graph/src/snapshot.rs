@@ -247,26 +247,7 @@ impl GraphSnapshot {
         Self::from_parts_with_paths(symbols, edges, confidence_threshold, &file_paths)
     }
 
-    /// Load symbols and edges only for specific files (scoped graph).
-    ///
-    /// Useful for targeted graph refresh after lazy structural extraction
-    /// affects a small set of files, or for constructing test graphs.
-    #[allow(dead_code)]
-    pub fn from_files(
-        store: &Store,
-        file_ids: &[FileId],
-        confidence_threshold: f32,
-    ) -> anyhow::Result<Self> {
-        let symbols = store.find_symbols_by_files(file_ids)?;
-        let edges = store.find_edges_for_files(file_ids)?;
-        let file_paths: HashMap<FileId, String> = store
-            .list_files()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|f| (f.file_id, f.path))
-            .collect();
-        Self::from_parts_with_paths(symbols, edges, confidence_threshold, &file_paths)
-    }
+
 
     /// Build from already-loaded vectors (useful for testing).
     /// All files are treated as non-test (is_test_file = false).
@@ -565,36 +546,7 @@ impl GraphSnapshot {
         self.edge_count = self.edges.len();
     }
 
-    /// Experimental: clone snapshot then merge delta nodes/edges from given files.
-    ///
-    /// **WARNING**: Delegates to [`merge_delta_in_place`] which is append-only.
-    /// It adds new symbols/edges but does NOT remove old symbols/edges from
-    /// re-indexed files. Safe ONLY for files that have never been indexed before.
-    /// For re-indexing (changed files), use full [`GraphSnapshot::from_store`].
-    #[allow(dead_code)]
-    pub fn from_store_with_delta(
-        old: &GraphSnapshot,
-        store: &Store,
-        changed_file_ids: &[FileId],
-        confidence_threshold: f32,
-    ) -> anyhow::Result<Self> {
-        let file_paths: HashMap<FileId, String> = store
-            .list_files()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|f| (f.file_id, f.path))
-            .collect();
-        let new_symbols = store.find_symbols_by_files(changed_file_ids)?;
-        let new_edges = store.find_edges_for_files(changed_file_ids)?;
-        let mut new_snapshot = old.clone();
-        new_snapshot.merge_delta_in_place(
-            new_symbols,
-            new_edges,
-            confidence_threshold,
-            &file_paths,
-        );
-        Ok(new_snapshot)
-    }
+
 
     // ── lookups ──────────────────────────────────────────────────────────
 
@@ -826,156 +778,9 @@ impl GraphSnapshot {
         self.shortest_path_weighted(from, to, max_depth, edge_kind_filter, direction)
     }
 
-    /// Standard bidirectional BFS — unchanged behavior, enhanced output.
-    /// Kept for backward compatibility; new code should use
-    /// [`shortest_path_weighted`] for semantically-aware pathfinding.
-    #[allow(dead_code)]
-    fn shortest_path_bfs(
-        &self,
-        from: NodeIx,
-        to: NodeIx,
-        max_depth: usize,
-        edge_kind_filter: Option<&[EdgeKind]>,
-        direction: TraversalDirection,
-    ) -> Option<GraphPath> {
-        let mut visited = vec![false; self.nodes.len()];
-        let mut parent = vec![None; self.nodes.len()];
-        let mut parent_edge = vec![None; self.nodes.len()];
-        let mut queue = VecDeque::new();
 
-        visited[from] = true;
-        queue.push_back((from, 0));
 
-        while let Some((current, depth)) = queue.pop_front() {
-            if current == to {
-                return Some(self.reconstruct_path(from, to, &parent_edge, &parent));
-            }
 
-            if depth >= max_depth {
-                continue;
-            }
-
-            // Build edge lists based on direction constraint
-            let edge_lists: Vec<&Vec<EdgeIx>> = match direction {
-                TraversalDirection::Outgoing => vec![&self.nodes[current].outgoing],
-                TraversalDirection::Incoming => vec![&self.nodes[current].incoming],
-                TraversalDirection::Both => {
-                    vec![&self.nodes[current].outgoing, &self.nodes[current].incoming]
-                }
-            };
-
-            for edge_list in &edge_lists {
-                for &eix in *edge_list {
-                    let edge = &self.edges[eix];
-                    // Apply edge kind filter
-                    if let Some(kinds) = edge_kind_filter {
-                        if !kinds.contains(&edge.kind) {
-                            continue;
-                        }
-                    }
-                    let neighbor = if edge.source_ix == current {
-                        edge.target_ix
-                    } else {
-                        edge.source_ix
-                    };
-                    if !visited[neighbor] {
-                        visited[neighbor] = true;
-                        parent[neighbor] = Some(current);
-                        parent_edge[neighbor] = Some(eix);
-                        queue.push_back((neighbor, depth + 1));
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    /// Production-preferring BFS using a two-queue approach (0-1 BFS).
-    /// Nodes in test files have their exploration deferred behind all
-    /// production nodes at the same depth.
-    /// Kept for backward compatibility; use [`shortest_path_weighted_prod`].
-    #[allow(dead_code)]
-    fn shortest_path_prefer_production(
-        &self,
-        from: NodeIx,
-        to: NodeIx,
-        max_depth: usize,
-        edge_kind_filter: Option<&[EdgeKind]>,
-        direction: TraversalDirection,
-    ) -> Option<GraphPath> {
-        let mut visited = vec![false; self.nodes.len()];
-        let mut parent = vec![None; self.nodes.len()];
-        let mut parent_edge = vec![None; self.nodes.len()];
-
-        // Two queues: primary (production) and secondary (test files)
-        let mut primary_queue: VecDeque<(NodeIx, usize)> = VecDeque::new();
-        let mut secondary_queue: VecDeque<(NodeIx, usize)> = VecDeque::new();
-
-        visited[from] = true;
-        // Push to the appropriate queue based on whether 'from' is test code
-        if self.nodes[from].is_test_file {
-            secondary_queue.push_back((from, 0));
-        } else {
-            primary_queue.push_back((from, 0));
-        }
-
-        loop {
-            // Always drain the primary queue first (production paths)
-            let next = primary_queue
-                .pop_front()
-                .or_else(|| secondary_queue.pop_front());
-            let (current, depth) = match next {
-                Some(x) => x,
-                None => break,
-            };
-
-            if current == to {
-                return Some(self.reconstruct_path(from, to, &parent_edge, &parent));
-            }
-
-            if depth >= max_depth {
-                continue;
-            }
-
-            let edge_lists: Vec<&Vec<EdgeIx>> = match direction {
-                TraversalDirection::Outgoing => vec![&self.nodes[current].outgoing],
-                TraversalDirection::Incoming => vec![&self.nodes[current].incoming],
-                TraversalDirection::Both => {
-                    vec![&self.nodes[current].outgoing, &self.nodes[current].incoming]
-                }
-            };
-
-            for edge_list in &edge_lists {
-                for &eix in *edge_list {
-                    let edge = &self.edges[eix];
-                    if let Some(kinds) = edge_kind_filter {
-                        if !kinds.contains(&edge.kind) {
-                            continue;
-                        }
-                    }
-                    let neighbor = if edge.source_ix == current {
-                        edge.target_ix
-                    } else {
-                        edge.source_ix
-                    };
-                    if !visited[neighbor] {
-                        visited[neighbor] = true;
-                        parent[neighbor] = Some(current);
-                        parent_edge[neighbor] = Some(eix);
-                        // Route to primary or secondary queue based on file type
-                        if self.nodes[neighbor].is_test_file {
-                            secondary_queue.push_back((neighbor, depth + 1));
-                        } else {
-                            primary_queue.push_back((neighbor, depth + 1));
-                        }
-                    }
-                }
-            }
-        }
-
-        None
-    }
 
     /// Reconstruct a GraphPath from BFS parent pointers.
     /// Walks from `to` backward to `from`, then reverses and computes
@@ -1836,32 +1641,7 @@ pub struct GraphPath {
     pub indirect_hops: usize,
 }
 
-impl GraphPath {
-    /// Produce a GraphPath from the inner tuple returned by older APIs.
-    /// Note: direction and breakpoints cannot be reconstructed, so they
-    /// are omitted. Confidence is set to 1.0.
-    #[allow(dead_code)]
-    fn from_raw(node_indices: Vec<NodeIx>, edge_indices: Vec<EdgeIx>) -> Self {
-        let edges: Vec<PathEdge> = edge_indices
-            .iter()
-            .map(|&eix| PathEdge {
-                edge_ix: eix,
-                direction: PathEdgeDirection::Forward,
-            })
-            .collect();
-        let confidence = 1.0;
-        Self {
-            node_indices,
-            edges,
-            confidence,
-            breakpoints: vec![],
-            edge_indices,
-            total_weight: 0.0,
-            test_hops: 0,
-            indirect_hops: 0,
-        }
-    }
-}
+
 
 /// Produce a stable identifier for a path's edge set for deduplication.
 fn primary_edge_id(path: &GraphPath) -> Vec<EdgeIx> {
