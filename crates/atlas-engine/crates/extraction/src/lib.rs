@@ -15,7 +15,6 @@ pub mod callsite_spec;
 pub mod cancel;
 mod cfg_builder;
 mod dataflow_builder;
-mod engine;
 pub mod error;
 mod extract;
 pub(crate) mod extraction_ctx;
