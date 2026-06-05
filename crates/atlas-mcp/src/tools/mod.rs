@@ -28,6 +28,7 @@ use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolI
 
 use serde_json::{Value, json};
 
+use crate::tools::lazy_response::SnapshotStore;
 use crate::tools::query_snapshot::{InvestigationState, QUERY_SNAPSHOT_TTL_SECS, QuerySnapshot};
 
 /// Progress report tuple: (progress, total, message)
@@ -1073,6 +1074,14 @@ impl ToolRouter {
     /// the `source` field when this returns `None`.
     pub(crate) fn read_symbol_source(&self, symbol_id: &SymbolId) -> Option<String> {
         self.source_extractor.extract_source(symbol_id)
+    }
+}
+
+// Implement SnapshotStore for ToolRouter so LazyResponse::build() can store
+// snapshots without knowing the concrete handler type.
+impl SnapshotStore for ToolRouter {
+    fn store_query_snapshot(&mut self, snapshot: QuerySnapshot) {
+        self.store_snapshot(snapshot);
     }
 }
 

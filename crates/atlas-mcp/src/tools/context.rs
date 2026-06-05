@@ -8,8 +8,7 @@
 
 use std::time::Instant;
 
-use super::lazy_response::LazyDiagnostics;
-use super::query_snapshot::{QuerySnapshot, QueryStatus};
+    use super::lazy_response::{LazyDiagnostics, LazyResponse};
 use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str};
 
 use atlas_engine::InvestigationFocus;
@@ -42,7 +41,8 @@ impl ToolRouter {
             tracing::warn!("include_roots: {}", w);
         }
 
-        let query_id = Self::generate_query_id();
+        let lr = LazyResponse::new("symbol", args);
+        let query_id = lr.query_id().to_string();
 
         // Try to find symbol by qname before resolution for initial investigation
         let initial_sid = self
@@ -175,7 +175,7 @@ impl ToolRouter {
                     ));
                 }
 
-                // ── assemble result ────────────────────────────────────────
+                // ── assemble result (body only, without envelope fields) ────
                 let mut result = json!({
                     "symbol": qname,
                     "view": "context",
@@ -187,51 +187,22 @@ impl ToolRouter {
                     "importers": view.importers,
                     "dependencies": view.dependencies,
                     "trail": trail,
-                    "precision_tier": serde_json::to_value(tier).unwrap_or(json!(null)),
                 });
                 if let Some(ss) = subject_source {
                     result["subject_source"] = ss;
                 }
-                if tier != PrecisionTier::Exact {
-                    if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
-                        result["hint"] = json!(hint);
-                    }
-                }
-                // Surface include_roots and lazy-structural warnings to the caller.
-                let mut all_warnings: Vec<String> = root_warnings;
-                all_warnings.extend(lazy_warnings);
-                if !all_warnings.is_empty() {
-                    result["warnings"] = json!(all_warnings);
-                }
-                if let Some(diag) = &lazy_diag {
-                    result["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
-                    result["analysis_contract"] =
-                        serde_json::to_value(&diag.analysis_contract).unwrap_or(json!(null));
-                }
 
-                // Store query snapshot for potential atlas_resume
                 let mut stored_args = args.clone();
                 if let Some(obj) = stored_args.as_object_mut() {
                     obj.insert("view".into(), serde_json::Value::String("context".into()));
                 }
-                self.store_snapshot(QuerySnapshot {
-                    query_id: query_id.clone(),
-                    tool_name: "symbol".into(),
-                    tool_args: stored_args,
-                    lazy_window: None,
-                    created_at: Instant::now(),
-                    status: if tier == PrecisionTier::Exact {
-                        QueryStatus::Ready
-                    } else {
-                        QueryStatus::Partial
-                    },
-                });
-                result["query_id"] = json!(query_id);
 
-                (
-                    serde_json::to_string_pretty(&result).unwrap_or_else(|e| e.to_string()),
-                    false,
-                )
+                lr.with_precision_tier(tier)
+                    .with_root_warnings(root_warnings)
+                    .with_lazy_warnings(lazy_warnings)
+                    .with_lazy_diag(lazy_diag)
+                    .with_is_error(false)
+                    .build_with_args(result, &stored_args, self)
             }
             Err(e) => (format!("Context build error: {e}"), true),
         }

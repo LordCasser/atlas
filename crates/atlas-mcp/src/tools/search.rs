@@ -15,8 +15,7 @@ use atlas_engine::SearchResult;
 use atlas_engine::SymbolKind;
 use atlas_engine::structs::precision::PrecisionTier;
 
-use super::lazy_response::LazyDiagnostics;
-use super::query_snapshot::{QuerySnapshot, QueryStatus};
+use super::lazy_response::{LazyDiagnostics, LazyResponse};
 use super::{
     MAX_QUERY_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt,
     get_u64,
@@ -24,7 +23,6 @@ use super::{
 
 use serde_json::json;
 use std::sync::Arc;
-use std::time::Instant;
 
 // ── MCP response helpers ────────────────────────────────────────────────────
 
@@ -375,7 +373,8 @@ impl ToolRouter {
             tracing::warn!("include_roots: {}", w);
         }
 
-        let query_id = Self::generate_query_id();
+        let lr = LazyResponse::new("symbol", args);
+        let query_id = lr.query_id().to_string();
         let symbols = match self.store.find_symbols_by_qname(qname) {
             Ok(s) => s,
             Err(e) => {
@@ -476,38 +475,19 @@ impl ToolRouter {
         // Surface include_roots and lazy-structural warnings to the caller.
         add_json_warnings(&mut result, root_warnings, lazy_warnings);
 
-        result["precision_tier"] = serde_json::to_value(structural_tier).unwrap_or(json!(null));
-        if structural_tier != PrecisionTier::Exact {
-            if let Some(hint) = atlas_engine::precision::next_action_structural(structural_tier) {
-                result["hint"] = json!(hint);
-            }
-        }
-        if let Some(ref diag) = lazy_diag {
-            result["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
-        }
-        result["query_id"] = json!(query_id);
-
+        // Prepare stored_args for snapshot (add view="detail")
         let mut stored_args = args.clone();
         if let Some(obj) = stored_args.as_object_mut() {
             obj.insert("view".into(), serde_json::Value::String("detail".into()));
         }
-        self.store_snapshot(QuerySnapshot {
-            query_id: query_id.clone(),
-            tool_name: "symbol".into(),
-            tool_args: stored_args,
-            lazy_window: None,
-            created_at: Instant::now(),
-            status: if structural_tier == PrecisionTier::Exact {
-                QueryStatus::Ready
-            } else {
-                QueryStatus::Partial
-            },
-        });
 
-        (
-            serde_json::to_string_pretty(&result).unwrap_or_else(|e| e.to_string()),
-            false,
-        )
+        lr.with_precision_tier(structural_tier)
+            .with_root_warnings(Vec::new()) // already merged via add_json_warnings above
+            .with_lazy_warnings(Vec::new()) // already merged via add_json_warnings above
+            .with_lazy_diag(lazy_diag)
+            .with_analysis_contract(false) // symbol detail does not include analysis_contract
+            .with_is_error(false)
+            .build_with_args(result, &stored_args, self)
     }
 
     // ── helpers ───────────────────────────────────────────────────────────

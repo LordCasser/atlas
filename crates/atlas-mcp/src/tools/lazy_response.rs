@@ -1,16 +1,26 @@
-//! Unified lazy extraction diagnostics for MCP tool responses.
+//! Unified lazy extraction diagnostics and response envelope for MCP tool responses.
 //!
 //! Provides [`LazyDiagnostics`] — a consistent UX contract surfaced in every
 //! tool response that triggers lazy extraction.  Handlers construct diagnostics
 //! from [`LazyOutcome`] (structural) and [`LazyWindow`] (dataflow), and the
 //! serialized JSON includes a `lazy_diagnostics` block with per-layer stats
 //! and a recommended next action.
+//!
+//! Also provides [`LazyResponse`] — a builder that centralizes the common
+//! response envelope pattern shared by "full envelope" tool handlers:
+//! generating a `query_id`, injecting `precision_tier`/`hint`,
+//! merging warnings, adding `lazy_diagnostics`/`analysis_contract`,
+//! and storing a [`super::query_snapshot::QuerySnapshot`].
 
 use atlas_engine::LazyOutcome;
 use atlas_engine::LazyWindow;
+use atlas_engine::precision::next_action_structural;
 use atlas_engine::structs::CapabilityMask;
 use atlas_engine::structs::precision::PrecisionTier;
 use serde::Serialize;
+use serde_json::json;
+
+use super::query_snapshot::{QuerySnapshot, QueryStatus};
 
 /// Unified lazy extraction diagnostics for MCP tool responses.
 ///
@@ -328,6 +338,242 @@ impl LazyLayerDiagnostics {
         } else {
             PrecisionTier::Exact
         }
+    }
+}
+
+// ── SnapshotStore trait ─────────────────────────────────────────────────
+
+/// Trait for storing query snapshots, implemented by [`super::ToolRouter`].
+///
+/// This decouples [`LazyResponse`] from the concrete router type so the
+/// builder can store snapshots without knowing the handler's full context.
+pub(crate) trait SnapshotStore {
+    fn store_query_snapshot(&mut self, snapshot: QuerySnapshot);
+}
+
+// ── LazyResponse builder ──────────────────────────────────────────────
+
+/// Envelope wrapper that adds common lazy-analysis fields to MCP tool
+/// responses.
+///
+/// Eliminates the repeated pattern of generating `query_id`, injecting
+/// `precision_tier`/`hint`, merging warnings, adding
+/// `lazy_diagnostics`/`analysis_contract`, and storing a [`QuerySnapshot`].
+///
+/// # Usage
+///
+/// ```ignore
+/// let lr = LazyResponse::new("trace", args)
+///     .with_structural_keys()          // use structural_precision_tier / structural_hint
+///     .with_precision_tier(tier)
+///     .with_lazy_diag(lazy_diag)
+///     .with_is_error(!resp.ok);
+/// let (json_str, is_error) = lr.build(resp_value, self);
+/// ```
+pub(crate) struct LazyResponse {
+    query_id: String,
+    tool_name: String,
+    tool_args: serde_json::Value,
+    precision_tier: PrecisionTier,
+    tier_key: &'static str,
+    hint_key: &'static str,
+    root_warnings: Vec<String>,
+    lazy_warnings: Vec<String>,
+    lazy_diag: Option<LazyDiagnostics>,
+    inject_analysis_contract: bool,
+    status: Option<QueryStatus>,
+    is_error_override: Option<bool>,
+    partial_result: bool,
+}
+
+impl LazyResponse {
+    /// Create a new `LazyResponse`, generating a fresh `query_id`.
+    ///
+    /// `tool_name` is stored in the [`QuerySnapshot`] for `atlas_resume`.
+    /// `tool_args` is the original MCP arguments (cloned for storage).
+    pub fn new(tool_name: &'static str, tool_args: &serde_json::Value) -> Self {
+        Self {
+            query_id: super::ToolRouter::generate_query_id(),
+            tool_name: tool_name.to_string(),
+            tool_args: tool_args.clone(),
+            precision_tier: PrecisionTier::Exact,
+            tier_key: "precision_tier",
+            hint_key: "hint",
+            root_warnings: Vec::new(),
+            lazy_warnings: Vec::new(),
+            lazy_diag: None,
+            inject_analysis_contract: true,
+            status: None,
+            is_error_override: None,
+            partial_result: false,
+        }
+    }
+
+    /// Access the generated `query_id` (for passing to structural extraction).
+    pub fn query_id(&self) -> &str {
+        &self.query_id
+    }
+
+    /// Switch to structural-style key names: `structural_precision_tier` and
+    /// `structural_hint` (used by trace handlers).
+    pub fn with_structural_keys(mut self) -> Self {
+        self.tier_key = "structural_precision_tier";
+        self.hint_key = "structural_hint";
+        self
+    }
+
+    /// Set the precision tier. The hint is automatically derived via
+    /// [`next_action_structural`] when tier ≠ [`PrecisionTier::Exact`].
+    pub fn with_precision_tier(mut self, tier: PrecisionTier) -> Self {
+        self.precision_tier = tier;
+        self
+    }
+
+    /// Add root warnings (from the primary response, e.g. include_roots).
+    pub fn with_root_warnings(mut self, warnings: Vec<String>) -> Self {
+        self.root_warnings = warnings;
+        self
+    }
+
+    /// Add lazy warnings (from lazy structural extraction).
+    pub fn with_lazy_warnings(mut self, warnings: Vec<String>) -> Self {
+        self.lazy_warnings = warnings;
+        self
+    }
+
+    /// Set lazy diagnostics (which includes `analysis_contract`).
+    pub fn with_lazy_diag(mut self, diag: Option<LazyDiagnostics>) -> Self {
+        self.lazy_diag = diag;
+        self
+    }
+
+    /// Whether to inject `analysis_contract` alongside `lazy_diagnostics`.
+    /// Default is `true`. Set to `false` for handlers that don't include it
+    /// (e.g., `symbol` detail view).
+    pub fn with_analysis_contract(mut self, inject: bool) -> Self {
+        self.inject_analysis_contract = inject;
+        self
+    }
+
+    /// Override the [`QueryStatus`] stored in the snapshot.
+    /// When not set, status is auto-derived from `precision_tier` and
+    /// `partial_result`.
+    #[allow(dead_code)]
+    pub fn with_status(mut self, status: QueryStatus) -> Self {
+        self.status = Some(status);
+        self
+    }
+
+    /// Override the `is_error` flag in the returned tuple.
+    /// When not set, `is_error` is derived from the body's `"ok"` or
+    /// `"error"` field.
+    pub fn with_is_error(mut self, is_error: bool) -> Self {
+        self.is_error_override = Some(is_error);
+        self
+    }
+
+    /// Mark that the result is partial (affects snapshot status).
+    pub fn with_partial_result(mut self, partial: bool) -> Self {
+        self.partial_result = partial;
+        self
+    }
+
+    /// Build the final response: merge envelope fields into `body`, store a
+    /// [`QuerySnapshot`] (using `tool_args` for stored args), and return
+    /// `(json_string, is_error)`.
+    ///
+    /// Envelope fields injected:
+    /// - `precision_tier` (or `structural_precision_tier` if
+    ///   [`with_structural_keys`] was called)
+    /// - `hint` (or `structural_hint`), only when tier ≠ Exact
+    /// - `warnings` (merged root + lazy, only when non-empty)
+    /// - `lazy_diagnostics`
+    /// - `analysis_contract` (when `inject_analysis_contract` is true and
+    ///   lazy_diag is Some)
+    /// - `query_id`
+pub fn build(
+        self,
+        body: serde_json::Value,
+        store: &mut impl SnapshotStore,
+    ) -> (String, bool) {
+        let args = self.tool_args.clone();
+        self.build_with_args(body, &args, store)
+    }
+
+    /// Build the final response with custom stored args for the snapshot.
+    ///
+    /// Use this when the snapshot args differ from the original tool args
+    /// (e.g., symbol detail adds `"view": "detail"`).
+    pub fn build_with_args(
+        self,
+        mut body: serde_json::Value,
+        stored_args: &serde_json::Value,
+        store: &mut impl SnapshotStore,
+    ) -> (String, bool) {
+        // 1. Inject precision tier
+        body[self.tier_key] = serde_json::to_value(self.precision_tier).unwrap_or(json!(null));
+
+        // 2. Inject hint when tier ≠ Exact
+        if self.precision_tier != PrecisionTier::Exact {
+            if let Some(hint) = next_action_structural(self.precision_tier) {
+                body[self.hint_key] = json!(hint);
+            }
+        }
+
+        // 3. Merge warnings into JSON "warnings" array (only when non-empty)
+        let mut all_warnings = self.root_warnings;
+        all_warnings.extend(self.lazy_warnings);
+        if !all_warnings.is_empty() {
+            body["warnings"] = serde_json::Value::Array(
+                all_warnings
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            );
+        }
+
+        // 4. Inject lazy_diagnostics and optionally analysis_contract
+        if let Some(ref diag) = self.lazy_diag {
+            body["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
+            if self.inject_analysis_contract {
+                body["analysis_contract"] =
+                    serde_json::to_value(&diag.analysis_contract).unwrap_or(json!(null));
+            }
+        }
+
+        // 5. Inject query_id
+        body["query_id"] = json!(self.query_id);
+
+        // 6. Store snapshot
+        let status = self.status.unwrap_or_else(|| {
+            if self.precision_tier == PrecisionTier::Exact && !self.partial_result {
+                QueryStatus::Ready
+            } else {
+                QueryStatus::Partial
+            }
+        });
+        store.store_query_snapshot(QuerySnapshot {
+            query_id: self.query_id,
+            tool_name: self.tool_name,
+            tool_args: stored_args.clone(),
+            lazy_window: None,
+            created_at: std::time::Instant::now(),
+            status,
+        });
+
+        // 7. Determine is_error
+        let is_error = self.is_error_override.unwrap_or_else(|| {
+            body.get("ok")
+                .and_then(|v| v.as_bool())
+                .map(|b| !b)
+                .or_else(|| body.get("error").map(|_| true))
+                .unwrap_or(false)
+        });
+
+        (
+            serde_json::to_string_pretty(&body).unwrap_or_else(|e| e.to_string()),
+            is_error,
+        )
     }
 }
 

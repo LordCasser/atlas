@@ -2,13 +2,10 @@
 //! traversal.  Includes transparent lazy structural extraction with progress
 //! notifications to prevent MCP timeout during on-demand extraction.
 
-use std::time::Instant;
-
 use atlas_engine::SymbolId;
 use atlas_engine::{InvestigationFocus, TraceQueryResponse};
 
-use super::lazy_response::{LazyDiagnostics, LazyLayerDiagnostics};
-use super::query_snapshot::{QuerySnapshot, QueryStatus};
+use super::lazy_response::{LazyDiagnostics, LazyLayerDiagnostics, LazyResponse};
 use super::{
     MAX_FILE_PATH_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str, get_str_opt, get_u64,
     resolve_file_id, warnings_to_trace_diagnostics,
@@ -94,7 +91,8 @@ impl ToolRouter {
             col: column,
         });
         let investigation = self.investigation_state.active_investigation.clone();
-        let query_id = Self::generate_query_id();
+        let lr = LazyResponse::new("trace", args);
+        let query_id = lr.query_id().to_string();
 
         // Ensure structural before tracing
         let outcome = self.ensure_structural_for_files(
@@ -131,39 +129,14 @@ impl ToolRouter {
         let is_error = !resp.ok;
 
         let tier = outcome.precision_tier;
-        let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
-        resp_value["structural_precision_tier"] = serde_json::to_value(tier).unwrap_or(json!(null));
-        if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
-            if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
-                resp_value["structural_hint"] = json!(hint);
-            }
-        }
-        if let Some(ref diag) = lazy_diag {
-            resp_value["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
-            resp_value["analysis_contract"] =
-                serde_json::to_value(&diag.analysis_contract).unwrap_or(json!(null));
-        }
+        let resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
 
-        // Store query snapshot for potential atlas_resume
-        let all_complete = tier == atlas_engine::structs::precision::PrecisionTier::Exact;
-        self.store_snapshot(QuerySnapshot {
-            query_id: query_id.clone(),
-            tool_name: "trace".into(),
-            tool_args: args.clone(),
-            lazy_window: None, // trace_point only triggers structural, not dataflow
-            created_at: Instant::now(),
-            status: if all_complete {
-                QueryStatus::Ready
-            } else {
-                QueryStatus::Partial
-            },
-        });
-        resp_value["query_id"] = json!(query_id);
-
-        (
-            serde_json::to_string_pretty(&resp_value).unwrap_or_else(|e| e.to_string()),
-            is_error,
-        )
+        lr.with_structural_keys()
+            .with_precision_tier(tier)
+            .with_lazy_diag(lazy_diag)
+            .with_partial_result(resp.partial_result)
+            .with_is_error(is_error)
+            .build(resp_value, self)
     }
 
     pub(crate) fn handle_trace_variable(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -241,7 +214,8 @@ impl ToolRouter {
             col: column,
         });
         let investigation = self.investigation_state.active_investigation.clone();
-        let query_id = Self::generate_query_id();
+        let lr = LazyResponse::new("trace", args);
+        let query_id = lr.query_id().to_string();
 
         // Ensure structural before tracing
         let outcome = self.ensure_structural_for_files(
@@ -305,40 +279,14 @@ impl ToolRouter {
         let is_error = !resp.ok;
 
         let tier = outcome.precision_tier;
-        let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
-        resp_value["structural_precision_tier"] = serde_json::to_value(tier).unwrap_or(json!(null));
-        if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
-            if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
-                resp_value["structural_hint"] = json!(hint);
-            }
-        }
-        if let Some(ref diag) = combined_lazy_diag {
-            resp_value["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
-            resp_value["analysis_contract"] =
-                serde_json::to_value(&diag.analysis_contract).unwrap_or(json!(null));
-        }
+        let resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
 
-        // Store query snapshot for potential atlas_resume
-        let all_complete =
-            tier == atlas_engine::structs::precision::PrecisionTier::Exact && !resp.partial_result;
-        self.store_snapshot(QuerySnapshot {
-            query_id: query_id.clone(),
-            tool_name: "trace".into(),
-            tool_args: args.clone(),
-            lazy_window: None,
-            created_at: Instant::now(),
-            status: if all_complete {
-                QueryStatus::Ready
-            } else {
-                QueryStatus::Partial
-            },
-        });
-        resp_value["query_id"] = json!(query_id);
-
-        (
-            serde_json::to_string_pretty(&resp_value).unwrap_or_else(|e| e.to_string()),
-            is_error,
-        )
+        lr.with_structural_keys()
+            .with_precision_tier(tier)
+            .with_lazy_diag(combined_lazy_diag)
+            .with_partial_result(resp.partial_result)
+            .with_is_error(is_error)
+            .build(resp_value, self)
     }
 
     pub(crate) fn handle_trace_caller_path(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -376,7 +324,8 @@ impl ToolRouter {
         let mut structural_tier = atlas_engine::structs::precision::PrecisionTier::Exact;
         let mut lazy_diag: Option<LazyDiagnostics> = None;
 
-        let query_id = Self::generate_query_id();
+        let lr = LazyResponse::new("trace", args);
+        let query_id = lr.query_id().to_string();
 
         // Auto-detect symbol: try hex parse first, then qname resolution.
         let is_hex = symbol.len() >= 8 && symbol.chars().all(|c| c.is_ascii_hexdigit());
@@ -472,41 +421,13 @@ impl ToolRouter {
         ));
         resp.partial_result = resp.partial_result || lazy_partial;
 
-        let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
-        resp_value["structural_precision_tier"] =
-            serde_json::to_value(structural_tier).unwrap_or(json!(null));
-        if structural_tier != atlas_engine::structs::precision::PrecisionTier::Exact {
-            if let Some(hint) = atlas_engine::precision::next_action_structural(structural_tier) {
-                resp_value["structural_hint"] = json!(hint);
-            }
-        }
-        if let Some(ref diag) = lazy_diag {
-            resp_value["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
-            resp_value["analysis_contract"] =
-                serde_json::to_value(&diag.analysis_contract).unwrap_or(json!(null));
-        }
+        let resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
 
-        // Store query snapshot for potential atlas_resume
-        let all_complete =
-            structural_tier == atlas_engine::structs::precision::PrecisionTier::Exact;
-        self.store_snapshot(QuerySnapshot {
-            query_id: query_id.clone(),
-            tool_name: "trace".into(),
-            tool_args: args.clone(),
-            lazy_window: None,
-            created_at: Instant::now(),
-            status: if all_complete {
-                QueryStatus::Ready
-            } else {
-                QueryStatus::Partial
-            },
-        });
-        resp_value["query_id"] = json!(query_id);
-
-        (
-            serde_json::to_string_pretty(&resp_value).unwrap_or_else(|e| e.to_string()),
-            is_error,
-        )
+        lr.with_structural_keys()
+            .with_precision_tier(structural_tier)
+            .with_lazy_diag(lazy_diag)
+            .with_is_error(is_error)
+            .build(resp_value, self)
     }
 
     pub(crate) fn handle_trace_forward(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -555,7 +476,8 @@ impl ToolRouter {
         let mut structural_tier = atlas_engine::structs::precision::PrecisionTier::Exact;
         let mut lazy_diag: Option<LazyDiagnostics> = None;
 
-        let query_id = Self::generate_query_id();
+        let lr = LazyResponse::new("trace", args);
+        let query_id = lr.query_id().to_string();
 
         // Auto-detect from/to: try hex parse first, then qname resolution.
         let mut resolve_to_id = |input: &str, field: &str| -> Result<SymbolId, String> {
@@ -586,6 +508,7 @@ impl ToolRouter {
                     // Re-query after lazy extraction
                     match self.store.find_symbols_by_qname(input) {
                         Ok(refs) if !refs.is_empty() => Ok(refs[0].id),
+                        Err(e) => Err(format!("Lookup error: {e}")),
                         _ => Err(format!(
                             "Symbol not found: '{input}'. The '{field}' parameter accepts both hex SymbolIds and qualified names. Try 'search' first to discover the correct qualified name."
                         )),
@@ -656,40 +579,12 @@ impl ToolRouter {
         ));
         resp.partial_result = resp.partial_result || lazy_partial;
 
-        let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
-        resp_value["structural_precision_tier"] =
-            serde_json::to_value(structural_tier).unwrap_or(json!(null));
-        if structural_tier != atlas_engine::structs::precision::PrecisionTier::Exact {
-            if let Some(hint) = atlas_engine::precision::next_action_structural(structural_tier) {
-                resp_value["structural_hint"] = json!(hint);
-            }
-        }
-        if let Some(ref diag) = lazy_diag {
-            resp_value["lazy_diagnostics"] = serde_json::to_value(diag).unwrap_or(json!(null));
-            resp_value["analysis_contract"] =
-                serde_json::to_value(&diag.analysis_contract).unwrap_or(json!(null));
-        }
+        let resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
 
-        // Store query snapshot for potential atlas_resume
-        let all_complete =
-            structural_tier == atlas_engine::structs::precision::PrecisionTier::Exact;
-        self.store_snapshot(QuerySnapshot {
-            query_id: query_id.clone(),
-            tool_name: "trace".into(),
-            tool_args: args.clone(),
-            lazy_window: None,
-            created_at: Instant::now(),
-            status: if all_complete {
-                QueryStatus::Ready
-            } else {
-                QueryStatus::Partial
-            },
-        });
-        resp_value["query_id"] = json!(query_id);
-
-        (
-            serde_json::to_string_pretty(&resp_value).unwrap_or_else(|e| e.to_string()),
-            is_error,
-        )
+        lr.with_structural_keys()
+            .with_precision_tier(structural_tier)
+            .with_lazy_diag(lazy_diag)
+            .with_is_error(is_error)
+            .build(resp_value, self)
     }
 }
