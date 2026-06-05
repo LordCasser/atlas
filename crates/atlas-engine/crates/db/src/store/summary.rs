@@ -109,7 +109,14 @@ impl SummaryStore {
     ///
     /// `build_fn` receives `&dyn TraceStore` and a function `SymbolId` and
     /// must return a `FunctionSummary`.
-    pub fn build_all<F>(store: &Store, build_fn: F) -> anyhow::Result<SummaryBuildStats>
+    ///
+    /// `on_progress` (optional) is called every 100 functions with the
+    /// number completed so far.
+    pub fn build_all<F>(
+        store: &Store,
+        build_fn: F,
+        on_progress: Option<&(dyn Fn(u64) + Sync)>,
+    ) -> anyhow::Result<SummaryBuildStats>
     where
         F: Fn(&dyn TraceStore, &SymbolId) -> anyhow::Result<FunctionSummary>,
     {
@@ -145,7 +152,7 @@ impl SummaryStore {
         // acquire the write lock in Phase 2 solely for persisting them —
         // without any nested lock_read() calls.
         let mut results: Vec<(SymbolId, FunctionSummary)> = Vec::with_capacity(total);
-        for sym in &function_symbols {
+        for (idx, sym) in function_symbols.iter().enumerate() {
             match build_fn(store, &sym.id) {
                 Ok(summary) => {
                     if summary.is_empty() {
@@ -156,6 +163,12 @@ impl SummaryStore {
                 }
                 Err(_) => {
                     stats.functions_skipped += 1;
+                }
+            }
+            // Report progress every 100 functions or on the last one
+            if idx % 100 == 0 || idx + 1 == total {
+                if let Some(ref cb) = on_progress {
+                    cb((idx + 1) as u64);
                 }
             }
         }
@@ -814,7 +827,7 @@ mod tests {
         };
         store.insert_symbols(&[fn_a.clone(), fn_b.clone(), not_a_fn])?;
 
-        let stats = SummaryStore::build_all(&store, |_s, fid| Ok(test_summary(fid, &file_id)))?;
+        let stats = SummaryStore::build_all(&store, |_s, fid| Ok(test_summary(fid, &file_id)), None)?;
 
         // Should process exactly 2 functions, skipping the Class
         assert_eq!(
@@ -890,7 +903,7 @@ mod tests {
         let stats = SummaryStore::build_all(&store, |ts, _fid| {
             let _sym = ts.find_symbol_by_id(_fid)?;
             Ok(test_summary(_fid, &file_id))
-        })?;
+        }, None)?;
 
         assert_eq!(stats.functions_processed, 1);
         assert_eq!(stats.functions_summarized, 1);

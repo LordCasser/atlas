@@ -33,7 +33,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use db::Store;
@@ -44,6 +44,7 @@ use extraction::{
 use graph::GraphBuilder;
 use resolution::{PathAliasConfig, ReferenceResolver};
 use types::{FileFacts, FileId, Language};
+use types::progress::ProgressState;
 
 use crate::cleanup::{clean_stale_file_ids, clean_stale_file_paths, source_file_id};
 use crate::dirty::{DirtySet, build_dirty_set_for_mode};
@@ -130,8 +131,9 @@ pub fn phase_dirty_check(
     discovered: &[PathBuf],
     root: &Path,
     mode: &ExtractionMode,
+    on_progress: Option<&(dyn Fn(u64) + Sync)>,
 ) -> Result<DirtySet> {
-    build_dirty_set_for_mode(store, discovered, root, mode)
+    build_dirty_set_for_mode(store, discovered, root, mode, on_progress)
 }
 
 // ── Phase 3: Stale cleanup ─────────────────────────────────────────────
@@ -495,7 +497,11 @@ pub fn phase_write_batched(
 /// changed since the last index; if so, invalidates all resolved references
 /// and deletes all existing edges before re-resolving.  Resolution itself
 /// runs in parallel via [`ReferenceResolver::resolve_all_parallel`].
-pub fn phase_resolve_and_build(store: &Arc<Store>, root: &Path) -> Result<GraphResult> {
+pub fn phase_resolve_and_build(
+    store: &Arc<Store>,
+    root: &Path,
+    progress: Option<&Arc<Mutex<ProgressState>>>,
+) -> Result<GraphResult> {
     let path_alias = PathAliasConfig::resolver(root);
     if PathAliasConfig::has_changed(store, root)? {
         store.invalidate_all_references()?;
@@ -503,7 +509,7 @@ pub fn phase_resolve_and_build(store: &Arc<Store>, root: &Path) -> Result<GraphR
     }
     let mut resolver = ReferenceResolver::with_path_alias(store.clone(), path_alias);
     let (resolved_refs, res_stats) = resolver
-        .resolve_all_parallel(store.clone(), None, None)
+        .resolve_all_parallel(store.clone(), progress, None)
         .context("Reference resolution failed")?;
     let builder = GraphBuilder::new(store.clone());
     let build_stats = builder.build_all(&resolved_refs);
@@ -523,10 +529,13 @@ pub fn phase_materialize_annotations(store: &Arc<Store>) -> Result<()> {
 /// Build persistent function summaries (Schema v3 / analysis surface).
 ///
 /// Returns the number of functions summarised.
-pub fn phase_build_summaries(store: &Arc<Store>) -> Result<usize> {
+pub fn phase_build_summaries(
+    store: &Arc<Store>,
+    on_progress: Option<&(dyn Fn(u64) + Sync)>,
+) -> Result<usize> {
     let stats = db::summary::SummaryStore::build_all(store, |s, fid| {
         analysis::summary::SummaryBuilder::build(s, fid, None)
-    })
+    }, on_progress)
     .context("Failed to build summaries")?;
 
     // Record "summaries" layer in extraction_state so get_capability_mask()

@@ -16,6 +16,8 @@
 
 use crate::index_pipeline::{IndexProgress, IndexProgressCallback};
 use std::fmt;
+use std::sync::{Arc, Mutex};
+use types::progress::ProgressState;
 
 // ── ProgressEvent ──────────────────────────────────────────────────────────
 
@@ -114,6 +116,16 @@ impl fmt::Display for PhaseName {
 pub trait ProgressSink: Send + Sync {
     /// Receive a progress event.
     fn emit(&self, event: ProgressEvent);
+
+    /// Returns an optional reference to the internal [`ProgressState`]
+    /// that this sink manages. Default returns `None`.
+    ///
+    /// This allows phase functions that use [`ProgressState`] natively
+    /// (e.g. the parallel resolver) to update progress directly without
+    /// going through [`ProgressEvent::ItemProgress`] translation.
+    fn progress_state(&self) -> Option<&Arc<Mutex<ProgressState>>> {
+        None
+    }
 }
 
 // ── Built-in implementations ───────────────────────────────────────────────
@@ -187,6 +199,15 @@ impl ProgressSink for MultiplexSink {
         for child in &self.children {
             child.emit(event.clone());
         }
+    }
+
+    fn progress_state(&self) -> Option<&Arc<Mutex<ProgressState>>> {
+        for child in &self.children {
+            if let Some(ps) = child.progress_state() {
+                return Some(ps);
+            }
+        }
+        None
     }
 }
 

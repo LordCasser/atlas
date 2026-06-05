@@ -239,6 +239,10 @@ impl ProgressSink for CliProgressSink {
             }
         }
     }
+
+    fn progress_state(&self) -> Option<&Arc<Mutex<ProgressState>>> {
+        Some(&self.progress)
+    }
 }
 
 /// Map the pipeline's [`PhaseName`] to the TUI-facing [`ProgressPhase`].

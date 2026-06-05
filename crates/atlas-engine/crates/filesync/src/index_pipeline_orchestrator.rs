@@ -13,6 +13,7 @@ use anyhow::Result;
 use db::Store;
 #[cfg(test)]
 use extraction::ExtractionMode;
+use types::SymbolKind;
 
 use crate::cleanup::source_file_id;
 use crate::index_phases::{
@@ -119,11 +120,20 @@ impl IndexPipeline {
             phase: PhaseName::HashCheck,
             total: discovered.len() as u64,
         });
+
+        let on_hash_progress = |completed: u64| {
+            sink.emit(ProgressEvent::ItemProgress {
+                phase: PhaseName::HashCheck,
+                completed,
+            });
+        };
+
         let dirty_set = match phase_dirty_check(
             &self.store,
             &discovered,
             &self.project_root,
             &self.options.mode,
+            Some(&on_hash_progress),
         ) {
             Ok(ds) => ds,
             Err(e) => {
@@ -326,11 +336,21 @@ impl IndexPipeline {
         // ── Phase 7: Resolution (Structural / Full only) ────────────────
         if self.options.mode.produces_references() {
             check_cancelled!();
+
+            // Get unresolved count for progress total
+            let unresolved_total = self
+                .store
+                .find_unresolved_references()
+                .map(|refs| refs.len() as u64)
+                .unwrap_or(0);
+
             sink.emit(ProgressEvent::PhaseStarted {
                 phase: PhaseName::Resolution,
-                total: 0,
+                total: unresolved_total,
             });
-            let graph_result = match phase_resolve_and_build(&self.store, &self.project_root) {
+
+            let ps = sink.progress_state();
+            let graph_result = match phase_resolve_and_build(&self.store, &self.project_root, ps) {
                 Ok(gr) => gr,
                 Err(e) => {
                     sink.emit(ProgressEvent::Warning {
@@ -382,11 +402,27 @@ impl IndexPipeline {
         // ── Phase 9: Build summaries (Full mode only) ───────────────────
         if self.options.mode.produces_dataflow() {
             check_cancelled!();
+
+            // Get function count for progress total
+            let all_symbols = self.store.get_all_symbols().unwrap_or_default();
+            let function_count = all_symbols
+                .iter()
+                .filter(|s| s.kind == SymbolKind::Function)
+                .count() as u64;
+
             sink.emit(ProgressEvent::PhaseStarted {
                 phase: PhaseName::SummaryBuild,
-                total: 0,
+                total: function_count,
             });
-            match phase_build_summaries(&self.store) {
+
+            let on_summary_progress = |completed: u64| {
+                sink.emit(ProgressEvent::ItemProgress {
+                    phase: PhaseName::SummaryBuild,
+                    completed,
+                });
+            };
+
+            match phase_build_summaries(&self.store, Some(&on_summary_progress)) {
                 Ok(n) => {
                     sink.emit(ProgressEvent::PhaseFinished {
                         phase: PhaseName::SummaryBuild,

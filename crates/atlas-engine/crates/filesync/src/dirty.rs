@@ -27,7 +27,7 @@ pub struct DirtySet {
 /// `discovered` must contain project-relative paths. Paths that cannot be
 /// normalized as [`SourcePath`] are ignored, matching extraction behavior.
 pub fn build_dirty_set(store: &Store, discovered: &[PathBuf], root: &Path) -> Result<DirtySet> {
-    build_dirty_set_with_required_capability(store, discovered, root, CapabilityMask::default())
+    build_dirty_set_with_required_capability(store, discovered, root, CapabilityMask::default(), None)
 }
 
 /// Compute changed files for a target extraction mode.
@@ -41,12 +41,14 @@ pub fn build_dirty_set_for_mode(
     discovered: &[PathBuf],
     root: &Path,
     mode: &ExtractionMode,
+    on_progress: Option<&(dyn Fn(u64) + Sync)>,
 ) -> Result<DirtySet> {
     build_dirty_set_with_required_capability(
         store,
         discovered,
         root,
         required_capability_for_mode(mode),
+        on_progress,
     )
 }
 
@@ -55,6 +57,7 @@ fn build_dirty_set_with_required_capability(
     discovered: &[PathBuf],
     root: &Path,
     required: CapabilityMask,
+    on_progress: Option<&(dyn Fn(u64) + Sync)>,
 ) -> Result<DirtySet> {
     let current_hashes: HashMap<String, String> = discovered
         .par_iter()
@@ -79,8 +82,9 @@ fn build_dirty_set_with_required_capability(
     let mut dirty = Vec::new();
     let mut clean_count = 0usize;
     let discovered_set: HashSet<String> = current_hashes.keys().cloned().collect();
+    let total = discovered.len();
 
-    for rel_path in discovered {
+    for (idx, rel_path) in discovered.iter().enumerate() {
         let key = match SourcePath::try_from_relative(&rel_path.to_string_lossy()) {
             Ok(sp) => sp.as_str().to_string(),
             Err(_) => continue,
@@ -112,6 +116,12 @@ fn build_dirty_set_with_required_capability(
                 } else {
                     dirty.push(rel_path.clone());
                 }
+            }
+        }
+        // Report progress every 50 files or on the last file
+        if idx % 50 == 0 || idx + 1 == total {
+            if let Some(ref cb) = on_progress {
+                cb((idx + 1) as u64);
             }
         }
     }
@@ -202,6 +212,7 @@ mod tests {
             &[path.clone()],
             dir.path(),
             &ExtractionMode::Structural,
+            None,
         )
         .unwrap();
 
@@ -244,10 +255,11 @@ mod tests {
             &[path.clone()],
             dir.path(),
             &ExtractionMode::Structural,
+            None,
         )
         .unwrap();
         let full =
-            build_dirty_set_for_mode(&store, &[path], dir.path(), &ExtractionMode::Full).unwrap();
+            build_dirty_set_for_mode(&store, &[path], dir.path(), &ExtractionMode::Full, None).unwrap();
 
         assert!(structural.dirty.is_empty());
         assert_eq!(structural.clean_count, 1);

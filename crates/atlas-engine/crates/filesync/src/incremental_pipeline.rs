@@ -347,10 +347,17 @@ impl IncrementalPipeline {
                 sink.emit(ProgressEvent::Cancelled { last_phase: phase });
                 return Ok(stats);
             }
-            sink.emit(ProgressEvent::PhaseStarted { phase, total: 0 });
 
+            let unresolved_total = self
+                .store
+                .find_unresolved_references()
+                .map(|refs| refs.len() as u64)
+                .unwrap_or(0);
+            sink.emit(ProgressEvent::PhaseStarted { phase, total: unresolved_total });
+
+            let ps = sink.progress_state();
             let graph_result =
-                phase_resolve_and_build(&self.store, &self.project_root).map_err(|e| {
+                phase_resolve_and_build(&self.store, &self.project_root, ps).map_err(|e| {
                     sink.emit(ProgressEvent::Warning {
                         phase,
                         message: format!("{:#}", e),
@@ -402,7 +409,6 @@ impl IncrementalPipeline {
                 sink.emit(ProgressEvent::Cancelled { last_phase: phase });
                 return Ok(stats);
             }
-            sink.emit(ProgressEvent::PhaseStarted { phase, total: 0 });
 
             let total_indexed = self.store.count_files().unwrap_or(0);
             let changed_count = changed.modified.len() + changed.added.len();
@@ -416,7 +422,23 @@ impl IncrementalPipeline {
                         changed_count, total_indexed
                     ),
                 });
-                let full_summaries = phase_build_summaries(&self.store).map_err(|e| {
+
+                // Get function count for progress total
+                let all_symbols = self.store.get_all_symbols().unwrap_or_default();
+                let function_count = all_symbols
+                    .iter()
+                    .filter(|s| s.kind == SymbolKind::Function)
+                    .count() as u64;
+                sink.emit(ProgressEvent::PhaseStarted { phase, total: function_count });
+
+                let on_progress = |completed: u64| {
+                    sink.emit(ProgressEvent::ItemProgress {
+                        phase,
+                        completed,
+                    });
+                };
+
+                let full_summaries = phase_build_summaries(&self.store, Some(&on_progress)).map_err(|e| {
                     sink.emit(ProgressEvent::Warning {
                         phase,
                         message: format!("Failed to build summaries: {:#}", e),
@@ -434,6 +456,7 @@ impl IncrementalPipeline {
                 });
             } else {
                 // Scoped: rebuild summaries only for changed functions.
+                sink.emit(ProgressEvent::PhaseStarted { phase, total: 0 });
                 let changed_rel: Vec<PathBuf> = modified_rel
                     .iter()
                     .chain(added_rel.iter())
