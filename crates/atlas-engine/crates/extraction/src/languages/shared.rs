@@ -8,8 +8,40 @@
 //!
 //! The builder handles step (4) — SymbolId generation and default field
 //! population — so adapters only express what varies.
+//!
+//! ## make_binding_def
+//! Reduces boilerplate in language adapters' dataflow normalize functions.
+//! All adapters construct `BindingDef` with the same pattern: generate a
+//! deterministic `ScopeId` and `BindingId`, then fill in default fields
+//! (`function_id: None`, `symbol_id: None`). The helper centralizes this
+//! so adapters only need to provide `file_id`, `kind`, `name`, and `range`.
 
 use types::*;
+
+/// Construct a `BindingDef` with default fields, reducing boilerplate in
+/// language adapters' dataflow normalize functions.
+///
+/// Generates deterministic `ScopeId` and `BindingId` from the provided
+/// fields, and sets `function_id` and `symbol_id` to `None`.
+pub fn make_binding_def(
+    file_id: FileId,
+    kind: BindingKind,
+    name: String,
+    range: TextRange,
+) -> BindingDef {
+    let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
+    let id = BindingId::generate(&file_id, &scope_id, kind.as_str(), &name, range.start_byte);
+    BindingDef {
+        id,
+        file_id,
+        function_id: None,
+        scope_id,
+        kind,
+        name,
+        symbol_id: None,
+        range,
+    }
+}
 
 /// Builder for `SymbolDef` — standardizes the repetitive construction
 /// pattern shared by all language adapters.

@@ -3,6 +3,7 @@
 //! Uses tree-sitter-python grammar and embedded query files.
 
 use crate::languages::{node_range, node_text};
+use crate::languages::shared::make_binding_def;
 use types::*;
 
 use crate::frontend::{
@@ -748,18 +749,7 @@ fn normalize_py_lexical(
     let kind = py_binding_kind(capture_name)?;
     let name = node_text(node, source)?;
     let range = node_range(node);
-    let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
-    let id = BindingId::generate(&file_id, &scope_id, kind.as_str(), &name, range.start_byte);
-    Some(BindingDef {
-        id,
-        file_id,
-        function_id: None,
-        scope_id,
-        kind,
-        name,
-        symbol_id: None,
-        range,
-    })
+    Some(make_binding_def(file_id, kind, name, range))
 }
 
 #[cfg(test)]

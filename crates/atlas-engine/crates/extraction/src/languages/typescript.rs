@@ -7,6 +7,7 @@
 //! DataflowSpec) via shared private normalize helpers.
 
 use crate::languages::{node_range, node_text};
+use crate::languages::shared::make_binding_def;
 
 use crate::frontend::{
     Capture, DataflowSpec, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, NoOpRecovery,
@@ -287,29 +288,7 @@ pub(crate) fn normalize_ts_lexical(
     let kind = ts_binding_kind(capture_name)?;
     let name = node_text(node, source)?;
     let range = node_range(node);
-    let scope_id = types::ids::ScopeId::generate(
-        &file_id,
-        None::<&types::ids::ScopeId>,
-        kind.as_str(),
-        range.start_byte,
-    );
-    let id = types::ids::BindingId::generate(
-        &file_id,
-        &scope_id,
-        kind.as_str(),
-        &name,
-        range.start_byte,
-    );
-    Some(BindingDef {
-        id,
-        file_id,
-        function_id: None,
-        scope_id,
-        kind,
-        name,
-        symbol_id: None,
-        range,
-    })
+    Some(make_binding_def(file_id, kind, name, range))
 }
 
 /// Check if a tree-sitter identifier node is a declaration name, property name,

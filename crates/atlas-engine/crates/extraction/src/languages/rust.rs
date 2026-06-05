@@ -14,7 +14,7 @@ use crate::frontend::{
     LexicalBindingSpec, NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec,
     ScopeExtractorSpec, SymbolExtractorSpec,
 };
-use crate::languages::shared::SymbolDefBuilder;
+use crate::languages::shared::{make_binding_def, SymbolDefBuilder};
 use std::collections::HashMap;
 use types::bindings::BindingDef;
 use types::capability::FeatureSupport;
@@ -540,18 +540,7 @@ fn normalize_rust_lexical(
     let kind = rust_binding_kind(capture_name)?;
     let name = node_text(node, source)?;
     let range = node_range(node);
-    let scope_id = ScopeId::generate(&file_id, None::<&ScopeId>, kind.as_str(), range.start_byte);
-    let id = BindingId::generate(&file_id, &scope_id, kind.as_str(), &name, range.start_byte);
-    Some(BindingDef {
-        id,
-        file_id,
-        function_id: None,
-        scope_id,
-        kind,
-        name,
-        symbol_id: None,
-        range,
-    })
+    Some(make_binding_def(file_id, kind, name, range))
 }
 
 // ── Dataflow normalize ─────────────────────────────────────────────────
