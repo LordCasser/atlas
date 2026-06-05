@@ -7,7 +7,7 @@
 //! - `cleanup_fn`: functions that perform cleanup
 
 use super::super::learning::{LearnedRuleCandidate, LearningEvidence, RuleLearningStrategy};
-use super::super::registry::{LanguageRuleKinds, RuleKindSpec, RuleValidationResult};
+use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
 
 use db::Store;
@@ -19,6 +19,10 @@ pub struct CRegistry;
 impl LanguageRuleKinds for CRegistry {
     fn language(&self) -> &'static str {
         "c"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "C/C++"
     }
 
     fn known_rule_kinds(&self) -> &'static [RuleKindSpec] {
@@ -95,10 +99,6 @@ impl LanguageRuleKinds for CRegistry {
                 updated_at: now.clone(),
             })
             .collect()
-    }
-
-    fn validate_rule(&self, rule: &DomainRule) -> RuleValidationResult {
-        crate::registry::default_validate_rule(self.known_rule_kinds(), "C/C++", rule)
     }
 }
 
@@ -230,6 +230,7 @@ fn match_alloc_pattern(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::super::registry::RuleValidationResult;
 
     #[test]
     fn test_builtin_rules() {

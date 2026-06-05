@@ -7,7 +7,7 @@
 //! - `ts/cleanup_return`: return function from useEffect for cleanup (not yet implemented)
 
 use super::super::learning::{LearnedRuleCandidate, RuleLearningStrategy};
-use super::super::registry::{LanguageRuleKinds, RuleKindSpec, RuleValidationResult};
+use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
 
 use db::Store;
@@ -19,6 +19,10 @@ pub struct TypeScriptRegistry;
 impl LanguageRuleKinds for TypeScriptRegistry {
     fn language(&self) -> &'static str {
         "typescript"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "TypeScript"
     }
 
     fn known_rule_kinds(&self) -> &'static [RuleKindSpec] {
@@ -105,10 +109,6 @@ impl LanguageRuleKinds for TypeScriptRegistry {
             })
             .collect()
     }
-
-    fn validate_rule(&self, rule: &DomainRule) -> RuleValidationResult {
-        crate::registry::default_validate_rule(self.known_rule_kinds(), "TypeScript", rule)
-    }
 }
 
 /// TypeScript rule learning strategy (minimal stub).
@@ -138,6 +138,7 @@ impl RuleLearningStrategy for TypeScriptLearningStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::super::registry::RuleValidationResult;
 
     #[test]
     fn test_builtin_rules() {

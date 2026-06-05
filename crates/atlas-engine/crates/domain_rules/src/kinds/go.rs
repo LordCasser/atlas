@@ -7,7 +7,7 @@
 //! - `go/cleanup_fn`: functions that perform cleanup beyond simple close
 
 use super::super::learning::{LearnedRuleCandidate, RuleLearningStrategy};
-use super::super::registry::{LanguageRuleKinds, RuleKindSpec, RuleValidationResult};
+use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
 
 use db::Store;
@@ -19,6 +19,10 @@ pub struct GoRegistry;
 impl LanguageRuleKinds for GoRegistry {
     fn language(&self) -> &'static str {
         "go"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Go"
     }
 
     fn known_rule_kinds(&self) -> &'static [RuleKindSpec] {
@@ -96,10 +100,6 @@ impl LanguageRuleKinds for GoRegistry {
             })
             .collect()
     }
-
-    fn validate_rule(&self, rule: &DomainRule) -> RuleValidationResult {
-        crate::registry::default_validate_rule(self.known_rule_kinds(), "Go", rule)
-    }
 }
 
 /// Go rule learning strategy (minimal stub).
@@ -129,6 +129,7 @@ impl RuleLearningStrategy for GoLearningStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::super::registry::RuleValidationResult;
 
     #[test]
     fn test_builtin_rules() {

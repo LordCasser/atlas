@@ -37,8 +37,15 @@ pub trait LanguageRuleKinds: std::fmt::Debug + Send + Sync {
     /// Builtin rules that can be seeded into the database.
     fn builtin_rules(&self) -> Vec<DomainRule>;
 
+    /// Human-readable display name for error messages (defaults to `language()`).
+    fn display_name(&self) -> &'static str {
+        self.language()
+    }
+
     /// Validate a domain rule against this language's kind specifications.
-    fn validate_rule(&self, rule: &DomainRule) -> RuleValidationResult;
+    fn validate_rule(&self, rule: &DomainRule) -> RuleValidationResult {
+        default_validate_rule(self.known_rule_kinds(), self.display_name(), rule)
+    }
 }
 
 /// Standard status-for-source mapping shared by all language registries.

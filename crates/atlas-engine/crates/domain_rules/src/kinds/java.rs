@@ -7,7 +7,7 @@
 //! - `java/cleanup_fn`: general cleanup functions
 
 use super::super::learning::{LearnedRuleCandidate, RuleLearningStrategy};
-use super::super::registry::{LanguageRuleKinds, RuleKindSpec, RuleValidationResult};
+use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
 
 use db::Store;
@@ -19,6 +19,10 @@ pub struct JavaRegistry;
 impl LanguageRuleKinds for JavaRegistry {
     fn language(&self) -> &'static str {
         "java"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Java"
     }
 
     fn known_rule_kinds(&self) -> &'static [RuleKindSpec] {
@@ -101,10 +105,6 @@ impl LanguageRuleKinds for JavaRegistry {
             })
             .collect()
     }
-
-    fn validate_rule(&self, rule: &DomainRule) -> RuleValidationResult {
-        crate::registry::default_validate_rule(self.known_rule_kinds(), "Java", rule)
-    }
 }
 
 /// Java rule learning strategy (minimal stub).
@@ -134,6 +134,7 @@ impl RuleLearningStrategy for JavaLearningStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::super::registry::RuleValidationResult;
 
     #[test]
     fn test_builtin_rules() {
