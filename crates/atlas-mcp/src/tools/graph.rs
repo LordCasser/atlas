@@ -135,7 +135,8 @@ impl ToolRouter {
 
         self.update_investigation(InvestigationFocus::Symbol(sid));
         let investigation = self.investigation_state.active_investigation.clone();
-        let query_id = Self::generate_query_id();
+        let lr = LazyResponse::new("calls", args);
+        let query_id = lr.query_id().to_string();
 
         // Lazy structural: ensure graph edges exist before querying
         let file_id = self
@@ -165,16 +166,29 @@ impl ToolRouter {
 
         let nodes: Vec<_> = shown.map(|ix| self.node_json(snap, *ix, None)).collect();
 
-        let resp = json!({
+        let mut resp = json!({
             "symbol": qname,
             "total_callers": cg.callers.len(),
             "callers": nodes,
         });
+        if !self.has_manual_full_index() {
+            resp["note"] = json!(
+                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
+            );
+        }
         // Lazy structural response — merge warnings from both outcomes
         let mut lazy_warnings: Vec<String> = outcome_files.warnings;
         lazy_warnings.extend(outcome_name.warnings);
         let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
-        self.finalize_calls_response(resp, lazy_warnings, tier, &query_id, args)
+        let lazy_diag: Option<LazyDiagnostics> = outcome_files
+            .lazy_outcome
+            .as_ref()
+            .map(LazyDiagnostics::from_structural);
+
+        lr.with_precision_tier(tier)
+            .with_lazy_warnings(lazy_warnings)
+            .with_lazy_diag(lazy_diag)
+            .build_with_args(resp, args, self)
     }
 
     pub(crate) fn handle_callees(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -194,7 +208,8 @@ impl ToolRouter {
 
         self.update_investigation(InvestigationFocus::Symbol(sid));
         let investigation = self.investigation_state.active_investigation.clone();
-        let query_id = Self::generate_query_id();
+        let lr = LazyResponse::new("calls", args);
+        let query_id = lr.query_id().to_string();
 
         // Lazy structural: ensure graph edges exist before querying
         let file_id = self
@@ -224,52 +239,28 @@ impl ToolRouter {
 
         let nodes: Vec<_> = shown.map(|ix| self.node_json(snap, *ix, None)).collect();
 
-        let resp = json!({
+        let mut resp = json!({
             "symbol": qname,
             "total_callees": cg.callees.len(),
             "callees": nodes,
         });
-        // Lazy structural response
-        let lazy_warnings = outcome.warnings;
-        let tier = outcome.precision_tier;
-        self.finalize_calls_response(resp, lazy_warnings, tier, &query_id, args)
-    }
-
-    fn finalize_calls_response(
-        &mut self,
-        mut resp: serde_json::Value,
-        warnings: Vec<String>,
-        tier: atlas_engine::structs::precision::PrecisionTier,
-        query_id: &str,
-        args: &serde_json::Value,
-    ) -> (String, bool) {
         if !self.has_manual_full_index() {
             resp["note"] = json!(
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
         }
-        if !warnings.is_empty() {
-            resp["warnings"] = json!(warnings);
-        }
-        resp["precision_tier"] = serde_json::to_value(tier).unwrap_or(json!(null));
-        if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
-            if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
-                resp["hint"] = json!(hint);
-            }
-        }
-        self.store_snapshot(QuerySnapshot {
-            query_id: query_id.to_string(),
-            tool_name: "calls".into(),
-            tool_args: args.clone(),
-            lazy_window: None,
-            created_at: Instant::now(),
-            status: QueryStatus::Ready,
-        });
-        resp["query_id"] = json!(query_id);
-        (
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
-            false,
-        )
+        // Lazy structural response
+        let lazy_warnings = outcome.warnings;
+        let tier = outcome.precision_tier;
+        let lazy_diag: Option<LazyDiagnostics> = outcome
+            .lazy_outcome
+            .as_ref()
+            .map(LazyDiagnostics::from_structural);
+
+        lr.with_precision_tier(tier)
+            .with_lazy_warnings(lazy_warnings)
+            .with_lazy_diag(lazy_diag)
+            .build_with_args(resp, args, self)
     }
 
     pub(crate) fn handle_callgraph(&mut self, args: &serde_json::Value) -> (String, bool) {
