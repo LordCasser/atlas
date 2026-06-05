@@ -392,7 +392,7 @@ pub(crate) fn normalize_ts_dataflow_builder(
             .unwrap_or((None, None)),
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression(node)
+            let callsite_id = crate::languages::shared::find_call_expression(node, &["call_expression", "new_expression"])
                 .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
@@ -442,7 +442,7 @@ pub(crate) fn normalize_ts_dataflow_builder(
         }
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression(node)
+            let callsite_id = crate::languages::shared::find_call_expression(node, &["call_expression", "new_expression"])
                 .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
@@ -468,7 +468,7 @@ pub(crate) fn normalize_ts_dataflow_builder(
                 // Use the full qualified text as `name` so Suffix rules (".close")
                 // match against "conn.close" instead of just "close".
                 let name = access_path.clone();
-                let callsite_id = find_call_expression(node).map(|ce| {
+                let callsite_id = crate::languages::shared::find_call_expression(node, &["call_expression", "new_expression"]).map(|ce| {
                     types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
                 });
                 let node_id = DataNodeId::generate(
@@ -560,7 +560,7 @@ pub(crate) fn normalize_ts_dataflow_builder(
         }
         "df.await_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression(node)
+            let callsite_id = crate::languages::shared::find_call_expression(node, &["call_expression", "new_expression"])
                 .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
@@ -681,27 +681,6 @@ pub fn typescript_frontend() -> LanguageFrontend {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Walk up the AST to find the enclosing `call_expression` or `new_expression`, if any.
-///
-/// Used to group `CallArg` and `CallTarget` nodes that belong to the same
-/// call site — this enables correct ArgToParam edge creation even in the
-/// presence of nested calls like `foo(bar(a), b)`.
-fn find_call_expression(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
-    // A call expression can be captured directly (e.g., @df.assign_value
-    // on a call_expression) or as a child (e.g., @df.call_arg).
-    let mut current = node;
-    if current.kind() == "call_expression" || current.kind() == "new_expression" {
-        return Some(current);
-    }
-    while let Some(parent) = current.parent() {
-        if parent.kind() == "call_expression" || parent.kind() == "new_expression" {
-            return Some(parent);
-        }
-        current = parent;
-    }
-    None
-}
 
 /// Map lexical capture name to BindingKind.
 fn ts_binding_kind(capture_name: &str) -> Option<types::enums::BindingKind> {

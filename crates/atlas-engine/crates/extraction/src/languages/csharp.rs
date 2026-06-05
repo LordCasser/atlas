@@ -414,23 +414,6 @@ fn normalize_csharp_lexical(
 
 // ── Dataflow normalize ─────────────────────────────────────────────────
 
-fn find_call_expression_csharp(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
-    let kinds: &[&str] = &["invocation_expression", "object_creation_expression"];
-    // Check current node first — the captured node may itself be the call expression
-    // (e.g. when `df.assign_value` captures an invocation_expression directly).
-    if kinds.contains(&node.kind()) {
-        return Some(node);
-    }
-    let mut current = node;
-    while let Some(parent) = current.parent() {
-        if kinds.contains(&parent.kind()) {
-            return Some(parent);
-        }
-        current = parent;
-    }
-    None
-}
-
 fn normalize_csharp_dataflow_builder(
     capture_name: &str,
     node: tree_sitter::Node,
@@ -476,7 +459,7 @@ fn normalize_csharp_dataflow_builder(
             .unwrap_or((None, None)),
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_csharp(node)
+            let callsite_id = crate::languages::shared::find_call_expression(node, &["invocation_expression", "object_creation_expression"])
                 .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
@@ -531,7 +514,7 @@ fn normalize_csharp_dataflow_builder(
         "df.call_target" => node_text(node, source)
             .map(|name| {
                 let access_path = name.clone();
-                let callsite_id = find_call_expression_csharp(node).map(|ce| {
+                let callsite_id = crate::languages::shared::find_call_expression(node, &["invocation_expression", "object_creation_expression"]).map(|ce| {
                     types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
                 });
                 let node_id = DataNodeId::generate(
@@ -558,7 +541,7 @@ fn normalize_csharp_dataflow_builder(
             .unwrap_or((None, None)),
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_csharp(node)
+            let callsite_id = crate::languages::shared::find_call_expression(node, &["invocation_expression", "object_creation_expression"])
                 .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,

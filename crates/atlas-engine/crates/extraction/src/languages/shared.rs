@@ -106,6 +106,24 @@ impl SymbolDefBuilder {
     }
 }
 
+// ── Shared call-expression ancestor walk ───────────────────────────────
+
+/// Walk up the AST parent chain from `node` to find the first ancestor
+/// whose kind matches one of `call_kinds`. Checks `node` itself first.
+pub fn find_call_expression<'a>(node: tree_sitter::Node<'a>, call_kinds: &[&str]) -> Option<tree_sitter::Node<'a>> {
+    if call_kinds.contains(&node.kind()) {
+        return Some(node);
+    }
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        if call_kinds.contains(&parent.kind()) {
+            return Some(parent);
+        }
+        current = parent;
+    }
+    None
+}
+
 // ── Shared identifier-use filter ────────────────────────────────────────
 
 /// Check if an identifier node sits inside an assignment left-hand side.

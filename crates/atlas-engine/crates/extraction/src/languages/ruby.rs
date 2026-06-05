@@ -435,22 +435,6 @@ fn normalize_ruby_lexical(
 
 // ── Dataflow normalize ─────────────────────────────────────────────────
 
-fn find_call_expression_ruby(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
-    // Check current node first — the captured node may itself be the call expression
-    // (e.g. when `df.assign_value` captures a call directly).
-    if node.kind() == "call" {
-        return Some(node);
-    }
-    let mut current = node;
-    while let Some(parent) = current.parent() {
-        if parent.kind() == "call" {
-            return Some(parent);
-        }
-        current = parent;
-    }
-    None
-}
-
 fn normalize_ruby_dataflow_builder(
     capture_name: &str,
     node: tree_sitter::Node,
@@ -543,7 +527,7 @@ fn normalize_ruby_dataflow_builder(
         }
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_ruby(node)
+            let callsite_id = crate::languages::shared::find_call_expression(node, &["call"])
                 .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
@@ -625,7 +609,7 @@ fn normalize_ruby_dataflow_builder(
                     let t = terminal_text.clone();
                     (t.clone(), t)
                 });
-            let callsite_id = find_call_expression_ruby(node)
+            let callsite_id = crate::languages::shared::find_call_expression(node, &["call"])
                 .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
@@ -650,7 +634,7 @@ fn normalize_ruby_dataflow_builder(
         }
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_ruby(node)
+            let callsite_id = crate::languages::shared::find_call_expression(node, &["call"])
                 .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,

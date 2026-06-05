@@ -413,23 +413,6 @@ fn normalize_java_lexical(
 // ── Dataflow normalize ─────────────────────────────────────────────────
 
 /// Find a call expression ancestor for a dataflow node.
-fn find_call_expression_java(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
-    let kinds: &[&str] = &["method_invocation", "object_creation_expression"];
-    // Check current node first — the captured node may itself be the call expression
-    // (e.g. when `df.assign_value` captures a method_invocation directly).
-    if kinds.contains(&node.kind()) {
-        return Some(node);
-    }
-    let mut current = node;
-    while let Some(parent) = current.parent() {
-        if kinds.contains(&parent.kind()) {
-            return Some(parent);
-        }
-        current = parent;
-    }
-    None
-}
-
 /// Normalize a dataflow capture into (DataNode, DataFlowEdge).
 fn normalize_java_dataflow_builder(
     capture_name: &str,
@@ -472,7 +455,7 @@ fn normalize_java_dataflow_builder(
             .unwrap_or((None, None)),
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_java(node)
+            let callsite_id = crate::languages::shared::find_call_expression(node, &["method_invocation", "object_creation_expression"])
                 .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
@@ -523,7 +506,7 @@ fn normalize_java_dataflow_builder(
         "df.call_target" => node_text(node, source)
             .map(|name| {
                 let access_path = name.clone();
-                let callsite_id = find_call_expression_java(node).map(|ce| {
+                let callsite_id = crate::languages::shared::find_call_expression(node, &["method_invocation", "object_creation_expression"]).map(|ce| {
                     types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
                 });
                 let node_id = DataNodeId::generate(
@@ -548,7 +531,7 @@ fn normalize_java_dataflow_builder(
             .unwrap_or((None, None)),
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_java(node)
+            let callsite_id = crate::languages::shared::find_call_expression(node, &["method_invocation", "object_creation_expression"])
                 .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,

@@ -176,23 +176,6 @@ fn is_py_identifier_declaration(node: tree_sitter::Node) -> bool {
     }
 }
 
-/// Find the enclosing `call` node in Python AST.
-fn find_call_expression_python(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
-    // Check current node first — the captured node may itself be the call expression
-    // (e.g. when `df.assign_value` captures a call node directly).
-    if node.kind() == "call" {
-        return Some(node);
-    }
-    let mut current = node;
-    while let Some(parent) = current.parent() {
-        if parent.kind() == "call" {
-            return Some(parent);
-        }
-        current = parent;
-    }
-    None
-}
-
 fn normalize_py_dataflow_builder(
     capture_name: &str,
     node: tree_sitter::Node,
@@ -234,7 +217,7 @@ fn normalize_py_dataflow_builder(
             .unwrap_or((None, None)),
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_python(node)
+            let callsite_id = crate::languages::shared::find_call_expression(node, &["call"])
                 .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
@@ -272,7 +255,7 @@ fn normalize_py_dataflow_builder(
         }
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_python(node)
+            let callsite_id = crate::languages::shared::find_call_expression(node, &["call"])
                 .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
@@ -292,7 +275,7 @@ fn normalize_py_dataflow_builder(
                     .filter(|p| p.kind() == "attribute")
                     .and_then(|p| node_text(p, source))
                     .unwrap_or_else(|| name.clone());
-                let callsite_id = find_call_expression_python(node).map(|ce| {
+                let callsite_id = crate::languages::shared::find_call_expression(node, &["call"]).map(|ce| {
                     types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
                 });
                 let node_id = DataNodeId::generate(

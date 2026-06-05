@@ -535,22 +535,6 @@ fn normalize_kotlin_lexical(
 
 // ── Dataflow normalize ─────────────────────────────────────────────────
 
-fn find_call_expression_kotlin(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
-    // Check current node first — the captured node may itself be the call expression
-    // (e.g. when `df.assign_value` captures a call_expression directly).
-    if node.kind() == "call_expression" {
-        return Some(node);
-    }
-    let mut current = node;
-    while let Some(parent) = current.parent() {
-        if parent.kind() == "call_expression" {
-            return Some(parent);
-        }
-        current = parent;
-    }
-    None
-}
-
 fn normalize_kotlin_dataflow_builder(
     capture_name: &str,
     node: tree_sitter::Node,
@@ -596,7 +580,7 @@ fn normalize_kotlin_dataflow_builder(
             .unwrap_or((None, None)),
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_kotlin(node)
+            let callsite_id = crate::languages::shared::find_call_expression(node, &["call_expression"])
                 .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
@@ -651,7 +635,7 @@ fn normalize_kotlin_dataflow_builder(
         "df.call_target" => node_text(node, source)
             .map(|name| {
                 let access_path = name.clone();
-                let callsite_id = find_call_expression_kotlin(node).map(|ce| {
+                let callsite_id = crate::languages::shared::find_call_expression(node, &["call_expression"]).map(|ce| {
                     types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
                 });
                 let node_id = DataNodeId::generate(
@@ -678,7 +662,7 @@ fn normalize_kotlin_dataflow_builder(
             .unwrap_or((None, None)),
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_kotlin(node)
+            let callsite_id = crate::languages::shared::find_call_expression(node, &["call_expression"])
                 .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
             let node_id = DataNodeId::generate(
                 &file_id,
