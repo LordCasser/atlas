@@ -22,7 +22,7 @@ use crate::frontend::{
     LexicalBindingSpec, NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec,
     ScopeExtractorSpec, SymbolExtractorSpec,
 };
-use crate::languages::shared::{make_binding_def, SymbolDefBuilder};
+use crate::languages::shared::{make_binding_def, make_reference_use, SymbolDefBuilder};
 use types::capability::FeatureSupport;
 use types::*;
 
@@ -70,29 +70,7 @@ fn normalize_ruby_reference(
     let name = text.clone();
     let range = node_range(node);
 
-    let ref_id = ReferenceId::generate(
-        &file_id,
-        None::<&SymbolId>,
-        range.start_byte,
-        range.end_byte,
-        &text,
-        kind,
-    );
-
-    Some(ReferenceUse {
-        id: ref_id,
-        file_id,
-        source_symbol: None,
-        scope_id: None,
-        kind,
-        text,
-        name,
-        receiver: None,
-        arity: None,
-        range,
-        resolved: None,
-        binding_id: None,
-    })
+    Some(make_reference_use(file_id, kind, text, name, range))
 }
 
 fn normalize_ruby_import(

@@ -14,7 +14,7 @@ use crate::frontend::{
     LexicalBindingSpec, NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec,
     ScopeExtractorSpec, SymbolExtractorSpec,
 };
-use crate::languages::shared::{make_binding_def, SymbolDefBuilder};
+use crate::languages::shared::{make_binding_def, make_reference_use, SymbolDefBuilder};
 use std::collections::HashMap;
 use types::bindings::BindingDef;
 use types::capability::FeatureSupport;
@@ -79,29 +79,11 @@ fn normalize_go_reference(
     };
 
     // source_symbol is resolved by SemanticBinder after extraction.
-    let ref_id = ReferenceId::generate(
-        &file_id,
-        None::<&SymbolId>,
-        range.start_byte,
-        range.end_byte,
-        &text,
-        kind,
-    );
-
-    Some(ReferenceUse {
-        id: ref_id,
-        file_id,
-        source_symbol: None,
-        scope_id: None,
-        kind,
-        text,
-        name,
-        receiver,
-        arity: None,
-        range,
-        resolved: None,
-        binding_id: None,
-    })
+    let mut r = make_reference_use(file_id, kind, text, name, range);
+    if let Some(recv) = receiver {
+        r.receiver = Some(recv);
+    }
+    Some(r)
 }
 
 fn normalize_go_import(

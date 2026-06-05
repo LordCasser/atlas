@@ -43,6 +43,39 @@ pub fn make_binding_def(
     }
 }
 
+/// Construct a `ReferenceUse` with default optional fields, reducing boilerplate
+/// in language adapters' reference normalize functions.
+///
+/// Parameters:
+/// - `file_id`: The file's `FileId`
+/// - `kind`: The `ReferenceKind` determined by the per-language mapping
+/// - `text`: The reference text (usually from node_text)
+/// - `name`: The reference name (may differ from text for qualified references)
+/// - `range`: The node's `TextRange`
+pub fn make_reference_use(
+    file_id: FileId,
+    kind: ReferenceKind,
+    text: String,
+    name: String,
+    range: TextRange,
+) -> ReferenceUse {
+    let ref_id = ReferenceId::generate(&file_id, None::<&SymbolId>, range.start_byte, range.end_byte, &text, kind);
+    ReferenceUse {
+        id: ref_id,
+        file_id,
+        source_symbol: None,
+        scope_id: None,
+        kind,
+        text,
+        name,
+        receiver: None,
+        arity: None,
+        range,
+        resolved: None,
+        binding_id: None,
+    }
+}
+
 /// Builder for `SymbolDef` — standardizes the repetitive construction
 /// pattern shared by all language adapters.
 #[derive(Debug, Clone)]

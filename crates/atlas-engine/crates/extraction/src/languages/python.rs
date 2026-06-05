@@ -3,7 +3,7 @@
 //! Uses tree-sitter-python grammar and embedded query files.
 
 use crate::languages::{node_range, node_text};
-use crate::languages::shared::make_binding_def;
+use crate::languages::shared::{make_binding_def, make_reference_use};
 use types::*;
 
 use crate::frontend::{
@@ -58,30 +58,8 @@ fn normalize_py_reference(
     let name = text.clone();
     let range = node_range(node);
 
-    let ref_id = ReferenceId::generate(
-        &file_id,
-        None::<&SymbolId>,
-        range.start_byte,
-        range.end_byte,
-        &text,
-        kind,
-    );
-
     // source_symbol is resolved by SemanticBinder after extraction.
-    Some(ReferenceUse {
-        id: ref_id,
-        file_id,
-        source_symbol: None,
-        scope_id: None,
-        kind,
-        text,
-        name,
-        receiver: None,
-        arity: None,
-        range,
-        resolved: None,
-        binding_id: None,
-    })
+    Some(make_reference_use(file_id, kind, text, name, range))
 }
 
 fn normalize_py_import(
