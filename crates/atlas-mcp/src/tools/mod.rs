@@ -149,7 +149,6 @@ pub(crate) mod wait_for;
 
 /// Result of lazy structural extraction triggered via
 /// [`ensure_structural_for_files`] or [`ensure_structural_for_symbol_name`].
-#[allow(dead_code)]
 pub(crate) struct StructuralEnsureOutcome {
     pub warnings: Vec<String>,
     pub built_file_ids: Vec<atlas_engine::FileId>,

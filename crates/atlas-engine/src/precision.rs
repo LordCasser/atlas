@@ -23,7 +23,6 @@ pub fn structural_precision(built: usize, cached: usize, budget_exceeded: bool) 
 }
 
 /// Suggested next action based on structural precision tier.
-#[allow(dead_code)] // public API, consumed in future phases
 pub fn next_action_structural(tier: PrecisionTier) -> Option<&'static str> {
     match tier {
         PrecisionTier::Unavailable => {
