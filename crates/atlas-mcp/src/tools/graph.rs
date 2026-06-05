@@ -2,12 +2,10 @@
 //! explore, and impact analysis.
 
 use std::collections::HashSet;
-use std::time::Instant;
 
 use atlas_engine::analysis;
 use atlas_engine::{EdgeKind, InvestigationFocus, Store, SymbolId, SymbolKind, TraversalDirection};
 
-use super::query_snapshot::{QuerySnapshot, QueryStatus};
 use super::lazy_response::{LazyDiagnostics, LazyResponse};
 use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str, get_str_opt, get_u64};
 
@@ -530,7 +528,8 @@ impl ToolRouter {
             self.update_investigation(InvestigationFocus::Symbol(first_from));
         }
         let investigation = self.investigation_state.active_investigation.clone();
-        let query_id = Self::generate_query_id();
+        let lr = LazyResponse::new("path", args);
+        let query_id = lr.query_id().to_string();
 
         // Transparent lazy structural: ensure both endpoint files have full
         // structural data before path finding.  A manifest-only index (MCP
@@ -554,6 +553,11 @@ impl ToolRouter {
             Some(&query_id),
         );
         let lazy_warnings = outcome.warnings;
+        let lazy_diag = outcome
+            .lazy_outcome
+            .as_ref()
+            .map(|lo| LazyDiagnostics::from_structural(lo));
+        let tier = outcome.precision_tier;
         // Cache for no-path diagnostics below (used in user-facing messages).
         let is_manual_full = self.has_manual_full_index();
 
@@ -797,39 +801,14 @@ impl ToolRouter {
 
             resp["path_quality"] = insight;
 
-            // Surface include_roots and lazy-structural warnings to the caller.
-            let mut all_warnings: Vec<String> = root_warnings;
-            all_warnings.extend(lazy_warnings);
-            if !all_warnings.is_empty() {
-                resp["warnings"] = json!(all_warnings);
-            }
-
-            let tier = outcome.precision_tier;
-            resp["precision_tier"] = serde_json::to_value(tier).unwrap_or(json!(null));
-            if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
-                if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
-                    resp["hint"] = json!(hint);
-                }
-            }
-
-            self.store_snapshot(QuerySnapshot {
-                query_id: query_id.clone(),
-                tool_name: "path".into(),
-                tool_args: args.clone(),
-                lazy_window: None,
-                created_at: Instant::now(),
-                status: if tier == atlas_engine::structs::precision::PrecisionTier::Exact {
-                    QueryStatus::Ready
-                } else {
-                    QueryStatus::Partial
-                },
-            });
-            resp["query_id"] = json!(query_id);
-
-            (
-                serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
-                false,
-            )
+            lr.with_precision_tier(tier)
+                .with_root_warnings(root_warnings)
+                .with_lazy_warnings(lazy_warnings)
+                .with_lazy_diag(lazy_diag)
+                .with_partial_result(
+                    tier != atlas_engine::structs::precision::PrecisionTier::Exact,
+                )
+                .build(resp, self)
         } else {
             // No path found — diagnostic frontier.
             let total_pairs = from_ids.len() * to_ids.len();
@@ -907,44 +886,21 @@ impl ToolRouter {
             } else {
                 Vec::new()
             };
-            // Surface include_roots and lazy-structural warnings.
-            let mut all_warnings: Vec<String> = root_warnings;
-            all_warnings.extend(lazy_warnings);
-            let mut resp = json!({
+            // Build base response before envelope injection.
+            let resp = json!({
                 "from": from_qname, "to": to_qname,
                 "path_length": 0, "path": [], "breakpoints": [],
                 "message": &message, "frontier": frontier_nodes,
             });
-            if !all_warnings.is_empty() {
-                resp["warnings"] = json!(all_warnings);
-            }
 
-            let tier = outcome.precision_tier;
-            resp["precision_tier"] = serde_json::to_value(tier).unwrap_or(json!(null));
-            if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
-                if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
-                    resp["hint"] = json!(hint);
-                }
-            }
-
-            self.store_snapshot(QuerySnapshot {
-                query_id: query_id.clone(),
-                tool_name: "path".into(),
-                tool_args: args.clone(),
-                lazy_window: None,
-                created_at: Instant::now(),
-                status: if tier == atlas_engine::structs::precision::PrecisionTier::Exact {
-                    QueryStatus::Ready
-                } else {
-                    QueryStatus::Partial
-                },
-            });
-            resp["query_id"] = json!(query_id);
-
-            (
-                serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
-                false,
-            )
+            lr.with_precision_tier(tier)
+                .with_root_warnings(root_warnings)
+                .with_lazy_warnings(lazy_warnings)
+                .with_lazy_diag(lazy_diag)
+                .with_partial_result(
+                    tier != atlas_engine::structs::precision::PrecisionTier::Exact,
+                )
+                .build(resp, self)
         }
     }
 
