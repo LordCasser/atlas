@@ -254,10 +254,7 @@ CREATE TABLE IF NOT EXISTS cfg_nodes (
     range_start_column   INTEGER NOT NULL,
     range_end_line       INTEGER NOT NULL,
     range_end_column     INTEGER NOT NULL,
-    effect_kind          TEXT,                     -- read/write/allocate/free/call/condition/return/goto/assign
-    target_field         TEXT,                     -- e.g. "data->state.aptr" (normalized struct field path)
     semantic_effects_json TEXT,                     -- serialized Vec<SemanticEffect> as JSON
-    callee_name          TEXT,                     -- callee function name for Call-effect nodes (nullable, for domain rule matching)
     call_context         TEXT                      -- call-site context annotation (None, GoGoroutine, GoDefer, PythonWith, etc.)
 );
 

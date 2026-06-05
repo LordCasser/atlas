@@ -385,7 +385,7 @@ pub(crate) fn row_to_cfg_node(row: &Row) -> rusqlite::Result<CfgNode> {
     let kind =
         CfgNodeKind::from_str(&kind_str).ok_or_else(|| parse_err(2, &kind_str, "CfgNodeKind"))?;
     let semantic_effects: Vec<SemanticEffect> = {
-        let json_str: Option<String> = row.get(11)?;
+        let json_str: Option<String> = row.get(9)?;
         match json_str {
             Some(ref s) if !s.is_empty() && s != "[]" => {
                 serde_json::from_str(s).unwrap_or_else(|e| {
@@ -400,7 +400,7 @@ pub(crate) fn row_to_cfg_node(row: &Row) -> rusqlite::Result<CfgNode> {
         }
     };
     let call_context: CallContext = {
-        let ctx_str: Option<String> = row.get(13)?;
+        let ctx_str: Option<String> = row.get(10)?;
         let ctx_dbg = ctx_str.clone();
         ctx_str
             .and_then(|s| CallContext::from_str(&s))

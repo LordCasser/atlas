@@ -37,8 +37,8 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT cfg_node_id, function_id, kind,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
-                    range_end_line, range_end_column, effect_kind, target_field,
-                    semantic_effects_json, callee_name, call_context
+                    range_end_line, range_end_column,
+                    semantic_effects_json, call_context
              FROM cfg_nodes WHERE function_id = ?1",
         )?;
         let rows = stmt.query_map(params![function_id], row_to_cfg_node)?;

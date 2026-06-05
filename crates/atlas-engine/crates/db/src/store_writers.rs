@@ -505,9 +505,9 @@ pub(crate) fn write_cfg_nodes(conn: &Connection, nodes: &[CfgNode]) -> anyhow::R
         r#"INSERT OR REPLACE INTO cfg_nodes
            (cfg_node_id, function_id, kind,
             range_start_byte, range_end_byte, range_start_line, range_start_column,
-            range_end_line, range_end_column, effect_kind, target_field,
-            semantic_effects_json, callee_name, call_context)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"#,
+            range_end_line, range_end_column,
+            semantic_effects_json, call_context)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)"#,
     )?;
     for n in nodes {
         stmt.execute(params![
@@ -520,8 +520,6 @@ pub(crate) fn write_cfg_nodes(conn: &Connection, nodes: &[CfgNode]) -> anyhow::R
             n.stmt_range.start_column,
             n.stmt_range.end_line,
             n.stmt_range.end_column,
-            None::<&str>,
-            None::<&str>,
             serde_json::to_string(&n.semantic_effects)
                 .map_err(|e| {
                     tracing::error!(
@@ -533,7 +531,6 @@ pub(crate) fn write_cfg_nodes(conn: &Connection, nodes: &[CfgNode]) -> anyhow::R
                 })
                 .ok()
                 .and_then(|s| if s == "[]" { None } else { Some(s) }),
-            None::<&str>,
             n.call_context.as_str(),
         ])?;
     }
