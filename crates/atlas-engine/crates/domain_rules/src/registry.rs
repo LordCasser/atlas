@@ -40,3 +40,50 @@ pub trait LanguageRuleKinds: std::fmt::Debug + Send + Sync {
     /// Validate a domain rule against this language's kind specifications.
     fn validate_rule(&self, rule: &DomainRule) -> RuleValidationResult;
 }
+
+/// Standard status-for-source mapping shared by all language registries.
+pub fn status_for_source(source: RuleSource) -> RuleStatus {
+    match source {
+        RuleSource::Builtin => RuleStatus::Enabled,
+        RuleSource::Learned => RuleStatus::Candidate,
+        RuleSource::User => RuleStatus::Enabled,
+    }
+}
+
+/// Default rule validation shared by all language registries.
+/// Each language passes its own display name for error messages.
+pub fn default_validate_rule(
+    known_kinds: &[RuleKindSpec],
+    lang_display: &str,
+    rule: &DomainRule,
+) -> RuleValidationResult {
+    let spec = match known_kinds.iter().find(|s| s.name == rule.rule_kind) {
+        Some(s) => s,
+        None => {
+            return RuleValidationResult::Rejected(format!(
+                "Unknown rule_kind '{}' for {}. Known kinds: {:?}",
+                rule.rule_kind,
+                lang_display,
+                known_kinds.iter().map(|s| s.name).collect::<Vec<_>>()
+            ));
+        }
+    };
+    let pkind = match PatternKind::from_str(&rule.pattern_kind) {
+        Some(pk) => pk,
+        None => {
+            return RuleValidationResult::Rejected(format!(
+                "Unknown pattern_kind '{}'",
+                rule.pattern_kind
+            ));
+        }
+    };
+    if !spec.allowed_pattern_kinds.contains(&pkind) {
+        return RuleValidationResult::Warning(format!(
+            "pattern_kind '{}' is not in the allowed set for '{}': {:?}",
+            pkind.as_str(),
+            rule.rule_kind,
+            spec.allowed_pattern_kinds
+        ));
+    }
+    RuleValidationResult::Valid
+}

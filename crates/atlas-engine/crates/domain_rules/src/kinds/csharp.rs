@@ -8,7 +8,7 @@
 
 use super::super::learning::{LearnedRuleCandidate, RuleLearningStrategy};
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec, RuleValidationResult};
-use super::super::types::{DomainRule, PatternKind, RuleSource, RuleStatus};
+use super::super::types::{DomainRule, PatternKind};
 
 use db::Store;
 
@@ -33,7 +33,7 @@ impl LanguageRuleKinds for CSharpRegistry {
                     PatternKind::Suffix,
                     PatternKind::Glob,
                 ],
-                default_status: status_for_source,
+                default_status: crate::registry::status_for_source,
                 meta_validator: None,
             },
             RuleKindSpec {
@@ -45,7 +45,7 @@ impl LanguageRuleKinds for CSharpRegistry {
                     PatternKind::Suffix,
                     PatternKind::Glob,
                 ],
-                default_status: status_for_source,
+                default_status: crate::registry::status_for_source,
                 meta_validator: None,
             },
             RuleKindSpec {
@@ -53,7 +53,7 @@ impl LanguageRuleKinds for CSharpRegistry {
                 description: "IDisposable pattern resources (using statement, Dispose method, IDisposable interface)",
                 auto_learn_enabled: false,
                 allowed_pattern_kinds: &[PatternKind::Exact, PatternKind::Suffix],
-                default_status: status_for_source,
+                default_status: crate::registry::status_for_source,
                 meta_validator: None,
             },
             RuleKindSpec {
@@ -61,7 +61,7 @@ impl LanguageRuleKinds for CSharpRegistry {
                 description: "General cleanup functions (e.g., finalizers, ~ClassName destructors)",
                 auto_learn_enabled: false,
                 allowed_pattern_kinds: &[PatternKind::Exact],
-                default_status: status_for_source,
+                default_status: crate::registry::status_for_source,
                 meta_validator: None,
             },
         ]
@@ -103,45 +103,7 @@ impl LanguageRuleKinds for CSharpRegistry {
     }
 
     fn validate_rule(&self, rule: &DomainRule) -> RuleValidationResult {
-        let known = self.known_rule_kinds();
-        let spec = match known.iter().find(|s| s.name == rule.rule_kind) {
-            Some(s) => s,
-            None => {
-                return RuleValidationResult::Rejected(format!(
-                    "Unknown rule_kind '{}' for C#. Known kinds: {:?}",
-                    rule.rule_kind,
-                    known.iter().map(|s| s.name).collect::<Vec<_>>()
-                ));
-            }
-        };
-
-        let pkind = match PatternKind::from_str(&rule.pattern_kind) {
-            Some(pk) => pk,
-            None => {
-                return RuleValidationResult::Rejected(format!(
-                    "Unknown pattern_kind '{}'",
-                    rule.pattern_kind
-                ));
-            }
-        };
-        if !spec.allowed_pattern_kinds.contains(&pkind) {
-            return RuleValidationResult::Warning(format!(
-                "pattern_kind '{}' is not in the allowed set for '{}': {:?}",
-                pkind.as_str(),
-                rule.rule_kind,
-                spec.allowed_pattern_kinds
-            ));
-        }
-
-        RuleValidationResult::Valid
-    }
-}
-
-fn status_for_source(source: RuleSource) -> RuleStatus {
-    match source {
-        RuleSource::Builtin => RuleStatus::Enabled,
-        RuleSource::Learned => RuleStatus::Candidate,
-        RuleSource::User => RuleStatus::Enabled,
+        crate::registry::default_validate_rule(self.known_rule_kinds(), "C#", rule)
     }
 }
 
