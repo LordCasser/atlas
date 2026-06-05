@@ -287,7 +287,8 @@ impl ToolRouter {
 
         self.update_investigation(InvestigationFocus::Symbol(sid));
         let investigation = self.investigation_state.active_investigation.clone();
-        let query_id = Self::generate_query_id();
+        let lr = LazyResponse::new("calls", args);
+        let query_id = lr.query_id().to_string();
 
         // Lazy structural: ensure graph edges exist before querying.
         // Direction-dependent: outgoing needs file edges, incoming needs
@@ -299,7 +300,7 @@ impl ToolRouter {
             .flatten()
             .map(|s| s.file_id);
         let file_ids: Vec<atlas_engine::FileId> = file_id.into_iter().collect();
-        let (lazy_warnings, tier) = match direction {
+        let (lazy_warnings, tier, lazy_outcome) = match direction {
             "incoming" => {
                 let f = self.ensure_structural_for_files(
                     file_ids,
@@ -315,7 +316,8 @@ impl ToolRouter {
                 );
                 let mut w = f.warnings;
                 w.extend(n.warnings);
-                (w, std::cmp::min(f.precision_tier, n.precision_tier))
+                let tier = std::cmp::min(f.precision_tier, n.precision_tier);
+                (w, tier, f.lazy_outcome)
             }
             "outgoing" => {
                 let f = self.ensure_structural_for_files(
@@ -324,7 +326,7 @@ impl ToolRouter {
                     investigation.as_ref(),
                     Some(&query_id),
                 );
-                (f.warnings, f.precision_tier)
+                (f.warnings, f.precision_tier, f.lazy_outcome)
             }
             // "both" or default — need both directions
             _ => {
@@ -342,7 +344,8 @@ impl ToolRouter {
                 );
                 let mut w = f.warnings;
                 w.extend(n.warnings);
-                (w, std::cmp::min(f.precision_tier, n.precision_tier))
+                let tier = std::cmp::min(f.precision_tier, n.precision_tier);
+                (w, tier, f.lazy_outcome)
             }
         };
 
@@ -472,30 +475,14 @@ impl ToolRouter {
         }
 
         // Lazy structural response
-        if !lazy_warnings.is_empty() {
-            resp["warnings"] = json!(lazy_warnings);
-        }
-        resp["precision_tier"] = serde_json::to_value(tier).unwrap_or(json!(null));
-        if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
-            if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
-                resp["hint"] = json!(hint);
-            }
-        }
+        let lazy_diag: Option<LazyDiagnostics> = lazy_outcome
+            .as_ref()
+            .map(LazyDiagnostics::from_structural);
 
-        self.store_snapshot(QuerySnapshot {
-            query_id: query_id.clone(),
-            tool_name: "calls".into(),
-            tool_args: args.clone(),
-            lazy_window: None,
-            created_at: Instant::now(),
-            status: QueryStatus::Ready,
-        });
-        resp["query_id"] = json!(query_id);
-
-        (
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
-            false,
-        )
+        lr.with_precision_tier(tier)
+            .with_lazy_warnings(lazy_warnings)
+            .with_lazy_diag(lazy_diag)
+            .build_with_args(resp, args, self)
     }
 
     pub(crate) fn handle_path(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -1038,7 +1025,8 @@ impl ToolRouter {
 
         self.update_investigation(InvestigationFocus::Symbol(sym.id));
         let investigation = self.investigation_state.active_investigation.clone();
-        let query_id = Self::generate_query_id();
+        let lr = LazyResponse::new("explore", args);
+        let query_id = lr.query_id().to_string();
 
         let source = if include_code {
             self.read_symbol_source(&sym.id)
@@ -1126,30 +1114,15 @@ impl ToolRouter {
         let mut lazy_warnings: Vec<String> = outcome_files.warnings;
         lazy_warnings.extend(outcome_name.warnings);
         let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
-        if !lazy_warnings.is_empty() {
-            resp["warnings"] = json!(lazy_warnings);
-        }
-        resp["precision_tier"] = serde_json::to_value(tier).unwrap_or(json!(null));
-        if tier != atlas_engine::structs::precision::PrecisionTier::Exact {
-            if let Some(hint) = atlas_engine::precision::next_action_structural(tier) {
-                resp["hint"] = json!(hint);
-            }
-        }
+        let lazy_diag: Option<LazyDiagnostics> = outcome_files
+            .lazy_outcome
+            .as_ref()
+            .map(LazyDiagnostics::from_structural);
 
-        self.store_snapshot(QuerySnapshot {
-            query_id: query_id.clone(),
-            tool_name: "explore".into(),
-            tool_args: args.clone(),
-            lazy_window: None,
-            created_at: Instant::now(),
-            status: QueryStatus::Ready,
-        });
-        resp["query_id"] = json!(query_id);
-
-        (
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
-            false,
-        )
+        lr.with_precision_tier(tier)
+            .with_lazy_warnings(lazy_warnings)
+            .with_lazy_diag(lazy_diag)
+            .build_with_args(resp, args, self)
     }
 
     pub(crate) fn handle_impact(&mut self, args: &serde_json::Value) -> (String, bool) {
