@@ -21,7 +21,7 @@
 //! - Does not handle field-to-field aliasing (`x.a = y.b`).
 //! - Does not handle pointer arithmetic (`p + offset`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use types::dataflow::DataFlowEdge;
 use types::enums::DataFlowKind;
@@ -48,77 +48,6 @@ pub struct AliasTable {
 impl AliasTable {
     /// Maximum fixpoint iterations (safety bound).
     const MAX_ITERATIONS: usize = 20;
-
-    /// Build an alias table from DataFlow edges for a single function.
-    ///
-    /// Consumes the `Assign` (local ← local) and `FieldLoad`
-    /// (local ← field) edges.
-    pub fn build(edges: &[DataFlowEdge]) -> Self {
-        let raw: HashMap<String, HashSet<AliasTarget>> = HashMap::new();
-
-        for edge in edges {
-            match edge.kind {
-                // local = other_local   (DataFlow: Assign from local to local)
-                DataFlowKind::Assign => {
-                    // The target of an Assign edge is the LHS; the source is
-                    // the RHS.  We need both source and target names.
-                    // DataNode IDs don't carry names directly, so we rely
-                    // on the caller to provide name lookups.
-                    //
-                    // This function receives edges only; the name resolution
-                    // is done at the call site in `build_with_names`.
-                }
-                // local = field_expr   (DataFlow: FieldLoad produces a local)
-                DataFlowKind::FieldLoad => {
-                    // Similar: target is the local, source is the field path.
-                }
-                _ => {}
-            }
-        }
-
-        // Fixpoint transitive closure
-        let mut table = AliasTable {
-            mapping: HashMap::new(),
-        };
-
-        for (local, targets) in &raw {
-            if let Some(first) = targets.iter().next() {
-                table.mapping.insert(local.clone(), first.clone());
-            }
-        }
-
-        // Transitive closure: if a → b and b → c, then a → c
-        let mut changed = true;
-        let mut iterations = 0;
-        while changed && iterations < Self::MAX_ITERATIONS {
-            changed = false;
-            iterations += 1;
-
-            let snapshot: Vec<(String, AliasTarget)> = table
-                .mapping
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-
-            for (local, target) in &snapshot {
-                match target {
-                    AliasTarget::Local {
-                        name: aliased_local,
-                    } => {
-                        if let Some(next) = table.mapping.get(aliased_local) {
-                            if next != target {
-                                table.mapping.insert(local.clone(), next.clone());
-                                changed = true;
-                            }
-                        }
-                    }
-                    AliasTarget::Field { .. } => {}
-                }
-            }
-        }
-
-        table
-    }
 
     /// Build an alias table using DataFlow edges and name-resolution closures.
     ///
