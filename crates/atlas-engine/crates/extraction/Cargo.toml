@@ -8,7 +8,6 @@ license = "MIT"
 [dependencies]
 types = { path = "../types" }
 anyhow = "1"
-serde_json = "1"
 # streaming-iterator removed: tree-sitter 0.25+ uses standard Iterator for QueryCursor
 tracing = "0.1"
 tree-sitter = "0.26"

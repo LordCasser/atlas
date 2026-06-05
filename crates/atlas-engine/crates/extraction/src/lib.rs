@@ -42,7 +42,7 @@ pub use error::{ExtractionFailure, ExtractionFailureKind};
 pub use extract::{extract_file, extract_file_with_mode, extract_file_with_mode_cancellable};
 pub use frontend::{
     FrontendParts, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, ParserSpec,
-    ReferenceExtractorSpec, ScopeExtractorSpec, SymbolExtractorSpec, UnsupportedSpec,
+    ReferenceExtractorSpec, ScopeExtractorSpec, SymbolExtractorSpec,
 };
 pub use grammar::LanguageRegistry;
 pub use languages::{available_languages, create_frontend};

@@ -239,63 +239,6 @@ impl RecoverySpec for NoOpRecovery {
 }
 
 // ---------------------------------------------------------------------------
-// Unsupported spec stubs
-// ---------------------------------------------------------------------------
-
-/// Generic unsupported spec that returns `FeatureSupport::Unsupported`.
-pub struct UnsupportedSpec {
-    reason: String,
-}
-
-impl UnsupportedSpec {
-    pub fn new(reason: &str) -> Self {
-        Self {
-            reason: reason.to_string(),
-        }
-    }
-}
-
-impl LexicalBindingSpec for UnsupportedSpec {
-    fn lexical_query(&self) -> &str {
-        ""
-    }
-    fn capability(&self) -> FeatureSupport {
-        FeatureSupport::unsupported(&self.reason)
-    }
-    fn normalize(&self, _ctx: NormalizeCtx<'_>, _capture: Capture<'_>) -> Option<BindingDef> {
-        None
-    }
-}
-
-impl DataflowSpec for UnsupportedSpec {
-    fn dataflow_builder_query(&self) -> &str {
-        ""
-    }
-    fn capability(&self) -> FeatureSupport {
-        FeatureSupport::unsupported(&self.reason)
-    }
-    fn normalize(
-        &self,
-        _ctx: NormalizeCtx<'_>,
-        _capture: Capture<'_>,
-    ) -> (Option<DataNode>, Option<DataFlowEdge>) {
-        (None, None)
-    }
-}
-
-impl ScopeExtractorSpec for UnsupportedSpec {
-    fn scope_query(&self) -> &str {
-        ""
-    }
-    fn capability(&self) -> FeatureSupport {
-        FeatureSupport::unsupported(&self.reason)
-    }
-    fn normalize(&self, _ctx: NormalizeCtx<'_>, _capture: Capture<'_>) -> Option<ScopeDef> {
-        None
-    }
-}
-
-// ---------------------------------------------------------------------------
 // FrontendParts
 // ---------------------------------------------------------------------------
 

@@ -207,7 +207,7 @@ impl Workspace {
 ///
 /// This is a proper newtype (not a bare `String`) to prevent accidental
 /// creation with backslashes or absolute paths. Use [`SourcePath::from_relative`]
-/// or [`relative_source_path`] to obtain instances.
+/// to obtain instances.
 ///
 /// # Slash normalization
 ///
@@ -326,16 +326,6 @@ impl From<SourcePath> for String {
     fn from(p: SourcePath) -> String {
         p.0
     }
-}
-
-/// Derive a workspace-relative [`SourcePath`] from an absolute file path.
-///
-/// Strips the `root` prefix from `abs_path`, normalizing separators to
-/// forward slashes. Returns `None` if `abs_path` is not under `root` or
-/// the resulting path is not a valid relative source path.
-pub fn relative_source_path(root: &Path, abs_path: &Path) -> Option<SourcePath> {
-    let rel = abs_path.strip_prefix(root).ok()?;
-    SourcePath::try_from_relative(&rel.to_string_lossy()).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -487,10 +477,4 @@ mod tests {
         assert!(SourcePath::try_from_relative("D:/foo/bar").is_err());
     }
 
-    #[test]
-    fn source_path_relative_source_path_returns_none_for_invalid() {
-        let root = Path::new("/tmp/project");
-        // Path doesn't start with root, should return None
-        assert!(relative_source_path(root, Path::new("/other/file")).is_none());
-    }
 }

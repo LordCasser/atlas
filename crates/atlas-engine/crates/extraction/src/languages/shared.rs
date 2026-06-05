@@ -106,43 +106,6 @@ impl SymbolDefBuilder {
     }
 }
 
-/// Extract the precise range for a name token within a definition node.
-///
-/// Most adapters currently set `name_range = node_range(node)` which makes
-/// go-to-definition highlight the entire declaration. This helper extracts
-/// just the name token's range by finding the first child that matches the
-/// symbol name text.
-#[allow(dead_code)]
-pub fn node_name_range(node: tree_sitter::Node, name: &str, source: &str) -> Option<TextRange> {
-    // For simple cases where the name is the first identifier child
-    for i in 0..node.child_count() {
-        let child = node.child(i as u32)?;
-        let kind = child.kind();
-        // Handle common identifier-like node types
-        if matches!(
-            kind,
-            "identifier"
-                | "type_identifier"
-                | "property_identifier"
-                | "shorthand_property_identifier"
-        ) {
-            if let Ok(text) = child.utf8_text(source.as_bytes()) {
-                if text == name {
-                    return Some(super::node_range(child));
-                }
-            }
-        }
-    }
-    // Fall back to the first identifier child
-    for i in 0..node.child_count() {
-        let child = node.child(i as u32)?;
-        if child.kind().contains("identifier") {
-            return Some(super::node_range(child));
-        }
-    }
-    None
-}
-
 // ── Shared identifier-use filter ────────────────────────────────────────
 
 /// Check if an identifier node sits inside an assignment left-hand side.

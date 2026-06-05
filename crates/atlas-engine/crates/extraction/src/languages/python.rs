@@ -597,23 +597,6 @@ fn qualified_name_from_node_py(
     }
 }
 
-/// Extract project name from pyproject.toml (simple parser for MVP).
-#[allow(dead_code)]
-fn extract_toml_project_name(content: &str) -> Option<String> {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("name ") {
-            if let Some(rest) = rest.strip_prefix('=') {
-                let name = rest.trim().trim_matches('"').trim_matches('\'');
-                if !name.is_empty() {
-                    return Some(name.to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
 /// Check if a Python definition is exported (module-level, no leading underscore).
 fn is_exported_in_tree_py(node: tree_sitter::Node, name: &str) -> bool {
     if name.starts_with('_') {

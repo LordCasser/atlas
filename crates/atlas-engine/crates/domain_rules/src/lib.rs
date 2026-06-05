@@ -20,11 +20,9 @@ pub mod kinds;
 pub mod learning;
 pub mod pattern;
 pub mod registry;
-pub mod store;
 pub mod types;
 
 pub use engine::GenericRuleEngine;
 pub use learning::{LearnedRuleCandidate, LearningEvidence, RuleLearningStrategy};
 pub use registry::{LanguageRuleKinds, RuleKindSpec, RuleValidationResult};
-pub use store::GenericRuleStore;
 pub use types::*;
