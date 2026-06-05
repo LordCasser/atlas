@@ -473,9 +473,8 @@ impl ToolRouter {
         }
 
         // Lazy structural response
-        let lazy_diag: Option<LazyDiagnostics> = lazy_outcome
-            .as_ref()
-            .map(LazyDiagnostics::from_structural);
+        let lazy_diag: Option<LazyDiagnostics> =
+            lazy_outcome.as_ref().map(LazyDiagnostics::from_structural);
 
         lr.with_precision_tier(tier)
             .with_lazy_warnings(lazy_warnings)
@@ -805,9 +804,7 @@ impl ToolRouter {
                 .with_root_warnings(root_warnings)
                 .with_lazy_warnings(lazy_warnings)
                 .with_lazy_diag(lazy_diag)
-                .with_partial_result(
-                    tier != atlas_engine::structs::precision::PrecisionTier::Exact,
-                )
+                .with_partial_result(tier != atlas_engine::structs::precision::PrecisionTier::Exact)
                 .build(resp, self)
         } else {
             // No path found — diagnostic frontier.
@@ -897,9 +894,7 @@ impl ToolRouter {
                 .with_root_warnings(root_warnings)
                 .with_lazy_warnings(lazy_warnings)
                 .with_lazy_diag(lazy_diag)
-                .with_partial_result(
-                    tier != atlas_engine::structs::precision::PrecisionTier::Exact,
-                )
+                .with_partial_result(tier != atlas_engine::structs::precision::PrecisionTier::Exact)
                 .build(resp, self)
         }
     }
