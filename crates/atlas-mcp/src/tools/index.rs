@@ -125,44 +125,10 @@ impl ToolRouter {
 
         let start = std::time::Instant::now();
 
-        let exclude_patterns: Vec<String> = args["exclude"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let include_patterns: Vec<String> = args["include"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        if exclude_patterns.len() > MAX_INDEX_PATTERNS {
-            return (
-                format!(
-                    "exclude patterns ({}) exceed maximum of {}",
-                    exclude_patterns.len(),
-                    MAX_INDEX_PATTERNS,
-                ),
-                true,
-            );
-        }
-        if include_patterns.len() > MAX_INDEX_PATTERNS {
-            return (
-                format!(
-                    "include patterns ({}) exceed maximum of {}",
-                    include_patterns.len(),
-                    MAX_INDEX_PATTERNS,
-                ),
-                true,
-            );
-        }
+        let (include_patterns, exclude_patterns) = match parse_include_exclude_patterns(args) {
+            Ok(patterns) => patterns,
+            Err(err) => return (err, true),
+        };
 
         let mut result = IndexResult {
             ok: false,
@@ -268,43 +234,10 @@ impl ToolRouter {
         let store = self.store.clone();
         let project_root = self.project_root.clone();
 
-        let exclude_patterns: Vec<String> = args["exclude"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let include_patterns: Vec<String> = args["include"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        if exclude_patterns.len() > MAX_INDEX_PATTERNS {
-            return (
-                format!(
-                    "exclude patterns ({}) exceed maximum of {}",
-                    exclude_patterns.len(),
-                    MAX_INDEX_PATTERNS,
-                ),
-                true,
-            );
-        }
-        if include_patterns.len() > MAX_INDEX_PATTERNS {
-            return (
-                format!(
-                    "include patterns ({}) exceed maximum of {}",
-                    include_patterns.len(),
-                    MAX_INDEX_PATTERNS,
-                ),
-                true,
-            );
-        }
+        let (include_patterns, exclude_patterns) = match parse_include_exclude_patterns(args) {
+            Ok(patterns) => patterns,
+            Err(err) => return (err, true),
+        };
 
         std::thread::spawn(move || {
             let start = std::time::Instant::now();
@@ -431,6 +364,45 @@ fn parse_analysis_mode(args: &serde_json::Value) -> Result<ExtractionMode, Strin
         .and_then(|v| v.as_str())
         .unwrap_or("manifest");
     atlas_engine::parse_analysis_mode(analysis).map_err(|e| e.to_string())
+}
+
+fn parse_include_exclude_patterns(
+    args: &serde_json::Value,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let exclude_patterns: Vec<String> = args["exclude"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let include_patterns: Vec<String> = args["include"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if exclude_patterns.len() > MAX_INDEX_PATTERNS {
+        return Err(format!(
+            "exclude patterns ({}) exceed maximum of {}",
+            exclude_patterns.len(),
+            MAX_INDEX_PATTERNS,
+        ));
+    }
+    if include_patterns.len() > MAX_INDEX_PATTERNS {
+        return Err(format!(
+            "include patterns ({}) exceed maximum of {}",
+            include_patterns.len(),
+            MAX_INDEX_PATTERNS,
+        ));
+    }
+
+    Ok((include_patterns, exclude_patterns))
 }
 
 fn index_error_result(error: String) -> String {
