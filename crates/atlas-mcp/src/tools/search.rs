@@ -193,7 +193,7 @@ impl ToolRouter {
             self.store.clone(),
             Some(&self.project_root),
         ));
-        let svc = ScopedSearchService::new(self.store.clone(), engine, self.project_root.clone());
+        let svc = ScopedSearchService::new(self.store.clone(), engine);
 
         let engine_resp = match svc.execute(req) {
             Ok(r) => r,
@@ -291,7 +291,7 @@ impl ToolRouter {
 
             let engine: Arc<Engine> =
                 Arc::new(Engine::from_store(store.clone(), Some(&project_root)));
-            let svc = ScopedSearchService::new(store.clone(), engine.clone(), project_root.clone());
+            let svc = ScopedSearchService::new(store.clone(), engine.clone());
 
             let engine_resp = match svc.execute(req) {
                 Ok(r) => r,

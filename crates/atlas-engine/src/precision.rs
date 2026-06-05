@@ -22,17 +22,6 @@ pub fn structural_precision(built: usize, cached: usize, budget_exceeded: bool) 
     }
 }
 
-/// Compute precision tier for lazy dataflow extraction.
-/// Delegates to [`types::structs::precision::dataflow_precision`].
-#[allow(dead_code)] // public API, consumed by MCP/CLI consumers
-pub fn dataflow_precision(
-    available: usize,
-    planned: usize,
-    budget_exceeded: bool,
-) -> PrecisionTier {
-    types::structs::precision::dataflow_precision(available, planned, budget_exceeded)
-}
-
 /// Suggested next action based on structural precision tier.
 #[allow(dead_code)] // public API, consumed in future phases
 pub fn next_action_structural(tier: PrecisionTier) -> Option<&'static str> {

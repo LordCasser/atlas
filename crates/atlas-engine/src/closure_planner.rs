@@ -218,9 +218,6 @@ impl ClosurePlanner {
             }
         }
 
-        // Collect files still in queue as unprocessed dependencies
-        let _unprocessed: Vec<FileId> = queue.into_iter().collect();
-
         Ok(DependencyClosure {
             seed_file: *seed,
             direct_deps,
@@ -415,12 +412,6 @@ impl ClosurePlanner {
         }
     }
 
-    // Private helper needed for fn resolve_import_target - dead_code warning
-    #[allow(dead_code)]
-    fn _project_root(&self) -> Option<&std::path::Path> {
-        self.project_root.as_deref()
-    }
-
     /// Resolve an angle-bracket include module string by searching the
     /// configured include roots.
     ///
@@ -513,7 +504,7 @@ impl ClosurePlanner {
         };
 
         // Scan for include/import patterns
-        let imports = scan_c_includes(file_id, &file_info.path, &source);
+        let imports = scan_c_includes(file_id, &source);
 
         // Write discovered imports to DB
         if !imports.is_empty() {
@@ -540,7 +531,7 @@ impl ClosurePlanner {
 /// Distinguishes local from system includes per the C standard:
 /// - `#include "..."` → always relative (searches including file's directory first)
 /// - `#include <...>` → never relative (system/library include paths)
-pub(crate) fn scan_c_includes(file_id: &FileId, _file_path: &str, source: &str) -> Vec<ImportDef> {
+pub(crate) fn scan_c_includes(file_id: &FileId, source: &str) -> Vec<ImportDef> {
     // Separate patterns for quoted (local) vs angle (system) includes
     let quote_re = Regex::new(r##"#include\s+"([^"]+)""##).unwrap();
     let angle_re = Regex::new(r#"#include\s+<([^>]+)>"#).unwrap();
@@ -677,7 +668,7 @@ mod tests {
             "int main() { return 0; }\n",
         );
 
-        let imports = scan_c_includes(&file_id, "src/main.c", source);
+        let imports = scan_c_includes(&file_id, source);
 
         assert_eq!(imports.len(), 4, "should discover all 4 includes");
 

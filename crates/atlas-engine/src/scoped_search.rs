@@ -31,7 +31,7 @@
 //! };
 //!
 //! let svc = ScopedSearchService::new(
-//!     store, engine, project_root,
+//!     store, engine,
 //! );
 //! let resp = svc.execute(ScopedSearchRequest {
 //!     query: "handleRequest".into(),
@@ -42,7 +42,6 @@
 //! })?;
 //! ```
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use db::Store;
@@ -142,17 +141,14 @@ pub struct ScopedSearchResponse {
 pub struct ScopedSearchService {
     store: Arc<Store>,
     engine: Arc<Engine>,
-    #[allow(dead_code)]
-    project_root: PathBuf,
 }
 
 impl ScopedSearchService {
     /// Create a new service.
-    pub fn new(store: Arc<Store>, engine: Arc<Engine>, project_root: PathBuf) -> Self {
+    pub fn new(store: Arc<Store>, engine: Arc<Engine>) -> Self {
         Self {
             store,
             engine,
-            project_root,
         }
     }
 
@@ -600,7 +596,7 @@ mod tests {
         let store = Arc::new(Store::open_in_memory().expect("open in-memory store"));
         store.init_schema().expect("init schema");
         let engine = Arc::new(Engine::from_store(Arc::clone(&store), None));
-        ScopedSearchService::new(store, engine, PathBuf::from("."))
+        ScopedSearchService::new(store, engine)
     }
 
     // ── execute_manifest_returns_results ───────────────────────────────
