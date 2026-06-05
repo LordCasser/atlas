@@ -4,6 +4,51 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
+## [1.4.1] — 2026-06-05
+
+### Index Precision Guard
+
+Running `atlas index` or `atlas sync` on a rich-indexed database (structural/full) with
+the default manifest analysis mode could silently discard capability. v1.4.1 adds a
+runtime guard that detects and prevents accidental precision downgrades.
+
+- **`index_precision` module**: `would_downgrade_index_precision()`,
+  `is_rich_index_mode()`, `extraction_mode_name()`, `recommended_analysis_for()` for
+  detecting and explaining precision downgrade risk.
+- **`Store::read_index_mode()`** with `compute_index_mode()` logic that distinguishes 8
+  states: `none`, `unknown`, `manifest`, `partial_structural`,
+  `partial_structural+lazy`, `structural`, `structural+lazy`, `full`.
+- **`Store::dominant_language()`** and **`dominant_language_in_scope()`** — language-aware
+  scoped search that applies language-specific extraction when a scope is dominated by a
+  single language.
+- **`Store::derive_capability_for_files()`** — capability aggregation across multiple
+  files with edge-aware `STRUCTURAL`/`CALL_EDGES` bits.
+- **`guard_against_precision_downgrade()`** — shared runtime check wired into CLI
+  `index`/`sync` commands and MCP entry points. Refuses to re-index with lower precision
+  unless `--force-reindex` is explicitly passed.
+- **`--force-reindex` flag** added to `atlas index` and `atlas sync` for explicit
+  override of the safety guard.
+- **TUI** simplified: `preserve_unusable_db()` now uses `read_index_mode()` instead of
+  manual layer counting.
+- **Coverage**: unit tests for all `compute_index_mode` states,
+  `guard_rejects_manifest_downgrade`, `guard_rejects_structural_downgrade`,
+  `derive_capability` aggregation, and E2E MCP tests for index refusal of default
+  manifest downgrade.
+
+### Release CI Hardening
+
+- **Static musl linking**: Linux release targets switched from `-gnu` to `-musl`
+  (`x86_64`, `aarch64`, `riscv64gc`). musl-tools installed on native runners with
+  `CC_*=musl-gcc` env. Static binary verification via `readelf` check added.
+- **riscv64 workaround**: temporarily pinned to GNU target (`riscv64gc-unknown-linux-gnu`)
+  until musl toolchain for riscv64 is available.
+- **GitHub Actions dependency upgrades**: `actions/checkout` v4→v6,
+  `actions/upload-artifact` v4→v7, `softprops/action-gh-release` v2→v3. Removed
+  deprecated `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24` env. Windows runner updated to
+  `windows-2025-vs2026`.
+
+---
+
 ## [1.4.0] — 2026-06-05
 
 ### Breaking
