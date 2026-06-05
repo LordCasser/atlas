@@ -37,6 +37,7 @@ pub use lazy_crate::LazyDataflowService;
 // ── Internal modules ──────────────────────────────────────────────────────
 
 mod closure_planner;
+mod index_precision;
 /// Investigation context: MCP-session-scoped analysis focus for lazy job prioritization.
 pub mod investigation;
 /// Unified job context: shared cancellation and progress for long-running operations.
@@ -57,6 +58,12 @@ pub use closure_planner::{ClosurePlanner, DependencyClosure, IncludeRoot, Priori
 
 /// Lazy coordinator: orchestrates lazy extraction with job tracking and in-flight dedup.
 pub use lazy_coordinator::LazyCoordinator;
+
+/// Index precision helpers shared by CLI/MCP/TUI entry points.
+pub use index_precision::{
+    extraction_mode_name, is_rich_index_mode, recommended_analysis_for,
+    would_downgrade_index_precision,
+};
 
 /// Lazy structural service: on-demand full structural extraction.
 pub use lazy_structural::{

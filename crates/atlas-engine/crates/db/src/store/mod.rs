@@ -1560,6 +1560,72 @@ mod tests {
     }
 
     #[test]
+    fn read_index_mode_treats_dataflow_layer_as_full_index() {
+        let store = test_store();
+        let file_id = FileId::generate("src/example.ts");
+        let file = FileInfo {
+            file_id,
+            path: "src/example.ts".into(),
+            language: Language::TypeScript,
+            content_hash: "abc".into(),
+            status: ParseStatus::Success,
+        };
+        store.upsert_file(&file).unwrap();
+
+        // The full extraction pipeline records the file-level layer as
+        // `dataflow`; it does not also write a separate structural row.
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "dataflow",
+                "abc",
+                "complete",
+                CapabilityMask::from_layers(&["dataflow"]),
+            )
+            .unwrap();
+
+        assert_eq!(store.read_index_mode().unwrap(), "full");
+    }
+
+    #[test]
+    fn read_index_mode_treats_mixed_dataflow_as_partial_structural() {
+        let store = test_store();
+        let file_a = FileId::generate("src/a.ts");
+        let file_b = FileId::generate("src/b.ts");
+        for (file_id, path) in [(file_a, "src/a.ts"), (file_b, "src/b.ts")] {
+            store
+                .upsert_file(&FileInfo {
+                    file_id,
+                    path: path.into(),
+                    language: Language::TypeScript,
+                    content_hash: "abc".into(),
+                    status: ParseStatus::Success,
+                })
+                .unwrap();
+        }
+        store
+            .upsert_file_extraction_state(
+                &file_a,
+                "dataflow",
+                "abc",
+                "complete",
+                CapabilityMask::from_layers(&["dataflow"]),
+            )
+            .unwrap();
+        store
+            .upsert_file_extraction_state(
+                &file_b,
+                "manifest",
+                "abc",
+                "complete",
+                CapabilityMask::from_layers(&["manifest"]),
+            )
+            .unwrap();
+
+        assert_eq!(store.read_index_mode().unwrap(), "partial_structural");
+    }
+
+    #[test]
     fn derive_capability_with_edges_returns_call_edges_bit() {
         let store = test_store();
         let file_id = FileId::generate("src/example.ts");

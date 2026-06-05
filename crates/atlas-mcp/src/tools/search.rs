@@ -262,7 +262,6 @@ impl ToolRouter {
         let store = self.store.clone();
         let project_root = self.project_root.clone();
         let task_manager = self.task_manager.clone();
-        let lazy_refresh_queue = Arc::clone(&self.lazy_refresh_queue);
         let q = query.to_string();
         let k = kind.map(|s| s.to_string());
         let sc = scope.to_string();
@@ -301,11 +300,6 @@ impl ToolRouter {
                     return;
                 }
             };
-
-            // Signal graph refresh if lazy structural was triggered.
-            if engine_resp.triggered_lazy {
-                lazy_refresh_queue.signal_background_writes();
-            }
 
             let mut all_warnings = root_warnings_for_thread;
             all_warnings.extend(engine_resp.warnings.iter().cloned());

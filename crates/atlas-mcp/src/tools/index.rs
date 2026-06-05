@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use atlas_engine::{
     ExtractionMode, FileLock, IndexPipeline, IndexPipelineOptions, IndexPipelineStats,
-    ProgressEvent, ProgressSink,
+    ProgressEvent, ProgressSink, extraction_mode_name, recommended_analysis_for,
+    would_downgrade_index_precision,
 };
 
 use super::ToolRouter;
@@ -103,14 +104,23 @@ impl ToolRouter {
             Ok(mode) => mode,
             Err(err) => return (index_error_result(err), true),
         };
+        let force_reindex = args
+            .get("force_reindex")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let background = args
             .get("background")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         if background {
+            if let Err(err) =
+                guard_against_precision_downgrade(&self.store, &mode, force_reindex, "MCP index")
+            {
+                return (index_error_result(err), true);
+            }
             self.invalidate_manual_full_index_cache();
-            return self.handle_index_background(args, mode);
+            return self.handle_index_background(args, mode, force_reindex);
         }
 
         let start = std::time::Instant::now();
@@ -183,6 +193,13 @@ impl ToolRouter {
         } else {
             None
         };
+        if let Err(err) =
+            guard_against_precision_downgrade(&self.store, &mode, force_reindex, "MCP index")
+        {
+            result.errors.push(err);
+            let json = serde_json::to_string(&result).unwrap_or_else(|e| e.to_string());
+            return (json, true);
+        }
 
         // Run the index pipeline
         let sink = McpProgressSink {
@@ -238,6 +255,7 @@ impl ToolRouter {
         &self,
         args: &serde_json::Value,
         mode: ExtractionMode,
+        force_reindex: bool,
     ) -> (String, bool) {
         let task_id = self.task_manager.create_task("index", "index");
         let auto_background = args
@@ -308,6 +326,12 @@ impl ToolRouter {
             } else {
                 None
             };
+            if let Err(err) =
+                guard_against_precision_downgrade(&store, &mode, force_reindex, "MCP index")
+            {
+                task_manager.fail_task(&tid, &err);
+                return;
+            }
 
             let sink = McpProgressSink {
                 progress_sender: None,
@@ -412,6 +436,30 @@ fn parse_analysis_mode(args: &serde_json::Value) -> Result<ExtractionMode, Strin
             "Unsupported analysis mode '{other}'. Must be one of: manifest, structural, full."
         )),
     }
+}
+
+fn guard_against_precision_downgrade(
+    store: &atlas_engine::Store,
+    requested: &ExtractionMode,
+    force_reindex: bool,
+    operation: &str,
+) -> Result<(), String> {
+    if force_reindex {
+        return Ok(());
+    }
+
+    let current = store
+        .read_index_mode()
+        .unwrap_or_else(|_| "unknown".to_string());
+    if !would_downgrade_index_precision(&current, requested) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Refusing to run {operation} with analysis='{}' because the existing fresh index is {current}. This would discard higher-precision facts for changed files. Use analysis='{}' or pass force_reindex=true to allow the downgrade explicitly.",
+        extraction_mode_name(requested),
+        recommended_analysis_for(&current),
+    ))
 }
 
 fn index_error_result(error: String) -> String {

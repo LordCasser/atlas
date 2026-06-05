@@ -24,6 +24,9 @@ use self::scoring::SearchScore;
 pub struct SearchOptions {
     /// Filter results to this language only.
     pub language: Option<Language>,
+    /// Soft ranking preference. Unlike `language`, this does not filter out
+    /// other languages; it only ranks the project/scope primary language higher.
+    pub preferred_language: Option<Language>,
     /// Filter results where file path contains this substring.
     pub file_path_pattern: Option<String>,
     /// Filter results to this symbol kind only.
@@ -39,6 +42,11 @@ impl SearchOptions {
 
     pub fn with_language(mut self, lang: Language) -> Self {
         self.language = Some(lang);
+        self
+    }
+
+    pub fn with_preferred_language(mut self, lang: Language) -> Self {
+        self.preferred_language = Some(lang);
         self
     }
 
@@ -195,6 +203,19 @@ impl SearchEngine {
         // Normalize query for camelCase/snake_case matching
         let query_norm = normalize_name_for_search(query);
         let weights = scoring::ScoreWeights::default();
+        let preferred_language = if options.language.is_some() {
+            None
+        } else if let Some(lang) = options.preferred_language {
+            Some(lang)
+        } else if let Some(ref path_pat) = options.file_path_pattern {
+            self.store
+                .dominant_language_in_scope(path_pat)
+                .ok()
+                .flatten()
+                .or_else(|| self.store.dominant_language().ok().flatten())
+        } else {
+            self.store.dominant_language().ok().flatten()
+        };
 
         // Score → filter → (retry with LIKE if filters emptied FTS results)
         let mut results: Vec<SearchResult> = loop {
@@ -233,7 +254,8 @@ impl SearchEngine {
                     sym.kind,
                     file_path.as_deref(),
                     &weights,
-                );
+                )
+                .with_language_preference(preferred_language == Some(sym.language), &weights);
 
                 // Determine matched field for display
                 let matched_field = if from_like {
@@ -291,13 +313,10 @@ impl SearchEngine {
             break results;
         };
 
-        // Sort by total score descending, then truncate to limit
-        results.sort_by(|a, b| {
-            b.score
-                .total
-                .partial_cmp(&a.score.total)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // Sort by total score descending. For near-equal name matches, use the
+        // project/scope primary language as a strong tie-breaker so common names
+        // like `App` do not drift to incidental files from another language.
+        results.sort_by(|a, b| compare_results(a, b, preferred_language));
         results.truncate(limit);
 
         Ok(results)
@@ -356,6 +375,25 @@ impl SearchEngine {
             .map(|r| (r.symbol, r.score.name_score))
             .collect())
     }
+}
+
+fn compare_results(
+    a: &SearchResult,
+    b: &SearchResult,
+    preferred_language: Option<Language>,
+) -> std::cmp::Ordering {
+    if let Some(lang) = preferred_language {
+        let a_preferred = a.symbol.language == lang;
+        let b_preferred = b.symbol.language == lang;
+        let near_equal_name = (a.score.name_score - b.score.name_score).abs() <= 0.15;
+        if near_equal_name && a_preferred != b_preferred {
+            return b_preferred.cmp(&a_preferred);
+        }
+    }
+    b.score
+        .total
+        .partial_cmp(&a.score.total)
+        .unwrap_or(std::cmp::Ordering::Equal)
 }
 
 // ------------------------------------------------------------------
@@ -768,6 +806,57 @@ mod tests {
         store.insert_symbols(&syms).unwrap();
     }
 
+    fn seed_cross_language_app_symbols(store: &Store) {
+        let rust_fid = types::FileId::generate("src/main.rs");
+        store
+            .upsert_file(&FileInfo {
+                file_id: rust_fid,
+                path: "src/main.rs".into(),
+                language: Language::Rust,
+                content_hash: "rust-main".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        let rust_extra_fid = types::FileId::generate("src/lib.rs");
+        store
+            .upsert_file(&FileInfo {
+                file_id: rust_extra_fid,
+                path: "src/lib.rs".into(),
+                language: Language::Rust,
+                content_hash: "rust-lib".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        let ts_fid = types::FileId::generate("app.tsx");
+        store
+            .upsert_file(&FileInfo {
+                file_id: ts_fid,
+                path: "app.tsx".into(),
+                language: Language::TypeScript,
+                content_hash: "ts-app".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+
+        let syms = vec![
+            mk_sym_lang(
+                rust_fid,
+                "App",
+                "crate::App",
+                SymbolKind::Variable,
+                Language::Rust,
+            ),
+            mk_sym_lang(
+                ts_fid,
+                "App",
+                "App",
+                SymbolKind::Variable,
+                Language::TypeScript,
+            ),
+        ];
+        store.insert_symbols(&syms).unwrap();
+    }
+
     // ── new tests ──
 
     #[test]
@@ -909,5 +998,30 @@ mod tests {
             "result should be a Python symbol"
         );
         assert_eq!(results[0].symbol.name, "PythonUserHelper");
+    }
+
+    #[test]
+    fn test_primary_language_soft_boost_orders_same_name_symbols() {
+        let store = test_store();
+        seed_cross_language_app_symbols(&store);
+        assert_eq!(store.dominant_language().unwrap(), Some(Language::Rust));
+        let engine = test_engine(store);
+
+        let results = engine.search_simple("App", 10).unwrap();
+        assert!(
+            results
+                .iter()
+                .any(|r| r.symbol.language == Language::TypeScript),
+            "soft preference must not hide other languages"
+        );
+        assert_eq!(
+            results[0].symbol.language,
+            Language::Rust,
+            "Rust should rank first in a Rust-dominant project"
+        );
+        assert!(
+            results[0].score.language_bonus > 0.0,
+            "top result should carry the language preference bonus"
+        );
     }
 }

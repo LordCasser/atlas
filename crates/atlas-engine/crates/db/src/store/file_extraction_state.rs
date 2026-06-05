@@ -114,6 +114,30 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Return the effective precision of the fresh project index.
+    ///
+    /// This is the shared status boundary used by CLI, MCP, and TUI entry
+    /// points. Stale extraction rows are ignored so an old structural/full
+    /// layer cannot make a downgraded or modified project look protected.
+    pub fn read_index_mode(&self) -> anyhow::Result<String> {
+        let stats = self.get_stats()?;
+        let lazy_stats = self.get_lazy_dataflow_stats().ok();
+        let layer_counts = self.count_fresh_file_extraction_state().unwrap_or_default();
+
+        Ok(compute_index_mode(
+            stats.total_files,
+            complete_count(&layer_counts, "manifest"),
+            complete_count(&layer_counts, "structural"),
+            complete_count(&layer_counts, "dataflow"),
+            lazy_stats
+                .as_ref()
+                .map(|l| l.total_unit_states)
+                .unwrap_or(0),
+            lazy_stats.as_ref().is_some_and(|l| l.has_dataflow),
+        )
+        .to_string())
+    }
+
     /// Return true when a file has fresh, complete file-level extraction state
     /// covering every bit in `required`.
     pub fn file_has_fresh_complete_capability(
@@ -384,5 +408,50 @@ impl Store {
         // `function_summaries` respectively and set the bits here.
 
         mask
+    }
+}
+
+fn complete_count(layer_counts: &[(String, String, i64)], layer: &str) -> i64 {
+    layer_counts
+        .iter()
+        .filter(|(l, s, _)| l == layer && s == "complete")
+        .map(|(_, _, c)| *c)
+        .sum()
+}
+
+fn compute_index_mode(
+    total_files: i64,
+    manifest_complete: i64,
+    structural_complete: i64,
+    dataflow_file_complete: i64,
+    lazy_total_unit_states: i64,
+    lazy_has_dataflow: bool,
+) -> &'static str {
+    let structural_or_better_complete = structural_complete.max(dataflow_file_complete);
+
+    if total_files == 0 {
+        "none"
+    } else if dataflow_file_complete >= total_files {
+        // `--analysis full` writes a per-file `dataflow` layer. That layer
+        // implies structural facts even when no separate structural row exists.
+        "full"
+    } else if structural_or_better_complete == 0 {
+        if manifest_complete > 0 {
+            "manifest"
+        } else {
+            "unknown"
+        }
+    } else if structural_or_better_complete < total_files {
+        if lazy_total_unit_states > 0 {
+            "partial_structural+lazy"
+        } else {
+            "partial_structural"
+        }
+    } else if lazy_total_unit_states > 0 {
+        "structural+lazy"
+    } else if dataflow_file_complete >= total_files || lazy_has_dataflow {
+        "full"
+    } else {
+        "structural"
     }
 }

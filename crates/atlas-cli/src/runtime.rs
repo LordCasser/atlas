@@ -18,7 +18,8 @@ use std::sync::Arc;
 use anyhow::Context;
 use atlas_engine::{
     ExtractionError, ExtractionMode, FailureCategory, FileFacts, Language, LanguageFrontend,
-    ParseWorkerPool, Store, Workspace,
+    ParseWorkerPool, Store, Workspace, extraction_mode_name, recommended_analysis_for,
+    would_downgrade_index_precision,
 };
 
 /// Controls DB creation and schema-initialisation behaviour.
@@ -146,6 +147,35 @@ impl CommandContext {
     }
 }
 
+/// Prevent accidental precision downgrade of an existing rich index.
+///
+/// Default CLI flows should never replace fresh structural/full facts with a
+/// lower analysis depth because an agent picked a low-information default.
+/// Callers can still opt in explicitly with `--force-reindex`.
+pub fn guard_against_precision_downgrade(
+    store: &Store,
+    requested: &ExtractionMode,
+    force_reindex: bool,
+    operation: &str,
+) -> anyhow::Result<()> {
+    if force_reindex {
+        return Ok(());
+    }
+
+    let current = store
+        .read_index_mode()
+        .unwrap_or_else(|_| "unknown".to_string());
+    if !would_downgrade_index_precision(&current, requested) {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Refusing to run {operation} with --analysis {} because the existing fresh index is {current}. This would discard higher-precision facts for changed files. Use --analysis {} or pass --force-reindex to allow the downgrade explicitly.",
+        extraction_mode_name(requested),
+        recommended_analysis_for(&current),
+    );
+}
+
 // ── Shared extraction ──────────────────────────────────────────────────────
 
 /// Read a source file, hash it, and extract facts using the given language frontend.
@@ -188,6 +218,7 @@ pub fn extract_one(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use atlas_engine::{CapabilityMask, FileInfo, ParseStatus, source_file_id};
     use tempfile::TempDir;
 
     /// A valid temp directory with no `.atlas/` should succeed with creator modes.
@@ -261,5 +292,81 @@ mod tests {
         let stats = ctx.store.get_stats().unwrap();
         // Just verify the store is in a healthy state
         assert!(stats.total_symbols == 0);
+    }
+
+    #[test]
+    fn guard_rejects_manifest_downgrade_of_structural_index() {
+        let dir = TempDir::new().unwrap();
+        let ctx = CommandContext::open(dir.path().to_str().unwrap(), DbMode::InitOrCreate).unwrap();
+        seed_file_layer(&ctx.store, "src/lib.rs", "structural");
+
+        let err = guard_against_precision_downgrade(
+            &ctx.store,
+            &ExtractionMode::Manifest,
+            false,
+            "atlas index",
+        )
+        .expect_err("manifest should not downgrade a structural index");
+        assert!(
+            err.to_string().contains("--force-reindex"),
+            "error should point to explicit override: {err:#}"
+        );
+
+        guard_against_precision_downgrade(
+            &ctx.store,
+            &ExtractionMode::Manifest,
+            true,
+            "atlas index",
+        )
+        .expect("force_reindex should allow explicit downgrade");
+    }
+
+    #[test]
+    fn guard_rejects_structural_downgrade_of_full_index() {
+        let dir = TempDir::new().unwrap();
+        let ctx = CommandContext::open(dir.path().to_str().unwrap(), DbMode::InitOrCreate).unwrap();
+        seed_file_layer(&ctx.store, "src/lib.rs", "dataflow");
+
+        let err = guard_against_precision_downgrade(
+            &ctx.store,
+            &ExtractionMode::Structural,
+            false,
+            "atlas sync",
+        )
+        .expect_err("structural should not downgrade a full index");
+        assert!(
+            err.to_string().contains("--analysis full"),
+            "error should recommend preserving full precision: {err:#}"
+        );
+    }
+
+    fn seed_file_layer(store: &Store, path: &str, layer: &str) {
+        let file_id = source_file_id(Path::new(path)).expect("file id");
+        let content_hash = "fresh-hash";
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: path.to_string(),
+                language: Language::Rust,
+                content_hash: content_hash.to_string(),
+                status: ParseStatus::Success,
+            })
+            .expect("insert file");
+        let layers: Vec<&str> = match layer {
+            "dataflow" => vec!["manifest", "structural", "dataflow"],
+            "structural" => vec!["manifest", "structural"],
+            other => vec![other],
+        };
+        for layer in layers {
+            store
+                .upsert_file_extraction_state(
+                    &file_id,
+                    layer,
+                    content_hash,
+                    "complete",
+                    CapabilityMask::from_layers(&[layer]),
+                )
+                .expect("insert extraction state");
+        }
     }
 }

@@ -1,6 +1,6 @@
 //! `atlas sync` — incremental sync for changed files.
 
-use crate::runtime::{CommandContext, DbMode};
+use crate::runtime::{CommandContext, DbMode, guard_against_precision_downgrade};
 use anyhow::Result;
 use atlas_engine::ExtractionMode;
 use atlas_engine::progress::{ProgressPhase, ProgressState};
@@ -19,6 +19,10 @@ impl Drop for DoneGuard {
 }
 
 pub fn run(project: &str, analysis: &str) -> Result<()> {
+    run_with_options(project, analysis, false)
+}
+
+pub fn run_with_options(project: &str, analysis: &str, force_reindex: bool) -> Result<()> {
     let mode = match analysis {
         "manifest" => ExtractionMode::Manifest,
         "structural" => ExtractionMode::Structural,
@@ -30,6 +34,7 @@ pub fn run(project: &str, analysis: &str) -> Result<()> {
     let has_dataflow = mode.produces_dataflow();
 
     let ctx = CommandContext::open(project, DbMode::ExistingReadWrite)?;
+    guard_against_precision_downgrade(&ctx.store, &mode, force_reindex, "atlas sync")?;
     let root = ctx.root.clone(); // clone before move into SyncEngine
 
     let engine = atlas_engine::SyncEngine::with_mode(ctx.store.clone(), root.clone(), mode);

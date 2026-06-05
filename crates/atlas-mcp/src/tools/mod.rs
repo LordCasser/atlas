@@ -22,6 +22,7 @@ use atlas_engine::SourceExtractor;
 use atlas_engine::Store;
 use atlas_engine::SymbolId;
 use atlas_engine::TraceDiagnostic;
+use atlas_engine::is_rich_index_mode;
 
 use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolInputSchema};
 
@@ -189,11 +190,9 @@ pub struct ToolRouter {
     cached_signature: String,
     /// When the cached signature was last checked (avoids re-query within cooldown).
     last_signature_check: std::time::Instant,
-    /// Cached result of `has_manual_full_index()` — detects a manually built
-    /// (CLI) structural/full index vs MCP's automatic manifest-only index.
-    /// `None` means not yet checked; checked lazily on first use.
-    /// Uses Cell for interior mutability so &self methods (handle_index) can invalidate.
-    cached_manual_full_index: RwLock<Option<bool>>,
+    /// Cached result of `has_manual_full_index()` keyed by index signature.
+    /// `None` means not yet checked; signature changes force re-check.
+    cached_manual_full_index: RwLock<Option<(String, bool)>>,
     /// Background task manager for `background: true` mode.
     pub(crate) task_manager: Arc<crate::task_manager::TaskManager>,
     /// Project activations prepared by background `open_project` tasks.
@@ -361,47 +360,35 @@ impl ToolRouter {
         }
     }
 
-    /// Detect whether the current database was built from a manual (CLI) full
-    /// structural index rather than MCP's automatic manifest-only index.
+    /// Detect whether the current database already has a reusable rich index.
     ///
-    /// MCP `index` always uses [`ExtractionMode::Manifest`]; the CLI
-    /// `atlas index` (without `--analysis manifest`) builds a full structural
-    /// index.  We detect this by checking whether a majority of indexed files
-    /// have a `"structural"` layer with status `"complete"`.
+    /// This lets MCP avoid lazy preparse work when the active store is already
+    /// structural/full, regardless of whether that index was built by CLI, TUI,
+    /// or MCP.
     ///
     /// The result is cached for the lifetime of the session; callers that
     /// trigger a re-index (MCP `index` tool) should invalidate this cache
     /// after completion.
     pub(crate) fn has_manual_full_index(&self) -> bool {
-        if let Some(cached) = *self.cached_manual_full_index.read().unwrap() {
-            return cached;
+        let signature = self.store.index_signature().unwrap_or_default();
+        if let Some((cached_signature, cached)) = &*self.cached_manual_full_index.read().unwrap()
+            && *cached_signature == signature
+        {
+            return *cached;
         }
-        let total = self.store.count_files().unwrap_or(0);
-        if total == 0 {
-            *self.cached_manual_full_index.write().unwrap() = Some(false);
-            return false;
-        }
-        let layer_counts = self
+        let index_mode = self
             .store
-            .count_fresh_file_extraction_state()
-            .unwrap_or_default();
-        let structural_complete: usize = layer_counts
-            .iter()
-            .filter(|(l, s, _)| l == "structural" && s == "complete")
-            .map(|(_, _, c)| *c as usize)
-            .sum();
-        // More than half of indexed files have structural layer — this is a
-        // manual full index, not MCP's manifest-only index.
-        let result = structural_complete > total / 2;
-        *self.cached_manual_full_index.write().unwrap() = Some(result);
+            .read_index_mode()
+            .unwrap_or_else(|_| "unknown".to_string());
+        let result = is_rich_index_mode(&index_mode);
+        *self.cached_manual_full_index.write().unwrap() = Some((signature, result));
         result
     }
 
     /// Invalidate the cached manual-full-index flag.
     ///
-    /// Called after MCP `index` completes (which always produces a manifest
-    /// index), so the next search/trace query re-checks the actual layer
-    /// distribution.
+    /// Called after MCP `index` completes, so the next search/trace query
+    /// re-checks the actual layer distribution.
     pub(crate) fn invalidate_manual_full_index_cache(&self) {
         *self.cached_manual_full_index.write().unwrap() = None;
     }
@@ -460,7 +447,10 @@ impl ToolRouter {
     }
 
     /// Refresh the graph snapshot if an external index/sync has changed the DB.
-    /// Signature is cached for 5 seconds to avoid per-request COUNT queries.
+    ///
+    /// Graph-backed tools must observe a just-completed full index immediately.
+    /// The signature query is deliberately cheap compared with graph traversal,
+    /// so correctness takes precedence over a short cooldown cache here.
     pub(crate) fn maybe_refresh_graph(&mut self) -> anyhow::Result<()> {
         if !self.graph_initialized {
             return Ok(());
@@ -475,18 +465,8 @@ impl ToolRouter {
         // or spawn the rebuild thread. NEVER blocks the current request.
         self.try_apply_or_spawn_rebuild();
 
-        // Step 3: Background preparse wrote to the DB — bypass cooldown.
-        if self.lazy_refresh_queue.has_background_writes() {
-            self.last_signature_check = self
-                .last_signature_check
-                .checked_sub(std::time::Duration::from_secs(10))
-                .unwrap_or(self.last_signature_check);
-        }
-
-        // Step 4: 5s signature cache cooldown + rebuild if changed.
-        if self.last_signature_check.elapsed().as_secs() < 5 {
-            return Ok(());
-        }
+        // Step 3: Always check the store signature. A full index may change
+        // extraction layers and graph facts without going through this router.
         self.last_signature_check = std::time::Instant::now();
         self.rebuild_if_signature_changed("Index signature changed, refreshing graph")
     }
@@ -1138,7 +1118,7 @@ fn make_project_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "project".into(),
-            description: "Open, inspect, or list files in a project. Use action='open' to activate a project (never indexes), 'status' for a comprehensive overview including language capabilities and index mode, 'files' to list indexed files with language and parse status. Parameters for action='open': project_path (required), storage, scan_files, background. If storage is omitted or 'auto', Atlas reuses persistent storage only when project status shows a reusable index; otherwise it opens an in-memory project. action='status' returns file/symbol/edge counts, extraction state, per-language capability profiles. action='files' supports optional limit, language, and path_prefix filters.".into(),
+            description: "Open, inspect, or list files in a project. Use action='open' to activate a project (never indexes), 'status' for a comprehensive overview including language capabilities and index mode, 'files' to list indexed files with language and parse status. Parameters for action='open': project_path (required), storage, force_memory, scan_files, background. If storage is omitted or 'auto', Atlas reuses persistent storage when project status shows a reusable index; otherwise it opens an in-memory project. Explicit storage='memory' is refused when a reusable persistent index exists unless force_memory=true. action='status' returns file/symbol/edge counts, extraction state, per-language capability profiles. action='files' supports optional limit, language, and path_prefix filters.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
@@ -1151,8 +1131,9 @@ fn make_project_tools() -> Vec<Tool> {
                     "storage": {
                         "type": "string",
                         "enum": ["auto", "memory", "persistent"],
-                        "description": "Storage mode: \"auto\" (default; reuse project/.atlas/atlas.db only when project status shows a reusable index, otherwise memory), \"memory\" (in-memory, zero footprint), or \"persistent\" (project/.atlas/atlas.db)."
+                        "description": "Storage mode: \"auto\" (default; reuse project/.atlas/atlas.db when project status shows a reusable index, otherwise memory), \"memory\" (in-memory, zero footprint; refused if a reusable persistent index exists unless force_memory=true), or \"persistent\" (project/.atlas/atlas.db)."
                     },
+                    "force_memory": { "type": "boolean", "description": "Allow storage='memory' even when an existing persistent Atlas index would otherwise be reused. This intentionally starts an empty temporary index." },
                     "scan_files": { "type": "boolean", "description": "Run file discovery to estimate file_count without indexing (default false; can be slow on very large trees)." },
                     "background": { "type": "boolean", "description": "Prepare/open in a background task; task_status/wait_for_task activates the completed project." },
                     "verbose": { "type": "boolean", "description": "Include verbose details (action='status')." },
@@ -1165,13 +1146,14 @@ fn make_project_tools() -> Vec<Tool> {
         },
         Tool {
             name: "index".into(),
-            description: "Index/re-index the active project for MCP use. Defaults to fast manifest indexing (files plus basic symbols/functions). Pass analysis='structural' for imports/references/call graph, or analysis='full' for dataflow too. Use background=true + wait_for_task for very large projects. Parameters: include/exclude glob patterns, analysis, background (default false).".into(),
+            description: "Index/re-index the active project for MCP use. Defaults to fast manifest indexing (files plus basic symbols/functions). If the existing fresh index is structural/full, Atlas refuses lower-precision re-indexing unless force_reindex=true. Pass analysis='structural' for imports/references/call graph, or analysis='full' for dataflow too. Use background=true + wait_for_task for very large projects. Parameters: include/exclude glob patterns, analysis, force_reindex, background (default false).".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "include": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns to restrict indexing to specific directories/files (e.g. [\"src/**\"])" },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns for directories/files to skip (e.g. [\"**/test/**\", \"**/*.spec.ts\"])" },
                     "analysis": { "type": "string", "enum": ["manifest", "structural", "full"], "description": "Index depth. manifest is fast and default; structural adds imports/references/call graph; full also builds dataflow." },
+                    "force_reindex": { "type": "boolean", "description": "Allow a lower analysis depth to replace an existing structural/full index. Default false protects manually built rich indexes." },
                     "background": { "type": "boolean", "description": "Run indexing as a background task (returns task_id for task_status/wait_for_task)" },
                 })),
                 required: None,

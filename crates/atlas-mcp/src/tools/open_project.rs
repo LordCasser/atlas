@@ -2,10 +2,11 @@
 //!
 //! Unlike the MCP server's initial project (which is always persistent),
 //! `open_project` defaults to automatic storage selection: read the candidate
-//! persistent project status and reuse `.atlas/atlas.db` only when it reports a
+//! persistent project status and reuse `.atlas/atlas.db` when it reports a
 //! reusable index, otherwise use `storage: "memory"` for zero-footprint,
-//! instant-start temporary sessions. Indexing is handled exclusively by the
-//! `index` tool after project activation.
+//! instant-start temporary sessions. Explicit `storage: "memory"` is refused
+//! when a reusable persistent index exists unless `force_memory=true` is set.
+//! Indexing is handled exclusively by the `index` tool after project activation.
 //!
 //! Long-running project opens can use `background: true`. The tool then returns
 //! a `task_id` immediately; `task_status` or `wait_for_task` activates the
@@ -49,6 +50,7 @@ impl ToolRouter {
     /// Parameters:
     ///   project_path (required): absolute path to the project directory.
     ///   storage (optional): "auto" (default) | "memory" | "persistent".
+    ///   force_memory (optional): allow memory even when a persistent index exists.
     ///   scan_files (optional): run pre-index discovery for file_count (default: false).
     ///   background (optional): prepare in a background task and activate on wait/status.
     pub(crate) fn handle_open_project(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -248,14 +250,31 @@ fn prepare_project(args: &serde_json::Value) -> Result<PreparedProject, OpenProj
     }
 
     let requested_storage = args["storage"].as_str().unwrap_or("auto");
-    let auto_index_mode = if requested_storage == "auto" {
-        reusable_persistent_index_mode(&canonical)
-    } else {
-        None
-    };
+    let force_memory = args["force_memory"].as_bool().unwrap_or(false);
+    let persistent_index_mode = reusable_persistent_index_mode(&canonical);
     let storage = match requested_storage {
-        "auto" if auto_index_mode.is_some() => "persistent".to_string(),
+        "auto" if persistent_index_mode.is_some() => "persistent".to_string(),
         "auto" => "memory".to_string(),
+        "memory" if persistent_index_mode.is_some() && !force_memory => {
+            let index_mode = persistent_index_mode
+                .as_deref()
+                .unwrap_or("reusable")
+                .to_string();
+            return Err(OpenProjectResult {
+                ok: false,
+                active_project: canonical.display().to_string(),
+                db_path: canonical.join(".atlas").join("atlas.db").display().to_string(),
+                storage: "memory".to_string(),
+                file_count: None,
+                suggestion: Some(format!(
+                    "Existing persistent index detected (mode={index_mode}). Use storage=\"auto\" or storage=\"persistent\" to reuse it. Pass force_memory=true only when you intentionally want an empty temporary in-memory index."
+                )),
+                error: Some(
+                    "Refusing storage=\"memory\" because it would ignore an existing persistent Atlas index."
+                        .into(),
+                ),
+            });
+        }
         "memory" | "persistent" => requested_storage.to_string(),
         _ => {
             return Err(OpenProjectResult {
@@ -323,10 +342,18 @@ fn prepare_project(args: &serde_json::Value) -> Result<PreparedProject, OpenProj
     })?;
 
     let mut file_count: Option<usize> = None;
-    let mut suggestion: Option<String> = if let Some(index_mode) = auto_index_mode {
-        Some(format!(
-            "Reusable persistent index detected via project status (mode={index_mode}); opened .atlas/atlas.db. Pass storage=\"memory\" for an empty temporary index."
-        ))
+    let mut suggestion: Option<String> = if storage == "persistent" {
+        persistent_index_mode.as_ref().map(|index_mode| {
+            format!(
+                "Reusable persistent index detected via project status (mode={index_mode}); opened .atlas/atlas.db."
+            )
+        })
+    } else if force_memory {
+        persistent_index_mode.as_ref().map(|index_mode| {
+            format!(
+                "Forced in-memory storage despite an existing persistent index (mode={index_mode}); this session starts empty and will not use .atlas/atlas.db."
+            )
+        })
     } else {
         None
     };

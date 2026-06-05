@@ -50,6 +50,12 @@ impl Store {
             conn.query_row("SELECT COUNT(*) FROM symbol_edges", [], |r| r.get(0))?;
         let total_references: i64 =
             conn.query_row("SELECT COUNT(*) FROM \"references\"", [], |r| r.get(0))?;
+        let extraction_rows: i64 =
+            conn.query_row("SELECT COUNT(*) FROM extraction_state", [], |r| r.get(0))?;
+        let max_extraction_time: Option<String> =
+            conn.query_row("SELECT MAX(updated_at) FROM extraction_state", [], |r| {
+                r.get(0)
+            })?;
         let max_index_time: Option<String> =
             conn.query_row("SELECT MAX(index_time) FROM files", [], |r| r.get(0))?;
         let last_index_time: Option<String> = conn
@@ -68,8 +74,9 @@ impl Store {
             .optional()?;
 
         Ok(format!(
-            "files={total_files};symbols={total_symbols};refs={total_references};edges={total_edges};max_index_time={};last_index_time={};last_sync_time={}",
+            "files={total_files};symbols={total_symbols};refs={total_references};edges={total_edges};extraction_rows={extraction_rows};max_index_time={};max_extraction_time={};last_index_time={};last_sync_time={}",
             max_index_time.unwrap_or_default(),
+            max_extraction_time.unwrap_or_default(),
             last_index_time.unwrap_or_default(),
             last_sync_time.unwrap_or_default(),
         ))

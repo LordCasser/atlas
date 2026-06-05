@@ -138,23 +138,10 @@ fn preserve_unusable_db(db_path: &Path) -> anyhow::Result<()> {
 }
 
 fn has_basic_or_better_index(store: &Store) -> anyhow::Result<bool> {
-    let stats = store.get_stats()?;
-    if stats.total_files <= 0 {
-        return Ok(false);
-    }
-
-    let counts = store.count_fresh_file_extraction_state()?;
-    let complete_count = |layer: &str| -> i64 {
-        counts
-            .iter()
-            .filter(|(l, s, _)| l == layer && s == "complete")
-            .map(|(_, _, c)| *c)
-            .sum()
-    };
-
-    Ok(complete_count("manifest") >= stats.total_files
-        || complete_count("structural") >= stats.total_files
-        || complete_count("dataflow") >= stats.total_files)
+    Ok(!matches!(
+        store.read_index_mode()?.as_str(),
+        "none" | "unknown"
+    ))
 }
 
 fn run_default_index_before_tui(project_root: &Path) -> anyhow::Result<()> {

@@ -167,6 +167,12 @@ fn parse_language(s: &str) -> Option<Language> {
         "arkts" | "ark-ts" | "ets" => Some(Language::ArkTS),
         #[cfg(feature = "cangjie")]
         "cangjie" | "cj" => Some(Language::Cangjie),
+        "go" => Some(Language::Go),
+        "csharp" | "c#" | "cs" => Some(Language::CSharp),
+        "rust" | "rs" => Some(Language::Rust),
+        "php" => Some(Language::Php),
+        "ruby" | "rb" => Some(Language::Ruby),
+        "kotlin" | "kt" | "kts" => Some(Language::Kotlin),
         _ => None,
     }
 }
@@ -194,7 +200,14 @@ pub fn searchable_languages() -> Vec<Language> {
     {
         langs.push(Language::Cangjie);
     }
-    // Go, CSharp, Rust, PHP, Ruby, Kotlin — not yet in parse_language()
+    langs.extend([
+        Language::Go,
+        Language::CSharp,
+        Language::Rust,
+        Language::Php,
+        Language::Ruby,
+        Language::Kotlin,
+    ]);
     langs
 }
 
@@ -297,6 +310,12 @@ mod tests {
         assert_eq!(parse_query("lang:cj").language, Some(Language::Cangjie));
         #[cfg(not(feature = "cangjie"))]
         assert_eq!(parse_query("lang:cj").language, None);
+        assert_eq!(parse_query("lang:rust").language, Some(Language::Rust));
+        assert_eq!(parse_query("lang:go").language, Some(Language::Go));
+        assert_eq!(parse_query("lang:cs").language, Some(Language::CSharp));
+        assert_eq!(parse_query("lang:php").language, Some(Language::Php));
+        assert_eq!(parse_query("lang:rb").language, Some(Language::Ruby));
+        assert_eq!(parse_query("lang:kts").language, Some(Language::Kotlin));
     }
 
     #[test]

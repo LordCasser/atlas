@@ -29,8 +29,6 @@ pub(crate) struct LazyRefreshQueue {
     rebuild_needed: AtomicBool,
     /// Set while a background rebuild thread is active (CAS gate).
     rebuild_in_progress: AtomicBool,
-    /// Set by background preparse thread to signal new structural data exists.
-    background_writes_pending: AtomicBool,
 }
 
 impl LazyRefreshQueue {
@@ -41,7 +39,6 @@ impl LazyRefreshQueue {
             cumulative_count: AtomicUsize::new(0),
             rebuild_needed: AtomicBool::new(false),
             rebuild_in_progress: AtomicBool::new(false),
-            background_writes_pending: AtomicBool::new(false),
         })
     }
 
@@ -73,12 +70,6 @@ impl LazyRefreshQueue {
         if new_count >= CUMULATIVE_LAZY_REBUILD_THRESHOLD {
             self.schedule_full_rebuild();
         }
-    }
-
-    /// Signal that background preparse wrote new data (called from bg thread).
-    pub(crate) fn signal_background_writes(&self) {
-        self.background_writes_pending
-            .store(true, Ordering::Release);
     }
 
     /// Take up to `max_files` file IDs for per-file incremental refresh.
@@ -130,13 +121,6 @@ impl LazyRefreshQueue {
         self.rebuild_in_progress.store(false, Ordering::Release);
     }
 
-    /// Check and reset the background-writes-pending flag.
-    /// Returns true if background thread wrote data since last check.
-    /// Called in maybe_refresh_graph to bypass the 5s cooldown.
-    pub(crate) fn has_background_writes(&self) -> bool {
-        self.background_writes_pending.swap(false, Ordering::AcqRel)
-    }
-
     /// Drop all queued refresh state.
     ///
     /// Used when the active project changes.
@@ -147,8 +131,6 @@ impl LazyRefreshQueue {
         self.cumulative_count.store(0, Ordering::Release);
         self.rebuild_needed.store(false, Ordering::Release);
         self.rebuild_in_progress.store(false, Ordering::Release);
-        self.background_writes_pending
-            .store(false, Ordering::Release);
     }
 }
 
@@ -162,7 +144,6 @@ mod tests {
         let q = LazyRefreshQueue::new();
         assert!(q.take_incremental_batch(500).is_empty());
         assert!(!q.needs_full_rebuild());
-        assert!(!q.has_background_writes());
     }
 
     #[test]
@@ -230,15 +211,6 @@ mod tests {
         // 400th should trigger (cumulative_count reaches 400)
         q.record_lazy_writes(&fids[399..]);
         assert!(q.needs_full_rebuild());
-    }
-
-    #[test]
-    fn signal_background_writes_is_observable() {
-        let q = LazyRefreshQueue::new();
-        assert!(!q.has_background_writes());
-        q.signal_background_writes();
-        assert!(q.has_background_writes());
-        assert!(!q.has_background_writes()); // reset on second call
     }
 
     #[test]

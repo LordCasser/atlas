@@ -73,6 +73,24 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Return the dominant indexed language for the whole project.
+    ///
+    /// Ties return `None`; callers should not apply an arbitrary language boost
+    /// when the project is evenly mixed.
+    pub fn dominant_language(&self) -> anyhow::Result<Option<Language>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT language, COUNT(*) AS n
+             FROM files
+             GROUP BY language
+             ORDER BY n DESC, language",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        dominant_language_from_counts(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// Find files whose path starts with the given prefix.
     ///
     /// Uses a SQL `LIKE` query with the prefix escaped for LIKE special chars
@@ -106,6 +124,29 @@ impl Store {
             |row| row.get(0),
         )?;
         Ok(count as usize)
+    }
+
+    /// Return the dominant indexed language under a user-facing scope.
+    ///
+    /// Ties return `None` for the same reason as [`Store::dominant_language`].
+    pub fn dominant_language_in_scope(&self, scope: &str) -> anyhow::Result<Option<Language>> {
+        let normalized = normalize_scope(scope);
+        if normalized.is_empty() {
+            return self.dominant_language();
+        }
+        let (lower, upper) = scope_child_bounds(&normalized);
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT language, COUNT(*) AS n
+             FROM files
+             WHERE path = ?1 OR (path >= ?2 AND path < ?3)
+             GROUP BY language
+             ORDER BY n DESC, language",
+        )?;
+        let rows = stmt.query_map(params![normalized, lower, upper], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        dominant_language_from_counts(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     /// Return file IDs under a scope, ordered by path and capped by `limit`.
@@ -195,4 +236,14 @@ pub(crate) fn scope_child_bounds(scope: &str) -> (String, String) {
     let mut upper = lower.clone();
     upper.push(char::MAX);
     (lower, upper)
+}
+
+fn dominant_language_from_counts(rows: Vec<(String, i64)>) -> anyhow::Result<Option<Language>> {
+    let Some((lang, top_count)) = rows.first() else {
+        return Ok(None);
+    };
+    if rows.get(1).is_some_and(|(_, count)| count == top_count) {
+        return Ok(None);
+    }
+    Ok(Language::from_str(lang))
 }

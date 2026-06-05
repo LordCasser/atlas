@@ -8,7 +8,7 @@
 //! The IndexPipeline emits ProgressEvent items.  CliProgressSink translates
 //! them into ProgressState updates consumed by the TUI render loop.
 
-use crate::runtime::{CommandContext, DbMode};
+use crate::runtime::{CommandContext, DbMode, guard_against_precision_downgrade};
 use crate::tui::{TextFallback, TuiProgress};
 use anyhow::Context;
 use atlas_engine::ExtractionMode;
@@ -24,6 +24,17 @@ pub fn run(
     scopes: &[String],
     exclude: &[String],
     analysis: &str,
+) -> anyhow::Result<()> {
+    run_with_options(project, includes, scopes, exclude, analysis, false)
+}
+
+pub fn run_with_options(
+    project: &str,
+    includes: &[String],
+    scopes: &[String],
+    exclude: &[String],
+    analysis: &str,
+    force_reindex: bool,
 ) -> anyhow::Result<()> {
     let mode = match analysis {
         "manifest" => ExtractionMode::Manifest,
@@ -44,6 +55,7 @@ pub fn run(
     let ctx = CommandContext::open(project, DbMode::CreateOrOpenReadWrite)?;
     let _lock =
         FileLock::acquire(&ctx.store).context("Another atlas process is indexing this project.")?;
+    guard_against_precision_downgrade(&ctx.store, &mode, force_reindex, "atlas index")?;
 
     // ── Shared state ──
     let progress_state = Arc::new(Mutex::new(ProgressState::new()));

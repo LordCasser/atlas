@@ -47,6 +47,7 @@ use std::sync::Arc;
 
 use db::Store;
 use search::query_parser::parse_query;
+use search::scoring::{ScoreWeights, language_preference_bonus};
 use types::structs::precision::PrecisionTier;
 use types::{CapabilityMask, Language, SymbolDef, SymbolKind};
 
@@ -418,10 +419,15 @@ fn search_symbols_scoped(
     if scope.is_empty() {
         // ── Non-scoped: search entire project ───────────────────────────
         let mut symbols = store.find_symbols_by_name(query)?;
+        if let Some(lang) = language {
+            symbols.retain(|s| s.language == lang);
+        }
         if symbols.is_empty() {
             symbols = store.search_symbols(query)?;
+            if let Some(lang) = language {
+                symbols.retain(|s| s.language == lang);
+            }
         }
-        symbols.truncate(limit);
         if symbols.is_empty() && query.len() >= 2 {
             symbols = store.search_symbols_by_name_like(
                 query,
@@ -433,21 +439,33 @@ fn search_symbols_scoped(
         if let Some(kind) = kind_filter {
             symbols.retain(|s| s.kind == kind);
         }
+        let preferred_language = if language.is_none() {
+            store.dominant_language().ok().flatten()
+        } else {
+            None
+        };
         symbols.sort_by(|a, b| {
-            simple_score(query, b)
-                .partial_cmp(&simple_score(query, a))
+            ranked_simple_score(query, b, preferred_language)
+                .partial_cmp(&ranked_simple_score(query, a, preferred_language))
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.qualified_name.cmp(&b.qualified_name))
         });
+        symbols.truncate(limit);
         return Ok(symbols);
     }
 
     // ── Scoped: filter by directory prefix at SQL level ────────────────
     let mut symbols =
         store.find_symbols_by_name_in_scope(query, scope, limit, kind_filter.as_ref())?;
+    if let Some(lang) = language {
+        symbols.retain(|s| s.language == lang);
+    }
     if symbols.is_empty() {
         symbols =
             store.search_symbols_in_scope_with_limit(query, scope, limit, kind_filter.as_ref())?;
+        if let Some(lang) = language {
+            symbols.retain(|s| s.language == lang);
+        }
     }
     if symbols.is_empty() && query.len() >= 2 && scope_file_count <= LIKE_FALLBACK_SCOPE_LIMIT {
         symbols = store.search_symbols_by_name_like_in_scope(
@@ -458,13 +476,29 @@ fn search_symbols_scoped(
             kind_filter.as_ref(),
         )?;
     }
+    let preferred_language = if language.is_none() {
+        store
+            .dominant_language_in_scope(scope)
+            .ok()
+            .flatten()
+            .or_else(|| store.dominant_language().ok().flatten())
+    } else {
+        None
+    };
     symbols.sort_by(|a, b| {
-        simple_score(query, b)
-            .partial_cmp(&simple_score(query, a))
+        ranked_simple_score(query, b, preferred_language)
+            .partial_cmp(&ranked_simple_score(query, a, preferred_language))
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.qualified_name.cmp(&b.qualified_name))
     });
+    symbols.truncate(limit);
     Ok(symbols)
+}
+
+fn ranked_simple_score(query: &str, sym: &SymbolDef, preferred_language: Option<Language>) -> f64 {
+    let weights = ScoreWeights::default();
+    simple_score(query, sym)
+        + language_preference_bonus(preferred_language == Some(sym.language)) * weights.language
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -500,6 +534,51 @@ mod tests {
             symbol_path: vec![],
             file_id,
             language: Language::TypeScript,
+            range: Default::default(),
+            name_range: Default::default(),
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "manifest".to_string(),
+        };
+        store.insert_symbols(&[sym]).unwrap();
+        file_id
+    }
+
+    fn seed_file_with_symbol(
+        store: &Store,
+        path: &str,
+        language: Language,
+        name: &str,
+        qname: &str,
+        kind: SymbolKind,
+    ) -> types::FileId {
+        let file_id = types::FileId::generate(path);
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: path.to_string(),
+                language,
+                content_hash: blake3::hash(path.as_bytes()).to_hex().to_string(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        let sid =
+            types::SymbolId::generate(&file_id, language.as_str(), qname, kind.as_str(), None);
+        let sym = types::SymbolDef {
+            id: sid,
+            kind,
+            name: name.into(),
+            qualified_name: qname.into(),
+            symbol_path: vec![],
+            file_id,
+            language,
             range: Default::default(),
             name_range: Default::default(),
             signature: None,
@@ -684,5 +763,95 @@ mod tests {
             "Auto should trigger lazy when only manifest data exists"
         );
         assert_eq!(resp.scope_file_count, 1);
+    }
+
+    #[test]
+    fn execute_manifest_prefers_scope_dominant_language_for_same_name() {
+        let svc = test_service();
+        seed_file_with_symbol(
+            &svc.store,
+            "src/main.rs",
+            Language::Rust,
+            "App",
+            "crate::App",
+            SymbolKind::Variable,
+        );
+        seed_file_with_symbol(
+            &svc.store,
+            "src/lib.rs",
+            Language::Rust,
+            "Helper",
+            "crate::Helper",
+            SymbolKind::Variable,
+        );
+        seed_file_with_symbol(
+            &svc.store,
+            "src/app.tsx",
+            Language::TypeScript,
+            "App",
+            "App",
+            SymbolKind::Variable,
+        );
+
+        let resp = svc
+            .execute(ScopedSearchRequest {
+                query: "App".into(),
+                scope: Some("src".into()),
+                analysis: SearchAnalysis::Manifest,
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("execute should succeed");
+
+        assert_eq!(
+            resp.results[0].symbol.language,
+            Language::Rust,
+            "Rust should rank first in a Rust-dominant scope"
+        );
+        assert!(
+            resp.results
+                .iter()
+                .any(|r| r.symbol.language == Language::TypeScript),
+            "soft preference should keep cross-language results visible"
+        );
+    }
+
+    #[test]
+    fn execute_manifest_language_filter_applies_to_exact_matches() {
+        let svc = test_service();
+        seed_file_with_symbol(
+            &svc.store,
+            "src/main.rs",
+            Language::Rust,
+            "App",
+            "crate::App",
+            SymbolKind::Variable,
+        );
+        seed_file_with_symbol(
+            &svc.store,
+            "src/app.tsx",
+            Language::TypeScript,
+            "App",
+            "App",
+            SymbolKind::Variable,
+        );
+
+        let resp = svc
+            .execute(ScopedSearchRequest {
+                query: "lang:typescript App".into(),
+                scope: Some("src".into()),
+                analysis: SearchAnalysis::Manifest,
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("execute should succeed");
+
+        assert!(!resp.results.is_empty());
+        assert!(
+            resp.results
+                .iter()
+                .all(|r| r.symbol.language == Language::TypeScript),
+            "explicit lang filter must filter exact-name results"
+        );
     }
 }

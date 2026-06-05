@@ -24,6 +24,7 @@ pub struct ScoreWeights {
     pub qualified: f64,
     pub kind: f64,
     pub path: f64,
+    pub language: f64,
 }
 
 impl Default for ScoreWeights {
@@ -35,6 +36,7 @@ impl Default for ScoreWeights {
             qualified: 0.15,
             kind: 0.10,
             path: 0.05,
+            language: 0.12,
         }
     }
 }
@@ -54,6 +56,8 @@ pub struct SearchScore {
     pub kind_bonus: f64,
     /// Path relevance (query appears in file path, test files downranked).
     pub path_bonus: f64,
+    /// Language preference bonus (project/scope primary language).
+    pub language_bonus: f64,
     /// Weighted total.
     pub total: f64,
 }
@@ -94,9 +98,22 @@ impl SearchScore {
             qualified_bonus,
             kind_bonus,
             path_bonus,
+            language_bonus: 0.0,
             total,
         }
     }
+
+    /// Apply a project/scope language preference as a soft ranking boost.
+    pub fn with_language_preference(mut self, preferred: bool, weights: &ScoreWeights) -> Self {
+        self.language_bonus = language_preference_bonus(preferred);
+        self.total += self.language_bonus * weights.language;
+        self
+    }
+}
+
+/// Soft language affinity score used when no explicit language filter is set.
+pub fn language_preference_bonus(preferred: bool) -> f64 {
+    if preferred { 1.0 } else { 0.0 }
 }
 
 /// Return a heuristic kind weight for search relevance.

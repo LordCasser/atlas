@@ -96,6 +96,9 @@ pub enum Commands {
         /// Analysis depth: "manifest" (fastest, top-level symbols only), "structural" (default, symbols+references+callgraph), or "full" (slower, complete dataflow/CFG)
         #[arg(long, default_value = "structural", value_parser = ["manifest", "structural", "full"])]
         analysis: String,
+        /// Allow a lower analysis depth to replace an existing structural/full index.
+        #[arg(long)]
+        force_reindex: bool,
     },
     /// Incremental sync
     Sync {
@@ -104,6 +107,9 @@ pub enum Commands {
         /// Analysis depth: "structural" (default) | "manifest" (top-level only) | "full"
         #[arg(long, default_value = "structural", value_parser = ["manifest", "structural", "full"])]
         analysis: String,
+        /// Allow a lower analysis depth to replace an existing structural/full index.
+        #[arg(long)]
+        force_reindex: bool,
     },
     /// List indexed files
     Files {

@@ -1334,6 +1334,31 @@ fn index_accepts_structural_analysis_parameter() {
 }
 
 #[test]
+fn index_refuses_default_manifest_downgrade_of_structural_project() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[("app.ts", "export const x = 1;\n")];
+    let (_tmp, mut router) = build_router(files);
+
+    let (json, is_error) = call_tool(&mut router, "index", json!({}));
+
+    assert!(
+        is_error,
+        "default manifest index should not downgrade structural project: {json:?}"
+    );
+    assert_eq!(json["ok"].as_bool(), Some(false));
+    let errors = json["errors"]
+        .as_array()
+        .expect("index error result should include errors");
+    assert!(
+        errors.iter().any(|e| e
+            .as_str()
+            .unwrap_or_default()
+            .contains("force_reindex=true")),
+        "error should explain the explicit override: {json:?}"
+    );
+}
+
+#[test]
 fn open_project_background_activates_on_wait_for_task() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[("app.ts", "export const x = 1;\n")];
@@ -1407,6 +1432,7 @@ fn index_background_completes_via_wait_for_task() {
         &ToolCallContext::empty(),
         "index",
         &json!({
+            "analysis": "structural",
             "background": true
         }),
     );
@@ -1435,12 +1461,9 @@ fn index_background_completes_via_wait_for_task() {
     };
     let completed: Value = serde_json::from_str(wait_text).expect("index wait json");
     assert_eq!(completed["status"], "completed");
-    assert_eq!(completed["result"]["ok"], true);
+    assert_eq!(completed["ok"], true);
     assert!(
-        completed["result"]["files_discovered"]
-            .as_u64()
-            .unwrap_or(0)
-            >= 1,
+        completed["files_discovered"].as_u64().unwrap_or(0) >= 1,
         "background index should report discovered files"
     );
 }
@@ -1642,8 +1665,13 @@ fn mcp_search_requires_scope() {
     );
     // Scope defaults to project root; response is a valid ScopedSearchResponse.
     assert_eq!(search_json["query"].as_str(), Some("greet"));
-    assert_eq!(search_json["parse_level"].as_str(), Some("structural"));
-    assert_eq!(search_json["precise"].as_bool(), Some(true));
+    assert!(
+        matches!(
+            search_json["parse_level"].as_str(),
+            Some("manifest" | "structural")
+        ),
+        "parse level should reflect compiled language capability: {search_json:?}"
+    );
 }
 
 #[test]
@@ -1869,4 +1897,69 @@ fn open_project_auto_ignores_empty_persistent_db() {
         Some(":memory:"),
         "auto fallback should be an in-memory store"
     );
+}
+
+#[test]
+fn open_project_refuses_memory_when_persistent_index_exists() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let target = TempDir::new().expect("target temp dir");
+    std::fs::write(target.path().join("lib.ts"), "export const x = 1;\n").unwrap();
+    let project = target.path().to_string_lossy().to_string();
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
+    index::run(&project, &[], &[], &[], "structural").expect("seed structural index");
+
+    let files = &[("dummy.ts", "export const seed = 1;\n")];
+    let (_tmp_initial, mut router) = build_router(files);
+
+    let (memory_json, memory_error) = call_tool(
+        &mut router,
+        "project",
+        json!({
+            "action": "open",
+            "project_path": target.path().to_string_lossy(),
+            "storage": "memory",
+        }),
+    );
+    assert!(
+        memory_error,
+        "memory open should be refused when persistent index exists: {memory_json:?}"
+    );
+    assert!(
+        memory_json["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("existing persistent Atlas index"),
+        "error should explain the protected persistent index: {memory_json:?}"
+    );
+
+    let (auto_json, auto_error) = call_tool(
+        &mut router,
+        "project",
+        json!({
+            "action": "open",
+            "project_path": target.path().to_string_lossy(),
+        }),
+    );
+    assert!(
+        !auto_error,
+        "auto open should reuse persistent: {auto_json:?}"
+    );
+    assert_eq!(auto_json["storage"].as_str(), Some("persistent"));
+
+    let (forced_json, forced_error) = call_tool(
+        &mut router,
+        "project",
+        json!({
+            "action": "open",
+            "project_path": target.path().to_string_lossy(),
+            "storage": "memory",
+            "force_memory": true,
+        }),
+    );
+    assert!(
+        !forced_error,
+        "force_memory should allow intentional memory open: {forced_json:?}"
+    );
+    assert_eq!(forced_json["storage"].as_str(), Some("memory"));
 }

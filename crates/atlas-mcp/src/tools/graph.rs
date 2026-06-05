@@ -238,6 +238,12 @@ impl ToolRouter {
             investigation.as_ref(),
             Some(&query_id),
         );
+        if let Err(e) = self.maybe_refresh_graph() {
+            return (
+                format!("Failed to refresh graph after structural ensure: {e:#}"),
+                true,
+            );
+        }
 
         let graph = self.context_builder().graph_snapshot();
         let cg = graph.callees(&sid);
@@ -1570,6 +1576,80 @@ mod tests {
 
     fn test_router(store: Arc<Store>) -> ToolRouter {
         ToolRouter::new_empty(store, std::path::PathBuf::from("/tmp/test_project"))
+    }
+
+    fn insert_test_symbol(store: &Store, path: &str, qname: &str) -> atlas_engine::SymbolId {
+        let fid = FileId::generate(path);
+        store
+            .upsert_file(&atlas_engine::FileInfo {
+                file_id: fid,
+                path: path.into(),
+                language: atlas_engine::Language::TypeScript,
+                content_hash: "hash1".into(),
+                status: atlas_engine::ParseStatus::Success,
+            })
+            .unwrap();
+        let sid = atlas_engine::SymbolId::generate(&fid, "typescript", qname, "function", None);
+        store
+            .insert_symbols(&[atlas_engine::SymbolDef {
+                id: sid,
+                kind: atlas_engine::SymbolKind::Function,
+                name: qname.rsplit('.').next().unwrap_or(qname).into(),
+                qualified_name: qname.into(),
+                symbol_path: qname.split('.').map(str::to_string).collect(),
+                file_id: fid,
+                language: atlas_engine::Language::TypeScript,
+                range: atlas_engine::TextRange::default(),
+                name_range: atlas_engine::TextRange::default(),
+                signature: None,
+                visibility: None,
+                exported: false,
+                static_: false,
+                async_: false,
+                container: None,
+                scope_id: None,
+                package_name: None,
+                namespace_path: vec![],
+                layer: "structural".into(),
+            }])
+            .unwrap();
+        sid
+    }
+
+    #[test]
+    fn graph_refresh_observes_external_store_changes_immediately() {
+        let store = test_store();
+        let _sid_a = insert_test_symbol(&store, "a.ts", "a");
+        let mut router = test_router(store.clone());
+        router.ensure_graph_initialized().unwrap();
+
+        let sid_b = insert_test_symbol(&store, "b.ts", "b");
+        let before = router
+            .context_builder()
+            .graph_snapshot()
+            .impact_with_kinds(
+                &sid_b,
+                1,
+                Some(vec![]),
+                atlas_engine::TraversalDirection::Outgoing,
+            )
+            .node_indices
+            .len();
+        assert_eq!(before, 0, "precondition: old graph should not contain b");
+
+        router.maybe_refresh_graph().unwrap();
+        let after = router
+            .context_builder()
+            .graph_snapshot()
+            .impact_with_kinds(
+                &sid_b,
+                1,
+                Some(vec![]),
+                atlas_engine::TraversalDirection::Outgoing,
+            )
+            .node_indices
+            .len();
+        assert_eq!(after, 1, "refreshed graph should contain b");
     }
 
     #[test]

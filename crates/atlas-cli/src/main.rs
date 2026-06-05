@@ -47,13 +47,25 @@ fn main() -> anyhow::Result<()> {
             scope,
             exclude,
             analysis,
+            force_reindex,
         } => {
             let _span = tracing::info_span!("index", project = %project).entered();
-            atlas_cli::commands::index::run(&project, &include, &scope, &exclude, &analysis)?;
+            atlas_cli::commands::index::run_with_options(
+                &project,
+                &include,
+                &scope,
+                &exclude,
+                &analysis,
+                force_reindex,
+            )?;
         }
-        Commands::Sync { project, analysis } => {
+        Commands::Sync {
+            project,
+            analysis,
+            force_reindex,
+        } => {
             let _span = tracing::info_span!("sync", project = %project).entered();
-            atlas_cli::commands::sync::run(&project, &analysis)?;
+            atlas_cli::commands::sync::run_with_options(&project, &analysis, force_reindex)?;
         }
         Commands::Files { project } => {
             let _span = tracing::info_span!("files", project = %project).entered();
