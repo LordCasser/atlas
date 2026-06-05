@@ -8,7 +8,6 @@ use crate::frontend::{
     LexicalBindingSpec, NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec,
     ScopeExtractorSpec, SymbolExtractorSpec,
 };
-use std::path::Path;
 use types::capability::FeatureSupport;
 use types::*;
 
@@ -24,7 +23,6 @@ fn normalize_js_definition(
     node: tree_sitter::Node,
     source: &str,
     file_id: FileId,
-    _file_path: &Path,
 ) -> Option<SymbolDef> {
     super::typescript::normalize_ts_definition(
         capture_name,
@@ -40,7 +38,6 @@ fn normalize_js_reference(
     node: tree_sitter::Node,
     source: &str,
     file_id: FileId,
-    _file_path: &Path,
 ) -> Option<ReferenceUse> {
     super::typescript::normalize_ts_reference(capture_name, node, source, file_id)
 }
@@ -50,7 +47,6 @@ fn normalize_js_import(
     node: tree_sitter::Node,
     source: &str,
     file_id: FileId,
-    _file_path: &Path,
 ) -> Option<ImportDef> {
     super::typescript::normalize_ts_import(capture_name, node, source, file_id)
 }
@@ -60,7 +56,6 @@ fn normalize_js_scope(
     node: tree_sitter::Node,
     _source: &str,
     file_id: FileId,
-    _file_path: &Path,
 ) -> Option<ScopeDef> {
     super::typescript::normalize_ts_scope(capture_name, node, file_id)
 }
@@ -70,7 +65,6 @@ fn normalize_js_lexical(
     node: tree_sitter::Node,
     source: &str,
     file_id: FileId,
-    _file_path: &Path,
 ) -> Option<BindingDef> {
     super::typescript::normalize_ts_lexical(capture_name, node, source, file_id)
 }
@@ -80,7 +74,6 @@ fn normalize_js_dataflow_builder(
     node: tree_sitter::Node,
     source: &str,
     file_id: FileId,
-    _file_path: &Path,
 ) -> (Option<DataNode>, Option<DataFlowEdge>) {
     super::typescript::normalize_ts_dataflow_builder(capture_name, node, source, file_id)
 }
@@ -112,7 +105,6 @@ impl SymbolExtractorSpec for JavaScriptAdapter {
             capture.node,
             ctx.source,
             ctx.file_id,
-            ctx.file_path,
         )
     }
 }
@@ -130,7 +122,6 @@ impl ReferenceExtractorSpec for JavaScriptAdapter {
             capture.node,
             ctx.source,
             ctx.file_id,
-            ctx.file_path,
         )
     }
 }
@@ -148,7 +139,6 @@ impl ImportExtractorSpec for JavaScriptAdapter {
             capture.node,
             ctx.source,
             ctx.file_id,
-            ctx.file_path,
         )
     }
 }
@@ -166,7 +156,6 @@ impl ScopeExtractorSpec for JavaScriptAdapter {
             capture.node,
             ctx.source,
             ctx.file_id,
-            ctx.file_path,
         )
     }
 }
@@ -187,7 +176,6 @@ impl LexicalBindingSpec for JavaScriptAdapter {
             capture.node,
             ctx.source,
             ctx.file_id,
-            ctx.file_path,
         )
     }
 }
@@ -212,7 +200,6 @@ impl DataflowSpec for JavaScriptAdapter {
             capture.node,
             ctx.source,
             ctx.file_id,
-            ctx.file_path,
         )
     }
 }
