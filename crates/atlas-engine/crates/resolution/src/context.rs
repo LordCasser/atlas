@@ -53,7 +53,7 @@ pub struct GlobalSymbolIndex {
 impl GlobalSymbolIndex {
     /// Build the global index from all symbols in the store.
     pub fn build(store: &Store) -> anyhow::Result<Self> {
-        let symbols = store.load_all_symbols()?;
+        let symbols = store.get_all_symbols()?;
         let mut by_name: HashMap<String, Vec<SymbolDef>> = HashMap::new();
         let mut by_id: HashMap<SymbolId, SymbolDef> = HashMap::new();
         let mut lower_names: Vec<String> = Vec::with_capacity(symbols.len());

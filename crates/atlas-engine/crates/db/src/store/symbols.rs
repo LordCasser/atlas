@@ -494,11 +494,6 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    /// Alias for `get_all_symbols` (P4: GlobalSymbolIndex construction).
-    pub fn load_all_symbols(&self) -> anyhow::Result<Vec<SymbolDef>> {
-        self.get_all_symbols()
-    }
-
     /// Find symbols by exact `name` match (uses index on `symbols.name`).
     ///
     /// Faster than `search_symbols_by_name_like` for exact-match lookups,

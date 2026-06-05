@@ -160,10 +160,6 @@ impl CppOwnershipRules {
     }
 }
 
-// Backward compatibility alias.
-#[deprecated(note = "use CppOwnershipRules instead")]
-pub type LoadedDomainRules = CppOwnershipRules;
-
 // ── OwnershipContract impl ─────────────────────────────────────────────────
 
 use types::effects::{
