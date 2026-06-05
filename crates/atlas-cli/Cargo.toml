@@ -1,6 +1,6 @@
 [package]
 name = "atlas-cli"
-version = "1.4.0"
+version = "1.4.1"
 edition = "2024"
 description = "Atlas CLI — command-line interface and binary entry point"
 license = "MIT"
