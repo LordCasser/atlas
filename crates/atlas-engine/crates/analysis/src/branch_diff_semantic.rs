@@ -548,69 +548,6 @@ mod tests {
         types::ids::SymbolId::default()
     }
 
-    #[allow(dead_code)]
-    fn make_stmt_node(line: u32, seq: u32, effects: Vec<SemanticEffect>) -> CfgNode {
-        let fid = test_fid();
-        let nid = CfgNodeId::generate(&fid, "test_stmt", seq);
-        CfgNode {
-            id: nid,
-            function_id: fid,
-            kind: CfgNodeKind::Statement,
-            stmt_range: TextRange {
-                start_byte: seq,
-                end_byte: seq + 1,
-                start_line: line,
-                start_column: 0,
-                end_line: line,
-                end_column: 0,
-            },
-            call_context: types::enums::CallContext::None,
-            semantic_effects: effects,
-        }
-    }
-
-    #[allow(dead_code)]
-    fn make_branch_node(line: u32, seq: u32) -> CfgNode {
-        let fid = test_fid();
-        let nid = CfgNodeId::generate(&fid, "test_branch", seq);
-        CfgNode {
-            id: nid,
-            function_id: fid,
-            kind: CfgNodeKind::Branch,
-            stmt_range: TextRange {
-                start_byte: seq,
-                end_byte: seq + 1,
-                start_line: line,
-                start_column: 0,
-                end_line: line,
-                end_column: 0,
-            },
-            call_context: types::enums::CallContext::None,
-            semantic_effects: vec![],
-        }
-    }
-
-    #[allow(dead_code)]
-    fn make_join_node(line: u32, seq: u32) -> CfgNode {
-        let fid = test_fid();
-        let nid = CfgNodeId::generate(&fid, "test_join", seq);
-        CfgNode {
-            id: nid,
-            function_id: fid,
-            kind: CfgNodeKind::Join,
-            stmt_range: TextRange {
-                start_byte: seq,
-                end_byte: seq + 1,
-                start_line: line,
-                start_column: 0,
-                end_line: line,
-                end_column: 0,
-            },
-            call_context: types::enums::CallContext::None,
-            semantic_effects: vec![],
-        }
-    }
-
     fn make_se_effect(node_id: CfgNodeId, order: u32, kind: SemanticEffectKind) -> SemanticEffect {
         let kind_name = match &kind {
             SemanticEffectKind::Alloc { .. } => "Alloc",
