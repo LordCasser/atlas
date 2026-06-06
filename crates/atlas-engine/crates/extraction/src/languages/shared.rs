@@ -175,7 +175,6 @@ impl SymbolDefBuilder {
 
     /// Set the name-only range (for precise go-to-definition).
     /// If not set, falls back to `range`.
-    #[allow(dead_code)]
     pub fn name_range(mut self, r: TextRange) -> Self {
         self.name_range = Some(r);
         self
@@ -409,7 +408,6 @@ fn is_inside_assignment_left(node: tree_sitter::Node) -> bool {
 /// `extra_decl_kinds`: language-specific declaration node kinds to also check.
 /// Common kinds (variable_declarator, function_declaration, class_declaration,
 /// parameter, catch_clause) are always checked.
-#[allow(dead_code)] // used by language adapters gated behind features
 pub(crate) fn is_identifier_decl_or_property(
     node: tree_sitter::Node,
     extra_decl_kinds: &[&str],

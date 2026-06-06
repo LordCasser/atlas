@@ -465,7 +465,6 @@ impl GraphSnapshot {
     /// Safe ONLY for files that have never been indexed before.
     /// For re-indexing (changed files), use [`replace_files_in_place`]
     /// or full [`GraphSnapshot::from_store`].
-    #[allow(dead_code)]
     pub fn merge_delta_in_place(
         &mut self,
         new_symbols: Vec<SymbolDef>,

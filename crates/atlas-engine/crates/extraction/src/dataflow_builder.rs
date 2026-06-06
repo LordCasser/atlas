@@ -701,7 +701,6 @@ fn walk_for_assign_edges(
 }
 
 /// Create Assign edges from Go expression_list pairs.
-#[allow(dead_code)] // used by Go language adapter (feature-gated)
 pub(crate) fn create_assign_edges_from_expression_lists(
     left_list: tree_sitter::Node,
     right_list: tree_sitter::Node,

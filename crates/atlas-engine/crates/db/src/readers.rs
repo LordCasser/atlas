@@ -12,7 +12,6 @@
 //! | Dataflow | `DataflowReader` | data nodes, dataflow edges |
 //! | Call graph | `CallGraphReader` | callsites, bindings, CFG, function-level edges |
 //! | File | `FileReader` | file info, path resolution, metadata |
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::path::Path;
