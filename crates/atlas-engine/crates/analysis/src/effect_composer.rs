@@ -104,8 +104,6 @@ impl TransferGraph {
 #[derive(Debug)]
 struct DfIndex<'a> {
     nodes: HashMap<DataNodeId, &'a DataNode>,
-    #[allow(dead_code)]
-    source_edges: HashMap<DataNodeId, Vec<(DataFlowKind, DataNodeId)>>,
     target_edges: HashMap<DataNodeId, Vec<(DataFlowKind, DataNodeId)>>,
     range_index: HashMap<(u32, u32), Vec<&'a DataNode>>,
 }
@@ -114,13 +112,8 @@ impl<'a> DfIndex<'a> {
     fn build(data_nodes: &'a [DataNode], edges: &'a [DataFlowEdge]) -> Self {
         let nodes: HashMap<DataNodeId, &DataNode> = data_nodes.iter().map(|n| (n.id, n)).collect();
 
-        let mut source_edges: HashMap<DataNodeId, Vec<(DataFlowKind, DataNodeId)>> = HashMap::new();
         let mut target_edges: HashMap<DataNodeId, Vec<(DataFlowKind, DataNodeId)>> = HashMap::new();
         for e in edges {
-            source_edges
-                .entry(e.source)
-                .or_default()
-                .push((e.kind, e.target));
             target_edges
                 .entry(e.target)
                 .or_default()
@@ -135,7 +128,6 @@ impl<'a> DfIndex<'a> {
 
         Self {
             nodes,
-            source_edges,
             target_edges,
             range_index,
         }
