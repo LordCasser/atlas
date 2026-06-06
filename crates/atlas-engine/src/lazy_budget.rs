@@ -48,7 +48,7 @@ impl LazyBudget {
     }
 
     /// Custom budget (for testing only — not part of the stable API surface).
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn new(budget_ms: u64, max_files: usize) -> Self {
         Self {
             budget_ms,

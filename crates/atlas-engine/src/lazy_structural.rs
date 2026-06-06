@@ -228,8 +228,8 @@ impl LazyStructuralService {
         }
     }
 
-    /// Create a service with a custom candidate provider.
-    #[allow(dead_code)]
+    /// Create a service with a custom candidate provider (for testing only).
+    #[cfg(test)]
     pub fn with_provider(
         store: Arc<Store>,
         project_root: Option<PathBuf>,
