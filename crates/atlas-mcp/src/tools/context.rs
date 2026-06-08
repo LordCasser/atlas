@@ -7,7 +7,7 @@
 //! happened before the handler's own structural extraction.
 
 use super::lazy_response::{LazyDiagnostics, LazyResponse};
-use super::{MAX_SYMBOL_NAME_LENGTH, QnameResolution, ToolRouter, get_str};
+use super::{MAX_AMBIGUOUS_CANDIDATES, MAX_SYMBOL_NAME_LENGTH, QnameResolution, ToolRouter, get_str};
 
 use atlas_engine::InvestigationFocus;
 use atlas_engine::structs::precision::PrecisionTier;
@@ -272,7 +272,7 @@ impl ToolRouter {
             Ok(QnameResolution::Ambiguous { candidates }) => {
                 let names: Vec<String> = candidates
                     .iter()
-                    .take(8)
+                    .take(MAX_AMBIGUOUS_CANDIDATES)
                     .map(|c| {
                         format!(
                             "{} [{}:{}:{}]",
@@ -348,7 +348,7 @@ impl ToolRouter {
             if matching_qnames.len() > 1 {
                 let suggestions: Vec<&str> = matching_qnames
                     .iter()
-                    .take(8)
+                    .take(MAX_AMBIGUOUS_CANDIDATES)
                     .map(|s| s.qualified_name.as_str())
                     .collect();
                 let mut err = format!(
@@ -395,7 +395,7 @@ impl ToolRouter {
             Ok(QnameResolution::Ambiguous { candidates }) => {
                 let names: Vec<String> = candidates
                     .iter()
-                    .take(8)
+                    .take(MAX_AMBIGUOUS_CANDIDATES)
                     .map(|c| {
                         format!(
                             "{} [{}:{}:{}]",
@@ -428,7 +428,7 @@ impl ToolRouter {
         if fresh_matches.len() > 1 {
             let suggestions: Vec<&str> = fresh_matches
                 .iter()
-                .take(8)
+                .take(MAX_AMBIGUOUS_CANDIDATES)
                 .map(|s| s.qualified_name.as_str())
                 .collect();
             let mut err = format!(

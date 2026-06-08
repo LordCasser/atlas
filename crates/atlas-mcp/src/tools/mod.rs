@@ -45,6 +45,10 @@ pub(crate) enum QnameResolution {
     Ambiguous { candidates: Vec<CandidateInfo> },
 }
 
+/// Maximum number of ambiguous candidates to display in diagnostics.
+/// Beyond this, candidates are truncated to avoid log flooding in large projects.
+pub(crate) const MAX_AMBIGUOUS_CANDIDATES: usize = 8;
+
 /// Human-readable candidate for ambiguous qname resolution.
 #[derive(Debug, Clone)]
 pub(crate) struct CandidateInfo {
@@ -53,6 +57,7 @@ pub(crate) struct CandidateInfo {
     pub file_path: String,
     pub line: u32,
     pub kind: String,
+    pub language: String,
 }
 
 // -------------------------------------------------------------------
@@ -1023,6 +1028,7 @@ impl ToolRouter {
                 file_path: self.resolve_file_path(&s.file_id),
                 line: s.range.start_line,
                 kind: s.kind.as_str().to_string(),
+                language: s.language.as_str().to_string(),
             })
             .collect();
 
@@ -1330,12 +1336,18 @@ fn make_graph_tools() -> Vec<Tool> {
         },
         Tool {
             name: "explore".into(),
-            description: "Explore a symbol: detail info + all immediate neighbors grouped by edge kind. Returns shallow JSON (depth=1 adjacency).".into(),
+            description: "Symbol dossier: investigate a symbol's identity, source code, call evidence with callsite snippets, non-call relations (implements, extends, references, field access, etc.), file context (imports/exports/peers), and recommended next queries. For multi-hop graph traversal use atlas_calls.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "symbol": { "type": "string", "description": "Qualified symbol name" },
-                    "includeCode": { "type": "boolean", "description": "When true, includes source code for the subject symbol. Default false." },
+                    "source_mode": { "type": "string", "enum": ["excerpt", "full", "none"], "description": "Source display mode: excerpt (snippet around definition), full (entire symbol body, capped by max_source_bytes=65536), none (skip source). Default: excerpt." },
+                    "source_lines": { "type": "integer", "description": "Max source lines to return when source_mode=excerpt. Default: 40." },
+                    "evidence_limit": { "type": "integer", "description": "Max call evidence examples per direction. Default: 5." },
+                    "relation_limit": { "type": "integer", "description": "Max non-call relation examples across all groups. Default: 20." },
+                    "peer_limit": { "type": "integer", "description": "Max file peer symbols to return. Default: 12." },
+                    "include_file_context": { "type": "boolean", "description": "Include imports, exports, and file peers. Default: true." },
+                    "include_recommendations": { "type": "boolean", "description": "Include recommended next queries. Default: true." },
                 })),
                 required: Some(vec!["symbol".into()]),
             },
@@ -3324,6 +3336,385 @@ mod tests {
         assert!(
             err.contains("resolve_qname_disambiguated"),
             "error should mention resolve_qname_disambiguated: {err}"
+        );
+    }
+
+    // ── Trace E2E tests ─────────────────────────────────────────────────
+
+    /// Helper: insert a symbol with a custom qname and return its SymbolId
+    /// for edge construction.
+    fn insert_trace_test_symbol(
+        store: &Store,
+        file_id: FileId,
+        simple_name: &str,
+        qualified_name: &str,
+        kind: atlas_engine::SymbolKind,
+    ) -> SymbolId {
+        let id =
+            SymbolId::generate(&file_id, "typescript", simple_name, kind.as_str(), None);
+        // Use the existing insert_test_symbol_with_qname to insert the symbol.
+        // Reconstruct the same SymbolId to ensure edges refer to the correct id.
+        insert_test_symbol_with_qname(store, file_id, simple_name, qualified_name, kind);
+        id
+    }
+
+    // ── A. trace_callers E2E ────────────────────────────────────────────
+
+    #[test]
+    fn trace_callers_with_edge_returns_path() {
+        let store = test_store();
+        let file_a = register_test_file(&store, "a.ts");
+        let file_b = register_test_file(&store, "b.ts");
+
+        let caller_id = insert_trace_test_symbol(
+            &store,
+            file_a,
+            "caller_func",
+            "caller_func",
+            atlas_engine::SymbolKind::Function,
+        );
+        let callee_id = insert_trace_test_symbol(
+            &store,
+            file_b,
+            "callee_func",
+            "callee_func",
+            atlas_engine::SymbolKind::Function,
+        );
+        insert_test_edge(&store, caller_id, callee_id);
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let args = serde_json::json!({"symbol": "callee_func"});
+        let (resp_str, is_error) = router.handle_trace_caller_path(&args);
+
+        assert!(!is_error, "Expected no error, got: {resp_str}");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        assert_eq!(
+            resp["kind"].as_str(),
+            Some("trace_callers"),
+            "Expected kind=trace_callers, got: {resp_str}"
+        );
+        // With an edge inserted, the result should have callers/path data.
+        let ok = resp["ok"].as_bool().unwrap_or(false);
+        assert!(ok, "Expected ok=true with callers data, got: {resp_str}");
+    }
+
+    #[test]
+    fn trace_callers_ambiguous_symbol() {
+        let store = test_store();
+        let file_a = register_test_file(&store, "a.ts");
+        let file_b = register_test_file(&store, "b.ts");
+        let file_c = register_test_file(&store, "c.ts");
+
+        insert_test_symbol_with_qname(
+            &store,
+            file_a,
+            "turn",
+            "turn",
+            atlas_engine::SymbolKind::Function,
+        );
+        insert_test_symbol_with_qname(
+            &store,
+            file_b,
+            "turn",
+            "turn",
+            atlas_engine::SymbolKind::Variable,
+        );
+        insert_test_symbol_with_qname(
+            &store,
+            file_c,
+            "turn",
+            "turn",
+            atlas_engine::SymbolKind::Method,
+        );
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let args = serde_json::json!({"symbol": "turn"});
+        let (resp_str, is_error) = router.handle_trace_caller_path(&args);
+
+        assert!(is_error, "Ambiguous should produce error, got: {resp_str}");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        assert_eq!(
+            resp["partial_result"].as_bool(),
+            Some(true),
+            "Ambiguous should be partial: {resp_str}"
+        );
+        let diags = resp["diagnostics"].as_array().unwrap();
+        let codes: Vec<&str> = diags
+            .iter()
+            .filter_map(|d| d["code"].as_str())
+            .collect();
+        assert!(
+            codes.contains(&"ambiguous_name"),
+            "Expected ambiguous_name code, got: {codes:?}"
+        );
+    }
+
+    // ── B. trace_forward E2E ────────────────────────────────────────────
+
+    #[test]
+    fn trace_forward_with_edge_returns_path() {
+        let store = test_store();
+        let file_a = register_test_file(&store, "a.ts");
+        let file_b = register_test_file(&store, "b.ts");
+
+        let from_id = insert_trace_test_symbol(
+            &store,
+            file_a,
+            "from_func",
+            "from_func",
+            atlas_engine::SymbolKind::Function,
+        );
+        let to_id = insert_trace_test_symbol(
+            &store,
+            file_b,
+            "to_func",
+            "to_func",
+            atlas_engine::SymbolKind::Function,
+        );
+        insert_test_edge(&store, from_id, to_id);
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let args = serde_json::json!({"from": "from_func", "to": "to_func"});
+        let (resp_str, is_error) = router.handle_trace_forward(&args);
+
+        assert!(!is_error, "Expected no error, got: {resp_str}");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        assert_eq!(
+            resp["kind"].as_str(),
+            Some("trace_forward"),
+            "Expected kind=trace_forward, got: {resp_str}"
+        );
+        let ok = resp["ok"].as_bool().unwrap_or(false);
+        assert!(ok, "Expected ok=true with path data, got: {resp_str}");
+    }
+
+    #[test]
+    fn trace_forward_ambiguous_to_path_aware() {
+        let store = test_store();
+        let file_a = register_test_file(&store, "a.ts");
+        let file_b = register_test_file(&store, "b.ts");
+        let file_c = register_test_file(&store, "c.ts");
+
+        let from_id = insert_trace_test_symbol(
+            &store,
+            file_a,
+            "from_func",
+            "from_func",
+            atlas_engine::SymbolKind::Function,
+        );
+        // Two "to_func" symbols — only one reachable from from_func
+        let reachable_id = insert_trace_test_symbol(
+            &store,
+            file_b,
+            "to_func",
+            "to_func",
+            atlas_engine::SymbolKind::Function,
+        );
+        insert_trace_test_symbol(
+            &store,
+            file_c,
+            "to_func",
+            "to_func",
+            atlas_engine::SymbolKind::Function,
+        );
+        insert_test_edge(&store, from_id, reachable_id);
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let args = serde_json::json!({"from": "from_func", "to": "to_func"});
+        let (resp_str, is_error) = router.handle_trace_forward(&args);
+
+        assert!(
+            !is_error,
+            "Path-aware disambiguation should succeed, got: {resp_str}"
+        );
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        assert_eq!(
+            resp["kind"].as_str(),
+            Some("trace_forward"),
+            "Expected kind=trace_forward, got: {resp_str}"
+        );
+    }
+
+    #[test]
+    fn trace_forward_ambiguous_to_no_reachable() {
+        let store = test_store();
+        let file_a = register_test_file(&store, "a.ts");
+        let file_b = register_test_file(&store, "b.ts");
+        let file_c = register_test_file(&store, "c.ts");
+
+        insert_trace_test_symbol(
+            &store,
+            file_a,
+            "from_func",
+            "from_func",
+            atlas_engine::SymbolKind::Function,
+        );
+        // Two "to_func" symbols — neither reachable
+        insert_trace_test_symbol(
+            &store,
+            file_b,
+            "to_func",
+            "to_func",
+            atlas_engine::SymbolKind::Function,
+        );
+        insert_trace_test_symbol(
+            &store,
+            file_c,
+            "to_func",
+            "to_func",
+            atlas_engine::SymbolKind::Function,
+        );
+        // No edge between them
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let args = serde_json::json!({"from": "from_func", "to": "to_func"});
+        let (resp_str, is_error) = router.handle_trace_forward(&args);
+
+        assert!(
+            is_error,
+            "No reachable candidate should return ambiguous error, got: {resp_str}"
+        );
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        assert_eq!(
+            resp["partial_result"].as_bool(),
+            Some(true),
+            "Should be partial when ambiguous, got: {resp_str}"
+        );
+        let diags = resp["diagnostics"].as_array().unwrap();
+        let codes: Vec<&str> = diags
+            .iter()
+            .filter_map(|d| d["code"].as_str())
+            .collect();
+        assert!(
+            codes.contains(&"ambiguous_name"),
+            "Expected ambiguous_name code, got: {codes:?}"
+        );
+    }
+
+    // ── C. trace_variable analysis_contract ────────────────────────────
+
+    #[test]
+    fn trace_variable_has_analysis_contract() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "test.ts");
+        insert_test_symbol_with_qname(
+            &store,
+            file_id,
+            "main",
+            "main",
+            atlas_engine::SymbolKind::Function,
+        );
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let args = serde_json::json!({
+            "file_path": "test.ts",
+            "line": 1,
+            "column": 1,
+        });
+        let (resp_str, _is_error) = router.handle_trace_variable(&args);
+
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        // The response must include kind
+        assert_eq!(
+            resp["kind"].as_str(),
+            Some("trace_variable"),
+            "Expected kind=trace_variable, got: {resp_str}"
+        );
+        // Check for analysis_contract or lazy_diagnostics as evidence the
+        // structural layer injected its metadata
+        let has_contract = resp.get("analysis_contract").is_some();
+        let has_lazy_diag = resp.get("lazy_diagnostics").is_some();
+        assert!(
+            has_contract || has_lazy_diag,
+            "Expected analysis_contract or lazy_diagnostics field, got: {resp_str}"
+        );
+    }
+
+    // ── D. QnameResolution candidate info ──────────────────────────────
+
+    #[test]
+    fn qname_resolution_candidate_info_fields() {
+        let store = test_store();
+        let file_a = register_test_file(&store, "a.ts");
+        let file_b = register_test_file(&store, "b.ts");
+
+        insert_test_symbol_with_qname(
+            &store,
+            file_a,
+            "shared",
+            "shared",
+            atlas_engine::SymbolKind::Function,
+        );
+        insert_test_symbol_with_qname(
+            &store,
+            file_b,
+            "shared",
+            "shared",
+            atlas_engine::SymbolKind::Method,
+        );
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        // ensure_graph_initialized is not needed for qname resolution in the store,
+        // but call it to match the existing test pattern.
+        router.ensure_graph_initialized().unwrap();
+
+        match router.resolve_qname_disambiguated("shared").unwrap() {
+            QnameResolution::Ambiguous { candidates } => {
+                assert_eq!(
+                    candidates.len(),
+                    2,
+                    "Expected 2 candidates, got {}",
+                    candidates.len()
+                );
+                for (i, c) in candidates.iter().enumerate() {
+                    assert!(
+                        !c.id.to_hex().is_empty(),
+                        "Candidate {i} missing id"
+                    );
+                    assert!(
+                        !c.qualified_name.is_empty(),
+                        "Candidate {i} missing qualified_name"
+                    );
+                    assert!(
+                        !c.file_path.is_empty(),
+                        "Candidate {i} missing file_path"
+                    );
+                    assert!(
+                        c.line > 0,
+                        "Candidate {i} missing or zero line: {}",
+                        c.line
+                    );
+                    assert!(
+                        !c.kind.is_empty(),
+                        "Candidate {i} missing kind"
+                    );
+                }
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    // ── E. Hex SymbolId resolution in callers ──────────────────────────
+
+    #[test]
+    fn trace_callers_hex_symbol_accepted() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "test.ts");
+        let sym_name = "my_func";
+        let kind = atlas_engine::SymbolKind::Function;
+        let sym_id =
+            SymbolId::generate(&file_id, "typescript", sym_name, kind.as_str(), None);
+        insert_test_symbol_with_qname(&store, file_id, sym_name, "my_func", kind);
+        let hex_id = sym_id.to_hex();
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let args = serde_json::json!({"symbol": hex_id});
+        let (resp_str, is_error) = router.handle_trace_caller_path(&args);
+
+        assert!(!is_error, "Hex SymbolId should resolve, got: {resp_str}");
+        assert!(
+            !resp_str.contains("not found"),
+            "Response should not contain 'not found': {resp_str}"
         );
     }
 }

@@ -690,4 +690,212 @@ mod tests {
         assert!(json.contains("mask_bits"));
         assert!(json.contains("total_files"));
     }
+
+    // ── AnalysisContract AND-reconciliation tests ─────────────────────
+
+    #[test]
+    fn contract_and_reconcile_dataflow_declared_but_no_files() {
+        let mask = CapabilityMask::new(CapabilityMask::DATAFLOW);
+        let stats = CapabilityStats {
+            files_with_dataflow: 0,
+            ..Default::default()
+        };
+        let contract = AnalysisContract::from_capability(mask, None, Some(stats));
+        let has_dataflow = contract
+            .safe_conclusions
+            .iter()
+            .any(|c| c.contains("dataflow"));
+        assert!(
+            !has_dataflow,
+            "dataflow should be AND-reconciled AWAY when no files have dataflow"
+        );
+    }
+
+    #[test]
+    fn contract_and_reconcile_dataflow_declared_with_files() {
+        let mask = CapabilityMask::new(CapabilityMask::DATAFLOW);
+        let stats = CapabilityStats {
+            files_with_dataflow: 1,
+            ..Default::default()
+        };
+        let contract = AnalysisContract::from_capability(mask, None, Some(stats));
+        let has_dataflow = contract
+            .safe_conclusions
+            .iter()
+            .any(|c| c.contains("dataflow"));
+        assert!(
+            has_dataflow,
+            "dataflow should be present in safe_conclusions when files have dataflow"
+        );
+    }
+
+    #[test]
+    fn contract_no_reconciliation_without_stats() {
+        let mask = CapabilityMask::new(CapabilityMask::DATAFLOW);
+        let contract = AnalysisContract::from_capability(mask, None, None);
+        let has_dataflow = contract
+            .safe_conclusions
+            .iter()
+            .any(|c| c.contains("dataflow"));
+        assert!(
+            has_dataflow,
+            "dataflow should be present when no stats are provided (backward compatible)"
+        );
+    }
+
+    #[test]
+    fn contract_and_reconcile_cfg() {
+        let mask = CapabilityMask::new(CapabilityMask::CFG | CapabilityMask::STRUCTURAL);
+        let stats = CapabilityStats {
+            files_with_cfg: 0,
+            files_structural_only: 1,
+            ..Default::default()
+        };
+        let contract = AnalysisContract::from_capability(mask, None, Some(stats));
+
+        // CFG should NOT be in safe_conclusions
+        let has_cfg = contract
+            .safe_conclusions
+            .iter()
+            .any(|c| c.contains("branch-level control flow"));
+        assert!(
+            !has_cfg,
+            "CFG should be reconciled AWAY when no files have CFG"
+        );
+
+        // Structural SHOULD be in safe_conclusions
+        let has_structural = contract
+            .safe_conclusions
+            .iter()
+            .any(|c| c.contains("AST-level references"));
+        assert!(
+            has_structural,
+            "structural should remain when files have structural extraction"
+        );
+    }
+
+    #[test]
+    fn contract_and_reconcile_manifest_only_structural_zero() {
+        let mask =
+            CapabilityMask::new(CapabilityMask::MANIFEST | CapabilityMask::STRUCTURAL);
+        let stats = CapabilityStats {
+            files_manifest_only: 1,
+            files_structural_only: 0,
+            ..Default::default()
+        };
+        let contract = AnalysisContract::from_capability(mask, None, Some(stats));
+
+        // Manifest should be present (total > 0)
+        let has_manifest = contract
+            .safe_conclusions
+            .iter()
+            .any(|c| c.contains("resolve symbol names"));
+        assert!(has_manifest, "manifest should survive reconciliation");
+
+        // Structural should be absent (files_structural_only=0, AND-reconciled away)
+        let has_structural = contract
+            .safe_conclusions
+            .iter()
+            .any(|c| c.contains("AST-level references"));
+        assert!(
+            !has_structural,
+            "structural should be downgraded when files_structural_only is 0"
+        );
+    }
+
+    // ── CapabilityStats / capability_mask_from_counts tests ───────────
+
+    #[test]
+    fn capability_mask_from_counts_all_zero() {
+        let stats = CapabilityStats::default();
+        let mask = capability_mask_from_counts(&stats);
+        assert!(
+            mask.is_zero(),
+            "all-zero stats should produce a zero mask"
+        );
+    }
+
+    #[test]
+    fn capability_mask_from_counts_dataflow_present() {
+        let stats = CapabilityStats {
+            files_with_dataflow: 5,
+            ..Default::default()
+        };
+        let mask = capability_mask_from_counts(&stats);
+        assert!(
+            mask.has(CapabilityMask::DATAFLOW),
+            "non-zero files_with_dataflow should set the DATAFLOW bit"
+        );
+        assert!(
+            mask.has(CapabilityMask::SUMMARIES),
+            "DATAFLOW should imply SUMMARIES"
+        );
+    }
+
+    #[test]
+    fn capability_mask_from_counts_cfg_present() {
+        let stats = CapabilityStats {
+            files_with_cfg: 3,
+            ..Default::default()
+        };
+        let mask = capability_mask_from_counts(&stats);
+        assert!(
+            mask.has(CapabilityMask::CFG),
+            "non-zero files_with_cfg should set the CFG bit"
+        );
+        assert!(
+            mask.has(CapabilityMask::MANIFEST),
+            "any file should set MANIFEST"
+        );
+    }
+
+    // ── LazyDiagnostics layered test ──────────────────────────────────
+
+    #[test]
+    fn lazy_diagnostics_combined_structural_and_dataflow() {
+        use atlas_engine::LazySummary;
+        use atlas_engine::structs::precision::PrecisionTier;
+
+        let structural_layer = LazyLayerDiagnostics {
+            triggered: true,
+            files_built: 5,
+            files_cached: 2,
+            files_pending: 0,
+            pending_job_ids: vec![],
+            budget_exceeded: false,
+        };
+
+        let summary = LazySummary {
+            triggered: true,
+            units_built: 1,
+            units_cached: 0,
+            units_pending: 0,
+            pending_job_ids: vec![],
+            truncated: false,
+            duration_ms: 100,
+            precision_tier: Some(PrecisionTier::Exact),
+        };
+        let dataflow_layer = LazyLayerDiagnostics::from_lazy_summary(&summary);
+
+        let mask = CapabilityMask::new(
+            CapabilityMask::MANIFEST
+                | CapabilityMask::STRUCTURAL
+                | CapabilityMask::CALL_EDGES
+                | CapabilityMask::DATAFLOW,
+        );
+        let contract = AnalysisContract::from_capability(mask, None, None);
+
+        let diag = LazyDiagnostics {
+            structural: Some(structural_layer),
+            dataflow: Some(dataflow_layer),
+            next_action: "none",
+            analysis_contract: contract,
+        };
+
+        let json = serde_json::to_string(&diag).unwrap();
+        assert!(json.contains("structural"), "json should contain structural layer diagnostics");
+        assert!(json.contains("dataflow"), "json should contain dataflow layer diagnostics");
+        assert!(json.contains("next_action"), "json should contain next_action");
+        assert!(json.contains("analysis_contract"), "json should contain analysis_contract");
+    }
 }

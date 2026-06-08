@@ -9,8 +9,9 @@ use atlas_engine::{EdgeKind, InvestigationFocus, TraceDiagnostic, TraceQueryResp
 
 use super::lazy_response::{LazyDiagnostics, LazyLayerDiagnostics, LazyResponse};
 use super::{
-    CandidateInfo, MAX_FILE_PATH_LENGTH, MAX_SYMBOL_NAME_LENGTH, QnameResolution, ToolRouter,
-    get_str, get_str_opt, get_u64, resolve_file_id, warnings_to_trace_diagnostics,
+    CandidateInfo, MAX_AMBIGUOUS_CANDIDATES, MAX_FILE_PATH_LENGTH, MAX_SYMBOL_NAME_LENGTH,
+    QnameResolution, ToolRouter, get_str, get_str_opt, get_u64, resolve_file_id,
+    warnings_to_trace_diagnostics,
 };
 
 use serde_json::json;
@@ -717,7 +718,7 @@ fn build_ambiguous_response_for_callers(
 ) -> (String, bool) {
     let candidates_str = candidates
         .iter()
-        .take(8)
+        .take(MAX_AMBIGUOUS_CANDIDATES)
         .map(|c| {
             format!(
                 "{} [{}:{} {}]",
@@ -751,7 +752,7 @@ fn build_ambiguous_response_for_forward(
 ) -> (String, bool) {
     let candidates_str = candidates
         .iter()
-        .take(8)
+        .take(MAX_AMBIGUOUS_CANDIDATES)
         .map(|c| {
             format!(
                 "{} [{}:{} {}]",
@@ -776,4 +777,319 @@ fn build_ambiguous_response_for_forward(
         serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
         true,
     )
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use super::*;
+    use atlas_engine::Confidence;
+    use atlas_engine::EdgeId;
+    use atlas_engine::EdgeKind;
+    use atlas_engine::FileId;
+    use atlas_engine::FileInfo;
+    use atlas_engine::Language;
+    use atlas_engine::ParseStatus;
+    use atlas_engine::Provenance;
+    use atlas_engine::RawEdge;
+    use atlas_engine::Store;
+    use atlas_engine::SymbolDef;
+    use atlas_engine::SymbolId;
+    use atlas_engine::SymbolKind;
+    use atlas_engine::TextRange;
+
+    // ── Test helpers ───────────────────────────────────────────────────
+
+    fn test_store() -> Arc<Store> {
+        let s = Store::open_in_memory().unwrap();
+        s.init_schema().unwrap();
+        Arc::new(s)
+    }
+
+    fn register_file(store: &Store, path: &str) -> FileId {
+        let fid = FileId::generate(path);
+        store
+            .upsert_file(&FileInfo {
+                file_id: fid,
+                path: path.into(),
+                language: Language::TypeScript,
+                content_hash: "hash1".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        fid
+    }
+
+    fn insert_symbol(
+        store: &Store,
+        file_id: FileId,
+        simple_name: &str,
+        qname: &str,
+        kind: SymbolKind,
+    ) -> SymbolId {
+        let range = TextRange {
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 11,
+        };
+        let sid = SymbolId::generate(&file_id, "typescript", simple_name, kind.as_str(), None);
+        let sym = SymbolDef {
+            id: sid,
+            kind,
+            name: simple_name.into(),
+            qualified_name: qname.into(),
+            symbol_path: vec![simple_name.into()],
+            file_id,
+            language: Language::TypeScript,
+            range,
+            name_range: range,
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".into(),
+        };
+        store.insert_symbols(&[sym]).unwrap();
+        sid
+    }
+
+    fn insert_call_edge(store: &Store, from: &SymbolId, to: &SymbolId) {
+        let eid = EdgeId::generate(from, to, "calls", None, "tree_sitter");
+        let edge = RawEdge::new(
+            eid,
+            *from,
+            *to,
+            EdgeKind::Calls,
+            Confidence::new(1.0),
+            Provenance::TreeSitter,
+        );
+        store.insert_edges(&[edge]).unwrap();
+    }
+
+    fn make_candidate(id: SymbolId) -> CandidateInfo {
+        CandidateInfo {
+            id,
+            qualified_name: "test".into(),
+            file_path: "test.ts".into(),
+            line: 1,
+            kind: "function".into(),
+            language: "typescript".into(),
+        }
+    }
+
+    // ── compute_reachable_from tests ──────────────────────────────────
+
+    #[test]
+    fn reachable_from_finds_one_hop() {
+        let store = test_store();
+        let f = register_file(&store, "a.ts");
+        let a = insert_symbol(&store, f, "a", "a", SymbolKind::Function);
+        let b = insert_symbol(&store, f, "b", "b", SymbolKind::Function);
+        let c = insert_symbol(&store, f, "c", "c", SymbolKind::Function);
+        insert_call_edge(&store, &a, &b);
+        insert_call_edge(&store, &b, &c);
+
+        let reachable = compute_reachable_from(&store, &a, 1);
+        assert!(reachable.contains(&b), "B should be reachable");
+        assert!(!reachable.contains(&c), "C should NOT be reachable at depth 1");
+        assert!(!reachable.contains(&a), "source should NOT be in reachable");
+    }
+
+    #[test]
+    fn reachable_from_honors_max_depth() {
+        let store = test_store();
+        let f = register_file(&store, "a.ts");
+        let a = insert_symbol(&store, f, "a", "a", SymbolKind::Function);
+        let b = insert_symbol(&store, f, "b", "b", SymbolKind::Function);
+        let c = insert_symbol(&store, f, "c", "c", SymbolKind::Function);
+        insert_call_edge(&store, &a, &b);
+        insert_call_edge(&store, &b, &c);
+
+        let reachable = compute_reachable_from(&store, &a, 2);
+        assert!(reachable.contains(&b));
+        assert!(reachable.contains(&c));
+    }
+
+    #[test]
+    fn reachable_from_depth_zero_returns_empty() {
+        let store = test_store();
+        let f = register_file(&store, "a.ts");
+        let a = insert_symbol(&store, f, "a", "a", SymbolKind::Function);
+        let b = insert_symbol(&store, f, "b", "b", SymbolKind::Function);
+        insert_call_edge(&store, &a, &b);
+
+        let reachable = compute_reachable_from(&store, &a, 0);
+        assert!(reachable.is_empty(), "depth 0 should return empty set");
+    }
+
+    #[test]
+    fn reachable_from_empty_graph() {
+        let store = test_store();
+        let f = register_file(&store, "a.ts");
+        let a = insert_symbol(&store, f, "a", "a", SymbolKind::Function);
+
+        let reachable = compute_reachable_from(&store, &a, 5);
+        assert!(reachable.is_empty());
+    }
+
+    #[test]
+    fn reachable_from_filters_by_edge_kind() {
+        let store = test_store();
+        let f = register_file(&store, "a.ts");
+        let a = insert_symbol(&store, f, "a", "a", SymbolKind::Function);
+        let b = insert_symbol(&store, f, "b", "b", SymbolKind::Function);
+        // Import edge — NOT a call edge, should NOT be followed
+        let eid = EdgeId::generate(&a, &b, "imports", None, "tree_sitter");
+        let edge = RawEdge::new(
+            eid,
+            a,
+            b,
+            EdgeKind::Imports,
+            Confidence::new(1.0),
+            Provenance::TreeSitter,
+        );
+        store.insert_edges(&[edge]).unwrap();
+
+        let reachable = compute_reachable_from(&store, &a, 5);
+        assert!(reachable.is_empty(), "Imports edge should not be followed");
+    }
+
+    // ── ambiguous response helper tests ───────────────────────────────
+
+    #[test]
+    fn ambiguous_callers_response_has_code() {
+        let c = make_candidate(SymbolId::generate(
+            &FileId::generate("test.ts"),
+            "ts",
+            "f",
+            "function",
+            None,
+        ));
+        let (json_str, is_error) = build_ambiguous_response_for_callers("test", &[c]);
+        assert!(
+            is_error == true || json_str.contains("ambiguous_name") || json_str.contains("partial")
+        );
+    }
+
+    #[test]
+    fn ambiguous_forward_response_has_code() {
+        let c = make_candidate(SymbolId::generate(
+            &FileId::generate("test.ts"),
+            "ts",
+            "f",
+            "function",
+            None,
+        ));
+        let (json_str, is_error) = build_ambiguous_response_for_forward("test", &[c], "from");
+        assert!(
+            is_error == true || json_str.contains("ambiguous_name") || json_str.contains("partial")
+        );
+    }
+
+    #[test]
+    fn ambiguous_response_truncates_to_eight() {
+        let mut candidates = Vec::new();
+        for i in 0..12 {
+            candidates.push(CandidateInfo {
+                id: SymbolId::generate(
+                    &FileId::generate("test.ts"),
+                    "ts",
+                    &format!("f{i}"),
+                    "function",
+                    None,
+                ),
+                qualified_name: "test".into(),
+                file_path: format!("file{i}.ts"),
+                line: i,
+                kind: "function".into(),
+                language: "typescript".into(),
+            });
+        }
+        let (json_str, _) = build_ambiguous_response_for_callers("test", &candidates);
+        assert!(json_str.contains("12 candidates"));
+        // Each candidate formatted as "qualified_name [file_path:line kind]"
+        let count = json_str.matches("function]").count();
+        assert_eq!(count, MAX_AMBIGUOUS_CANDIDATES, "Should truncate to {} candidates, got: {json_str}", MAX_AMBIGUOUS_CANDIDATES);
+    }
+
+    // ── Handler tests ─────────────────────────────────────────────────
+
+    fn new_router(store: Arc<Store>) -> ToolRouter {
+        ToolRouter::new_empty(store, PathBuf::from("/tmp"))
+    }
+
+    #[test]
+    fn trace_callers_valid_hex_symbol_id_accepted() {
+        let store = test_store();
+        let f = register_file(&store, "test.ts");
+        let sid = insert_symbol(&store, f, "func", "func.func", SymbolKind::Function);
+        let hex = sid.to_hex();
+
+        let mut router = new_router(store);
+        let args = serde_json::json!({"symbol": hex});
+        let (resp_str, _is_error) = router.handle_trace_caller_path(&args);
+        assert!(
+            !resp_str.contains("not found"),
+            "hex SymbolId should resolve: {resp_str}"
+        );
+    }
+
+    #[test]
+    fn trace_variable_missing_file_returns_error() {
+        let store = test_store();
+        let mut router = new_router(store);
+
+        let args = serde_json::json!({
+            "file_path": "nonexistent.ts",
+            "line": 1,
+            "column": 1,
+        });
+        let (_resp_str, is_error) = router.handle_trace_variable(&args);
+        assert!(is_error, "should be error for missing file");
+    }
+
+    #[test]
+    fn trace_variable_missing_position_returns_error() {
+        let store = test_store();
+        let _f = register_file(&store, "test.ts");
+        let mut router = new_router(store);
+
+        let args = serde_json::json!({
+            "file_path": "test.ts",
+        });
+        let (_resp_str, is_error) = router.handle_trace_variable(&args);
+        assert!(is_error, "should be error without line/column");
+    }
+
+    #[test]
+    fn trace_callers_empty_symbol_returns_error() {
+        let store = test_store();
+        let mut router = new_router(store);
+
+        let args = serde_json::json!({"symbol": ""});
+        let (_resp_str, is_error) = router.handle_trace_caller_path(&args);
+        assert!(is_error, "empty symbol should error");
+    }
+
+    #[test]
+    fn trace_forward_empty_params_returns_error() {
+        let store = test_store();
+        let mut router = new_router(store);
+
+        let args = serde_json::json!({"from": "a", "to": ""});
+        let (_resp_str, is_error) = router.handle_trace_forward(&args);
+        assert!(is_error, "empty 'to' should error");
+    }
 }

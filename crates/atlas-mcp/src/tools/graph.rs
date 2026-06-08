@@ -5,6 +5,7 @@ use std::collections::HashSet;
 
 use atlas_engine::analysis;
 use atlas_engine::{EdgeKind, InvestigationFocus, Store, SymbolId, SymbolKind, TraversalDirection};
+use dossier::SourceRepository;
 
 use super::lazy_response::{LazyDiagnostics, LazyResponse};
 use super::{MAX_SYMBOL_NAME_LENGTH, QnameResolution, ToolRouter, get_str, get_str_opt, get_u64};
@@ -1007,28 +1008,52 @@ impl ToolRouter {
                 true,
             );
         }
-        let include_code = args
-            .get("includeCode")
+        let source_mode = parse_source_mode(args);
+        let source_lines = args
+            .get("source_lines")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(40) as u32;
+        let evidence_limit = args
+            .get("evidence_limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5) as usize;
+        let relation_limit = args
+            .get("relation_limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(20) as usize;
+        let peer_limit = args
+            .get("peer_limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(12) as usize;
+        let max_source_bytes: usize = 65536;
+        let include_file_context = args
+            .get("include_file_context")
             .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+            .unwrap_or(true);
+        let include_recommendations = args
+            .get("include_recommendations")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
         let sym_id = match self.resolve_qname_disambiguated(qname) {
             Ok(QnameResolution::Unique(id)) => id,
             Ok(QnameResolution::Ambiguous { candidates }) => {
-                let names: Vec<String> = candidates
+                let symbol_candidates: Vec<dossier::types::SymbolCandidate> = candidates
                     .iter()
-                    .take(5)
-                    .map(|c| format!("{} [{}:{}]", c.qualified_name, c.file_path, c.line))
+                    .map(|c| dossier::types::SymbolCandidate {
+                        qualified_name: c.qualified_name.clone(),
+                        signature: None,
+                        file: c.file_path.clone(),
+                        line: c.line,
+                        kind: c.kind.clone(),
+                        language: c.language.clone(),
+                    })
                     .collect();
-                return (
-                    format!(
-                        "Symbol '{}' is ambiguous ({} matches). Use hex SymbolId from search results. Candidates: {}",
-                        qname,
-                        candidates.len(),
-                        names.join(", ")
-                    ),
-                    true,
-                );
+                let ambiguous =
+                    dossier::builder::ExploreDossierBuilder::build_ambiguous(qname, symbol_candidates);
+                let json = serde_json::to_string(&ambiguous)
+                    .unwrap_or_else(|e| format!(r#"{{"error":"{}"}}"#, e));
+                return (json, false);
             }
             Err(e) => return (e, true),
         };
@@ -1047,19 +1072,16 @@ impl ToolRouter {
             }
         };
 
+        let file_path = self.resolve_file_path(&sym.file_id);
+
         self.update_investigation(InvestigationFocus::Symbol(sym.id));
         let investigation = self.investigation_state.active_investigation.clone();
         let lr = LazyResponse::new("explore", args);
         let query_id = lr.query_id().to_string();
 
-        let source = if include_code {
-            self.read_symbol_source(&sym.id)
-        } else {
-            None
-        };
-
         // Lazy structural: ensure graph edges exist before querying
-        let file_ids: Vec<atlas_engine::FileId> = std::iter::once(sym.file_id).collect();
+        let file_ids: Vec<atlas_engine::FileId> =
+            std::iter::once(sym.file_id).collect();
         let outcome_files = self.ensure_structural_for_files(
             file_ids,
             vec![],
@@ -1073,80 +1095,65 @@ impl ToolRouter {
             Some(&query_id),
         );
 
-        let graph = self.context_builder().graph_snapshot();
-        let snap = graph.snapshot();
+        let sym_repo = dossier::SymbolRepo::new(self.store());
+        let mut source_repo = dossier::SourceRepo::new(
+            self.store(),
+            self.project_root.clone(),
+        );
+        let relation_repo = dossier::RelationRepo::new(
+            self.store(),
+            self.context_builder().graph_snapshot(),
+        );
+        let file_repo = dossier::FileFactsRepo::new(self.store());
 
-        // Immediate neighbors with edge kind info
-        let incoming: Vec<_> = snap
-            .incoming_neighbors_with_kinds(&sym.id)
-            .iter()
-            .map(|(node_ix, edge_kind)| {
-                let n = snap.node(*node_ix);
-                json!({
-                    "name": n.name,
-                    "qualified_name": n.qualified_name,
-                    "kind": n.kind.as_str(),
-                    "edge_kind": edge_kind.as_str(),
-                    "direction": "incoming",
-                    "file": self.resolve_file_path(&n.file_id),
-                    "line": n.start_line,
-                })
-            })
-            .collect();
+        let request = dossier::types::ExploreRequest {
+            symbol: qname.to_string(),
+            source_mode,
+            source_lines,
+            evidence_limit,
+            relation_limit,
+            peer_limit,
+            max_source_bytes,
+            include_file_context,
+            include_recommendations,
+        };
 
-        let outgoing: Vec<_> = snap
-            .outgoing_neighbors_with_kinds(&sym.id)
-            .iter()
-            .map(|(node_ix, edge_kind)| {
-                let n = snap.node(*node_ix);
-                json!({
-                    "name": n.name,
-                    "qualified_name": n.qualified_name,
-                    "kind": n.kind.as_str(),
-                    "edge_kind": edge_kind.as_str(),
-                    "direction": "outgoing",
-                    "file": self.resolve_file_path(&n.file_id),
-                    "line": n.start_line,
-                })
-            })
-            .collect();
+        let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
+        let tier_str = format!("{:?}", tier);
 
-        let mut sym_obj = json!({
-            "name": sym.name,
-            "qualified_name": sym.qualified_name,
-            "kind": sym.kind.as_str(),
-            "language": sym.language.as_str(),
-            "file": self.resolve_file_path(&sym.file_id),
-            "range": { "line": sym.range.start_line, "column": sym.range.start_column },
-        });
-        if let Some(ref src) = source {
-            sym_obj["source"] = json!(src);
-        }
+        let mut dossier = match dossier::builder::ExploreDossierBuilder::build(
+            &sym,
+            &file_path,
+            &sym_repo,
+            &relation_repo,
+            &file_repo,
+            &mut source_repo,
+            &request,
+            tier_str,
+        ) {
+            Ok(d) => d,
+            Err(e) => return (format!("Failed to build dossier: {e}"), true),
+        };
 
-        let mut resp = json!({
-            "symbol": sym_obj,
-            "incoming": incoming,
-            "outgoing": outgoing,
-        });
-        if !self.has_manual_full_index() {
-            resp["note"] = json!(
-                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
-            );
-        }
+        source_repo.clear_cache();
 
-        // Lazy structural response — merge warnings from both outcomes
+        // Merge lazy warnings into dossier warnings
         let mut lazy_warnings: Vec<String> = outcome_files.warnings;
         lazy_warnings.extend(outcome_name.warnings);
-        let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
+        dossier.warnings.extend(lazy_warnings);
+
         let lazy_diag: Option<LazyDiagnostics> = outcome_files
             .lazy_outcome
             .as_ref()
             .map(LazyDiagnostics::from_structural);
 
+        let resp_value = serde_json::to_value(&dossier)
+            .unwrap_or_else(|e| json!({"error": e.to_string()}));
+
         lr.with_precision_tier(tier)
-            .with_lazy_warnings(lazy_warnings)
+            .with_lazy_warnings(dossier.warnings)
             .with_lazy_diag(lazy_diag)
-            .build_with_args(resp, args, self)
+            .build_with_args(resp_value, args, self)
     }
 
     pub(crate) fn handle_impact(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -1524,6 +1531,15 @@ impl ToolRouter {
             .with_lazy_warnings(lazy_warnings)
             .with_lazy_diag(lazy_diag)
             .build(resp, self)
+    }
+}
+
+/// Parse the `source_mode` parameter from explore tool arguments.
+fn parse_source_mode(args: &serde_json::Value) -> dossier::types::SourceMode {
+    match args.get("source_mode").and_then(|v| v.as_str()) {
+        Some("full") => dossier::types::SourceMode::Full,
+        Some("none") => dossier::types::SourceMode::None_,
+        _ => dossier::types::SourceMode::Excerpt,
     }
 }
 
@@ -2009,6 +2025,73 @@ mod tests {
         assert!(
             resp.get("precision_tier").is_some(),
             "precision_tier missing from callers response"
+        );
+    }
+
+    // ── handle_explore tests ───────────────────────────────────────────
+
+    #[test]
+    fn explore_unique_symbol_returns_dossier() {
+        let store = test_store();
+        let _sid = insert_test_symbol(&store, "test.ts", "myfunc");
+        let mut router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+        let (resp_str, is_error) = router.handle_explore(&json!({"symbol": "myfunc"}));
+        assert!(!is_error, "expected success, got error: {resp_str}");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        assert!(
+            resp.get("subject").is_some(),
+            "response should have 'subject' field, got keys: {:?}",
+            resp.as_object().map(|o| o.keys().collect::<Vec<_>>())
+        );
+    }
+
+    #[test]
+    fn explore_ambiguous_symbol_returns_list() {
+        let store = test_store();
+        insert_test_symbol(&store, "a.ts", "shared_func");
+        insert_test_symbol(&store, "b.ts", "shared_func");
+        insert_test_symbol(&store, "c.ts", "shared_func");
+        let mut router = test_router(store);
+        // Ambiguous path returns early; graph init not needed
+        let (resp_str, is_error) = router.handle_explore(&json!({"symbol": "shared_func"}));
+        assert!(!is_error, "expected not an error, got: {resp_str}");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        assert_eq!(resp["ambiguous"], json!(true), "should be ambiguous");
+        let candidates = resp
+            .get("candidates")
+            .and_then(|v| v.as_array())
+            .expect("should have candidates array");
+        assert_eq!(candidates.len(), 3, "expected 3 candidates");
+    }
+
+    #[test]
+    fn explore_accepts_source_lines_param() {
+        let store = test_store();
+        let _sid = insert_test_symbol(&store, "test.ts", "myfunc2");
+        let mut router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+        let (resp_str, is_error) =
+            router.handle_explore(&json!({"symbol": "myfunc2", "source_lines": 10}));
+        assert!(
+            !is_error,
+            "expected no error with source_lines param, got: {resp_str}"
+        );
+        // Params are accepted if handler does not reject them.
+        // Dossier may still build with warnings about missing source files.
+    }
+
+    #[test]
+    fn explore_accepts_evidence_limit_param() {
+        let store = test_store();
+        let _sid = insert_test_symbol(&store, "test.ts", "myfunc3");
+        let mut router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+        let (resp_str, is_error) =
+            router.handle_explore(&json!({"symbol": "myfunc3", "evidence_limit": 5}));
+        assert!(
+            !is_error,
+            "expected no error with evidence_limit param, got: {resp_str}"
         );
     }
 }
