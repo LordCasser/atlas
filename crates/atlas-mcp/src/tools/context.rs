@@ -32,6 +32,10 @@ impl ToolRouter {
             .get("includeCode")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let include_file_peers = args
+            .get("includeFilePeers")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
         ctx.send_progress(0.2, &format!("Building context for '{qname}'..."));
 
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
@@ -76,7 +80,7 @@ impl ToolRouter {
         }
 
         ctx.send_progress(0.7, "Building context view...");
-        match self.context_builder().build_context_for_symbol(&sid) {
+        match self.context_builder().build_context_for_symbol(&sid, include_file_peers) {
             Ok(view) => {
                 ctx.send_progress(1.0, "Context complete");
 

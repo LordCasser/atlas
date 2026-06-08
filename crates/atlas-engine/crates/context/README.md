@@ -35,6 +35,8 @@ doSomething(id: number): Promise<Result> {
 
 ```rust
 ContextBuilder::new(store: Arc<Store>, graph: Arc<GraphEngine>)
-ContextBuilder::build_context_for_symbol(&symbol_id) → ContextView
+ContextBuilder::build_context_for_symbol(&symbol_id, include_file_peers: bool) → ContextView
 ContextView::to_markdown() → String
 ```
+
+When `include_file_peers` is `false`, the `file_peers` field is set to an empty vector and no DB query for file peers is performed, producing smaller, faster responses. Default is `true` for backward compatibility.

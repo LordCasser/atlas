@@ -1203,6 +1203,7 @@ fn make_symbol_tools() -> Vec<Tool> {
                         "description": "View mode: 'detail' for symbol info with optional source, 'context' for rich structured context, 'usages' for reference listing. Default: 'detail'."
                     },
                     "includeCode": { "type": "boolean", "description": "When true, includes the full source code of the enclosing definition (function/class/struct body). Default false (applies to view='detail' and 'context')." },
+                    "includeFilePeers": { "type": "boolean", "description": "Include file peer symbols in context view (default: true). Set false for faster, smaller responses." },
                     "limit": { "type": "integer", "description": "Max results for view='usages' (default 50)." },
                     "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
@@ -1564,6 +1565,9 @@ impl ToolRouter {
                 mapped.insert("symbol".into(), Value::String(qname.to_string()));
                 if let Some(v) = args.get("includeCode") {
                     mapped.insert("includeCode".into(), v.clone());
+                }
+                if let Some(v) = args.get("includeFilePeers") {
+                    mapped.insert("includeFilePeers".into(), v.clone());
                 }
                 if let Some(v) = args.get("include_roots") {
                     mapped.insert("include_roots".into(), v.clone());
@@ -2633,6 +2637,34 @@ mod tests {
         assert!(
             !warns.unwrap().is_empty(),
             "Expected non-empty warnings in: {resp_str}"
+        );
+    }
+
+    #[test]
+    fn context_include_file_peers_false_produces_empty_file_peers() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "test.ts");
+        insert_test_symbol(&store, file_id, "test_func");
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let args = serde_json::json!({
+            "symbol": "test_func.test_func",
+            "includeFilePeers": false,
+        });
+
+        let (resp_str, is_error) = router.handle_context(&ToolCallContext::empty(), &args);
+        assert!(!is_error, "Expected success, got: {resp_str}");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let file_peers = resp["file_peers"].as_array();
+        assert!(
+            file_peers.is_some(),
+            "Expected 'file_peers' field in: {resp_str}"
+        );
+        assert!(
+            file_peers.unwrap().is_empty(),
+            "Expected empty file_peers when includeFilePeers=false, got: {resp_str}"
         );
     }
 

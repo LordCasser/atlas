@@ -587,6 +587,7 @@ v1.4.1 之后的清理目标不是单纯减少行数，而是把重复实现压�
 
 ### 11.2 Context
 - 基于 symbol、callers/callees、file peers、importers/dependencies 构建 Agent context (Markdown)。
+- `symbol(view="context")` 支持 `includeFilePeers` 布尔参数（默认 `true`），设为 `false` 时跳过 file peers 查询，适合更快、更小的响应。
 - 当符号未被索引时，`symbol(view="context")` 工具内置 lazy structural extraction（查询时按需触发完整 structural 解析）。
 - **图刷新决策**：lazy structural 写新 facts 到 DB 后，`context` handler 会在调用 context builder 前执行 `force_refresh_graph()`，确保内存图快照包含刚解析的边。这关闭了 graph init 早于 handler 自身 structural extraction 的调用流缺口。
 

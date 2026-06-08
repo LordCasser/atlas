@@ -97,7 +97,11 @@ impl ContextBuilder {
     /// The graph snapshot is locked once and held for the entire operation,
     /// guaranteeing consistent results even if `refresh_graph()` is called
     /// concurrently from another request.
-    pub fn build_context_for_symbol(&self, symbol_id: &SymbolId) -> anyhow::Result<ContextView> {
+    pub fn build_context_for_symbol(
+        &self,
+        symbol_id: &SymbolId,
+        include_file_peers: bool,
+    ) -> anyhow::Result<ContextView> {
         let sym = self.store.find_symbol_by_id(symbol_id)?;
         let Some(ref sym) = sym else {
             anyhow::bail!("symbol not found: {symbol_id}");
@@ -109,8 +113,12 @@ impl ContextBuilder {
         let callee_view = g.callees(symbol_id);
         let file_id = sym.file_id;
 
-        // Peers: symbols in the same file
-        let file_symbols = self.store.find_symbols_by_file(&file_id)?;
+        // Peers: symbols in the same file (skip DB query when not needed)
+        let file_symbols = if include_file_peers {
+            self.store.find_symbols_by_file(&file_id)?
+        } else {
+            vec![]
+        };
 
         // Importers are symbols; dependencies are files
         let importer_symbols = g.importers(&file_id);
@@ -193,7 +201,7 @@ impl ContextBuilder {
     pub fn build_context_for_query(&self, query: &str) -> anyhow::Result<Option<ContextView>> {
         let results = self.store.search_symbols(query)?;
         if let Some(top) = results.first() {
-            self.build_context_for_symbol(&top.id).map(Some)
+            self.build_context_for_symbol(&top.id, true).map(Some)
         } else {
             Ok(None)
         }
