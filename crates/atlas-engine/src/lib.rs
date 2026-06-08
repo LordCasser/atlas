@@ -161,6 +161,9 @@ pub use analysis::trace;
 /// Context internals: caller/callee detail types and context view.
 pub use context::{CalleeDetail, CallerDetail, ContextView};
 
+/// Dossier: Symbol Dossier builder for atlas_explore tool.
+pub use dossier;
+
 /// Summary persistence internals: build stats and low-level store.
 pub use db::summary::{SummaryBuildStats, SummaryStore};
 
