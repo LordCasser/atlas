@@ -5,7 +5,7 @@
 //! records with provenance, confidence, and source location.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use anyhow::Result;
 use types::{EdgeKind, RawEdge, SymbolId, TextRange};
@@ -22,16 +22,13 @@ use super::types::InternalRelationKind;
 /// neighbor iteration.
 pub struct RelationRepo {
     store: Arc<db::Store>,
-    graph: RwLock<Arc<graph::GraphEngine>>,
+    graph: Arc<graph::GraphEngine>,
 }
 
 impl RelationRepo {
     /// Create a new RelationRepo.
     pub fn new(store: Arc<db::Store>, graph: Arc<graph::GraphEngine>) -> Self {
-        Self {
-            store,
-            graph: RwLock::new(graph),
-        }
+        Self { store, graph }
     }
 }
 
@@ -75,8 +72,7 @@ impl RelationRepository for RelationRepo {
         kinds: Option<&[InternalRelationKind]>,
         limit: usize,
     ) -> Result<Vec<RelationEvidence>> {
-        let g = self.graph.read().unwrap_or_else(|e| e.into_inner());
-        let snapshot = g.snapshot();
+        let snapshot = self.graph.snapshot();
 
         let raw_pairs = snapshot.incoming_neighbors_with_kinds(symbol_id);
         let candidates = filter_candidates(raw_pairs, kinds, limit);
@@ -123,8 +119,7 @@ impl RelationRepository for RelationRepo {
         kinds: Option<&[InternalRelationKind]>,
         limit: usize,
     ) -> Result<Vec<RelationEvidence>> {
-        let g = self.graph.read().unwrap_or_else(|e| e.into_inner());
-        let snapshot = g.snapshot();
+        let snapshot = self.graph.snapshot();
 
         let raw_pairs = snapshot.outgoing_neighbors_with_kinds(symbol_id);
         let candidates = filter_candidates(raw_pairs, kinds, limit);
@@ -174,8 +169,7 @@ impl RelationRepository for RelationRepo {
         &self,
         symbol_id: &SymbolId,
     ) -> Result<HashMap<InternalRelationKind, usize>> {
-        let g = self.graph.read().unwrap_or_else(|e| e.into_inner());
-        let snapshot = g.snapshot();
+        let snapshot = self.graph.snapshot();
 
         let mut counts = HashMap::new();
         for (_, ek) in snapshot.incoming_neighbors_with_kinds(symbol_id) {
@@ -190,8 +184,7 @@ impl RelationRepository for RelationRepo {
         &self,
         symbol_id: &SymbolId,
     ) -> Result<HashMap<InternalRelationKind, usize>> {
-        let g = self.graph.read().unwrap_or_else(|e| e.into_inner());
-        let snapshot = g.snapshot();
+        let snapshot = self.graph.snapshot();
 
         let mut counts = HashMap::new();
         for (_, ek) in snapshot.outgoing_neighbors_with_kinds(symbol_id) {
