@@ -2,7 +2,8 @@
   "symbols": [
     {
       "name": "main",
-      "kind": "function"
+      "kind": "function",
+      "signature": "()"
     },
     {
       "name": "items",

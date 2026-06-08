@@ -2,7 +2,8 @@
   "symbols": [
     {
       "name": "test_loop",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(x: int) -> int"
     }
   ],
   "scopes": [

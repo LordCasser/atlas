@@ -6,11 +6,13 @@
     },
     {
       "name": "add",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(a, b int) int"
     },
     {
       "name": "main",
-      "kind": "function"
+      "kind": "function",
+      "signature": "()"
     },
     {
       "name": "result",

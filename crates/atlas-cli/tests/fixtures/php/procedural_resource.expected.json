@@ -2,11 +2,13 @@
   "symbols": [
     {
       "name": "read_file",
-      "kind": "function"
+      "kind": "function",
+      "signature": "()"
     },
     {
       "name": "db_query",
-      "kind": "function"
+      "kind": "function",
+      "signature": "()"
     }
   ],
   "references": [

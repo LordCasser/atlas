@@ -10,11 +10,13 @@
     },
     {
       "name": "constructor",
-      "kind": "method"
+      "kind": "method",
+      "signature": "(port)"
     },
     {
       "name": "start",
-      "kind": "method"
+      "kind": "method",
+      "signature": "()"
     },
     {
       "name": "router",
@@ -22,7 +24,8 @@
     },
     {
       "name": "createServer",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(port)"
     }
   ],
   "references": [

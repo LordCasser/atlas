@@ -18,7 +18,8 @@
     },
     {
       "name": "initialize",
-      "kind": "method"
+      "kind": "method",
+      "signature": "(name)"
     },
     {
       "name": "@name",

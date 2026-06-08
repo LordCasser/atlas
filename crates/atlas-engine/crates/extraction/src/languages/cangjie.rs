@@ -10,8 +10,8 @@ use crate::frontend::{
     ScopeExtractorSpec, SymbolExtractorSpec,
 };
 use crate::languages::shared::{
-    SymbolDefBuilder, make_binding_def, make_df_assign_target, make_df_parameter,
-    make_reference_use, make_scope_def,
+    SymbolDefBuilder, compact_signature, make_binding_def, make_df_assign_target,
+    make_df_parameter, make_reference_use, make_scope_def,
 };
 use types::bindings::BindingDef;
 use types::capability::FeatureSupport;
@@ -49,6 +49,7 @@ fn normalize_cangjie_definition(
     let range = node_range(node);
 
     let qualified_name = qualified_name_from_node_cj("", &name, node, source);
+    let signature = cj_extract_signature(capture_name, node, source);
 
     Some(
         SymbolDefBuilder::new(
@@ -59,6 +60,7 @@ fn normalize_cangjie_definition(
             qualified_name,
             range,
         )
+        .signature(signature)
         .build(),
     )
 }
@@ -286,6 +288,39 @@ fn cj_definition_kind(capture: &str) -> Option<SymbolKind> {
         "definition.function" => Some(SymbolKind::Function),
         "definition.entry" => Some(SymbolKind::Function), // mainDefinition
         "definition.variable" => Some(SymbolKind::Variable),
+        _ => None,
+    }
+}
+
+fn cj_extract_signature(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+) -> Option<String> {
+    match capture_name {
+        "definition.function" => {
+            let function = node.parent()?;
+            let function_text = node_text(function, source)?;
+            let header = function_text
+                .split_once('{')
+                .map(|(head, _)| head)
+                .unwrap_or(function_text.as_str())
+                .trim();
+            let name = node_text(node, source)?;
+            let after_func = header.strip_prefix("func").unwrap_or(header).trim_start();
+            let signature = after_func.strip_prefix(&name)?.trim_start();
+            compact_signature(signature)
+        }
+        "definition.entry" => {
+            let entry_text = node_text(node, source)?;
+            let header = entry_text
+                .split_once('{')
+                .map(|(head, _)| head)
+                .unwrap_or(entry_text.as_str())
+                .trim();
+            let signature = header.strip_prefix("main")?.trim_start();
+            compact_signature(signature)
+        }
         _ => None,
     }
 }

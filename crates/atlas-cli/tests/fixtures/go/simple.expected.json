@@ -10,11 +10,13 @@
     },
     {
       "name": "Start",
-      "kind": "method"
+      "kind": "method",
+      "signature": "()"
     },
     {
       "name": "main",
-      "kind": "function"
+      "kind": "function",
+      "signature": "()"
     },
     {
       "name": "srv",

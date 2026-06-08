@@ -92,6 +92,39 @@ pub(crate) struct CapabilityStats {
     pub files_with_cfg: usize,
 }
 
+/// Derive an actual capability mask from DB-sourced file counts.
+/// Only sets bits that have at least one verified file.
+fn capability_mask_from_counts(stats: &CapabilityStats) -> CapabilityMask {
+    let mut mask = CapabilityMask::default();
+    // Manifest: any file that's been indexed at all
+    let total = stats.files_with_dataflow
+        + stats.files_structural_only
+        + stats.files_manifest_only
+        + stats.files_with_cfg;
+    if total > 0 {
+        mask = CapabilityMask::new(mask.bits() | CapabilityMask::MANIFEST);
+    }
+    // Structural + Call edges: at least structural tier
+    if stats.files_structural_only + stats.files_with_dataflow + stats.files_with_cfg > 0 {
+        mask = CapabilityMask::new(
+            mask.bits() | CapabilityMask::STRUCTURAL | CapabilityMask::CALL_EDGES,
+        );
+    }
+    // Dataflow
+    if stats.files_with_dataflow > 0 {
+        mask = CapabilityMask::new(mask.bits() | CapabilityMask::DATAFLOW);
+    }
+    // CFG
+    if stats.files_with_cfg > 0 {
+        mask = CapabilityMask::new(mask.bits() | CapabilityMask::CFG);
+    }
+    // SUMMARIES: implied by dataflow (verified through dataflow count)
+    if stats.files_with_dataflow > 0 {
+        mask = CapabilityMask::new(mask.bits() | CapabilityMask::SUMMARIES);
+    }
+    mask
+}
+
 /// A background job that would improve the analysis contract.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct RefinementJob {
@@ -102,32 +135,45 @@ pub(crate) struct RefinementJob {
 impl AnalysisContract {
     /// Build an AnalysisContract from a capability mask and optional LazyOutcome.
     /// `capability_stats` populates file-count breakdowns; pass `None` for zero defaults.
+    ///
+    /// When `capability_stats` is provided, the theoretical `mask` is AND‑reconciled
+    /// with the actual DB file counts so that a bit is only claimed if at least one
+    /// file has been verified at that tier.
     pub(crate) fn from_capability(
         mask: CapabilityMask,
         outcome: Option<&LazyOutcome>,
         capability_stats: Option<CapabilityStats>,
     ) -> Self {
+        // Reconcile theoretical mask with actual DB state.
+        // Without stats we retain the mask as-is (backward compatible).
+        let effective_mask = if let Some(ref stats) = capability_stats {
+            let actual_mask = capability_mask_from_counts(stats);
+            CapabilityMask::new(mask.bits() & actual_mask.bits())
+        } else {
+            mask
+        };
+
         let mut safe = Vec::new();
         let mut unsafe_conc = Vec::new();
 
-        if mask.has(CapabilityMask::MANIFEST) {
+        if effective_mask.has(CapabilityMask::MANIFEST) {
             safe.push("can resolve symbol names and top-level declarations".into());
         } else {
             unsafe_conc.push("no symbol index available — cannot confirm any symbol exists".into());
         }
 
-        if mask.has(CapabilityMask::STRUCTURAL) {
+        if effective_mask.has(CapabilityMask::STRUCTURAL) {
             safe.push("can confirm all AST-level references and scope relationships".into());
         }
 
-        if mask.has(CapabilityMask::CALL_EDGES) {
+        if effective_mask.has(CapabilityMask::CALL_EDGES) {
             safe.push("can trace direct caller/callee relationships".into());
         } else {
             unsafe_conc
                 .push("cannot confirm complete call graph — some calls may be missing".into());
         }
 
-        if mask.has(CapabilityMask::CFG) {
+        if effective_mask.has(CapabilityMask::CFG) {
             safe.push("can analyze branch-level control flow".into());
         } else {
             unsafe_conc.push(
@@ -136,7 +182,7 @@ impl AnalysisContract {
             );
         }
 
-        if mask.has(CapabilityMask::DATAFLOW) {
+        if effective_mask.has(CapabilityMask::DATAFLOW) {
             safe.push("can trace intra-procedural dataflow (def-use chains)".into());
         } else {
             unsafe_conc.push(
@@ -145,7 +191,7 @@ impl AnalysisContract {
             );
         }
 
-        if mask.has(CapabilityMask::SUMMARIES) {
+        if effective_mask.has(CapabilityMask::SUMMARIES) {
             safe.push("can trace inter-procedural dataflow via function summaries".into());
         } else {
             unsafe_conc.push(
@@ -156,8 +202,8 @@ impl AnalysisContract {
 
         let stats = capability_stats.unwrap_or_default();
         let summary = CapabilitySummary {
-            mask_bits: mask.bits(),
-            best_capability: mask.best_capability_name().into(),
+            mask_bits: effective_mask.bits(),
+            best_capability: effective_mask.best_capability_name().into(),
             total_files: outcome
                 .map(|o| o.files_built + o.files_cached + o.files_pending)
                 .unwrap_or(0),
@@ -168,13 +214,13 @@ impl AnalysisContract {
         };
 
         let mut jobs = Vec::new();
-        if !mask.has(CapabilityMask::CFG) {
+        if !effective_mask.has(CapabilityMask::CFG) {
             jobs.push(RefinementJob {
                 description: "build CFG for functions in scope".into(),
                 capability_needed: "cfg".into(),
             });
         }
-        if !mask.has(CapabilityMask::DATAFLOW) {
+        if !effective_mask.has(CapabilityMask::DATAFLOW) {
             jobs.push(RefinementJob {
                 description: "build intra-procedural dataflow for functions in scope".into(),
                 capability_needed: "dataflow".into(),
@@ -274,6 +320,20 @@ impl LazyDiagnostics {
     pub(crate) fn from_structural(outcome: &LazyOutcome) -> Self {
         Self::from_layers(Some(outcome), None, None)
             .expect("from_structural always has a structural outcome")
+    }
+
+    /// Create diagnostics from a structural outcome with real DB capability stats.
+    ///
+    /// Unlike [`from_structural`] (which injects `capability_stats=None`),
+    /// this variant queries the DB for verified file counts so the
+    /// `analysis_contract` reflects actual extraction state rather than
+    /// theoretical capability.
+    pub(crate) fn from_structural_with_stats(
+        outcome: &LazyOutcome,
+        stats: Option<&CapabilityStats>,
+    ) -> Self {
+        Self::from_layers(Some(outcome), None, stats.copied())
+            .expect("from_structural_with_stats always has a structural outcome")
     }
 
     /// Create diagnostics from only a dataflow [`LazySummary`].

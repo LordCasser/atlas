@@ -28,13 +28,32 @@ use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolI
 
 use serde_json::{Value, json};
 
-use crate::tools::lazy_response::SnapshotStore;
+use crate::tools::lazy_response::{CapabilityStats, SnapshotStore};
 use crate::tools::query_snapshot::{InvestigationState, QUERY_SNAPSHOT_TTL_SECS, QuerySnapshot};
 
 /// Progress report tuple: (progress, total, message)
 pub(crate) type ProgressReport = (f64, Option<f64>, Option<String>);
 /// Channel sender for progress updates during long-running operations.
 pub(crate) type ProgressSender = tokio::sync::mpsc::UnboundedSender<ProgressReport>;
+
+/// Resolved qualified name result.
+#[derive(Debug, Clone)]
+pub(crate) enum QnameResolution {
+    /// Exactly one symbol matched.
+    Unique(SymbolId),
+    /// Multiple symbols matched; caller must surface ambiguity or disambiguate.
+    Ambiguous { candidates: Vec<CandidateInfo> },
+}
+
+/// Human-readable candidate for ambiguous qname resolution.
+#[derive(Debug, Clone)]
+pub(crate) struct CandidateInfo {
+    pub id: SymbolId,
+    pub qualified_name: String,
+    pub file_path: String,
+    pub line: u32,
+    pub kind: String,
+}
 
 // -------------------------------------------------------------------
 // ToolCallContext — request-scoped progress capabilities
@@ -349,6 +368,19 @@ impl ToolRouter {
     /// Check if the store has any indexed files (fast COUNT query).
     pub(crate) fn has_indexed_files(&self) -> bool {
         self.store.count_files().unwrap_or(0) > 0
+    }
+
+    /// Query the DB for real capability file counts.
+    /// Returns None if the query fails (graceful degradation).
+    pub(crate) fn get_capability_stats(&self) -> Option<CapabilityStats> {
+        let (files_with_dataflow, files_structural_only, files_manifest_only, files_with_cfg) =
+            self.store.get_capability_counts().ok()?;
+        Some(CapabilityStats {
+            files_with_dataflow,
+            files_structural_only,
+            files_manifest_only,
+            files_with_cfg,
+        })
     }
 
     /// Return a guidance string when the project has not been indexed yet.
@@ -958,19 +990,75 @@ impl ToolRouter {
         }
     }
 
-    /// Resolve a qualified name to a SymbolId, returning error string on failure.
-    /// When the store has no indexed files, the error includes guidance to run `index`.
-    pub(crate) fn resolve_qname(&self, qname: &str) -> Result<SymbolId, String> {
+    // ── Qname resolution with ambiguity detection ──────────────────────
+
+    /// Resolve a qualified name with ambiguity detection.
+    ///
+    /// Returns `Unique` when exactly one symbol matches; `Ambiguous` with all
+    /// candidates when multiple match.  Never silently picks the first result.
+    pub(crate) fn resolve_qname_disambiguated(
+        &self,
+        qname: &str,
+    ) -> Result<QnameResolution, String> {
         let symbols = self
             .store
             .find_symbols_by_qname(qname)
             .map_err(|e| format!("Lookup error: {e}"))?;
-        match symbols.first() {
-            Some(s) => Ok(s.id),
-            None => {
-                let mut err = format!("Symbol not found: {qname}");
-                err.push_str(self.index_not_run_guidance());
-                Err(err)
+
+        if symbols.is_empty() {
+            let mut err = format!("Symbol not found: {qname}");
+            err.push_str(self.index_not_run_guidance());
+            return Err(err);
+        }
+
+        if symbols.len() == 1 {
+            return Ok(QnameResolution::Unique(symbols[0].id));
+        }
+
+        let candidates: Vec<CandidateInfo> = symbols
+            .iter()
+            .map(|s| CandidateInfo {
+                id: s.id,
+                qualified_name: s.qualified_name.clone(),
+                file_path: self.resolve_file_path(&s.file_id),
+                line: s.range.start_line,
+                kind: s.kind.as_str().to_string(),
+            })
+            .collect();
+
+        assert!(candidates.len() >= 2, "must have at least 2 candidates");
+        Ok(QnameResolution::Ambiguous { candidates })
+    }
+
+    /// Resolve a qualified name to a SymbolId, returning error string on failure.
+    ///
+    /// When the store has no indexed files, the error includes guidance to run `index`.
+    ///
+    /// ⚠️  Legacy: this method errors when multiple symbols match the same
+    /// qualified name.  Callers that need to handle ambiguity should use
+    /// [`resolve_qname_disambiguated`] instead.
+    #[allow(dead_code)]
+    pub(crate) fn resolve_qname(&self, qname: &str) -> Result<SymbolId, String> {
+        match self.resolve_qname_disambiguated(qname)? {
+            QnameResolution::Unique(id) => Ok(id),
+            QnameResolution::Ambiguous { candidates } => {
+                let names: Vec<String> = candidates
+                    .iter()
+                    .take(5)
+                    .map(|c| {
+                        format!(
+                            "{} [{}::{}::{}]",
+                            c.qualified_name, c.file_path, c.line, c.kind
+                        )
+                    })
+                    .collect();
+                Err(format!(
+                    "Ambiguous name: '{}' matched {} symbols: [{}]. \
+                     Use resolve_qname_disambiguated for structured resolution.",
+                    qname,
+                    candidates.len(),
+                    names.join(", ")
+                ))
             }
         }
     }
@@ -2384,6 +2472,15 @@ mod tests {
 
     // ── Helper: insert a minimal function symbol ────────────────────────
     fn insert_test_symbol(store: &Store, file_id: FileId, name: &str) {
+        insert_test_symbol_with_signature(store, file_id, name, None);
+    }
+
+    fn insert_test_symbol_with_signature(
+        store: &Store,
+        file_id: FileId,
+        name: &str,
+        signature: Option<&str>,
+    ) {
         let range = atlas_engine::TextRange {
             start_byte: 0,
             end_byte: 10,
@@ -2402,7 +2499,7 @@ mod tests {
             language: atlas_engine::Language::TypeScript,
             range,
             name_range: range,
-            signature: None,
+            signature: signature.map(str::to_string),
             visibility: None,
             exported: false,
             static_: false,
@@ -2611,6 +2708,35 @@ mod tests {
         assert!(
             !warns.unwrap().is_empty(),
             "Expected non-empty warnings in: {resp_str}"
+        );
+    }
+
+    #[test]
+    fn symbol_detail_returns_stored_signature() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "test.ts");
+        insert_test_symbol_with_signature(
+            &store,
+            file_id,
+            "test_func",
+            Some("(arg: string): void"),
+        );
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let args = serde_json::json!({
+            "symbol": "test_func.test_func",
+            "view": "detail"
+        });
+
+        let (resp_str, is_error) = router.handle_symbol(&ToolCallContext::empty(), &args);
+        assert!(!is_error, "Expected success, got: {resp_str}");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        assert_eq!(
+            resp["signature"].as_str(),
+            Some("(arg: string): void"),
+            "symbol detail must pass through the stored SymbolDef.signature"
         );
     }
 
@@ -3028,5 +3154,176 @@ mod tests {
         assert_eq!(reports.len(), 1, "Expected exactly 1 progress report");
         assert_eq!(reports[0].0, 0.5);
         assert_eq!(reports[0].2.as_deref(), Some("halfway"));
+    }
+
+    // ── resolve_qname_disambiguated ────────────────────────────────────
+
+    /// Insert a minimal symbol with a caller-controlled qualified name.
+    fn insert_test_symbol_with_qname(
+        store: &Store,
+        file_id: FileId,
+        simple_name: &str,
+        qualified_name: &str,
+        kind: atlas_engine::SymbolKind,
+    ) {
+        let range = atlas_engine::TextRange {
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 11,
+        };
+        let sym = atlas_engine::SymbolDef {
+            id: SymbolId::generate(&file_id, "typescript", simple_name, kind.as_str(), None),
+            kind,
+            name: simple_name.into(),
+            qualified_name: qualified_name.into(),
+            symbol_path: vec![simple_name.into()],
+            file_id,
+            language: atlas_engine::Language::TypeScript,
+            range,
+            name_range: range,
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".into(),
+        };
+        store.insert_symbols(&[sym]).unwrap();
+    }
+
+    #[test]
+    fn resolve_qname_disambiguated_ambiguous_multiple() {
+        let store = test_store();
+        let file_a = register_test_file(&store, "a.ts");
+        let file_b = register_test_file(&store, "b.ts");
+        let file_c = register_test_file(&store, "c.ts");
+
+        insert_test_symbol_with_qname(
+            &store,
+            file_a,
+            "turn",
+            "turn",
+            atlas_engine::SymbolKind::Function,
+        );
+        insert_test_symbol_with_qname(
+            &store,
+            file_b,
+            "turn",
+            "turn",
+            atlas_engine::SymbolKind::Variable,
+        );
+        insert_test_symbol_with_qname(
+            &store,
+            file_c,
+            "turn",
+            "turn",
+            atlas_engine::SymbolKind::Method,
+        );
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        match router.resolve_qname_disambiguated("turn").unwrap() {
+            QnameResolution::Ambiguous { candidates } => {
+                assert_eq!(candidates.len(), 3);
+                let kinds: Vec<&str> = candidates.iter().map(|c| c.kind.as_str()).collect();
+                assert!(kinds.contains(&"function"));
+                assert!(kinds.contains(&"variable"));
+                assert!(kinds.contains(&"method"));
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_qname_disambiguated_unique_single() {
+        let store = test_store();
+        let file_a = register_test_file(&store, "a.ts");
+
+        insert_test_symbol_with_qname(
+            &store,
+            file_a,
+            "run",
+            "run",
+            atlas_engine::SymbolKind::Function,
+        );
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        match router.resolve_qname_disambiguated("run").unwrap() {
+            QnameResolution::Unique(_id) => {
+                // success
+            }
+            other => panic!("expected Unique, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_qname_disambiguated_not_found() {
+        let store = test_store();
+        // No files registered — guidance should appear
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let result = router.resolve_qname_disambiguated("nonexistent");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Symbol not found"),
+            "expected 'Symbol not found' in: {err}"
+        );
+        assert!(
+            err.contains("index") && err.contains("Hint"),
+            "expected index guidance in: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_qname_legacy_ambiguous_is_error() {
+        let store = test_store();
+        let file_a = register_test_file(&store, "a.ts");
+        let file_b = register_test_file(&store, "b.ts");
+
+        insert_test_symbol_with_qname(
+            &store,
+            file_a,
+            "turn",
+            "turn",
+            atlas_engine::SymbolKind::Function,
+        );
+        insert_test_symbol_with_qname(
+            &store,
+            file_b,
+            "turn",
+            "turn",
+            atlas_engine::SymbolKind::Variable,
+        );
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let result = router.resolve_qname("turn");
+        assert!(
+            result.is_err(),
+            "legacy resolve_qname should error on ambiguous qname"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Ambiguous"),
+            "expected 'Ambiguous' in error: {err}"
+        );
+        assert!(
+            err.contains("resolve_qname_disambiguated"),
+            "error should mention resolve_qname_disambiguated: {err}"
+        );
     }
 }

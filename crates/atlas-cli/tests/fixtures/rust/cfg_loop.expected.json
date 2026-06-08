@@ -2,7 +2,8 @@
   "symbols": [
     {
       "name": "test_loop",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(mut x: i32) i32"
     }
   ],
   "scopes": [

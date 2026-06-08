@@ -2,7 +2,8 @@
   "symbols": [
     {
       "name": "greet",
-      "kind": "method"
+      "kind": "method",
+      "signature": "(name)"
     }
   ],
   "references": [

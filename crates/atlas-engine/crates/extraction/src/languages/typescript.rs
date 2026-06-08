@@ -7,8 +7,8 @@
 //! DataflowSpec) via shared private normalize helpers.
 
 use crate::languages::shared::{
-    make_binding_def, make_df_assign_field_target, make_df_assign_target, make_df_parameter,
-    make_df_return_value, make_reference_use, make_scope_def_auto_name,
+    compact_signature, make_binding_def, make_df_assign_field_target, make_df_assign_target,
+    make_df_parameter, make_df_return_value, make_reference_use, make_scope_def_auto_name,
 };
 use crate::languages::{node_range, node_text};
 
@@ -150,10 +150,12 @@ pub(crate) fn normalize_ts_definition(
 
     let qualified_name = qualified_name_from_node("", &name, node, source);
     let exported = is_exported_in_tree(node);
+    let signature = ts_extract_signature(capture_name, node, source);
 
     Some(
         SymbolDefBuilder::new(file_id, language, kind, name, qualified_name, range)
             .exported(exported)
+            .signature(signature)
             .build(),
     )
 }
@@ -591,6 +593,33 @@ fn ts_binding_kind(capture_name: &str) -> Option<types::enums::BindingKind> {
         "lexical.import_alias" => Some(BindingKind::ImportAlias),
         "lexical.catch_variable" => Some(BindingKind::CatchVariable),
         "lexical.field" => Some(BindingKind::Field),
+        _ => None,
+    }
+}
+
+fn ts_extract_signature(
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+) -> Option<String> {
+    match capture_name {
+        "definition.function" | "definition.method" => {
+            let declaration = node.parent()?;
+            let mut signature = String::new();
+
+            if let Some(type_params) = declaration.child_by_field_name("type_parameters") {
+                signature.push_str(&node_text(type_params, source)?);
+            }
+
+            let params = declaration.child_by_field_name("parameters")?;
+            signature.push_str(&node_text(params, source)?);
+
+            if let Some(return_type) = declaration.child_by_field_name("return_type") {
+                signature.push_str(&node_text(return_type, source)?);
+            }
+
+            compact_signature(&signature)
+        }
         _ => None,
     }
 }

@@ -14,8 +14,9 @@ use crate::frontend::{
     ScopeExtractorSpec, SymbolExtractorSpec,
 };
 use crate::languages::shared::{
-    SymbolDefBuilder, make_binding_def, make_df_assign_field_target, make_df_assign_target,
-    make_df_parameter, make_df_return_value, make_reference_use, make_scope_def_auto_name,
+    SymbolDefBuilder, compact_signature, make_binding_def, make_df_assign_field_target,
+    make_df_assign_target, make_df_parameter, make_df_return_value, make_reference_use,
+    make_scope_def_auto_name,
 };
 use types::capability::FeatureSupport;
 use types::*;
@@ -340,8 +341,31 @@ fn csharp_extract_signature(
     match capture_name {
         "definition.method" | "definition.constructor" => {
             let parent = node.parent()?;
-            let params = parent.child_by_field_name("parameter_list")?;
-            Some(node_text(params, source)?)
+            let declaration = node_text(parent, source)?;
+            let header = declaration
+                .split_once('{')
+                .map(|(head, _)| head)
+                .unwrap_or(declaration.as_str())
+                .trim()
+                .trim_end_matches(';')
+                .trim();
+            let name = node_text(node, source)?;
+            let name_pos = header.find(&name)?;
+            let before_name = header[..name_pos].trim();
+            let after_name = header[name_pos + name.len()..].trim();
+            let params = after_name
+                .split_once("=>")
+                .map(|(sig, _)| sig)
+                .unwrap_or(after_name)
+                .trim();
+            if capture_name == "definition.constructor" {
+                return compact_signature(params);
+            }
+            let return_type = before_name.split_whitespace().last();
+            match return_type {
+                Some(ret) if !ret.is_empty() => compact_signature(&format!("{params}: {ret}")),
+                _ => compact_signature(params),
+            }
         }
         _ => None,
     }

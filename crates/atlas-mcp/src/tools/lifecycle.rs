@@ -6,7 +6,7 @@
 
 use super::lazy_response::LazyDiagnostics;
 use super::query_snapshot::{QuerySnapshot, QueryStatus};
-use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str};
+use super::{MAX_SYMBOL_NAME_LENGTH, QnameResolution, ToolRouter, get_str};
 use serde_json::json;
 use std::time::Instant;
 
@@ -30,8 +30,24 @@ impl ToolRouter {
         }
 
         // Resolve symbol to SymbolId
-        let sid = match self.resolve_qname(symbol) {
-            Ok(id) => id,
+        let sid = match self.resolve_qname_disambiguated(symbol) {
+            Ok(QnameResolution::Unique(id)) => id,
+            Ok(QnameResolution::Ambiguous { candidates }) => {
+                let candidates_str: Vec<String> = candidates
+                    .iter()
+                    .take(5)
+                    .map(|c| format!("{}::{} [{}]", c.file_path, c.line, c.kind))
+                    .collect();
+                return (
+                    format!(
+                        "Symbol '{}' is ambiguous ({} matches: {}). Use hex SymbolId from search results.",
+                        symbol,
+                        candidates.len(),
+                        candidates_str.join(", ")
+                    ),
+                    true,
+                );
+            }
             Err(e) => return (e, true),
         };
 

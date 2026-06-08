@@ -125,6 +125,23 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 - dataflow 使用 `DataNodeId → DataNodeId`，6 字段完整 TextRange。
 - CFG 节点必须属于同一 function，函数 CFG 应有 Entry/Exit。
 
+### 5.1 Symbol Signature Contract
+
+`SymbolDef.signature` 是跨语言符号事实，由 language adapter 在 extraction 阶段产生并持久化到
+`symbols.signature`。下游 graph、context、CLI 和 MCP 只能透传该 DB fact，不得在展示层重新推断签名。
+
+签名格式：
+- 单行字符串，使用 compact whitespace normalization。
+- 不包含符号名，只包含接口形状信息，例如参数列表、泛型参数、返回类型或语言等价形式。
+- 适用于 `function`、`method`、`constructor` 等可调用符号；类型、变量、字段等天然无调用签名的符号可为 `null`。
+
+`signature: null` 只允许两类情况：
+- 符号类型天然无签名。
+- 该语言/语法构造当前明确 unsupported，并通过 golden 或集成测试体现。
+
+新增或修改语言 adapter 时必须通过 extraction golden 覆盖至少一个 function/method signature，确保 full index 后 MCP
+`symbol(view="detail")` 能从 DB 返回签名，而不是在 MCP 层补丁式生成。
+
 ## 6. Persistence 约束
 
 ### 6.1 Schema（当前版本：V1）

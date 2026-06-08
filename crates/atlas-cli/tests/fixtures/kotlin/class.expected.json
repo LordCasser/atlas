@@ -6,7 +6,8 @@
     },
     {
       "name": "greet",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(): String"
     },
     {
       "name": "Person",
@@ -14,11 +15,13 @@
     },
     {
       "name": "greet",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(): String"
     },
     {
       "name": "main",
-      "kind": "function"
+      "kind": "function",
+      "signature": "()"
     },
     {
       "name": "p",

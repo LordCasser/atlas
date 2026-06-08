@@ -37,22 +37,20 @@ use super::effect_composer::make_effect;
 /// - Context-managed Allocs (PythonWith/JavaTryWith/CSharpUsing/RubyBlock) always
 ///   get a Free at the nearest BlockExit successor.
 /// - Other Allocs only get a Free if `eligible_for_implicit_cleanup` is true
-///   AND the allocated place is NOT returned or escaped.
+///   (or absent on legacy effects) AND the allocated place is NOT returned or
+///   escaped.
 pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>, cfg: &CfgGraph) {
     // 0. Collect Return/Escape value names (to skip auto-free for escaped resources)
     let mut escaped_locals: HashSet<String> = HashSet::new();
+    let mut escaped_call_returns: HashSet<String> = HashSet::new();
     for (_node_id, node_effects) in effects.iter() {
         for effect in node_effects {
             match &effect.kind {
                 SemanticEffectKind::Return { value } => {
-                    if let ValueSource::Local { name } = value {
-                        escaped_locals.insert(name.clone());
-                    }
+                    collect_escaped_value(value, &mut escaped_locals, &mut escaped_call_returns);
                 }
                 SemanticEffectKind::Escape { value, .. } => {
-                    if let ValueSource::Local { name } = value {
-                        escaped_locals.insert(name.clone());
-                    }
+                    collect_escaped_value(value, &mut escaped_locals, &mut escaped_call_returns);
                 }
                 _ => {}
             }
@@ -87,13 +85,14 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
                         is_context_managed || has_kotlin_use_successor(&effect.cfg_node_id, cfg, 3);
 
                     // Per-effect eligibility (backward compat: None = eligible)
-                    let eligible = effect.eligible_for_implicit_cleanup.unwrap_or(false);
+                    let eligible = effect.eligible_for_implicit_cleanup.unwrap_or(true);
 
                     // Check if the allocated place is returned or escaped
-                    let is_escaped = match target {
-                        PlaceRef::Local { name } => escaped_locals.contains(name),
-                        PlaceRef::Field { .. } | PlaceRef::Indeterminate => false,
-                    };
+                    let is_escaped = escaped_call_returns.contains(callee)
+                        || match target {
+                            PlaceRef::Local { name } => escaped_locals.contains(name),
+                            PlaceRef::Field { .. } | PlaceRef::Indeterminate => false,
+                        };
 
                     allocs.push((
                         effect.cfg_node_id,
@@ -199,6 +198,22 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
             new_effect.consumption_style = Some(ConsumptionStyle::ContextManaged);
         }
         exit_effects.push(new_effect);
+    }
+}
+
+fn collect_escaped_value(
+    value: &ValueSource,
+    escaped_locals: &mut HashSet<String>,
+    escaped_call_returns: &mut HashSet<String>,
+) {
+    match value {
+        ValueSource::Local { name } => {
+            escaped_locals.insert(name.clone());
+        }
+        ValueSource::CallReturn { callee } => {
+            escaped_call_returns.insert(callee.clone());
+        }
+        ValueSource::Param { .. } | ValueSource::LiteralNull | ValueSource::Unknown => {}
     }
 }
 

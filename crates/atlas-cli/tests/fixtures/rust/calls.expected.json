@@ -2,11 +2,13 @@
   "symbols": [
     {
       "name": "add",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(a: i32, b: i32) i32"
     },
     {
       "name": "main",
-      "kind": "function"
+      "kind": "function",
+      "signature": "()"
     },
     {
       "name": "result",

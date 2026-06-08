@@ -1405,7 +1405,7 @@ function compute(): number {
 fn test_python_with_lifecycle() {
     use atlas_engine::analysis::cfg_graph::CfgGraph;
     use atlas_engine::analysis::{ResourceOpConfig, compose_effects};
-    use atlas_engine::effects::{ConsumptionStyle, PlaceRef, SemanticEffectKind};
+    use atlas_engine::effects::{ConsumptionStyle, SemanticEffectKind};
 
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[(
@@ -2274,9 +2274,7 @@ class MultiDemo
 
         // Manually construct Alloc effects for both resources on the same statement node
         use atlas_engine::analysis::scope_exit::run_scope_exit_pass;
-        use atlas_engine::effects::{
-            ConsumptionStyle, PlaceRef, SemanticEffect, SemanticEffectKind,
-        };
+        use atlas_engine::effects::{PlaceRef, SemanticEffect, SemanticEffectKind};
         use atlas_engine::ids::EffectId;
         use std::collections::HashMap;
 

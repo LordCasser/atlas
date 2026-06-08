@@ -6,7 +6,8 @@
     },
     {
       "name": "main",
-      "kind": "function"
+      "kind": "function",
+      "signature": "()"
     }
   ],
   "references": [

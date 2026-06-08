@@ -5,7 +5,7 @@ use std::time::Instant;
 use atlas_engine::InvestigationFocus;
 
 use super::query_snapshot::{QuerySnapshot, QueryStatus};
-use super::{ToolRouter, get_str, get_u64};
+use super::{QnameResolution, ToolRouter, get_str, get_u64};
 use serde_json::json;
 
 impl ToolRouter {
@@ -16,8 +16,24 @@ impl ToolRouter {
         // Accept hex SymbolId or qualified name
         let sid = match qname.parse() {
             Ok(id) => id,
-            Err(_) => match self.resolve_qname(qname) {
-                Ok(id) => id,
+            Err(_) => match self.resolve_qname_disambiguated(qname) {
+                Ok(QnameResolution::Unique(id)) => id,
+                Ok(QnameResolution::Ambiguous { candidates }) => {
+                    let candidates_str: Vec<String> = candidates
+                        .iter()
+                        .take(5)
+                        .map(|c| format!("{}::{} [{}]", c.file_path, c.line, c.kind))
+                        .collect();
+                    return (
+                        format!(
+                            "Symbol '{}' is ambiguous ({} matches: {}). Use hex SymbolId from search results.",
+                            qname,
+                            candidates.len(),
+                            candidates_str.join(", ")
+                        ),
+                        true,
+                    );
+                }
                 Err(e) => return (e, true),
             },
         };

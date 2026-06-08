@@ -14,6 +14,8 @@ use atlas_engine::SearchCoverage;
 use atlas_engine::SearchResult;
 use atlas_engine::SymbolKind;
 
+use super::CandidateInfo;
+use super::QnameResolution;
 use super::lazy_response::{LazyDiagnostics, LazyResponse};
 use super::{
     MAX_QUERY_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt,
@@ -374,47 +376,58 @@ impl ToolRouter {
 
         let lr = LazyResponse::new("symbol", args);
         let query_id = lr.query_id().to_string();
-        let symbols = match self.store.find_symbols_by_qname(qname) {
-            Ok(s) => s,
-            Err(e) => {
-                let mut s = format!("Lookup error: {e}");
-                s.push_str(self.index_not_run_guidance());
-                return (s, true);
-            }
-        };
+        let resolution = self.resolve_qname_disambiguated(qname);
         let sym;
         let lazy_warnings;
         let structural_tier;
         let mut lazy_diag: Option<LazyDiagnostics> = None;
-        match symbols.into_iter().next() {
-            Some(s) => {
-                // Update investigation with the known symbol
-                self.update_investigation(InvestigationFocus::Symbol(s.id));
-                let investigation = self.investigation_state.active_investigation.clone();
-                // Ensure structural data so caller/callee results
-                // include fresh edges from lazy extraction.
-                let outcome = self.ensure_structural_for_files(
-                    [s.file_id],
-                    include_roots.clone(),
-                    investigation.as_ref(),
-                    Some(&query_id),
-                );
-                lazy_warnings = outcome.warnings;
-                structural_tier = outcome.precision_tier;
-                if let Some(ref lo) = outcome.lazy_outcome {
-                    lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+        match resolution {
+            Ok(QnameResolution::Unique(id)) => {
+                // Found a unique symbol on the first try
+                if let Ok(Some(s)) = self.store.find_symbol_by_id(&id) {
+                    self.update_investigation(InvestigationFocus::Symbol(s.id));
+                    let investigation = self.investigation_state.active_investigation.clone();
+                    // Ensure structural data so caller/callee results
+                    // include fresh edges from lazy extraction.
+                    let outcome = self.ensure_structural_for_files(
+                        [s.file_id],
+                        include_roots.clone(),
+                        investigation.as_ref(),
+                        Some(&query_id),
+                    );
+                    lazy_warnings = outcome.warnings;
+                    structural_tier = outcome.precision_tier;
+                    if let Some(ref lo) = outcome.lazy_outcome {
+                        let stats = self.get_capability_stats();
+                        lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
+                            lo,
+                            stats.as_ref(),
+                        ));
+                    }
+                    // Re-query after lazy — structural replace may have
+                    // updated symbol metadata or source ranges.
+                    sym = match self.resolve_qname_disambiguated(qname) {
+                        Ok(QnameResolution::Unique(new_id)) => self
+                            .store
+                            .find_symbol_by_id(&new_id)
+                            .unwrap_or_default()
+                            .unwrap_or(s),
+                        Ok(QnameResolution::Ambiguous { candidates }) => {
+                            return Self::build_ambiguous_symbol_response(qname, &candidates, args);
+                        }
+                        Err(_) => s,
+                    };
+                } else {
+                    let mut err = format!("Symbol not found: {qname}");
+                    err.push_str(self.index_not_run_guidance());
+                    return (err, true);
                 }
-                // Re-query after lazy — structural replace may have
-                // updated symbol metadata or source ranges.
-                sym = self
-                    .store
-                    .find_symbols_by_qname(qname)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .next()
-                    .unwrap_or(s);
             }
-            None => {
+            Ok(QnameResolution::Ambiguous { candidates }) => {
+                return Self::build_ambiguous_symbol_response(qname, &candidates, args);
+            }
+            Err(_) => {
+                // Not found in manifest — trigger lazy structural extraction
                 let outcome = self.ensure_structural_for_symbol_name(
                     qname,
                     include_roots.clone(),
@@ -424,18 +437,28 @@ impl ToolRouter {
                 lazy_warnings = outcome.warnings;
                 structural_tier = outcome.precision_tier;
                 if let Some(ref lo) = outcome.lazy_outcome {
-                    lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+                    let stats = self.get_capability_stats();
+                    lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
+                        lo,
+                        stats.as_ref(),
+                    ));
                 }
-                let retry = self.store.find_symbols_by_qname(qname).unwrap_or_default();
-                match retry.into_iter().next() {
-                    Some(s) => {
-                        self.update_investigation(InvestigationFocus::Symbol(s.id));
-                        sym = s;
+                match self.resolve_qname_disambiguated(qname) {
+                    Ok(QnameResolution::Unique(id)) => {
+                        if let Ok(Some(s)) = self.store.find_symbol_by_id(&id) {
+                            self.update_investigation(InvestigationFocus::Symbol(s.id));
+                            sym = s;
+                        } else {
+                            let mut err = format!("Symbol not found: {qname}");
+                            err.push_str(self.index_not_run_guidance());
+                            return (err, true);
+                        }
                     }
-                    None => {
-                        let mut s = format!("Symbol not found: {qname}");
-                        s.push_str(self.index_not_run_guidance());
-                        return (s, true);
+                    Ok(QnameResolution::Ambiguous { candidates }) => {
+                        return Self::build_ambiguous_symbol_response(qname, &candidates, args);
+                    }
+                    Err(err) => {
+                        return (err, true);
                     }
                 }
             }
@@ -513,5 +536,41 @@ impl ToolRouter {
             line: sym.range.start_line,
             layer: sym.layer.clone(),
         }
+    }
+
+    /// Build a structured error response when a qualified name matches
+    /// multiple symbols, providing the caller with disambiguation candidates.
+    fn build_ambiguous_symbol_response(
+        qname: &str,
+        candidates: &[CandidateInfo],
+        _args: &serde_json::Value,
+    ) -> (String, bool) {
+        let candidates_json: Vec<serde_json::Value> = candidates
+            .iter()
+            .take(10)
+            .map(|c| {
+                json!({
+                    "id": c.id.to_hex(),
+                    "qualified_name": c.qualified_name,
+                    "file_path": c.file_path,
+                    "line": c.line,
+                    "kind": c.kind,
+                })
+            })
+            .collect();
+        let hint = format!(
+            "Symbol '{}' is ambiguous ({} matches). Use a hex SymbolId from the list below.",
+            qname,
+            candidates.len()
+        );
+        let resp = json!({
+            "ok": false,
+            "error": hint,
+            "candidates": candidates_json,
+        });
+        (
+            serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            true,
+        )
     }
 }

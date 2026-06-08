@@ -392,7 +392,7 @@ impl App {
         match self
             .session
             .context_builder()
-            .build_context_for_symbol(&symbol.id)
+            .build_context_for_symbol(&symbol.id, true)
         {
             Ok(ctx) => {
                 self.detail_context = Some(ctx);
@@ -431,7 +431,7 @@ impl App {
             match self
                 .session
                 .context_builder()
-                .build_context_for_symbol(&symbol_id)
+                .build_context_for_symbol(&symbol_id, true)
             {
                 Ok(ctx) => {
                     self.detail_context = Some(ctx);

@@ -2,7 +2,8 @@
   "symbols": [
     {
       "name": "readFile",
-      "kind": "function"
+      "kind": "function",
+      "signature": "()"
     },
     {
       "name": "file",

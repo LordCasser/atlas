@@ -6,7 +6,8 @@
     },
     {
       "name": "testLoop",
-      "kind": "method"
+      "kind": "method",
+      "signature": "(int x): int"
     }
   ],
   "scopes": [

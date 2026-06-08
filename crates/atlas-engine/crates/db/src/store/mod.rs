@@ -1806,4 +1806,144 @@ mod tests {
             "aggregate should have CALL_EDGES from file_b edges"
         );
     }
+
+    #[test]
+    fn derive_capability_reads_dataflow_and_summaries_from_capability_mask() {
+        let store = test_store();
+        let file_id = FileId::generate("src/example.ts");
+        let file = FileInfo {
+            file_id,
+            path: "src/example.ts".into(),
+            language: Language::TypeScript,
+            content_hash: "abc".into(),
+            status: ParseStatus::Success,
+        };
+        store.upsert_file(&file).unwrap();
+
+        // Simulate a full-index run: dataflow layer with DATAFLOW bit set
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "dataflow",
+                "abc",
+                "complete",
+                CapabilityMask::from_layers(&["dataflow"]),
+            )
+            .unwrap();
+
+        // Simulate summaries extraction
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "summaries",
+                "abc",
+                "complete",
+                CapabilityMask::new(CapabilityMask::SUMMARIES),
+            )
+            .unwrap();
+
+        let mask = store.derive_capability_for_files(&[file_id]);
+        assert!(
+            mask.has(CapabilityMask::DATAFLOW),
+            "should have DATAFLOW from capability_mask: {mask:?}"
+        );
+        assert!(
+            mask.has(CapabilityMask::SUMMARIES),
+            "should have SUMMARIES from capability_mask: {mask:?}"
+        );
+        // dataflow layer implies lower bits via from_layers too
+        assert!(mask.has(CapabilityMask::MANIFEST));
+        assert!(mask.has(CapabilityMask::STRUCTURAL));
+        assert!(mask.has(CapabilityMask::CALL_EDGES));
+    }
+
+    #[test]
+    fn derive_capability_structural_only_no_dataflow() {
+        let store = test_store();
+        let file_id = FileId::generate("src/example.ts");
+        let file = FileInfo {
+            file_id,
+            path: "src/example.ts".into(),
+            language: Language::TypeScript,
+            content_hash: "abc".into(),
+            status: ParseStatus::Success,
+        };
+        store.upsert_file(&file).unwrap();
+
+        // Lazy structural extraction: writes capability_mask=0, relies on layer fallback
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "structural",
+                "abc",
+                "complete",
+                CapabilityMask::default(),
+            )
+            .unwrap();
+
+        let mask = store.derive_capability_for_files(&[file_id]);
+        assert!(mask.has(CapabilityMask::MANIFEST));
+        assert!(mask.has(CapabilityMask::STRUCTURAL));
+        assert!(
+            !mask.has(CapabilityMask::DATAFLOW),
+            "should NOT have DATAFLOW with only structural layer: {mask:?}"
+        );
+        assert!(
+            !mask.has(CapabilityMask::CFG),
+            "should NOT have CFG with only structural layer: {mask:?}"
+        );
+        assert!(
+            !mask.has(CapabilityMask::SUMMARIES),
+            "should NOT have SUMMARIES with only structural layer: {mask:?}"
+        );
+    }
+
+    #[test]
+    fn derive_capability_excludes_stale_content_hash() {
+        let store = test_store();
+        let file_id = FileId::generate("src/example.ts");
+
+        // File record with current hash "new_hash"
+        let file = FileInfo {
+            file_id,
+            path: "src/example.ts".into(),
+            language: Language::TypeScript,
+            content_hash: "new_hash".into(),
+            status: ParseStatus::Success,
+        };
+        store.upsert_file(&file).unwrap();
+
+        // Stale extraction_state row with old hash "old_hash" — should be excluded
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "dataflow",
+                "old_hash",
+                "complete",
+                CapabilityMask::from_layers(&["dataflow"]),
+            )
+            .unwrap();
+
+        // Fresh structural row
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "structural",
+                "new_hash",
+                "complete",
+                CapabilityMask::default(),
+            )
+            .unwrap();
+
+        let mask = store.derive_capability_for_files(&[file_id]);
+        // The stale row's content_hash doesn't match files.content_hash,
+        // so its DATAFLOW capability should NOT appear.
+        assert!(
+            !mask.has(CapabilityMask::DATAFLOW),
+            "stale content_hash should be excluded, got DATAFLOW: {mask:?}"
+        );
+        // The fresh structural row should still contribute via layer fallback
+        assert!(mask.has(CapabilityMask::MANIFEST));
+        assert!(mask.has(CapabilityMask::STRUCTURAL));
+    }
 }

@@ -2,7 +2,8 @@
   "symbols": [
     {
       "name": "build",
-      "kind": "method"
+      "kind": "method",
+      "signature": "()"
     },
     {
       "name": "SimpleWidget",

@@ -6,7 +6,8 @@
     },
     {
       "name": "greet",
-      "kind": "method"
+      "kind": "method",
+      "signature": "()"
     },
     {
       "name": "Greeter",
@@ -18,7 +19,8 @@
     },
     {
       "name": "greet",
-      "kind": "method"
+      "kind": "method",
+      "signature": "()"
     }
   ],
   "references": [

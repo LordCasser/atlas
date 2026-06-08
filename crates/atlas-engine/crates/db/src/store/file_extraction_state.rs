@@ -301,113 +301,89 @@ impl Store {
     /// Derive actual capability for a set of files by querying the store.
     ///
     /// This is the **single source of truth** for extraction capability —
-    /// no hardcoded masks.  Queries `extraction_state` and `symbol_edges`
-    /// to determine what capabilities are actually available.
+    /// no hardcoded masks.  Aggregates `capability_mask` from fresh
+    /// `extraction_state` rows (OR across all layers), with layer-string
+    /// fallback for lazy-extraction records that write `capability_mask=0`.
+    /// Also queries `symbol_edges` to detect CALL_EDGES when not already
+    /// covered by stored masks.
     ///
     /// # Bits set based on actual store content
     ///
-    /// | Bit          | Condition                                                    |
-    /// |--------------|--------------------------------------------------------------|
-    /// | `MANIFEST`   | Any file has a `manifest` layer with status `complete`       |
-    /// | `STRUCTURAL` | Any file has a `structural` layer with status `complete`     |
-    /// | `CALL_EDGES` | Any `symbol_edges` exist for symbols belonging to these files|
-    /// | `CFG`        | Always false (lazy structural doesn't build CFG)             |
-    /// | `DATAFLOW`   | Always false (lazy structural doesn't build dataflow)        |
-    /// | `SUMMARIES`  | Always false (lazy structural doesn't build summaries)       |
-    ///
-    /// The last three bits are extension points — when future lazy
-    /// extraction layers are added, this function should query the
-    /// corresponding tables (e.g. `cfg_nodes`, `dataflow_edges`,
-    /// `function_summaries`) and set the bits accordingly.
+    /// | Bit          | Condition                                                      |
+    /// |--------------|----------------------------------------------------------------|
+    /// | `MANIFEST`   | Fresh `capability_mask` OR layer="manifest"                    |
+    /// | `STRUCTURAL` | Fresh `capability_mask` OR layer="structural"                  |
+    /// | `CALL_EDGES` | Fresh `capability_mask` OR `symbol_edges` for these files      |
+    /// | `CFG`        | Fresh `capability_mask` from full-index rows                   |
+    /// | `DATAFLOW`   | Fresh `capability_mask` from full-index rows                   |
+    /// | `SUMMARIES`  | Fresh `capability_mask` from full-index rows                   |
     pub fn derive_capability_for_files(&self, file_ids: &[FileId]) -> CapabilityMask {
         if file_ids.is_empty() {
             return CapabilityMask::default();
         }
 
-        let mut mask = CapabilityMask::default();
         let conn = self.lock_read();
+        let mut aggregated = 0u16;
 
-        // ── Query extraction_state for manifest + structural layers ──────
-        //
-        // Follows the same layer→capability semantics as CapabilityMask::from_layers:
-        // - "manifest" layer → MANIFEST_BIT
-        // - "structural" layer → MANIFEST_BIT | STRUCTURAL_BIT (structural implies manifest)
-
-        for file_id in file_ids {
-            let has_manifest: bool = conn
-                .query_row(
-                    "SELECT 1 FROM extraction_state
-                     WHERE file_id = ?1 AND layer = 'manifest' AND status = 'complete'",
-                    params![file_id],
-                    |_| Ok(()),
-                )
-                .is_ok();
-
-            if has_manifest {
-                mask.set(CapabilityMask::MANIFEST);
-                break;
-            }
-        }
-
-        for file_id in file_ids {
-            let has_structural: bool = conn
-                .query_row(
-                    "SELECT 1 FROM extraction_state
-                     WHERE file_id = ?1 AND layer = 'structural' AND status = 'complete'",
-                    params![file_id],
-                    |_| Ok(()),
-                )
-                .is_ok();
-
-            if has_structural {
-                // structural implies manifest (same as from_layers convention)
-                mask.set(CapabilityMask::MANIFEST);
-                mask.set(CapabilityMask::STRUCTURAL);
-                break;
-            }
-        }
-
-        // ── Query symbol_edges joined with symbols ───────────────────────
-        //
-        // We check whether any edges exist whose source or target symbol
-        // belongs to one of the given files.  A single edge is enough to
-        // set CALL_EDGES — the presence of any call-graph edge implies the
-        // call-graph layer was built.
-
-        // Build dynamic IN clause.  FileIds are BLOBs so we need
+        // Build dynamic IN clause — FileIds are BLOBs so we need
         // placeholders for each file_id.
         let placeholders: Vec<String> =
             (0..file_ids.len()).map(|i| format!("?{}", i + 1)).collect();
         let in_clause = placeholders.join(",");
-
-        let sql = format!(
-            "SELECT 1 FROM symbol_edges
-              WHERE source IN (SELECT symbol_id FROM symbols WHERE file_id IN ({in_clause}))
-                 OR target IN (SELECT symbol_id FROM symbols WHERE file_id IN ({in_clause}))
-              LIMIT 1",
-        );
 
         let params: Vec<&dyn rusqlite::types::ToSql> = file_ids
             .iter()
             .map(|fid| fid as &dyn rusqlite::types::ToSql)
             .collect();
 
-        let has_edges: bool = conn
-            .prepare(&sql)
-            .ok()
-            .and_then(|mut stmt| stmt.query_row(params.as_slice(), |_| Ok(())).ok())
-            .is_some();
+        // ── Aggregate capability_mask from fresh extraction_state rows ──
+        //
+        // Joins with `files` on content_hash to skip stale rows.
+        // Also applies `from_layers` on the layer string as a fallback
+        // for lazy-extraction rows that write `capability_mask=0`.
+        let cap_sql = format!(
+            "SELECT l.capability_mask, l.layer
+             FROM extraction_state l
+             JOIN files f ON f.file_id = l.file_id
+             WHERE l.file_id IN ({in_clause})
+               AND l.content_hash = f.content_hash
+               AND l.unit_id IS NULL",
+        );
 
-        if has_edges {
-            mask.set(CapabilityMask::CALL_EDGES);
+        if let Ok(mut stmt) = conn.prepare(&cap_sql) {
+            if let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            }) {
+                for row in rows {
+                    if let Ok((cap_mask_i64, layer)) = row {
+                        aggregated |= cap_mask_i64 as u16;
+                        aggregated |= CapabilityMask::from_layers(&[layer.as_str()]).bits();
+                    }
+                }
+            }
         }
 
-        // CFG, DATAFLOW, SUMMARIES — not built by lazy structural.
-        // These are extension points; when future lazy extraction layers
-        // are added, query `cfg_nodes`, `dataflow_edges`, and
-        // `function_summaries` respectively and set the bits here.
+        // ── Check symbol_edges for CALL_EDGES ───────────────────────────
+        //
+        // Only checked when CALL_EDGES is not already set by stored masks.
+        // Any edge whose source or target belongs to one of the given files
+        // implies the call-graph layer was built.
+        if aggregated & CapabilityMask::CALL_EDGES == 0 {
+            let edge_sql = format!(
+                "SELECT 1 FROM symbol_edges
+                  WHERE source IN (SELECT symbol_id FROM symbols WHERE file_id IN ({in_clause}))
+                     OR target IN (SELECT symbol_id FROM symbols WHERE file_id IN ({in_clause}))
+                  LIMIT 1",
+            );
 
-        mask
+            if let Ok(mut stmt) = conn.prepare(&edge_sql) {
+                if stmt.query_row(params.as_slice(), |_| Ok(())).is_ok() {
+                    aggregated |= CapabilityMask::CALL_EDGES;
+                }
+            }
+        }
+
+        CapabilityMask::from_bits(aggregated)
     }
 }
 

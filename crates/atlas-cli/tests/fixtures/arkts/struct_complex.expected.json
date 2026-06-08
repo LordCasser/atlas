@@ -2,7 +2,8 @@
   "symbols": [
     {
       "name": "Column",
-      "kind": "method"
+      "kind": "method",
+      "signature": "()"
     },
     {
       "name": "ComplexWidget",
@@ -49,7 +50,7 @@
       "kind": "file"
     },
     {
-      "name": "struct#443",
+      "name": "struct#432",
       "kind": "struct"
     },
     {

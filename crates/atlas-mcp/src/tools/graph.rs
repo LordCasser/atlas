@@ -7,7 +7,7 @@ use atlas_engine::analysis;
 use atlas_engine::{EdgeKind, InvestigationFocus, Store, SymbolId, SymbolKind, TraversalDirection};
 
 use super::lazy_response::{LazyDiagnostics, LazyResponse};
-use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str, get_str_opt, get_u64};
+use super::{MAX_SYMBOL_NAME_LENGTH, QnameResolution, ToolRouter, get_str, get_str_opt, get_u64};
 
 use serde_json::json;
 
@@ -126,8 +126,24 @@ impl ToolRouter {
         }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
 
-        let sid = match self.resolve_qname(qname) {
-            Ok(id) => id,
+        let sid = match self.resolve_qname_disambiguated(qname) {
+            Ok(QnameResolution::Unique(id)) => id,
+            Ok(QnameResolution::Ambiguous { candidates }) => {
+                let candidates_str: Vec<String> = candidates
+                    .iter()
+                    .take(5)
+                    .map(|c| format!("{}::{} [{}]", c.file_path, c.line, c.kind))
+                    .collect();
+                return (
+                    format!(
+                        "Symbol '{}' is ambiguous ({} matches: {}). Use hex SymbolId from search results.",
+                        qname,
+                        candidates.len(),
+                        candidates_str.join(", ")
+                    ),
+                    true,
+                );
+            }
             Err(e) => return (e, true),
         };
 
@@ -199,8 +215,24 @@ impl ToolRouter {
         }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
 
-        let sid = match self.resolve_qname(qname) {
-            Ok(id) => id,
+        let sid = match self.resolve_qname_disambiguated(qname) {
+            Ok(QnameResolution::Unique(id)) => id,
+            Ok(QnameResolution::Ambiguous { candidates }) => {
+                let candidates_str: Vec<String> = candidates
+                    .iter()
+                    .take(5)
+                    .map(|c| format!("{}::{} [{}]", c.file_path, c.line, c.kind))
+                    .collect();
+                return (
+                    format!(
+                        "Symbol '{}' is ambiguous ({} matches: {}). Use hex SymbolId from search results.",
+                        qname,
+                        candidates.len(),
+                        candidates_str.join(", ")
+                    ),
+                    true,
+                );
+            }
             Err(e) => return (e, true),
         };
 
@@ -278,8 +310,24 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        let sid = match self.resolve_qname(qname) {
-            Ok(id) => id,
+        let sid = match self.resolve_qname_disambiguated(qname) {
+            Ok(QnameResolution::Unique(id)) => id,
+            Ok(QnameResolution::Ambiguous { candidates }) => {
+                let candidates_str: Vec<String> = candidates
+                    .iter()
+                    .take(5)
+                    .map(|c| format!("{}::{} [{}]", c.file_path, c.line, c.kind))
+                    .collect();
+                return (
+                    format!(
+                        "Symbol '{}' is ambiguous ({} matches: {}). Use hex SymbolId from search results.",
+                        qname,
+                        candidates.len(),
+                        candidates_str.join(", ")
+                    ),
+                    true,
+                );
+            }
             Err(e) => return (e, true),
         };
 
@@ -552,10 +600,11 @@ impl ToolRouter {
             Some(&query_id),
         );
         let lazy_warnings = outcome.warnings;
+        let stats = self.get_capability_stats();
         let lazy_diag = outcome
             .lazy_outcome
             .as_ref()
-            .map(|lo| LazyDiagnostics::from_structural(lo));
+            .map(|lo| LazyDiagnostics::from_structural_with_stats(lo, stats.as_ref()));
         let tier = outcome.precision_tier;
         // Cache for no-path diagnostics below (used in user-facing messages).
         let is_manual_full = self.has_manual_full_index();
@@ -836,14 +885,20 @@ impl ToolRouter {
 
             // Resolve endpoint symbol kinds for type-aware diagnostics.
             // Uses the first SymbolId per qname (most common case).
-            let from_kind = from_ids
-                .first()
-                .and_then(|id| snap.node_by_id(id))
-                .map(|n| n.kind);
-            let to_kind = to_ids
-                .first()
-                .and_then(|id| snap.node_by_id(id))
-                .map(|n| n.kind);
+            let from_kind = match self.resolve_qname_disambiguated(from_qname) {
+                Ok(QnameResolution::Unique(id)) => snap.node_by_id(&id).map(|n| n.kind),
+                _ => from_ids
+                    .first()
+                    .and_then(|id| snap.node_by_id(id))
+                    .map(|n| n.kind),
+            };
+            let to_kind = match self.resolve_qname_disambiguated(to_qname) {
+                Ok(QnameResolution::Unique(id)) => snap.node_by_id(&id).map(|n| n.kind),
+                _ => to_ids
+                    .first()
+                    .and_then(|id| snap.node_by_id(id))
+                    .map(|n| n.kind),
+            };
             if let (Some(fk), Some(tk)) = (from_kind, to_kind) {
                 message.push_str(&format!(
                     " (from '{from_qname}' resolved as {fk:?}, to '{to_qname}' resolved as {tk:?})",
@@ -957,18 +1012,36 @@ impl ToolRouter {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let symbols = match self.store.find_symbols_by_qname(qname) {
-            Ok(s) => s,
-            Err(e) => {
-                let mut err = format!("Lookup error: {e}");
+        let sym_id = match self.resolve_qname_disambiguated(qname) {
+            Ok(QnameResolution::Unique(id)) => id,
+            Ok(QnameResolution::Ambiguous { candidates }) => {
+                let names: Vec<String> = candidates
+                    .iter()
+                    .take(5)
+                    .map(|c| format!("{} [{}:{}]", c.qualified_name, c.file_path, c.line))
+                    .collect();
+                return (
+                    format!(
+                        "Symbol '{}' is ambiguous ({} matches). Use hex SymbolId from search results. Candidates: {}",
+                        qname,
+                        candidates.len(),
+                        names.join(", ")
+                    ),
+                    true,
+                );
+            }
+            Err(e) => return (e, true),
+        };
+
+        let sym = match self.store.find_symbol_by_id(&sym_id) {
+            Ok(Some(s)) => s,
+            Ok(None) => {
+                let mut err = format!("Symbol not found in store: {qname}");
                 err.push_str(self.index_not_run_guidance());
                 return (err, true);
             }
-        };
-        let sym = match symbols.first() {
-            Some(s) => s,
-            None => {
-                let mut err = format!("Symbol not found: {qname}");
+            Err(e) => {
+                let mut err = format!("Lookup error: {e}");
                 err.push_str(self.index_not_run_guidance());
                 return (err, true);
             }
@@ -1142,8 +1215,24 @@ impl ToolRouter {
             }
         };
 
-        let sid = match self.resolve_qname(qname) {
-            Ok(id) => id,
+        let sid = match self.resolve_qname_disambiguated(qname) {
+            Ok(QnameResolution::Unique(id)) => id,
+            Ok(QnameResolution::Ambiguous { candidates }) => {
+                let candidates_str: Vec<String> = candidates
+                    .iter()
+                    .take(5)
+                    .map(|c| format!("{}::{} [{}]", c.file_path, c.line, c.kind))
+                    .collect();
+                return (
+                    format!(
+                        "Symbol '{}' is ambiguous ({} matches: {}). Use hex SymbolId from search results.",
+                        qname,
+                        candidates.len(),
+                        candidates_str.join(", ")
+                    ),
+                    true,
+                );
+            }
             Err(e) => return (e, true),
         };
 

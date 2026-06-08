@@ -14,7 +14,7 @@
 //!
 //! ```json
 //! {
-//!   "symbols": [{ "name": "foo", "kind": "function" }],
+//!   "symbols": [{ "name": "foo", "kind": "function", "signature": "(arg: Type): Return" }],
 //!   "references": [{ "text": "bar", "kind": "call" }],
 //!   "imports": [{ "module": "express", "imported_name": "Router" }],
 //!   "scopes": [{ "name": "Server", "kind": "class" }],
@@ -54,6 +54,8 @@ struct GoldenExpected {
 struct GldSymbol {
     name: String,
     kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    signature: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -136,6 +138,7 @@ fn run_golden(lang_dir: &str, stem: &str, ext: &str, lang: Language) {
             .map(|s| GldSymbol {
                 name: s.name.clone(),
                 kind: s.kind.as_str().to_string(),
+                signature: s.signature.clone(),
             })
             .collect(),
         references: facts
@@ -216,9 +219,9 @@ fn run_golden(lang_dir: &str, stem: &str, ext: &str, lang: Language) {
             .collect(),
     };
 
-    if !expected_path.exists() {
-        // No expected file yet — write actual output as the expected file
-        // (bootstrap mode: first run creates the baseline)
+    let actual_json = serde_json::to_string_pretty(&actual).unwrap();
+    if std::env::var_os("ATLAS_UPDATE_GOLDEN").is_some() || !expected_path.exists() {
+        // Bootstrap/update mode: write actual output as the expected baseline.
         let json = serde_json::to_string_pretty(&actual).unwrap();
         std::fs::write(&expected_path, &json)
             .unwrap_or_else(|e| panic!("Cannot write {}: {}", expected_path.display(), e));
@@ -231,7 +234,6 @@ fn run_golden(lang_dir: &str, stem: &str, ext: &str, lang: Language) {
         .unwrap_or_else(|e| panic!("Cannot parse {}: {}", expected_path.display(), e));
 
     if actual != expected {
-        let actual_json = serde_json::to_string_pretty(&actual).unwrap();
         panic!(
             "\nGolden test mismatch: {lang_dir}/{stem}\n\n--- Expected ---\n{expected_json}\n\n--- Actual ---\n{actual_json}\n"
         );

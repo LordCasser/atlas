@@ -10,7 +10,7 @@
 
 use atlas_engine::{FpAnnotation, Language};
 
-use super::{MAX_ANNOTATION_QNAME_LENGTH, ToolRouter, get_str};
+use super::{MAX_ANNOTATION_QNAME_LENGTH, QnameResolution, ToolRouter, get_str};
 
 use serde_json::json;
 
@@ -57,14 +57,48 @@ impl ToolRouter {
         }
 
         // Resolve field symbol
-        let field_id = match self.resolve_qname(field_qname) {
-            Ok(id) => id,
+        let field_id = match self.resolve_qname_disambiguated(field_qname) {
+            Ok(QnameResolution::Unique(id)) => id,
+            Ok(QnameResolution::Ambiguous { candidates }) => {
+                let candidates_str: Vec<String> = candidates
+                    .iter()
+                    .take(5)
+                    .map(|c| format!("{}::{} [{}]", c.file_path, c.line, c.kind))
+                    .collect();
+                return (
+                    json!({
+                        "error": format!(
+                            "Field symbol '{}' is ambiguous ({} matches: {}). Use hex SymbolId from search results.",
+                            field_qname, candidates.len(), candidates_str.join(", ")
+                        )
+                    })
+                    .to_string(),
+                    true,
+                );
+            }
             Err(e) => return (json!({"error": e}).to_string(), true),
         };
 
         // Resolve target symbol
-        let target_id = match self.resolve_qname(target_qname) {
-            Ok(id) => id,
+        let target_id = match self.resolve_qname_disambiguated(target_qname) {
+            Ok(QnameResolution::Unique(id)) => id,
+            Ok(QnameResolution::Ambiguous { candidates }) => {
+                let candidates_str: Vec<String> = candidates
+                    .iter()
+                    .take(5)
+                    .map(|c| format!("{}::{} [{}]", c.file_path, c.line, c.kind))
+                    .collect();
+                return (
+                    json!({
+                        "error": format!(
+                            "Target symbol '{}' is ambiguous ({} matches: {}). Use hex SymbolId from search results.",
+                            target_qname, candidates.len(), candidates_str.join(", ")
+                        )
+                    })
+                    .to_string(),
+                    true,
+                );
+            }
             Err(e) => return (json!({"error": e}).to_string(), true),
         };
 
@@ -285,8 +319,25 @@ impl ToolRouter {
                 annotation_id.to_string(),
             )
         } else if !field_qname.is_empty() {
-            let field_id = match self.resolve_qname(field_qname) {
-                Ok(id) => id,
+            let field_id = match self.resolve_qname_disambiguated(field_qname) {
+                Ok(QnameResolution::Unique(id)) => id,
+                Ok(QnameResolution::Ambiguous { candidates }) => {
+                    let candidates_str: Vec<String> = candidates
+                        .iter()
+                        .take(5)
+                        .map(|c| format!("{}::{} [{}]", c.file_path, c.line, c.kind))
+                        .collect();
+                    return (
+                        json!({
+                            "error": format!(
+                                "Field symbol '{}' is ambiguous ({} matches: {}). Use hex SymbolId from search results.",
+                                field_qname, candidates.len(), candidates_str.join(", ")
+                            )
+                        })
+                        .to_string(),
+                        true,
+                    );
+                }
                 Err(e) => return (json!({"error": e}).to_string(), true),
             };
             // Extract field_name from qname

@@ -6,7 +6,8 @@
     },
     {
       "name": "readFile",
-      "kind": "method"
+      "kind": "method",
+      "signature": "(): void"
     },
     {
       "name": "buf",

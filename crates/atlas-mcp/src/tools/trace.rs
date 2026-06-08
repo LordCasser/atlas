@@ -2,13 +2,15 @@
 //! traversal.  Includes transparent lazy structural extraction with progress
 //! notifications to prevent MCP timeout during on-demand extraction.
 
+use std::collections::{HashSet, VecDeque};
+
 use atlas_engine::SymbolId;
-use atlas_engine::{InvestigationFocus, TraceQueryResponse};
+use atlas_engine::{EdgeKind, InvestigationFocus, TraceDiagnostic, TraceQueryResponse};
 
 use super::lazy_response::{LazyDiagnostics, LazyLayerDiagnostics, LazyResponse};
 use super::{
-    MAX_FILE_PATH_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str, get_str_opt, get_u64,
-    resolve_file_id, warnings_to_trace_diagnostics,
+    CandidateInfo, MAX_FILE_PATH_LENGTH, MAX_SYMBOL_NAME_LENGTH, QnameResolution, ToolRouter,
+    get_str, get_str_opt, get_u64, resolve_file_id, warnings_to_trace_diagnostics,
 };
 
 use serde_json::json;
@@ -102,10 +104,11 @@ impl ToolRouter {
             Some(&query_id),
         );
         // Capture lazy diagnostics before outcome fields are moved.
+        let stats = self.get_capability_stats();
         let lazy_diag: Option<LazyDiagnostics> = outcome
             .lazy_outcome
             .as_ref()
-            .map(LazyDiagnostics::from_structural);
+            .map(|lo| LazyDiagnostics::from_structural_with_stats(lo, stats.as_ref()));
 
         ctx.send_progress(0.8, "Running trace point...");
         let mut resp = self
@@ -239,9 +242,10 @@ impl ToolRouter {
         // Build combined lazy diagnostics from the structural outcome.
         // Engine already injects dataflow-layer diagnostics into resp.diagnostics;
         // we surface the structural layer separately so the agent sees both.
+        let stats = self.get_capability_stats();
         let mut combined_lazy_diag: Option<LazyDiagnostics> = structural_lo
             .as_ref()
-            .map(|lo| LazyDiagnostics::from_structural(lo));
+            .map(|lo| LazyDiagnostics::from_structural_with_stats(lo, stats.as_ref()));
 
         // Populate dataflow diagnostics from Engine's LazySummary (P2#14).
         // After routing through Engine, the MCP layer no longer has a direct
@@ -332,9 +336,12 @@ impl ToolRouter {
         let target_id: SymbolId = if is_hex {
             match symbol.parse() {
                 Ok(id) => id,
-                Err(_) => match self.store.find_symbols_by_qname(symbol) {
-                    Ok(refs) if !refs.is_empty() => refs[0].id,
-                    _ => {
+                Err(_) => match self.resolve_qname_disambiguated(symbol) {
+                    Ok(QnameResolution::Unique(id)) => id,
+                    Ok(QnameResolution::Ambiguous { candidates }) => {
+                        return build_ambiguous_response_for_callers(symbol, &candidates);
+                    }
+                    Err(_) => {
                         let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                             "trace_callers",
                             &format!(
@@ -349,9 +356,12 @@ impl ToolRouter {
                 },
             }
         } else {
-            match self.store.find_symbols_by_qname(symbol) {
-                Ok(refs) if !refs.is_empty() => refs[0].id,
-                _ => {
+            match self.resolve_qname_disambiguated(symbol) {
+                Ok(QnameResolution::Unique(id)) => id,
+                Ok(QnameResolution::Ambiguous { candidates }) => {
+                    return build_ambiguous_response_for_callers(symbol, &candidates);
+                }
+                Err(_) => {
                     // Lazy structural fallback: try name-based lookup with structural extraction
                     let outcome = self.ensure_structural_for_symbol_name(
                         symbol,
@@ -362,12 +372,19 @@ impl ToolRouter {
                     lazy_warnings.extend(outcome.warnings);
                     structural_tier = std::cmp::min(structural_tier, outcome.precision_tier);
                     if let Some(ref lo) = outcome.lazy_outcome {
-                        lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+                        let stats = self.get_capability_stats();
+                        lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
+                            lo,
+                            stats.as_ref(),
+                        ));
                     }
                     // Re-query after lazy extraction
-                    match self.store.find_symbols_by_qname(symbol) {
-                        Ok(refs) if !refs.is_empty() => refs[0].id,
-                        _ => {
+                    match self.resolve_qname_disambiguated(symbol) {
+                        Ok(QnameResolution::Unique(id)) => id,
+                        Ok(QnameResolution::Ambiguous { candidates }) => {
+                            return build_ambiguous_response_for_callers(symbol, &candidates);
+                        }
+                        Err(_) => {
                             let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                                 "trace_callers",
                                 &format!(
@@ -398,7 +415,11 @@ impl ToolRouter {
             lazy_warnings = outcome.warnings;
             structural_tier = outcome.precision_tier;
             if let Some(ref lo) = outcome.lazy_outcome {
-                lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+                let stats = self.get_capability_stats();
+                lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
+                    lo,
+                    stats.as_ref(),
+                ));
             }
         }
         let resp = self
@@ -479,46 +500,47 @@ impl ToolRouter {
         let lr = LazyResponse::new("trace", args);
         let query_id = lr.query_id().to_string();
 
-        // Auto-detect from/to: try hex parse first, then qname resolution.
-        let mut resolve_to_id = |input: &str, field: &str| -> Result<SymbolId, String> {
-            let is_hex = input.len() >= 8 && input.chars().all(|c| c.is_ascii_hexdigit());
-            if is_hex {
-                if let Ok(id) = input.parse::<SymbolId>() {
-                    return Ok(id);
-                }
-                // Fall through to qname resolution
-            }
-            match self.store.find_symbols_by_qname(input) {
-                Ok(refs) if !refs.is_empty() => Ok(refs[0].id),
-                _ => {
-                    // Lazy structural fallback: try name-based lookup with structural extraction
-                    let outcome = self.ensure_structural_for_symbol_name(
-                        input,
-                        include_roots.clone(),
-                        None,
-                        Some(&query_id),
-                    );
-                    lazy_warnings.extend(outcome.warnings);
-                    if outcome.precision_tier < structural_tier {
-                        structural_tier = outcome.precision_tier;
-                    }
-                    if let Some(ref lo) = outcome.lazy_outcome {
-                        lazy_diag = Some(LazyDiagnostics::from_structural(lo));
-                    }
-                    // Re-query after lazy extraction
-                    match self.store.find_symbols_by_qname(input) {
-                        Ok(refs) if !refs.is_empty() => Ok(refs[0].id),
-                        Err(e) => Err(format!("Lookup error: {e}")),
-                        _ => Err(format!(
-                            "Symbol not found: '{input}'. The '{field}' parameter accepts both hex SymbolIds and qualified names. Try 'search' first to discover the correct qualified name."
-                        )),
+        // ── Resolve 'from' symbol (with hex auto-detect + lazy fallback) ──
+        let from_resolution = {
+            let is_hex = from.len() >= 8 && from.chars().all(|c| c.is_ascii_hexdigit());
+            // Try hex parse first
+            let hex_id = if is_hex {
+                from.parse::<SymbolId>().ok()
+            } else {
+                None
+            };
+            if let Some(id) = hex_id {
+                Ok(QnameResolution::Unique(id))
+            } else {
+                // Resolve by qname with lazy fallback on not-found
+                match self.resolve_qname_disambiguated(from) {
+                    Ok(res) => Ok(res),
+                    Err(_) => {
+                        let outcome = self.ensure_structural_for_symbol_name(
+                            from,
+                            include_roots.clone(),
+                            None,
+                            Some(&query_id),
+                        );
+                        lazy_warnings.extend(outcome.warnings);
+                        structural_tier = std::cmp::min(structural_tier, outcome.precision_tier);
+                        if let Some(ref lo) = outcome.lazy_outcome {
+                            let stats = self.get_capability_stats();
+                            lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
+                                lo,
+                                stats.as_ref(),
+                            ));
+                        }
+                        self.resolve_qname_disambiguated(from)
                     }
                 }
             }
         };
-
-        let from_id: SymbolId = match resolve_to_id(from, "from") {
-            Ok(id) => id,
+        let from_id: SymbolId = match from_resolution {
+            Ok(QnameResolution::Unique(id)) => id,
+            Ok(QnameResolution::Ambiguous { candidates }) => {
+                return build_ambiguous_response_for_forward(from, &candidates, "from");
+            }
             Err(e) => {
                 let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_forward", &e);
                 return (
@@ -527,8 +549,59 @@ impl ToolRouter {
                 );
             }
         };
-        let to_id: SymbolId = match resolve_to_id(to, "to") {
-            Ok(id) => id,
+
+        // ── Resolve 'to' symbol (with path-aware disambiguation) ─────────
+        let to_resolution = {
+            let is_hex = to.len() >= 8 && to.chars().all(|c| c.is_ascii_hexdigit());
+            let hex_id = if is_hex {
+                to.parse::<SymbolId>().ok()
+            } else {
+                None
+            };
+            if let Some(id) = hex_id {
+                Ok(QnameResolution::Unique(id))
+            } else {
+                match self.resolve_qname_disambiguated(to) {
+                    Ok(res) => Ok(res),
+                    Err(_) => {
+                        let outcome = self.ensure_structural_for_symbol_name(
+                            to,
+                            include_roots.clone(),
+                            None,
+                            Some(&query_id),
+                        );
+                        lazy_warnings.extend(outcome.warnings);
+                        structural_tier = std::cmp::min(structural_tier, outcome.precision_tier);
+                        if let Some(ref lo) = outcome.lazy_outcome {
+                            let stats = self.get_capability_stats();
+                            lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
+                                lo,
+                                stats.as_ref(),
+                            ));
+                        }
+                        self.resolve_qname_disambiguated(to)
+                    }
+                }
+            }
+        };
+        let to_id: SymbolId = match to_resolution {
+            Ok(QnameResolution::Unique(id)) => id,
+            Ok(QnameResolution::Ambiguous { candidates }) => {
+                // Path-aware disambiguation: from is unique, to has multiple
+                // candidates. Filter to only those reachable from 'from' via
+                // outgoing call edges.
+                let reachable = compute_reachable_from(&self.store, &from_id, max_depth);
+                let reachable_candidates: Vec<&CandidateInfo> = candidates
+                    .iter()
+                    .filter(|c| reachable.contains(&c.id))
+                    .collect();
+                match reachable_candidates.len() {
+                    1 => reachable_candidates[0].id,
+                    _ => {
+                        return build_ambiguous_response_for_forward(to, &candidates, "to");
+                    }
+                }
+            }
             Err(e) => {
                 let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_forward", &e);
                 return (
@@ -557,9 +630,13 @@ impl ToolRouter {
             Some(&query_id),
         );
         lazy_warnings = outcome.warnings;
-        structural_tier = outcome.precision_tier;
+        structural_tier = std::cmp::min(structural_tier, outcome.precision_tier);
         if let Some(ref lo) = outcome.lazy_outcome {
-            lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+            let stats = self.get_capability_stats();
+            lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
+                lo,
+                stats.as_ref(),
+            ));
         }
 
         let mut resp = self
@@ -587,4 +664,116 @@ impl ToolRouter {
             .with_is_error(is_error)
             .build(resp_value, self)
     }
+}
+
+// ── Disambiguation helpers ───────────────────────────────────────────────
+
+/// BFS from `from_id` along outgoing call-graph edges to discover all
+/// reachable SymbolIds within `max_depth` hops.
+fn compute_reachable_from(
+    store: &atlas_engine::Store,
+    from_id: &SymbolId,
+    max_depth: usize,
+) -> HashSet<SymbolId> {
+    let mut reachable = HashSet::new();
+    let mut queue = VecDeque::new();
+    let mut visited = HashSet::new();
+    queue.push_back((*from_id, 0usize));
+    visited.insert(*from_id);
+
+    while let Some((current, depth)) = queue.pop_front() {
+        if depth > 0 {
+            reachable.insert(current);
+        }
+        if depth >= max_depth {
+            continue;
+        }
+
+        if let Ok(edges) = store.find_edges_by_source(&current) {
+            for edge in &edges {
+                if !matches!(
+                    edge.kind,
+                    EdgeKind::Calls
+                        | EdgeKind::Instantiates
+                        | EdgeKind::Implements
+                        | EdgeKind::RegistersCallback
+                ) {
+                    continue;
+                }
+                if visited.insert(edge.target) {
+                    queue.push_back((edge.target, depth + 1));
+                }
+            }
+        }
+    }
+
+    reachable
+}
+
+/// Build a partial (ambiguous) response for trace_callers.
+fn build_ambiguous_response_for_callers(
+    name: &str,
+    candidates: &[CandidateInfo],
+) -> (String, bool) {
+    let candidates_str = candidates
+        .iter()
+        .take(8)
+        .map(|c| {
+            format!(
+                "{} [{}:{} {}]",
+                c.qualified_name, c.file_path, c.line, c.kind
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let msg = format!(
+        "Symbol '{}' matched {} candidates: [{}]. Re-run with the hex SymbolId of the correct candidate.",
+        name,
+        candidates.len(),
+        candidates_str
+    );
+    let resp: TraceQueryResponse<()> = TraceQueryResponse::partial(
+        "trace_callers",
+        TraceDiagnostic::warning(&msg).with_code("ambiguous_name"),
+        None,
+    );
+    (
+        serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+        true,
+    )
+}
+
+/// Build a partial (ambiguous) response for trace_forward.
+fn build_ambiguous_response_for_forward(
+    name: &str,
+    candidates: &[CandidateInfo],
+    field: &str,
+) -> (String, bool) {
+    let candidates_str = candidates
+        .iter()
+        .take(8)
+        .map(|c| {
+            format!(
+                "{} [{}:{} {}]",
+                c.qualified_name, c.file_path, c.line, c.kind
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let msg = format!(
+        "Ambiguous {} name: '{}' matched {} candidates: [{}]. Re-run with the hex SymbolId from the candidate list.",
+        field,
+        name,
+        candidates.len(),
+        candidates_str
+    );
+    let resp: TraceQueryResponse<()> = TraceQueryResponse::partial(
+        "trace_forward",
+        TraceDiagnostic::warning(&msg).with_code("ambiguous_name"),
+        None,
+    );
+    (
+        serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+        true,
+    )
 }

@@ -7,7 +7,7 @@
 //! happened before the handler's own structural extraction.
 
 use super::lazy_response::{LazyDiagnostics, LazyResponse};
-use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str};
+use super::{MAX_SYMBOL_NAME_LENGTH, QnameResolution, ToolRouter, get_str};
 
 use atlas_engine::InvestigationFocus;
 use atlas_engine::structs::precision::PrecisionTier;
@@ -47,11 +47,10 @@ impl ToolRouter {
         let query_id = lr.query_id().to_string();
 
         // Try to find symbol by qname before resolution for initial investigation
-        let initial_sid = self
-            .store
-            .find_symbols_by_qname(qname)
-            .ok()
-            .and_then(|syms| syms.first().map(|s| s.id));
+        let initial_sid = match self.resolve_qname_disambiguated(qname) {
+            Ok(QnameResolution::Unique(id)) => Some(id),
+            _ => None,
+        };
         if let Some(sid) = initial_sid {
             self.update_investigation(InvestigationFocus::Symbol(sid));
         }
@@ -80,7 +79,10 @@ impl ToolRouter {
         }
 
         ctx.send_progress(0.7, "Building context view...");
-        match self.context_builder().build_context_for_symbol(&sid, include_file_peers) {
+        match self
+            .context_builder()
+            .build_context_for_symbol(&sid, include_file_peers)
+        {
             Ok(view) => {
                 ctx.send_progress(1.0, "Context complete");
 
@@ -243,26 +245,53 @@ impl ToolRouter {
         let mut worst_tier = PrecisionTier::Exact;
         let mut lazy_diag: Option<LazyDiagnostics> = None;
 
-        // ── Tier 1: exact qualified-name match ──
-        let symbols = self.store.find_symbols_by_qname(qname).unwrap_or_else(|e| {
-            tracing::warn!("DB error on find_symbols_by_qname: {}", e);
-            Default::default()
-        });
-        if let Some(id) = symbols.first().map(|s| s.id) {
-            // Ensure structural data for this file (include_roots optional,
-            // always relevant) so graph queries see complete edges.
-            let outcome = self.ensure_structural_for_files(
-                [symbols[0].file_id],
-                include_roots,
-                investigation,
-                query_id,
-            );
-            warnings.extend(outcome.warnings);
-            worst_tier = cmp::min(worst_tier, outcome.precision_tier);
-            if let Some(ref lo) = outcome.lazy_outcome {
-                lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+        // ── Tier 1: exact qualified-name match (disambiguated) ──
+        match self.resolve_qname_disambiguated(qname) {
+            Ok(QnameResolution::Unique(id)) => {
+                // Look up symbol info for file_id
+                if let Ok(Some(sym)) = self.store.find_symbol_by_id(&id) {
+                    let outcome = self.ensure_structural_for_files(
+                        [sym.file_id],
+                        include_roots,
+                        investigation,
+                        query_id,
+                    );
+                    warnings.extend(outcome.warnings);
+                    worst_tier = cmp::min(worst_tier, outcome.precision_tier);
+                    if let Some(ref lo) = outcome.lazy_outcome {
+                        let stats = self.get_capability_stats();
+                        lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
+                            lo,
+                            stats.as_ref(),
+                        ));
+                    }
+                    return Ok((id, warnings, worst_tier, lazy_diag));
+                }
+                // Symbol ID not in store — fall through
             }
-            return Ok((id, warnings, worst_tier, lazy_diag));
+            Ok(QnameResolution::Ambiguous { candidates }) => {
+                let names: Vec<String> = candidates
+                    .iter()
+                    .take(8)
+                    .map(|c| {
+                        format!(
+                            "{} [{}:{}:{}]",
+                            c.qualified_name, c.file_path, c.line, c.kind
+                        )
+                    })
+                    .collect();
+                let mut err = format!(
+                    "Symbol '{}' is ambiguous ({} matches). Did you mean one of: [{}]? Use the exact qualified_name.",
+                    qname,
+                    candidates.len(),
+                    names.join(", ")
+                );
+                err.push_str(self.index_not_run_guidance());
+                return Err(err);
+            }
+            Err(_) => {
+                // Not found by qname — fall through to Tier 2
+            }
         }
 
         // ── Tier 2: name-based search (look for symbol by simple name) ──
@@ -281,7 +310,11 @@ impl ToolRouter {
             warnings.extend(outcome.warnings);
             worst_tier = cmp::min(worst_tier, outcome.precision_tier);
             if let Some(ref lo) = outcome.lazy_outcome {
-                lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+                let stats = self.get_capability_stats();
+                lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
+                    lo,
+                    stats.as_ref(),
+                ));
             }
             return Ok((name_matches[0].id, warnings, worst_tier, lazy_diag));
         }
@@ -304,7 +337,11 @@ impl ToolRouter {
                 warnings.extend(outcome.warnings);
                 worst_tier = cmp::min(worst_tier, outcome.precision_tier);
                 if let Some(ref lo) = outcome.lazy_outcome {
-                    lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+                    let stats = self.get_capability_stats();
+                    lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
+                        lo,
+                        stats.as_ref(),
+                    ));
                 }
                 return Ok((matching_qnames[0].id, warnings, worst_tier, lazy_diag));
             }
@@ -342,17 +379,42 @@ impl ToolRouter {
             warnings.extend(outcome.warnings);
             worst_tier = cmp::min(worst_tier, outcome.precision_tier);
             if let Some(ref lo) = outcome.lazy_outcome {
-                lazy_diag = Some(LazyDiagnostics::from_structural(lo));
+                let stats = self.get_capability_stats();
+                lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
+                    lo,
+                    stats.as_ref(),
+                ));
             }
         }
 
         // Re-query after lazy extraction (tier 1 again on freshly-parsed data)
-        let retry = self.store.find_symbols_by_qname(qname).unwrap_or_else(|e| {
-            tracing::warn!("DB error on retry find_symbols_by_qname: {}", e);
-            Default::default()
-        });
-        if let Some(sym) = retry.first() {
-            return Ok((sym.id, warnings, worst_tier, lazy_diag));
+        match self.resolve_qname_disambiguated(qname) {
+            Ok(QnameResolution::Unique(id)) => {
+                return Ok((id, warnings, worst_tier, lazy_diag));
+            }
+            Ok(QnameResolution::Ambiguous { candidates }) => {
+                let names: Vec<String> = candidates
+                    .iter()
+                    .take(8)
+                    .map(|c| {
+                        format!(
+                            "{} [{}:{}:{}]",
+                            c.qualified_name, c.file_path, c.line, c.kind
+                        )
+                    })
+                    .collect();
+                let mut err = format!(
+                    "After lazy extraction, symbol '{}' is still ambiguous ({} matches). Did you mean one of: [{}]?",
+                    qname,
+                    candidates.len(),
+                    names.join(", ")
+                );
+                err.push_str(self.index_not_run_guidance());
+                return Err(err);
+            }
+            Err(_) => {
+                // Still not found — fall through to Tier 4
+            }
         }
 
         // Re-check name after lazy extraction

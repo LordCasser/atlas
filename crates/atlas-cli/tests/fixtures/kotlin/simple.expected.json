@@ -2,11 +2,13 @@
   "symbols": [
     {
       "name": "greet",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(name: String): String"
     },
     {
       "name": "main",
-      "kind": "function"
+      "kind": "function",
+      "signature": "()"
     }
   ],
   "references": [

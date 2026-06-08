@@ -6,11 +6,13 @@
     },
     {
       "name": "Add",
-      "kind": "method"
+      "kind": "method",
+      "signature": "(int a, int b): int"
     },
     {
       "name": "Main",
-      "kind": "method"
+      "kind": "method",
+      "signature": "(): void"
     },
     {
       "name": "result",

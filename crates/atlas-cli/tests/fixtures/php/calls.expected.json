@@ -2,7 +2,8 @@
   "symbols": [
     {
       "name": "add",
-      "kind": "function"
+      "kind": "function",
+      "signature": "($a, $b)"
     }
   ],
   "references": [

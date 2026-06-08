@@ -6,7 +6,8 @@
     },
     {
       "name": "TestIf",
-      "kind": "method"
+      "kind": "method",
+      "signature": "(int x): int"
     }
   ],
   "references": [

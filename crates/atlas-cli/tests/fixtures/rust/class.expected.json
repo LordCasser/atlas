@@ -14,11 +14,13 @@
     },
     {
       "name": "greet",
-      "kind": "method"
+      "kind": "method",
+      "signature": "(&self) String"
     },
     {
       "name": "main",
-      "kind": "function"
+      "kind": "function",
+      "signature": "()"
     },
     {
       "name": "p",

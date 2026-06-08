@@ -6,7 +6,8 @@
     },
     {
       "name": "Greet",
-      "kind": "method"
+      "kind": "method",
+      "signature": "(): string"
     },
     {
       "name": "Greeter",
@@ -18,11 +19,13 @@
     },
     {
       "name": "Greet",
-      "kind": "method"
+      "kind": "method",
+      "signature": "(): string"
     },
     {
       "name": "Main",
-      "kind": "method"
+      "kind": "method",
+      "signature": "(): void"
     },
     {
       "name": "g",

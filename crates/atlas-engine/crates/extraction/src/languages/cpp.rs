@@ -10,8 +10,9 @@ use crate::frontend::{
     ScopeExtractorSpec, SymbolExtractorSpec,
 };
 use crate::languages::shared::{
-    SymbolDefBuilder, make_binding_def, make_df_assign_field_target, make_df_assign_target,
-    make_df_parameter, make_df_return_value, make_reference_use, make_scope_def,
+    SymbolDefBuilder, compact_signature, make_binding_def, make_df_assign_field_target,
+    make_df_assign_target, make_df_parameter, make_df_return_value, make_reference_use,
+    make_scope_def,
 };
 use types::capability::FeatureSupport;
 use types::*;
@@ -323,20 +324,72 @@ fn cpp_import_info(
     }
 }
 
-/// Extract function signature (parameter list) from the AST.
-///
-/// The `node` is the `function_declarator` captured by `@definition.function`.
-/// It has a `parameters` child field containing the `parameter_list`.
 fn cpp_extract_signature(
     capture_name: &str,
     node: tree_sitter::Node,
     source: &str,
 ) -> Option<String> {
-    if capture_name != "definition.function" {
+    if capture_name != "definition.function" && capture_name != "definition.method" {
         return None;
     }
-    let params = node.child_by_field_name("parameters")?;
-    node_text(params, source)
+    let name = node_text(node, source)?;
+    let declaration = find_cpp_declaration_header(node, source)?;
+    cpp_signature_from_header(&declaration, &name)
+}
+
+fn find_cpp_declaration_header(node: tree_sitter::Node, source: &str) -> Option<String> {
+    let mut current = Some(node);
+    while let Some(n) = current {
+        match n.kind() {
+            "function_definition" | "declaration" | "field_declaration" => {
+                let text = node_text(n, source)?;
+                let header = text
+                    .split_once('{')
+                    .map(|(head, _)| head)
+                    .unwrap_or(text.as_str())
+                    .trim()
+                    .trim_end_matches(';')
+                    .trim();
+                return Some(header.to_string());
+            }
+            _ => current = n.parent(),
+        }
+    }
+    None
+}
+
+fn cpp_signature_from_header(header: &str, name: &str) -> Option<String> {
+    let name_pos = header.rfind(name)?;
+    let before_name = header[..name_pos].trim();
+    let after_name = header[name_pos + name.len()..].trim();
+    let params = leading_parenthesized(after_name)?;
+    let return_type = before_name.trim_end_matches(['*', '&']).trim();
+    if return_type.is_empty() {
+        compact_signature(params)
+    } else {
+        compact_signature(&format!("{params}: {return_type}"))
+    }
+}
+
+fn leading_parenthesized(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    if bytes.first().copied()? != b'(' {
+        return None;
+    }
+    let mut depth = 0u32;
+    for (idx, byte) in bytes.iter().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(&text[..=idx]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 // ── Lexical binding normalize ──────────────────────────────────────────

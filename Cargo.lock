@@ -154,6 +154,7 @@ dependencies = [
  "context",
  "db",
  "domain-rules",
+ "dossier",
  "extraction",
  "filesync",
  "graph",
@@ -179,6 +180,7 @@ dependencies = [
  "atlas-engine",
  "blake3",
  "domain-rules",
+ "dossier",
  "hex",
  "rmcp",
  "serde",
@@ -533,6 +535,18 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "dossier"
+version = "1.4.1"
+dependencies = [
+ "anyhow",
+ "db",
+ "graph",
+ "serde",
+ "serde_json",
+ "types",
 ]
 
 [[package]]

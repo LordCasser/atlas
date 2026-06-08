@@ -6,15 +6,18 @@
     },
     {
       "name": "__init__",
-      "kind": "method"
+      "kind": "method",
+      "signature": "(self, port: int, host: str)"
     },
     {
       "name": "create_server",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(port: int) -> Config"
     },
     {
       "name": "main",
-      "kind": "function"
+      "kind": "function",
+      "signature": "()"
     }
   ],
   "references": [

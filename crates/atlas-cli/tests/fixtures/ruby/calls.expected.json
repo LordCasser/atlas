@@ -2,7 +2,8 @@
   "symbols": [
     {
       "name": "add",
-      "kind": "method"
+      "kind": "method",
+      "signature": "(a, b)"
     }
   ],
   "references": [

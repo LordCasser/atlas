@@ -6,7 +6,8 @@
     },
     {
       "name": "testLoop",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(x int) int"
     }
   ],
   "references": [

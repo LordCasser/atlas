@@ -2,7 +2,8 @@
   "symbols": [
     {
       "name": "testLoop",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(x: Int): Int"
     }
   ],
   "references": [

@@ -2,7 +2,8 @@
   "symbols": [
     {
       "name": "greet",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(name: string): string"
     },
     {
       "name": "msg",
@@ -10,7 +11,8 @@
     },
     {
       "name": "check",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(x: number): number"
     }
   ],
   "scopes": [

@@ -2,11 +2,13 @@
   "symbols": [
     {
       "name": "add",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(a: Int64, b: Int64): Int64"
     },
     {
       "name": "compute",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(): Int64"
     },
     {
       "name": "x",

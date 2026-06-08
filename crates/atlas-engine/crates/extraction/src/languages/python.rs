@@ -3,8 +3,8 @@
 //! Uses tree-sitter-python grammar and embedded query files.
 
 use crate::languages::shared::{
-    make_binding_def, make_df_assign_field_target, make_df_assign_target, make_df_parameter,
-    make_reference_use, make_scope_def_auto_name,
+    compact_signature, make_binding_def, make_df_assign_field_target, make_df_assign_target,
+    make_df_parameter, make_reference_use, make_scope_def_auto_name,
 };
 use crate::languages::{node_range, node_text};
 use types::*;
@@ -580,13 +580,15 @@ fn py_extract_signature(
 ) -> Option<String> {
     match capture_name {
         "definition.function" => {
-            // node is the identifier; parent is function_definition
             let func_def = node.parent()?;
             if func_def.kind() != "function_definition" {
                 return None;
             }
-            let params = func_def.child_by_field_name("parameters")?;
-            Some(node_text(params, source)?)
+            let declaration = node_text(func_def, source)?;
+            let header = declaration.lines().next()?.trim().trim_end_matches(':');
+            let name = node_text(node, source)?;
+            let name_pos = header.find(&name)?;
+            compact_signature(header[name_pos + name.len()..].trim())
         }
         _ => None,
     }

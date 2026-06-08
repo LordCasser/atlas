@@ -2,7 +2,8 @@
   "symbols": [
     {
       "name": "test_if",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(int x): int"
     }
   ],
   "references": [

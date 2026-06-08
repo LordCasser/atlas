@@ -14,11 +14,13 @@
     },
     {
       "name": "Greet",
-      "kind": "method"
+      "kind": "method",
+      "signature": "() string"
     },
     {
       "name": "main",
-      "kind": "function"
+      "kind": "function",
+      "signature": "()"
     },
     {
       "name": "g",

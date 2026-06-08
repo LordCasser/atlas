@@ -229,6 +229,19 @@ impl SymbolDefBuilder {
     }
 }
 
+/// Normalize a language-level signature for compact UI/API display.
+///
+/// Signatures are persisted facts, so adapters should normalize multiline or
+/// oddly spaced syntax into a deterministic single-line form before storing it.
+pub fn compact_signature(text: &str) -> Option<String> {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        None
+    } else {
+        Some(compact)
+    }
+}
+
 // ── Shared dataflow dispatch helpers ────────────────────────────────────
 
 /// Construct a parameter DataNode and return it as `(Some(dn), None)`.

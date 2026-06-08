@@ -17,8 +17,9 @@ use crate::frontend::{
     ScopeExtractorSpec, SymbolExtractorSpec,
 };
 use crate::languages::shared::{
-    SymbolDefBuilder, make_binding_def, make_df_assign_field_target, make_df_assign_target,
-    make_df_parameter, make_df_return_value, make_reference_use, make_scope_def_auto_name,
+    SymbolDefBuilder, compact_signature, make_binding_def, make_df_assign_field_target,
+    make_df_assign_target, make_df_parameter, make_df_return_value, make_reference_use,
+    make_scope_def_auto_name,
 };
 use std::collections::HashMap;
 use types::bindings::BindingDef;
@@ -448,14 +449,23 @@ fn kotlin_extract_signature(
     match capture_name {
         "definition.function" => {
             let parent = node.parent()?;
-            // tree-sitter-kotlin v0.4.0 uses function_value_parameters
-            if let Some(params) = parent.child_by_field_name("function_value_parameters") {
-                Some(node_text(params, source)?)
-            } else if let Some(params) = parent.child_by_field_name("parameters") {
-                Some(node_text(params, source)?)
-            } else {
-                None
-            }
+            let declaration = node_text(parent, source)?;
+            let header = declaration
+                .split_once('{')
+                .map(|(head, _)| head)
+                .unwrap_or(declaration.as_str())
+                .split_once('=')
+                .map(|(head, _)| head)
+                .unwrap_or_else(|| {
+                    declaration
+                        .split_once('{')
+                        .map(|(head, _)| head)
+                        .unwrap_or(declaration.as_str())
+                })
+                .trim();
+            let name = node_text(node, source)?;
+            let name_pos = header.find(&name)?;
+            compact_signature(header[name_pos + name.len()..].trim())
         }
         _ => None,
     }

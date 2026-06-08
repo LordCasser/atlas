@@ -2,11 +2,13 @@
   "symbols": [
     {
       "name": "add",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(a: Int, b: Int): Int"
     },
     {
       "name": "main",
-      "kind": "function"
+      "kind": "function",
+      "signature": "()"
     },
     {
       "name": "result",

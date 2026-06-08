@@ -2,7 +2,8 @@
   "symbols": [
     {
       "name": "greet",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(name: String): String"
     },
     {
       "name": "message",

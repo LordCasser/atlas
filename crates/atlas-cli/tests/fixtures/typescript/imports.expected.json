@@ -2,11 +2,13 @@
   "symbols": [
     {
       "name": "main",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(): void"
     },
     {
       "name": "main",
-      "kind": "function"
+      "kind": "function",
+      "signature": "(): void"
     },
     {
       "name": "r",
