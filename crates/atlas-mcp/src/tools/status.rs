@@ -63,22 +63,38 @@ impl ToolRouter {
         }
 
         // Build lazy_dataflow block
-        let lazy_dataflow = self
-            .store
-            .get_lazy_dataflow_stats()
-            .ok()
-            .map(|l| {
+        let lazy_dataflow = {
+            let df_stats = self.store.get_lazy_dataflow_stats().ok();
+            let (files_with_dataflow, _structural, _manifest, files_with_cfg) = self
+                .store
+                .get_capability_counts()
+                .unwrap_or((0, 0, 0, 0));
+
+            let mut df = if let Some(ref s) = df_stats {
                 json!({
                     "enabled": true,
-                    "unit_states": l.total_unit_states,
-                    "partial_unit_states": l.partial_unit_states,
+                    "unit_states": s.total_unit_states,
+                    "partial_unit_states": s.partial_unit_states,
+                    "has_dataflow": s.has_dataflow,
                 })
-            })
-            .unwrap_or(json!({
-                "enabled": true,
-                "unit_states": 0,
-                "partial_unit_states": 0,
-            }));
+            } else {
+                json!({
+                    "enabled": true,
+                    "unit_states": 0,
+                    "partial_unit_states": 0,
+                    "has_dataflow": false,
+                })
+            };
+            df.as_object_mut().unwrap().insert(
+                "files_with_dataflow".to_string(),
+                json!(files_with_dataflow),
+            );
+            df.as_object_mut().unwrap().insert(
+                "files_with_cfg".to_string(),
+                json!(files_with_cfg),
+            );
+            df
+        };
 
         // Determine storage mode from db_path
         let db_path = self.store.db_path().to_string_lossy().to_string();
@@ -228,4 +244,24 @@ fn compiled_features() -> Vec<&'static str> {
             _ => "unknown",
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_lazy_dataflow_includes_has_dataflow() {
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+
+        let stats = store.get_lazy_dataflow_stats().unwrap();
+        assert!(!stats.has_dataflow, "empty DB should have has_dataflow=false");
+
+        let (df, st, mn, cfg) = store.get_capability_counts().unwrap();
+        assert_eq!(df, 0);
+        assert_eq!(st, 0);
+        assert_eq!(mn, 0);
+        assert_eq!(cfg, 0);
+    }
 }
