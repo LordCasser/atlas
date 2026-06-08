@@ -565,6 +565,19 @@ discover files
 - `CancelToken`：前台/后台均可中断执行，取消是正常降级路径。
 - `task_id`：所有异步操作注册到 `TaskManager`，通过 `tasks`/`task_status`/`wait_for_task` 可观测。
 
+### 10.5 v1.4.1 以来的架构收敛约束
+
+v1.4.1 之后的清理目标不是单纯减少行数，而是把重复实现压回稳定边界。后续改动必须遵守以下模式：
+
+- **先删除，再抽象**：零调用代码、过期别名、错误的 `#[allow(dead_code)]` 和未接入主路径的 facade 必须直接删除。只有当多个调用点共享同一不变式时才新增 helper、trait 或 struct；不得为了“参数成组出现”创建没有行为边界的状态对象。
+- **入口层只做编排**：CLI、TUI、MCP 只解释参数、处理锁、进度、后台任务和用户可见错误。dirty check、stale cleanup、capability upgrade、precision downgrade guard、resolution、graph build 和 summary build 都必须走 engine/filesync/service 层的共享入口。
+- **抽取层 helper 只承载机械一致性**：`languages::shared` 可以统一 `TextRange`、deterministic ID、`ScopeDef`、`BindingDef`、`ReferenceUse`、常见 `DataNode` 默认字段和 call-expression 查找。语言语义差异、特殊 AST 形状、return/callsite/field 规则必须留在各语言 adapter；禁止回到大型 `GenericExtractor`。
+- **trait 默认实现只表达真正相同的规则**：如 `LanguageRuleKinds::validate_rule` 这类跨语言完全一致的校验可以进入 trait default；只要某语言的 rule kind、pattern、metadata 或展示名语义不同，就必须在 registry 中显式覆盖，而不是在默认实现里堆条件分支。
+- **MCP lazy envelope 只有一个构建路径**：触发 lazy structural/dataflow 的 tool 响应必须通过 `LazyResponse` 或等价共享 builder 注入 `precision_tier`、`hint`、`warnings`、`lazy_diagnostics`、`analysis_contract`、`query_id` 和 `QuerySnapshot`。Graph、trace、search、context handler 不得手写同一 envelope，以免字段、status 或 retry 语义漂移。
+- **public facade 改造必须保留调用者 ergonomics**：`atlas-engine` stable re-export 是外部契约。用 trait 替代 type alias、闭包或函数指针时，必须提供 blanket impl、兼容 wrapper 或迁移期 API，确保旧的自然调用方式不会无意中失效。`Internal / Prelude` re-export 可以服务 workspace 内部，但不得被文档描述为稳定外部 API。
+- **测试支撑 API 不等同于死代码**：仅测试使用的构造器或 provider 注入点必须通过 `pub(crate)`、`#[cfg(test)]` 或注释明确用途；不能因为生产路径零调用就删除，也不能用无理由的 `#[allow(dead_code)]` 掩盖。
+- **policy module 可以优先于 policy struct**：当规则只是一组纯函数和一个 guard（例如 index precision downgrade）时，保持自由函数模块更清晰。只有当对象需要携带跨入口生命周期、统一日志/遥测、或多条规则共同依赖的状态时，才引入 `Policy` struct。
+
 ## 11. Search、Context、MCP、CLI
 
 ### 11.1 Search
