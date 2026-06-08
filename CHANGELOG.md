@@ -4,6 +4,89 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
+## [1.4.2] — 2026-06-08
+
+### Architecture Convergence — Subtraction & Constraint
+
+v1.4.2 is a consolidation release that eliminates dead code, unifies diverged
+response paths, and codifies architectural constraints discovered during the
+v1.4.0–v1.4.1 feature cycle.  **No MCP tool interface or data format changes.**
+
+**Dead code subtraction (~850 lines across 38 commits):**
+- Removed dead `extraction/src/engine.rs` module (−202 lines)
+- Removed 7 dead `#[allow(dead_code)]` graph methods (−175 lines)
+- Removed dead `cfg_nodes` columns (`effect_kind`, `target_field`, `callee_name`) across 5 files
+- Removed deprecated `begin_bulk_write`/`end_bulk_write` (−30 lines)
+- Removed dead `extract_one` CLI wrapper + orphaned deps (−45 lines)
+- Removed dead aliases (`loaded_all_symbols`, `LoadedDomainRules`, `AliasTable::build`, `NoopSink`)
+- Removed unused `DfIndex::source_edges` field (built but never read)
+- Fixed 8 wrong `#[allow(dead_code)]` annotations on actively-called symbols
+- Gated test-only APIs (`LazyStructuralService::with_provider`, `LazyBudget::new`) with `#[cfg(test)]` per §10.5
+- Removed 3 uncalled test helper functions in `branch_diff_semantic.rs`
+- JS adapter: removed `_file_path` dead parameters
+
+**Architecture documentation:**
+- **§10.5 Convergence Constraints**: codified rules for deletion-before-abstraction,
+  entry-layer orchestration, language adapter boundaries, trait default correctness,
+  MCP lazy envelope single-build-path, facade API compatibility, test-only API
+  treatment, and policy-module-vs-struct guidance.
+- **§2.10 Cleanup PR Guard Rules**: codified minimum requirements for subtraction
+  PRs — zero-production-call-site verification, happy-path + branch coverage for
+  new helpers, MCP lazy response field equivalence, stable facade compile-level
+  compatibility, and batch-level `cargo fmt --check` + `cargo check` + test gating.
+- **Stability tier markers** added to `atlas-engine` facade re-exports.
+
+### MCP LazyResponse Envelope Unification
+
+All lazy structural/dataflow-triggering tool handlers now produce responses through
+a single `LazyResponse` builder, eliminating per-handler field-drift risk:
+
+- `handle_impact`, `handle_callees`/`handle_callers`, `handle_callgraph`/`handle_explore`,
+  `handle_path` all migrated to `LazyResponse`.
+- Pattern parsing helper extracted in index handler.
+- Callers/callees shared tail extracted from MCP handlers.
+- Every lazy response now uniformly carries `precision_tier`, `hint`, `warnings`,
+  `lazy_diagnostics`, `analysis_contract`, `query_id`, and `QuerySnapshot`.
+
+### Extraction Deduplication
+
+Shared construction helpers extracted from language adapters into
+`extraction/languages/shared.rs`, reducing per-adapter boilerplate:
+
+- `make_binding_def`, `make_reference_use`, `make_scope_def`
+- `make_data_node` family (dataflow node helpers)
+- `find_call_expression` deduplicated across 11 language adapters
+- `node_range` copies and analysis mode parsing deduplicated
+
+### Domain Rules Deduplication
+
+- `validate_rule` extracted as `LanguageRuleKinds` trait default method —
+  cross-language identical validation now lives in one place.
+- `validate_rule` and `status_for_source` helpers deduplicated.
+
+### Context Refactoring
+
+- `SourceLookupFn` type alias replaced with `SourceReader` trait, providing a
+  stable facade-compatible interface with blanket `impl` for compatible closures.
+
+### Resolution / Lazy / Precision Guard Deduplication
+
+- Shared `ensure_structural` and precision downgrade guard paths unified across
+  call sites.
+
+### Feature Cleanup
+
+- All 14 languages now compile by default (`all-languages` feature gate removed).
+  No feature flags needed for full language matrix.
+
+### Bug Fixes
+
+- Engine now reports real progress during Resolution, HashCheck, and SummaryBuild
+  phases (was stuck at 0%).
+- Sync progress reporting improved with finer-grained phase updates.
+
+---
+
 ## [1.4.1] — 2026-06-05
 
 ### Index Precision Guard
