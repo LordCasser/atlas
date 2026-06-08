@@ -47,7 +47,7 @@ pub(crate) enum QnameResolution {
 
 /// Maximum number of ambiguous candidates to display in diagnostics.
 /// Beyond this, candidates are truncated to avoid log flooding in large projects.
-pub(crate) const MAX_AMBIGUOUS_CANDIDATES: usize = 8;
+pub(crate) const MAX_AMBIGUOUS_CANDIDATES: usize = 5;
 
 /// Human-readable candidate for ambiguous qname resolution.
 #[derive(Debug, Clone)]
@@ -1291,6 +1291,9 @@ fn make_symbol_tools() -> Vec<Tool> {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "symbol": { "type": "string", "description": "Fully qualified symbol name (primary parameter)." },
+                    "file_path": { "type": "string", "description": "File path relative to project root. When combined with 'line', resolves the symbol at this position (alternative to 'symbol' parameter)." },
+                    "line": { "type": "integer", "description": "1-based line number. Used with 'file_path' for position-based symbol lookup." },
+                    "column": { "type": "integer", "description": "1-based column number. Optional; defaults to 1 when omitted. Used with 'file_path' + 'line' for position-based symbol lookup." },
                     "view": {
                         "type": "string",
                         "enum": ["detail", "context", "usages"],
@@ -1436,8 +1439,25 @@ fn make_trace_tools() -> Vec<Tool> {
                 properties: Some(json!({
                     "kind": {
                         "type": "string",
-                        "enum": ["point", "variable", "forward", "callers"],
-                        "description": "Trace kind: 'point' for source position resolution, 'variable' for backward dataflow, 'forward' for forward call chain, 'callers' for backward call chain."
+                        "description": "Trace operation kind.",
+                        "oneOf": [
+                            {
+                                "const": "point",
+                                "description": "Resolve a source position (file+line+column) to its full context — enclosing symbol, reference, scope, data node, and callsite. Requires structural index. Dataflow layer enables reference/callsite resolution; without it returns enclosing symbol only."
+                            },
+                            {
+                                "const": "variable",
+                                "description": "Trace where a variable's value comes from (backward intra-procedural dataflow). Requires dataflow layer for complete results; returns best-effort on structural-only projects."
+                            },
+                            {
+                                "const": "forward",
+                                "description": "Trace the forward call chain from source symbol to target symbol. Requires call-graph edges (available with structural index)."
+                            },
+                            {
+                                "const": "callers",
+                                "description": "Trace how a function gets invoked — backward call chain to the farthest caller. Requires call-graph edges (available with structural index)."
+                            }
+                        ]
                     },
                     "file_id": { "type": "string", "description": "File ID in hex (alternative to file_path for kind='point'/'variable')." },
                     "file_path": { "type": "string", "description": "File path relative to project root (e.g. 'src/foo.ts'). Alternative to file_id." },
@@ -1635,6 +1655,13 @@ impl ToolRouter {
     /// Handle `symbol` tool — dispatch by `view` to legacy handlers.
     /// Remaps `symbol` → `qualified_name` (detail) or passes through as `symbol` (context/usages).
     pub(crate) fn handle_symbol(&mut self, ctx: &ToolCallContext, args: &Value) -> (String, bool) {
+        // Position-based lookup: file_path + line as alternative to 'symbol'
+        let file_path = get_str(args, "file_path");
+        let line_opt = args.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
+        if !file_path.is_empty() && line_opt.is_some() {
+            return self.handle_symbol_by_position(file_path, line_opt.unwrap(), args);
+        }
+
         let view = get_str(args, "view");
         let qname = get_str(args, "symbol");
         let qname = if qname.is_empty() {
@@ -2451,6 +2478,160 @@ fn normalize_project_relative_path(raw: &str) -> Option<String> {
         return None;
     }
     Some(components.join("/"))
+}
+
+// ── Position-based symbol lookup ──────────────────────────────────────
+
+/// Check if a [`SymbolKind`] represents a definition entity (not a reference or unknown).
+///
+/// All currently defined [`SymbolKind`] variants are definitions, so this
+/// always returns `true`.  Kept as a named predicate for clarity and
+/// future-proofing in case reference/import kinds are added later.
+fn is_definition_kind(_kind: &atlas_engine::SymbolKind) -> bool {
+    // All current SymbolKind values (File, Module, Class, Struct,
+    // Interface, Trait, Enum, EnumMember, Function, Method, Property,
+    // Field, Variable, Constant, TypeAlias, Namespace, Parameter,
+    // Constructor, Macro, Decorator, Package) are definitions.
+    true
+}
+
+impl ToolRouter {
+    /// Handle symbol lookup by file position (`file_path` + `line` + optional `column`).
+    ///
+    /// Resolves the position to the nearest enclosing symbol definition, then
+    /// delegates to [`handle_symbol_detail`] with the found `qualified_name`.
+    fn handle_symbol_by_position(
+        &mut self,
+        file_path: &str,
+        line: u32,
+        args: &serde_json::Value,
+    ) -> (String, bool) {
+        let column = args
+            .get("column")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .unwrap_or(1);
+
+        // Normalize and resolve file_path to FileId
+        let normalized = match normalize_project_relative_path(file_path) {
+            Some(p) => p,
+            None => {
+                return (
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ok": false,
+                        "error": format!(
+                            "Invalid file path: '{}'. Path must be project-relative and must not escape the project root.",
+                            file_path
+                        ),
+                    }))
+                    .unwrap_or_default(),
+                    true,
+                );
+            }
+        };
+        let file_id = FileId::generate(&normalized);
+        if self.store.get_file(&file_id).ok().flatten().is_none() {
+            return (
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "ok": false,
+                    "error": format!(
+                        "File not found in project: '{}'. Use the 'files' action on the 'project' tool to list indexed files.",
+                        file_path
+                    ),
+                }))
+                .unwrap_or_default(),
+                true,
+            );
+        }
+
+        // Ensure structural layer is available for this file
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
+        let investigation = self.investigation_state.active_investigation.clone();
+        let query_id = Self::generate_query_id();
+        let outcome = self.ensure_structural_for_files(
+            std::collections::HashSet::from([file_id]),
+            include_roots,
+            investigation.as_ref(),
+            Some(&query_id),
+        );
+        let mut warnings: Vec<String> = root_warnings;
+        warnings.extend(outcome.warnings);
+
+        // Find all symbols in the file
+        let symbols = match self.store.find_symbols_by_file(&file_id) {
+            Ok(syms) => syms,
+            Err(e) => {
+                let mut err = serde_json::json!({
+                    "ok": false,
+                    "error": format!("Failed to read symbols for '{}': {}", file_path, e),
+                });
+                add_json_warnings(&mut err, warnings, vec![]);
+                return (serde_json::to_string_pretty(&err).unwrap_or_default(), true);
+            }
+        };
+
+        // Filter: symbol range must contain the position AND be a definition kind.
+        // TextRange uses 0-based lines/columns; user input is 1-based.
+        let target_line = line.saturating_sub(1);
+        let target_col = column;
+        let mut candidates: Vec<&atlas_engine::SymbolDef> = symbols
+            .iter()
+            .filter(|s| {
+                is_definition_kind(&s.kind)
+                    && s.range.start_line <= target_line
+                    && target_line <= s.range.end_line
+                    && s.range.start_column <= target_col
+                    && target_col <= s.range.end_column
+            })
+            .collect();
+
+        if candidates.is_empty() {
+            let mut err = serde_json::json!({
+                "ok": false,
+                "error": format!(
+                    "No symbol definition found at {}:{} (column {})",
+                    file_path, line, column
+                ),
+            });
+            add_json_warnings(&mut err, warnings, vec![]);
+            return (serde_json::to_string_pretty(&err).unwrap_or_default(), true);
+        }
+
+        // Pick innermost (smallest range): sort by (line_span, column_span)
+        candidates.sort_by_key(|s| {
+            (s.range.end_line - s.range.start_line) * 1_000_000
+                + (s.range.end_column - s.range.start_column)
+        });
+        let symbol = candidates[0];
+
+        // Delegate to handle_symbol_detail with the found qualified_name
+        let mut mapped = serde_json::Map::new();
+        mapped.insert(
+            "qualified_name".into(),
+            serde_json::Value::String(symbol.qualified_name.clone()),
+        );
+        if let Some(v) = args.get("includeCode") {
+            mapped.insert("includeCode".into(), v.clone());
+        }
+        if let Some(v) = args.get("include_roots") {
+            mapped.insert("include_roots".into(), v.clone());
+        }
+        if let Some(v) = args.get("view") {
+            mapped.insert("view".into(), v.clone());
+        }
+
+        let (mut result, is_error) = self.handle_symbol_detail(&serde_json::Value::Object(mapped));
+        if !warnings.is_empty() && !is_error {
+            // Inject warnings into the JSON result if possible
+            if let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&result) {
+                add_json_warnings(&mut parsed, warnings.clone(), vec![]);
+                if let Ok(pretty) = serde_json::to_string_pretty(&parsed) {
+                    result = pretty;
+                }
+            }
+        }
+        (result, is_error)
+    }
 }
 
 #[cfg(test)]
@@ -3716,5 +3897,207 @@ mod tests {
             !resp_str.contains("not found"),
             "Response should not contain 'not found': {resp_str}"
         );
+    }
+
+    #[test]
+    fn trace_tool_has_per_kind_descriptions() {
+        let tools = make_trace_tools();
+        assert_eq!(tools.len(), 1);
+        let tool = &tools[0];
+        assert_eq!(tool.name, "trace");
+
+        let props = tool.input_schema.properties.as_ref().expect("should have properties");
+        let kind = props.get("kind").expect("should have kind property");
+
+        // Verify oneOf is present with 4 variants
+        let one_of = kind.get("oneOf").expect("kind should have oneOf");
+        let variants = one_of.as_array().expect("oneOf should be array");
+        assert_eq!(variants.len(), 4);
+
+        let descriptions: Vec<&str> = variants.iter()
+            .map(|v| v.get("description").and_then(|d| d.as_str()).unwrap_or(""))
+            .collect();
+
+        assert!(descriptions[0].contains("position"), "point description missing: {:?}", descriptions[0]);
+        assert!(descriptions[1].contains("dataflow"), "variable description should mention dataflow");
+        assert!(descriptions[2].contains("call-graph"), "forward description should mention call-graph");
+        assert!(descriptions[3].contains("call-graph"), "callers description should mention call-graph");
+    }
+
+    // ── Position-based symbol lookup tests ───────────────────────────
+
+    /// Helper: insert a symbol with a specific source range.
+    fn insert_symbol_with_range(
+        store: &Store,
+        file_id: FileId,
+        name: &str,
+        kind: atlas_engine::SymbolKind,
+        start_line: u32,
+        start_col: u32,
+        end_line: u32,
+        end_col: u32,
+    ) -> atlas_engine::SymbolId {
+        let range = atlas_engine::TextRange {
+            start_byte: 0,
+            end_byte: 10,
+            start_line,
+            start_column: start_col,
+            end_line,
+            end_column: end_col,
+        };
+        let id = atlas_engine::SymbolId::generate(
+            &file_id, "typescript", name, "function", None,
+        );
+        let sym = atlas_engine::SymbolDef {
+            id,
+            kind,
+            name: name.into(),
+            qualified_name: format!("{name}.{name}"),
+            symbol_path: vec![name.into()],
+            file_id,
+            language: atlas_engine::Language::TypeScript,
+            range,
+            name_range: range,
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".into(),
+        };
+        store.insert_symbols(&[sym]).unwrap();
+        id
+    }
+
+    #[test]
+    fn is_definition_kind_all_are_definitions() {
+        // All currently defined SymbolKind variants are definitions.
+        assert!(is_definition_kind(&atlas_engine::SymbolKind::Function));
+        assert!(is_definition_kind(&atlas_engine::SymbolKind::Class));
+        assert!(is_definition_kind(&atlas_engine::SymbolKind::Struct));
+        assert!(is_definition_kind(&atlas_engine::SymbolKind::Interface));
+        assert!(is_definition_kind(&atlas_engine::SymbolKind::Enum));
+        assert!(is_definition_kind(&atlas_engine::SymbolKind::TypeAlias));
+        assert!(is_definition_kind(&atlas_engine::SymbolKind::Variable));
+        assert!(is_definition_kind(&atlas_engine::SymbolKind::Field));
+        assert!(is_definition_kind(&atlas_engine::SymbolKind::Method));
+        assert!(is_definition_kind(&atlas_engine::SymbolKind::Module));
+        assert!(is_definition_kind(&atlas_engine::SymbolKind::Parameter));
+    }
+
+    #[test]
+    fn position_lookup_picks_innermost_symbol() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "src/test.ts");
+
+        // Outer: function at lines 1-10 (0-based: 0..9), cols 0-80
+        insert_symbol_with_range(
+            &store, file_id, "outer", atlas_engine::SymbolKind::Function,
+            0, 0, 9, 80,
+        );
+        // Inner: function at lines 3-5 (0-based: 2..4), cols 0-40
+        insert_symbol_with_range(
+            &store, file_id, "inner", atlas_engine::SymbolKind::Function,
+            2, 0, 4, 40,
+        );
+
+        let symbols = store.find_symbols_by_file(&file_id).unwrap();
+        assert_eq!(symbols.len(), 2);
+
+        // Position at line 4 (1-based) → 0-based line 3 should match inner
+        let line_1based: u32 = 4;
+        let target_line_0based = line_1based - 1;
+        let target_col_0based: u32 = 1; // column 1 (ignored for line-only check)
+        let inner_symbols: Vec<_> = symbols
+            .iter()
+            .filter(|s| {
+                is_definition_kind(&s.kind)
+                    && s.range.start_line <= target_line_0based
+                    && target_line_0based <= s.range.end_line
+                    && s.range.start_column <= target_col_0based
+                    && target_col_0based <= s.range.end_column
+            })
+            .collect();
+        assert_eq!(
+            inner_symbols.len(),
+            2,
+            "both outer and inner cover line 4"
+        );
+
+        // Pick smallest range: (line_span, column_span)
+        let mut sorted: Vec<_> = inner_symbols.iter().collect();
+        sorted.sort_by_key(|s| {
+            (s.range.end_line - s.range.start_line) * 1_000_000
+                + (s.range.end_column - s.range.start_column)
+        });
+        assert_eq!(
+            sorted[0].name, "inner",
+            "Should pick innermost (smallest range) symbol"
+        );
+    }
+
+    #[test]
+    fn position_lookup_no_candidates_returns_empty() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "src/empty.ts");
+
+        // Insert symbol at lines 1-3
+        insert_symbol_with_range(
+            &store, file_id, "func", atlas_engine::SymbolKind::Function,
+            0, 0, 2, 10,
+        );
+
+        let symbols = store.find_symbols_by_file(&file_id).unwrap();
+        assert_eq!(symbols.len(), 1);
+
+        // Query line 10 (1-based) → no symbol should cover it
+        let line_1based: u32 = 10;
+        let target_line = line_1based - 1;
+        let matches: Vec<_> = symbols
+            .iter()
+            .filter(|s| {
+                is_definition_kind(&s.kind)
+                    && s.range.start_line <= target_line
+                    && target_line <= s.range.end_line
+            })
+            .collect();
+        assert!(matches.is_empty(), "no symbol should cover line 10");
+    }
+
+    #[test]
+    fn position_lookup_respects_column_filter() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "src/coltest.ts");
+
+        // Two symbols on the same line span but different columns
+        insert_symbol_with_range(
+            &store, file_id, "left", atlas_engine::SymbolKind::Variable,
+            2, 0, 2, 20,  // line 3 (0-based 2), cols 0-20
+        );
+        insert_symbol_with_range(
+            &store, file_id, "right", atlas_engine::SymbolKind::Variable,
+            2, 25, 2, 45, // line 3 (0-based 2), cols 25-45
+        );
+
+        let symbols = store.find_symbols_by_file(&file_id).unwrap();
+        let target_line = 2; // 0-based line 2
+        let target_col: u32 = 30; // col 30, should match "right" only
+
+        let matches: Vec<_> = symbols
+            .iter()
+            .filter(|s| {
+                is_definition_kind(&s.kind)
+                    && s.range.start_line <= target_line
+                    && target_line <= s.range.end_line
+                    && s.range.start_column <= target_col
+                    && target_col <= s.range.end_column
+            })
+            .collect();
+        assert_eq!(matches.len(), 1, "only 'right' should match column 30");
+        assert_eq!(matches[0].name, "right");
     }
 }
