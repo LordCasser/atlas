@@ -5,10 +5,10 @@ use std::collections::HashSet;
 
 use atlas_engine::analysis;
 use atlas_engine::{EdgeKind, InvestigationFocus, Store, SymbolId, SymbolKind, TraversalDirection};
-use dossier::SourceRepository;
+use atlas_engine::dossier::SourceRepository;
 
 use super::lazy_response::{LazyDiagnostics, LazyResponse};
-use super::{MAX_SYMBOL_NAME_LENGTH, QnameResolution, ToolRouter, get_str, get_str_opt, get_u64};
+use super::{MAX_AMBIGUOUS_CANDIDATES, MAX_SYMBOL_NAME_LENGTH, QnameResolution, ToolRouter, get_str, get_str_opt, get_u64};
 
 use serde_json::json;
 
@@ -62,6 +62,35 @@ fn is_callable_kind(kind: SymbolKind) -> bool {
         kind,
         SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
     )
+}
+
+/// Build a candidate JSON object for ambiguity reporting in path results.
+pub(crate) fn candidate_json(store: &Store, id: &SymbolId, selected: bool) -> serde_json::Value {
+    store
+        .find_symbol_by_id(id)
+        .ok()
+        .flatten()
+        .map(|s| {
+            json!({
+                "qualified_name": s.qualified_name,
+                "file": store
+                    .get_file(&s.file_id)
+                    .ok()
+                    .flatten()
+                    .map(|f| f.path)
+                    .unwrap_or_else(|| s.file_id.to_hex()),
+                "line": s.range.start_line + 1,
+                "kind": s.kind.as_str(),
+                "selected": selected,
+            })
+        })
+        .unwrap_or(json!({
+            "qualified_name": id.to_hex(),
+            "file": "unknown",
+            "line": 0,
+            "kind": "unknown",
+            "selected": selected,
+        }))
 }
 
 /// Default edge kinds for path finding — call relationships only.
@@ -764,12 +793,48 @@ impl ToolRouter {
                         ambiguity["matched_from"] = json!(symbol_label(&self.store, wid));
                     }
                     ambiguity["from_count"] = json!(from_ids.len());
+                    // Add from_candidates list (truncated to MAX_AMBIGUOUS_CANDIDATES)
+                    let from_candidates: Vec<serde_json::Value> = from_ids
+                        .iter()
+                        .take(MAX_AMBIGUOUS_CANDIDATES)
+                        .map(|id| {
+                            candidate_json(
+                                &self.store,
+                                id,
+                                Some(id) == winning_from.as_ref(),
+                            )
+                        })
+                        .collect();
+                    if !from_candidates.is_empty() {
+                        ambiguity["from_candidates"] = json!(from_candidates);
+                    }
                 }
                 if to_ids.len() > 1 {
                     if let Some(ref wid) = winning_to {
                         ambiguity["matched_to"] = json!(symbol_label(&self.store, wid));
                     }
                     ambiguity["to_count"] = json!(to_ids.len());
+                    // Add to_candidates list (truncated to MAX_AMBIGUOUS_CANDIDATES)
+                    let to_candidates: Vec<serde_json::Value> = to_ids
+                        .iter()
+                        .take(MAX_AMBIGUOUS_CANDIDATES)
+                        .map(|id| {
+                            candidate_json(
+                                &self.store,
+                                id,
+                                Some(id) == winning_to.as_ref(),
+                            )
+                        })
+                        .collect();
+                    if !to_candidates.is_empty() {
+                        ambiguity["to_candidates"] = json!(to_candidates);
+                    }
+                }
+                // Add selection note
+                if from_ids.len() > 1 || to_ids.len() > 1 {
+                    ambiguity["selection_note"] = json!(
+                        "Selected first (from, to) pair with a discoverable path."
+                    );
                 }
                 resp["ambiguity"] = ambiguity;
             }
@@ -940,11 +1005,36 @@ impl ToolRouter {
                 Vec::new()
             };
             // Build base response before envelope injection.
-            let resp = json!({
+            let mut resp = json!({
                 "from": from_qname, "to": to_qname,
                 "path_length": 0, "path": [], "breakpoints": [],
                 "message": &message, "frontier": frontier_nodes,
             });
+
+            // Add candidates and hint when symbols are ambiguous
+            if from_ids.len() > 1 || to_ids.len() > 1 {
+                if from_ids.len() > 1 {
+                    let from_candidates: Vec<serde_json::Value> = from_ids
+                        .iter()
+                        .take(MAX_AMBIGUOUS_CANDIDATES)
+                        .map(|id| candidate_json(&self.store, id, false))
+                        .collect();
+                    if !from_candidates.is_empty() {
+                        resp["from_candidates"] = json!(from_candidates);
+                    }
+                }
+                if to_ids.len() > 1 {
+                    let to_candidates: Vec<serde_json::Value> = to_ids
+                        .iter()
+                        .take(MAX_AMBIGUOUS_CANDIDATES)
+                        .map(|id| candidate_json(&self.store, id, false))
+                        .collect();
+                    if !to_candidates.is_empty() {
+                        resp["to_candidates"] = json!(to_candidates);
+                    }
+                }
+                resp["hint"] = json!("Use a fully-qualified name or hex SymbolId to disambiguate.");
+            }
 
             lr.with_precision_tier(tier)
                 .with_root_warnings(root_warnings)
@@ -1038,9 +1128,9 @@ impl ToolRouter {
         let sym_id = match self.resolve_qname_disambiguated(qname) {
             Ok(QnameResolution::Unique(id)) => id,
             Ok(QnameResolution::Ambiguous { candidates }) => {
-                let symbol_candidates: Vec<dossier::types::SymbolCandidate> = candidates
+                let symbol_candidates: Vec<atlas_engine::dossier::types::SymbolCandidate> = candidates
                     .iter()
-                    .map(|c| dossier::types::SymbolCandidate {
+                    .map(|c| atlas_engine::dossier::types::SymbolCandidate {
                         qualified_name: c.qualified_name.clone(),
                         signature: None,
                         file: c.file_path.clone(),
@@ -1050,7 +1140,7 @@ impl ToolRouter {
                     })
                     .collect();
                 let ambiguous =
-                    dossier::builder::ExploreDossierBuilder::build_ambiguous(qname, symbol_candidates);
+                    atlas_engine::dossier::builder::ExploreDossierBuilder::build_ambiguous(qname, symbol_candidates);
                 let json = serde_json::to_string(&ambiguous)
                     .unwrap_or_else(|e| format!(r#"{{"error":"{}"}}"#, e));
                 return (json, false);
@@ -1095,18 +1185,18 @@ impl ToolRouter {
             Some(&query_id),
         );
 
-        let sym_repo = dossier::SymbolRepo::new(self.store());
-        let mut source_repo = dossier::SourceRepo::new(
+        let sym_repo = atlas_engine::dossier::SymbolRepo::new(self.store());
+        let mut source_repo = atlas_engine::dossier::SourceRepo::new(
             self.store(),
             self.project_root.clone(),
         );
-        let relation_repo = dossier::RelationRepo::new(
+        let relation_repo = atlas_engine::dossier::RelationRepo::new(
             self.store(),
             self.context_builder().graph_snapshot(),
         );
-        let file_repo = dossier::FileFactsRepo::new(self.store());
+        let file_repo = atlas_engine::dossier::FileFactsRepo::new(self.store());
 
-        let request = dossier::types::ExploreRequest {
+        let request = atlas_engine::dossier::types::ExploreRequest {
             symbol: qname.to_string(),
             source_mode,
             source_lines,
@@ -1121,7 +1211,7 @@ impl ToolRouter {
         let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
         let tier_str = format!("{:?}", tier);
 
-        let mut dossier = match dossier::builder::ExploreDossierBuilder::build(
+        let mut dossier = match atlas_engine::dossier::builder::ExploreDossierBuilder::build(
             &sym,
             &file_path,
             &sym_repo,
@@ -1535,11 +1625,11 @@ impl ToolRouter {
 }
 
 /// Parse the `source_mode` parameter from explore tool arguments.
-fn parse_source_mode(args: &serde_json::Value) -> dossier::types::SourceMode {
+fn parse_source_mode(args: &serde_json::Value) -> atlas_engine::dossier::types::SourceMode {
     match args.get("source_mode").and_then(|v| v.as_str()) {
-        Some("full") => dossier::types::SourceMode::Full,
-        Some("none") => dossier::types::SourceMode::None_,
-        _ => dossier::types::SourceMode::Excerpt,
+        Some("full") => atlas_engine::dossier::types::SourceMode::Full,
+        Some("none") => atlas_engine::dossier::types::SourceMode::None_,
+        _ => atlas_engine::dossier::types::SourceMode::Excerpt,
     }
 }
 
@@ -2093,5 +2183,34 @@ mod tests {
             !is_error,
             "expected no error with evidence_limit param, got: {resp_str}"
         );
+    }
+
+    // ── ambiguity candidate tests ──────────────────────────────────────
+
+    #[test]
+    fn max_ambiguous_candidates_is_5() {
+        // Verify the constant was changed
+        assert_eq!(super::super::MAX_AMBIGUOUS_CANDIDATES, 5);
+    }
+
+    #[test]
+    fn ambiguity_includes_candidates_when_multiple() {
+        let store = test_store();
+
+        // Insert two symbols with same qname but different files
+        let sid1 = insert_test_symbol(&store, "src/a.ts", "ns.foo");
+        let sid2 = insert_test_symbol(&store, "src/b.ts", "ns.foo");
+
+        // Build candidate JSON manually to test helper
+        let c = super::candidate_json(&store, &sid1, true);
+        assert_eq!(c["qualified_name"], "ns.foo");
+        assert_eq!(c["selected"], true);
+        assert!(c["file"].as_str().unwrap().contains("a.ts"));
+
+        // Second candidate not selected
+        let c2 = super::candidate_json(&store, &sid2, false);
+        assert_eq!(c2["qualified_name"], "ns.foo");
+        assert_eq!(c2["selected"], false);
+        assert!(c2["file"].as_str().unwrap().contains("b.ts"));
     }
 }
