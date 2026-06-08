@@ -5,6 +5,7 @@
 //! file context, and recommended next queries.
 
 use anyhow::Result;
+use std::collections::HashMap;
 
 use super::traits::{FileFactsRepository, RelationRepository, SourceRepository, SymbolRepository};
 use super::types::*;
@@ -52,6 +53,13 @@ impl ExploreDossierBuilder {
             None
         };
 
+        // ── Relation counts (centralized, used by multiple sub‑builders) ──────
+        let incoming_counts = rel_repo.count_incoming_by_kind(&sym.id).unwrap_or_default();
+        let outgoing_counts = rel_repo.count_outgoing_by_kind(&sym.id).unwrap_or_default();
+        if incoming_counts.is_empty() && outgoing_counts.is_empty() {
+            warnings.push("Relation count data unavailable; totals may be inaccurate".to_string());
+        }
+
         // ── Call evidence ─────────────────────────────────────────────
         let call_evidence = build_call_evidence(
             &sym.id,
@@ -59,6 +67,9 @@ impl ExploreDossierBuilder {
             rel_repo,
             src_repo,
             request.evidence_limit,
+            &incoming_counts,
+            &outgoing_counts,
+            &mut warnings,
         );
 
         // ── Relation groups ───────────────────────────────────────────
@@ -68,6 +79,8 @@ impl ExploreDossierBuilder {
             rel_repo,
             src_repo,
             request.relation_limit,
+            &incoming_counts,
+            &outgoing_counts,
             &mut warnings,
         );
 
@@ -80,7 +93,7 @@ impl ExploreDossierBuilder {
 
         // ── Recommendations ───────────────────────────────────────────
         let recommended_next_queries = if request.include_recommendations {
-            generate_recommendations(sym)
+            generate_recommendations(sym, &incoming_counts, &outgoing_counts)
         } else {
             Vec::new()
         };
@@ -225,31 +238,29 @@ fn build_call_evidence(
     rel_repo: &dyn RelationRepository,
     src_repo: &mut dyn SourceRepository,
     evidence_limit: usize,
+    incoming_counts: &HashMap<InternalRelationKind, usize>,
+    outgoing_counts: &HashMap<InternalRelationKind, usize>,
+    warnings: &mut Vec<String>,
 ) -> CallEvidence {
     let call_kinds: &[InternalRelationKind] = &[InternalRelationKind::Calls];
 
-    let incoming_evidence =
-        rel_repo
-            .incoming_evidence(symbol_id, Some(call_kinds), evidence_limit)
-            .unwrap_or_default();
-    let outgoing_evidence =
-        rel_repo
-            .outgoing_evidence(symbol_id, Some(call_kinds), evidence_limit)
-            .unwrap_or_default();
+    let incoming_evidence = match rel_repo.incoming_evidence(symbol_id, Some(call_kinds), evidence_limit) {
+        Ok(v) => v,
+        Err(e) => {
+            warnings.push(format!("Failed to query incoming call evidence: {e}"));
+            Vec::new()
+        }
+    };
+    let outgoing_evidence = match rel_repo.outgoing_evidence(symbol_id, Some(call_kinds), evidence_limit) {
+        Ok(v) => v,
+        Err(e) => {
+            warnings.push(format!("Failed to query outgoing call evidence: {e}"));
+            Vec::new()
+        }
+    };
 
-    let incoming_total = rel_repo
-        .count_incoming_by_kind(symbol_id)
-        .unwrap_or_default()
-        .get(&InternalRelationKind::Calls)
-        .copied()
-        .unwrap_or(0);
-
-    let outgoing_total = rel_repo
-        .count_outgoing_by_kind(symbol_id)
-        .unwrap_or_default()
-        .get(&InternalRelationKind::Calls)
-        .copied()
-        .unwrap_or(0);
+    let incoming_total = incoming_counts.get(&InternalRelationKind::Calls).copied().unwrap_or(0);
+    let outgoing_total = outgoing_counts.get(&InternalRelationKind::Calls).copied().unwrap_or(0);
 
     let incoming = CallEvidenceGroup {
         total: incoming_total,
@@ -258,6 +269,7 @@ fn build_call_evidence(
             sym_repo,
             src_repo,
             /* is_incoming */ true,
+            warnings,
         ),
     };
     let outgoing = CallEvidenceGroup {
@@ -267,6 +279,7 @@ fn build_call_evidence(
             sym_repo,
             src_repo,
             /* is_incoming */ false,
+            warnings,
         ),
     };
 
@@ -283,6 +296,7 @@ fn evidence_to_call_entries(
     sym_repo: &dyn SymbolRepository,
     src_repo: &mut dyn SourceRepository,
     is_incoming: bool,
+    warnings: &mut Vec<String>,
 ) -> Vec<CallEvidenceEntry> {
     evidence
         .into_iter()
@@ -293,21 +307,35 @@ fn evidence_to_call_entries(
                 ev.target_id
             };
 
-            let peer_sym = sym_repo.get_symbol_by_id(&peer_id).ok()??;
-            let peer_file = sym_repo
-                .get_file_path(&peer_sym.file_id)
-                .ok()?
-                .unwrap_or_default();
+            let peer_sym = match sym_repo.get_symbol_by_id(&peer_id) {
+                Ok(Some(s)) => s,
+                Ok(None) => return None,
+                Err(e) => {
+                    warnings.push(format!("Failed to look up peer symbol {}: {e}", peer_id.to_hex()));
+                    return None;
+                }
+            };
+            let peer_file = match sym_repo.get_file_path(&peer_sym.file_id) {
+                Ok(Some(p)) => p,
+                Ok(None) => String::new(),
+                Err(e) => {
+                    warnings.push(format!("Failed to resolve file path: {e}"));
+                    String::new()
+                }
+            };
 
             let snippet = src_repo
                 .read_range(&ev.file_id, &ev.range)
                 .unwrap_or_default();
 
-            let callsite_file = sym_repo
-                .get_file_path(&ev.file_id)
-                .ok()
-                .flatten()
-                .unwrap_or_default();
+            let callsite_file = match sym_repo.get_file_path(&ev.file_id) {
+                Ok(Some(p)) => p,
+                Ok(None) => String::new(),
+                Err(e) => {
+                    warnings.push(format!("Failed to resolve callsite file: {e}"));
+                    String::new()
+                }
+            };
 
             Some(CallEvidenceEntry {
                 symbol: PeerSymbol {
@@ -342,6 +370,8 @@ fn build_relation_groups(
     rel_repo: &dyn RelationRepository,
     src_repo: &mut dyn SourceRepository,
     relation_limit: usize,
+    incoming_counts: &HashMap<InternalRelationKind, usize>,
+    outgoing_counts: &HashMap<InternalRelationKind, usize>,
     warnings: &mut Vec<String>,
 ) -> RelationGroups {
     let non_call_kinds: &[InternalRelationKind] = &[
@@ -357,23 +387,23 @@ fn build_relation_groups(
         InternalRelationKind::RegistersCallback,
     ];
 
-    let incoming = rel_repo
-        .incoming_evidence(symbol_id, Some(non_call_kinds), relation_limit)
-        .unwrap_or_default();
-    let outgoing = rel_repo
-        .outgoing_evidence(symbol_id, Some(non_call_kinds), relation_limit)
-        .unwrap_or_default();
+    let incoming = match rel_repo.incoming_evidence(symbol_id, Some(non_call_kinds), relation_limit) {
+        Ok(v) => v,
+        Err(e) => {
+            warnings.push(format!("Failed to query incoming non-call relations: {e}"));
+            Vec::new()
+        }
+    };
+    let outgoing = match rel_repo.outgoing_evidence(symbol_id, Some(non_call_kinds), relation_limit) {
+        Ok(v) => v,
+        Err(e) => {
+            warnings.push(format!("Failed to query outgoing non-call relations: {e}"));
+            Vec::new()
+        }
+    };
     let all_evidence: Vec<_> = incoming.into_iter().chain(outgoing).collect();
 
-    let counts = rel_repo
-        .count_incoming_by_kind(symbol_id)
-        .unwrap_or_default();
-    let out_counts = rel_repo
-        .count_outgoing_by_kind(symbol_id)
-        .unwrap_or_default();
-
     // Group by InternalRelationKind
-    use std::collections::HashMap;
     let mut grouped: HashMap<InternalRelationKind, Vec<RelationEntry>> = HashMap::new();
 
     for ev in all_evidence {
@@ -417,11 +447,11 @@ fn build_relation_groups(
     let mut field_access_examples: Vec<FieldAccessEntry> = Vec::new();
     let mut field_access_total: usize = 0;
     if let Some(entries) = grouped.remove(&InternalRelationKind::FieldRead) {
-        field_access_total += counts
+        field_access_total += incoming_counts
             .get(&InternalRelationKind::FieldRead)
             .copied()
-            .unwrap_or(entries.len())
-            + out_counts
+            .unwrap_or(0)
+            + outgoing_counts
                 .get(&InternalRelationKind::FieldRead)
                 .copied()
                 .unwrap_or(0);
@@ -435,11 +465,11 @@ fn build_relation_groups(
         }
     }
     if let Some(entries) = grouped.remove(&InternalRelationKind::FieldWrite) {
-        field_access_total += counts
+        field_access_total += incoming_counts
             .get(&InternalRelationKind::FieldWrite)
             .copied()
-            .unwrap_or(entries.len())
-            + out_counts
+            .unwrap_or(0)
+            + outgoing_counts
                 .get(&InternalRelationKind::FieldWrite)
                 .copied()
                 .unwrap_or(0);
@@ -465,11 +495,11 @@ fn build_relation_groups(
     // Helper: extract a RelationGroup from the grouped map.
     let mut take_group = |kind: InternalRelationKind| -> Option<RelationGroup> {
         grouped.remove(&kind).map(|examples| {
-            let total = counts
+            let total = incoming_counts
                 .get(&kind)
                 .copied()
                 .unwrap_or(0)
-                + out_counts.get(&kind).copied().unwrap_or(0);
+                + outgoing_counts.get(&kind).copied().unwrap_or(0);
             RelationGroup {
                 total: total.max(examples.len()),
                 examples,
@@ -525,14 +555,13 @@ fn build_file_context(
         .map(|imp| ImportFact {
             module: imp.module,
             symbols: {
-                let mut syms = vec![imp.imported_name.clone()];
-                if let Some(alias) = &imp.alias {
-                    syms.push(alias.clone());
-                }
                 if imp.is_wildcard {
-                    syms.push("*".to_string());
+                    vec!["*".to_string()]
+                } else if let Some(alias) = &imp.alias {
+                    vec![alias.clone()]
+                } else {
+                    vec![imp.imported_name.clone()]
                 }
-                syms
             },
             line: imp.range.start_line + 1,
         })
@@ -568,24 +597,49 @@ fn build_file_context(
 }
 
 /// Generate recommended next queries.
-fn generate_recommendations(sym: &types::SymbolDef) -> Vec<RecommendedQuery> {
+fn generate_recommendations(
+    sym: &types::SymbolDef,
+    incoming_counts: &HashMap<InternalRelationKind, usize>,
+    outgoing_counts: &HashMap<InternalRelationKind, usize>,
+) -> Vec<RecommendedQuery> {
     let mut recs = Vec::new();
     let qname = &sym.qualified_name;
-    let hex_id = sym.id.to_hex();
 
-    // Always: call graph exploration.
-    recs.push(RecommendedQuery {
-        tool: "atlas_calls".to_string(),
-        args: serde_json::json!({"symbol": hex_id, "direction": "both", "depth": 2}),
-        reason: "Explore call graph 2 hops in both directions".to_string(),
-    });
+    // If there are callers → trace incoming call graph
+    let has_incoming_calls = incoming_counts.get(&InternalRelationKind::Calls).copied().unwrap_or(0) > 0;
+    // If there are callees → trace outgoing call graph
+    let has_outgoing_calls = outgoing_counts.get(&InternalRelationKind::Calls).copied().unwrap_or(0) > 0;
+    // If there are non-call relations → suggest context view
+    let has_non_call = incoming_counts.iter().any(|(k, &c)| c > 0 && *k != InternalRelationKind::Calls)
+        || outgoing_counts.iter().any(|(k, &c)| c > 0 && *k != InternalRelationKind::Calls);
 
-    // Always: detailed symbol info.
-    recs.push(RecommendedQuery {
-        tool: "atlas_symbol".to_string(),
-        args: serde_json::json!({"symbol": qname, "view": "context"}),
-        reason: "Get rich structured context for this symbol".to_string(),
-    });
+    if has_incoming_calls && has_outgoing_calls {
+        recs.push(RecommendedQuery {
+            tool: "atlas_calls".to_string(),
+            args: serde_json::json!({"symbol": qname, "direction": "both", "depth": 2}),
+            reason: "Explore call graph 2 hops in both directions (has both callers and callees)".to_string(),
+        });
+    } else if has_incoming_calls {
+        recs.push(RecommendedQuery {
+            tool: "atlas_calls".to_string(),
+            args: serde_json::json!({"symbol": qname, "direction": "incoming", "depth": 2}),
+            reason: "Explore incoming callers up to 2 hops".to_string(),
+        });
+    } else if has_outgoing_calls {
+        recs.push(RecommendedQuery {
+            tool: "atlas_calls".to_string(),
+            args: serde_json::json!({"symbol": qname, "direction": "outgoing", "depth": 2}),
+            reason: "Explore outgoing callees up to 2 hops".to_string(),
+        });
+    }
+
+    if has_non_call || has_incoming_calls || has_outgoing_calls {
+        recs.push(RecommendedQuery {
+            tool: "atlas_symbol".to_string(),
+            args: serde_json::json!({"symbol": qname, "view": "context"}),
+            reason: "Get rich structured context for this symbol".to_string(),
+        });
+    }
 
     recs
 }
