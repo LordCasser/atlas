@@ -21,7 +21,7 @@ impl ExploreDossierBuilder {
         sym_repo: &dyn SymbolRepository,
         rel_repo: &dyn RelationRepository,
         file_repo: &dyn FileFactsRepository,
-        src_repo: &mut dyn SourceRepository,
+        src_repo: &dyn SourceRepository,
         request: &ExploreRequest,
         precision_tier: String,
     ) -> Result<ExploreDossier> {
@@ -158,7 +158,7 @@ fn confidence_label(c: types::enums::Confidence) -> &'static str {
 fn relation_kind_str(kind: InternalRelationKind) -> &'static str {
     match kind {
         InternalRelationKind::Calls => "calls",
-        InternalRelationKind::ReferencesType => "references",
+        InternalRelationKind::References => "references",
         InternalRelationKind::Implements => "implements",
         InternalRelationKind::Extends => "extends",
         InternalRelationKind::Instantiates => "instantiates",
@@ -180,7 +180,7 @@ fn relation_kind_str(kind: InternalRelationKind) -> &'static str {
 ///   symbol body (not a context window around it).
 fn build_source_excerpt(
     sym: &types::SymbolDef,
-    src_repo: &mut dyn SourceRepository,
+    src_repo: &dyn SourceRepository,
     request: &ExploreRequest,
     warnings: &mut Vec<String>,
 ) -> Option<SourceExcerpt> {
@@ -236,7 +236,7 @@ fn build_call_evidence(
     symbol_id: &types::SymbolId,
     sym_repo: &dyn SymbolRepository,
     rel_repo: &dyn RelationRepository,
-    src_repo: &mut dyn SourceRepository,
+    src_repo: &dyn SourceRepository,
     evidence_limit: usize,
     incoming_counts: &HashMap<InternalRelationKind, usize>,
     outgoing_counts: &HashMap<InternalRelationKind, usize>,
@@ -294,7 +294,7 @@ fn build_call_evidence(
 fn evidence_to_call_entries(
     evidence: Vec<super::traits::RelationEvidence>,
     sym_repo: &dyn SymbolRepository,
-    src_repo: &mut dyn SourceRepository,
+    src_repo: &dyn SourceRepository,
     is_incoming: bool,
     warnings: &mut Vec<String>,
 ) -> Vec<CallEvidenceEntry> {
@@ -368,14 +368,14 @@ fn build_relation_groups(
     symbol_id: &types::SymbolId,
     sym_repo: &dyn SymbolRepository,
     rel_repo: &dyn RelationRepository,
-    src_repo: &mut dyn SourceRepository,
+    src_repo: &dyn SourceRepository,
     relation_limit: usize,
     incoming_counts: &HashMap<InternalRelationKind, usize>,
     outgoing_counts: &HashMap<InternalRelationKind, usize>,
     warnings: &mut Vec<String>,
 ) -> RelationGroups {
     let non_call_kinds: &[InternalRelationKind] = &[
-        InternalRelationKind::ReferencesType,
+        InternalRelationKind::References,
         InternalRelationKind::Implements,
         InternalRelationKind::Extends,
         InternalRelationKind::Instantiates,
@@ -507,7 +507,7 @@ fn build_relation_groups(
         })
     };
 
-    let references_type = take_group(InternalRelationKind::ReferencesType);
+    let references_type = take_group(InternalRelationKind::References);
     let implements = take_group(InternalRelationKind::Implements);
     let extends = take_group(InternalRelationKind::Extends);
     let instantiates = take_group(InternalRelationKind::Instantiates);
@@ -642,4 +642,611 @@ fn generate_recommendations(
     }
 
     recs
+}
+
+// ── tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use types::{
+        Confidence, FileId, ImportDef, Language,
+        SymbolDef, SymbolId, SymbolKind, TextRange,
+    };
+
+    use super::super::traits::{FileFactsRepository, RelationEvidence, RelationRepository, SourceRepository, SymbolRepository};
+
+    // ── helper constructors ──────────────────────────────────────────────
+
+    fn fid(name: &str) -> FileId {
+        FileId::generate(name)
+    }
+
+    fn sid(file: &FileId, path: &str, kind: &str) -> SymbolId {
+        SymbolId::generate(file, "typescript", path, kind, None)
+    }
+
+    fn make_symbol(name: &str, qname: &str, sym_id: SymbolId, file_id: FileId) -> SymbolDef {
+        SymbolDef {
+            id: sym_id,
+            kind: SymbolKind::Function,
+            name: name.to_string(),
+            qualified_name: qname.to_string(),
+            symbol_path: qname.split('.').map(|s| s.to_string()).collect(),
+            file_id,
+            language: Language::TypeScript,
+            range: TextRange { start_line: 0, end_line: 9, ..Default::default() },
+            name_range: TextRange::default(),
+            signature: Some(format!("fn {name}()")),
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".to_string(),
+        }
+    }
+
+    fn tr(start_byte: u32, end_byte: u32, start_line: u32, end_line: u32) -> TextRange {
+        TextRange { start_byte, end_byte, start_line, start_column: 0, end_line, end_column: 0 }
+    }
+
+    // ── Mock implementations ─────────────────────────────────────────────
+
+    struct MockSymbolRepo {
+        symbols: RefCell<HashMap<SymbolId, SymbolDef>>,
+        files: RefCell<HashMap<FileId, String>>,
+        resolve_results: RefCell<HashMap<String, Vec<SymbolDef>>>,
+    }
+
+    impl MockSymbolRepo {
+        fn new() -> Self {
+            Self {
+                symbols: RefCell::new(HashMap::new()),
+                files: RefCell::new(HashMap::new()),
+                resolve_results: RefCell::new(HashMap::new()),
+            }
+        }
+        fn add_symbol(&self, sym: SymbolDef) {
+            self.symbols.borrow_mut().insert(sym.id, sym);
+        }
+        fn add_file(&self, file_id: FileId, path: &str) {
+            self.files.borrow_mut().insert(file_id, path.to_string());
+        }
+    }
+
+    impl SymbolRepository for MockSymbolRepo {
+        fn resolve(&self, query: &str) -> anyhow::Result<Vec<SymbolDef>> {
+            Ok(self.resolve_results.borrow().get(query).cloned().unwrap_or_default())
+        }
+        fn get_signature(&self, symbol_id: &SymbolId) -> anyhow::Result<Option<String>> {
+            Ok(self.symbols.borrow().get(symbol_id).and_then(|s| s.signature.clone()))
+        }
+        fn get_symbol_by_id(&self, id: &SymbolId) -> anyhow::Result<Option<SymbolDef>> {
+            Ok(self.symbols.borrow().get(id).cloned())
+        }
+        fn get_file_path(&self, file_id: &FileId) -> anyhow::Result<Option<String>> {
+            Ok(self.files.borrow().get(file_id).cloned())
+        }
+    }
+
+    struct MockRelationRepo {
+        incoming: RefCell<HashMap<SymbolId, Vec<RelationEvidence>>>,
+        outgoing: RefCell<HashMap<SymbolId, Vec<RelationEvidence>>>,
+        inc_counts: RefCell<HashMap<SymbolId, HashMap<InternalRelationKind, usize>>>,
+        out_counts: RefCell<HashMap<SymbolId, HashMap<InternalRelationKind, usize>>>,
+    }
+
+    impl MockRelationRepo {
+        fn new() -> Self {
+            Self {
+                incoming: RefCell::new(HashMap::new()),
+                outgoing: RefCell::new(HashMap::new()),
+                inc_counts: RefCell::new(HashMap::new()),
+                out_counts: RefCell::new(HashMap::new()),
+            }
+        }
+    }
+
+    impl RelationRepository for MockRelationRepo {
+        fn incoming_evidence(
+            &self,
+            symbol_id: &SymbolId,
+            kinds: Option<&[InternalRelationKind]>,
+            _limit: usize,
+        ) -> anyhow::Result<Vec<RelationEvidence>> {
+            let all = self.incoming.borrow().get(symbol_id).cloned().unwrap_or_default();
+            let filtered: Vec<_> = match kinds {
+                Some(filter) => all.into_iter().filter(|e| filter.contains(&e.relation_kind)).collect(),
+                None => all,
+            };
+            Ok(filtered)
+        }
+        fn outgoing_evidence(
+            &self,
+            symbol_id: &SymbolId,
+            kinds: Option<&[InternalRelationKind]>,
+            _limit: usize,
+        ) -> anyhow::Result<Vec<RelationEvidence>> {
+            let all = self.outgoing.borrow().get(symbol_id).cloned().unwrap_or_default();
+            let filtered: Vec<_> = match kinds {
+                Some(filter) => all.into_iter().filter(|e| filter.contains(&e.relation_kind)).collect(),
+                None => all,
+            };
+            Ok(filtered)
+        }
+        fn count_incoming_by_kind(
+            &self,
+            symbol_id: &SymbolId,
+        ) -> anyhow::Result<HashMap<InternalRelationKind, usize>> {
+            Ok(self.inc_counts.borrow().get(symbol_id).cloned().unwrap_or_default())
+        }
+        fn count_outgoing_by_kind(
+            &self,
+            symbol_id: &SymbolId,
+        ) -> anyhow::Result<HashMap<InternalRelationKind, usize>> {
+            Ok(self.out_counts.borrow().get(symbol_id).cloned().unwrap_or_default())
+        }
+    }
+
+    struct MockFileFactsRepo {
+        imports: RefCell<HashMap<FileId, Vec<ImportDef>>>,
+        exports: RefCell<HashMap<FileId, Vec<ExportFact>>>,
+        peers: RefCell<HashMap<FileId, Vec<SymbolDef>>>,
+    }
+
+    impl MockFileFactsRepo {
+        fn new() -> Self {
+            Self {
+                imports: RefCell::new(HashMap::new()),
+                exports: RefCell::new(HashMap::new()),
+                peers: RefCell::new(HashMap::new()),
+            }
+        }
+    }
+
+    impl FileFactsRepository for MockFileFactsRepo {
+        fn get_imports(&self, file_id: &FileId) -> anyhow::Result<Vec<ImportDef>> {
+            Ok(self.imports.borrow().get(file_id).cloned().unwrap_or_default())
+        }
+        fn get_exports(&self, file_id: &FileId) -> anyhow::Result<Vec<ExportFact>> {
+            Ok(self.exports.borrow().get(file_id).cloned().unwrap_or_default())
+        }
+        fn get_peers(
+            &self,
+            file_id: &FileId,
+            exclude_id: &SymbolId,
+            limit: usize,
+        ) -> anyhow::Result<Vec<SymbolDef>> {
+            let all = self.peers.borrow().get(file_id).cloned().unwrap_or_default();
+            let filtered: Vec<_> = all.into_iter().filter(|s| &s.id != exclude_id).take(limit).collect();
+            Ok(filtered)
+        }
+    }
+
+    struct MockSourceRepo {
+        files: RefCell<HashMap<FileId, String>>,
+        /// Tracks how many times load_file was called (reset by clear_cache).
+        read_count: RefCell<usize>,
+    }
+
+    impl MockSourceRepo {
+        fn new() -> Self {
+            Self { files: RefCell::new(HashMap::new()), read_count: RefCell::new(0) }
+        }
+        fn add_file(&self, file_id: FileId, content: &str) {
+            self.files.borrow_mut().insert(file_id, content.to_string());
+        }
+        fn load_content(&self, file_id: &FileId) -> anyhow::Result<String> {
+            *self.read_count.borrow_mut() += 1;
+            self.files
+                .borrow()
+                .get(file_id)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("file not found"))
+        }
+    }
+
+    impl SourceRepository for MockSourceRepo {
+        fn read_range(&self, file_id: &FileId, range: &TextRange) -> anyhow::Result<String> {
+            let content = self.load_content(file_id)?;
+            let start = range.start_byte as usize;
+            let end = range.end_byte as usize;
+            Ok(content.get(start..end).unwrap_or("").to_string())
+        }
+        fn read_lines(&self, file_id: &FileId, start_line: u32, end_line: u32) -> anyhow::Result<String> {
+            let content = self.load_content(file_id)?;
+            let skip = start_line.saturating_sub(1) as usize;
+            let take = end_line.saturating_sub(start_line).saturating_add(1) as usize;
+            let joined = content.lines().skip(skip).take(take).collect::<Vec<_>>().join("\n");
+            Ok(joined)
+        }
+        fn clear_cache(&self) {
+            *self.read_count.borrow_mut() = 0;
+        }
+    }
+
+    // ── builder tests ────────────────────────────────────────────────────
+
+    fn default_request() -> ExploreRequest {
+        ExploreRequest {
+            symbol: "test_func".to_string(),
+            source_mode: SourceMode::Excerpt,
+            source_lines: 40,
+            evidence_limit: 5,
+            relation_limit: 20,
+            peer_limit: 12,
+            include_file_context: true,
+            include_recommendations: true,
+            max_source_bytes: 65536,
+        }
+    }
+
+    #[test]
+    fn build_assembles_valid_dossier() {
+        let file = fid("src/main.ts");
+        let sym = make_symbol("main", "Main.main", sid(&file, "Main.main", "function"), file);
+
+        let sym_repo = MockSymbolRepo::new();
+        sym_repo.add_symbol(sym.clone());
+        sym_repo.add_file(file, "src/main.ts");
+
+        let rel_repo = MockRelationRepo::new();
+        // Prevent "relation count unavailable" warning by seeding a dummy count.
+        let mut counts = HashMap::new();
+        counts.insert(InternalRelationKind::Calls, 0);
+        rel_repo.inc_counts.borrow_mut().insert(sym.id, counts.clone());
+        rel_repo.out_counts.borrow_mut().insert(sym.id, counts);
+
+        let file_repo = MockFileFactsRepo::new();
+
+        let src_repo = MockSourceRepo::new();
+        src_repo.add_file(file, "fn main() {\n    println!(\"hi\");\n}\n");
+
+        let req = default_request();
+
+        let dossier = ExploreDossierBuilder::build(
+            &sym, "src/main.ts",
+            &sym_repo, &rel_repo, &file_repo, &src_repo,
+            &req, "exact".to_string(),
+        ).unwrap();
+
+        // Check subject info
+        assert_eq!(dossier.subject.name, "main");
+        assert_eq!(dossier.subject.qualified_name, "Main.main");
+        assert_eq!(dossier.subject.file, "src/main.ts");
+        assert_eq!(dossier.subject.kind, "function");
+        assert_eq!(dossier.precision_tier, "exact");
+
+        // Source excerpt present (Excerpt mode)
+        assert!(dossier.source_excerpt.is_some());
+
+        // Call evidence exists (empty groups)
+        assert_eq!(dossier.call_evidence.incoming.total, 0);
+        assert_eq!(dossier.call_evidence.outgoing.total, 0);
+
+        // File context present (include_file_context=true)
+        assert!(dossier.file_context.is_some());
+
+        // Recommendations: with no relations, none are expected.
+        assert!(
+            dossier.recommended_next_queries.is_empty(),
+            "expected no recommendations without relations"
+        );
+
+        // No warnings
+        assert!(dossier.warnings.is_empty());
+    }
+
+    #[test]
+    fn build_ambiguous_returns_correct_candidates() {
+        let candidates = vec![
+            SymbolCandidate {
+                qualified_name: "A.foo".to_string(),
+                signature: Some("fn foo()".to_string()),
+                file: "a.ts".to_string(),
+                line: 10,
+                kind: "function".to_string(),
+                language: "typescript".to_string(),
+            },
+            SymbolCandidate {
+                qualified_name: "B.foo".to_string(),
+                signature: None,
+                file: "b.ts".to_string(),
+                line: 20,
+                kind: "method".to_string(),
+                language: "typescript".to_string(),
+            },
+        ];
+
+        let response = ExploreDossierBuilder::build_ambiguous("foo", candidates);
+        assert!(response.ambiguous);
+        assert_eq!(response.query, "foo");
+        assert_eq!(response.candidates.len(), 2);
+        assert_eq!(response.recommended_next_queries.len(), 2);
+
+        // Each recommendation uses atlas_explore with the qualified name.
+        assert_eq!(response.recommended_next_queries[0].tool, "atlas_explore");
+        assert_eq!(
+            response.recommended_next_queries[0].args["symbol"],
+            "A.foo"
+        );
+    }
+
+    #[test]
+    fn source_mode_none_excludes_source_excerpt() {
+        let file = fid("src/a.ts");
+        let sym = make_symbol("a", "A.a", sid(&file, "A.a", "function"), file);
+
+        let sym_repo = MockSymbolRepo::new();
+        sym_repo.add_symbol(sym.clone());
+        sym_repo.add_file(file, "src/a.ts");
+
+        let rel_repo = MockRelationRepo::new();
+        let file_repo = MockFileFactsRepo::new();
+        let src_repo = MockSourceRepo::new();
+
+        let mut req = default_request();
+        req.source_mode = SourceMode::None_;
+
+        let dossier = ExploreDossierBuilder::build(
+            &sym, "src/a.ts",
+            &sym_repo, &rel_repo, &file_repo, &src_repo,
+            &req, "exact".to_string(),
+        ).unwrap();
+
+        assert!(dossier.source_excerpt.is_none());
+    }
+
+    #[test]
+    fn source_mode_full_reads_full_source() {
+        let file = fid("src/full.ts");
+        let sym = make_symbol("f", "F.f", sid(&file, "F.f", "function"), file);
+
+        let sym_repo = MockSymbolRepo::new();
+        sym_repo.add_symbol(sym.clone());
+        sym_repo.add_file(file, "src/full.ts");
+
+        let rel_repo = MockRelationRepo::new();
+        let file_repo = MockFileFactsRepo::new();
+
+        let src_repo = MockSourceRepo::new();
+        src_repo.add_file(file, "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n");
+
+        let mut req = default_request();
+        req.source_mode = SourceMode::Full;
+
+        let dossier = ExploreDossierBuilder::build(
+            &sym, "src/full.ts",
+            &sym_repo, &rel_repo, &file_repo, &src_repo,
+            &req, "exact".to_string(),
+        ).unwrap();
+
+        let excerpt = dossier.source_excerpt.unwrap();
+        assert_eq!(excerpt.mode, SourceMode::Full);
+        assert!(!excerpt.truncated);
+        // Full mode reads all lines in the symbol range (0-based: 0..10, 1-based: 1..10)
+        assert_eq!(excerpt.start_line, 1);
+        assert_eq!(excerpt.end_line, 10);
+    }
+
+    #[test]
+    fn call_evidence_populated_from_relations() {
+        let file = fid("src/call.ts");
+        let sym_id = sid(&file, "Sub.f", "function");
+        let sym = make_symbol("f", "Sub.f", sym_id, file);
+
+        let caller_file = fid("src/caller.ts");
+        let caller_id = sid(&caller_file, "Caller.g", "function");
+        let caller_sym = make_symbol("g", "Caller.g", caller_id, caller_file);
+
+        let callee_file = fid("src/callee.ts");
+        let callee_id = sid(&callee_file, "Callee.h", "function");
+        let callee_sym = make_symbol("h", "Callee.h", callee_id, callee_file);
+
+        // ── Symbol repo ────────────────────────────────────────────────
+        let sym_repo = MockSymbolRepo::new();
+        sym_repo.add_symbol(sym.clone());
+        sym_repo.add_symbol(caller_sym);
+        sym_repo.add_symbol(callee_sym);
+        sym_repo.add_file(file, "src/call.ts");
+        sym_repo.add_file(caller_file, "src/caller.ts");
+        sym_repo.add_file(callee_file, "src/callee.ts");
+
+        // ── Relation repo ──────────────────────────────────────────────
+        let rel_repo = MockRelationRepo::new();
+
+        // Incoming call: Caller.g → Sub.f
+        rel_repo.incoming.borrow_mut().insert(
+            sym_id,
+            vec![RelationEvidence {
+                source_id: caller_id,
+                target_id: sym_id,
+                relation_kind: InternalRelationKind::Calls,
+                file_id: caller_file,
+                range: tr(10, 14, 3, 3),
+                confidence: Confidence::new(0.95),
+            }],
+        );
+
+        // Outgoing call: Sub.f → Callee.h
+        rel_repo.outgoing.borrow_mut().insert(
+            sym_id,
+            vec![RelationEvidence {
+                source_id: sym_id,
+                target_id: callee_id,
+                relation_kind: InternalRelationKind::Calls,
+                file_id: file,
+                range: tr(20, 25, 5, 5),
+                confidence: Confidence::new(0.80),
+            }],
+        );
+
+        // Counts
+        let mut inc_map = HashMap::new();
+        inc_map.insert(InternalRelationKind::Calls, 1);
+        rel_repo.inc_counts.borrow_mut().insert(sym_id, inc_map);
+
+        let mut out_map = HashMap::new();
+        out_map.insert(InternalRelationKind::Calls, 1);
+        rel_repo.out_counts.borrow_mut().insert(sym_id, out_map);
+
+        let file_repo = MockFileFactsRepo::new();
+        let src_repo = MockSourceRepo::new();
+        src_repo.add_file(caller_file, "fn g() { f(); }\n");
+        src_repo.add_file(file, "fn f() { h(); }\n");
+
+        let req = default_request();
+
+        let dossier = ExploreDossierBuilder::build(
+            &sym, "src/call.ts",
+            &sym_repo, &rel_repo, &file_repo, &src_repo,
+            &req, "exact".to_string(),
+        ).unwrap();
+
+        assert_eq!(dossier.call_evidence.incoming.total, 1);
+        assert_eq!(dossier.call_evidence.incoming.examples.len(), 1);
+        assert_eq!(dossier.call_evidence.incoming.examples[0].symbol.name, "g");
+        assert_eq!(dossier.call_evidence.incoming.examples[0].edge_kind, "calls");
+        assert_eq!(dossier.call_evidence.incoming.examples[0].confidence, "exact");
+
+        assert_eq!(dossier.call_evidence.outgoing.total, 1);
+        assert_eq!(dossier.call_evidence.outgoing.examples.len(), 1);
+        assert_eq!(dossier.call_evidence.outgoing.examples[0].symbol.name, "h");
+    }
+
+    #[test]
+    fn warnings_added_when_relation_queries_fail() {
+        let file = fid("src/err.ts");
+        let sym = make_symbol("e", "E.e", sid(&file, "E.e", "function"), file);
+
+        let sym_repo = MockSymbolRepo::new();
+        sym_repo.add_symbol(sym.clone());
+        sym_repo.add_file(file, "src/err.ts");
+
+        // RelationRepo that returns Err — not possible with our mock as-is, but we can simulate
+        // by having count_incoming_by_kind return empty maps — that adds a warning.
+        let rel_repo = MockRelationRepo::new();
+
+        let file_repo = MockFileFactsRepo::new();
+        let src_repo = MockSourceRepo::new();
+
+        let req = default_request();
+
+        let dossier = ExploreDossierBuilder::build(
+            &sym, "src/err.ts",
+            &sym_repo, &rel_repo, &file_repo, &src_repo,
+            &req, "exact".to_string(),
+        ).unwrap();
+
+        // Empty relation counts → warning added
+        assert!(
+            dossier.warnings.iter().any(|w| w.contains("Relation count data unavailable")),
+            "expected relation count warning, got: {:?}", dossier.warnings
+        );
+    }
+
+    #[test]
+    fn file_context_excluded_when_flag_false() {
+        let file = fid("src/noctx.ts");
+        let sym = make_symbol("nc", "NC.nc", sid(&file, "NC.nc", "function"), file);
+
+        let sym_repo = MockSymbolRepo::new();
+        sym_repo.add_symbol(sym.clone());
+        sym_repo.add_file(file, "src/noctx.ts");
+
+        let rel_repo = MockRelationRepo::new();
+        let file_repo = MockFileFactsRepo::new();
+        let src_repo = MockSourceRepo::new();
+
+        let mut req = default_request();
+        req.include_file_context = false;
+
+        let dossier = ExploreDossierBuilder::build(
+            &sym, "src/noctx.ts",
+            &sym_repo, &rel_repo, &file_repo, &src_repo,
+            &req, "exact".to_string(),
+        ).unwrap();
+
+        assert!(dossier.file_context.is_none());
+    }
+
+    #[test]
+    fn recommendations_generated_based_on_relation_counts() {
+        let file = fid("src/rec.ts");
+        let sym_id = sid(&file, "R.r", "function");
+        let sym = make_symbol("r", "R.r", sym_id, file);
+
+        let sym_repo = MockSymbolRepo::new();
+        sym_repo.add_symbol(sym.clone());
+        sym_repo.add_file(file, "src/rec.ts");
+
+        let rel_repo = MockRelationRepo::new();
+        let mut inc = HashMap::new();
+        inc.insert(InternalRelationKind::Calls, 2);
+        inc.insert(InternalRelationKind::References, 1);
+        rel_repo.inc_counts.borrow_mut().insert(sym_id, inc);
+
+        let mut out = HashMap::new();
+        out.insert(InternalRelationKind::Calls, 3);
+        rel_repo.out_counts.borrow_mut().insert(sym_id, out);
+
+        let file_repo = MockFileFactsRepo::new();
+        let src_repo = MockSourceRepo::new();
+
+        let req = default_request();
+
+        let dossier = ExploreDossierBuilder::build(
+            &sym, "src/rec.ts",
+            &sym_repo, &rel_repo, &file_repo, &src_repo,
+            &req, "exact".to_string(),
+        ).unwrap();
+
+        // Has both incoming and outgoing calls → should generate "both" direction
+        let has_both = dossier.recommended_next_queries.iter().any(|r| {
+            r.tool == "atlas_calls" && r.args["direction"] == "both"
+        });
+        assert!(has_both, "expected 'both' direction recommendation");
+    }
+
+    #[test]
+    fn source_excerpt_truncated_by_max_source_bytes() {
+        let file = fid("src/big.ts");
+        let sym = make_symbol("big", "B.big", sid(&file, "B.big", "function"), file);
+
+        let sym_repo = MockSymbolRepo::new();
+        sym_repo.add_symbol(sym.clone());
+        sym_repo.add_file(file, "src/big.ts");
+
+        let rel_repo = MockRelationRepo::new();
+        let file_repo = MockFileFactsRepo::new();
+
+        // Create content larger than max_source_bytes
+        let huge = "x".repeat(200);
+        let src_repo = MockSourceRepo::new();
+        src_repo.add_file(file, &huge);
+
+        let mut req = default_request();
+        req.max_source_bytes = 100;
+        req.source_mode = SourceMode::Full;
+
+        let dossier = ExploreDossierBuilder::build(
+            &sym, "src/big.ts",
+            &sym_repo, &rel_repo, &file_repo, &src_repo,
+            &req, "exact".to_string(),
+        ).unwrap();
+
+        let excerpt = dossier.source_excerpt.unwrap();
+        assert!(excerpt.truncated);
+        assert!(excerpt.text.len() <= 100);
+        assert!(
+            dossier.warnings.iter().any(|w| w.contains("truncated")),
+            "expected truncation warning"
+        );
+    }
 }

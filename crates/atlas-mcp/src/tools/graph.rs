@@ -1186,7 +1186,7 @@ impl ToolRouter {
         );
 
         let sym_repo = atlas_engine::dossier::SymbolRepo::new(self.store());
-        let mut source_repo = atlas_engine::dossier::SourceRepo::new(
+        let source_repo = atlas_engine::dossier::SourceRepo::new(
             self.store(),
             self.project_root.clone(),
         );
@@ -1217,7 +1217,7 @@ impl ToolRouter {
             &sym_repo,
             &relation_repo,
             &file_repo,
-            &mut source_repo,
+            &source_repo,
             &request,
             tier_str,
         ) {

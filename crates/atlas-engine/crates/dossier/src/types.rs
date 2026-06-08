@@ -459,7 +459,7 @@ fn default_max_source_bytes() -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InternalRelationKind {
     Calls,
-    ReferencesType,
+    References,
     Implements,
     Extends,
     Instantiates,
@@ -479,7 +479,7 @@ impl InternalRelationKind {
         use types::enums::EdgeKind;
         Some(match ek {
             EdgeKind::Calls => Self::Calls,
-            EdgeKind::References => Self::ReferencesType,
+            EdgeKind::References => Self::References,
             EdgeKind::Implements => Self::Implements,
             EdgeKind::Extends => Self::Extends,
             EdgeKind::Instantiates => Self::Instantiates,

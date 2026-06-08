@@ -545,6 +545,7 @@ dependencies = [
  "graph",
  "serde",
  "serde_json",
+ "tempfile",
  "types",
 ]
 

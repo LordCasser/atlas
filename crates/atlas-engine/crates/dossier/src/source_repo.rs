@@ -102,7 +102,141 @@ impl SourceRepository for SourceRepo {
         Ok(joined)
     }
 
-    fn clear_cache(&mut self) {
+    fn clear_cache(&self) {
         self.cache.borrow_mut().clear();
+    }
+}
+
+// ── tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use types::{FileId, FileInfo, Language, ParseStatus, TextRange};
+
+    /// Create an in-memory Store with schema initialized.
+    fn make_store() -> Arc<Store> {
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        Arc::new(store)
+    }
+
+    /// Insert a FileInfo into the store.
+    fn seed_file(store: &Store, file_id: FileId, path: &str) {
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: path.to_string(),
+                language: Language::TypeScript,
+                content_hash: "abc".to_string(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn read_lines_reads_correct_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.ts");
+        std::fs::write(&file_path, "line1\nline2\nline3\nline4\nline5\n").unwrap();
+
+        let store = make_store();
+        let file_id = FileId::generate("test.ts");
+        seed_file(&store, file_id, "test.ts");
+
+        let repo = SourceRepo::new(store, dir.path().to_path_buf());
+        let lines = repo.read_lines(&file_id, 2, 4).unwrap();
+        assert_eq!(lines, "line2\nline3\nline4");
+    }
+
+    #[test]
+    fn read_range_reads_correct_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "fn hello() {\n    println!(\"hi\");\n}\n";
+        let file_path = dir.path().join("main.rs");
+        std::fs::write(&file_path, content).unwrap();
+
+        let store = make_store();
+        let file_id = FileId::generate("main.rs");
+        seed_file(&store, file_id, "main.rs");
+
+        let repo = SourceRepo::new(store, dir.path().to_path_buf());
+        let range = TextRange {
+            start_byte: 3,
+            end_byte: 8,
+            ..Default::default()
+        };
+        let snippet = repo.read_range(&file_id, &range).unwrap();
+        assert_eq!(snippet, "hello");
+    }
+
+    #[test]
+    fn caching_two_reads_only_hit_disk_once() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "cached\n").unwrap();
+
+        let store = make_store();
+        let file_id = FileId::generate("f.txt");
+        seed_file(&store, file_id, "f.txt");
+
+        let repo = SourceRepo::new(store, dir.path().to_path_buf());
+
+        // First read — loaded from disk.
+        let r1 = repo.read_lines(&file_id, 1, 1).unwrap();
+        assert_eq!(r1, "cached");
+
+        // Modify the file on disk.
+        std::fs::write(dir.path().join("f.txt"), "modified\n").unwrap();
+
+        // Second read — still cached, returns original content.
+        let r2 = repo.read_lines(&file_id, 1, 1).unwrap();
+        assert_eq!(r2, "cached");
+    }
+
+    #[test]
+    fn path_traversal_outside_project_root_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create a file in the *parent* of the tempdir so that `../secret.txt`
+        // relative to `dir` can canonicalize to an existing file outside.
+        let parent = dir.path().parent().unwrap().to_path_buf();
+        std::fs::write(parent.join("secret.txt"), "secret\n").unwrap();
+
+        let store = make_store();
+        let file_id = FileId::generate("../secret.txt");
+        seed_file(&store, file_id, "../secret.txt");
+
+        let repo = SourceRepo::new(store, dir.path().to_path_buf());
+        let result = repo.read_lines(&file_id, 1, 1);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("outside project root"),
+            "expected path-traversal rejection, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn clear_cache_flushes_and_subsequent_read_reloads() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("g.txt"), "v1\n").unwrap();
+
+        let store = make_store();
+        let file_id = FileId::generate("g.txt");
+        seed_file(&store, file_id, "g.txt");
+
+        let repo = SourceRepo::new(store, dir.path().to_path_buf());
+
+        // Prime cache.
+        let r1 = repo.read_lines(&file_id, 1, 1).unwrap();
+        assert_eq!(r1, "v1");
+
+        // Clear cache and modify file.
+        repo.clear_cache();
+        std::fs::write(dir.path().join("g.txt"), "v2\n").unwrap();
+
+        // Re-read — must see new content.
+        let r2 = repo.read_lines(&file_id, 1, 1).unwrap();
+        assert_eq!(r2, "v2");
     }
 }

@@ -143,5 +143,5 @@ pub trait SourceRepository {
     /// Release per-request cache.
     ///
     /// Called after dossier build completes to free memory.
-    fn clear_cache(&mut self);
+    fn clear_cache(&self);
 }
