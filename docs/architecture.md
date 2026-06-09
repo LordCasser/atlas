@@ -89,6 +89,24 @@ CfgNodeId    = blake3(function_id + kind + start_byte)
 - 不得用 line number 作为稳定 ID 核心。
 - ID 类型必须分层，不能用 `SymbolId::default()` 伪装 dataflow node。
 
+### 3.1 SymbolId 内外分界
+
+`SymbolId` 是引擎内部确定性标识符（Blake3 hash），**不暴露给 MCP 外部契约**。外部所有
+需要符号引用的接口（MCP 工具参数、查询结果、候选消歧列表）统一使用 `SymbolSelector`：
+
+```json
+{
+  "qualified_name": "atlas_engine::Engine",
+  "file_path": "src/lib.rs",
+  "line": 42,
+  "kind": "function",
+  "language": "rust"
+}
+```
+
+`SymbolSelector` 的字段按计分优先级排序（qualified_name > file_path > line > kind > language），
+错误字段不会阻塞正确匹配——只影响候选排序。详见第 10.6 节。
+
 ## 4. 抽取约束
 
 ```text
@@ -594,6 +612,63 @@ v1.4.1 之后的清理目标不是单纯减少行数，而是把重复实现压�
 - **public facade 改造必须保留调用者 ergonomics**：`atlas-engine` stable re-export 是外部契约。用 trait 替代 type alias、闭包或函数指针时，必须提供 blanket impl、兼容 wrapper 或迁移期 API，确保旧的自然调用方式不会无意中失效。`Internal / Prelude` re-export 可以服务 workspace 内部，但不得被文档描述为稳定外部 API。
 - **测试支撑 API 不等同于死代码**：仅测试使用的构造器或 provider 注入点必须通过 `pub(crate)`、`#[cfg(test)]` 或注释明确用途；不能因为生产路径零调用就删除，也不能用无理由的 `#[allow(dead_code)]` 掩盖。
 - **policy module 可以优先于 policy struct**：当规则只是一组纯函数和一个 guard（例如 index precision downgrade）时，保持自由函数模块更清晰。只有当对象需要携带跨入口生命周期、统一日志/遥测、或多条规则共同依赖的状态时，才引入 `Policy` struct。
+
+### 10.6 Symbol Selector 解析引擎
+
+**位置**：`crates/atlas-engine/src/symbol_selector.rs` — engine 层模块，CLI/TUI/MCP 均可复用。MCP 通过 `crates/atlas-mcp/src/tools/symbol_selector.rs`（39 行薄封装）委托调用。
+
+**核心类型**：
+
+| 类型 | 职责 |
+|------|------|
+| `SymbolSelector` | 结构化符号选择器，qualified_name 必填，其余可选 |
+| `SymbolInput` | `Name(String)` 或 `Selector(SymbolSelector)` 的并集 |
+| `SymbolResolution` | 解析结果：`Single` / `Ambiguous` / `NotFound` |
+| `SymbolResolutionPolicy` | 歧义处理策略：`UniqueOrCandidates` / `Aggregate` / `BestEffortSingle` |
+| `ResolvedSymbol` | 实际命中符号，**始终返回 DB 真实值**，不透过用户输入 |
+| `ScoredCandidate` | 带分数的候选，含 `symbol_ref` 可跨工具复用 |
+
+**容错计分优先级瀑布**：
+
+计分优先级（硬编码常量，不可调参）：
+
+| 优先级 | 字段 | 精确得分 | 模糊得分 | 说明 |
+|--------|------|---------|---------|------|
+| P1 | qualified_name | +10,000 | — | 必填，所有候选基础分 |
+| P2 | file_path | +3,000 (exact) | +2,000 (suffix) / +1,200 (basename) / ≤1,000 (fuzzy) | 后缀/段重叠匹配，不使用编辑距离 |
+| P3 | line | +1,200 (delta=0) | +800 (≤2) / +500 (≤10) / +200 (≤50) | 容错排序，**不使用负分** |
+| P4 | kind | +200 | 0 | 弱 tiebreaker |
+| P5 | language | +100 | 0 | 最弱信号 |
+
+**核心不变式**：
+
+- **不惩罚错误**：所有计分均为正向加成。`file_path` 写错、`line` 错位不会降低正确候选的排名——只是不会加分。
+- **唯一性阈值**：`UniqueOrCandidates` 策略要求第 1 名与第 2 名分差 ≥ 400（等于 `SCORE_LINE_EXACT - SCORE_LINE_STRONG`）才接受为 `Single`。`kind`（200）和 `language`（100）单独不能强制唯一选择。
+- **始终返回实际值**：`ResolvedSymbol.file_path` 和 `ResolvedSymbol.line` 来自 DB 事实，不是用户输入。当用户提供的 `file_path`/`line` 与实际不符时，记录在 `match_info.ignored_mismatches` 中而不是修改输出。
+- **聚合上限**：`MAX_AGGREGATION_CANDIDATES = 50`。超出时返回 `partial_selector: true`，要求用户细化选择器。
+- **SymbolId 内部性**：解析器输出 `SymbolId` 供内部使用，但外部 JSON 响应中不出现 hex SymbolId。`ScoredCandidate.symbol_ref` 是自包含的 `SymbolSelector`，可直接作为下一个查询的输入。
+
+**解析策略**：
+
+| 策略 | 多候选行为 | 使用工具 |
+|------|-----------|---------|
+| `UniqueOrCandidates` | 分差 ≥ 400 → `Single`；< 400 → `Ambiguous` 返回候选列表 | `symbol detail`, `explore`, `context` |
+| `Aggregate` | 始终返回所有候选，图工具以所有候选为 roots 做并集去重 | `calls`, `impact`, `path` |
+| `BestEffortSingle` | 始终选最佳，分差 < 400 时标记 `BestEffort` 模式 | `trace`, `usages` |
+
+**API 入口**：
+
+```rust
+pub fn resolve_symbol_input(
+    store: &Store,
+    input: &SymbolInput,
+    policy: SymbolResolutionPolicy,
+) -> Result<SymbolResolution, String>
+```
+
+**路径校验安全说明**：
+
+`normalize_and_validate_path` 拒绝 `..` 逃逸路径和绝对路径，在计分前返回参数错误。
 
 ## 11. Search、Context、MCP、CLI
 
