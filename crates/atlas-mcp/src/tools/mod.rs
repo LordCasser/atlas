@@ -1398,6 +1398,32 @@ pub fn make_all_tools() -> Vec<Tool> {
     tools
 }
 
+/// Merge edge-based file references into a dependents/dependencies JSON value.
+fn merge_edge_deps(
+    value: &mut serde_json::Value,
+    edge_deps: &serde_json::Value,
+    list_field: &str,
+    total_field: &str,
+) {
+    if let Some(arr) = edge_deps.as_array() {
+        if arr.is_empty() {
+            return;
+        }
+        if let Some(deps) = value.get_mut(list_field) {
+            if let Some(existing) = deps.as_array_mut() {
+                for dep in arr {
+                    existing.push(dep.clone());
+                }
+            }
+        }
+        if let Some(total) = value.get_mut(total_field) {
+            if let Some(n) = total.as_u64() {
+                *total = serde_json::json!(n + arr.len() as u64);
+            }
+        }
+    }
+}
+
 // ===================================================================
 // Facade handlers — dispatch merged tools to legacy handlers
 // ===================================================================
@@ -1738,22 +1764,7 @@ impl ToolRouter {
                 );
                 let mut value =
                     serde_json::from_str::<Value>(&out_str).unwrap_or_else(|_| json!({}));
-                if let Some(arr) = edge_deps.as_array() {
-                    if !arr.is_empty() {
-                        if let Some(deps) = value.get_mut("dependents") {
-                            if let Some(existing) = deps.as_array_mut() {
-                                for dep in arr {
-                                    existing.push(dep.clone());
-                                }
-                            }
-                        }
-                        if let Some(total) = value.get_mut("total_dependents") {
-                            if let Some(n) = total.as_u64() {
-                                *total = json!(n + arr.len() as u64);
-                            }
-                        }
-                    }
-                }
+                merge_edge_deps(&mut value, &edge_deps, "dependents", "total_dependents");
                 let resp = add_analysis_contract_manifest(
                     serde_json::to_string_pretty(&value).unwrap_or_default(),
                 );
@@ -1778,22 +1789,7 @@ impl ToolRouter {
                 );
                 let mut value =
                     serde_json::from_str::<Value>(&out_str).unwrap_or_else(|_| json!({}));
-                if let Some(arr) = edge_deps.as_array() {
-                    if !arr.is_empty() {
-                        if let Some(deps) = value.get_mut("dependencies") {
-                            if let Some(existing) = deps.as_array_mut() {
-                                for dep in arr {
-                                    existing.push(dep.clone());
-                                }
-                            }
-                        }
-                        if let Some(total) = value.get_mut("total_dependencies") {
-                            if let Some(n) = total.as_u64() {
-                                *total = json!(n + arr.len() as u64);
-                            }
-                        }
-                    }
-                }
+                merge_edge_deps(&mut value, &edge_deps, "dependencies", "total_dependencies");
                 let resp = add_analysis_contract_manifest(
                     serde_json::to_string_pretty(&value).unwrap_or_default(),
                 );
@@ -1813,11 +1809,14 @@ impl ToolRouter {
                 let edge_out = self.manifest_edge_dependencies(&file_id, limit);
                 let edge_in = self.manifest_edge_dependents(&file_id, limit);
 
+                let mut outgoing = serde_json::from_str::<Value>(&out_str).unwrap_or_default();
+                let mut incoming = serde_json::from_str::<Value>(&in_str).unwrap_or_default();
+                merge_edge_deps(&mut outgoing, &edge_out, "dependencies", "total_dependencies");
+                merge_edge_deps(&mut incoming, &edge_in, "dependents", "total_dependents");
+
                 let result = json!({
-                    "outgoing": serde_json::from_str::<Value>(&out_str).unwrap_or_default(),
-                    "incoming": serde_json::from_str::<Value>(&in_str).unwrap_or_default(),
-                    "edge_dependencies": edge_out,
-                    "edge_dependents": edge_in,
+                    "outgoing": outgoing,
+                    "incoming": incoming,
                     "analysis_contract": {
                         "coverage": "full",
                         "reason": Value::Null,
@@ -3676,5 +3675,47 @@ mod tests {
             .collect();
         assert_eq!(matches.len(), 1, "only 'right' should match column 30");
         assert_eq!(matches[0].name, "right");
+    }
+
+    // ── merge_edge_deps tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_merge_edge_deps_empty() {
+        let mut value = serde_json::json!({"dependents": []});
+        let edge_deps = serde_json::json!([]);
+        merge_edge_deps(&mut value, &edge_deps, "dependents", "total_dependents");
+        assert_eq!(value["dependents"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_merge_edge_deps_into_existing() {
+        let mut value = serde_json::json!({
+            "dependents": [{"file": "a.ts"}],
+            "total_dependents": 1,
+        });
+        let edge_deps = serde_json::json!([
+            {"file": "b.ts"},
+            {"file": "c.ts"},
+        ]);
+        merge_edge_deps(&mut value, &edge_deps, "dependents", "total_dependents");
+        assert_eq!(value["dependents"].as_array().unwrap().len(), 3);
+        assert_eq!(value["total_dependents"].as_u64().unwrap(), 3);
+    }
+
+    #[test]
+    fn test_merge_edge_deps_into_empty() {
+        let mut value = serde_json::json!({"dependents": []});
+        let edge_deps = serde_json::json!([{"file": "b.ts"}]);
+        merge_edge_deps(&mut value, &edge_deps, "dependents", "total_dependents");
+        assert_eq!(value["dependents"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_merge_edge_deps_no_list_field() {
+        let mut value = serde_json::json!({"other": 1});
+        let edge_deps = serde_json::json!([{"file": "b.ts"}]);
+        // Should not panic — gracefully skip
+        merge_edge_deps(&mut value, &edge_deps, "dependents", "total_dependents");
+        assert_eq!(value["other"].as_u64().unwrap(), 1);
     }
 }

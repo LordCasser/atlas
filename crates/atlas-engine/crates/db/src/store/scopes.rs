@@ -1,5 +1,7 @@
 //! Scopes and imports: insert + query by file.
 
+use std::collections::HashSet;
+
 use rusqlite::params;
 use types::*;
 
@@ -107,18 +109,19 @@ impl Store {
     /// This is a best-effort O(N) scan over all imports; for large projects
     /// consider building an in-memory dependency index.
     ///
-    /// # C/C++ `#include` resolution
+    /// # Resolution strategies
     ///
-    /// For languages where imports use bare filenames (e.g., `#include "helper.h"`),
-    /// the standard path-substring LIKE query fails because the `module` column
-    /// stores just `helper.h` rather than the full path `src/helper.h`.  This
-    /// method includes a C/C++ include resolution pass that:
+    /// **Path A** – LIKE substring match on `module`.  Works when the stored
+    /// module string already contains the target path as a substring (e.g.
+    /// TypeScript imports with full paths, or npm-like package names).
     ///
-    /// 1. Extracts the target file's basename and matches it against import modules.
-    /// 2. Resolves relative includes by combining the importing file's directory
-    ///    with the include path.
+    /// **Path B** – Relative import resolution.  Handles languages where
+    /// imports use bare filenames (`#include "helper.h"`), directory-relative
+    /// paths (`./utils` → `src/utils`), or paths missing file extensions.
+    /// This path covers both C/C++ `#include` directives and TypeScript /
+    /// JavaScript / Python `import` statements.
     ///
-    /// Both results are merged and returned.
+    /// Both paths contribute candidates, and duplicates are removed.
     pub fn find_dependents_by_file(
         &self,
         file_id: &FileId,
@@ -132,10 +135,19 @@ impl Store {
             |row| row.get(0),
         )?;
 
+        // Dedup accumulator – both Path A and Path B contribute candidates.
+        let mut seen: HashSet<(String, String)> = HashSet::new();
+        let mut results: Vec<(String, String)> = Vec::new();
+        let mut insert = |importing_path: String, module: String| {
+            if seen.insert((importing_path.clone(), module.clone())) {
+                results.push((importing_path, module));
+            }
+        };
+
         // ── Path A: Standard path-substring LIKE query ──────────────────
         // Works for TypeScript, Python, Java etc. where module stores
         // relative paths like "./foo/bar" or "react".
-        let mut results: Vec<(String, String)> = {
+        {
             let mut stmt = conn.prepare(
                 "SELECT f.path, i.module
                  FROM imports i
@@ -144,51 +156,50 @@ impl Store {
                  ORDER BY f.path",
             )?;
             let pattern = format!("%{target_path}%");
-            stmt.query_map(params![pattern], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .filter_map(|r| match r {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    tracing::warn!(
-                        ?e,
-                        "Dependent import row decode error (LIKE path), skipping"
-                    );
-                    None
-                }
-            })
-            .collect()
-        };
-
-        if !results.is_empty() {
-            return Ok(results);
+            let rows: Vec<(String, String)> = stmt
+                .query_map(params![pattern], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| match r {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        tracing::warn!(
+                            ?e,
+                            "Dependent import row decode error (LIKE path), skipping"
+                        );
+                        None
+                    }
+                })
+                .collect();
+            for (path, module) in rows {
+                insert(path, module);
+            }
         }
 
-        // ── Path B: C/C++ include resolution ────────────────────────────
-        // Extract the target file's basename for bare-filename matching.
+        // ── Path B: Relative import resolution ──────────────────────────
+        // Handles both C/C++ includes AND TS/JS/Python relative imports.
+        // Now covers all relative imports (is_relative=1), not just includes.
         let target_basename = if let Some(pos) = target_path.rfind('/') {
             &target_path[pos + 1..]
         } else {
             &target_path
         };
 
-        // Collect include imports that might reference this file.
-        // We need both bare-filename matches and relative-path matches.
         {
             let mut stmt = conn.prepare(
-                "SELECT f.file_id, f.path, i.module
+                "SELECT f.file_id, f.path, i.module, i.kind
                  FROM imports i
                  JOIN files f ON f.file_id = i.file_id
-                 WHERE i.kind = 'include'
-                   AND i.is_relative = 1
+                 WHERE i.is_relative = 1
                  ORDER BY f.path",
             )?;
-            let candidate_rows: Vec<(FileId, String, String)> = stmt
+            let candidate_rows: Vec<(FileId, String, String, String)> = stmt
                 .query_map([], |row| {
                     Ok((
                         row.get::<_, FileId>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
                     ))
                 })?
                 .filter_map(|r| match r {
@@ -200,25 +211,253 @@ impl Store {
                 })
                 .collect();
 
-            for (_importing_fid, importing_path, module) in candidate_rows {
+            for (_importing_fid, importing_path, module, kind) in candidate_rows {
                 // Strategy 1: Bare basename match — `helper.h` == `helper.h`
                 if module == target_basename {
-                    results.push((importing_path, module));
+                    insert(importing_path, module);
                     continue;
                 }
 
-                // Strategy 2: Relative include path resolved against importing
+                // Strategy 2: Relative path resolved against importing
                 // file's directory.  e.g., importing `src/main.c` with
                 // `#include "helper.h"` → check `src/helper.h`.
+                // Path normalization handles "." and ".." components in
+                // TS/JS specifiers like `./utils` or `../foo/bar`.
                 if let Some(parent_dir) = std::path::Path::new(&importing_path).parent() {
-                    let resolved = parent_dir.join(&module);
-                    if resolved.to_string_lossy() == target_path {
-                        results.push((importing_path, module));
+                    let raw = parent_dir.join(&module);
+                    // Manually normalize: pop on ParentDir, skip CurDir.
+                    let mut resolved = std::path::PathBuf::new();
+                    for c in raw.components() {
+                        match c {
+                            std::path::Component::ParentDir => {
+                                resolved.pop();
+                            }
+                            std::path::Component::CurDir => {}
+                            other => {
+                                resolved.push(other.as_os_str());
+                            }
+                        }
+                    }
+                    let resolved_str = resolved.to_string_lossy();
+                    if resolved_str == target_path {
+                        insert(importing_path, module);
+                        continue;
+                    }
+
+                    // Strategy 3 (non-include kinds only): Extension and
+                    // index resolution.  TS/JS imports like `./utils` may
+                    // resolve to `./utils/index.ts` or `./utils.ts`.
+                    if kind != "include" {
+                        // Try appending extensions
+                        for ext in [".ts", ".tsx", ".js", ".jsx", ".py"] {
+                            let with_ext = format!("{resolved_str}{ext}");
+                            if with_ext == target_path {
+                                insert(importing_path.clone(), module.clone());
+                                break;
+                            }
+                        }
+                        // If no extension match, try index variants
+                        for idx_ext in
+                            ["index.ts", "index.tsx", "index.js", "index.jsx"]
+                        {
+                            let with_index = resolved.join(idx_ext);
+                            if with_index.to_string_lossy() == target_path {
+                                insert(importing_path.clone(), module.clone());
+                                break;
+                            }
+                        }
                     }
                 }
             }
         }
 
         Ok(results)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to create a fresh in-memory store with schema initialized.
+    fn test_store() -> Store {
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        store
+    }
+
+    /// Insert a file row so FK constraints are satisfied.
+    fn insert_test_file(store: &Store, path: &str) -> FileId {
+        let fid = FileId::generate(path);
+        store
+            .upsert_file(&FileInfo {
+                file_id: fid,
+                path: path.to_string(),
+                language: Language::TypeScript,
+                content_hash: "test".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        fid
+    }
+
+    /// Insert a file with a specific language.
+    fn insert_test_file_lang(store: &Store, path: &str, lang: Language) -> FileId {
+        let fid = FileId::generate(path);
+        store
+            .upsert_file(&FileInfo {
+                file_id: fid,
+                path: path.to_string(),
+                language: lang,
+                content_hash: "test".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        fid
+    }
+
+    /// Build an ImportDef with minimal fields for dependency tests.
+    fn make_import(
+        file_id: &FileId,
+        kind: ImportKind,
+        module: &str,
+        is_relative: bool,
+    ) -> ImportDef {
+        ImportDef {
+            id: ImportId::generate(
+                file_id,
+                kind.as_str(),
+                module,
+                None,
+                0,
+            ),
+            file_id: *file_id,
+            kind,
+            module: module.to_string(),
+            imported_name: String::new(),
+            local_name: None,
+            is_wildcard: false,
+            is_relative,
+            range: TextRange::default(),
+            alias: None,
+        }
+    }
+
+    // ── Tests ────────────────────────────────────────────────────────────
+
+    /// Path A (LIKE) finds dependents when the module string contains
+    /// the target file path as a substring.
+    #[test]
+    fn test_find_dependents_like_match() {
+        let store = test_store();
+
+        let target_fid = insert_test_file(&store, "src/github/index.ts");
+        let a_fid = insert_test_file(&store, "src/a.ts");
+        let b_fid = insert_test_file(&store, "src/b.ts");
+
+        // These module strings contain "src/github/index.ts" as a substring.
+        store
+            .insert_imports(&[
+                make_import(&a_fid, ImportKind::Import, "src/github/index.ts", false),
+                make_import(&b_fid, ImportKind::Import, "../src/github/index.ts", true),
+            ])
+            .unwrap();
+
+        let deps = store
+            .find_dependents_by_file(&target_fid)
+            .unwrap();
+
+        let paths: Vec<&str> = deps.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(deps.len(), 2);
+        assert!(paths.contains(&"src/a.ts"));
+        assert!(paths.contains(&"src/b.ts"));
+    }
+
+    /// Path B resolves TS/JS relative imports using extension/index fallback.
+    #[test]
+    fn test_find_dependents_relative_import() {
+        let store = test_store();
+
+        let target_fid = insert_test_file(&store, "src/utils/index.ts");
+        let a_fid = insert_test_file(&store, "src/a.ts");
+        let b_fid = insert_test_file(&store, "src/subdir/b.ts");
+
+        // "./utils" resolves to "src/utils" → index fallback → "src/utils/index.ts"
+        // "../utils" resolves to "src/utils" (normalized) → index → "src/utils/index.ts"
+        store
+            .insert_imports(&[
+                make_import(&a_fid, ImportKind::Import, "./utils", true),
+                make_import(&b_fid, ImportKind::Import, "../utils", true),
+            ])
+            .unwrap();
+
+        let deps = store
+            .find_dependents_by_file(&target_fid)
+            .unwrap();
+
+        let paths: Vec<&str> = deps.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(deps.len(), 2, "expected 2 dependents, got {deps:?}");
+        assert!(paths.contains(&"src/a.ts"));
+        assert!(paths.contains(&"src/subdir/b.ts"));
+    }
+
+    /// Dedup prevents the same (path, module) pair from appearing twice
+    /// when matched by both Path A and Path B.
+    #[test]
+    fn test_find_dependents_no_duplicates() {
+        let store = test_store();
+
+        let target_fid = insert_test_file(&store, "helpers.ts");
+        let a_fid = insert_test_file(&store, "app.ts");
+
+        // "helpers.ts" is matched by Path A (LIKE) AND Path B (bare basename).
+        store
+            .insert_imports(&[
+                make_import(&a_fid, ImportKind::Import, "helpers.ts", true),
+            ])
+            .unwrap();
+
+        let deps = store
+            .find_dependents_by_file(&target_fid)
+            .unwrap();
+
+        assert_eq!(
+            deps.len(),
+            1,
+            "duplicates detected: {deps:?}"
+        );
+        assert_eq!(deps[0].0, "app.ts");
+    }
+
+    /// Path B still resolves C/C++ `#include` directives as before.
+    #[test]
+    fn test_find_dependents_c_include() {
+        let store = test_store();
+
+        let target_fid = insert_test_file_lang(&store, "src/helper.h", Language::C);
+        let main_fid = insert_test_file_lang(&store, "src/main.c", Language::C);
+        let other_fid = insert_test_file_lang(&store, "src/other.c", Language::C);
+
+        // "helper.h" → bare basename match
+        // "../src/helper.h" → directory resolution (normalized)
+        store
+            .insert_imports(&[
+                make_import(&main_fid, ImportKind::Include, "helper.h", true),
+                make_import(&other_fid, ImportKind::Include, "../src/helper.h", true),
+            ])
+            .unwrap();
+
+        let deps = store
+            .find_dependents_by_file(&target_fid)
+            .unwrap();
+
+        let paths: Vec<&str> = deps.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(deps.len(), 2, "expected 2 dependents, got {deps:?}");
+        assert!(paths.contains(&"src/main.c"));
+        assert!(paths.contains(&"src/other.c"));
     }
 }
