@@ -221,10 +221,15 @@ impl ScopedSearchService {
             SearchAnalysis::Auto => scope_file_count <= AUTO_STRUCTURAL_THRESHOLD,
         };
 
+        let mut precision_tier = PrecisionTier::Unavailable;
+        let mut capability_mask = CapabilityMask::from_layers(&["manifest"]);
+
         // If the DB already has full structural data (e.g. after
-        // `atlas index --analysis full`), skip lazy extraction — there is
-        // nothing to gain from re-extracting.
-        if should_trigger_lazy {
+        // `atlas index --analysis full`), report Exact precision and skip
+        // lazy extraction — there is nothing to gain from re-extracting.
+        // Run this check regardless of analysis mode so precision_tier is
+        // correctly reported even for Manifest-only searches.
+        {
             let file_ids = if normalized_scope.is_empty() {
                 self.store
                     .list_files()?
@@ -238,11 +243,15 @@ impl ScopedSearchService {
             if !file_ids.is_empty() {
                 let capability = self.store.derive_capability_for_files(&file_ids);
                 if capability.has(CapabilityMask::STRUCTURAL) {
-                    should_trigger_lazy = false;
-                    warnings.push(
-                        "Full structural index already present; skipping lazy extraction"
-                            .to_string(),
-                    );
+                    precision_tier = PrecisionTier::Exact;
+                    capability_mask = CapabilityMask::from_layers(&["manifest", "structural"]);
+                    if should_trigger_lazy {
+                        should_trigger_lazy = false;
+                        warnings.push(
+                            "Full structural index already present; skipping lazy extraction"
+                                .to_string(),
+                        );
+                    }
                 }
             }
         }
@@ -262,8 +271,6 @@ impl ScopedSearchService {
         )?;
 
         let mut triggered_lazy = false;
-        let mut precision_tier = PrecisionTier::Unavailable;
-        let mut capability_mask = CapabilityMask::from_layers(&["manifest"]);
 
         // 5. Trigger lazy structural if manifest returned nothing and policy
         //    says we should try.
@@ -729,6 +736,67 @@ mod tests {
                 .iter()
                 .any(|w| w.contains("structural index already present")),
             "should warn about existing structural data"
+        );
+        assert_eq!(
+            resp.precision_tier,
+            PrecisionTier::Exact,
+            "precision_tier should be Exact when structural data exists"
+        );
+        assert!(
+            resp.capability_mask.has(CapabilityMask::STRUCTURAL),
+            "capability_mask should include STRUCTURAL when structural data exists"
+        );
+    }
+
+    // ── test_manifest_mode_with_structural_existing ─────────────────
+    //
+    // Verifies that Manifest mode correctly reports Exact precision_tier
+    // when the DB already contains structural extraction state (the key
+    // bug fix — previously precision_tier remained Unavailable).
+    #[test]
+    fn test_manifest_mode_with_structural_existing() {
+        let svc = test_service();
+
+        // Seed a file with a symbol and mark it as structurally extracted.
+        let file_id = seed_ts_file(&svc.store, "src/handler.ts", "function handleRequest() {}");
+        let content_hash = svc
+            .store
+            .get_file(&file_id)
+            .expect("get_file")
+            .expect("file should exist")
+            .content_hash;
+        svc.store
+            .upsert_file_extraction_state(
+                &file_id,
+                "structural",
+                &content_hash,
+                "complete",
+                CapabilityMask::from_layers(&["manifest", "structural"]),
+            )
+            .unwrap();
+
+        let resp = svc
+            .execute(ScopedSearchRequest {
+                query: "nonexistent".into(),
+                scope: Some("src".into()),
+                analysis: SearchAnalysis::Manifest,
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("execute should succeed");
+
+        assert!(
+            !resp.triggered_lazy,
+            "Manifest mode should never trigger lazy"
+        );
+        assert_eq!(
+            resp.precision_tier,
+            PrecisionTier::Exact,
+            "precision_tier should be Exact when structural data exists"
+        );
+        assert!(
+            resp.capability_mask.has(CapabilityMask::STRUCTURAL),
+            "capability_mask should include STRUCTURAL when structural data exists"
         );
     }
 
