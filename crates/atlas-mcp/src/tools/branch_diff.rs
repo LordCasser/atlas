@@ -5,7 +5,7 @@
 //! a field while the other does not.
 
 use super::lazy_response::{LazyDiagnostics, LazyResponse};
-use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str};
+use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter};
 use crate::tools::symbol_selector::{
     parse_symbol_input, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
 };
