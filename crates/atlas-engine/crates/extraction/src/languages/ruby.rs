@@ -517,7 +517,7 @@ fn normalize_ruby_dataflow_builder(
                         })
                         .and_then(|r| node_text(r, source));
                     receiver_text.map(|recv| {
-                        let qualified = format!("{}.{}", recv, terminal_text);
+                        let qualified = format!("{recv}.{terminal_text}");
                         (qualified.clone(), qualified)
                     })
                 })
@@ -591,7 +591,7 @@ fn normalize_ruby_dataflow_builder(
                         })
                         .and_then(|r| node_text(r, source));
                     receiver_text.map(|recv| {
-                        let qualified = format!("{}.{}", recv, terminal_text);
+                        let qualified = format!("{recv}.{terminal_text}");
                         (qualified.clone(), qualified)
                     })
                 })

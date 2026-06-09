@@ -104,7 +104,7 @@ impl<'a> SearchSession<'a> {
                 .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
             {
                 if !rest.is_empty() && !prefix.contains(' ') {
-                    legacy_scope = Some(format!("{}/", prefix));
+                    legacy_scope = Some(format!("{prefix}/"));
                     legacy_term = Some(rest.trim().to_string());
                 }
             }

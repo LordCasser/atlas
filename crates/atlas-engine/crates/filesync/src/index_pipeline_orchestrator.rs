@@ -95,7 +95,7 @@ impl IndexPipeline {
             Err(e) => {
                 sink.emit(ProgressEvent::Warning {
                     phase: PhaseName::Discovery,
-                    message: format!("{:#}", e),
+                    message: format!("{e:#}"),
                 });
                 return Err(e);
             }
@@ -138,7 +138,7 @@ impl IndexPipeline {
             Err(e) => {
                 sink.emit(ProgressEvent::Warning {
                     phase: PhaseName::HashCheck,
-                    message: format!("{:#}", e),
+                    message: format!("{e:#}"),
                 });
                 return Err(e);
             }
@@ -168,7 +168,7 @@ impl IndexPipeline {
             if let Err(e) = phase_cleanup_stale(&self.store, &dirty_set.deleted) {
                 sink.emit(ProgressEvent::Warning {
                     phase: PhaseName::Cleanup,
-                    message: format!("{:#}", e),
+                    message: format!("{e:#}"),
                 });
                 return Err(e);
             }
@@ -185,7 +185,7 @@ impl IndexPipeline {
             Err(e) => {
                 sink.emit(ProgressEvent::Warning {
                     phase: PhaseName::Cleanup,
-                    message: format!("{:#}", e),
+                    message: format!("{e:#}"),
                 });
                 return Err(e);
             }
@@ -195,7 +195,7 @@ impl IndexPipeline {
             if let Err(e) = phase_cleanup_file_ids(&self.store, &stale_ids) {
                 sink.emit(ProgressEvent::Warning {
                     phase: PhaseName::Cleanup,
-                    message: format!("{:#}", e),
+                    message: format!("{e:#}"),
                 });
                 return Err(e);
             }
@@ -206,8 +206,7 @@ impl IndexPipeline {
             succeeded: (deleted_count + stale_count) as u64,
             failed: 0,
             detail: Some(format!(
-                "{} deleted, {} stale cleaned",
-                deleted_count, stale_count,
+                "{deleted_count} deleted, {stale_count} stale cleaned",
             )),
         });
         last_phase = PhaseName::Cleanup;
@@ -227,7 +226,7 @@ impl IndexPipeline {
                 Err(e) => {
                     sink.emit(ProgressEvent::Warning {
                         phase: PhaseName::LanguageInit,
-                        message: format!("{:#}", e),
+                        message: format!("{e:#}"),
                     });
                     return Err(e);
                 }
@@ -237,7 +236,7 @@ impl IndexPipeline {
                 phase: PhaseName::LanguageInit,
                 succeeded: lang_count as u64,
                 failed: 0,
-                detail: Some(format!("{} language frontends initialized", lang_count,)),
+                detail: Some(format!("{lang_count} language frontends initialized")),
             });
             last_phase = PhaseName::LanguageInit;
 
@@ -354,7 +353,7 @@ impl IndexPipeline {
                 Err(e) => {
                     sink.emit(ProgressEvent::Warning {
                         phase: PhaseName::Resolution,
-                        message: format!("{:#}", e),
+                        message: format!("{e:#}"),
                     });
                     return Err(e);
                 }
@@ -390,7 +389,7 @@ impl IndexPipeline {
                 Err(e) => {
                     sink.emit(ProgressEvent::Warning {
                         phase: PhaseName::AnnotationMaterialize,
-                        message: format!("{:#}", e),
+                        message: format!("{e:#}"),
                     });
                     return Err(e);
                 }
@@ -427,13 +426,13 @@ impl IndexPipeline {
                         phase: PhaseName::SummaryBuild,
                         succeeded: n as u64,
                         failed: 0,
-                        detail: Some(format!("{} functions summarized", n)),
+                        detail: Some(format!("{n} functions summarized")),
                     });
                 }
                 Err(e) => {
                     sink.emit(ProgressEvent::Warning {
                         phase: PhaseName::SummaryBuild,
-                        message: format!("{:#}", e),
+                        message: format!("{e:#}"),
                     });
                     return Err(e);
                 }
@@ -450,7 +449,7 @@ impl IndexPipeline {
         if let Err(e) = phase_commit_path_alias_config(&self.store, &self.project_root) {
             sink.emit(ProgressEvent::Warning {
                 phase: PhaseName::Finalize,
-                message: format!("{:#}", e),
+                message: format!("{e:#}"),
             });
             return Err(e);
         }
@@ -461,7 +460,7 @@ impl IndexPipeline {
         ) {
             sink.emit(ProgressEvent::Warning {
                 phase: PhaseName::Finalize,
-                message: format!("{:#}", e),
+                message: format!("{e:#}"),
             });
             return Err(e);
         }

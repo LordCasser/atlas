@@ -172,7 +172,7 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
                     exit_effects.len() as u32,
                     SemanticEffectKind::Free {
                         place: place.clone(),
-                        callee: format!("<block-exit>{}", callee),
+                        callee: format!("<block-exit>{callee}"),
                     },
                     0.80,
                 );
@@ -190,7 +190,7 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
             exit_effects.len() as u32,
             SemanticEffectKind::Free {
                 place: place.clone(),
-                callee: format!("<scope-exit>{}", callee),
+                callee: format!("<scope-exit>{callee}"),
             },
             0.70,
         );

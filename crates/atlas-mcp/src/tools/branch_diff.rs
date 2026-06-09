@@ -15,7 +15,7 @@ impl ToolRouter {
         let symbol = get_str(args, "symbol");
         if symbol.len() > MAX_SYMBOL_NAME_LENGTH {
             return (
-                format!("symbol exceeds max length of {}", MAX_SYMBOL_NAME_LENGTH),
+                format!("symbol exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
                 true,
             );
         }

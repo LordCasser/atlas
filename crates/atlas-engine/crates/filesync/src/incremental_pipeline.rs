@@ -100,7 +100,7 @@ impl IncrementalPipeline {
                 |e| {
                     sink.emit(ProgressEvent::Warning {
                         phase,
-                        message: format!("{:#}", e),
+                        message: format!("{e:#}"),
                     });
                     e
                 },
@@ -151,7 +151,7 @@ impl IncrementalPipeline {
             phase_cleanup_stale(&self.store, &deleted_rel).map_err(|e| {
                 sink.emit(ProgressEvent::Warning {
                     phase,
-                    message: format!("Cleanup of deleted files failed: {:#}", e),
+                    message: format!("Cleanup of deleted files failed: {e:#}"),
                 });
                 e
             })?;
@@ -166,7 +166,7 @@ impl IncrementalPipeline {
                 phase_cleanup_file_ids(&self.store, &modified_file_ids).map_err(|e| {
                     sink.emit(ProgressEvent::Warning {
                         phase,
-                        message: format!("Cleanup of modified files failed: {:#}", e),
+                        message: format!("Cleanup of modified files failed: {e:#}"),
                     });
                     e
                 })?;
@@ -181,7 +181,7 @@ impl IncrementalPipeline {
                 .map_err(|e| {
                     sink.emit(ProgressEvent::Warning {
                         phase,
-                        message: format!("{:#}", e),
+                        message: format!("{e:#}"),
                     });
                     e
                 })?;
@@ -191,7 +191,7 @@ impl IncrementalPipeline {
                 .map_err(|e| {
                     sink.emit(ProgressEvent::Warning {
                         phase,
-                        message: format!("{:#}", e),
+                        message: format!("{e:#}"),
                     });
                     e
                 })?;
@@ -237,7 +237,7 @@ impl IncrementalPipeline {
             let frontends = phase_init_frontends(&to_extract_rel).map_err(|e| {
                 sink.emit(ProgressEvent::Warning {
                     phase,
-                    message: format!("{:#}", e),
+                    message: format!("{e:#}"),
                 });
                 e
             })?;
@@ -322,7 +322,7 @@ impl IncrementalPipeline {
             .map_err(|e| {
                 sink.emit(ProgressEvent::Warning {
                     phase,
-                    message: format!("{:#}", e),
+                    message: format!("{e:#}"),
                 });
                 e
             })?;
@@ -363,7 +363,7 @@ impl IncrementalPipeline {
                 .map_err(|e| {
                     sink.emit(ProgressEvent::Warning {
                         phase,
-                        message: format!("{:#}", e),
+                        message: format!("{e:#}"),
                     });
                     e
                 })?;
@@ -393,7 +393,7 @@ impl IncrementalPipeline {
             if let Err(e) = phase_materialize_annotations(&self.store) {
                 sink.emit(ProgressEvent::Warning {
                     phase,
-                    message: format!("Failed to materialize annotations: {:#}", e),
+                    message: format!("Failed to materialize annotations: {e:#}"),
                 });
             }
 
@@ -421,8 +421,7 @@ impl IncrementalPipeline {
                 sink.emit(ProgressEvent::Warning {
                     phase,
                     message: format!(
-                        "{}/{} files changed (≥30%), rebuilding all summaries",
-                        changed_count, total_indexed
+                        "{changed_count}/{total_indexed} files changed (≥30%), rebuilding all summaries",
                     ),
                 });
 
@@ -445,7 +444,7 @@ impl IncrementalPipeline {
                     .map_err(|e| {
                         sink.emit(ProgressEvent::Warning {
                             phase,
-                            message: format!("Failed to build summaries: {:#}", e),
+                            message: format!("Failed to build summaries: {e:#}"),
                         });
                         e
                     })?;
@@ -528,7 +527,7 @@ impl IncrementalPipeline {
         phase_commit_path_alias_config(&self.store, &self.project_root).map_err(|e| {
             sink.emit(ProgressEvent::Warning {
                 phase,
-                message: format!("{:#}", e),
+                message: format!("{e:#}"),
             });
             e
         })?;
