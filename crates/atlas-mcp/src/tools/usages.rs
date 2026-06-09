@@ -4,7 +4,7 @@ use atlas_engine::InvestigationFocus;
 
 use super::lazy_response::LazyResponse;
 use super::{ToolRouter, get_u64};
-use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy};
+use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input};
 use serde_json::json;
 
 impl ToolRouter {
@@ -12,9 +12,9 @@ impl ToolRouter {
         let limit = get_u64(args, "limit").unwrap_or(50) as usize;
 
         // Unified symbol resolution via SymbolInput (string or structured selector).
-        let input: SymbolInput = match serde_json::from_value(args["symbol"].clone()) {
+        let input: SymbolInput = match parse_symbol_input(args, "symbol") {
             Ok(inp) => inp,
-            Err(e) => return (format!("Invalid symbol parameter: {e}"), true),
+            Err(e) => return (e, true),
         };
         let resolution = match self
             .resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle)

@@ -9,7 +9,7 @@ use super::{
     MAX_FILE_PATH_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str_opt, get_u64,
     resolve_file_id, warnings_to_trace_diagnostics,
 };
-use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy};
+use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input};
 
 use serde_json::json;
 
@@ -462,12 +462,12 @@ impl ToolRouter {
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
         // Parse 'from' parameter as unified SymbolInput.
-        let from_input: SymbolInput = match serde_json::from_value(args["from"].clone()) {
+        let from_input: SymbolInput = match parse_symbol_input(args, "from") {
             Ok(inp) => inp,
             Err(e) => {
                 let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                     "trace_forward",
-                    &format!("Invalid 'from' parameter: {e}"),
+                    &e,
                 );
                 return (
                     serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
@@ -476,12 +476,12 @@ impl ToolRouter {
             }
         };
         // Parse 'to' parameter as unified SymbolInput.
-        let to_input: SymbolInput = match serde_json::from_value(args["to"].clone()) {
+        let to_input: SymbolInput = match parse_symbol_input(args, "to") {
             Ok(inp) => inp,
             Err(e) => {
                 let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                     "trace_forward",
-                    &format!("Invalid 'to' parameter: {e}"),
+                    &e,
                 );
                 return (
                     serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),

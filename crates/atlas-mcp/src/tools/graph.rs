@@ -11,6 +11,7 @@ use super::lazy_response::{LazyDiagnostics, LazyResponse};
 use super::{MAX_AMBIGUOUS_CANDIDATES, MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str, get_str_opt, get_u64};
 use crate::tools::symbol_selector::{
     ScoredCandidate, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
+    parse_symbol_input,
 };
 
 use serde_json::json;
@@ -35,20 +36,12 @@ fn symbol_input_qname(input: &SymbolInput) -> &str {
 /// Parse the "symbol" key from args as a SymbolInput.
 /// Returns error if missing, null, or invalid.
 fn parse_symbol_arg(args: &serde_json::Value) -> Result<SymbolInput, String> {
-    let val = args.get("symbol").cloned().unwrap_or(serde_json::Value::Null);
-    if val.is_null() {
-        return Err("symbol parameter is required".to_string());
-    }
-    serde_json::from_value(val).map_err(|e| format!("Invalid symbol parameter: {e}"))
+    parse_symbol_input(args, "symbol")
 }
 
 /// Parse a named field from args as a SymbolInput (e.g. "from" or "to").
 fn parse_symbol_field(args: &serde_json::Value, field: &str) -> Result<SymbolInput, String> {
-    let val = args.get(field).cloned().unwrap_or(serde_json::Value::Null);
-    if val.is_null() {
-        return Err(format!("{field} parameter is required"));
-    }
-    serde_json::from_value(val).map_err(|e| format!("Invalid {field} parameter: {e}"))
+    parse_symbol_input(args, field)
 }
 
 /// Build the resolution metadata JSON object for Aggregate-policy responses.

@@ -9,8 +9,8 @@
 use super::lazy_response::{LazyDiagnostics, LazyResponse};
 use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter};
 use super::symbol_selector::{
-    ResolvedSymbol, ScoredCandidate, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
-    SymbolSelector, MAX_AGGREGATION_CANDIDATES,
+    parse_symbol_input, ResolvedSymbol, ScoredCandidate, SymbolInput, SymbolResolution,
+    SymbolResolutionPolicy, SymbolSelector, MAX_AGGREGATION_CANDIDATES,
 };
 
 use atlas_engine::InvestigationFocus;
@@ -41,9 +41,9 @@ impl ToolRouter {
         args: &serde_json::Value,
     ) -> (String, bool) {
         // Parse symbol as unified SymbolInput (string or structured selector)
-        let input: SymbolInput = match serde_json::from_value(args["symbol"].clone()) {
+        let input: SymbolInput = match parse_symbol_input(args, "symbol") {
             Ok(inp) => inp,
-            Err(e) => return (format!("Invalid symbol parameter: {e}"), true),
+            Err(e) => return (e, true),
         };
         let qname = match &input {
             SymbolInput::Name(name) => name.as_str(),
