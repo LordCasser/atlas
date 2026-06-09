@@ -175,7 +175,7 @@ impl ServerHandler for AtlasMcpService {
             // For long-running tools with a progress token, create a channel and
             // spawn a forwarder that converts ProgressReport → MCP notifications.
             let (ctx, _progress_task) =
-                if matches!(tool_name.as_str(), "index" | "project" | "search")
+                if matches!(tool_name.as_str(), "index" | "project" | "search" | "symbol" | "trace")
                     && has_progress_token
                 {
                     let (tx, mut rx) =

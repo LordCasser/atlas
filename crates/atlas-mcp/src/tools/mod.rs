@@ -431,11 +431,15 @@ impl ToolRouter {
         })
     }
 
-    /// Refresh the graph snapshot if an external index/sync has changed the DB.
+    /// Ensure the in-memory call-graph reflects any newly extracted structural data.
     ///
-    /// Graph-backed tools must observe a just-completed full index immediately.
-    /// The signature query is deliberately cheap compared with graph traversal,
-    /// so correctness takes precedence over a short cooldown cache here.
+    /// **Refresh responsibility**: this method is already called internally by
+    /// [`ensure_structural_for_files`] and [`ensure_structural_for_symbol_name`]
+    /// whenever they actually built new files.  Callers that use those helpers
+    /// do **not** need to call `maybe_refresh_graph` separately.
+    ///
+    /// Callers that modify the store independently (e.g. through a full re-index
+    /// signal) may still need to call this to pick up changes.
     pub(crate) fn maybe_refresh_graph(&mut self) -> anyhow::Result<()> {
         if !self.graph.graph_initialized {
             return Ok(());
@@ -678,6 +682,9 @@ impl ToolRouter {
     /// are prioritized before unrelated files.
     /// When `query_id` is provided, it is threaded into extraction job records
     /// so `atlas_jobs` can filter by query.
+    /// After this returns, the in-memory graph is guaranteed to be refreshed
+    /// if any new files were built. Callers do not need to call
+    /// `maybe_refresh_graph()` separately.
     pub(crate) fn ensure_structural_for_files(
         &mut self,
         file_ids: impl IntoIterator<Item = FileId>,
@@ -753,6 +760,9 @@ impl ToolRouter {
     /// with optional include_roots.  Useful for name-based lookups
     /// where the file_id is not yet known.
     /// When `query_id` is provided, it is threaded into extraction job records.
+    /// After this returns, the in-memory graph is guaranteed to be refreshed
+    /// if any new files were built. Callers do not need to call
+    /// `maybe_refresh_graph()` separately.
     pub(crate) fn ensure_structural_for_symbol_name(
         &mut self,
         symbol_name: &str,
@@ -1460,7 +1470,7 @@ impl ToolRouter {
         let file_path = get_str(args, "file_path");
         let line_opt = args.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
         if !file_path.is_empty() && line_opt.is_some() {
-            return self.handle_symbol_by_position(file_path, line_opt.unwrap(), args);
+            return self.handle_symbol_by_position(ctx, file_path, line_opt.unwrap(), args);
         }
 
         let view = get_str(args, "view");
@@ -1479,9 +1489,13 @@ impl ToolRouter {
 
         match view {
             "detail" | "" => {
-                // Remap: symbol → qualified_name for the legacy detail handler
+                // Pass original symbol value (string or structured selector) so
+                // handle_symbol_detail can apply file_path/kind/line filtering.
                 let mut mapped = serde_json::Map::new();
-                mapped.insert("qualified_name".into(), Value::String(qname.to_string()));
+                mapped.insert(
+                    "symbol".into(),
+                    args.get("symbol").cloned().unwrap_or(Value::String(qname.clone())),
+                );
                 if let Some(v) = args.get("includeCode") {
                     mapped.insert("includeCode".into(), v.clone());
                 }
@@ -1526,62 +1540,79 @@ impl ToolRouter {
             ),
         }
     }
+}
 
+// ── calls dispatch ────────────────────────────────────────────────────
+
+/// Result of [`resolve_calls_dispatch`] — which sub-handler should process the call.
+pub(crate) enum CallsDispatch {
+    CallGraph(serde_json::Value),
+    Callers,
+    Callees,
+    Error(String),
+}
+
+// ── calls dispatch helper ─────────────────────────────────────────
+
+pub(crate) fn resolve_calls_dispatch(
+    args: &serde_json::Value,
+) -> CallsDispatch {
+    let direction = crate::tools::get_str(args, "direction");
+    let depth = crate::tools::get_u64(args, "depth").unwrap_or(1);
+
+    let raw_kinds = args.get("edge_kinds").and_then(|v| v.as_array());
+    let (is_wildcard, edge_kinds): (bool, Vec<&str>) = match raw_kinds {
+        Some(arr) => {
+            let kinds: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+            (kinds.is_empty(), kinds)
+        }
+        None => (false, vec!["calls", "instantiates", "implements"]),
+    };
+    let is_default_edges =
+        !is_wildcard && edge_kinds == ["calls", "instantiates", "implements"];
+    let is_custom_edges = !is_wildcard && !is_default_edges;
+
+    if is_custom_edges
+        || is_wildcard
+        || depth > 1
+        || direction == "both"
+        || direction.is_empty()
+    {
+        let call_args = if args.get("depth").is_none() {
+            let mut m = serde_json::Map::new();
+            if let Some(obj) = args.as_object() {
+                m.clone_from(obj);
+            }
+            m.insert(
+                "depth".into(),
+                serde_json::Value::Number(serde_json::Number::from(depth)),
+            );
+            serde_json::Value::Object(m)
+        } else {
+            args.clone()
+        };
+        CallsDispatch::CallGraph(call_args)
+    } else {
+        match direction {
+            "incoming" => CallsDispatch::Callers,
+            "outgoing" => CallsDispatch::Callees,
+            other => CallsDispatch::Error(format!(
+                "Unknown direction: '{other}'. Must be one of: incoming, outgoing, both"
+            )),
+        }
+    }
+}
+
+impl ToolRouter {
     // ── calls ────────────────────────────────────────────────────────
 
     /// Handle `calls` tool — dispatch by `direction`/`depth`/`edge_kinds`.
     pub(crate) fn handle_calls(&mut self, args: &Value) -> (String, bool) {
-        let direction = get_str(args, "direction");
-        let depth = get_u64(args, "depth").unwrap_or(1);
-
-        // Distinguish "not provided" (→ default) from explicit "[]" (→ wildcard).
-        // JSON preserves this: missing key → None, present but empty array → Some([]).
-        let raw_kinds = args.get("edge_kinds").and_then(|v| v.as_array());
-        let (is_wildcard, edge_kinds): (bool, Vec<&str>) = match raw_kinds {
-            Some(arr) => {
-                let kinds: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
-                (kinds.is_empty(), kinds)
-            }
-            // Not provided → use documented default
-            None => (false, vec!["calls", "instantiates", "implements"]),
-        };
-        let is_default_edges =
-            !is_wildcard && edge_kinds == ["calls", "instantiates", "implements"];
-        let is_custom_edges = !is_wildcard && !is_default_edges;
-
-        // Custom edge_kinds, wildcard (explicit []), multi-hop, or bidirectional
-        // → callgraph (handles all properly)
-        if is_custom_edges
-            || is_wildcard
-            || depth > 1
-            || direction == "both"
-            || direction.is_empty()
-        {
-            // handle_callgraph internally defaults depth to 3, but our schema
-            // default is 1. Inject depth when not user-specified.
-            let call_args = if args.get("depth").is_none() {
-                let mut m = serde_json::Map::new();
-                if let Some(obj) = args.as_object() {
-                    m.clone_from(obj);
-                }
-                m.insert(
-                    "depth".into(),
-                    serde_json::Value::Number(serde_json::Number::from(depth)),
-                );
-                serde_json::Value::Object(m)
-            } else {
-                args.clone()
-            };
-            return self.handle_callgraph(&call_args);
-        }
-
-        match direction {
-            "incoming" => self.handle_callers(args),
-            "outgoing" => self.handle_callees(args),
-            other => (
-                format!("Unknown direction: '{other}'. Must be one of: incoming, outgoing, both"),
-                true,
-            ),
+        match resolve_calls_dispatch(args) {
+            CallsDispatch::CallGraph(call_args) => self.handle_callgraph(&call_args),
+            CallsDispatch::Callers => self.handle_callers(args),
+            CallsDispatch::Callees => self.handle_callees(args),
+            CallsDispatch::Error(e) => (e, true),
         }
     }
 
@@ -2285,6 +2316,7 @@ impl ToolRouter {
     /// delegates to [`handle_symbol_detail`] with the found `qualified_name`.
     fn handle_symbol_by_position(
         &mut self,
+        ctx: &ToolCallContext,
         file_path: &str,
         line: u32,
         args: &serde_json::Value,
@@ -2387,33 +2419,75 @@ impl ToolRouter {
         });
         let symbol = candidates[0];
 
-        // Delegate to handle_symbol_detail with the found qualified_name
-        let mut mapped = serde_json::Map::new();
-        mapped.insert(
-            "qualified_name".into(),
-            serde_json::Value::String(symbol.qualified_name.clone()),
-        );
-        if let Some(v) = args.get("includeCode") {
-            mapped.insert("includeCode".into(), v.clone());
-        }
-        if let Some(v) = args.get("include_roots") {
-            mapped.insert("include_roots".into(), v.clone());
-        }
-        if let Some(v) = args.get("view") {
-            mapped.insert("view".into(), v.clone());
-        }
+        // Dispatch to the appropriate sub-handler based on view.
+        let view = args
+            .get("view")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
-        let (mut result, is_error) = self.handle_symbol_detail(&serde_json::Value::Object(mapped));
-        if !warnings.is_empty() && !is_error {
-            // Inject warnings into the JSON result if possible
-            if let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&result) {
-                add_json_warnings(&mut parsed, warnings.clone(), vec![]);
-                if let Ok(pretty) = serde_json::to_string_pretty(&parsed) {
-                    result = pretty;
+        match view {
+            "detail" | "" => {
+                let mut mapped = serde_json::Map::new();
+                mapped.insert(
+                    "qualified_name".into(),
+                    serde_json::Value::String(symbol.qualified_name.clone()),
+                );
+                if let Some(v) = args.get("includeCode") {
+                    mapped.insert("includeCode".into(), v.clone());
                 }
+                if let Some(v) = args.get("include_roots") {
+                    mapped.insert("include_roots".into(), v.clone());
+                }
+
+                let (mut result, is_error) =
+                    self.handle_symbol_detail(&serde_json::Value::Object(mapped));
+                if !warnings.is_empty() && !is_error {
+                    if let Ok(mut parsed) =
+                        serde_json::from_str::<serde_json::Value>(&result)
+                    {
+                        add_json_warnings(&mut parsed, warnings.clone(), vec![]);
+                        if let Ok(pretty) = serde_json::to_string_pretty(&parsed) {
+                            result = pretty;
+                        }
+                    }
+                }
+                (result, is_error)
             }
+            "context" => {
+                let mut mapped = serde_json::Map::new();
+                mapped.insert(
+                    "symbol".into(),
+                    serde_json::Value::String(symbol.qualified_name.clone()),
+                );
+                if let Some(v) = args.get("includeCode") {
+                    mapped.insert("includeCode".into(), v.clone());
+                }
+                if let Some(v) = args.get("includeFilePeers") {
+                    mapped.insert("includeFilePeers".into(), v.clone());
+                }
+                if let Some(v) = args.get("include_roots") {
+                    mapped.insert("include_roots".into(), v.clone());
+                }
+                self.handle_context(ctx, &serde_json::Value::Object(mapped))
+            }
+            "usages" => {
+                let mut mapped = serde_json::Map::new();
+                mapped.insert(
+                    "symbol".into(),
+                    serde_json::Value::String(symbol.qualified_name.clone()),
+                );
+                if let Some(v) = args.get("limit") {
+                    mapped.insert("limit".into(), v.clone());
+                }
+                self.handle_usages(&serde_json::Value::Object(mapped))
+            }
+            other => (
+                format!(
+                    "Unknown view: '{other}'. Must be one of: detail, context, usages"
+                ),
+                true,
+            ),
         }
-        (result, is_error)
     }
 }
 
@@ -3727,5 +3801,305 @@ mod tests {
         // Should not panic — gracefully skip
         merge_edge_deps(&mut value, &edge_deps, "dependents", "total_dependents");
         assert_eq!(value["other"].as_u64().unwrap(), 1);
+    }
+
+    // ── handle_symbol_by_position view dispatch tests ───────────────────────
+
+    #[test]
+    fn handle_symbol_by_position_with_detail_view() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "src/test.ts");
+        // Use insert_symbol_with_range to place symbol at 0-based line 0 so that
+        // user's 1-based line=1 matches it.
+        insert_symbol_with_range(
+            &store, file_id, "myFunc",
+            atlas_engine::SymbolKind::Function,
+            0, 1, 0, 80,  // (start_line, start_col, end_line, end_col) 0-based
+        );
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let ctx = ToolCallContext::empty();
+        let args = serde_json::json!({
+            "file_path": "src/test.ts",
+            "line": 1,
+            "view": "detail"
+        });
+
+        let (resp_str, is_error) = router.handle_symbol(&ctx, &args);
+        assert!(!is_error, "Expected no error, got: {resp_str}");
+        let resp: serde_json::Value =
+            serde_json::from_str(&resp_str).expect("response should be valid JSON");
+        // Detail view should have 'name' and 'qualified_name' fields
+        assert!(resp.get("name").is_some(), "detail response should have 'name' field");
+        assert!(resp.get("qualified_name").is_some(), "detail response should have 'qualified_name' field");
+    }
+
+    #[test]
+    fn handle_symbol_by_position_with_context_view() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "src/main.rs");
+        insert_symbol_with_range(
+            &store, file_id, "process",
+            atlas_engine::SymbolKind::Function,
+            0, 1, 0, 80,
+        );
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let ctx = ToolCallContext::empty();
+        let args = serde_json::json!({
+            "file_path": "src/main.rs",
+            "line": 1,
+            "view": "context"
+        });
+
+        let (resp_str, is_error) = router.handle_symbol(&ctx, &args);
+        assert!(!is_error, "Expected no error, got: {resp_str}");
+        let resp: serde_json::Value =
+            serde_json::from_str(&resp_str).expect("response should be valid JSON");
+        // Context view should have 'subject' not 'name' at top level
+        assert!(
+            resp.get("subject").is_some(),
+            "context response should have 'subject' field, got keys: {:?}",
+            resp.as_object().map(|o| o.keys().collect::<Vec<_>>())
+        );
+    }
+
+    #[test]
+    fn handle_symbol_by_position_with_usages_view() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "src/lib.rs");
+        insert_symbol_with_range(
+            &store, file_id, "helper",
+            atlas_engine::SymbolKind::Function,
+            0, 1, 0, 80,
+        );
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let ctx = ToolCallContext::empty();
+        let args = serde_json::json!({
+            "file_path": "src/lib.rs",
+            "line": 1,
+            "view": "usages"
+        });
+
+        let (resp_str, is_error) = router.handle_symbol(&ctx, &args);
+        assert!(!is_error, "Expected no error, got: {resp_str}");
+        let resp: serde_json::Value =
+            serde_json::from_str(&resp_str).expect("response should be valid JSON");
+        // Usages view should have 'usages' array
+        assert!(
+            resp.get("usages").is_some(),
+            "usages response should have 'usages' field, got keys: {:?}",
+            resp.as_object().map(|o| o.keys().collect::<Vec<_>>())
+        );
+        assert!(
+            resp.get("total_usages").is_some(),
+            "usages response should have 'total_usages' field"
+        );
+    }
+
+    #[test]
+    fn handle_symbol_by_position_with_invalid_view() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "src/bad.rs");
+        insert_symbol_with_range(
+            &store, file_id, "func",
+            atlas_engine::SymbolKind::Function,
+            0, 1, 0, 80,
+        );
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let ctx = ToolCallContext::empty();
+        let args = serde_json::json!({
+            "file_path": "src/bad.rs",
+            "line": 1,
+            "view": "nonexistent"
+        });
+
+        let (_resp_str, is_error) = router.handle_symbol(&ctx, &args);
+        assert!(is_error, "Should return error for unknown view");
+    }
+
+    // ── Structured selector + view=detail filtering tests ──────────────
+
+    #[test]
+    fn structured_selector_detail_resolves_uniquely() {
+        let store = test_store();
+        // Two symbols with SAME qualified_name but DIFFERENT files.
+        let file_a = register_test_file(&store, "src/a.ts");
+        let file_b = register_test_file(&store, "src/b.ts");
+        insert_symbol_with_range(
+            &store, file_a, "Helper",
+            atlas_engine::SymbolKind::Function,
+            0, 1, 0, 80,
+        );
+        insert_symbol_with_range(
+            &store, file_b, "Helper",
+            atlas_engine::SymbolKind::Function,
+            5, 1, 5, 80,
+        );
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let ctx = ToolCallContext::empty();
+        // Structured selector with file_path to disambiguate.
+        let args = serde_json::json!({
+            "symbol": {
+                "qualified_name": "Helper.Helper",
+                "file_path": "src/a.ts"
+            },
+            "view": "detail"
+        });
+
+        let (resp_str, is_error) = router.handle_symbol(&ctx, &args);
+        assert!(!is_error, "Expected unique resolution, got error: {resp_str}");
+        let resp: serde_json::Value =
+            serde_json::from_str(&resp_str).expect("response should be valid JSON");
+        assert!(
+            resp.get("name").is_some(),
+            "detail response should have 'name' field, got: {resp_str}"
+        );
+        // Verify the resolved file matches the selector.
+        assert_eq!(
+            resp.get("file").and_then(|v| v.as_str()).unwrap_or(""),
+            "src/a.ts",
+            "Should resolve to the file specified in the selector, got: {resp_str}"
+        );
+    }
+
+    #[test]
+    fn plain_string_symbol_detail_still_works() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "src/main.ts");
+        insert_symbol_with_range(
+            &store, file_id, "SingleFunction",
+            atlas_engine::SymbolKind::Function,
+            0, 1, 0, 80,
+        );
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let ctx = ToolCallContext::empty();
+        let args = serde_json::json!({
+            "symbol": "SingleFunction.SingleFunction",
+            "view": "detail"
+        });
+
+        let (resp_str, is_error) = router.handle_symbol(&ctx, &args);
+        assert!(!is_error, "Expected no error, got: {resp_str}");
+        let resp: serde_json::Value =
+            serde_json::from_str(&resp_str).expect("response should be valid JSON");
+        assert!(
+            resp.get("name").is_some(),
+            "detail response should have 'name' field, got: {resp_str}"
+        );
+        assert_eq!(
+            resp.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+            "SingleFunction",
+            "Should resolve to SingleFunction, got: {resp_str}"
+        );
+    }
+
+    // ── file_path diagnostic in ambiguous responses ──────────────────────
+
+    #[test]
+    fn invalid_file_path_in_selector_produces_diagnostic() {
+        let store = test_store();
+        let file_a = register_test_file(&store, "src/a.ts");
+        let file_b = register_test_file(&store, "src/b.ts");
+
+        // Two symbols with the same qualified name in different files → ambiguous.
+        insert_test_symbol_with_qname(
+            &store, file_a, "Foo", "Foo.Foo",
+            atlas_engine::SymbolKind::Function,
+        );
+        insert_test_symbol_with_qname(
+            &store, file_b, "Foo", "Foo.Foo",
+            atlas_engine::SymbolKind::Function,
+        );
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+
+        let args = serde_json::json!({
+            "symbol": {
+                "qualified_name": "Foo.Foo",
+                "file_path": "src/nonexistent.ts"
+            }
+        });
+
+        let (resp_str, is_error) = router.handle_symbol_detail(&args);
+        assert!(is_error, "Expected error for ambiguous symbol, got: {resp_str}");
+        assert!(
+            resp_str.contains("file_path 'src/nonexistent.ts' does not match any file"),
+            "Expected file_path diagnostic in error, got: {resp_str}"
+        );
+    }
+
+    #[test]
+    fn plain_string_ambiguous_no_false_diagnostic() {
+        let store = test_store();
+        let file_a = register_test_file(&store, "src/a.ts");
+        let file_b = register_test_file(&store, "src/b.ts");
+
+        // Two symbols with the same qualified name → ambiguous.
+        insert_test_symbol_with_qname(
+            &store, file_a, "Foo", "Foo.Foo",
+            atlas_engine::SymbolKind::Function,
+        );
+        insert_test_symbol_with_qname(
+            &store, file_b, "Foo", "Foo.Foo",
+            atlas_engine::SymbolKind::Function,
+        );
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+
+        let args = serde_json::json!({
+            "symbol": "Foo.Foo"
+        });
+
+        let (resp_str, is_error) = router.handle_symbol_detail(&args);
+        assert!(is_error, "Expected error for ambiguous symbol, got: {resp_str}");
+        assert!(
+            !resp_str.contains("does not match any file"),
+            "Should NOT contain file_path diagnostic for plain string input, got: {resp_str}"
+        );
+    }
+
+    #[test]
+    fn valid_file_path_unambiguous_no_diagnostic_leak() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "src/main.ts");
+
+        insert_test_symbol_with_qname(
+            &store, file_id, "MyFunc", "MyFunc.MyFunc",
+            atlas_engine::SymbolKind::Function,
+        );
+
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        let args = serde_json::json!({
+            "symbol": {
+                "qualified_name": "MyFunc.MyFunc",
+                "file_path": "src/main.ts"
+            }
+        });
+
+        let (resp_str, is_error) = router.handle_symbol_detail(&args);
+        assert!(!is_error, "Expected successful resolution, got error: {resp_str}");
+        assert!(
+            !resp_str.contains("does not match any file"),
+            "Should NOT contain file_path diagnostic on successful resolution, got: {resp_str}"
+        );
     }
 }

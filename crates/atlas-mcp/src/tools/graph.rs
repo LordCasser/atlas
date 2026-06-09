@@ -418,18 +418,18 @@ impl ToolRouter {
                 file_ids_set.insert(sym.file_id);
             }
         }
-        let outcome = self.ensure_structural_for_files(
+        let outcome_files = self.ensure_structural_for_files(
             file_ids_set,
             vec![],
             investigation.as_ref(),
             Some(&query_id),
         );
-        if let Err(e) = self.maybe_refresh_graph() {
-            return (
-                format!("Failed to refresh graph after structural ensure: {e:#}"),
-                true,
-            );
-        }
+        let outcome_name = self.ensure_structural_for_symbol_name(
+            qname,
+            vec![],
+            investigation.as_ref(),
+            Some(&query_id),
+        );
 
         let cb = match self.context_builder() {
             Ok(cb) => cb,
@@ -469,10 +469,11 @@ impl ToolRouter {
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
         }
-        // Lazy structural response
-        let lazy_warnings = outcome.warnings;
-        let tier = outcome.precision_tier;
-        let lazy_diag: Option<LazyDiagnostics> = outcome
+        // Lazy structural response — merge warnings from both outcomes
+        let mut lazy_warnings: Vec<String> = outcome_files.warnings;
+        lazy_warnings.extend(outcome_name.warnings);
+        let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
+        let lazy_diag: Option<LazyDiagnostics> = outcome_files
             .lazy_outcome
             .as_ref()
             .map(LazyDiagnostics::from_structural);
@@ -2771,5 +2772,109 @@ mod tests {
         ];
         let ids: Vec<_> = candidates.iter().map(|c| c.symbol_id).collect();
         assert_eq!(ids, vec![sid1, sid2]);
+    }
+
+    // ── calls dispatch tests ──────────────────────────────────────────
+
+    #[test]
+    fn calls_dispatch_wildcard_edge_kinds_routes_to_callgraph() {
+        let store = test_store();
+        let _sid = insert_test_symbol(&store, "a.ts", "a.a");
+        let mut router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+
+        // Explicit empty edge_kinds [] means wildcard → should route to callgraph
+        let dispatch = crate::tools::resolve_calls_dispatch(&serde_json::json!({
+            "symbol": "a.a",
+            "direction": "outgoing",
+            "edge_kinds": [],
+        }));
+        assert!(
+            matches!(dispatch, crate::tools::CallsDispatch::CallGraph(_)),
+            "wildcard edge_kinds should route to CallGraph"
+        );
+    }
+
+    #[test]
+    fn calls_dispatch_custom_edge_kinds_routes_to_callgraph() {
+        let store = test_store();
+        let _sid = insert_test_symbol(&store, "a.ts", "a.a");
+        let mut router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+
+        // Custom edge_kinds → should route to callgraph
+        let dispatch = crate::tools::resolve_calls_dispatch(&serde_json::json!({
+            "symbol": "a.a",
+            "direction": "outgoing",
+            "edge_kinds": ["calls", "references"],
+        }));
+        assert!(
+            matches!(dispatch, crate::tools::CallsDispatch::CallGraph(_)),
+            "custom edge_kinds should route to CallGraph"
+        );
+    }
+
+    #[test]
+    fn calls_dispatch_default_edges_routes_to_specific_handler() {
+        let store = test_store();
+        let _sid = insert_test_symbol(&store, "a.ts", "a.a");
+        let mut router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+
+        let dispatch = crate::tools::resolve_calls_dispatch(&serde_json::json!({
+            "symbol": "a.a",
+            "direction": "incoming",
+        }));
+        assert!(
+            matches!(dispatch, crate::tools::CallsDispatch::Callers),
+            "incoming with default edges should route to Callers"
+        );
+    }
+
+    #[test]
+    fn calls_dispatch_both_direction_routes_to_callgraph() {
+        let store = test_store();
+        let _sid = insert_test_symbol(&store, "a.ts", "a.a");
+        let mut router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+
+        let dispatch = crate::tools::resolve_calls_dispatch(&serde_json::json!({
+            "symbol": "a.a",
+            "direction": "both",
+        }));
+        assert!(
+            matches!(dispatch, crate::tools::CallsDispatch::CallGraph(_)),
+            "'both' direction should route to CallGraph"
+        );
+    }
+
+    #[test]
+    fn calls_dispatch_depth_gt_1_routes_to_callgraph() {
+        let store = test_store();
+        let _sid = insert_test_symbol(&store, "a.ts", "a.a");
+        let mut router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+
+        let dispatch = crate::tools::resolve_calls_dispatch(&serde_json::json!({
+            "symbol": "a.a",
+            "direction": "outgoing",
+            "depth": 3,
+        }));
+        assert!(
+            matches!(dispatch, crate::tools::CallsDispatch::CallGraph(_)),
+            "depth > 1 should route to CallGraph"
+        );
+    }
+
+    #[test]
+    fn calls_dispatch_unknown_direction_returns_error() {
+        let dispatch = crate::tools::resolve_calls_dispatch(&serde_json::json!({
+            "symbol": "a.a",
+            "direction": "sideways",
+        }));
+        assert!(
+            matches!(dispatch, crate::tools::CallsDispatch::Error(_)),
+            "unknown direction should return Error"
+        );
     }
 }

@@ -4,6 +4,8 @@
 //! Re-dispatches to the original handler after re-running lazy extraction on
 //! the snapshot's window, so newly cached data is picked up.
 
+use super::CallsDispatch;
+use super::resolve_calls_dispatch;
 use super::ToolRouter;
 use super::query_snapshot::QueryStatus;
 use serde_json::{Value, json};
@@ -99,68 +101,12 @@ impl ToolRouter {
                     ),
                 }
             }
-            "calls" => {
-                let direction = snapshot
-                    .tool_args
-                    .get("direction")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let depth = snapshot
-                    .tool_args
-                    .get("depth")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(1);
-                // Distinguish "not provided" (→ default) from explicit "[]" (→ wildcard).
-                let raw_kinds = snapshot
-                    .tool_args
-                    .get("edge_kinds")
-                    .and_then(|v| v.as_array());
-                let (is_wildcard, edge_kinds_is_custom): (bool, bool) = match raw_kinds {
-                    Some(arr) => {
-                        let kinds: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
-                        let wildcard = kinds.is_empty();
-                        let custom = !wildcard && kinds != ["calls", "instantiates", "implements"];
-                        (wildcard, custom)
-                    }
-                    None => (false, false),
-                };
-                // Custom edge_kinds, wildcard (explicit []), multi-hop, or bidirectional
-                // → callgraph (handles all properly)
-                if is_wildcard
-                    || edge_kinds_is_custom
-                    || depth > 1
-                    || direction == "both"
-                    || direction.is_empty()
-                {
-                    // handle_callgraph internally defaults depth to 3, but our
-                    // schema default is 1. Inject depth when not user-specified.
-                    let call_args = if snapshot.tool_args.get("depth").is_none() {
-                        let mut m = serde_json::Map::new();
-                        if let Some(obj) = snapshot.tool_args.as_object() {
-                            m.clone_from(obj);
-                        }
-                        m.insert(
-                            "depth".into(),
-                            serde_json::Value::Number(serde_json::Number::from(depth)),
-                        );
-                        serde_json::Value::Object(m)
-                    } else {
-                        snapshot.tool_args.clone()
-                    };
-                    self.handle_callgraph(&call_args)
-                } else {
-                    match direction {
-                        "incoming" => self.handle_callers(&snapshot.tool_args),
-                        "outgoing" => self.handle_callees(&snapshot.tool_args),
-                        _ => return (
-                            serde_json::to_string(
-                                &json!({"error": format!("resume not supported for calls direction '{}'", direction)}),
-                            ).unwrap(),
-                            true,
-                        ),
-                    }
-                }
-            }
+            "calls" => match resolve_calls_dispatch(&snapshot.tool_args) {
+                CallsDispatch::CallGraph(call_args) => self.handle_callgraph(&call_args),
+                CallsDispatch::Callers => self.handle_callers(&snapshot.tool_args),
+                CallsDispatch::Callees => self.handle_callees(&snapshot.tool_args),
+                CallsDispatch::Error(e) => (e, true),
+            },
             "symbol" => {
                 let view = snapshot
                     .tool_args

@@ -6,6 +6,7 @@
 //! engine response back to the MCP JSON format.
 
 use atlas_engine::Engine;
+use atlas_engine::FileId;
 use atlas_engine::InvestigationFocus;
 use atlas_engine::ScopedSearchRequest;
 use atlas_engine::ScopedSearchService;
@@ -15,7 +16,7 @@ use atlas_engine::SearchResult;
 use atlas_engine::SymbolKind;
 
 use super::lazy_response::{LazyDiagnostics, LazyResponse};
-use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy, ScoredCandidate};
+use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy, ScoredCandidate, parse_symbol_input};
 use super::{MAX_QUERY_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64};
 
 use serde_json::json;
@@ -343,8 +344,48 @@ impl ToolRouter {
 
     // ── symbol detail ─────────────────────────────────────────────────────
 
+    /// Check if the selector's file_path matches any file in the store.
+    /// Returns a diagnostic string if a file_path was provided but not found.
+    fn file_path_diagnostic(&self, input: &SymbolInput) -> Option<String> {
+        match input {
+            SymbolInput::Selector(sel) => {
+                if let Some(ref fp) = sel.file_path {
+                    let replaced = fp
+                        .trim_start_matches("./")
+                        .replace('\\', "/");
+                    let normalized = replaced.trim_end_matches('/');
+                    if normalized.is_empty() {
+                        return None;
+                    }
+                    let file_id = FileId::generate(&normalized);
+                    if self.store.get_file(&file_id).ok().flatten().is_none() {
+                        return Some(format!(
+                            "file_path '{}' does not match any file in the project",
+                            fp
+                        ));
+                    }
+                }
+                None
+            }
+            SymbolInput::Name(_) => None,
+        }
+    }
+
     pub(crate) fn handle_symbol_detail(&mut self, args: &serde_json::Value) -> (String, bool) {
-        let qname = get_str(args, "qualified_name");
+        // Accept both "symbol" (structured selector from handle_symbol)
+        // and "qualified_name" (legacy from handle_symbol_by_position / resume_task).
+        let (qname, symbol_input) = if let Ok(input) =
+            parse_symbol_input(args, "symbol")
+        {
+            let name = match &input {
+                SymbolInput::Name(s) => s.clone(),
+                SymbolInput::Selector(sel) => sel.qualified_name.clone(),
+            };
+            (name, input)
+        } else {
+            let name = get_str(args, "qualified_name").to_string();
+            (name.clone(), SymbolInput::Name(name))
+        };
         if qname.len() > MAX_SYMBOL_NAME_LENGTH {
             return (
                 serde_json::to_string_pretty(&json!({
@@ -370,7 +411,7 @@ impl ToolRouter {
         let lr = LazyResponse::new("symbol", args);
         let query_id = lr.query_id().to_string();
         let resolution = self.resolve_symbol_input(
-            &SymbolInput::Name(qname.to_string()),
+            &symbol_input,
             SymbolResolutionPolicy::UniqueOrCandidates,
         );
         let sym;
@@ -403,7 +444,7 @@ impl ToolRouter {
                     // Re-query after lazy — structural replace may have
                     // updated symbol metadata or source ranges.
                     sym = match self.resolve_symbol_input(
-                        &SymbolInput::Name(qname.to_string()),
+                        &symbol_input,
                         SymbolResolutionPolicy::UniqueOrCandidates,
                     ) {
                         Ok(SymbolResolution::Single { symbol_id: new_id, .. }) => self
@@ -412,7 +453,8 @@ impl ToolRouter {
                             .unwrap_or_default()
                             .unwrap_or(s),
                         Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
-                            let amb_resp = Self::build_ambiguous_symbol_body(qname, &candidates);
+                            let diag = self.file_path_diagnostic(&symbol_input);
+                            let amb_resp = Self::build_ambiguous_symbol_body(&qname, &candidates, diag.as_deref());
                             return lr.with_is_error(true)
                                      .with_precision_tier(structural_tier)
                                      .with_lazy_warnings(lazy_warnings)
@@ -428,14 +470,15 @@ impl ToolRouter {
                 }
             }
             Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
-                let amb_resp = Self::build_ambiguous_symbol_body(qname, &candidates);
+                let diag = self.file_path_diagnostic(&symbol_input);
+                let amb_resp = Self::build_ambiguous_symbol_body(&qname, &candidates, diag.as_deref());
                 return lr.with_is_error(true)
                          .build_with_args(amb_resp, args, self);
             }
             Ok(SymbolResolution::NotFound { .. }) => {
                 // Not found in manifest — trigger lazy structural extraction
                 let outcome = self.ensure_structural_for_symbol_name(
-                    qname,
+                    &qname,
                     include_roots.clone(),
                     None,
                     Some(&query_id),
@@ -450,7 +493,7 @@ impl ToolRouter {
                     ));
                 }
                 match self.resolve_symbol_input(
-                    &SymbolInput::Name(qname.to_string()),
+                    &symbol_input,
                     SymbolResolutionPolicy::UniqueOrCandidates,
                 ) {
                     Ok(SymbolResolution::Single { symbol_id, .. }) => {
@@ -464,7 +507,8 @@ impl ToolRouter {
                         }
                     }
                     Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
-                        let amb_resp = Self::build_ambiguous_symbol_body(qname, &candidates);
+                        let diag = self.file_path_diagnostic(&symbol_input);
+                        let amb_resp = Self::build_ambiguous_symbol_body(&qname, &candidates, diag.as_deref());
                         return lr.with_is_error(true)
                                  .with_precision_tier(structural_tier)
                                  .with_lazy_warnings(lazy_warnings)
@@ -567,6 +611,7 @@ impl ToolRouter {
     fn build_ambiguous_symbol_body(
         qname: &str,
         candidates: &[ScoredCandidate],
+        diagnostic: Option<&str>,
     ) -> serde_json::Value {
         let candidates_json: Vec<serde_json::Value> = candidates
             .iter()
@@ -582,11 +627,19 @@ impl ToolRouter {
                 })
             })
             .collect();
-        let hint = format!(
-            "Symbol '{}' is ambiguous ({} matches). Use the symbol_ref from a candidate below.",
-            qname,
-            candidates.len()
-        );
+        let hint = match diagnostic {
+            Some(d) => format!(
+                "Symbol '{}' is ambiguous ({} matches). {} Use the symbol_ref from a candidate below.",
+                qname,
+                candidates.len(),
+                d
+            ),
+            None => format!(
+                "Symbol '{}' is ambiguous ({} matches). Use the symbol_ref from a candidate below.",
+                qname,
+                candidates.len()
+            ),
+        };
         json!({
             "ok": false,
             "error": hint,
