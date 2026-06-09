@@ -79,8 +79,11 @@ impl ToolRouter {
         }
 
         ctx.send_progress(0.7, "Building context view...");
-        match self
-            .context_builder()
+        let cb = match self.context_builder() {
+            Ok(cb) => cb,
+            Err(e) => return (format!("Internal error: {e}"), true),
+        };
+        match cb
             .build_context_for_symbol(&sid, include_file_peers)
         {
             Ok(view) => {
@@ -367,7 +370,7 @@ impl ToolRouter {
         // `ensure_structural_for_symbol_name`, but tier 3 does
         // symbol-based lookup so we check here to skip the progress
         // message when lazy work is a no-op.
-        let is_manual_full = self.has_manual_full_index();
+        let is_manual_full = self.cache.has_manual_full_index(&self.store);
         if !is_manual_full {
             ctx.send_progress(0.5, "Extracting structural data...");
             let outcome = self.ensure_structural_for_symbol_name(

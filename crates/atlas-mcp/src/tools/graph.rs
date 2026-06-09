@@ -150,7 +150,7 @@ impl ToolRouter {
         let qname = get_str(args, "symbol");
         if qname.len() > MAX_SYMBOL_NAME_LENGTH {
             return (
-                format!("symbol exceeds max length of {}", MAX_SYMBOL_NAME_LENGTH),
+                format!("symbol exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
                 true,
             );
         }
@@ -203,7 +203,11 @@ impl ToolRouter {
             Some(&query_id),
         );
 
-        let graph = self.context_builder().graph_snapshot();
+        let cb = match self.context_builder() {
+            Ok(cb) => cb,
+            Err(e) => return (format!("Internal error: {e}"), true),
+        };
+        let graph = cb.graph_snapshot();
         let cg = graph.callers(&sid);
         let snap = graph.snapshot();
         let shown = cg.callers.iter().take(limit);
@@ -215,7 +219,7 @@ impl ToolRouter {
             "total_callers": cg.callers.len(),
             "callers": nodes,
         });
-        if !self.has_manual_full_index() {
+        if !self.cache.has_manual_full_index(&self.store) {
             resp["note"] = json!(
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
@@ -239,7 +243,7 @@ impl ToolRouter {
         let qname = get_str(args, "symbol");
         if qname.len() > MAX_SYMBOL_NAME_LENGTH {
             return (
-                format!("symbol exceeds max length of {}", MAX_SYMBOL_NAME_LENGTH),
+                format!("symbol exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
                 true,
             );
         }
@@ -292,7 +296,11 @@ impl ToolRouter {
             );
         }
 
-        let graph = self.context_builder().graph_snapshot();
+        let cb = match self.context_builder() {
+            Ok(cb) => cb,
+            Err(e) => return (format!("Internal error: {e}"), true),
+        };
+        let graph = cb.graph_snapshot();
         let cg = graph.callees(&sid);
         let snap = graph.snapshot();
         let shown = cg.callees.iter().take(limit);
@@ -304,7 +312,7 @@ impl ToolRouter {
             "total_callees": cg.callees.len(),
             "callees": nodes,
         });
-        if !self.has_manual_full_index() {
+        if !self.cache.has_manual_full_index(&self.store) {
             resp["note"] = json!(
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
@@ -327,7 +335,7 @@ impl ToolRouter {
         let qname = get_str(args, "symbol");
         if qname.len() > MAX_SYMBOL_NAME_LENGTH {
             return (
-                format!("symbol exceeds max length of {}", MAX_SYMBOL_NAME_LENGTH),
+                format!("symbol exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
                 true,
             );
         }
@@ -425,7 +433,11 @@ impl ToolRouter {
             }
         };
 
-        let graph = self.context_builder().graph_snapshot();
+        let cb = match self.context_builder() {
+            Ok(cb) => cb,
+            Err(e) => return (format!("Internal error: {e}"), true),
+        };
+        let graph = cb.graph_snapshot();
         let snap = graph.snapshot();
 
         // Build hop-by-hop view: separate callers from callees at each depth.
@@ -544,7 +556,7 @@ impl ToolRouter {
             "total_nodes_visited": total_nodes,
             "hops": hops,
         });
-        if !self.has_manual_full_index() {
+        if !self.cache.has_manual_full_index(&self.store) {
             resp["note"] = json!(
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
@@ -565,13 +577,13 @@ impl ToolRouter {
         let to_qname = get_str(args, "to");
         if from_qname.len() > MAX_SYMBOL_NAME_LENGTH {
             return (
-                format!("from exceeds max length of {}", MAX_SYMBOL_NAME_LENGTH),
+                format!("from exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
                 true,
             );
         }
         if to_qname.len() > MAX_SYMBOL_NAME_LENGTH {
             return (
-                format!("to exceeds max length of {}", MAX_SYMBOL_NAME_LENGTH),
+                format!("to exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
                 true,
             );
         }
@@ -637,9 +649,13 @@ impl ToolRouter {
             .map(|lo| LazyDiagnostics::from_structural_with_stats(lo, stats.as_ref()));
         let tier = outcome.precision_tier;
         // Cache for no-path diagnostics below (used in user-facing messages).
-        let is_manual_full = self.has_manual_full_index();
+        let is_manual_full = self.cache.has_manual_full_index(&self.store);
 
-        let graph = self.context_builder().graph_snapshot();
+        let cb = match self.context_builder() {
+            Ok(cb) => cb,
+            Err(e) => return (format!("Internal error: {e}"), true),
+        };
+        let graph = cb.graph_snapshot();
         let snap = graph.snapshot();
 
         // Try all SymbolId pairs for the same qname.  In C/C++, a symbol
@@ -1094,7 +1110,7 @@ impl ToolRouter {
         let qname = get_str(args, "symbol");
         if qname.len() > MAX_SYMBOL_NAME_LENGTH {
             return (
-                format!("symbol exceeds max length of {}", MAX_SYMBOL_NAME_LENGTH),
+                format!("symbol exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
                 true,
             );
         }
@@ -1142,7 +1158,7 @@ impl ToolRouter {
                 let ambiguous =
                     atlas_engine::dossier::builder::ExploreDossierBuilder::build_ambiguous(qname, symbol_candidates);
                 let json = serde_json::to_string(&ambiguous)
-                    .unwrap_or_else(|e| format!(r#"{{"error":"{}"}}"#, e));
+                    .unwrap_or_else(|e| format!(r#"{{"error":"{e}"}}"#));
                 return (json, false);
             }
             Err(e) => return (e, true),
@@ -1190,9 +1206,13 @@ impl ToolRouter {
             self.store(),
             self.project_root.clone(),
         );
+        let cb = match self.context_builder() {
+            Ok(cb) => cb,
+            Err(e) => return (format!("Internal error: {e}"), true),
+        };
         let relation_repo = atlas_engine::dossier::RelationRepo::new(
             self.store(),
-            self.context_builder().graph_snapshot(),
+            cb.graph_snapshot(),
         );
         let file_repo = atlas_engine::dossier::FileFactsRepo::new(self.store());
 
@@ -1209,7 +1229,7 @@ impl ToolRouter {
         };
 
         let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
-        let tier_str = format!("{:?}", tier);
+        let tier_str = format!("{tier:?}");
 
         let mut dossier = match atlas_engine::dossier::builder::ExploreDossierBuilder::build(
             &sym,
@@ -1250,7 +1270,7 @@ impl ToolRouter {
         let qname = get_str(args, "symbol");
         if qname.len() > MAX_SYMBOL_NAME_LENGTH {
             return (
-                format!("symbol exceeds max length of {}", MAX_SYMBOL_NAME_LENGTH),
+                format!("symbol exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
                 true,
             );
         }
@@ -1357,7 +1377,11 @@ impl ToolRouter {
             .as_ref()
             .map(LazyDiagnostics::from_structural);
 
-        let graph = self.context_builder().graph_snapshot();
+        let cb = match self.context_builder() {
+            Ok(cb) => cb,
+            Err(e) => return (format!("Internal error: {e}"), true),
+        };
+        let graph = cb.graph_snapshot();
         let sub = if include_children {
             graph.impact_with_children_and_kinds(&sid, depth.min(5), edge_kinds.clone(), direction)
         } else {
@@ -1594,7 +1618,7 @@ impl ToolRouter {
                 "domain_rules_applied": domain_rules.is_some(),
             });
         }
-        if !self.has_manual_full_index() {
+        if !self.cache.has_manual_full_index(&self.store) {
             resp["capability_note"] = json!(
                 "manifest-only: structural data incomplete. Run 'atlas index' for full results."
             );
@@ -1702,6 +1726,7 @@ mod tests {
         let sid_b = insert_test_symbol(&store, "b.ts", "b");
         let before = router
             .context_builder()
+            .unwrap()
             .graph_snapshot()
             .impact_with_kinds(
                 &sid_b,
@@ -1716,6 +1741,7 @@ mod tests {
         router.maybe_refresh_graph().unwrap();
         let after = router
             .context_builder()
+            .unwrap()
             .graph_snapshot()
             .impact_with_kinds(
                 &sid_b,

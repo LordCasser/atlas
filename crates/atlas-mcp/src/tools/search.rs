@@ -75,7 +75,7 @@ impl ToolRouter {
         // When a manual full structural index exists (built via CLI `atlas index`),
         // scope restrictions are lifted and lazy structural is disabled — all
         // files already have complete structural facts.
-        let is_manual_full = self.has_manual_full_index();
+        let is_manual_full = self.cache.has_manual_full_index(&self.store);
 
         let scope = match scope {
             Some(s) => s.to_string(),
@@ -256,11 +256,11 @@ impl ToolRouter {
         include_roots: Vec<atlas_engine::IncludeRoot>,
         root_warnings: Vec<String>,
     ) -> (String, bool) {
-        let task_id = self.task_manager.create_task("search", "search");
+        let task_id = self.async_state.task_manager.create_task("search", "search");
         let tid = task_id.clone();
         let store = self.store.clone();
         let project_root = self.project_root.clone();
-        let task_manager = self.task_manager.clone();
+        let task_manager = self.async_state.task_manager.clone();
         let q = query.to_string();
         let k = kind.map(|s| s.to_string());
         let sc = scope.to_string();
@@ -464,7 +464,11 @@ impl ToolRouter {
             }
         };
         // Re-acquire graph after lazy structural may have refreshed it
-        let graph = self.search_engine().graph_snapshot();
+        let se = match self.search_engine() {
+            Ok(se) => se,
+            Err(e) => return (format!("Internal error: {e}"), true),
+        };
+        let graph = se.graph_snapshot();
         let snap = graph.snapshot();
 
         let caller_nodes: Vec<_> = graph

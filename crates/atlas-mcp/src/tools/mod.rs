@@ -10,8 +10,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Instant;
-
 use atlas_engine::ContextBuilder;
 use atlas_engine::FileId;
 use atlas_engine::LazyDataflowService;
@@ -22,14 +20,16 @@ use atlas_engine::SourceExtractor;
 use atlas_engine::Store;
 use atlas_engine::SymbolId;
 use atlas_engine::TraceDiagnostic;
-use atlas_engine::is_rich_index_mode;
 
 use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolInputSchema};
 
 use serde_json::{Value, json};
 
+use crate::tools::async_state::AsyncState;
+use crate::tools::cache_state::CacheState;
 use crate::tools::lazy_response::{CapabilityStats, SnapshotStore};
-use crate::tools::query_snapshot::{InvestigationState, QUERY_SNAPSHOT_TTL_SECS, QuerySnapshot};
+use crate::tools::query_snapshot::{InvestigationState, QuerySnapshot};
+use crate::tools::graph_state::GraphState;
 
 /// Progress report tuple: (progress, total, message)
 pub(crate) type ProgressReport = (f64, Option<f64>, Option<String>);
@@ -147,13 +147,16 @@ pub(crate) const MAX_ANNOTATION_QNAME_LENGTH: usize = 512;
 pub(crate) const MAX_FILE_PATH_LENGTH: usize = 4096;
 
 pub(crate) mod annotations;
+pub(crate) mod async_state;
 pub(crate) mod atlas_jobs;
 pub(crate) mod branch_diff;
+pub(crate) mod cache_state;
 pub(crate) mod context;
 pub(crate) mod dependencies;
 pub(crate) mod dependents;
 pub(crate) mod domain_rules;
 pub(crate) mod graph;
+pub(crate) mod graph_state;
 pub(crate) mod index;
 pub(crate) mod lazy_refresh;
 pub(crate) mod lazy_response;
@@ -193,39 +196,20 @@ pub struct ToolRouter {
     /// Wrapped in Mutex because Engine contains RefCell (Send but not Sync).
     pub(crate) engine: Mutex<atlas_engine::Engine>,
     pub(crate) lazy_service: LazyDataflowService,
-    /// Graph engines built lazily on first request (after MCP handshake).
-    pub(crate) search: Option<SearchEngine>,
-    pub(crate) context: Option<ContextBuilder>,
+    /// Graph engines and lifecycle state (lazy init, refresh, background rebuild).
+    pub(crate) graph: GraphState,
+    /// Index-signature and manual-full-index caching.
+    pub(crate) cache: CacheState,
     /// AST-aware source extractor (tree-sitter re-parsing).
     pub(crate) source_extractor: SourceExtractor,
     /// Project root directory for snippet extraction.
     pub(crate) project_root: std::path::PathBuf,
     tools: Vec<Tool>,
-    /// Database/index signature at last graph build (used to detect external index/sync).
-    last_graph_signature: String,
-    /// True once the graph has been built at least once.
-    graph_initialized: bool,
     /// Consolidates lazy graph refresh state: pending file IDs, cumulative
     /// write counter, and deferred full-rebuild scheduling.
     pub(crate) lazy_refresh_queue: Arc<lazy_refresh::LazyRefreshQueue>,
-    /// Background-built graph waiting to be atomically swapped in.
-    pending_graph_rebuild: Arc<Mutex<Option<Arc<atlas_engine::GraphEngine>>>>,
-    /// Cached signature to avoid per-request COUNT queries.
-    cached_signature: String,
-    /// When the cached signature was last checked (avoids re-query within cooldown).
-    last_signature_check: std::time::Instant,
-    /// Cached result of `has_manual_full_index()` keyed by index signature.
-    /// `None` means not yet checked; signature changes force re-check.
-    cached_manual_full_index: RwLock<Option<(String, bool)>>,
-    /// Background task manager for `background: true` mode.
-    pub(crate) task_manager: Arc<crate::task_manager::TaskManager>,
-    /// Project activations prepared by background `open_project` tasks.
-    pub(crate) pending_project_activations: Arc<Mutex<HashMap<String, PendingProjectActivation>>>,
-    /// In-memory query snapshots for `atlas_resume`.
-    pub(crate) query_snapshots: Mutex<HashMap<String, QuerySnapshot>>,
-    /// Per-store prewarm guard: at most one background dataflow prewarm
-    /// thread per store, shared across all concurrent MCP requests.
-    prewarm_running: Arc<AtomicBool>,
+    /// Background task and async operation state.
+    pub(crate) async_state: AsyncState,
     /// Investigation state (MCP session scoped) for lazy job prioritization.
     pub(crate) investigation_state: InvestigationState,
 }
@@ -260,22 +244,28 @@ impl ToolRouter {
             store: store.clone(),
             engine: Mutex::new(engine),
             lazy_service,
-            search: Some(search),
-            context: Some(context),
+            graph: GraphState {
+                search: Some(search),
+                context: Some(context),
+                graph_initialized: true,
+                last_graph_signature: last_graph_signature.clone(),
+                pending_graph_rebuild: Arc::new(Mutex::new(None)),
+            },
             source_extractor,
             project_root,
             tools: make_all_tools(),
-            last_graph_signature: last_graph_signature.clone(),
-            graph_initialized: true,
             lazy_refresh_queue: lazy_refresh::LazyRefreshQueue::new(),
-            pending_graph_rebuild: Arc::new(Mutex::new(None)),
-            cached_signature: last_graph_signature,
-            last_signature_check: std::time::Instant::now(),
-            task_manager: Arc::new(crate::task_manager::TaskManager::new()),
-            pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
-            cached_manual_full_index: RwLock::new(None),
-            query_snapshots: Mutex::new(HashMap::new()),
-            prewarm_running: Arc::new(AtomicBool::new(false)),
+            cache: CacheState {
+                cached_signature: last_graph_signature.clone(),
+                last_signature_check: std::time::Instant::now(),
+                cached_manual_full_index: RwLock::new(None),
+            },
+            async_state: AsyncState {
+                task_manager: Arc::new(crate::task_manager::TaskManager::new()),
+                pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
+                query_snapshots: Mutex::new(HashMap::new()),
+                prewarm_running: Arc::new(AtomicBool::new(false)),
+            },
             investigation_state: InvestigationState::default(),
         }
     }
@@ -290,22 +280,28 @@ impl ToolRouter {
             store: store.clone(),
             engine: Mutex::new(engine),
             lazy_service,
-            search: None,
-            context: None,
+            graph: GraphState {
+                search: None,
+                context: None,
+                graph_initialized: false,
+                last_graph_signature: String::new(),
+                pending_graph_rebuild: Arc::new(Mutex::new(None)),
+            },
             source_extractor,
             project_root,
             tools,
-            last_graph_signature: String::new(),
-            graph_initialized: false,
             lazy_refresh_queue: lazy_refresh::LazyRefreshQueue::new(),
-            pending_graph_rebuild: Arc::new(Mutex::new(None)),
-            cached_signature: String::new(),
-            last_signature_check: std::time::Instant::now(),
-            task_manager: Arc::new(crate::task_manager::TaskManager::new()),
-            pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
-            cached_manual_full_index: RwLock::new(None),
-            query_snapshots: Mutex::new(HashMap::new()),
-            prewarm_running: Arc::new(AtomicBool::new(false)),
+            cache: CacheState {
+                cached_signature: String::new(),
+                last_signature_check: std::time::Instant::now(),
+                cached_manual_full_index: RwLock::new(None),
+            },
+            async_state: AsyncState {
+                task_manager: Arc::new(crate::task_manager::TaskManager::new()),
+                pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
+                query_snapshots: Mutex::new(HashMap::new()),
+                prewarm_running: Arc::new(AtomicBool::new(false)),
+            },
             investigation_state: InvestigationState::default(),
         }
     }
@@ -336,38 +332,17 @@ impl ToolRouter {
     /// This is called only for graph-backed tool calls after the MCP handshake
     /// completes, so the client doesn't timeout waiting for a startup response.
     pub fn ensure_graph_initialized(&mut self) -> anyhow::Result<()> {
-        if self.graph_initialized {
-            return Ok(());
-        }
-        tracing::info!("Building graph snapshot (first request)...");
-        let graph = Arc::new(atlas_engine::GraphEngine::from_store(&self.store, 0.3)?);
-        self.search = Some(SearchEngine::new(
-            Arc::clone(&self.store),
-            Arc::clone(&graph),
-        ));
-        self.context = Some(
-            ContextBuilder::new(Arc::clone(&self.store), graph)
-                .with_project_root(self.project_root.clone()),
-        );
-        // Register AST-aware source extraction reader.
-        let ext = self.source_extractor.clone();
-        if let Some(ctx) = self.context.take() {
-            self.context = Some(ctx.with_source_fn(Arc::new(ext)));
-        }
-        self.last_graph_signature = self.store.index_signature().unwrap_or_default();
-        self.graph_initialized = true;
-        tracing::info!("Graph snapshot ready.");
-        Ok(())
+        self.graph.ensure_initialized(&self.store, &self.source_extractor, &self.project_root)
     }
 
-    /// Access the search engine (panics if graph not initialized).
-    pub(crate) fn search_engine(&self) -> &SearchEngine {
-        self.search.as_ref().expect("graph not initialized")
+    /// Access the search engine.
+    pub(crate) fn search_engine(&self) -> Result<&SearchEngine, graph_state::GraphNotInitializedError> {
+        self.graph.search_engine()
     }
 
-    /// Access the context builder (panics if graph not initialized).
-    pub(crate) fn context_builder(&self) -> &ContextBuilder {
-        self.context.as_ref().expect("graph not initialized")
+    /// Access the context builder.
+    pub(crate) fn context_builder(&self) -> Result<&ContextBuilder, graph_state::GraphNotInitializedError> {
+        self.graph.context_builder()
     }
 
     /// Check if the store has any indexed files (fast COUNT query).
@@ -397,37 +372,28 @@ impl ToolRouter {
         }
     }
 
-    /// Detect whether the current database already has a reusable rich index.
-    ///
-    /// This lets MCP avoid lazy preparse work when the active store is already
-    /// structural/full, regardless of whether that index was built by CLI, TUI,
-    /// or MCP.
-    ///
-    /// The result is cached for the lifetime of the session; callers that
-    /// trigger a re-index (MCP `index` tool) should invalidate this cache
-    /// after completion.
-    pub(crate) fn has_manual_full_index(&self) -> bool {
-        let signature = self.store.index_signature().unwrap_or_default();
-        if let Some((cached_signature, cached)) = &*self.cached_manual_full_index.read().expect("cached_manual_full_index lock poisoned")
-            && *cached_signature == signature
-        {
-            return *cached;
-        }
-        let index_mode = self
+    /// Rebuild the graph snapshot from the store if the index signature changed.
+    fn rebuild_if_signature_changed(&mut self, reason: &str) -> anyhow::Result<()> {
+        let current = self
             .store
-            .read_index_mode()
-            .unwrap_or_else(|_| "unknown".to_string());
-        let result = is_rich_index_mode(&index_mode);
-        *self.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = Some((signature, result));
-        result
-    }
-
-    /// Invalidate the cached manual-full-index flag.
-    ///
-    /// Called after MCP `index` completes, so the next search/trace query
-    /// re-checks the actual layer distribution.
-    pub(crate) fn invalidate_manual_full_index_cache(&self) {
-        *self.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = None;
+            .index_signature()
+            .unwrap_or_else(|_| self.cache.cached_signature.clone());
+        if current != self.graph.last_graph_signature {
+            tracing::info!("{reason}");
+            let graph = Arc::new(atlas_engine::GraphEngine::from_store(&self.store, 0.3)?);
+            if let Some(ref mut s) = self.graph.search {
+                s.refresh_graph(Arc::clone(&graph));
+            }
+            if let Some(ref mut c) = self.graph.context {
+                c.refresh_graph(graph);
+            }
+            self.graph.last_graph_signature = current.clone();
+            // Re-check whether a manual full index now exists (layer distribution
+            // may have changed after external index/sync or lazy structural).
+            *self.cache.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = None;
+        }
+        self.cache.cached_signature = current;
+        Ok(())
     }
 
     /// Resolve a [`FileId`] to its human-readable file path.
@@ -449,7 +415,7 @@ impl ToolRouter {
     pub(crate) fn activate_project(&mut self, project_root: std::path::PathBuf, store: Arc<Store>) {
         self.lazy_refresh_queue.clear();
         self.lazy_refresh_queue = lazy_refresh::LazyRefreshQueue::new();
-        self.pending_graph_rebuild = Arc::new(Mutex::new(None));
+        self.graph.pending_graph_rebuild = Arc::new(Mutex::new(None));
 
         let (engine, lazy_service, source_extractor) =
             Self::project_runtime(store.clone(), &project_root);
@@ -458,21 +424,21 @@ impl ToolRouter {
         *self.engine.lock().expect("engine lock poisoned") = engine;
         self.lazy_service = lazy_service;
         self.source_extractor = source_extractor;
-        self.search = None;
-        self.context = None;
-        self.graph_initialized = false;
-        self.cached_signature.clear();
-        self.last_graph_signature.clear();
-        self.last_signature_check = std::time::Instant::now();
-        *self.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = None;
-        self.query_snapshots.lock().expect("query_snapshots lock poisoned").clear();
+        self.graph.search = None;
+        self.graph.context = None;
+        self.graph.graph_initialized = false;
+        self.cache.cached_signature.clear();
+        self.graph.last_graph_signature.clear();
+        self.cache.last_signature_check = std::time::Instant::now();
+        *self.cache.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = None;
+        self.async_state.query_snapshots.lock().expect("query_snapshots lock poisoned").clear();
         self.investigation_state = InvestigationState::default();
     }
 
     /// Activate a prepared background `open_project` result, if one exists.
     pub(crate) fn activate_pending_project_for_task(&mut self, task_id: &str) -> Option<String> {
         let pending = self
-            .pending_project_activations
+            .async_state.pending_project_activations
             .lock()
             .ok()
             .and_then(|mut pending| pending.remove(task_id));
@@ -489,22 +455,29 @@ impl ToolRouter {
     /// The signature query is deliberately cheap compared with graph traversal,
     /// so correctness takes precedence over a short cooldown cache here.
     pub(crate) fn maybe_refresh_graph(&mut self) -> anyhow::Result<()> {
-        if !self.graph_initialized {
+        if !self.graph.graph_initialized {
             return Ok(());
         }
 
         // Step 1: Always flush pending incremental writes (no cooldown).
         // This ensures lazy writes from THIS request are visible before graph queries.
         let batch = self.lazy_refresh_queue.take_incremental_batch(500);
-        self.refresh_graph_for_files(&batch)?;
+        self.graph.refresh_graph_for_files(&self.store, &batch)?;
+        // Cache invalidation: new store data may have changed layer distribution.
+        if !batch.is_empty() {
+            *self.cache.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = None;
+        }
 
         // Step 2: Deferred full rebuild — try to apply a background-built graph,
         // or spawn the rebuild thread. NEVER blocks the current request.
-        self.try_apply_or_spawn_rebuild();
+        self.graph.try_apply_or_spawn_rebuild(
+            Arc::clone(&self.store),
+            Arc::clone(&self.lazy_refresh_queue),
+        );
 
         // Step 3: Always check the store signature. A full index may change
         // extraction layers and graph facts without going through this router.
-        self.last_signature_check = std::time::Instant::now();
+        self.cache.last_signature_check = std::time::Instant::now();
         self.rebuild_if_signature_changed("Index signature changed, refreshing graph")
     }
 
@@ -515,146 +488,11 @@ impl ToolRouter {
     /// in-memory graph includes the newly parsed edges before graph-backed
     /// tools run their queries.
     pub(crate) fn force_refresh_graph(&mut self) -> anyhow::Result<()> {
-        if !self.graph_initialized {
+        if !self.graph.graph_initialized {
             return Ok(());
         }
-        self.last_signature_check = std::time::Instant::now();
+        self.cache.last_signature_check = std::time::Instant::now();
         self.rebuild_if_signature_changed("Force-refreshing graph after lazy structural extraction")
-    }
-
-    /// Atomically swap in a pre-built graph, updating both search and context engines.
-    fn swap_graph(&mut self, graph: Arc<atlas_engine::GraphEngine>) {
-        if let Some(ref mut s) = self.search {
-            s.refresh_graph(Arc::clone(&graph));
-        }
-        if let Some(ref mut c) = self.context {
-            c.refresh_graph(graph);
-        }
-        self.last_graph_signature = self.store.index_signature().unwrap_or_default();
-        *self.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = None;
-    }
-
-    /// Try to apply a background-built graph from the pending slot,
-    /// or spawn a background rebuild thread if one was scheduled.
-    ///
-    /// Step 1: If a pending graph exists (built by a previous background thread),
-    /// swap it in and clear the flags.
-    /// Step 2: If a full rebuild was scheduled (cumulative threshold reached),
-    /// and no rebuild is in progress, spawn a background thread to build the
-    /// graph from the store. The current request continues with the old snapshot.
-    fn try_apply_or_spawn_rebuild(&mut self) {
-        // Step 1: Check for a pre-built graph in the pending slot.
-        if let Some(graph) = self
-            .pending_graph_rebuild
-            .lock()
-            .ok()
-            .and_then(|mut p| p.take())
-        {
-            tracing::info!("Applying background-built graph snapshot");
-            self.swap_graph(graph);
-            self.lazy_refresh_queue.mark_rebuild_applied();
-            self.lazy_refresh_queue.mark_rebuild_finished();
-            return;
-        }
-
-        // Step 2: If a full rebuild is needed and no rebuild is in progress,
-        // spawn a background thread to build the graph.
-        if self.lazy_refresh_queue.needs_full_rebuild()
-            && self.lazy_refresh_queue.try_start_rebuild()
-        {
-            tracing::info!("Spawning background full graph rebuild (non-blocking)");
-            let store = Arc::clone(&self.store);
-            let pending = Arc::clone(&self.pending_graph_rebuild);
-            let queue = Arc::clone(&self.lazy_refresh_queue);
-            std::thread::spawn(move || {
-                match atlas_engine::GraphEngine::from_store(&store, 0.3) {
-                    Ok(graph) => {
-                        if let Ok(mut slot) = pending.lock() {
-                            *slot = Some(Arc::new(graph));
-                        }
-                        // Note: rebuild_in_progress stays true until the pending
-                        // graph is picked up by a subsequent try_apply_or_spawn_rebuild.
-                    }
-                    Err(e) => {
-                        tracing::error!("Background graph rebuild failed: {:#}", e);
-                        queue.mark_rebuild_finished();
-                        queue.schedule_full_rebuild(); // retry on next call
-                    }
-                }
-            });
-        }
-    }
-
-    /// Refresh graph after lazy structural extraction.
-    ///
-    /// Uses per-file replace for small change sets: clones the existing
-    /// in-memory snapshot, removes old nodes/edges for the changed files
-    /// via [`remove_files_in_place`], then merges the fresh data from
-    /// the store.  For large change sets (> 500 files), falls back to
-    /// full rebuild (cloning the snapshot becomes costlier than SQLite scan).
-    pub(crate) fn refresh_graph_for_files(&mut self, file_ids: &[FileId]) -> anyhow::Result<()> {
-        if !self.graph_initialized || file_ids.is_empty() {
-            return Ok(());
-        }
-
-        const REPLACE_THRESHOLD: usize = 500;
-        if file_ids.len() > REPLACE_THRESHOLD {
-            return self.force_refresh_graph();
-        }
-
-        // Clone the existing snapshot and replace changed files in-place
-        let old_graph = match self.search.as_ref() {
-            Some(s) => s.graph_snapshot(),
-            None => return self.force_refresh_graph(),
-        };
-        let file_paths: std::collections::HashMap<FileId, String> = self
-            .store
-            .list_files()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|f| (f.file_id, f.path))
-            .collect();
-
-        let old_snap = old_graph.snapshot();
-        let mut new_snapshot = old_snap.clone();
-        new_snapshot.replace_files_in_place(&self.store, file_ids, 0.3, &file_paths)?;
-
-        let new_graph = Arc::new(atlas_engine::GraphEngine::from_snapshot(new_snapshot));
-        if let Some(ref mut s) = self.search {
-            s.refresh_graph(Arc::clone(&new_graph));
-        }
-        if let Some(ref mut c) = self.context {
-            c.refresh_graph(new_graph);
-        }
-
-        self.last_graph_signature = self.store.index_signature().unwrap_or_default();
-        *self.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = None;
-
-        Ok(())
-    }
-
-    /// Rebuild the graph snapshot from the store if the index signature changed.
-    fn rebuild_if_signature_changed(&mut self, reason: &str) -> anyhow::Result<()> {
-        let current = self
-            .store
-            .index_signature()
-            .unwrap_or_else(|_| self.cached_signature.clone());
-        if current != self.last_graph_signature {
-            tracing::info!("{reason}");
-            let graph = Arc::new(atlas_engine::GraphEngine::from_store(&self.store, 0.3)?);
-            if let Some(ref mut s) = self.search {
-                s.refresh_graph(Arc::clone(&graph));
-            }
-            if let Some(ref mut c) = self.context {
-                c.refresh_graph(graph);
-            }
-            self.last_graph_signature = current.clone();
-            // Re-check whether a manual full index now exists (layer distribution
-            // may have changed after external index/sync or lazy structural).
-            *self.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = None;
-        }
-        self.cached_signature = current;
-        Ok(())
     }
 
     /// Handle tools/list — return all registered tool definitions.
@@ -720,7 +558,7 @@ impl ToolRouter {
         if task_id.is_empty() {
             return ("Missing task_id parameter".to_string(), true);
         }
-        match self.task_manager.get_task(task_id) {
+        match self.async_state.task_manager.get_task(task_id) {
             Some(info) => {
                 let status_str = match info.status {
                     crate::task_manager::TaskStatus::Running => "running",
@@ -869,7 +707,7 @@ impl ToolRouter {
 
         let mut warnings = Vec::new();
         let mut built_file_ids = Vec::new();
-        if self.has_manual_full_index() {
+        if self.cache.has_manual_full_index(&self.store) {
             return StructuralEnsureOutcome {
                 warnings,
                 built_file_ids,
@@ -893,7 +731,7 @@ impl ToolRouter {
             Some(self.project_root.clone()),
             include_roots,
         )
-        .with_prewarm_flag(self.prewarm_running.clone());
+        .with_prewarm_flag(self.async_state.prewarm_running.clone());
         let outcome = match orchestrator.ensure_structural_for_files(
             &file_vec,
             LazyPolicy::ForegroundStructural,
@@ -944,7 +782,7 @@ impl ToolRouter {
 
         let mut warnings = Vec::new();
         let mut built_file_ids = Vec::new();
-        if self.has_manual_full_index() {
+        if self.cache.has_manual_full_index(&self.store) {
             return StructuralEnsureOutcome {
                 warnings,
                 built_file_ids,
@@ -957,7 +795,7 @@ impl ToolRouter {
             Some(self.project_root.clone()),
             include_roots,
         )
-        .with_prewarm_flag(self.prewarm_running.clone());
+        .with_prewarm_flag(self.async_state.prewarm_running.clone());
         let outcome = match orchestrator.ensure_structural_for_symbol(
             symbol_name,
             LazyPolicy::ForegroundStructural,
@@ -1111,20 +949,11 @@ impl ToolRouter {
 
     /// Store a query snapshot, pruning expired entries first.
     pub(crate) fn store_snapshot(&mut self, snapshot: QuerySnapshot) {
-        self.prune_expired_snapshots();
-        self.query_snapshots
+        self.async_state.prune_expired_snapshots();
+        self.async_state.query_snapshots
             .lock()
             .unwrap()
             .insert(snapshot.query_id.clone(), snapshot);
-    }
-
-    /// Remove query snapshots older than TTL.
-    pub(crate) fn prune_expired_snapshots(&mut self) {
-        let cutoff = Instant::now() - std::time::Duration::from_secs(QUERY_SNAPSHOT_TTL_SECS);
-        self.query_snapshots
-            .lock()
-            .unwrap()
-            .retain(|_, s| s.created_at > cutoff);
     }
 
     /// Update or create investigation based on a tool call focus.
@@ -1824,7 +1653,7 @@ impl ToolRouter {
         let mut coverage = "full";
         let mut reason: Option<&str> = None;
 
-        if !self.has_manual_full_index() {
+        if !self.cache.has_manual_full_index(&self.store) {
             let max_files = get_u64(args, "max_structural_files")
                 .or_else(|| get_u64(args, "limit"))
                 .unwrap_or(50) as usize;
@@ -2329,7 +2158,7 @@ impl ToolRouter {
     /// the runtime. This path exists for tests and embedded callers that invoke
     /// `ToolRouter::call_tool` directly.
     pub(crate) fn handle_wait_for_task_sync(&mut self, args: &Value) -> (String, bool) {
-        let wfr = wait_for::handle_wait_for_task_sync(&self.task_manager, args);
+        let wfr = wait_for::handle_wait_for_task_sync(&self.async_state.task_manager, args);
         if !wfr.task_is_project_completed {
             return (wfr.json_text, wfr.is_error);
         }
