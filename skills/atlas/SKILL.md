@@ -91,6 +91,29 @@ The 18 MCP tools use short names (no `atlas_` prefix):
 | `wait_for_task` | Block until task completes | `task_id` (required), optional `timeout_secs`, `poll_interval_secs` |
 | `resume_task` | Resume a previous partial query | `query_id` (required) |
 
+## Symbol Selector
+
+All tools that accept symbol references (`calls`, `impact`, `path`, `explore`,
+`symbol`, `trace`, `usages`) accept two input formats:
+
+1. **String** — qualified symbol name (e.g., `"atlas_engine::Engine"`):
+   - Graph tools (`calls`, `impact`, `path`) auto-aggregate all matching symbols
+   - Detail tools (`symbol`, `explore`) return a candidate list
+
+2. **SymbolSelector object** — structured selector with fault-tolerant scoring:
+   ```json
+   {
+     "qualified_name": "turn",
+     "file_path": "src/foo.ts",
+     "line": 42,
+     "kind": "function",
+     "language": "typescript"
+   }
+   ```
+   - Only `qualified_name` is required
+   - Other fields are hints for ranking — wrong values never block correct matches
+   - `symbol_ref` from `search` or `symbol` results can be reused directly
+
 ## Query tactics
 
 - Start with `search` for names. Use `kind:function`, `kind:class`, or shorter terms if exact match fails.

@@ -62,8 +62,8 @@ task-oriented view, so several rows intentionally share the same tool:
 | File dependencies | `file_dependencies` | `file_path` (required), `direction="incoming\|outgoing\|both"`, optional `limit` |
 | Point inspection | `trace(kind="point")` | `file_path` or `file_id`, `line`, `column` |
 | Variable origin | `trace(kind="variable")` | `file_path` or `file_id`, `line`, `column`, optional `max_depth` |
-| Caller chain | `trace(kind="callers")` | `symbol` (qualified name or hex ID), optional `max_depth` |
-| Forward call trace | `trace(kind="forward")` | `from`, `to` (qualified name or hex ID), optional `max_depth` |
+| Caller chain | `trace(kind="callers")` | `symbol` (qualified name or SymbolSelector object), optional `max_depth` |
+| Forward call trace | `trace(kind="forward")` | `from`, `to` (qualified name or SymbolSelector object), optional `max_depth` |
 | Index project | `index` | optional `include`, `exclude`, `analysis`, `background` |
 | Open project | `project(action="open")` | `project_path` (required), optional `storage`, `scan_files`, `background` |
 | FP dispatch annotations | `fp_dispatches` | `action="add\|list\|delete"` |

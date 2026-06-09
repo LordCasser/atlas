@@ -275,9 +275,9 @@ The `kind` parameter selects the trace mode.
       "file_id": { "type": "string", "description": "File ID in hex (alternative to file_path)." },
       "line": { "type": "integer", "description": "1-based line number." },
       "column": { "type": "integer", "description": "1-based column number." },
-      "symbol": { "type": "string", "description": "Qualified symbol name OR hex SymbolId (required for kind='callers')." },
-      "from": { "type": "string", "description": "Source qualified symbol name OR hex SymbolId (required for kind='forward')." },
-      "to": { "type": "string", "description": "Target qualified symbol name OR hex SymbolId (required for kind='forward')." },
+      "symbol": { "description": "Qualified symbol name or SymbolSelector object (required for kind='callers'). See Symbol Selector in tool documentation for the structured format." },
+      "from": { "description": "Source qualified symbol name or SymbolSelector object (required for kind='forward')." },
+      "to": { "description": "Target qualified symbol name or SymbolSelector object (required for kind='forward')." },
       "max_depth": { "type": "integer", "description": "Maximum traversal depth (default varies by kind)." },
       "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots." }
     },
