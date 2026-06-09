@@ -1,6 +1,6 @@
 [package]
 name = "extraction"
-version = "1.4.1"
+version = "1.4.2"
 edition = "2024"
 description = "Atlas code extraction engine — tree-sitter parsing, symbol extraction, CFG, dataflow"
 license = "MIT"

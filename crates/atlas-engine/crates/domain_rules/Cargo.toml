@@ -1,6 +1,6 @@
 [package]
 name = "domain-rules"
-version = "1.4.1"
+version = "1.4.2"
 edition = "2024"
 description = "Atlas language-agnostic domain rules engine"
 license = "MIT"

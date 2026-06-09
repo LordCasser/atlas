@@ -4,86 +4,98 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
-## [1.4.2] — 2026-06-08
+## [1.4.2] — 2026-06-09
 
-### Architecture Convergence — Subtraction & Constraint
+### SymbolSelector — Closed-Loop Symbol Resolution
 
-v1.4.2 is a consolidation release that eliminates dead code, unifies diverged
-response paths, and codifies architectural constraints discovered during the
-v1.4.0–v1.4.1 feature cycle.  **No MCP tool interface or data format changes.**
+A new fault-tolerant resolution engine that eliminates silent ambiguity across
+all MCP tool handlers. When a symbol query matches multiple candidates,
+tools now return scored candidate lists with `symbol_id` for deterministic
+follow-up — no more silent wrong-symbol results.
 
-**Dead code subtraction (~850 lines across 38 commits):**
-- Removed dead `extraction/src/engine.rs` module (−202 lines)
-- Removed 7 dead `#[allow(dead_code)]` graph methods (−175 lines)
-- Removed dead `cfg_nodes` columns (`effect_kind`, `target_field`, `callee_name`) across 5 files
-- Removed deprecated `begin_bulk_write`/`end_bulk_write` (−30 lines)
-- Removed dead `extract_one` CLI wrapper + orphaned deps (−45 lines)
-- Removed dead aliases (`loaded_all_symbols`, `LoadedDomainRules`, `AliasTable::build`, `NoopSink`)
-- Removed unused `DfIndex::source_edges` field (built but never read)
-- Fixed 8 wrong `#[allow(dead_code)]` annotations on actively-called symbols
-- Gated test-only APIs (`LazyStructuralService::with_provider`, `LazyBudget::new`) with `#[cfg(test)]` per §10.5
-- Removed 3 uncalled test helper functions in `branch_diff_semantic.rs`
-- JS adapter: removed `_file_path` dead parameters
+- **`SymbolSelector` engine** (`engine` crate): multi-signal scoring
+  (name match, file proximity, kind preference, scope overlap) with
+  configurable thresholds and fallback strategies.
+- **All 13 symbol-accepting MCP tools** now use `SymbolSelector` via
+  `resolve_symbol_input()`, replacing direct `resolve_qname_disambiguated`.
+- **Tool schemas** updated to `oneOf [string, SymbolSelector]` — callers
+  can pass a plain string (backward-compatible) or a structured selector
+  with `file_path`, `kind`, `scope` hints for disambiguation.
+- **Candidate transparency**: ambiguous results include `candidates[]` with
+  `symbol_id`, `name`, `kind`, `file_path`, `score` — callers pick the right
+  one on retry.
+- `ScoredCandidate.symbol_id` eliminates store round-trips for candidate lookup.
+- Integration tests verify the full resolve → disambiguate → retry cycle.
 
-**Architecture documentation:**
-- **§10.5 Convergence Constraints**: codified rules for deletion-before-abstraction,
-  entry-layer orchestration, language adapter boundaries, trait default correctness,
-  MCP lazy envelope single-build-path, facade API compatibility, test-only API
-  treatment, and policy-module-vs-struct guidance.
-- **§2.10 Cleanup PR Guard Rules**: codified minimum requirements for subtraction
-  PRs — zero-production-call-site verification, happy-path + branch coverage for
-  new helpers, MCP lazy response field equivalence, stable facade compile-level
-  compatibility, and batch-level `cargo fmt --check` + `cargo check` + test gating.
-- **Stability tier markers** added to `atlas-engine` facade re-exports.
+### MCP Refactoring
 
-### MCP LazyResponse Envelope Unification
+**Module decomposition:**
+- `ToolRouter` split into focused sub-modules: `GraphState`, `CacheState`,
+  `AsyncState`, `symbol_selector.rs`, `lazy_response.rs`.
 
-All lazy structural/dataflow-triggering tool handlers now produce responses through
-a single `LazyResponse` builder, eliminating per-handler field-drift risk:
+**LazyResponse unification** — all 7 lazy-triggering handlers now produce
+responses through a single builder, eliminating per-handler field-drift:
+- `handle_impact`, `handle_callees`, `handle_callers`, `handle_callgraph`,
+  `handle_explore`, `handle_path`, `handle_index`.
+- Every lazy response uniformly carries `precision_tier`, `hint`, `warnings`,
+  `lazy_diagnostics`, `analysis_contract`, `query_id`, `QuerySnapshot`.
 
-- `handle_impact`, `handle_callees`/`handle_callers`, `handle_callgraph`/`handle_explore`,
-  `handle_path` all migrated to `LazyResponse`.
-- Pattern parsing helper extracted in index handler.
-- Callers/callees shared tail extracted from MCP handlers.
-- Every lazy response now uniformly carries `precision_tier`, `hint`, `warnings`,
-  `lazy_diagnostics`, `analysis_contract`, `query_id`, and `QuerySnapshot`.
+**Other MCP improvements:**
+- `has_dataflow` and per-capability counts exposed in `project(action="status")`.
+- Per-kind trace descriptions and position-based symbol lookup for `trace`.
+- `ExploreDossierBuilder` for structured symbol exploration responses.
+- Mutex poisoning recovery unified: all `.unwrap()` → `.unwrap_or_else(|e| e.into_inner())`.
+- `generate_query_id()` fallback for misconfigured system clocks.
 
 ### Extraction Deduplication
 
-Shared construction helpers extracted from language adapters into
-`extraction/languages/shared.rs`, reducing per-adapter boilerplate:
-
+Shared helpers extracted from 11 language adapters into
+`extraction/languages/shared.rs`:
 - `make_binding_def`, `make_reference_use`, `make_scope_def`
 - `make_data_node` family (dataflow node helpers)
-- `find_call_expression` deduplicated across 11 language adapters
+- `find_call_expression` deduplicated across 11 adapters
 - `node_range` copies and analysis mode parsing deduplicated
 
-### Domain Rules Deduplication
+### Dead Code Subtraction (~1100 lines)
 
-- `validate_rule` extracted as `LanguageRuleKinds` trait default method —
-  cross-language identical validation now lives in one place.
-- `validate_rule` and `status_for_source` helpers deduplicated.
+- Deleted `extraction/src/engine.rs` (−202 lines), 7 dead graph methods (−175 lines)
+- Removed dead `cfg_nodes` columns (`effect_kind`, `target_field`, `callee_name`)
+- Removed deprecated `begin_bulk_write`/`end_bulk_write`, dead `extract_one` CLI wrapper
+- Removed dead aliases (`loaded_all_symbols`, `LoadedDomainRules`, `AliasTable::build`, `NoopSink`)
+- Removed `SearchSession` struct, `indexed_scope_json`, `FilteredCounts` (CLI dead code)
+- Purged `CandidateInfo`, `resolve_qname_disambiguated` (replaced by SymbolSelector)
+- Removed JS adapter `_file_path` dead parameters, `DfIndex::source_edges` field
+- Fixed 8 wrong `#[allow(dead_code)]` annotations on actively-called symbols
+- Gated test-only APIs with `#[cfg(test)]` per §10.5
 
-### Context Refactoring
+### Architecture Documentation
 
-- `SourceLookupFn` type alias replaced with `SourceReader` trait, providing a
-  stable facade-compatible interface with blanket `impl` for compatible closures.
+- **§10.5 Convergence Constraints**: deletion-before-abstraction, entry-layer
+  orchestration, language adapter boundaries, trait default correctness,
+  MCP lazy envelope single-build-path, facade compatibility, test-only API rules.
+- **§2.10 Cleanup PR Guard Rules**: zero-production-call-site verification,
+  happy-path + branch coverage, MCP lazy response field equivalence, stable
+  facade compile-level compatibility.
+- **Stability tier markers** on `atlas-engine` facade re-exports.
+- **SymbolSelector architecture** documented in `docs/architecture.md`.
 
-### Resolution / Lazy / Precision Guard Deduplication
+### Other Changes
 
-- Shared `ensure_structural` and precision downgrade guard paths unified across
-  call sites.
-
-### Feature Cleanup
-
-- All 14 languages now compile by default (`all-languages` feature gate removed).
-  No feature flags needed for full language matrix.
+- `SourceLookupFn` type alias → `SourceReader` trait with blanket `impl`.
+- `validate_rule` extracted as `LanguageRuleKinds` trait default method.
+- All 14 languages compile by default (`all-languages` feature gate removed).
+- Context: `includeFilePeers` flag to skip file peers in context view.
+- `SymbolDef.signature` extraction pipeline added across all languages.
 
 ### Bug Fixes
 
-- Engine now reports real progress during Resolution, HashCheck, and SummaryBuild
-  phases (was stuck at 0%).
+- TUI index mode display now uses canonical `store.read_index_mode()` (was
+  rolling its own detection with inconsistent labels).
+- Engine reports real progress during Resolution, HashCheck, SummaryBuild phases.
 - Sync progress reporting improved with finer-grained phase updates.
+- Dossier: `SourceRepository` signatures unified, error handling hardened,
+  recommendations made context-aware.
+- Removed arch violation: bare lock unwraps replaced with poison-safe patterns.
 
 ---
 

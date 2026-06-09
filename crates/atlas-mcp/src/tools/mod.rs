@@ -822,12 +822,14 @@ impl ToolRouter {
 
     /// Generate a time-sortable query_id in format `q_{hex_ts_ms}_{hex_rand4}`.
     /// Uses an atomic counter to prevent collisions within the same millisecond.
+    /// Falls back to epoch 0 if system time is before UNIX_EPOCH (practically
+    /// impossible but avoids a panic on misconfigured systems).
     pub(crate) fn generate_query_id() -> String {
         use std::sync::atomic::{AtomicU32, Ordering};
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis();
         let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
         // XOR ts components to spread bits, then mix with the atomic sequence
@@ -836,11 +838,14 @@ impl ToolRouter {
     }
 
     /// Store a query snapshot, pruning expired entries first.
+    ///
+    /// Recovers from a poisoned lock (e.g. after a panic in another handler)
+    /// rather than panicking — consistent with `AtlasMcpService::lock_router()`.
     pub(crate) fn store_snapshot(&mut self, snapshot: QuerySnapshot) {
         self.async_state.prune_expired_snapshots();
         self.async_state.query_snapshots
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(snapshot.query_id.clone(), snapshot);
     }
 
@@ -1268,29 +1273,10 @@ fn make_semantic_analysis_tools() -> Vec<Tool> {
     ]
 }
 
-// ── Annotation tools ─────────────────────────────────────────────────
+// ── Domain rules tools (semantic analysis) ──────────────────────────
 
-fn make_annotation_tools() -> Vec<Tool> {
+fn make_domain_rules_tools() -> Vec<Tool> {
     vec![
-        Tool {
-            name: "fp_dispatches".into(),
-            description: "Manage function-pointer dispatch annotations for C/C++ code. action='add' declares a mapping from a struct's function-pointer field to its concrete target function (required: field_qname, target_qname). action='list' returns all declared annotations. action='delete' removes an annotation (required: annotation_id OR field_qname). After deletion, the materialized edge is removed on next re-index.".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
-                    "action": {
-                        "type": "string",
-                        "enum": ["add", "list", "delete"],
-                        "description": "Action: 'add' to declare a dispatch, 'list' to show all annotations, 'delete' to remove one."
-                    },
-                    "field_qname": { "type": "string", "description": "Qualified name of the function-pointer field (required for action='add'; alternative identifier for action='delete')." },
-                    "target_qname": { "type": "string", "description": "Qualified name of the target function (required for action='add')." },
-                    "annotation_id": { "type": "string", "description": "Annotation ID from list (alternative identifier for action='delete')." },
-                    "confidence": { "type": "number", "description": "Confidence score 0.0-1.0 (default 1.0 for user-declared)." },
-                })),
-                required: None,
-            },
-        },
         Tool {
             name: "domain_rules".into(),
             description: "Manage domain rules for lifecycle analysis. action='add' defines which functions allocate/free/own memory (required: rule_kind [free_fn|alloc_fn|owned_pattern|cleanup_fn], pattern). action='list' shows rules, optionally filtered by source (builtin/learned/user). action='delete' removes a rule (required: rule_id). action='learn' auto-discovers rule candidates from project patterns (optional: min_confidence).".into(),
@@ -1312,6 +1298,32 @@ fn make_annotation_tools() -> Vec<Tool> {
                     "source": { "type": "string", "enum": ["builtin", "learned", "user"], "description": "Filter by source (optional for action='list')." },
                     "confidence": { "type": "number", "description": "Confidence 0.0-1.0 (default 1.0 for user-declared)." },
                     "min_confidence": { "type": "number", "description": "Minimum confidence threshold for action='learn' (default 0.5)." },
+                })),
+                required: None,
+            },
+        },
+    ]
+}
+
+// ── FP dispatch tools (C/C++) ───────────────────────────────────────
+
+fn make_fp_dispatch_tools() -> Vec<Tool> {
+    vec![
+        Tool {
+            name: "fp_dispatches".into(),
+            description: "Manage function-pointer dispatch annotations for C/C++ code. action='add' declares a mapping from a struct's function-pointer field to its concrete target function (required: field_qname, target_qname). action='list' returns all declared annotations. action='delete' removes an annotation (required: annotation_id OR field_qname). After deletion, the materialized edge is removed on next re-index.".into(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".into(),
+                properties: Some(json!({
+                    "action": {
+                        "type": "string",
+                        "enum": ["add", "list", "delete"],
+                        "description": "Action: 'add' to declare a dispatch, 'list' to show all annotations, 'delete' to remove one."
+                    },
+                    "field_qname": { "type": "string", "description": "Qualified name of the function-pointer field (required for action='add'; alternative identifier for action='delete')." },
+                    "target_qname": { "type": "string", "description": "Qualified name of the target function (required for action='add')." },
+                    "annotation_id": { "type": "string", "description": "Annotation ID from list (alternative identifier for action='delete')." },
+                    "confidence": { "type": "number", "description": "Confidence score 0.0-1.0 (default 1.0 for user-declared)." },
                 })),
                 required: None,
             },
@@ -1380,7 +1392,8 @@ pub fn make_all_tools() -> Vec<Tool> {
     tools.extend(make_file_graph_tools());
     tools.extend(make_trace_tools());
     tools.extend(make_semantic_analysis_tools());
-    tools.extend(make_annotation_tools());
+    tools.extend(make_domain_rules_tools());
+    tools.extend(make_fp_dispatch_tools());
     tools.extend(make_task_tools());
     tools
 }

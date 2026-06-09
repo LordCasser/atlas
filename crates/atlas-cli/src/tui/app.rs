@@ -89,7 +89,7 @@ impl App {
         let (file_count, symbol_count, edge_count) = stats
             .map(|s| (s.total_files, s.total_symbols, s.total_edges))
             .unwrap_or_default();
-        let index_mode = detect_index_mode(&store, file_count);
+        let index_mode = detect_index_mode(&store);
 
         let session = GraphSession::new(Arc::clone(&store), project_root.clone());
         let job_manager = JobManager::new(Arc::clone(&store), project_root.clone());
@@ -710,34 +710,18 @@ impl App {
             self.file_count = stats.total_files;
             self.symbol_count = stats.total_symbols;
             self.edge_count = stats.total_edges;
-            self.index_mode = detect_index_mode(&self.store, stats.total_files);
+            self.index_mode = detect_index_mode(&self.store);
         }
     }
 }
 
-fn detect_index_mode(store: &Store, total_files: i64) -> String {
-    if total_files <= 0 {
-        return "empty".into();
-    }
-    let counts = store
-        .count_fresh_file_extraction_state()
-        .unwrap_or_default();
-    let complete_count = |layer: &str| -> i64 {
-        counts
-            .iter()
-            .filter(|(l, s, _)| l == layer && s == "complete")
-            .map(|(_, _, c)| *c)
-            .sum()
-    };
-    if complete_count("dataflow") >= total_files {
-        "full".into()
-    } else if complete_count("structural") >= total_files {
-        "structural".into()
-    } else if complete_count("manifest") >= total_files {
-        "manifest".into()
-    } else {
-        "partial".into()
-    }
+/// Detect index mode by delegating to the canonical `Store::read_index_mode()`.
+///
+/// This is the single source of truth for index-mode detection, shared by
+/// CLI, MCP, and TUI.  Previously the TUI maintained its own divergent
+/// detection logic; see issue 2.1 in the pre-release review.
+fn detect_index_mode(store: &Store) -> String {
+    store.read_index_mode().unwrap_or_else(|_| "unknown".into())
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -820,7 +804,7 @@ mod tests {
             file_count: 0,
             symbol_count: 0,
             edge_count: 0,
-            index_mode: "empty".into(),
+            index_mode: "none".into(),
         }
     }
 

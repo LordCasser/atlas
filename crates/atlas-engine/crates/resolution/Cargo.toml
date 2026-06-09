@@ -1,6 +1,6 @@
 [package]
 name = "resolution"
-version = "1.4.1"
+version = "1.4.2"
 edition = "2024"
 description = "Atlas reference resolution — import resolver, name matching, path aliases, builtins"
 license = "MIT"

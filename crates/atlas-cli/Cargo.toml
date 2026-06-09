@@ -1,6 +1,6 @@
 [package]
 name = "atlas-cli"
-version = "1.4.1"
+version = "1.4.2"
 edition = "2024"
 description = "Atlas CLI — command-line interface and binary entry point"
 license = "MIT"
@@ -29,6 +29,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread"], optional = true }
 
 [dev-dependencies]
+# TODO: Gate behind a dev-only feature to avoid compiling atlas-mcp + tokio + rmcp
+# for all atlas-cli tests. Only MCP integration tests need this dependency.
+# Consider moving MCP e2e tests to the atlas-mcp crate instead.
 atlas-mcp = { path = "../atlas-mcp" }
 tempfile = "3"
 
