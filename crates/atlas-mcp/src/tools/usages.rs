@@ -5,37 +5,49 @@ use std::time::Instant;
 use atlas_engine::InvestigationFocus;
 
 use super::query_snapshot::{QuerySnapshot, QueryStatus};
-use super::{QnameResolution, ToolRouter, get_str, get_u64};
+use super::{ToolRouter, get_u64};
+use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy};
 use serde_json::json;
 
 impl ToolRouter {
     pub(crate) fn handle_usages(&mut self, args: &serde_json::Value) -> (String, bool) {
-        let qname = get_str(args, "symbol");
         let limit = get_u64(args, "limit").unwrap_or(50) as usize;
 
-        // Accept hex SymbolId or qualified name
-        let sid = match qname.parse() {
-            Ok(id) => id,
-            Err(_) => match self.resolve_qname_disambiguated(qname) {
-                Ok(QnameResolution::Unique(id)) => id,
-                Ok(QnameResolution::Ambiguous { candidates }) => {
-                    let candidates_str: Vec<String> = candidates
-                        .iter()
-                        .take(5)
-                        .map(|c| format!("{}::{} [{}]", c.file_path, c.line, c.kind))
-                        .collect();
-                    return (
-                        format!(
-                            "Symbol '{}' is ambiguous ({} matches: {}). Use hex SymbolId from search results.",
-                            qname,
-                            candidates.len(),
-                            candidates_str.join(", ")
-                        ),
-                        true,
-                    );
+        // Unified symbol resolution via SymbolInput (string or structured selector).
+        let input: SymbolInput = match serde_json::from_value(args["symbol"].clone()) {
+            Ok(inp) => inp,
+            Err(e) => return (format!("Invalid symbol parameter: {e}"), true),
+        };
+        let resolution = match self
+            .resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle)
+        {
+            Ok(r) => r,
+            Err(e) => return (e, true),
+        };
+        let sid = match resolution {
+            SymbolResolution::Single { symbol_id, .. } => symbol_id,
+            SymbolResolution::Ambiguous { candidates, .. } => {
+                // BestEffortSingle with plain Name input: pick the first candidate.
+                let first = &candidates[0];
+                match self.store.find_symbols_by_qname(&first.qualified_name) {
+                    Ok(symbols) => match symbols.first() {
+                        Some(s) => s.id,
+                        None => {
+                            return (
+                                format!(
+                                    "Symbol '{}' found in candidates but not in store",
+                                    first.qualified_name
+                                ),
+                                true,
+                            );
+                        }
+                    },
+                    Err(e) => return (format!("Lookup error: {e}"), true),
                 }
-                Err(e) => return (e, true),
-            },
+            }
+            SymbolResolution::NotFound { qname, .. } => {
+                return (format!("Symbol not found: {qname}"), true);
+            }
         };
 
         self.update_investigation(InvestigationFocus::Symbol(sid));
@@ -66,8 +78,13 @@ impl ToolRouter {
             })
             .collect();
 
+        // Use resolved qualified name from the input for the "symbol" field
+        let symbol_display = match &input {
+            SymbolInput::Name(s) => s.clone(),
+            SymbolInput::Selector(sel) => sel.qualified_name.clone(),
+        };
         let mut resp = json!({
-            "symbol": qname,
+            "symbol": symbol_display,
             "total_usages": refs.len(),
             "usages": usages,
         });

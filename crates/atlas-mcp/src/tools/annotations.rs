@@ -68,7 +68,7 @@ impl ToolRouter {
                 return (
                     json!({
                         "error": format!(
-                            "Field symbol '{}' is ambiguous ({} matches: {}). Use hex SymbolId from search results.",
+                            "Field symbol '{}' is ambiguous ({} matches: {}). Use a SymbolSelector object from search results (symbol_ref field).",
                             field_qname, candidates.len(), candidates_str.join(", ")
                         )
                     })
@@ -91,7 +91,7 @@ impl ToolRouter {
                 return (
                     json!({
                         "error": format!(
-                            "Target symbol '{}' is ambiguous ({} matches: {}). Use hex SymbolId from search results.",
+                            "Target symbol '{}' is ambiguous ({} matches: {}). Use a SymbolSelector object from search results (symbol_ref field).",
                             target_qname, candidates.len(), candidates_str.join(", ")
                         )
                     })
@@ -330,7 +330,7 @@ impl ToolRouter {
                     return (
                         json!({
                             "error": format!(
-                                "Field symbol '{}' is ambiguous ({} matches: {}). Use hex SymbolId from search results.",
+                                "Field symbol '{}' is ambiguous ({} matches: {}). Use a SymbolSelector object from search results (symbol_ref field).",
                                 field_qname, candidates.len(), candidates_str.join(", ")
                             )
                         })

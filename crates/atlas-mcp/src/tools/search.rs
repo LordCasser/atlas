@@ -554,16 +554,17 @@ impl ToolRouter {
             .take(10)
             .map(|c| {
                 json!({
-                    "id": c.id.to_hex(),
-                    "qualified_name": c.qualified_name,
-                    "file_path": c.file_path,
-                    "line": c.line,
-                    "kind": c.kind,
+                    "symbol_ref": {
+                        "qualified_name": c.qualified_name,
+                        "file_path": c.file_path,
+                        "line": c.line,
+                        "kind": c.kind,
+                    }
                 })
             })
             .collect();
         let hint = format!(
-            "Symbol '{}' is ambiguous ({} matches). Use a hex SymbolId from the list below.",
+            "Symbol '{}' is ambiguous ({} matches). Use the symbol_ref from a candidate below.",
             qname,
             candidates.len()
         );

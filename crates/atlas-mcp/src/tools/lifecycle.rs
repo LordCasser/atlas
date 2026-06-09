@@ -40,7 +40,7 @@ impl ToolRouter {
                     .collect();
                 return (
                     format!(
-                        "Symbol '{}' is ambiguous ({} matches: {}). Use hex SymbolId from search results.",
+                        "Symbol '{}' is ambiguous ({} matches: {}). Use a SymbolSelector object from search results (symbol_ref field).",
                         symbol,
                         candidates.len(),
                         candidates_str.join(", ")

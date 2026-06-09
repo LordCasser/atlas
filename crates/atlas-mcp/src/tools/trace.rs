@@ -2,17 +2,15 @@
 //! traversal.  Includes transparent lazy structural extraction with progress
 //! notifications to prevent MCP timeout during on-demand extraction.
 
-use std::collections::{HashSet, VecDeque};
-
-use atlas_engine::SymbolId;
-use atlas_engine::{EdgeKind, InvestigationFocus, TraceDiagnostic, TraceQueryResponse};
+use atlas_engine::{InvestigationFocus, TraceDiagnostic, TraceQueryResponse};
 
 use super::lazy_response::{LazyDiagnostics, LazyLayerDiagnostics, LazyResponse};
 use super::{
     CandidateInfo, MAX_AMBIGUOUS_CANDIDATES, MAX_FILE_PATH_LENGTH, MAX_SYMBOL_NAME_LENGTH,
-    QnameResolution, ToolRouter, get_str, get_str_opt, get_u64, resolve_file_id,
+    ToolRouter, get_str_opt, get_u64, resolve_file_id,
     warnings_to_trace_diagnostics,
 };
+use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy};
 
 use serde_json::json;
 
@@ -295,12 +293,32 @@ impl ToolRouter {
     }
 
     pub(crate) fn handle_trace_caller_path(&mut self, args: &serde_json::Value) -> (String, bool) {
-        let symbol = get_str(args, "symbol");
         let max_depth = args["max_depth"].as_u64().unwrap_or(20) as usize;
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
-        // Validate symbol length
-        if symbol.len() > MAX_SYMBOL_NAME_LENGTH {
+        // Parse symbol parameter as unified SymbolInput (string or structured selector).
+        let input: SymbolInput = match serde_json::from_value(args["symbol"].clone()) {
+            Ok(inp) => inp,
+            Err(e) => {
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                    "trace_callers",
+                    &format!(
+                        "Invalid symbol parameter: {e}. Accepts qualified name or SymbolSelector JSON."
+                    ),
+                );
+                return (
+                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                    true,
+                );
+            }
+        };
+
+        // Validate symbol name length
+        let symbol_str = match &input {
+            SymbolInput::Name(s) => s.as_str(),
+            SymbolInput::Selector(sel) => &sel.qualified_name,
+        };
+        if symbol_str.len() > MAX_SYMBOL_NAME_LENGTH {
             let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                 "trace_callers",
                 &format!("symbol exceeds maximum length of {MAX_SYMBOL_NAME_LENGTH} characters"),
@@ -311,10 +329,10 @@ impl ToolRouter {
             );
         }
 
-        if symbol.is_empty() {
+        if symbol_str.is_empty() {
             let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                 "trace_callers",
-                "Missing required 'symbol' parameter. Accepts qualified name or hex SymbolId. Auto-detects format.",
+                "Missing required 'symbol' parameter. Accepts qualified name or SymbolSelector JSON.",
             );
             return (
                 serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
@@ -332,73 +350,53 @@ impl ToolRouter {
         let lr = LazyResponse::new("trace", args);
         let query_id = lr.query_id().to_string();
 
-        // Auto-detect symbol: try hex parse first, then qname resolution.
-        let is_hex = symbol.len() >= 8 && symbol.chars().all(|c| c.is_ascii_hexdigit());
-        let target_id: SymbolId = if is_hex {
-            match symbol.parse() {
-                Ok(id) => id,
-                Err(_) => match self.resolve_qname_disambiguated(symbol) {
-                    Ok(QnameResolution::Unique(id)) => id,
-                    Ok(QnameResolution::Ambiguous { candidates }) => {
-                        return build_ambiguous_response_for_callers(symbol, &candidates);
-                    }
-                    Err(_) => {
-                        let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                            "trace_callers",
-                            &format!(
-                                "Symbol not found by qname: '{symbol}'. Tip: the 'symbol' parameter accepts both hex SymbolIds and qualified names. Auto-detects format."
-                            ),
-                        );
-                        return (
-                            serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                            true,
-                        );
-                    }
-                },
+        // Unified symbol resolution — BestEffortSingle always picks one symbol.
+        let resolution = match self
+            .resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle)
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return (format!("Symbol resolution error: {e}"), true);
             }
-        } else {
-            match self.resolve_qname_disambiguated(symbol) {
-                Ok(QnameResolution::Unique(id)) => id,
-                Ok(QnameResolution::Ambiguous { candidates }) => {
-                    return build_ambiguous_response_for_callers(symbol, &candidates);
-                }
-                Err(_) => {
-                    // Lazy structural fallback: try name-based lookup with structural extraction
-                    let outcome = self.ensure_structural_for_symbol_name(
-                        symbol,
-                        include_roots.clone(),
-                        None,
-                        Some(&query_id),
-                    );
-                    lazy_warnings.extend(outcome.warnings);
-                    structural_tier = std::cmp::min(structural_tier, outcome.precision_tier);
-                    if let Some(ref lo) = outcome.lazy_outcome {
-                        let stats = self.get_capability_stats();
-                        lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
-                            lo,
-                            stats.as_ref(),
-                        ));
-                    }
-                    // Re-query after lazy extraction
-                    match self.resolve_qname_disambiguated(symbol) {
-                        Ok(QnameResolution::Unique(id)) => id,
-                        Ok(QnameResolution::Ambiguous { candidates }) => {
-                            return build_ambiguous_response_for_callers(symbol, &candidates);
-                        }
-                        Err(_) => {
-                            let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                                "trace_callers",
-                                &format!(
-                                    "Symbol not found: '{symbol}'. Tip: the 'symbol' parameter accepts both hex SymbolIds and qualified names. Try 'search' first to discover the correct qualified name."
-                                ),
-                            );
+        };
+        let (target_id, resolved_symbol) = match resolution {
+            SymbolResolution::Single {
+                symbol_id,
+                resolved,
+            } => (symbol_id, Some(resolved)),
+            SymbolResolution::Ambiguous { candidates, .. } => {
+                // BestEffortSingle with plain Name input: engine can't break
+                // ties.  Pick the first candidate and look up its SymbolId
+                // from the store so we can proceed with tracing.
+                let first = &candidates[0];
+                let sid = match self.store.find_symbols_by_qname(&first.qualified_name) {
+                    Ok(symbols) => match symbols.first() {
+                        Some(s) => s.id,
+                        None => {
                             return (
-                                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                                format!(
+                                    "Symbol '{}' found in candidates but not in store",
+                                    first.qualified_name
+                                ),
                                 true,
                             );
                         }
-                    }
-                }
+                    },
+                    Err(e) => return (format!("Lookup error: {e}"), true),
+                };
+                (sid, None)
+            }
+            SymbolResolution::NotFound {
+                qname,
+                suggestions,
+            } => {
+                return (
+                    format!(
+                        "Symbol not found: {qname}. Suggestions: {:?}",
+                        suggestions
+                    ),
+                    true,
+                );
             }
         };
 
@@ -443,7 +441,15 @@ impl ToolRouter {
         ));
         resp.partial_result = resp.partial_result || lazy_partial;
 
-        let resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
+        let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
+        if let Some(ref resolved) = resolved_symbol {
+            if let Some(obj) = resp_value.as_object_mut() {
+                obj.insert(
+                    "resolved_symbol".to_string(),
+                    serde_json::to_value(resolved).unwrap_or(json!(null)),
+                );
+            }
+        }
 
         lr.with_structural_keys()
             .with_precision_tier(structural_tier)
@@ -453,13 +459,48 @@ impl ToolRouter {
     }
 
     pub(crate) fn handle_trace_forward(&mut self, args: &serde_json::Value) -> (String, bool) {
-        let from = get_str(args, "from");
-        let to = get_str(args, "to");
         let max_depth = args["max_depth"].as_u64().unwrap_or(10) as usize;
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
-        // Validate from / to length
-        if from.len() > MAX_SYMBOL_NAME_LENGTH {
+        // Parse 'from' parameter as unified SymbolInput.
+        let from_input: SymbolInput = match serde_json::from_value(args["from"].clone()) {
+            Ok(inp) => inp,
+            Err(e) => {
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                    "trace_forward",
+                    &format!("Invalid 'from' parameter: {e}"),
+                );
+                return (
+                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                    true,
+                );
+            }
+        };
+        // Parse 'to' parameter as unified SymbolInput.
+        let to_input: SymbolInput = match serde_json::from_value(args["to"].clone()) {
+            Ok(inp) => inp,
+            Err(e) => {
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                    "trace_forward",
+                    &format!("Invalid 'to' parameter: {e}"),
+                );
+                return (
+                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                    true,
+                );
+            }
+        };
+
+        // Validate name lengths
+        let from_name = match &from_input {
+            SymbolInput::Name(s) => s.as_str(),
+            SymbolInput::Selector(sel) => &sel.qualified_name,
+        };
+        let to_name = match &to_input {
+            SymbolInput::Name(s) => s.as_str(),
+            SymbolInput::Selector(sel) => &sel.qualified_name,
+        };
+        if from_name.len() > MAX_SYMBOL_NAME_LENGTH {
             let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                 "trace_forward",
                 &format!("from exceeds maximum length of {MAX_SYMBOL_NAME_LENGTH} characters"),
@@ -469,7 +510,7 @@ impl ToolRouter {
                 true,
             );
         }
-        if to.len() > MAX_SYMBOL_NAME_LENGTH {
+        if to_name.len() > MAX_SYMBOL_NAME_LENGTH {
             let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                 "trace_forward",
                 &format!("to exceeds maximum length of {MAX_SYMBOL_NAME_LENGTH} characters"),
@@ -480,10 +521,10 @@ impl ToolRouter {
             );
         }
 
-        if from.is_empty() || to.is_empty() {
+        if from_name.is_empty() || to_name.is_empty() {
             let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
                 "trace_forward",
-                "Must provide both 'from' and 'to' parameters. Accepts qualified names or hex SymbolIds. Auto-detects format.",
+                "Must provide both 'from' and 'to' parameters. Accepts qualified names or SymbolSelector JSON.",
             );
             return (
                 serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
@@ -494,121 +535,86 @@ impl ToolRouter {
         for w in &root_warnings {
             tracing::warn!("include_roots: {}", w);
         }
-        let mut lazy_warnings = Vec::new();
+        let lazy_warnings;
         let mut structural_tier = atlas_engine::structs::precision::PrecisionTier::Exact;
         let mut lazy_diag: Option<LazyDiagnostics> = None;
 
         let lr = LazyResponse::new("trace", args);
         let query_id = lr.query_id().to_string();
 
-        // ── Resolve 'from' symbol (with hex auto-detect + lazy fallback) ──
-        let from_resolution = {
-            let is_hex = from.len() >= 8 && from.chars().all(|c| c.is_ascii_hexdigit());
-            // Try hex parse first
-            let hex_id = if is_hex {
-                from.parse::<SymbolId>().ok()
-            } else {
-                None
-            };
-            if let Some(id) = hex_id {
-                Ok(QnameResolution::Unique(id))
-            } else {
-                // Resolve by qname with lazy fallback on not-found
-                match self.resolve_qname_disambiguated(from) {
-                    Ok(res) => Ok(res),
-                    Err(_) => {
-                        let outcome = self.ensure_structural_for_symbol_name(
-                            from,
-                            include_roots.clone(),
-                            None,
-                            Some(&query_id),
-                        );
-                        lazy_warnings.extend(outcome.warnings);
-                        structural_tier = std::cmp::min(structural_tier, outcome.precision_tier);
-                        if let Some(ref lo) = outcome.lazy_outcome {
-                            let stats = self.get_capability_stats();
-                            lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
-                                lo,
-                                stats.as_ref(),
-                            ));
-                        }
-                        self.resolve_qname_disambiguated(from)
-                    }
-                }
+        // -- Resolve 'from' symbol --
+        let from_resolution = match self
+            .resolve_symbol_input(&from_input, SymbolResolutionPolicy::BestEffortSingle)
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return (format!("Symbol resolution error for 'from': {e}"), true);
             }
         };
-        let from_id: SymbolId = match from_resolution {
-            Ok(QnameResolution::Unique(id)) => id,
-            Ok(QnameResolution::Ambiguous { candidates }) => {
-                return build_ambiguous_response_for_forward(from, &candidates, "from");
+        let (from_id, resolved_from) = match from_resolution {
+            SymbolResolution::Single {
+                symbol_id,
+                resolved,
+            } => (symbol_id, Some(resolved)),
+            SymbolResolution::Ambiguous { candidates, .. } => {
+                let first = &candidates[0];
+                let sid = match self.store.find_symbols_by_qname(&first.qualified_name) {
+                    Ok(symbols) => match symbols.first() {
+                        Some(s) => s.id,
+                        None => {
+                            return (
+                                format!(
+                                    "From symbol '{}' found in candidates but not in store",
+                                    first.qualified_name
+                                ),
+                                true,
+                            );
+                        }
+                    },
+                    Err(e) => return (format!("Lookup error: {e}"), true),
+                };
+                (sid, None)
             }
-            Err(e) => {
-                let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_forward", &e);
-                return (
-                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                    true,
-                );
+            SymbolResolution::NotFound { qname, .. } => {
+                return (format!("Symbol not found: {qname}"), true);
             }
         };
 
-        // ── Resolve 'to' symbol (with path-aware disambiguation) ─────────
-        let to_resolution = {
-            let is_hex = to.len() >= 8 && to.chars().all(|c| c.is_ascii_hexdigit());
-            let hex_id = if is_hex {
-                to.parse::<SymbolId>().ok()
-            } else {
-                None
-            };
-            if let Some(id) = hex_id {
-                Ok(QnameResolution::Unique(id))
-            } else {
-                match self.resolve_qname_disambiguated(to) {
-                    Ok(res) => Ok(res),
-                    Err(_) => {
-                        let outcome = self.ensure_structural_for_symbol_name(
-                            to,
-                            include_roots.clone(),
-                            None,
-                            Some(&query_id),
-                        );
-                        lazy_warnings.extend(outcome.warnings);
-                        structural_tier = std::cmp::min(structural_tier, outcome.precision_tier);
-                        if let Some(ref lo) = outcome.lazy_outcome {
-                            let stats = self.get_capability_stats();
-                            lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
-                                lo,
-                                stats.as_ref(),
-                            ));
-                        }
-                        self.resolve_qname_disambiguated(to)
-                    }
-                }
+        // -- Resolve 'to' symbol --
+        let to_resolution = match self
+            .resolve_symbol_input(&to_input, SymbolResolutionPolicy::BestEffortSingle)
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return (format!("Symbol resolution error for 'to': {e}"), true);
             }
         };
-        let to_id: SymbolId = match to_resolution {
-            Ok(QnameResolution::Unique(id)) => id,
-            Ok(QnameResolution::Ambiguous { candidates }) => {
-                // Path-aware disambiguation: from is unique, to has multiple
-                // candidates. Filter to only those reachable from 'from' via
-                // outgoing call edges.
-                let reachable = compute_reachable_from(&self.store, &from_id, max_depth);
-                let reachable_candidates: Vec<&CandidateInfo> = candidates
-                    .iter()
-                    .filter(|c| reachable.contains(&c.id))
-                    .collect();
-                match reachable_candidates.len() {
-                    1 => reachable_candidates[0].id,
-                    _ => {
-                        return build_ambiguous_response_for_forward(to, &candidates, "to");
-                    }
-                }
+        let (to_id, resolved_to) = match to_resolution {
+            SymbolResolution::Single {
+                symbol_id,
+                resolved,
+            } => (symbol_id, Some(resolved)),
+            SymbolResolution::Ambiguous { candidates, .. } => {
+                let first = &candidates[0];
+                let sid = match self.store.find_symbols_by_qname(&first.qualified_name) {
+                    Ok(symbols) => match symbols.first() {
+                        Some(s) => s.id,
+                        None => {
+                            return (
+                                format!(
+                                    "To symbol '{}' found in candidates but not in store",
+                                    first.qualified_name
+                                ),
+                                true,
+                            );
+                        }
+                    },
+                    Err(e) => return (format!("Lookup error: {e}"), true),
+                };
+                (sid, None)
             }
-            Err(e) => {
-                let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_forward", &e);
-                return (
-                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                    true,
-                );
+            SymbolResolution::NotFound { qname, .. } => {
+                return (format!("Symbol not found: {qname}"), true);
             }
         };
 
@@ -657,7 +663,23 @@ impl ToolRouter {
         ));
         resp.partial_result = resp.partial_result || lazy_partial;
 
-        let resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
+        let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
+        if let Some(ref resolved) = resolved_from {
+            if let Some(obj) = resp_value.as_object_mut() {
+                obj.insert(
+                    "resolved_from".to_string(),
+                    serde_json::to_value(resolved).unwrap_or(json!(null)),
+                );
+            }
+        }
+        if let Some(ref resolved) = resolved_to {
+            if let Some(obj) = resp_value.as_object_mut() {
+                obj.insert(
+                    "resolved_to".to_string(),
+                    serde_json::to_value(resolved).unwrap_or(json!(null)),
+                );
+            }
+        }
 
         lr.with_structural_keys()
             .with_precision_tier(structural_tier)
@@ -667,49 +689,7 @@ impl ToolRouter {
     }
 }
 
-// ── Disambiguation helpers ───────────────────────────────────────────────
-
-/// BFS from `from_id` along outgoing call-graph edges to discover all
-/// reachable SymbolIds within `max_depth` hops.
-fn compute_reachable_from(
-    store: &atlas_engine::Store,
-    from_id: &SymbolId,
-    max_depth: usize,
-) -> HashSet<SymbolId> {
-    let mut reachable = HashSet::new();
-    let mut queue = VecDeque::new();
-    let mut visited = HashSet::new();
-    queue.push_back((*from_id, 0usize));
-    visited.insert(*from_id);
-
-    while let Some((current, depth)) = queue.pop_front() {
-        if depth > 0 {
-            reachable.insert(current);
-        }
-        if depth >= max_depth {
-            continue;
-        }
-
-        if let Ok(edges) = store.find_edges_by_source(&current) {
-            for edge in &edges {
-                if !matches!(
-                    edge.kind,
-                    EdgeKind::Calls
-                        | EdgeKind::Instantiates
-                        | EdgeKind::Implements
-                        | EdgeKind::RegistersCallback
-                ) {
-                    continue;
-                }
-                if visited.insert(edge.target) {
-                    queue.push_back((edge.target, depth + 1));
-                }
-            }
-        }
-    }
-
-    reachable
-}
+// -- Disambiguation helpers ---------------------------------------------------
 
 /// Build a partial (ambiguous) response for trace_callers.
 fn build_ambiguous_response_for_callers(
@@ -728,7 +708,7 @@ fn build_ambiguous_response_for_callers(
         .collect::<Vec<_>>()
         .join(", ");
     let msg = format!(
-        "Symbol '{}' matched {} candidates: [{}]. Re-run with the hex SymbolId of the correct candidate.",
+        "Symbol '{}' matched {} candidates: [{}]. Re-run with a SymbolSelector object for the correct candidate.",
         name,
         candidates.len(),
         candidates_str
@@ -762,7 +742,7 @@ fn build_ambiguous_response_for_forward(
         .collect::<Vec<_>>()
         .join(", ");
     let msg = format!(
-        "Ambiguous {} name: '{}' matched {} candidates: [{}]. Re-run with the hex SymbolId from the candidate list.",
+        "Ambiguous {} name: '{}' matched {} candidates: [{}]. Re-run with a SymbolSelector object from the candidate list.",
         field,
         name,
         candidates.len(),
@@ -779,7 +759,7 @@ fn build_ambiguous_response_for_forward(
     )
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────
+// -- Tests --------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -787,22 +767,17 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use atlas_engine::Confidence;
-    use atlas_engine::EdgeId;
-    use atlas_engine::EdgeKind;
     use atlas_engine::FileId;
     use atlas_engine::FileInfo;
     use atlas_engine::Language;
     use atlas_engine::ParseStatus;
-    use atlas_engine::Provenance;
-    use atlas_engine::RawEdge;
     use atlas_engine::Store;
     use atlas_engine::SymbolDef;
     use atlas_engine::SymbolId;
     use atlas_engine::SymbolKind;
     use atlas_engine::TextRange;
 
-    // ── Test helpers ───────────────────────────────────────────────────
+    // -- Test helpers -------------------------------------------------------
 
     fn test_store() -> Arc<Store> {
         let s = Store::open_in_memory().unwrap();
@@ -865,19 +840,6 @@ mod tests {
         sid
     }
 
-    fn insert_call_edge(store: &Store, from: &SymbolId, to: &SymbolId) {
-        let eid = EdgeId::generate(from, to, "calls", None, "tree_sitter");
-        let edge = RawEdge::new(
-            eid,
-            *from,
-            *to,
-            EdgeKind::Calls,
-            Confidence::new(1.0),
-            Provenance::TreeSitter,
-        );
-        store.insert_edges(&[edge]).unwrap();
-    }
-
     fn make_candidate(id: SymbolId) -> CandidateInfo {
         CandidateInfo {
             id,
@@ -889,84 +851,7 @@ mod tests {
         }
     }
 
-    // ── compute_reachable_from tests ──────────────────────────────────
-
-    #[test]
-    fn reachable_from_finds_one_hop() {
-        let store = test_store();
-        let f = register_file(&store, "a.ts");
-        let a = insert_symbol(&store, f, "a", "a", SymbolKind::Function);
-        let b = insert_symbol(&store, f, "b", "b", SymbolKind::Function);
-        let c = insert_symbol(&store, f, "c", "c", SymbolKind::Function);
-        insert_call_edge(&store, &a, &b);
-        insert_call_edge(&store, &b, &c);
-
-        let reachable = compute_reachable_from(&store, &a, 1);
-        assert!(reachable.contains(&b), "B should be reachable");
-        assert!(!reachable.contains(&c), "C should NOT be reachable at depth 1");
-        assert!(!reachable.contains(&a), "source should NOT be in reachable");
-    }
-
-    #[test]
-    fn reachable_from_honors_max_depth() {
-        let store = test_store();
-        let f = register_file(&store, "a.ts");
-        let a = insert_symbol(&store, f, "a", "a", SymbolKind::Function);
-        let b = insert_symbol(&store, f, "b", "b", SymbolKind::Function);
-        let c = insert_symbol(&store, f, "c", "c", SymbolKind::Function);
-        insert_call_edge(&store, &a, &b);
-        insert_call_edge(&store, &b, &c);
-
-        let reachable = compute_reachable_from(&store, &a, 2);
-        assert!(reachable.contains(&b));
-        assert!(reachable.contains(&c));
-    }
-
-    #[test]
-    fn reachable_from_depth_zero_returns_empty() {
-        let store = test_store();
-        let f = register_file(&store, "a.ts");
-        let a = insert_symbol(&store, f, "a", "a", SymbolKind::Function);
-        let b = insert_symbol(&store, f, "b", "b", SymbolKind::Function);
-        insert_call_edge(&store, &a, &b);
-
-        let reachable = compute_reachable_from(&store, &a, 0);
-        assert!(reachable.is_empty(), "depth 0 should return empty set");
-    }
-
-    #[test]
-    fn reachable_from_empty_graph() {
-        let store = test_store();
-        let f = register_file(&store, "a.ts");
-        let a = insert_symbol(&store, f, "a", "a", SymbolKind::Function);
-
-        let reachable = compute_reachable_from(&store, &a, 5);
-        assert!(reachable.is_empty());
-    }
-
-    #[test]
-    fn reachable_from_filters_by_edge_kind() {
-        let store = test_store();
-        let f = register_file(&store, "a.ts");
-        let a = insert_symbol(&store, f, "a", "a", SymbolKind::Function);
-        let b = insert_symbol(&store, f, "b", "b", SymbolKind::Function);
-        // Import edge — NOT a call edge, should NOT be followed
-        let eid = EdgeId::generate(&a, &b, "imports", None, "tree_sitter");
-        let edge = RawEdge::new(
-            eid,
-            a,
-            b,
-            EdgeKind::Imports,
-            Confidence::new(1.0),
-            Provenance::TreeSitter,
-        );
-        store.insert_edges(&[edge]).unwrap();
-
-        let reachable = compute_reachable_from(&store, &a, 5);
-        assert!(reachable.is_empty(), "Imports edge should not be followed");
-    }
-
-    // ── ambiguous response helper tests ───────────────────────────────
+    // -- ambiguous response helper tests -----------------------------------
 
     #[test]
     fn ambiguous_callers_response_has_code() {
@@ -1024,14 +909,16 @@ mod tests {
         assert_eq!(count, MAX_AMBIGUOUS_CANDIDATES, "Should truncate to {} candidates, got: {json_str}", MAX_AMBIGUOUS_CANDIDATES);
     }
 
-    // ── Handler tests ─────────────────────────────────────────────────
+    // -- Handler tests -----------------------------------------------------
 
     fn new_router(store: Arc<Store>) -> ToolRouter {
         ToolRouter::new_empty(store, PathBuf::from("/tmp"))
     }
 
     #[test]
-    fn trace_callers_valid_hex_symbol_id_accepted() {
+    fn trace_callers_hex_input_returns_not_found() {
+        // Hex strings are no longer auto-detected — they are treated as
+        // qualified names. A hex-looking string won't match any symbol.
         let store = test_store();
         let f = register_file(&store, "test.ts");
         let sid = insert_symbol(&store, f, "func", "func.func", SymbolKind::Function);
@@ -1039,10 +926,10 @@ mod tests {
 
         let mut router = new_router(store);
         let args = serde_json::json!({"symbol": hex});
-        let (resp_str, _is_error) = router.handle_trace_caller_path(&args);
+        let (resp_str, is_error) = router.handle_trace_caller_path(&args);
         assert!(
-            !resp_str.contains("not found"),
-            "hex SymbolId should resolve: {resp_str}"
+            resp_str.contains("not found") || is_error,
+            "hex string should not resolve as SymbolId: {resp_str}"
         );
     }
 
