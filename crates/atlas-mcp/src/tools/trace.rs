@@ -296,15 +296,11 @@ impl ToolRouter {
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
         // Parse symbol parameter as unified SymbolInput (string or structured selector).
-        let input: SymbolInput = match serde_json::from_value(args["symbol"].clone()) {
+        let input: SymbolInput = match parse_symbol_input(args, "symbol") {
             Ok(inp) => inp,
             Err(e) => {
-                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                    "trace_callers",
-                    &format!(
-                        "Invalid symbol parameter: {e}. Accepts qualified name or SymbolSelector JSON."
-                    ),
-                );
+                let resp: TraceQueryResponse<()> =
+                    TraceQueryResponse::err("trace_callers", &e);
                 return (
                     serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
                     true,
