@@ -405,6 +405,7 @@ impl CfgContext<'_> {
     /// Search recursively for a `lambda_literal` descendant of the given node.
     /// In Kotlin tree-sitter, trailing lambdas are nested inside `call_suffix`,
     /// not as direct children of `call_expression`.
+    #[allow(clippy::only_used_in_recursion)]
     fn find_lambda_literal<'a>(&self, node: &Node<'a>) -> Option<Node<'a>> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -1172,8 +1173,6 @@ impl CfgContext<'_> {
                 .next()
                 .unwrap_or(*inner);
             self.emit_stmt(CfgNodeKind::Statement, start_byte, &callee);
-        } else if inner.kind() == "func_literal" {
-            self.emit_stmt(CfgNodeKind::Statement, start_byte, inner);
         } else {
             self.emit_stmt(CfgNodeKind::Statement, start_byte, inner);
         }

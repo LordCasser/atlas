@@ -210,7 +210,7 @@ impl ToolRouter {
         let hits: Vec<SearchHit> = engine_resp
             .results
             .iter()
-            .map(|r| Self::search_result_to_hit(r))
+            .map(Self::search_result_to_hit)
             .collect();
 
         let mut response = json!({
@@ -306,7 +306,7 @@ impl ToolRouter {
             let hits: Vec<SearchHit> = engine_resp
                 .results
                 .iter()
-                .map(|r| ToolRouter::search_result_to_hit(r))
+                .map(ToolRouter::search_result_to_hit)
                 .collect();
 
             let mut response = json!({

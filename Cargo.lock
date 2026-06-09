@@ -179,7 +179,6 @@ dependencies = [
  "anyhow",
  "atlas-engine",
  "blake3",
- "domain-rules",
  "hex",
  "rmcp",
  "serde",

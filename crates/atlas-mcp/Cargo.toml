@@ -10,7 +10,6 @@ documentation = "https://github.com/LordCasser/atlas#readme"
 
 [dependencies]
 atlas-engine = { path = "../atlas-engine", default-features = false }
-domain-rules = { path = "../atlas-engine/crates/domain_rules" }
 anyhow = "1"
 blake3 = "1"
 hex = "0.4"

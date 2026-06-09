@@ -58,7 +58,7 @@ fn filter_candidates(
             let irk = InternalRelationKind::from_edge_kind(ek)?;
             Some((nix, ek, irk))
         })
-        .filter(|(_, _, irk)| kinds.map_or(true, |allowed| allowed.contains(irk)))
+        .filter(|(_, _, irk)| kinds.is_none_or(|allowed| allowed.contains(irk)))
         .take(limit)
         .collect()
 }

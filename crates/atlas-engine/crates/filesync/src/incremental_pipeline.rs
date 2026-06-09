@@ -317,7 +317,7 @@ impl IncrementalPipeline {
                         });
                     }
                 },
-                || interrupted(),
+                &mut *interrupted,
             )
             .map_err(|e| {
                 sink.emit(ProgressEvent::Warning {

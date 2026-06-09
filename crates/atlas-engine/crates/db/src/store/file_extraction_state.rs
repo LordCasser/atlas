@@ -354,11 +354,9 @@ impl Store {
             if let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
             }) {
-                for row in rows {
-                    if let Ok((cap_mask_i64, layer)) = row {
-                        aggregated |= cap_mask_i64 as u16;
-                        aggregated |= CapabilityMask::from_layers(&[layer.as_str()]).bits();
-                    }
+                for (cap_mask_i64, layer) in rows.flatten() {
+                    aggregated |= cap_mask_i64 as u16;
+                    aggregated |= CapabilityMask::from_layers(&[layer.as_str()]).bits();
                 }
             }
         }

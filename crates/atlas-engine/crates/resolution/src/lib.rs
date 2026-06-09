@@ -479,7 +479,7 @@ impl ReferenceResolver {
         let matched_counter = Arc::new(AtomicU64::new(0));
         let session = &session;
 
-        let progress_atomic = progress_mutex.map(|a| Arc::clone(&a.lock().unwrap().atomic_current));
+        let progress_atomic = progress_mutex.map(|a| Arc::clone(&a.lock().expect("progress_mutex lock poisoned").atomic_current));
 
         // Step A: build all contexts
         let mut file_groups: Vec<(FileId, Vec<ReferenceUse>, ResolutionContext)> =

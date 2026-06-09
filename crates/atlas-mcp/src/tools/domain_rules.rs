@@ -132,8 +132,8 @@ impl ToolRouter {
             .unwrap_or(0.5);
 
         // Delegate to the C learning strategy from domain_rules crate
-        use domain_rules::kinds::c::CLearningStrategy;
-        use domain_rules::learning::RuleLearningStrategy;
+        use atlas_engine::rule_engine::kinds::c::CLearningStrategy;
+        use atlas_engine::rule_engine::learning::RuleLearningStrategy;
 
         let learner = CLearningStrategy;
         match learner.discover_candidates(&self.store) {

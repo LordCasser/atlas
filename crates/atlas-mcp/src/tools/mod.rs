@@ -408,7 +408,7 @@ impl ToolRouter {
     /// after completion.
     pub(crate) fn has_manual_full_index(&self) -> bool {
         let signature = self.store.index_signature().unwrap_or_default();
-        if let Some((cached_signature, cached)) = &*self.cached_manual_full_index.read().unwrap()
+        if let Some((cached_signature, cached)) = &*self.cached_manual_full_index.read().expect("cached_manual_full_index lock poisoned")
             && *cached_signature == signature
         {
             return *cached;
@@ -418,7 +418,7 @@ impl ToolRouter {
             .read_index_mode()
             .unwrap_or_else(|_| "unknown".to_string());
         let result = is_rich_index_mode(&index_mode);
-        *self.cached_manual_full_index.write().unwrap() = Some((signature, result));
+        *self.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = Some((signature, result));
         result
     }
 
@@ -427,7 +427,7 @@ impl ToolRouter {
     /// Called after MCP `index` completes, so the next search/trace query
     /// re-checks the actual layer distribution.
     pub(crate) fn invalidate_manual_full_index_cache(&self) {
-        *self.cached_manual_full_index.write().unwrap() = None;
+        *self.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = None;
     }
 
     /// Resolve a [`FileId`] to its human-readable file path.
@@ -455,7 +455,7 @@ impl ToolRouter {
             Self::project_runtime(store.clone(), &project_root);
         self.project_root = project_root.clone();
         self.store = store.clone();
-        *self.engine.lock().unwrap() = engine;
+        *self.engine.lock().expect("engine lock poisoned") = engine;
         self.lazy_service = lazy_service;
         self.source_extractor = source_extractor;
         self.search = None;
@@ -464,8 +464,8 @@ impl ToolRouter {
         self.cached_signature.clear();
         self.last_graph_signature.clear();
         self.last_signature_check = std::time::Instant::now();
-        *self.cached_manual_full_index.write().unwrap() = None;
-        self.query_snapshots.lock().unwrap().clear();
+        *self.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = None;
+        self.query_snapshots.lock().expect("query_snapshots lock poisoned").clear();
         self.investigation_state = InvestigationState::default();
     }
 
@@ -531,7 +531,7 @@ impl ToolRouter {
             c.refresh_graph(graph);
         }
         self.last_graph_signature = self.store.index_signature().unwrap_or_default();
-        *self.cached_manual_full_index.write().unwrap() = None;
+        *self.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = None;
     }
 
     /// Try to apply a background-built graph from the pending slot,
@@ -628,7 +628,7 @@ impl ToolRouter {
         }
 
         self.last_graph_signature = self.store.index_signature().unwrap_or_default();
-        *self.cached_manual_full_index.write().unwrap() = None;
+        *self.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = None;
 
         Ok(())
     }
@@ -651,7 +651,7 @@ impl ToolRouter {
             self.last_graph_signature = current.clone();
             // Re-check whether a manual full index now exists (layer distribution
             // may have changed after external index/sync or lazy structural).
-            *self.cached_manual_full_index.write().unwrap() = None;
+            *self.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = None;
         }
         self.cached_signature = current;
         Ok(())

@@ -296,12 +296,12 @@ fn extract_struct_name(error_text: &str) -> Option<(&str, usize)> {
             || error_text
                 .as_bytes()
                 .get(abs_pos.wrapping_sub(1))
-                .map_or(false, |b| b.is_ascii_whitespace());
+                .is_some_and(|b| b.is_ascii_whitespace());
         // Check word boundary after: must be end, whitespace, or `{`
         let after_ok = error_text
             .as_bytes()
             .get(abs_pos + "struct".len())
-            .map_or(true, |b| b.is_ascii_whitespace() || *b == b'{');
+            .is_none_or(|b| b.is_ascii_whitespace() || *b == b'{');
         if before_ok && after_ok {
             let after_keyword = error_text[abs_pos + "struct".len()..].trim_start();
             let name = after_keyword.split(['{', '\n', '\r']).next()?.trim();

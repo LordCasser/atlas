@@ -73,7 +73,7 @@ impl IndexPipeline {
         // Convenience: check for cancellation before the next phase.
         macro_rules! check_cancelled {
             () => {
-                if (*int_cell.lock().unwrap())() {
+                if (*int_cell.lock().expect("cancellation check lock poisoned"))() {
                     sink.emit(ProgressEvent::Cancelled { last_phase });
                     return Ok(IndexPipelineStats::default());
                 }
@@ -260,7 +260,7 @@ impl IndexPipeline {
             let ct = Arc::clone(&cancel_token);
             let int_cell_for_progress = std::sync::Arc::clone(&int_cell);
             let on_file_progress = move |completed: usize, _total: usize| {
-                if (*int_cell_for_progress.lock().unwrap())() {
+                if (*int_cell_for_progress.lock().expect("cancellation check lock poisoned"))() {
                     ct.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 sink.emit(ProgressEvent::ItemProgress {
@@ -271,7 +271,7 @@ impl IndexPipeline {
 
             // Propagate external interrupt to cancel token before extraction
             // starts so the rayon loop can see it on the first file.
-            if (*int_cell.lock().unwrap())() {
+            if (*int_cell.lock().expect("cancellation check lock poisoned"))() {
                 cancel_token.store(true, std::sync::atomic::Ordering::Relaxed);
             }
 
@@ -315,7 +315,7 @@ impl IndexPipeline {
 
             let write_stats =
                 phase_write_batched(&self.store, &extracted, 500, 500, write_progress, || {
-                    (*int_cell.lock().unwrap())()
+                    (*int_cell.lock().expect("cancellation check lock poisoned"))()
                 })?;
 
             stats.indexed = write_stats.written;
