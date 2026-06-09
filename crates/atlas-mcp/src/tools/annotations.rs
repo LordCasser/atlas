@@ -10,7 +10,10 @@
 
 use atlas_engine::{FpAnnotation, Language};
 
-use super::{MAX_ANNOTATION_QNAME_LENGTH, QnameResolution, ToolRouter, get_str};
+use super::{MAX_ANNOTATION_QNAME_LENGTH, ToolRouter, get_str};
+use crate::tools::symbol_selector::{
+    SymbolInput, SymbolResolution, SymbolResolutionPolicy,
+};
 
 use serde_json::json;
 
@@ -57,9 +60,12 @@ impl ToolRouter {
         }
 
         // Resolve field symbol
-        let field_id = match self.resolve_qname_disambiguated(field_qname) {
-            Ok(QnameResolution::Unique(id)) => id,
-            Ok(QnameResolution::Ambiguous { candidates }) => {
+        let field_id = match self.resolve_symbol_input(
+            &SymbolInput::Name(field_qname.to_string()),
+            SymbolResolutionPolicy::BestEffortSingle,
+        ) {
+            Ok(SymbolResolution::Single { symbol_id, .. }) => symbol_id,
+            Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
                 let candidates_str: Vec<String> = candidates
                     .iter()
                     .take(5)
@@ -76,13 +82,21 @@ impl ToolRouter {
                     true,
                 );
             }
+            Ok(SymbolResolution::NotFound { .. }) => {
+                let mut err = format!("Symbol not found: {field_qname}");
+                err.push_str(self.index_not_run_guidance());
+                return (json!({"error": err}).to_string(), true);
+            }
             Err(e) => return (json!({"error": e}).to_string(), true),
         };
 
         // Resolve target symbol
-        let target_id = match self.resolve_qname_disambiguated(target_qname) {
-            Ok(QnameResolution::Unique(id)) => id,
-            Ok(QnameResolution::Ambiguous { candidates }) => {
+        let target_id = match self.resolve_symbol_input(
+            &SymbolInput::Name(target_qname.to_string()),
+            SymbolResolutionPolicy::BestEffortSingle,
+        ) {
+            Ok(SymbolResolution::Single { symbol_id, .. }) => symbol_id,
+            Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
                 let candidates_str: Vec<String> = candidates
                     .iter()
                     .take(5)
@@ -98,6 +112,11 @@ impl ToolRouter {
                     .to_string(),
                     true,
                 );
+            }
+            Ok(SymbolResolution::NotFound { .. }) => {
+                let mut err = format!("Symbol not found: {target_qname}");
+                err.push_str(self.index_not_run_guidance());
+                return (json!({"error": err}).to_string(), true);
             }
             Err(e) => return (json!({"error": e}).to_string(), true),
         };
@@ -319,9 +338,12 @@ impl ToolRouter {
                 annotation_id.to_string(),
             )
         } else if !field_qname.is_empty() {
-            let field_id = match self.resolve_qname_disambiguated(field_qname) {
-                Ok(QnameResolution::Unique(id)) => id,
-                Ok(QnameResolution::Ambiguous { candidates }) => {
+            let field_id = match self.resolve_symbol_input(
+                &SymbolInput::Name(field_qname.to_string()),
+                SymbolResolutionPolicy::BestEffortSingle,
+            ) {
+                Ok(SymbolResolution::Single { symbol_id, .. }) => symbol_id,
+                Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
                     let candidates_str: Vec<String> = candidates
                         .iter()
                         .take(5)
@@ -337,6 +359,11 @@ impl ToolRouter {
                         .to_string(),
                         true,
                     );
+                }
+                Ok(SymbolResolution::NotFound { .. }) => {
+                    let mut err = format!("Symbol not found: {field_qname}");
+                    err.push_str(self.index_not_run_guidance());
+                    return (json!({"error": err}).to_string(), true);
                 }
                 Err(e) => return (json!({"error": e}).to_string(), true),
             };

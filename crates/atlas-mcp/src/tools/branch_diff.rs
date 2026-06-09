@@ -6,7 +6,10 @@
 
 use super::lazy_response::LazyDiagnostics;
 use super::query_snapshot::{QuerySnapshot, QueryStatus};
-use super::{MAX_SYMBOL_NAME_LENGTH, QnameResolution, ToolRouter, get_str};
+use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str};
+use crate::tools::symbol_selector::{
+    SymbolInput, SymbolResolution, SymbolResolutionPolicy,
+};
 use serde_json::json;
 use std::time::Instant;
 
@@ -25,9 +28,12 @@ impl ToolRouter {
         }
 
         // Resolve symbol to SymbolId
-        let sid = match self.resolve_qname_disambiguated(symbol) {
-            Ok(QnameResolution::Unique(id)) => id,
-            Ok(QnameResolution::Ambiguous { candidates }) => {
+        let sid = match self.resolve_symbol_input(
+            &SymbolInput::Name(symbol.to_string()),
+            SymbolResolutionPolicy::BestEffortSingle,
+        ) {
+            Ok(SymbolResolution::Single { symbol_id, .. }) => symbol_id,
+            Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
                 let candidates_str: Vec<String> = candidates
                     .iter()
                     .take(5)
@@ -42,6 +48,11 @@ impl ToolRouter {
                     ),
                     true,
                 );
+            }
+            Ok(SymbolResolution::NotFound { .. }) => {
+                let mut err = format!("Symbol not found: {symbol}");
+                err.push_str(self.index_not_run_guidance());
+                return (err, true);
             }
             Err(e) => return (e, true),
         };

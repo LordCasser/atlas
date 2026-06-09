@@ -14,13 +14,9 @@ use atlas_engine::SearchCoverage;
 use atlas_engine::SearchResult;
 use atlas_engine::SymbolKind;
 
-use super::CandidateInfo;
-use super::QnameResolution;
 use super::lazy_response::{LazyDiagnostics, LazyResponse};
-use super::{
-    MAX_QUERY_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt,
-    get_u64,
-};
+use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy, ScoredCandidate};
+use super::{MAX_QUERY_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64};
 
 use serde_json::json;
 use std::sync::Arc;
@@ -376,15 +372,18 @@ impl ToolRouter {
 
         let lr = LazyResponse::new("symbol", args);
         let query_id = lr.query_id().to_string();
-        let resolution = self.resolve_qname_disambiguated(qname);
+        let resolution = self.resolve_symbol_input(
+            &SymbolInput::Name(qname.to_string()),
+            SymbolResolutionPolicy::UniqueOrCandidates,
+        );
         let sym;
         let lazy_warnings;
         let structural_tier;
         let mut lazy_diag: Option<LazyDiagnostics> = None;
         match resolution {
-            Ok(QnameResolution::Unique(id)) => {
+            Ok(SymbolResolution::Single { symbol_id, .. }) => {
                 // Found a unique symbol on the first try
-                if let Ok(Some(s)) = self.store.find_symbol_by_id(&id) {
+                if let Ok(Some(s)) = self.store.find_symbol_by_id(&symbol_id) {
                     self.update_investigation(InvestigationFocus::Symbol(s.id));
                     let investigation = self.investigation_state.active_investigation.clone();
                     // Ensure structural data so caller/callee results
@@ -406,16 +405,19 @@ impl ToolRouter {
                     }
                     // Re-query after lazy — structural replace may have
                     // updated symbol metadata or source ranges.
-                    sym = match self.resolve_qname_disambiguated(qname) {
-                        Ok(QnameResolution::Unique(new_id)) => self
+                    sym = match self.resolve_symbol_input(
+                        &SymbolInput::Name(qname.to_string()),
+                        SymbolResolutionPolicy::UniqueOrCandidates,
+                    ) {
+                        Ok(SymbolResolution::Single { symbol_id: new_id, .. }) => self
                             .store
                             .find_symbol_by_id(&new_id)
                             .unwrap_or_default()
                             .unwrap_or(s),
-                        Ok(QnameResolution::Ambiguous { candidates }) => {
-                            return Self::build_ambiguous_symbol_response(qname, &candidates, args);
+                        Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
+                            return Self::build_ambiguous_symbol_response(qname, candidates, args);
                         }
-                        Err(_) => s,
+                        _ => s,
                     };
                 } else {
                     let mut err = format!("Symbol not found: {qname}");
@@ -423,10 +425,10 @@ impl ToolRouter {
                     return (err, true);
                 }
             }
-            Ok(QnameResolution::Ambiguous { candidates }) => {
-                return Self::build_ambiguous_symbol_response(qname, &candidates, args);
+            Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
+                return Self::build_ambiguous_symbol_response(qname, candidates, args);
             }
-            Err(_) => {
+            Ok(SymbolResolution::NotFound { .. }) => {
                 // Not found in manifest — trigger lazy structural extraction
                 let outcome = self.ensure_structural_for_symbol_name(
                     qname,
@@ -443,9 +445,12 @@ impl ToolRouter {
                         stats.as_ref(),
                     ));
                 }
-                match self.resolve_qname_disambiguated(qname) {
-                    Ok(QnameResolution::Unique(id)) => {
-                        if let Ok(Some(s)) = self.store.find_symbol_by_id(&id) {
+                match self.resolve_symbol_input(
+                    &SymbolInput::Name(qname.to_string()),
+                    SymbolResolutionPolicy::UniqueOrCandidates,
+                ) {
+                    Ok(SymbolResolution::Single { symbol_id, .. }) => {
+                        if let Ok(Some(s)) = self.store.find_symbol_by_id(&symbol_id) {
                             self.update_investigation(InvestigationFocus::Symbol(s.id));
                             sym = s;
                         } else {
@@ -454,14 +459,20 @@ impl ToolRouter {
                             return (err, true);
                         }
                     }
-                    Ok(QnameResolution::Ambiguous { candidates }) => {
-                        return Self::build_ambiguous_symbol_response(qname, &candidates, args);
+                    Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
+                        return Self::build_ambiguous_symbol_response(qname, candidates, args);
+                    }
+                    Ok(SymbolResolution::NotFound { .. }) => {
+                        let mut err = format!("Symbol not found: {qname}");
+                        err.push_str(self.index_not_run_guidance());
+                        return (err, true);
                     }
                     Err(err) => {
                         return (err, true);
                     }
                 }
             }
+            Err(e) => return (e, true),
         };
         // Re-acquire graph after lazy structural may have refreshed it
         let se = match self.search_engine() {
@@ -546,7 +557,7 @@ impl ToolRouter {
     /// multiple symbols, providing the caller with disambiguation candidates.
     fn build_ambiguous_symbol_response(
         qname: &str,
-        candidates: &[CandidateInfo],
+        candidates: Vec<ScoredCandidate>,
         _args: &serde_json::Value,
     ) -> (String, bool) {
         let candidates_json: Vec<serde_json::Value> = candidates

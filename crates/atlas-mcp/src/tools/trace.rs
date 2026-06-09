@@ -2,13 +2,12 @@
 //! traversal.  Includes transparent lazy structural extraction with progress
 //! notifications to prevent MCP timeout during on-demand extraction.
 
-use atlas_engine::{InvestigationFocus, TraceDiagnostic, TraceQueryResponse};
+use atlas_engine::{InvestigationFocus, TraceQueryResponse};
 
 use super::lazy_response::{LazyDiagnostics, LazyLayerDiagnostics, LazyResponse};
 use super::{
-    CandidateInfo, MAX_AMBIGUOUS_CANDIDATES, MAX_FILE_PATH_LENGTH, MAX_SYMBOL_NAME_LENGTH,
-    ToolRouter, get_str_opt, get_u64, resolve_file_id,
-    warnings_to_trace_diagnostics,
+    MAX_FILE_PATH_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str_opt, get_u64,
+    resolve_file_id, warnings_to_trace_diagnostics,
 };
 use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy};
 
@@ -689,76 +688,6 @@ impl ToolRouter {
     }
 }
 
-// -- Disambiguation helpers ---------------------------------------------------
-
-/// Build a partial (ambiguous) response for trace_callers.
-fn build_ambiguous_response_for_callers(
-    name: &str,
-    candidates: &[CandidateInfo],
-) -> (String, bool) {
-    let candidates_str = candidates
-        .iter()
-        .take(MAX_AMBIGUOUS_CANDIDATES)
-        .map(|c| {
-            format!(
-                "{} [{}:{} {}]",
-                c.qualified_name, c.file_path, c.line, c.kind
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    let msg = format!(
-        "Symbol '{}' matched {} candidates: [{}]. Re-run with a SymbolSelector object for the correct candidate.",
-        name,
-        candidates.len(),
-        candidates_str
-    );
-    let resp: TraceQueryResponse<()> = TraceQueryResponse::partial(
-        "trace_callers",
-        TraceDiagnostic::warning(&msg).with_code("ambiguous_name"),
-        None,
-    );
-    (
-        serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-        true,
-    )
-}
-
-/// Build a partial (ambiguous) response for trace_forward.
-fn build_ambiguous_response_for_forward(
-    name: &str,
-    candidates: &[CandidateInfo],
-    field: &str,
-) -> (String, bool) {
-    let candidates_str = candidates
-        .iter()
-        .take(MAX_AMBIGUOUS_CANDIDATES)
-        .map(|c| {
-            format!(
-                "{} [{}:{} {}]",
-                c.qualified_name, c.file_path, c.line, c.kind
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    let msg = format!(
-        "Ambiguous {} name: '{}' matched {} candidates: [{}]. Re-run with a SymbolSelector object from the candidate list.",
-        field,
-        name,
-        candidates.len(),
-        candidates_str
-    );
-    let resp: TraceQueryResponse<()> = TraceQueryResponse::partial(
-        "trace_forward",
-        TraceDiagnostic::warning(&msg).with_code("ambiguous_name"),
-        None,
-    );
-    (
-        serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-        true,
-    )
-}
-
 // -- Tests --------------------------------------------------------------------
 
 #[cfg(test)]
@@ -838,75 +767,6 @@ mod tests {
         };
         store.insert_symbols(&[sym]).unwrap();
         sid
-    }
-
-    fn make_candidate(id: SymbolId) -> CandidateInfo {
-        CandidateInfo {
-            id,
-            qualified_name: "test".into(),
-            file_path: "test.ts".into(),
-            line: 1,
-            kind: "function".into(),
-            language: "typescript".into(),
-        }
-    }
-
-    // -- ambiguous response helper tests -----------------------------------
-
-    #[test]
-    fn ambiguous_callers_response_has_code() {
-        let c = make_candidate(SymbolId::generate(
-            &FileId::generate("test.ts"),
-            "ts",
-            "f",
-            "function",
-            None,
-        ));
-        let (json_str, is_error) = build_ambiguous_response_for_callers("test", &[c]);
-        assert!(
-            is_error == true || json_str.contains("ambiguous_name") || json_str.contains("partial")
-        );
-    }
-
-    #[test]
-    fn ambiguous_forward_response_has_code() {
-        let c = make_candidate(SymbolId::generate(
-            &FileId::generate("test.ts"),
-            "ts",
-            "f",
-            "function",
-            None,
-        ));
-        let (json_str, is_error) = build_ambiguous_response_for_forward("test", &[c], "from");
-        assert!(
-            is_error == true || json_str.contains("ambiguous_name") || json_str.contains("partial")
-        );
-    }
-
-    #[test]
-    fn ambiguous_response_truncates_to_eight() {
-        let mut candidates = Vec::new();
-        for i in 0..12 {
-            candidates.push(CandidateInfo {
-                id: SymbolId::generate(
-                    &FileId::generate("test.ts"),
-                    "ts",
-                    &format!("f{i}"),
-                    "function",
-                    None,
-                ),
-                qualified_name: "test".into(),
-                file_path: format!("file{i}.ts"),
-                line: i,
-                kind: "function".into(),
-                language: "typescript".into(),
-            });
-        }
-        let (json_str, _) = build_ambiguous_response_for_callers("test", &candidates);
-        assert!(json_str.contains("12 candidates"));
-        // Each candidate formatted as "qualified_name [file_path:line kind]"
-        let count = json_str.matches("function]").count();
-        assert_eq!(count, MAX_AMBIGUOUS_CANDIDATES, "Should truncate to {} candidates, got: {json_str}", MAX_AMBIGUOUS_CANDIDATES);
     }
 
     // -- Handler tests -----------------------------------------------------

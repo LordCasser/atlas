@@ -36,29 +36,9 @@ pub(crate) type ProgressReport = (f64, Option<f64>, Option<String>);
 /// Channel sender for progress updates during long-running operations.
 pub(crate) type ProgressSender = tokio::sync::mpsc::UnboundedSender<ProgressReport>;
 
-/// Resolved qualified name result.
-#[derive(Debug, Clone)]
-pub(crate) enum QnameResolution {
-    /// Exactly one symbol matched.
-    Unique(SymbolId),
-    /// Multiple symbols matched; caller must surface ambiguity or disambiguate.
-    Ambiguous { candidates: Vec<CandidateInfo> },
-}
-
 /// Maximum number of ambiguous candidates to display in diagnostics.
 /// Beyond this, candidates are truncated to avoid log flooding in large projects.
 pub(crate) const MAX_AMBIGUOUS_CANDIDATES: usize = 5;
-
-/// Human-readable candidate for ambiguous qname resolution.
-#[derive(Debug, Clone)]
-pub(crate) struct CandidateInfo {
-    pub id: SymbolId,
-    pub qualified_name: String,
-    pub file_path: String,
-    pub line: u32,
-    pub kind: String,
-    pub language: String,
-}
 
 // -------------------------------------------------------------------
 // ToolCallContext — request-scoped progress capabilities
@@ -834,51 +814,8 @@ impl ToolRouter {
         }
     }
 
-    // ── Qname resolution with ambiguity detection ──────────────────────
-
-    /// Resolve a qualified name with ambiguity detection.
-    ///
-    /// Returns `Unique` when exactly one symbol matches; `Ambiguous` with all
-    /// candidates when multiple match.  Never silently picks the first result.
-    pub(crate) fn resolve_qname_disambiguated(
-        &self,
-        qname: &str,
-    ) -> Result<QnameResolution, String> {
-        let symbols = self
-            .store
-            .find_symbols_by_qname(qname)
-            .map_err(|e| format!("Lookup error: {e}"))?;
-
-        if symbols.is_empty() {
-            let mut err = format!("Symbol not found: {qname}");
-            err.push_str(self.index_not_run_guidance());
-            return Err(err);
-        }
-
-        if symbols.len() == 1 {
-            return Ok(QnameResolution::Unique(symbols[0].id));
-        }
-
-        let candidates: Vec<CandidateInfo> = symbols
-            .iter()
-            .map(|s| CandidateInfo {
-                id: s.id,
-                qualified_name: s.qualified_name.clone(),
-                file_path: self.resolve_file_path(&s.file_id),
-                line: s.range.start_line,
-                kind: s.kind.as_str().to_string(),
-                language: s.language.as_str().to_string(),
-            })
-            .collect();
-
-        assert!(candidates.len() >= 2, "must have at least 2 candidates");
-        Ok(QnameResolution::Ambiguous { candidates })
-    }
-
-
-
-
-
+    // -------------------------------------------------------------------
+    // Query snapshot + investigation helpers
     // -------------------------------------------------------------------
     // Query snapshot + investigation helpers
     // -------------------------------------------------------------------
@@ -3173,7 +3110,7 @@ mod tests {
         assert_eq!(reports[0].2.as_deref(), Some("halfway"));
     }
 
-    // ── resolve_qname_disambiguated ────────────────────────────────────
+    // ── Test helpers ───────────────────────────────────────────────────
 
     /// Insert a minimal symbol with a caller-controlled qualified name.
     fn insert_test_symbol_with_qname(
@@ -3214,97 +3151,6 @@ mod tests {
         };
         store.insert_symbols(&[sym]).unwrap();
     }
-
-    #[test]
-    fn resolve_qname_disambiguated_ambiguous_multiple() {
-        let store = test_store();
-        let file_a = register_test_file(&store, "a.ts");
-        let file_b = register_test_file(&store, "b.ts");
-        let file_c = register_test_file(&store, "c.ts");
-
-        insert_test_symbol_with_qname(
-            &store,
-            file_a,
-            "turn",
-            "turn",
-            atlas_engine::SymbolKind::Function,
-        );
-        insert_test_symbol_with_qname(
-            &store,
-            file_b,
-            "turn",
-            "turn",
-            atlas_engine::SymbolKind::Variable,
-        );
-        insert_test_symbol_with_qname(
-            &store,
-            file_c,
-            "turn",
-            "turn",
-            atlas_engine::SymbolKind::Method,
-        );
-
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        router.ensure_graph_initialized().unwrap();
-
-        match router.resolve_qname_disambiguated("turn").unwrap() {
-            QnameResolution::Ambiguous { candidates } => {
-                assert_eq!(candidates.len(), 3);
-                let kinds: Vec<&str> = candidates.iter().map(|c| c.kind.as_str()).collect();
-                assert!(kinds.contains(&"function"));
-                assert!(kinds.contains(&"variable"));
-                assert!(kinds.contains(&"method"));
-            }
-            other => panic!("expected Ambiguous, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn resolve_qname_disambiguated_unique_single() {
-        let store = test_store();
-        let file_a = register_test_file(&store, "a.ts");
-
-        insert_test_symbol_with_qname(
-            &store,
-            file_a,
-            "run",
-            "run",
-            atlas_engine::SymbolKind::Function,
-        );
-
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        router.ensure_graph_initialized().unwrap();
-
-        match router.resolve_qname_disambiguated("run").unwrap() {
-            QnameResolution::Unique(_id) => {
-                // success
-            }
-            other => panic!("expected Unique, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn resolve_qname_disambiguated_not_found() {
-        let store = test_store();
-        // No files registered — guidance should appear
-
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        router.ensure_graph_initialized().unwrap();
-
-        let result = router.resolve_qname_disambiguated("nonexistent");
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            err.contains("Symbol not found"),
-            "expected 'Symbol not found' in: {err}"
-        );
-        assert!(
-            err.contains("index") && err.contains("Hint"),
-            "expected index guidance in: {err}"
-        );
-    }
-
-
 
     // ── Trace E2E tests ─────────────────────────────────────────────────
 
@@ -3590,70 +3436,6 @@ mod tests {
             has_contract || has_lazy_diag,
             "Expected analysis_contract or lazy_diagnostics field, got: {resp_str}"
         );
-    }
-
-    // ── D. QnameResolution candidate info ──────────────────────────────
-
-    #[test]
-    fn qname_resolution_candidate_info_fields() {
-        let store = test_store();
-        let file_a = register_test_file(&store, "a.ts");
-        let file_b = register_test_file(&store, "b.ts");
-
-        insert_test_symbol_with_qname(
-            &store,
-            file_a,
-            "shared",
-            "shared",
-            atlas_engine::SymbolKind::Function,
-        );
-        insert_test_symbol_with_qname(
-            &store,
-            file_b,
-            "shared",
-            "shared",
-            atlas_engine::SymbolKind::Method,
-        );
-
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        // ensure_graph_initialized is not needed for qname resolution in the store,
-        // but call it to match the existing test pattern.
-        router.ensure_graph_initialized().unwrap();
-
-        match router.resolve_qname_disambiguated("shared").unwrap() {
-            QnameResolution::Ambiguous { candidates } => {
-                assert_eq!(
-                    candidates.len(),
-                    2,
-                    "Expected 2 candidates, got {}",
-                    candidates.len()
-                );
-                for (i, c) in candidates.iter().enumerate() {
-                    assert!(
-                        !c.id.to_hex().is_empty(),
-                        "Candidate {i} missing id"
-                    );
-                    assert!(
-                        !c.qualified_name.is_empty(),
-                        "Candidate {i} missing qualified_name"
-                    );
-                    assert!(
-                        !c.file_path.is_empty(),
-                        "Candidate {i} missing file_path"
-                    );
-                    assert!(
-                        c.line > 0,
-                        "Candidate {i} missing or zero line: {}",
-                        c.line
-                    );
-                    assert!(
-                        !c.kind.is_empty(),
-                        "Candidate {i} missing kind"
-                    );
-                }
-            }
-            other => panic!("expected Ambiguous, got {other:?}"),
-        }
     }
 
     // ── E. Hex SymbolId resolution in callers ──────────────────────────
