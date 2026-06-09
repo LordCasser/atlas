@@ -195,6 +195,10 @@ Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/tra
 
 Atlas is a Rust workspace with 15 Cargo packages. The public entry points are `atlas-cli` (CLI + TUI), `atlas-mcp`, and the `atlas-engine` facade. Engine internals are split by responsibility so extraction, persistence, graph construction, search, context, and trace can evolve independently.
 
+<p align="center">
+  <img src="docs/architecture.svg" alt="Atlas Architecture" width="800">
+</p>
+
 ```text
 atlas/
 ├── crates/

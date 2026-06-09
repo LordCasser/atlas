@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 643.4649999999999 812.5999999999999" width="643.4649999999999" height="812.5999999999999" style="--bg:#fdf6e3;--fg:#657b83;--line:#93a1a1;--accent:#268bd2;--muted:#93a1a1;background:var(--bg)">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+  text { font-family: 'Inter', system-ui, sans-serif; }
+  svg {
+    /* Derived from --bg and --fg (overridable via --line, --accent, etc.) */
+    --_text:          var(--fg);
+    --_text-sec:      var(--muted, color-mix(in srgb, var(--fg) 60%, var(--bg)));
+    --_text-muted:    var(--muted, color-mix(in srgb, var(--fg) 40%, var(--bg)));
+    --_text-faint:    color-mix(in srgb, var(--fg) 25%, var(--bg));
+    --_line:          var(--line, color-mix(in srgb, var(--fg) 50%, var(--bg)));
+    --_arrow:         var(--accent, color-mix(in srgb, var(--fg) 85%, var(--bg)));
+    --_node-fill:     var(--surface, color-mix(in srgb, var(--fg) 3%, var(--bg)));
+    --_node-stroke:   var(--border, color-mix(in srgb, var(--fg) 20%, var(--bg)));
+    --_group-fill:    var(--bg);
+    --_group-hdr:     color-mix(in srgb, var(--fg) 5%, var(--bg));
+    --_inner-stroke:  color-mix(in srgb, var(--fg) 12%, var(--bg));
+    --_key-badge:     color-mix(in srgb, var(--fg) 10%, var(--bg));
+  }
+</style>
+<defs>
+  <marker id="arrowhead" markerWidth="8" markerHeight="5" refX="7" refY="2.5" orient="auto">
+    <polygon points="0 0, 8 2.5, 0 5" fill="var(--_arrow)" stroke="var(--_arrow)" stroke-width="0.75" stroke-linejoin="round" />
+  </marker>
+  <marker id="arrowhead-start" markerWidth="8" markerHeight="5" refX="1" refY="2.5" orient="auto-start-reverse">
+    <polygon points="8 0, 0 2.5, 8 5" fill="var(--_arrow)" stroke="var(--_arrow)" stroke-width="0.75" stroke-linejoin="round" />
+  </marker>
+</defs>
+<polyline class="edge" data-from="CLI" data-to="SRC" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="153.78387500000002,76.9 153.78387500000002,100.9 272.8265,100.9 272.8265,124.9" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="MCP" data-to="SRC" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="285.60737500000005,76.9 285.60737500000005,100.9 272.8265,100.9 272.8265,124.9" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="API" data-to="SRC" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="427.06387500000005,76.9 427.06387500000005,100.9 272.8265,100.9 272.8265,124.9" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="SRC" data-to="EXTRACT" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="272.8265,161.8 272.8265,209.8" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="EXTRACT" data-to="STORE" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="272.8265,263.6 272.8265,311.6" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="STORE" data-to="RESOLVE" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="272.8265,365.40000000000003 272.8265,413.40000000000003" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="RESOLVE" data-to="GRAPH" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="272.8265,467.20000000000005 272.8265,515.2" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="GRAPH" data-to="SEARCH" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="272.8265,569 272.8265,593 111.363,593 111.363,617" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="GRAPH" data-to="TRACE" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="272.8265,569 272.8265,593 272.8265,593 272.8265,617" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="GRAPH" data-to="SEMANTIC" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="272.8265,569 272.8265,593 483.196,593 483.196,617" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="SEMANTIC" data-to="RULES" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="483.196,670.8 483.196,718.8" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<g class="node" data-id="CLI" data-label="CLI / TUI" data-shape="rectangle">
+  <rect x="107.98537500000002" y="40" width="91.59700000000001" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="153.78387500000002" y="58.45" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">CLI / TUI</text>
+</g>
+<g class="node" data-id="MCP" data-label="MCP Server" data-shape="rectangle">
+  <rect x="227.58237500000004" y="40" width="116.05" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="285.60737500000005" y="58.45" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">MCP Server</text>
+</g>
+<g class="node" data-id="API" data-label="Library API" data-shape="rectangle">
+  <rect x="371.632375" y="40" width="110.863" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="427.06387500000005" y="58.45" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">Library API</text>
+</g>
+<g class="node" data-id="SRC" data-label="Source Code (14 languages)" data-shape="rectangle">
+  <rect x="170.712" y="124.9" width="204.229" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="272.8265" y="143.35000000000002" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">Source Code (14 languages)</text>
+</g>
+<g class="node" data-id="EXTRACT" data-label="Parse &amp; Extract
+tree-sitter + blake3" data-shape="rectangle">
+  <rect x="197.38799999999998" y="209.8" width="150.877" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="272.8265" y="236.70000000000002" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="272.8265" dy="-3.9000000000000012">Parse &amp; Extract</tspan><tspan x="272.8265" dy="16.900000000000002">tree-sitter + blake3</tspan></text>
+</g>
+<g class="node" data-id="STORE" data-label="SQLite Store
+.atlas/atlas.db" data-shape="rectangle">
+  <rect x="211.46699999999998" y="311.6" width="122.71900000000001" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="272.8265" y="338.5" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="272.8265" dy="-3.9000000000000012">SQLite Store</tspan><tspan x="272.8265" dy="16.900000000000002">.atlas/atlas.db</tspan></text>
+</g>
+<g class="node" data-id="RESOLVE" data-label="Resolve
+confidence 1.0→0.5" data-shape="rectangle">
+  <rect x="198.87" y="413.40000000000003" width="147.913" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="272.8265" y="440.3" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="272.8265" dy="-3.9000000000000012">Resolve</tspan><tspan x="272.8265" dy="16.900000000000002">confidence 1.0→0.5</tspan></text>
+</g>
+<g class="node" data-id="GRAPH" data-label="Graph Snapshot
++ CrossFunctionBridge" data-shape="rectangle">
+  <rect x="182.56799999999998" y="515.2" width="180.517" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="272.8265" y="542.1" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="272.8265" dy="-3.9000000000000012">Graph Snapshot</tspan><tspan x="272.8265" dy="16.900000000000002">+ CrossFunctionBridge</tspan></text>
+</g>
+<g class="node" data-id="SEARCH" data-label="Search &amp; Context
+FTS5 + fuzzy" data-shape="rectangle">
+  <rect x="40" y="617" width="142.726" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="111.363" y="643.9" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="111.363" dy="-3.9000000000000012">Search &amp; Context</tspan><tspan x="111.363" dy="16.900000000000002">FTS5 + fuzzy</tspan></text>
+</g>
+<g class="node" data-id="TRACE" data-label="Trace Engine
+Lazy Dataflow" data-shape="rectangle">
+  <rect x="210.726" y="617" width="124.20100000000001" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="272.8265" y="643.9" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="272.8265" dy="-3.9000000000000012">Trace Engine</tspan><tspan x="272.8265" dy="16.900000000000002">Lazy Dataflow</tspan></text>
+</g>
+<g class="node" data-id="SEMANTIC" data-label="Semantic Analysis
+CFG + DataFlow + EffectComposer" data-shape="rectangle">
+  <rect x="362.927" y="617" width="240.53799999999995" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="483.196" y="643.9" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="483.196" dy="-3.9000000000000012">Semantic Analysis</tspan><tspan x="483.196" dy="16.900000000000002">CFG + DataFlow + EffectComposer</tspan></text>
+</g>
+<g class="node" data-id="RULES" data-label="Domain Rules
+lang-agnostic + learning" data-shape="rectangle">
+  <rect x="392.1965" y="718.8" width="181.999" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="483.196" y="745.6999999999999" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="483.196" dy="-3.9000000000000012">Domain Rules</tspan><tspan x="483.196" dy="16.900000000000002">lang-agnostic + learning</tspan></text>
+</g>
+</svg>
