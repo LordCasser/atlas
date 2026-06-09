@@ -28,6 +28,7 @@ use serde_json::{Value, json};
 use crate::tools::async_state::AsyncState;
 use crate::tools::cache_state::CacheState;
 use crate::tools::lazy_response::{CapabilityStats, SnapshotStore};
+use symbol_selector::{parse_symbol_input, SymbolInput};
 use crate::tools::query_snapshot::{InvestigationState, QuerySnapshot};
 use crate::tools::graph_state::GraphState;
 
@@ -1463,11 +1464,14 @@ impl ToolRouter {
         }
 
         let view = get_str(args, "view");
-        let qname = get_str(args, "symbol");
-        let qname = if qname.is_empty() {
-            get_str(args, "qname")
-        } else {
-            qname
+        // Parse symbol uniformly — handles string, object, and stringified-JSON
+        let input = match parse_symbol_input(args, "symbol") {
+            Ok(inp) => inp,
+            Err(e) => return (e, true),
+        };
+        let qname = match &input {
+            SymbolInput::Name(s) => s.clone(),
+            SymbolInput::Selector(sel) => sel.qualified_name.clone(),
         };
         if qname.is_empty() {
             return ("Missing required 'symbol' parameter".to_string(), true);
@@ -1487,9 +1491,12 @@ impl ToolRouter {
                 self.handle_symbol_detail(&Value::Object(mapped))
             }
             "context" => {
-                // Remap: symbol → symbol for the legacy context handler
+                // Pass original symbol value — sub-handler parses via parse_symbol_input
                 let mut mapped = serde_json::Map::new();
-                mapped.insert("symbol".into(), Value::String(qname.to_string()));
+                mapped.insert(
+                    "symbol".into(),
+                    args.get("symbol").cloned().unwrap_or(Value::String(qname.clone())),
+                );
                 if let Some(v) = args.get("includeCode") {
                     mapped.insert("includeCode".into(), v.clone());
                 }
@@ -1502,9 +1509,12 @@ impl ToolRouter {
                 self.handle_context(ctx, &Value::Object(mapped))
             }
             "usages" => {
-                // Remap: symbol → symbol for the legacy usages handler
+                // Pass original symbol value — sub-handler parses via parse_symbol_input
                 let mut mapped = serde_json::Map::new();
-                mapped.insert("symbol".into(), Value::String(qname.to_string()));
+                mapped.insert(
+                    "symbol".into(),
+                    args.get("symbol").cloned().unwrap_or(Value::String(qname.clone())),
+                );
                 if let Some(v) = args.get("limit") {
                     mapped.insert("limit".into(), v.clone());
                 }
