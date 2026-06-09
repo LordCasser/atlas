@@ -50,6 +50,8 @@ mod linux_augment;
 pub mod precision;
 /// Scoped search service: shared search orchestration with lazy structural fallback.
 pub mod scoped_search;
+/// Unified symbol resolution with fault-tolerant scoring.
+pub mod symbol_selector;
 mod source_extractor;
 
 // ── Stable Public API ─────────────────────────────────────────────────────
