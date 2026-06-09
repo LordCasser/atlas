@@ -52,9 +52,9 @@ task-oriented view, so several rows intentionally share the same tool:
 | Project overview | `project(action="status")` | none |
 | Indexed files | `project(action="files")` | optional `limit`, `language`, `path_prefix` |
 | Symbol search | `search` | `query` (required), `scope` required for manifest-only indexes, optional `kind`, `limit`, `background` |
-| Symbol details | `symbol(view="detail")` | `symbol` (required), optional `includeCode` |
-| Agent context | `symbol(view="context")` | `symbol` (required), optional `includeCode` |
-| Symbol usages | `symbol(view="usages")` | `symbol` (required), optional `limit` |
+| Symbol details | `symbol(view="detail")` | `symbol` (required, string or SymbolSelector), optional `file_path`+`line`+`column` for position lookup, `includeCode` |
+| Agent context | `symbol(view="context")` | `symbol` (required, string or SymbolSelector), optional `file_path`+`line`+`column` for position lookup, `includeCode` |
+| Symbol usages | `symbol(view="usages")` | `symbol` (required, string or SymbolSelector), optional `file_path`+`line`+`column` for position lookup, `limit` |
 | Call graph | `calls` | `symbol` (required), `direction="incoming\|outgoing\|both"`, optional `depth`, `limit`, `edge_kinds` |
 | Symbol exploration | `explore` | `symbol` (required), optional `includeCode` |
 | Shortest path | `path` | `from`, `to` (required), optional `max_depth`, `direction`, `prefer_production`, `edge_kinds`, `includeCode` |
@@ -80,6 +80,8 @@ task-oriented view, so several rows intentionally share the same tool:
 - Use shallow graph depths first (`depth: 1` or `2`) to avoid noisy results.
 - For code-review or refactor questions, combine `impact` with `symbol(view="usages")` and `symbol(view="context")`.
 - For debugging value flow, call `trace(kind="point")` first, then `trace(kind="variable")` at the same position.
+- For position-based lookup, combine `symbol` with `file_path`, `line`, and `view` (e.g. `symbol(file_path="src/foo.ts", line=42, view="context")`).
+- If SymbolSelector returns ambiguous with a `file_path` hint, check the error message — invalid `file_path` values are diagnosed inline.
 
 ## Trace response handling
 

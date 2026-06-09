@@ -4,7 +4,7 @@ description: Semantic code graph engine for local repositories. Indexes 14 langu
 license: MIT
 compatibility: Requires Rust toolchain. Build with `cargo build --release -p atlas-cli --features mcp`.
 metadata:
-  version: "1.4.0"
+  version: "1.4.2"
   repository: https://github.com/lordcasser/atlas
 ---
 
@@ -75,7 +75,7 @@ The 18 MCP tools use short names (no `atlas_` prefix):
 | `project` | Open, inspect, or list files | `action="open\|status\|files"` |
 | `index` | Index/re-index active project | optional `include`, `exclude`, `analysis`, `background` |
 | `search` | Symbol search by name | `query` (required), optional `scope`, `kind`, `limit`, `background` |
-| `symbol` | Symbol details, context, or usages | `symbol` (required), `view="detail\|context\|usages"`, optional `includeCode`, `limit` |
+| `symbol` | Symbol details, context, or usages | `symbol` (required), `view="detail\|context\|usages"`, optional `file_path`+`line`+`column` for position lookup, `includeCode`, `limit` |
 | `calls` | Call graph queries (callers, callees, multi-hop) | `symbol` (required), `direction="incoming\|outgoing\|both"`, optional `depth`, `limit`, `edge_kinds` |
 | `explore` | Symbol exploration (depth=1 adjacency) | `symbol` (required), optional `includeCode` |
 | `path` | Shortest path between symbols | `from`, `to` (required), optional `max_depth`, `direction`, `edge_kinds`, `includeCode`, `include_roots` |
@@ -120,6 +120,8 @@ All tools that accept symbol references (`calls`, `impact`, `path`, `explore`,
 - Prefer shallow graph depths (`depth: 1-2`) to avoid noisy results.
 - For barrel re-export chains (`import { X } from './barrel'` where barrel has `export * from './lib'`), Atlas follows the chain to the original definition via `ExportFrom` facts.
 - For code review, combine `impact` with `symbol(view="usages")` and `symbol(view="context")`.
+- For position-based symbol lookup, use `symbol(file_path="src/foo.ts", line=42, view="context")` — the `view` parameter works with all position queries.
+- For ambiguous results with a SymbolSelector, check the error message for `file_path` diagnostics — invalid `file_path` hints are reported inline.
 - For value flow debugging, call `trace(kind="point")` first, then `trace(kind="variable")` at the same position.
 
 ## Trace response handling

@@ -46,6 +46,11 @@ responses through a single builder, eliminating per-handler field-drift:
 - `ExploreDossierBuilder` for structured symbol exploration responses.
 - Mutex poisoning recovery unified: all `.unwrap()` → `.unwrap_or_else(|e| e.into_inner())`.
 - `generate_query_id()` fallback for misconfigured system clocks.
+- `parse_symbol_input`: unified symbol argument parsing with stringified-JSON
+  recovery. All handlers (`handle_symbol`, `handle_trace_caller_path`,
+  `lifecycle`, `branch_diff`) now parse the `symbol` parameter through a
+  shared entry point that handles strings, SymbolSelector objects, and
+  accidentally-stringified JSON transparently.
 
 ### Extraction Deduplication
 
@@ -96,6 +101,36 @@ Shared helpers extracted from 11 language adapters into
 - Dossier: `SourceRepository` signatures unified, error handling hardened,
   recommendations made context-aware.
 - Removed arch violation: bare lock unwraps replaced with poison-safe patterns.
+- **Code walk audit — 7 MCP handler fixes** (141 tests, 0 warnings):
+  - `handle_symbol_by_position`: `view` parameter now correctly dispatches to
+    detail/context/usages handlers when using `file_path`+`line` lookup (was
+    always ignoring view and forcing detail).
+  - `resume_task` / `handle_calls`: deduplicated 62-line dispatch logic into
+    shared `CallsDispatch` enum + `resolve_calls_dispatch()` function,
+    preventing future drift between initial call and resume paths.
+  - `maybe_refresh_graph`: doc comments now clarify that
+    `ensure_structural_for_files` and `ensure_structural_for_symbol_name`
+    already call it internally — callers should not duplicate.
+  - Progress channel: `symbol` and `trace` tools now create MCP progress
+    channels, so `context` view and `trace(point)` progress notifications
+    are delivered instead of silently dropped.
+  - `handle_callees`: now calls both `ensure_structural_for_files` and
+    `ensure_structural_for_symbol_name`, mirroring `handle_callers` for
+    symmetric lazy extraction (closes C/C++ header/source edge gap).
+  - `view=detail` now passes the full structured SymbolSelector (including
+    `file_path`/`kind`/`line` hints) to `handle_symbol_detail`, fixing a
+    regression where filtering fields were silently discarded.
+  - Invalid `file_path` in SymbolSelector now produces an inline diagnostic
+    in the ambiguous-symbol error message ("file_path '...' does not match
+    any file in the project"), so callers know their hint was ignored.
+- `file_dependencies`: incoming direction now returns complete results for
+  TS/JS/Python relative imports (e.g., `./utils`). Engine scopes Path B
+  extended from `kind='include'` to all `is_relative=1` imports with
+  `.././` normalization and extension/index resolution. MCP "both"
+  direction merged via shared `merge_edge_deps` helper.
+- `search`: precision tier now derived from actual scope capability when
+  structural data exists in a full index, fixing `Unavailable` tier on
+  `is_manual_full` queries.
 
 ---
 
