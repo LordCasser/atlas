@@ -7,13 +7,20 @@
 use super::lazy_response::{LazyDiagnostics, LazyResponse};
 use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str};
 use crate::tools::symbol_selector::{
-    SymbolInput, SymbolResolution, SymbolResolutionPolicy,
+    parse_symbol_input, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
 };
 use serde_json::json;
 
 impl ToolRouter {
     pub(crate) fn handle_lifecycle(&mut self, args: &serde_json::Value) -> (String, bool) {
-        let symbol = get_str(args, "symbol");
+        let input = match parse_symbol_input(args, "symbol") {
+            Ok(inp) => inp,
+            Err(e) => return (e, true),
+        };
+        let symbol = match &input {
+            SymbolInput::Name(s) => s.clone(),
+            SymbolInput::Selector(sel) => sel.qualified_name.clone(),
+        };
         if symbol.len() > MAX_SYMBOL_NAME_LENGTH {
             return (
                 format!("symbol exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
@@ -34,10 +41,7 @@ impl ToolRouter {
         let query_id = lr.query_id().to_string();
 
         // Resolve symbol to SymbolId
-        let sid = match self.resolve_symbol_input(
-            &SymbolInput::Name(symbol.to_string()),
-            SymbolResolutionPolicy::BestEffortSingle,
-        ) {
+        let sid = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle) {
             Ok(SymbolResolution::Single { symbol_id, .. }) => symbol_id,
             Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
                 let candidates_str: Vec<String> = candidates
