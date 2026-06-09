@@ -166,6 +166,7 @@ pub(crate) mod query_snapshot;
 pub(crate) mod resume;
 pub(crate) mod search;
 pub(crate) mod status;
+pub(crate) mod symbol_selector;
 pub(crate) mod trace;
 pub(crate) mod usages;
 pub(crate) mod wait_for;
@@ -874,59 +875,9 @@ impl ToolRouter {
         Ok(QnameResolution::Ambiguous { candidates })
     }
 
-    /// Resolve a qualified name to a SymbolId, returning error string on failure.
-    ///
-    /// When the store has no indexed files, the error includes guidance to run `index`.
-    ///
-    /// ⚠️  Legacy: this method errors when multiple symbols match the same
-    /// qualified name.  Callers that need to handle ambiguity should use
-    /// [`resolve_qname_disambiguated`] instead.
-    #[allow(dead_code)]
-    pub(crate) fn resolve_qname(&self, qname: &str) -> Result<SymbolId, String> {
-        match self.resolve_qname_disambiguated(qname)? {
-            QnameResolution::Unique(id) => Ok(id),
-            QnameResolution::Ambiguous { candidates } => {
-                let names: Vec<String> = candidates
-                    .iter()
-                    .take(5)
-                    .map(|c| {
-                        format!(
-                            "{} [{}::{}::{}]",
-                            c.qualified_name, c.file_path, c.line, c.kind
-                        )
-                    })
-                    .collect();
-                Err(format!(
-                    "Ambiguous name: '{}' matched {} symbols: [{}]. \
-                     Use resolve_qname_disambiguated for structured resolution.",
-                    qname,
-                    candidates.len(),
-                    names.join(", ")
-                ))
-            }
-        }
-    }
 
-    /// Resolve a qualified name to ALL matching SymbolIds (not just the first).
-    ///
-    /// In languages like C/C++, a symbol declared in a header (`.h`) and
-    /// defined in a source file (`.c`) produces two SymbolIds that share the
-    /// same qualified name but differ in `file_id`.  Call-graph edges
-    /// connect the definition's SymbolId, so a `resolve_qname` that picks
-    /// the header symbol will miss edges.  Callers that work with the graph
-    /// snapshot should use this method and try each candidate.
-    pub(crate) fn resolve_all_qname_symbols(&self, qname: &str) -> Result<Vec<SymbolId>, String> {
-        let symbols = self
-            .store
-            .find_symbols_by_qname(qname)
-            .map_err(|e| format!("Lookup error: {e}"))?;
-        if symbols.is_empty() {
-            let mut err = format!("Symbol not found: {qname}");
-            err.push_str(self.index_not_run_guidance());
-            return Err(err);
-        }
-        Ok(symbols.into_iter().map(|s| s.id).collect())
-    }
+
+
 
     // -------------------------------------------------------------------
     // Query snapshot + investigation helpers
@@ -1092,6 +1043,50 @@ fn make_project_tools() -> Vec<Tool> {
         },
     ]
 }
+// ── SymbolSelector schema helpers ────────────────────────────────────
+
+fn symbol_selector_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "description": "Structured symbol selector with fault-tolerant scoring. Fields outside qualified_name are used for ranking only — incorrect values cannot prevent the correct symbol from being found.",
+        "required": ["qualified_name"],
+        "properties": {
+            "qualified_name": {
+                "type": "string",
+                "description": "Qualified symbol name. REQUIRED. The highest-priority signal. If this uniquely identifies a symbol, other fields are ignored (but actual values are always returned in the response)."
+            },
+            "file_path": {
+                "type": "string",
+                "description": "Project-relative file path (e.g. 'src/foo.ts'). Supports suffix, basename, and fuzzy matching — no need to be exact. Used for ranking when qualified_name matches multiple symbols."
+            },
+            "line": {
+                "type": "integer",
+                "description": "1-based line number. Used for ranking within the same file. Off-by-small (1-2 lines) is tolerated; off-by-50+ becomes a weak signal."
+            },
+            "kind": {
+                "type": "string",
+                "description": "Symbol kind (function, method, class, ...). Weak tiebreaker only — cannot override file_path or line signals."
+            },
+            "language": {
+                "type": "string",
+                "description": "Language (typescript, rust, ...). Weakest signal, used only to break ties in multi-language repos."
+            }
+        }
+    })
+}
+
+fn symbol_param_schema(string_desc: &str) -> serde_json::Value {
+    json!({
+        "oneOf": [
+            {
+                "type": "string",
+                "description": string_desc
+            },
+            symbol_selector_schema()
+        ]
+    })
+}
+
 
 // ── Symbol tools ─────────────────────────────────────────────────────
 
@@ -1119,7 +1114,7 @@ fn make_symbol_tools() -> Vec<Tool> {
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
-                    "symbol": { "type": "string", "description": "Fully qualified symbol name (primary parameter)." },
+                    "symbol": symbol_param_schema("Qualified symbol name. String matches are auto-resolved; use SymbolSelector object for precise disambiguation."),
                     "file_path": { "type": "string", "description": "File path relative to project root. When combined with 'line', resolves the symbol at this position (alternative to 'symbol' parameter)." },
                     "line": { "type": "integer", "description": "1-based line number. Used with 'file_path' for position-based symbol lookup." },
                     "column": { "type": "integer", "description": "1-based column number. Optional; defaults to 1 when omitted. Used with 'file_path' + 'line' for position-based symbol lookup." },
@@ -1149,7 +1144,7 @@ fn make_graph_tools() -> Vec<Tool> {
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
-                    "symbol": { "type": "string", "description": "Qualified symbol name" },
+                    "symbol": symbol_param_schema("Qualified symbol name. Ambiguous matches are auto-aggregated. Use SymbolSelector object for a precise single-symbol query."),
                     "direction": {
                         "type": "string",
                         "enum": ["incoming", "outgoing", "both"],
@@ -1172,7 +1167,7 @@ fn make_graph_tools() -> Vec<Tool> {
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
-                    "symbol": { "type": "string", "description": "Qualified symbol name" },
+                    "symbol": symbol_param_schema("Qualified symbol name. Ambiguous matches return candidates. Use SymbolSelector object for precise disambiguation."),
                     "source_mode": { "type": "string", "enum": ["excerpt", "full", "none"], "description": "Source display mode: excerpt (snippet around definition), full (entire symbol body, capped by max_source_bytes=65536), none (skip source). Default: excerpt." },
                     "source_lines": { "type": "integer", "description": "Max source lines to return when source_mode=excerpt. Default: 40." },
                     "evidence_limit": { "type": "integer", "description": "Max call evidence examples per direction. Default: 5." },
@@ -1190,8 +1185,8 @@ fn make_graph_tools() -> Vec<Tool> {
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
-                    "from": { "type": "string", "description": "Source symbol qualified name" },
-                    "to": { "type": "string", "description": "Target symbol qualified name" },
+                    "from": symbol_param_schema("Source symbol qualified name. Ambiguous matches are auto-aggregated."),
+                    "to": symbol_param_schema("Target symbol qualified name. Ambiguous matches are auto-aggregated."),
                     "max_depth": { "type": "integer", "description": "Max search depth (default 5, max 10)" },
                     "direction": {
                         "type": "string",
@@ -1216,7 +1211,7 @@ fn make_graph_tools() -> Vec<Tool> {
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
-                    "symbol": { "type": "string", "description": "Qualified symbol name" },
+                    "symbol": symbol_param_schema("Qualified symbol name. Ambiguous matches are auto-aggregated."),
                     "depth": { "type": "integer", "description": "Max traversal depth (default 3, max 5)" },
                     "semantic": { "type": "boolean", "description": "When true, includes semantic impact analysis (lifecycle invariants, branch diffs) for impacted functions. Default false." },
                 })),
@@ -1292,9 +1287,9 @@ fn make_trace_tools() -> Vec<Tool> {
                     "file_path": { "type": "string", "description": "File path relative to project root (e.g. 'src/foo.ts'). Alternative to file_id." },
                     "line": { "type": "integer", "description": "1-based line number (required for kind='point'/'variable')." },
                     "column": { "type": "integer", "description": "1-based column number (required for kind='point'/'variable')." },
-                    "symbol": { "type": "string", "description": "Qualified symbol name OR hex SymbolId (required for kind='callers'). Auto-detects format." },
-                    "from": { "type": "string", "description": "Source qualified symbol name OR hex SymbolId (required for kind='forward'). Auto-detects format." },
-                    "to": { "type": "string", "description": "Target qualified symbol name OR hex SymbolId (required for kind='forward'). Auto-detects format." },
+                    "symbol": symbol_param_schema("Qualified symbol name. Use SymbolSelector object for precise disambiguation."),
+                    "from": symbol_param_schema("Source qualified symbol name."),
+                    "to": symbol_param_schema("Target qualified symbol name."),
                     "max_depth": { "type": "integer", "description": "Maximum traversal depth (kind='variable'/'forward'/'callers')." },
                     "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
@@ -3309,45 +3304,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_qname_legacy_ambiguous_is_error() {
-        let store = test_store();
-        let file_a = register_test_file(&store, "a.ts");
-        let file_b = register_test_file(&store, "b.ts");
 
-        insert_test_symbol_with_qname(
-            &store,
-            file_a,
-            "turn",
-            "turn",
-            atlas_engine::SymbolKind::Function,
-        );
-        insert_test_symbol_with_qname(
-            &store,
-            file_b,
-            "turn",
-            "turn",
-            atlas_engine::SymbolKind::Variable,
-        );
-
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        router.ensure_graph_initialized().unwrap();
-
-        let result = router.resolve_qname("turn");
-        assert!(
-            result.is_err(),
-            "legacy resolve_qname should error on ambiguous qname"
-        );
-        let err = result.unwrap_err();
-        assert!(
-            err.contains("Ambiguous"),
-            "expected 'Ambiguous' in error: {err}"
-        );
-        assert!(
-            err.contains("resolve_qname_disambiguated"),
-            "error should mention resolve_qname_disambiguated: {err}"
-        );
-    }
 
     // ── Trace E2E tests ─────────────────────────────────────────────────
 
@@ -3410,6 +3367,9 @@ mod tests {
 
     #[test]
     fn trace_callers_ambiguous_symbol() {
+        // BestEffortSingle picks the first candidate when multiple symbols
+        // share the same qualified name.  The test verifies that a trace
+        // succeeds rather than returning an ambiguous error.
         let store = test_store();
         let file_a = register_test_file(&store, "a.ts");
         let file_b = register_test_file(&store, "b.ts");
@@ -3441,21 +3401,12 @@ mod tests {
         let args = serde_json::json!({"symbol": "turn"});
         let (resp_str, is_error) = router.handle_trace_caller_path(&args);
 
-        assert!(is_error, "Ambiguous should produce error, got: {resp_str}");
+        assert!(!is_error, "BestEffortSingle should pick a candidate, got: {resp_str}");
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         assert_eq!(
-            resp["partial_result"].as_bool(),
-            Some(true),
-            "Ambiguous should be partial: {resp_str}"
-        );
-        let diags = resp["diagnostics"].as_array().unwrap();
-        let codes: Vec<&str> = diags
-            .iter()
-            .filter_map(|d| d["code"].as_str())
-            .collect();
-        assert!(
-            codes.contains(&"ambiguous_name"),
-            "Expected ambiguous_name code, got: {codes:?}"
+            resp["kind"].as_str(),
+            Some("trace_callers"),
+            "Expected trace_callers response, got: {resp_str}"
         );
     }
 
@@ -3547,6 +3498,9 @@ mod tests {
 
     #[test]
     fn trace_forward_ambiguous_to_no_reachable() {
+        // BestEffortSingle picks the first 'to' candidate even without
+        // path-aware disambiguation.  The trace_forward call succeeds
+        // and returns no_path_found.
         let store = test_store();
         let file_a = register_test_file(&store, "a.ts");
         let file_b = register_test_file(&store, "b.ts");
@@ -3580,24 +3534,22 @@ mod tests {
         let args = serde_json::json!({"from": "from_func", "to": "to_func"});
         let (resp_str, is_error) = router.handle_trace_forward(&args);
 
-        assert!(
-            is_error,
-            "No reachable candidate should return ambiguous error, got: {resp_str}"
-        );
+        assert!(!is_error, "BestEffortSingle should pick candidate even without path, got: {resp_str}");
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         assert_eq!(
-            resp["partial_result"].as_bool(),
-            Some(true),
-            "Should be partial when ambiguous, got: {resp_str}"
+            resp["kind"].as_str(),
+            Some("trace_forward"),
+            "Expected trace_forward response"
         );
+        // No path should be found between the two
         let diags = resp["diagnostics"].as_array().unwrap();
         let codes: Vec<&str> = diags
             .iter()
             .filter_map(|d| d["code"].as_str())
             .collect();
         assert!(
-            codes.contains(&"ambiguous_name"),
-            "Expected ambiguous_name code, got: {codes:?}"
+            codes.contains(&"no_path_found"),
+            "Expected no_path_found code, got: {codes:?}"
         );
     }
 
@@ -3708,6 +3660,8 @@ mod tests {
 
     #[test]
     fn trace_callers_hex_symbol_accepted() {
+        // Hex strings are no longer auto-detected — they are treated as
+        // qualified names. A hex-looking string won't match any symbol.
         let store = test_store();
         let file_id = register_test_file(&store, "test.ts");
         let sym_name = "my_func";
@@ -3721,10 +3675,9 @@ mod tests {
         let args = serde_json::json!({"symbol": hex_id});
         let (resp_str, is_error) = router.handle_trace_caller_path(&args);
 
-        assert!(!is_error, "Hex SymbolId should resolve, got: {resp_str}");
         assert!(
-            !resp_str.contains("not found"),
-            "Response should not contain 'not found': {resp_str}"
+            resp_str.contains("not found") || is_error,
+            "Hex string should not resolve as SymbolId: {resp_str}"
         );
     }
 
