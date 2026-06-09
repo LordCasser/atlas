@@ -188,15 +188,6 @@ fn scope_to_glob(scope: &str) -> String {
     }
 }
 
-#[allow(dead_code)]
-fn indexed_scope_json(patterns: &[String]) -> String {
-    if patterns.is_empty() {
-        "[]".to_string()
-    } else {
-        serde_json::to_string(patterns).unwrap_or_else(|_| "[]".to_string())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,9 +203,5 @@ mod tests {
     #[test]
     fn scope_to_glob_already_glob() {
         assert_eq!(scope_to_glob("src/**/*.rs"), "src/**/*.rs");
-    }
-    #[test]
-    fn indexed_scope_json_empty() {
-        assert_eq!(indexed_scope_json(&[]), "[]");
     }
 }

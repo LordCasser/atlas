@@ -17,7 +17,7 @@ use ratatui::{
 
 use super::event::{Event, EventHandler};
 use super::jobs::{JobManager, JobResult, TuiJob};
-use super::search_session::{ParsedSearch, SearchSession};
+use super::search_session::{ParsedSearch, parse_query};
 use super::session::GraphSession;
 use super::widgets::context_view::DetailTab;
 use super::widgets::{context_view, results_list, search_bar, status_bar, trace_view};
@@ -507,7 +507,7 @@ impl App {
         self.job_manager
             .set_graph(self.session.graph_engine().clone());
 
-        let parsed = SearchSession::parse_query(&self.search_input);
+        let parsed = parse_query(&self.search_input);
         self.pending_search = Some(parsed.clone());
         self.search_lazy_triggered = false;
 

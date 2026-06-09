@@ -16,6 +16,9 @@ use types::structs::TextRange;
 use types::trace::{BoundaryKind, BoundaryMarker};
 
 /// Default maximum depth for call-chain traversal.
+///
+/// Reserved; all current callers pass depth explicitly.  Remains public
+/// for documentation and potential future default-parameter usage.
 #[allow(dead_code)]
 pub const DEFAULT_MAX_DEPTH: usize = 20;
 

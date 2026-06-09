@@ -29,8 +29,10 @@ use types::trace::{TraceDiagnostic, TracePath, TracePathStep, TracePoint};
 
 use super::virtual_edges::TraceEdgeProvider;
 
-/// Default maximum depth for backward dataflow slicing (used by callers
-/// and tests; current call sites pass `max_depth` explicitly).
+/// Default maximum depth for backward dataflow slicing.
+///
+/// Reserved; all current callers pass depth explicitly.  Remains public
+/// for documentation and potential future default-parameter usage.
 #[allow(dead_code)]
 pub const DEFAULT_MAX_DEPTH: usize = 30;
 

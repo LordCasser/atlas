@@ -31,7 +31,7 @@ use atlas_engine::{
     CallerChain, Engine, GraphEngine, Language, SearchEngine, SearchResult, Store, SymbolId,
 };
 
-use super::search_session::{ParsedSearch, SearchSession};
+use super::search_session::{ParsedSearch, parse_query, do_search};
 
 // ── Job types ────────────────────────────────────────────────────────────────
 
@@ -343,7 +343,7 @@ fn run_search(
     let search_engine = SearchEngine::new(Arc::clone(store), Arc::clone(graph));
 
     // Parse the query.
-    let parsed = SearchSession::parse_query(query);
+    let parsed = parse_query(query);
 
     // Override with explicit scope/language from TuiJob (typically empty).
     let parsed = ParsedSearch {
@@ -356,7 +356,7 @@ fn run_search(
         return JobResult::SearchEmpty;
     }
 
-    match SearchSession::do_search(&search_engine, &parsed, 100) {
+    match do_search(&search_engine, &parsed, 100) {
         Ok(results) if !results.is_empty() => JobResult::SearchResults(results),
         Ok(_) => JobResult::SearchEmpty,
         Err(e) => {

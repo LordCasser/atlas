@@ -224,7 +224,6 @@ pub(crate) fn filter_cfg_edges(
 /// Public fields allow the caller to inspect what was filtered (for
 /// diagnostics/logging) and write only the safe subset.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) struct ValidatedDataflowPayload {
     pub bindings: Vec<BindingDef>,
     pub binding_uses: Vec<BindingUse>,
@@ -232,19 +231,6 @@ pub(crate) struct ValidatedDataflowPayload {
     pub dataflow_edges: Vec<DataFlowEdge>,
     pub cfg_nodes: Vec<CfgNode>,
     pub cfg_edges: Vec<CfgEdge>,
-    /// Count of items filtered out per category (for logging).
-    pub filtered_counts: FilteredCounts,
-}
-
-#[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
-pub(crate) struct FilteredCounts {
-    pub bindings_removed: usize,
-    pub binding_uses_removed: usize,
-    pub data_nodes_removed: usize,
-    pub dataflow_edges_removed: usize,
-    pub cfg_nodes_removed: usize,
-    pub cfg_edges_removed: usize,
 }
 
 /// Validate a full dataflow payload against DB-resident entities.
@@ -265,46 +251,20 @@ pub(crate) fn validate_dataflow_payload_db(
     let valid_scope_ids = query_existing_scope_ids(conn, bindings)?;
 
     let safe_bindings = filter_bindings(bindings, &valid_function_ids, &valid_scope_ids);
-    let filtered_counts = FilteredCounts {
-        bindings_removed: bindings.len().saturating_sub(safe_bindings.len()),
-        ..Default::default()
-    };
 
     let valid_binding_ids: HashSet<BindingId> = safe_bindings.iter().map(|b| b.id).collect();
 
     let safe_binding_uses = filter_binding_uses(binding_uses, &valid_binding_ids);
-    let filtered_counts = FilteredCounts {
-        binding_uses_removed: binding_uses.len().saturating_sub(safe_binding_uses.len()),
-        ..filtered_counts
-    };
 
     let safe_data_nodes = filter_data_nodes(data_nodes, &valid_function_ids, &valid_binding_ids);
     let valid_data_node_ids: HashSet<DataNodeId> = safe_data_nodes.iter().map(|n| n.id).collect();
-    let filtered_counts = FilteredCounts {
-        data_nodes_removed: data_nodes.len().saturating_sub(safe_data_nodes.len()),
-        ..filtered_counts
-    };
 
     let safe_dataflow_edges = filter_dataflow_edges(dataflow_edges, &valid_data_node_ids);
-    let filtered_counts = FilteredCounts {
-        dataflow_edges_removed: dataflow_edges
-            .len()
-            .saturating_sub(safe_dataflow_edges.len()),
-        ..filtered_counts
-    };
 
     let safe_cfg_nodes = filter_cfg_nodes(cfg_nodes, &valid_function_ids);
     let valid_cfg_node_ids: HashSet<CfgNodeId> = safe_cfg_nodes.iter().map(|n| n.id).collect();
-    let filtered_counts = FilteredCounts {
-        cfg_nodes_removed: cfg_nodes.len().saturating_sub(safe_cfg_nodes.len()),
-        ..filtered_counts
-    };
 
     let safe_cfg_edges = filter_cfg_edges(cfg_edges, &valid_cfg_node_ids);
-    let filtered_counts = FilteredCounts {
-        cfg_edges_removed: cfg_edges.len().saturating_sub(safe_cfg_edges.len()),
-        ..filtered_counts
-    };
 
     Ok(ValidatedDataflowPayload {
         bindings: safe_bindings,
@@ -313,6 +273,5 @@ pub(crate) fn validate_dataflow_payload_db(
         dataflow_edges: safe_dataflow_edges,
         cfg_nodes: safe_cfg_nodes,
         cfg_edges: safe_cfg_edges,
-        filtered_counts,
     })
 }
