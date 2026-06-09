@@ -104,8 +104,9 @@ impl ToolRouter {
                 root_warnings,
             );
         }
-        let (result_str, is_err, _built_file_ids) = self.handle_search_sync(
+        let (result_str, is_err) = self.handle_search_sync(
             ctx,
+            args,
             query,
             limit,
             kind,
@@ -124,8 +125,9 @@ impl ToolRouter {
 
     #[allow(clippy::too_many_arguments)]
     fn handle_search_sync(
-        &self,
+        &mut self,
         ctx: &super::ToolCallContext,
+        args: &serde_json::Value,
         query: &str,
         limit: usize,
         kind: Option<&str>,
@@ -133,7 +135,7 @@ impl ToolRouter {
         is_manual_full: bool,
         include_roots: Vec<atlas_engine::IncludeRoot>,
         root_warnings: Vec<String>,
-    ) -> (String, bool, Vec<atlas_engine::FileId>) {
+    ) -> (String, bool) {
         ctx.send_progress(0.1, &format!("Searching for '{query}' in {scope}..."));
 
         if !self.has_indexed_files() {
@@ -156,7 +158,6 @@ impl ToolRouter {
                 }))
                 .unwrap_or_else(|e| e.to_string()),
                 true,
-                Vec::new(),
             );
         }
 
@@ -195,14 +196,11 @@ impl ToolRouter {
             Err(err) => {
                 let mut s = format!("Search error: {err}");
                 s.push_str(self.index_not_run_guidance());
-                return (s, true, Vec::new());
+                return (s, true);
             }
         };
 
         // Build the MCP JSON response from the engine response.
-        let mut all_warnings = root_warnings;
-        all_warnings.extend(engine_resp.warnings.iter().cloned());
-
         let hits: Vec<SearchHit> = engine_resp
             .results
             .iter()
@@ -214,14 +212,12 @@ impl ToolRouter {
             "scope": scope,
             "results": hits,
             "total": engine_resp.total,
-            "warnings": all_warnings,
-            "precision_tier": engine_resp.precision_tier,
             "triggered_lazy": engine_resp.triggered_lazy,
             "analysis_contract": Self::coverage_to_json(&engine_resp.coverage),
+            "scope_file_count": engine_resp.scope_file_count,
         });
 
         // Backward-compat fields for existing MCP consumers.
-        response["scope_file_count"] = json!(engine_resp.scope_file_count);
         if engine_resp.triggered_lazy {
             response["parse_level"] = json!("structural");
             response["precise"] = json!(true);
@@ -232,11 +228,12 @@ impl ToolRouter {
 
         ctx.send_progress(1.0, &format!("Search complete ({} results)", hits.len()));
 
-        (
-            serde_json::to_string_pretty(&response).unwrap_or_else(|e| e.to_string()),
-            false,
-            Vec::new(),
-        )
+        let lr = LazyResponse::new("search", args);
+        lr.with_precision_tier(engine_resp.precision_tier)
+            .with_root_warnings(root_warnings)
+            .with_lazy_warnings(engine_resp.warnings)
+            .with_is_error(false)
+            .build(response, self)
     }
 
     // ── handle_search_background ──────────────────────────────────────────
@@ -415,7 +412,12 @@ impl ToolRouter {
                             .unwrap_or_default()
                             .unwrap_or(s),
                         Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
-                            return Self::build_ambiguous_symbol_response(qname, candidates, args);
+                            let amb_resp = Self::build_ambiguous_symbol_body(qname, &candidates);
+                            return lr.with_is_error(true)
+                                     .with_precision_tier(structural_tier)
+                                     .with_lazy_warnings(lazy_warnings)
+                                     .with_lazy_diag(lazy_diag)
+                                     .build_with_args(amb_resp, args, self);
                         }
                         _ => s,
                     };
@@ -426,7 +428,9 @@ impl ToolRouter {
                 }
             }
             Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
-                return Self::build_ambiguous_symbol_response(qname, candidates, args);
+                let amb_resp = Self::build_ambiguous_symbol_body(qname, &candidates);
+                return lr.with_is_error(true)
+                         .build_with_args(amb_resp, args, self);
             }
             Ok(SymbolResolution::NotFound { .. }) => {
                 // Not found in manifest — trigger lazy structural extraction
@@ -460,7 +464,12 @@ impl ToolRouter {
                         }
                     }
                     Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
-                        return Self::build_ambiguous_symbol_response(qname, candidates, args);
+                        let amb_resp = Self::build_ambiguous_symbol_body(qname, &candidates);
+                        return lr.with_is_error(true)
+                                 .with_precision_tier(structural_tier)
+                                 .with_lazy_warnings(lazy_warnings)
+                                 .with_lazy_diag(lazy_diag)
+                                 .build_with_args(amb_resp, args, self);
                     }
                     Ok(SymbolResolution::NotFound { .. }) => {
                         let mut err = format!("Symbol not found: {qname}");
@@ -553,13 +562,12 @@ impl ToolRouter {
         }
     }
 
-    /// Build a structured error response when a qualified name matches
-    /// multiple symbols, providing the caller with disambiguation candidates.
-    fn build_ambiguous_symbol_response(
+    /// Build the body for an ambiguous-symbol error response (without envelope).
+    /// Callers should wrap this via LazyResponse.
+    fn build_ambiguous_symbol_body(
         qname: &str,
-        candidates: Vec<ScoredCandidate>,
-        _args: &serde_json::Value,
-    ) -> (String, bool) {
+        candidates: &[ScoredCandidate],
+    ) -> serde_json::Value {
         let candidates_json: Vec<serde_json::Value> = candidates
             .iter()
             .take(10)
@@ -579,14 +587,10 @@ impl ToolRouter {
             qname,
             candidates.len()
         );
-        let resp = json!({
+        json!({
             "ok": false,
             "error": hint,
             "candidates": candidates_json,
-        });
-        (
-            serde_json::to_string_pretty(&resp).unwrap_or_default(),
-            true,
-        )
+        })
     }
 }

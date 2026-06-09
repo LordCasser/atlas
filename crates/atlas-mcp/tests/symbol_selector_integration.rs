@@ -754,3 +754,36 @@ fn test_hex_input_rejected_gracefully() {
         "hex input should return NotFound, got {res:?}"
     );
 }
+
+#[test]
+fn scored_candidate_symbol_id_survives_resolution_roundtrip() {
+    // Register two files with the same qualified_name in different paths.
+    // Verify resolution returns ScoredCandidates with distinct symbol_ids.
+    let store = test_store();
+    let fid1 = register_file(&store, "src/a.rs", Language::Rust);
+    let fid2 = register_file(&store, "src/b.rs", Language::Rust);
+    let sym1 = make_symbol(fid1, Language::Rust, SymbolKind::Function, "my_fn", "my_fn", 10);
+    let sym2 = make_symbol(fid2, Language::Rust, SymbolKind::Function, "my_fn", "my_fn", 20);
+    insert_symbols(&store, &[sym1.clone(), sym2.clone()]);
+
+    let sel = SymbolSelector {
+        qualified_name: "my_fn".into(),
+        file_path: None,
+        line: None,
+        kind: None,
+        language: None,
+    };
+    let input = SymbolInput::Selector(sel);
+    let resolution =
+        resolve_symbol_input(&store, &input, SymbolResolutionPolicy::Aggregate).unwrap();
+    match resolution {
+        SymbolResolution::Ambiguous { candidates, .. } => {
+            assert_eq!(candidates.len(), 2, "should have two candidates");
+            let ids: Vec<_> = candidates.iter().map(|c| c.symbol_id).collect();
+            assert!(ids.contains(&sym1.id));
+            assert!(ids.contains(&sym2.id));
+            assert_ne!(ids[0], ids[1], "distinct symbol_ids");
+        }
+        other => panic!("expected Ambiguous, got {:?}", other),
+    }
+}

@@ -72,6 +72,51 @@ fn build_resolution_meta(candidates: &[ScoredCandidate], count: usize) -> serde_
     })
 }
 
+/// Convert a SymbolResolution (Aggregate policy) to (Vec<SymbolId>, Option<resolution_meta_json>).
+///
+/// Returns Err(String) for NotFound (with suggestions) or empty candidates.
+/// Uses `c.symbol_id` directly — no store round-trip needed (Phase 1 fix).
+pub(crate) fn resolution_to_symbol_ids_and_meta(
+    resolution: &SymbolResolution,
+    qname: &str,
+) -> Result<(Vec<SymbolId>, Option<serde_json::Value>), String> {
+    match resolution {
+        SymbolResolution::Single { symbol_id, resolved } => {
+            let meta = json!({
+                "policy": "aggregated",
+                "count": 1,
+                "matched_candidates": [{
+                    "qualified_name": resolved.qualified_name,
+                    "file_path": resolved.file_path,
+                    "line": resolved.line,
+                    "kind": resolved.kind,
+                    "language": resolved.language,
+                }],
+            });
+            Ok((vec![*symbol_id], Some(meta)))
+        }
+        SymbolResolution::Ambiguous { candidates, .. } => {
+            let symbol_ids: Vec<SymbolId> = candidates.iter().map(|c| c.symbol_id).collect();
+            if symbol_ids.is_empty() {
+                Err(format!(
+                    "Symbol '{}' resolved but no matching symbols found",
+                    qname
+                ))
+            } else {
+                let meta = build_resolution_meta(candidates, symbol_ids.len());
+                Ok((symbol_ids, Some(meta)))
+            }
+        }
+        SymbolResolution::NotFound { qname, suggestions } => {
+            let mut err = format!("Symbol not found: {}", qname);
+            if !suggestions.is_empty() {
+                err.push_str(&format!(". Did you mean: {}?", suggestions.join(", ")));
+            }
+            Err(err)
+        }
+    }
+}
+
 /// Build resolution metadata for path endpoint responses.
 fn build_resolution_meta_for_path(resolution: &SymbolResolution) -> serde_json::Value {
     match resolution {
@@ -257,48 +302,11 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        let (symbol_ids, resolution_meta_opt) = match resolution {
-            SymbolResolution::Single { symbol_id, ref resolved } => {
-                let meta = json!({
-                    "policy": "aggregated",
-                    "count": 1,
-                    "matched_candidates": [{
-                        "qualified_name": resolved.qualified_name,
-                        "file_path": resolved.file_path,
-                        "line": resolved.line,
-                        "kind": resolved.kind,
-                        "language": resolved.language,
-                    }],
-                });
-                (vec![symbol_id], Some(meta))
-            }
-            SymbolResolution::Ambiguous { ref candidates, .. } => {
-                let symbol_ids: Vec<SymbolId> = candidates
-                    .iter()
-                    .filter_map(|c| {
-                        self.store
-                            .find_symbols_by_qname(&c.qualified_name)
-                            .ok()
-                            .and_then(|syms| syms.into_iter().next().map(|s| s.id))
-                    })
-                    .collect();
-                if symbol_ids.is_empty() {
-                    return (
-                        format!("Symbol '{}' resolved but no matching symbols found", qname),
-                        true,
-                    );
-                }
-                let meta = build_resolution_meta(candidates, symbol_ids.len());
-                (symbol_ids, Some(meta))
-            }
-            SymbolResolution::NotFound { ref qname, ref suggestions } => {
-                let mut err = format!("Symbol not found: {qname}");
-                if !suggestions.is_empty() {
-                    err.push_str(&format!(". Did you mean: {}?", suggestions.join(", ")));
-                }
-                return (err, true);
-            }
-        };
+        let (symbol_ids, resolution_meta_opt) =
+            match resolution_to_symbol_ids_and_meta(&resolution, qname) {
+                Ok(r) => r,
+                Err(e) => return (e, true),
+            };
 
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
@@ -398,48 +406,11 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        let (symbol_ids, resolution_meta_opt) = match resolution {
-            SymbolResolution::Single { symbol_id, ref resolved } => {
-                let meta = json!({
-                    "policy": "aggregated",
-                    "count": 1,
-                    "matched_candidates": [{
-                        "qualified_name": resolved.qualified_name,
-                        "file_path": resolved.file_path,
-                        "line": resolved.line,
-                        "kind": resolved.kind,
-                        "language": resolved.language,
-                    }],
-                });
-                (vec![symbol_id], Some(meta))
-            }
-            SymbolResolution::Ambiguous { ref candidates, .. } => {
-                let symbol_ids: Vec<SymbolId> = candidates
-                    .iter()
-                    .filter_map(|c| {
-                        self.store
-                            .find_symbols_by_qname(&c.qualified_name)
-                            .ok()
-                            .and_then(|syms| syms.into_iter().next().map(|s| s.id))
-                    })
-                    .collect();
-                if symbol_ids.is_empty() {
-                    return (
-                        format!("Symbol '{}' resolved but no matching symbols found", qname),
-                        true,
-                    );
-                }
-                let meta = build_resolution_meta(candidates, symbol_ids.len());
-                (symbol_ids, Some(meta))
-            }
-            SymbolResolution::NotFound { ref qname, ref suggestions } => {
-                let mut err = format!("Symbol not found: {qname}");
-                if !suggestions.is_empty() {
-                    err.push_str(&format!(". Did you mean: {}?", suggestions.join(", ")));
-                }
-                return (err, true);
-            }
-        };
+        let (symbol_ids, resolution_meta_opt) =
+            match resolution_to_symbol_ids_and_meta(&resolution, qname) {
+                Ok(r) => r,
+                Err(e) => return (e, true),
+            };
 
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
@@ -545,48 +516,11 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        let (symbol_ids, resolution_meta_opt) = match resolution {
-            SymbolResolution::Single { symbol_id, ref resolved } => {
-                let meta = json!({
-                    "policy": "aggregated",
-                    "count": 1,
-                    "matched_candidates": [{
-                        "qualified_name": resolved.qualified_name,
-                        "file_path": resolved.file_path,
-                        "line": resolved.line,
-                        "kind": resolved.kind,
-                        "language": resolved.language,
-                    }],
-                });
-                (vec![symbol_id], Some(meta))
-            }
-            SymbolResolution::Ambiguous { ref candidates, .. } => {
-                let symbol_ids: Vec<SymbolId> = candidates
-                    .iter()
-                    .filter_map(|c| {
-                        self.store
-                            .find_symbols_by_qname(&c.qualified_name)
-                            .ok()
-                            .and_then(|syms| syms.into_iter().next().map(|s| s.id))
-                    })
-                    .collect();
-                if symbol_ids.is_empty() {
-                    return (
-                        format!("Symbol '{}' resolved but no matching symbols found", qname),
-                        true,
-                    );
-                }
-                let meta = build_resolution_meta(candidates, symbol_ids.len());
-                (symbol_ids, Some(meta))
-            }
-            SymbolResolution::NotFound { ref qname, ref suggestions } => {
-                let mut err = format!("Symbol not found: {qname}");
-                if !suggestions.is_empty() {
-                    err.push_str(&format!(". Did you mean: {}?", suggestions.join(", ")));
-                }
-                return (err, true);
-            }
-        };
+        let (symbol_ids, resolution_meta_opt) =
+            match resolution_to_symbol_ids_and_meta(&resolution, qname) {
+                Ok(r) => r,
+                Err(e) => return (e, true),
+            };
 
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
@@ -853,43 +787,17 @@ impl ToolRouter {
         };
 
         // Extract SymbolId lists from both resolutions.
-        let from_ids: Vec<SymbolId> = match &from_resolution {
-            SymbolResolution::Single { symbol_id, .. } => vec![*symbol_id],
-            SymbolResolution::Ambiguous { candidates, .. } => candidates
-                .iter()
-                .filter_map(|c| {
-                    self.store
-                        .find_symbols_by_qname(&c.qualified_name)
-                        .ok()
-                        .and_then(|syms| syms.into_iter().next().map(|s| s.id))
-                })
-                .collect(),
-            SymbolResolution::NotFound { qname, .. } => {
-                return (format!("From symbol not found: {qname}"), true);
-            }
-        };
-        if from_ids.is_empty() {
-            return (format!("From symbol '{}' resolved but no matching symbols found", from_qname), true);
-        }
+        let from_ids: Vec<SymbolId> =
+            match resolution_to_symbol_ids_and_meta(&from_resolution, from_qname) {
+                Ok((ids, _)) => ids,
+                Err(e) => return (e, true),
+            };
 
-        let to_ids: Vec<SymbolId> = match &to_resolution {
-            SymbolResolution::Single { symbol_id, .. } => vec![*symbol_id],
-            SymbolResolution::Ambiguous { candidates, .. } => candidates
-                .iter()
-                .filter_map(|c| {
-                    self.store
-                        .find_symbols_by_qname(&c.qualified_name)
-                        .ok()
-                        .and_then(|syms| syms.into_iter().next().map(|s| s.id))
-                })
-                .collect(),
-            SymbolResolution::NotFound { qname, .. } => {
-                return (format!("To symbol not found: {qname}"), true);
-            }
-        };
-        if to_ids.is_empty() {
-            return (format!("To symbol '{}' resolved but no matching symbols found", to_qname), true);
-        }
+        let to_ids: Vec<SymbolId> =
+            match resolution_to_symbol_ids_and_meta(&to_resolution, to_qname) {
+                Ok((ids, _)) => ids,
+                Err(e) => return (e, true),
+            };
 
         // Update investigation with the first "from" symbol
         if let Some(&first_from) = from_ids.first() {
@@ -1428,6 +1336,8 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
+        let lr = LazyResponse::new("explore", args);
+
         let (sym_id, resolved_opt) = match resolution {
             SymbolResolution::Single { symbol_id, resolved } => {
                 (symbol_id, Some(resolved))
@@ -1454,8 +1364,7 @@ impl ToolRouter {
                     "score_gap": score_gap,
                     "candidates": candidate_list,
                 });
-                let resp_str = serde_json::to_string(&resp).unwrap_or_else(|e| format!(r#"{{"error":"{e}"}}"#));
-                return (resp_str, false);
+                return lr.with_is_error(false).build(resp, self);
             }
             SymbolResolution::NotFound { ref qname, ref suggestions } => {
                 let mut err = format!("Symbol not found: {qname}");
@@ -1485,7 +1394,6 @@ impl ToolRouter {
 
         self.update_investigation(InvestigationFocus::Symbol(sym.id));
         let investigation = self.investigation_state.active_investigation.clone();
-        let lr = LazyResponse::new("explore", args);
         let query_id = lr.query_id().to_string();
 
         // Lazy structural: ensure graph edges exist before querying
@@ -1652,48 +1560,11 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        let (symbol_ids, resolution_meta_opt) = match resolution {
-            SymbolResolution::Single { symbol_id, ref resolved } => {
-                let meta = json!({
-                    "policy": "aggregated",
-                    "count": 1,
-                    "matched_candidates": [{
-                        "qualified_name": resolved.qualified_name,
-                        "file_path": resolved.file_path,
-                        "line": resolved.line,
-                        "kind": resolved.kind,
-                        "language": resolved.language,
-                    }],
-                });
-                (vec![symbol_id], Some(meta))
-            }
-            SymbolResolution::Ambiguous { ref candidates, .. } => {
-                let symbol_ids: Vec<SymbolId> = candidates
-                    .iter()
-                    .filter_map(|c| {
-                        self.store
-                            .find_symbols_by_qname(&c.qualified_name)
-                            .ok()
-                            .and_then(|syms| syms.into_iter().next().map(|s| s.id))
-                    })
-                    .collect();
-                if symbol_ids.is_empty() {
-                    return (
-                        format!("Symbol '{}' resolved but no matching symbols found", qname),
-                        true,
-                    );
-                }
-                let meta = build_resolution_meta(candidates, symbol_ids.len());
-                (symbol_ids, Some(meta))
-            }
-            SymbolResolution::NotFound { ref qname, ref suggestions } => {
-                let mut err = format!("Symbol not found: {qname}");
-                if !suggestions.is_empty() {
-                    err.push_str(&format!(". Did you mean: {}?", suggestions.join(", ")));
-                }
-                return (err, true);
-            }
-        };
+        let (symbol_ids, resolution_meta_opt) =
+            match resolution_to_symbol_ids_and_meta(&resolution, qname) {
+                Ok(r) => r,
+                Err(e) => return (e, true),
+            };
 
         let sid = symbol_ids[0];
 
@@ -2008,7 +1879,9 @@ fn parse_source_mode(args: &serde_json::Value) -> atlas_engine::dossier::types::
 mod tests {
     use super::EdgeKind;
     use super::parse_edge_kind;
+    use super::resolution_to_symbol_ids_and_meta;
     use crate::tools::ToolRouter;
+    use crate::tools::symbol_selector::SymbolResolution;
     use atlas_engine::Store;
     use atlas_engine::ids::FileId;
     use serde_json::json;
@@ -2785,5 +2658,125 @@ mod tests {
                 .unwrap_or(false),
             "selection_note should mention pair-based selection"
         );
+    }
+
+    // ── resolution_to_symbol_ids_and_meta unit tests ──────────────────
+
+    #[test]
+    fn resolution_helper_single_returns_id_and_meta() {
+        use atlas_engine::symbol_selector::{MatchInfo, MatchMode, PathMatchQuality, ResolvedSymbol};
+        let sid = atlas_engine::SymbolId::from_bytes([1u8; 32]);
+        let resolved = ResolvedSymbol {
+            qualified_name: "foo".into(),
+            file_path: "src/lib.rs".into(),
+            line: 10,
+            kind: "function".into(),
+            language: "rust".into(),
+            match_info: MatchInfo {
+                mode: MatchMode::UniqueQname,
+                ignored_mismatches: vec![],
+                path_match: Some(PathMatchQuality::Exact),
+                line_delta: None,
+            },
+        };
+        let resolution = SymbolResolution::Single { symbol_id: sid, resolved };
+        let (ids, meta) = resolution_to_symbol_ids_and_meta(&resolution, "foo").unwrap();
+        assert_eq!(ids, vec![sid]);
+        assert!(meta.is_some());
+    }
+
+    #[test]
+    fn resolution_helper_ambiguous_uses_direct_symbol_id() {
+        use atlas_engine::symbol_selector::{ScoredCandidate, SymbolSelector};
+        let sid1 = atlas_engine::SymbolId::from_bytes([1u8; 32]);
+        let sid2 = atlas_engine::SymbolId::from_bytes([2u8; 32]);
+        let candidates = vec![
+            ScoredCandidate {
+                qualified_name: "foo".into(),
+                file_path: "a.rs".into(),
+                line: 10, kind: "function".into(), language: "rust".into(),
+                score: 100, reasons: vec![],
+                symbol_ref: SymbolSelector {
+                    qualified_name: "foo".into(),
+                    file_path: Some("a.rs".into()),
+                    line: Some(10), kind: Some("function".into()), language: Some("rust".into()),
+                },
+                symbol_id: sid1,
+            },
+            ScoredCandidate {
+                qualified_name: "foo".into(),
+                file_path: "b.rs".into(),
+                line: 20, kind: "function".into(), language: "rust".into(),
+                score: 80, reasons: vec![],
+                symbol_ref: SymbolSelector {
+                    qualified_name: "foo".into(),
+                    file_path: Some("b.rs".into()),
+                    line: Some(20), kind: Some("function".into()), language: Some("rust".into()),
+                },
+                symbol_id: sid2,
+            },
+        ];
+        let resolution = SymbolResolution::Ambiguous { candidates, score_gap: 20 };
+        let (ids, meta) = resolution_to_symbol_ids_and_meta(&resolution, "foo").unwrap();
+        assert_eq!(ids, vec![sid1, sid2]);
+        assert!(meta.is_some());
+    }
+
+    #[test]
+    fn resolution_helper_not_found_returns_error() {
+        let resolution = SymbolResolution::NotFound {
+            qname: "missing_fn".into(),
+            suggestions: vec!["other_fn".into()],
+        };
+        let err = resolution_to_symbol_ids_and_meta(&resolution, "missing_fn").unwrap_err();
+        assert!(err.contains("not found"));
+        assert!(err.contains("other_fn"));
+    }
+
+    #[test]
+    fn resolution_to_symbol_ids_uses_direct_symbol_id() {
+        // Verify that when ScoredCandidate carries symbol_id, we don't need
+        // find_symbols_by_qname round-trip.
+        use atlas_engine::symbol_selector::{ScoredCandidate, SymbolSelector};
+        let sid1 = atlas_engine::SymbolId::from_bytes([1u8; 32]);
+        let sid2 = atlas_engine::SymbolId::from_bytes([2u8; 32]);
+        let candidates = vec![
+            ScoredCandidate {
+                qualified_name: "test_fn".into(),
+                file_path: "src/a.rs".into(),
+                line: 10,
+                kind: "function".into(),
+                language: "rust".into(),
+                score: 100,
+                reasons: vec![],
+                symbol_ref: SymbolSelector {
+                    qualified_name: "test_fn".into(),
+                    file_path: Some("src/a.rs".into()),
+                    line: Some(10),
+                    kind: Some("function".into()),
+                    language: Some("rust".into()),
+                },
+                symbol_id: sid1,
+            },
+            ScoredCandidate {
+                qualified_name: "test_fn".into(),
+                file_path: "src/b.rs".into(),
+                line: 20,
+                kind: "function".into(),
+                language: "rust".into(),
+                score: 80,
+                reasons: vec![],
+                symbol_ref: SymbolSelector {
+                    qualified_name: "test_fn".into(),
+                    file_path: Some("src/b.rs".into()),
+                    line: Some(20),
+                    kind: Some("function".into()),
+                    language: Some("rust".into()),
+                },
+                symbol_id: sid2,
+            },
+        ];
+        let ids: Vec<_> = candidates.iter().map(|c| c.symbol_id).collect();
+        assert_eq!(ids, vec![sid1, sid2]);
     }
 }

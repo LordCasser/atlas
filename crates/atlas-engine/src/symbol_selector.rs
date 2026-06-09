@@ -184,6 +184,10 @@ pub struct ScoredCandidate {
     pub score: u64,
     pub reasons: Vec<String>,
     pub symbol_ref: SymbolSelector,
+    /// Internal SymbolId — not serialized to JSON (MCP consumers use symbol_ref).
+    /// Enables direct ID lookup without re-querying by qualified_name.
+    #[serde(skip)]
+    pub symbol_id: SymbolId,
 }
 
 /// Internal scoring struct (not serialized directly).
@@ -582,6 +586,7 @@ pub fn resolve_by_name(
                             kind: Some(sym.kind.as_str().to_string()),
                             language: Some(sym.language.as_str().to_string()),
                         },
+                        symbol_id: sym.id,
                     }
                 })
                 .collect();
@@ -658,6 +663,7 @@ pub fn resolve_by_selector(
                             kind: Some(cs.symbol_def.kind.as_str().to_string()),
                             language: Some(cs.symbol_def.language.as_str().to_string()),
                         },
+                        symbol_id: cs.symbol_def.id,
                     }
                 })
                 .collect();
@@ -709,6 +715,7 @@ pub fn resolve_by_selector(
                                 kind: Some(cs.symbol_def.kind.as_str().to_string()),
                                 language: Some(cs.symbol_def.language.as_str().to_string()),
                             },
+                            symbol_id: cs.symbol_def.id,
                         }
                     })
                     .collect();
@@ -1223,6 +1230,36 @@ mod tests {
         assert!(
             !result[0].1.is_empty(),
             "file_path should not be empty"
+        );
+    }
+
+    #[test]
+    fn scored_candidate_carries_symbol_id() {
+        // Verify ScoredCandidate.symbol_id is populated and serialization excludes it.
+        let sym = make_symbol(SymbolKind::Function, Language::Rust, "my_crate::foo", 10);
+        let sc = ScoredCandidate {
+            qualified_name: sym.qualified_name.clone(),
+            file_path: "src/lib.rs".into(),
+            line: 10,
+            kind: sym.kind.as_str().into(),
+            language: sym.language.as_str().into(),
+            score: 100,
+            reasons: vec!["exact".into()],
+            symbol_ref: SymbolSelector {
+                qualified_name: sym.qualified_name.clone(),
+                file_path: Some("src/lib.rs".into()),
+                line: Some(10),
+                kind: Some(sym.kind.as_str().into()),
+                language: Some(sym.language.as_str().into()),
+            },
+            symbol_id: sym.id,
+        };
+        assert_eq!(sc.symbol_id, sym.id);
+        // Verify JSON output does NOT contain symbol_id
+        let json_str = serde_json::to_string(&sc).unwrap();
+        assert!(
+            !json_str.contains("symbol_id"),
+            "symbol_id must be #[serde(skip)]"
         );
     }
 }

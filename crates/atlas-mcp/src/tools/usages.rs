@@ -1,10 +1,8 @@
 //! `usages` — find all reference usages of a symbol.
 
-use std::time::Instant;
-
 use atlas_engine::InvestigationFocus;
 
-use super::query_snapshot::{QuerySnapshot, QueryStatus};
+use super::lazy_response::LazyResponse;
 use super::{ToolRouter, get_u64};
 use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy};
 use serde_json::json;
@@ -27,23 +25,7 @@ impl ToolRouter {
         let sid = match resolution {
             SymbolResolution::Single { symbol_id, .. } => symbol_id,
             SymbolResolution::Ambiguous { candidates, .. } => {
-                // BestEffortSingle with plain Name input: pick the first candidate.
-                let first = &candidates[0];
-                match self.store.find_symbols_by_qname(&first.qualified_name) {
-                    Ok(symbols) => match symbols.first() {
-                        Some(s) => s.id,
-                        None => {
-                            return (
-                                format!(
-                                    "Symbol '{}' found in candidates but not in store",
-                                    first.qualified_name
-                                ),
-                                true,
-                            );
-                        }
-                    },
-                    Err(e) => return (format!("Lookup error: {e}"), true),
-                }
+                candidates[0].symbol_id
             }
             SymbolResolution::NotFound { qname, .. } => {
                 return (format!("Symbol not found: {qname}"), true);
@@ -52,7 +34,8 @@ impl ToolRouter {
 
         self.update_investigation(InvestigationFocus::Symbol(sid));
         let _investigation = self.investigation_state.active_investigation.clone();
-        let query_id = Self::generate_query_id();
+
+        let lr = LazyResponse::new("symbol", args);
 
         let refs = match self.store.find_references_by_symbol(&sid) {
             Ok(r) => r,
@@ -83,7 +66,7 @@ impl ToolRouter {
             SymbolInput::Name(s) => s.clone(),
             SymbolInput::Selector(sel) => sel.qualified_name.clone(),
         };
-        let mut resp = json!({
+        let resp = json!({
             "symbol": symbol_display,
             "total_usages": refs.len(),
             "usages": usages,
@@ -93,19 +76,8 @@ impl ToolRouter {
         if let Some(obj) = stored_args.as_object_mut() {
             obj.insert("view".into(), serde_json::Value::String("usages".into()));
         }
-        self.store_snapshot(QuerySnapshot {
-            query_id: query_id.clone(),
-            tool_name: "symbol".into(),
-            tool_args: stored_args,
-            lazy_window: None,
-            created_at: Instant::now(),
-            status: QueryStatus::Ready,
-        });
-        resp["query_id"] = json!(query_id);
 
-        (
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
-            false,
-        )
+        lr.with_is_error(false)
+            .build_with_args(resp, &stored_args, self)
     }
 }

@@ -898,4 +898,32 @@ mod tests {
         assert!(json.contains("next_action"), "json should contain next_action");
         assert!(json.contains("analysis_contract"), "json should contain analysis_contract");
     }
+
+    // ── LazyResponse builder tests ────────────────────────────────────
+
+    #[test]
+    fn lazy_response_injects_query_id_and_diagnostics() {
+        use crate::tools::query_snapshot::QuerySnapshot;
+
+        struct MockStore { snapshots: Vec<QuerySnapshot> }
+        impl super::SnapshotStore for MockStore {
+            fn store_query_snapshot(&mut self, snapshot: QuerySnapshot) {
+                self.snapshots.push(snapshot);
+            }
+        }
+
+        let args = json!({"symbol": "test_fn"});
+        let lr = LazyResponse::new("test_tool", &args);
+        let qid = lr.query_id().to_string();
+        assert!(!qid.is_empty(), "query_id should be generated");
+
+        let body = json!({"result": "ok"});
+        let mut store = MockStore { snapshots: vec![] };
+        let (json_str, is_err) = lr.with_is_error(false).build(body, &mut store);
+
+        assert!(!is_err);
+        assert!(json_str.contains("query_id"), "response must contain query_id");
+        assert!(!store.snapshots.is_empty(), "snapshot must be stored");
+        assert_eq!(store.snapshots[0].query_id, qid);
+    }
 }

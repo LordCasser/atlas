@@ -4,14 +4,12 @@
 //! with effect annotations to produce a state-machine view of the field's
 //! lifecycle: allocation, use, escape, free, and suspicious patterns (use-after-free, double-free).
 
-use super::lazy_response::LazyDiagnostics;
-use super::query_snapshot::{QuerySnapshot, QueryStatus};
+use super::lazy_response::{LazyDiagnostics, LazyResponse};
 use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str};
 use crate::tools::symbol_selector::{
     SymbolInput, SymbolResolution, SymbolResolutionPolicy,
 };
 use serde_json::json;
-use std::time::Instant;
 
 impl ToolRouter {
     pub(crate) fn handle_lifecycle(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -31,6 +29,9 @@ impl ToolRouter {
                 true,
             );
         }
+
+        let lr = LazyResponse::new("lifecycle", args);
+        let query_id = lr.query_id().to_string();
 
         // Resolve symbol to SymbolId
         let sid = match self.resolve_symbol_input(
@@ -62,23 +63,11 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        // Generate query_id for resume / tasks
-        let query_id = Self::generate_query_id();
-
         // Ensure structural data is available (may trigger lazy extraction)
         if let Ok(Some(sym)) = self.store.find_symbol_by_id(&sid) {
             let (roots, _warnings) = self.include_roots_from_args(args);
             let _ = self.ensure_structural_for_files([sym.file_id], roots, None, Some(&query_id));
         }
-
-        self.store_snapshot(QuerySnapshot {
-            query_id: query_id.clone(),
-            tool_name: "lifecycle".into(),
-            tool_args: args.clone(),
-            lazy_window: None,
-            created_at: Instant::now(),
-            status: QueryStatus::Partial,
-        });
 
         // Load CFG nodes for this function, with lazy CFG fallback
         let mut cfg_nodes = match self.store.find_cfg_nodes_by_function(&sid) {
@@ -120,12 +109,10 @@ impl ToolRouter {
                         "function": symbol,
                         "field_path": field,
                         "error": format!("CFG not available for lifecycle analysis: {:#}", e),
-                        "lazy_diagnostics": diagnostics,
                     });
-                    return (
-                        serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
-                        false,
-                    );
+                    return lr.with_is_error(true)
+                        .with_lazy_diag(diagnostics)
+                        .build(resp, self);
                 }
             }
         }
@@ -138,12 +125,10 @@ impl ToolRouter {
                 "function": symbol,
                 "field_path": field,
                 "message": "CFG not available for lifecycle analysis. The function may be in a language that does not yet support CFG extraction, or the source file could not be read. Consider running 'index' with full structural analysis first.",
-                "lazy_diagnostics": diagnostics,
             });
-            return (
-                serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
-                false,
-            );
+            return lr.with_is_error(true)
+                .with_lazy_diag(diagnostics)
+                .build(resp, self);
         }
 
         // --- CFG is available — run lifecycle analysis ---
@@ -174,10 +159,7 @@ impl ToolRouter {
                     "message": "Lifecycle analysis only supports C/C++. The requested symbol is not C/C++ or could not be resolved.",
                     "verdict": "incomplete",
                 });
-                return (
-                    serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
-                    false,
-                );
+                return lr.with_is_error(true).build(resp, self);
             }
         };
 
@@ -216,9 +198,8 @@ impl ToolRouter {
             exit_state: result.final_state,
         };
 
-        let mut resp = json!({
+        let resp = json!({
             "ok": true,
-            "query_id": query_id,
             "field_path": result.field_path,
             "function": result.function_qname,
             "final_state": result.final_state.as_str(),
@@ -248,17 +229,13 @@ impl ToolRouter {
             })).collect::<Vec<_>>(),
         });
 
-        // Attach lazy diagnostics if dataflow was triggered
-        if let Some(ref window) = lazy_window {
-            let diagnostics = LazyDiagnostics::from_layers(None, Some(window), None);
-            if let Some(diag) = diagnostics {
-                resp["lazy_diagnostics"] = json!(diag);
-            }
-        }
+        // Build lazy_diag from lazy_window if dataflow was triggered
+        let lazy_diag: Option<LazyDiagnostics> = lazy_window
+            .as_ref()
+            .and_then(|window| LazyDiagnostics::from_layers(None, Some(window), None));
 
-        (
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
-            false,
-        )
+        lr.with_is_error(false)
+            .with_lazy_diag(lazy_diag)
+            .build(resp, self)
     }
 }

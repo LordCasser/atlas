@@ -434,6 +434,7 @@ impl ToolRouter {
                                 kind: Some(s.kind.as_str().to_string()),
                                 language: Some(s.language.as_str().to_string()),
                             },
+                            symbol_id: s.id,
                         }
                     })
                     .collect();
@@ -518,6 +519,7 @@ impl ToolRouter {
                             kind: Some(s.kind.as_str().to_string()),
                             language: Some(s.language.as_str().to_string()),
                         },
+                        symbol_id: s.id,
                     }
                 })
                 .collect();

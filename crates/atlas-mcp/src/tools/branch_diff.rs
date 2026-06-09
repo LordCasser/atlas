@@ -4,14 +4,12 @@
 //! within a function. Detects suspicious asymmetries like one branch freeing
 //! a field while the other does not.
 
-use super::lazy_response::LazyDiagnostics;
-use super::query_snapshot::{QuerySnapshot, QueryStatus};
+use super::lazy_response::{LazyDiagnostics, LazyResponse};
 use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str};
 use crate::tools::symbol_selector::{
     SymbolInput, SymbolResolution, SymbolResolutionPolicy,
 };
 use serde_json::json;
-use std::time::Instant;
 
 impl ToolRouter {
     pub(crate) fn handle_branch_diff(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -26,6 +24,9 @@ impl ToolRouter {
         if symbol.is_empty() {
             return ("Missing required parameter: symbol".to_string(), true);
         }
+
+        let lr = LazyResponse::new("branch_diff", args);
+        let query_id = lr.query_id().to_string();
 
         // Resolve symbol to SymbolId
         let sid = match self.resolve_symbol_input(
@@ -57,23 +58,11 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        // Generate query_id for resume / tasks
-        let query_id = Self::generate_query_id();
-
         // Ensure structural data is available
         if let Ok(Some(sym)) = self.store.find_symbol_by_id(&sid) {
             let (roots, _warnings) = self.include_roots_from_args(args);
             let _ = self.ensure_structural_for_files([sym.file_id], roots, None, Some(&query_id));
         }
-
-        self.store_snapshot(QuerySnapshot {
-            query_id: query_id.clone(),
-            tool_name: "branch_diff".into(),
-            tool_args: args.clone(),
-            lazy_window: None,
-            created_at: Instant::now(),
-            status: QueryStatus::Partial,
-        });
 
         // Load CFG nodes for this function, with lazy CFG fallback
         let mut cfg_nodes = match self.store.find_cfg_nodes_by_function(&sid) {
@@ -106,12 +95,10 @@ impl ToolRouter {
                         "ok": false,
                         "function": symbol,
                         "error": format!("CFG not available for branch diff analysis: {:#}", e),
-                        "lazy_diagnostics": diagnostics,
                     });
-                    return (
-                        serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
-                        false,
-                    );
+                    return lr.with_is_error(true)
+                        .with_lazy_diag(diagnostics)
+                        .build(resp, self);
                 }
             }
         }
@@ -123,12 +110,10 @@ impl ToolRouter {
                 "ok": false,
                 "function": symbol,
                 "message": "CFG not available for branch diff analysis. The function may be in a language that does not yet support CFG extraction, or the source file could not be read. Consider running 'index' with full structural analysis first.",
-                "lazy_diagnostics": diagnostics,
             });
-            return (
-                serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
-                false,
-            );
+            return lr.with_is_error(true)
+                .with_lazy_diag(diagnostics)
+                .build(resp, self);
         }
 
         // --- CFG is available — run branch diff analysis ---
@@ -201,9 +186,8 @@ impl ToolRouter {
             atlas_engine::analysis::BranchDiffEngine::diff_branches(&cfg_nodes, &cfg_edges)
         };
 
-        let mut resp = json!({
+        let resp = json!({
             "ok": true,
-            "query_id": query_id,
             "function": qname,
             "branch_count": diffs.len(),
             "branches": diffs.iter().map(|d| json!({
@@ -225,17 +209,13 @@ impl ToolRouter {
             })).collect::<Vec<_>>(),
         });
 
-        // Attach lazy diagnostics if dataflow was triggered
-        if let Some(ref window) = lazy_window {
-            let diagnostics = LazyDiagnostics::from_layers(None, Some(window), None);
-            if let Some(diag) = diagnostics {
-                resp["lazy_diagnostics"] = json!(diag);
-            }
-        }
+        // Build lazy_diag from lazy_window if dataflow was triggered
+        let lazy_diag: Option<LazyDiagnostics> = lazy_window
+            .as_ref()
+            .and_then(|window| LazyDiagnostics::from_layers(None, Some(window), None));
 
-        (
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
-            false,
-        )
+        lr.with_is_error(false)
+            .with_lazy_diag(lazy_diag)
+            .build(resp, self)
     }
 }
