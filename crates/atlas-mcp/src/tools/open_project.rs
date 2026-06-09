@@ -101,10 +101,10 @@ impl ToolRouter {
             );
         }
 
-        let task_id = self.task_manager.create_task("project", "project");
+        let task_id = self.async_state.task_manager.create_task("project", "project");
         let tid = task_id.clone();
-        let task_manager = self.task_manager.clone();
-        let pending = self.pending_project_activations.clone();
+        let task_manager = self.async_state.task_manager.clone();
+        let pending = self.async_state.pending_project_activations.clone();
         let owned_args = args.clone();
 
         std::thread::spawn(move || {

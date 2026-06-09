@@ -219,7 +219,7 @@ impl ServerHandler for AtlasMcpService {
                     let router = self.lock_router().map_err(|_| {
                         rmcp::ErrorData::internal_error("Atlas MCP router lock poisoned", None)
                     })?;
-                    Arc::clone(&router.task_manager)
+                    Arc::clone(&router.async_state.task_manager)
                 };
 
                 let wfr = tools::wait_for::handle_wait_for_task(&tm, &args).await;

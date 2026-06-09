@@ -119,7 +119,7 @@ impl ToolRouter {
             {
                 return (index_error_result(err), true);
             }
-            self.invalidate_manual_full_index_cache();
+            self.cache.invalidate_manual_full_index_cache();
             return self.handle_index_background(args, mode, force_reindex);
         }
 
@@ -190,7 +190,7 @@ impl ToolRouter {
                 result.symbols_found = stats.symbols;
                 result.references_resolved = stats.resolved;
                 // Re-check layer distribution after any explicit MCP index.
-                self.invalidate_manual_full_index_cache();
+                self.cache.invalidate_manual_full_index_cache();
             }
             Err(e) => {
                 result.errors.push(format!("Index failed: {e:#}"));
@@ -224,13 +224,13 @@ impl ToolRouter {
         mode: ExtractionMode,
         force_reindex: bool,
     ) -> (String, bool) {
-        let task_id = self.task_manager.create_task("index", "index");
+        let task_id = self.async_state.task_manager.create_task("index", "index");
         let auto_background = args
             .get("_auto_background")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let tid = task_id.clone();
-        let task_manager = self.task_manager.clone();
+        let task_manager = self.async_state.task_manager.clone();
         let store = self.store.clone();
         let project_root = self.project_root.clone();
 
