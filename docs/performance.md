@@ -4,7 +4,7 @@
 
 - **Machine**: Apple Silicon (aarch64), macOS
 - **Atlas build**: `cargo build --release -p atlas-cli`
-- **Date**: 2026-05-23
+- **Date**: 2026-05-23 (Baselines 1-2), 2026-06-10 (Baseline 3)
 
 ## Baseline 1: TypeScript Project (project-graph)
 
@@ -27,23 +27,7 @@
 | Graph build | 496ms | 5.4% | 9,708 edges |
 | **Total** | **9,264ms** | 100% | |
 
-### Resolution Breakdown
-| Strategy | Count | % |
-|----------|-------|---|
-| fuzzy_match | 6,714 | 72.2% |
-| import_resolved | 1,123 | 12.1% |
-| name_only | 846 | 9.1% |
-| exact_match | 616 | 6.6% |
-
-### Memory
-- Max RSS: 176 MB
-- Peak footprint: 171 MB
-
-### Issues
-- **19 files failed**: `FOREIGN KEY constraint failed` in DB batch insert
-- **Resolution bottleneck**: 64% of wall time spent in resolution, primarily fuzzy matching
-
----
+> **Status**: Historical baseline from pre-optimization code. Resolution breakdown below uses the old strategy names (`fuzzy_match`, `name_only`). See Baseline 3 for current strategy distribution with S1-S6 naming.
 
 ## Baseline 2: Multi-Language Project (Atlas Itself)
 
@@ -66,14 +50,6 @@
 | Graph build | 3,367ms | 12.0% | 19,618 edges |
 | **Total** | **28,100ms** | 100% | |
 
-### Resolution Breakdown
-| Strategy | Count | % |
-|----------|-------|---|
-| fuzzy_match | 15,184 | 73.1% |
-| name_only | 3,997 | 19.2% |
-| import_resolved | 946 | 4.6% |
-| exact_match | 652 | 3.1% |
-
 ### Per-Language Parse/Extract Speed
 | Language | Files | Time | avg/file |
 |----------|-------|------|----------|
@@ -89,47 +65,99 @@
 | Go | 4 | 9ms | 2.3ms |
 | C | 1 | 7ms | 7ms |
 
-- **All 7 new languages extracted with 0 errors**
+> **Status**: Historical baseline. The FK constraint issue in Baseline 1 (19 failed files) has since been resolved.
 
-### Memory
-- Max RSS: ~200 MB (estimated from peak)
+---
+
+## Baseline 3: TypeScript Monorepo (Optimized)
+
+### Project Profile
+- **Files**: 1,931 indexed (TypeScript)
+- **Symbols extracted**: 35,080
+- **References extracted**: 313,985
+- **Edges built**: 65,350 (structural analysis only)
+
+### Performance (release build, RUST_LOG=warn, clean .atlas/)
+
+| Metric | Pre-Optimization | Post-Optimization | Improvement |
+|--------|-----------------|-------------------|-------------|
+| Wall clock | 53.29s | 31.25s | **41.4%** |
+| CPU utilization | 232% | 447% | 1.9x higher throughput |
+| Resolution S5 time (cumulative) | 252.80s | 53.36s | **78.9%** reduction |
+| Resolution S6 time (cumulative) | 87.66s | 47.96s | 45.3% reduction |
+
+### Resolution Strategy Distribution (313,985 references)
+
+| Strategy | Count | % | Per-Call Cost | Status |
+|----------|-------|---|---------------|--------|
+| **S1** — Builtin filter | 7,616 | 2.4% | ~2.5μs | Skip common names (error, console, etc.) |
+| **S2** — Scope-local | 24,462 | 7.8% | ~3.6μs | Exact match in local scope tree |
+| **S3** — Container-local | 0 | 0.0% | — | Dead code for TypeScript |
+| **S4** — Same-file name | 31,113 | 9.9% | ~1.0μs | Hash map lookup, O(1) |
+| **S5** — Import resolution | 26,716 | 8.5% | ~2.0ms | **Dominant CPU bottleneck** (53% of cumulative) |
+| **S6** — Global + fuzzy | 176,860 | 56.3% | ~271μs | Largest call volume, but cheapest per call |
+| **MISS** — Unresolved | 47,218 | 15.0% | — | Traverses all 6 strategies to None |
+
+### S6 Internal Breakdown (176,860 calls)
+
+| Sub-strategy | Count | % of S6 | Method |
+|-------------|-------|---------|--------|
+| Exact name match | 153,804 | 87.0% | `HashMap::get` O(1) |
+| Fuzzy proximity | 22,738 | 12.9% | Directory-scoped trigram + banding |
+| Fuzzy global | 318 | 0.2% | Full 35K-symbol scan |
+
+The proximity filter eliminates 99.8% of global fuzzy scans. A full trigram index for global fuzzy search would optimize only 318 calls per run — essentially worthless.
+
+### Active Optimizations (verified zero regression)
+
+| Optimization | Mechanism | Effect |
+|-------------|-----------|--------|
+| Import resolution caches | 3x `thread_local! RefCell<HashMap>` (QName, reexport chain, module path) | S5 cumulative 252.8s → 53.4s |
+| Levenshtein bounded distance | Early termination when row min > max_dist | +2.6s benefit (verified by revert) |
+| Proximity-aware fuzzy search | Directory-scoped candidate pool before global fallback | 99.8% reduction in global scans, +289 edge matches |
+| `fuzzy_cache` / `proximity_cache` | `thread_local! RefCell<HashMap>` (was `Mutex`) | Eliminated Mutex contention |
+| Strategy counters and timers | 7 `AtomicU64` counters + 6 nanosecond timers | Profiling infra, zero overhead |
+
+### Rejected Optimizations (verified regression)
+
+| Attempt | Expected | Actual | Root Cause |
+|---------|----------|--------|------------|
+| Mutex-guarded QName cache | Shared cache higher hit rate | **+5.8s** | Mutex contention at 249% CPU |
+| Dynamic SQL batch INSERT | Fewer DB round-trips | **+22.8s** | SQLite prepared statement cache > dynamic SQL |
+| Subquery batch DELETE | Single statement instead of N+1 | **+330s** (full analysis) | Missing index → full table scan on subquery |
+| Batch symbol lookup (IN clause) | One query instead of N | **+2.2s** | Same prepared-statement advantage as INSERT |
+| Debug tracing spans on hot path | Low overhead | **+16%** wall clock | Span enter/exit cost at 19K calls/sec |
+| In-memory symbol pre-load | Avoid DB queries | Neutral (wall clock + higher CPU) | SQLite query is already cached |
+| `has_name` fast-path | Skip hash map lookups | Neutral | Extra lookup cost = saved cost |
+| `find_by_name_refs` clone elimination | Fewer allocations | Marginal (0.2s) | Clone cost is negligible on modern hardware |
+
+**Key pattern**: SQLite's internal prepared statement cache makes per-row `stmt.execute(params![])` extremely efficient. Dynamic SQL construction (building variable-length `INSERT INTO ... VALUES` statements) defeats this cache entirely. This is counter-intuitive for engineers coming from PostgreSQL or MySQL where batching is almost always a win.
 
 ---
 
 ## Key Findings
 
-### 1. Resolution is the dominant bottleneck
-Across both projects, resolution consumes 64-79% of total wall time. Within resolution, **fuzzy matching** accounts for 72-73% of resolved references.
+### 1. The real bottleneck was import resolution, not fuzzy matching
 
-- **Recommendation**: Investigate fuzzy match algorithm (O(n²) name similarity checks likely driving cost). Consider:
-  - Index-based candidate pre-filtering
-  - Per-language resolution scope limits
-  - Parallel execution of resolution sub-phases
+Pre-optimization strategy distribution suggested fuzzy matching was 73% of the bottleneck. Strategy timing counters revealed the opposite: **S5 (import resolution) was 74% of CPU time** despite being only 8.5% of calls — each import resolution cost ~9.4ms via recursive DB queries through reexport chains. Adding three `thread_local!` caches (QName, reexport chain, module path) reduced S5 cumulative time from 252.8s to 53.4s.
 
-### 2. DB write overhead
-Consistently ~2.2s for 146-156 files, regardless of language count. This suggests fixed per-transaction overhead dominates.
+**Lesson**: Call count distribution alone is misleading. Always add per-strategy timing before prioritizing. What looks like a volume problem may be a per-call cost problem.
 
-- **Recommendation**: Profile batch insert transaction vs individual inserts. Consider larger batches or lower isolation level.
+### 2. S6 (global+fuzzy) was already well-optimized
 
-### 3. New language extraction is fast and reliable
-All 6 new DataflowBasic languages (Go, C#, Rust, PHP, Ruby, Kotlin) extracted correctly with 0 errors across the Atlas codebase itself. Parse/extract times are reasonable:
-- Fastest: Go (2.3ms/file), C (7ms/file)
-- Slowest: Ruby (59ms/file), Kotlin (58ms/file), C# (53ms/file)
+After banding + proximity filtering, global fuzzy search triggers only 318 times out of 176,860 S6 calls (0.2%). A full trigram index or BK-tree for global fuzzy would optimize less than 0.2% of the workload. The proximity directory filter (search same-directory symbols first) eliminated the need for a global index.
 
-### 4. DB integrity issue
-The TypeScript project had 19 files fail with `FOREIGN KEY constraint failed`. This indicates a data integrity bug in the batch insert path that needs investigation.
+### 3. DB write is not the bottleneck at scale
 
-### 5. 168-file project completes in <10 seconds
-A mid-size TypeScript project indexes in under 10 seconds. This is acceptable for interactive use but the resolution bottleneck must be addressed before scaling to 500+ file projects (which would take 30-60+ seconds).
+At 1,931 files, extraction and DB writes combined account for <20% of wall clock. Resolution dominates. Batch write paths (commit d6c9517b) already addressed the per-file write overhead from earlier baselines.
 
----
+### 4. New language extraction is fast and reliable
 
-## Recommended Next Steps
+All 6 new DataflowBasic languages extracted correctly with 0 errors. Parse/extract speeds: Go 2.3ms/file, Rust 14.9ms/file, Ruby 59ms/file. Tree-sitter grammars are mature enough for production use.
 
-1. **[P0] Fix DB integrity**: Investigate FOREIGN KEY failures in batch insert
-2. **[P1] Optimize resolution**: Focus on fuzzy match performance (72% of resolution cost)
-3. **[P2] Profile DB write**: Reduce 2.2s fixed overhead
-4. **[P3] Scale test**: Run on 500+ file project to validate linearity
+### 5. 1,931-file TypeScript monorepo indexes in ~31 seconds
+
+Acceptable for batch/CI use. The remaining optimization space (<10% further improvement) requires structural changes: extraction-resolution pipeline fusion, incremental index path optimization, or language-specific strategy tuning. These are diminishing returns compared to the 41% already achieved.
 
 ---
 
@@ -179,10 +207,6 @@ CPU capacity that other work could use.
 CPU (per-thread aggregation). The wall clock bottleneck and the CPU bottleneck
 are often different things.
 
-**Rule**: In any parallel system, always measure both wall clock AND cumulative
-CPU (per-thread aggregation). The wall clock bottleneck and the CPU bottleneck
-are often different things.
-
 ### 2. A/B Testing Discipline
 
 Every optimization claim must survive a clean A/B comparison:
@@ -205,7 +229,6 @@ Essential controls:
 
 When a change shows a regression, **verify by reverting** before moving on.
 A single misattributed regression can lead to hours of dead-end investigation.
-In our cycle, we reverted and re-verified every significant change at least once.
 
 ### 3. Progressive Isolation: Revert One Variable at a Time
 
@@ -266,7 +289,7 @@ with no active subscriber can measurably slow things down.
 run). For hot-path measurement, use `AtomicU64` counters or `Instant::now()`
 timers aggregated at the end — orders of magnitude cheaper than spans.
 
-### 6. database Batching: Test Your Assumptions
+### 6. Database Batching: Test Your Assumptions
 
 Three separate batching approaches were attempted. All three regressed:
 
