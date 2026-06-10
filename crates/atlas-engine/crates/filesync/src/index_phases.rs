@@ -291,7 +291,7 @@ pub fn phase_extract_parallel_cancellable(
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let pool = ParseWorkerPool::new(WorkerConfig::default());
+    let pool_worker = ParseWorkerPool::new(WorkerConfig::default());
     let total = files.len();
 
     // Atomic counters for thread-safe progress
@@ -300,46 +300,53 @@ pub fn phase_extract_parallel_cancellable(
     let symbol_count = AtomicUsize::new(0);
     let completed = AtomicUsize::new(0);
 
-    let items: Vec<ExtractedFile> = files
-        .par_iter()
-        .filter_map(|rel_path| {
-            // Check cancel token before processing this file
-            if let Some(token) = cancel_token {
-                if token.load(Ordering::Relaxed) {
-                    return None;
-                }
-            }
+    // Use extraction pool with 8 MiB stacks instead of rayon default 2 MiB.
+    // This is the PRIMARY defense against stack overflow from tree-sitter
+    // parsing + CFG/DataFlow recursion in --analysis full mode.
+    let extraction_pool = extraction::extraction_pool();
 
-            let abs_path = root.join(rel_path);
-
-            let result = (|| -> Option<ExtractedFile> {
-                let lang = Language::from_path(rel_path)?;
-                let frontend = frontends.get(&lang)?;
-                match extract_one_index_file(&pool, &abs_path, root, frontend, &mode) {
-                    Ok(file) => {
-                        symbol_count.fetch_add(file.facts.symbols.len(), Ordering::Relaxed);
-                        succeeded.fetch_add(1, Ordering::Relaxed);
-                        Some(file)
-                    }
-                    Err(_) => {
-                        failed.fetch_add(1, Ordering::Relaxed);
-                        None
+    let items: Vec<ExtractedFile> = extraction_pool.install(|| {
+        files
+            .par_iter()
+            .filter_map(|rel_path| {
+                // Check cancel token before processing this file
+                if let Some(token) = cancel_token {
+                    if token.load(Ordering::Relaxed) {
+                        return None;
                     }
                 }
-            })();
 
-            // Per-file progress: throttled to every 50 items to avoid
-            // AtomicUsize contention across rayon threads.
-            let c = completed.fetch_add(1, Ordering::Relaxed) + 1;
-            if let Some(cb) = on_file_progress {
-                if c % 50 == 0 || c == total {
-                    cb(c, total);
+                let abs_path = root.join(rel_path);
+
+                let result = (|| -> Option<ExtractedFile> {
+                    let lang = Language::from_path(rel_path)?;
+                    let frontend = frontends.get(&lang)?;
+                    match extract_one_index_file(&pool_worker, &abs_path, root, frontend, &mode) {
+                        Ok(file) => {
+                            symbol_count.fetch_add(file.facts.symbols.len(), Ordering::Relaxed);
+                            succeeded.fetch_add(1, Ordering::Relaxed);
+                            Some(file)
+                        }
+                        Err(_) => {
+                            failed.fetch_add(1, Ordering::Relaxed);
+                            None
+                        }
+                    }
+                })();
+
+                // Per-file progress: throttled to every 50 items to avoid
+                // AtomicUsize contention across rayon threads.
+                let c = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                if let Some(cb) = on_file_progress {
+                    if c % 50 == 0 || c == total {
+                        cb(c, total);
+                    }
                 }
-            }
 
-            result
-        })
-        .collect();
+                result
+            })
+            .collect()
+    });
 
     // Call on_progress once at the end if provided (backward-compat hook)
     if let Some(cb) = on_progress {
@@ -845,5 +852,53 @@ mod tests {
         assert_eq!(result.stats.succeeded, 0);
         assert_eq!(result.stats.failed, 0);
         assert_eq!(result.stats.attempted, 20);
+    }
+
+    /// Verify extraction pool is used (threads named "atlas-extract-*").
+    #[test]
+    fn phase_extract_parallel_uses_custom_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        for i in 0..5 {
+            let name = format!("f_{:03}.ts", i);
+            std::fs::write(
+                dir.path().join(&name),
+                format!("export const x_{i} = {i};\n"),
+            )
+            .unwrap();
+            paths.push(PathBuf::from(name));
+        }
+        let frontends = phase_init_frontends(&paths).unwrap();
+        let result = phase_extract_parallel_cancellable(
+            dir.path(),
+            &paths,
+            &frontends,
+            ExtractionMode::Manifest,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(result.stats.succeeded, 5);
+        assert_eq!(result.items.len(), 5);
+    }
+
+    /// Verify multi-language extraction works with custom pool.
+    #[test]
+    fn phase_extract_parallel_multi_language_with_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.ts"), "const a = 1;\n").unwrap();
+        std::fs::write(dir.path().join("b.py"), "def b(): pass\n").unwrap();
+        let files = vec![PathBuf::from("a.ts"), PathBuf::from("b.py")];
+        let frontends = phase_init_frontends(&files).unwrap();
+        let result = phase_extract_parallel_cancellable(
+            dir.path(),
+            &files,
+            &frontends,
+            ExtractionMode::Manifest,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(result.items.len(), 2);
     }
 }
