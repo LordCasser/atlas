@@ -11,7 +11,7 @@
 /// This trait lives in the `extraction` crate because it is consumed
 /// by `extract_file_with_mode_cancellable` — extraction cannot depend
 /// on `atlas-engine`.
-pub trait CancelCheck: Sync {
+pub trait CancelCheck {
     /// Whether the current operation has been cancelled.
     fn is_cancelled(&self) -> bool;
 }
