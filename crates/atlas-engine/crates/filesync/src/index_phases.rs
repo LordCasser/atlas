@@ -37,6 +37,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use db::Store;
+use tracing::info_span;
 use extraction::{
     ExtractionMode, LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig,
     create_frontend,
@@ -44,7 +45,7 @@ use extraction::{
 use graph::GraphBuilder;
 use resolution::{PathAliasConfig, ReferenceResolver};
 use types::progress::ProgressState;
-use types::{FileFacts, FileId, Language};
+use types::{FileFacts, FileId, Language, SymbolDef, SymbolId};
 
 use crate::cleanup::{clean_stale_file_ids, clean_stale_file_paths, source_file_id};
 use crate::dirty::{DirtySet, build_dirty_set_for_mode};
@@ -288,6 +289,7 @@ pub fn phase_extract_parallel_cancellable(
     on_file_progress: Option<&(dyn Fn(usize, usize) + Sync)>,
     cancel_token: Option<&std::sync::atomic::AtomicBool>,
 ) -> ExtractedFiles {
+    let _span = info_span!(target: "atlas_sync", "sync.phase_extract_parallel", file_count = files.len()).entered();
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -426,6 +428,7 @@ fn extract_one_index_file(
 ///
 /// Returns the number of files successfully inserted.
 pub fn phase_write_single(store: &Arc<Store>, extracted: &ExtractedFiles) -> Result<usize> {
+    let _span = info_span!(target: "atlas_sync", "sync.phase_write_single", file_count = extracted.items.len()).entered();
     let mut written = 0;
     for file in &extracted.items {
         store
@@ -446,12 +449,13 @@ pub fn phase_write_single(store: &Arc<Store>, extracted: &ExtractedFiles) -> Res
 ///   was written so far.
 pub fn phase_write_batched(
     store: &Arc<Store>,
-    extracted: &ExtractedFiles,
+    extracted: ExtractedFiles,
     batch_size: usize,
     checkpoint_interval: u64,
     mut on_progress: impl FnMut(u64),
     mut interrupted: impl FnMut() -> bool,
 ) -> Result<WriteBatchStats> {
+    let _span = info_span!(target: "atlas_sync", "sync.phase_write_batched", file_count = extracted.items.len()).entered();
     anyhow::ensure!(batch_size > 0, "batch_size must be > 0, got {batch_size}");
 
     let mut stats = WriteBatchStats {
@@ -463,15 +467,16 @@ pub fn phase_write_batched(
     let _bulk = store.enter_bulk_write()?;
     let mut next_checkpoint = checkpoint_interval;
 
-    for chunk in extracted.items.chunks(batch_size) {
+    let all_facts: Vec<FileFacts> = extracted.items.into_iter().map(|ef| ef.facts).collect();
+
+    for chunk in all_facts.chunks(batch_size) {
         if interrupted() {
             return Ok(stats);
         }
-        let facts: Vec<_> = chunk.iter().map(|ef| ef.facts.clone()).collect();
-        if store.insert_file_facts_batch(&facts).is_err() {
+        if store.insert_file_facts_batch(chunk).is_err() {
             stats.batch_failures += 1;
-            for ef in chunk {
-                match store.insert_file_facts(&ef.facts) {
+            for facts in chunk {
+                match store.insert_file_facts(facts) {
                     Ok(_) => {
                         stats.written += 1;
                     }
@@ -509,6 +514,7 @@ pub fn phase_resolve_and_build(
     root: &Path,
     progress: Option<&Arc<Mutex<ProgressState>>>,
 ) -> Result<GraphResult> {
+    let _span = info_span!(target: "atlas_sync", "sync.phase_resolve_and_build").entered();
     let path_alias = PathAliasConfig::resolver(root);
     if PathAliasConfig::has_changed(store, root)? {
         store.invalidate_all_references()?;
@@ -518,8 +524,15 @@ pub fn phase_resolve_and_build(
     let (resolved_refs, res_stats) = resolver
         .resolve_all_parallel(store.clone(), progress, None)
         .context("Reference resolution failed")?;
+
+    // Pre-load all symbols in a single DB query instead of N×1 find_symbol_by_id.
+    let symbol_map: HashMap<SymbolId, SymbolDef> = store
+        .get_all_symbols()
+        .map(|syms| syms.into_iter().map(|s| (s.id, s)).collect())
+        .unwrap_or_default();
+
     let builder = GraphBuilder::new(store.clone());
-    let build_stats = builder.build_all(&resolved_refs);
+    let build_stats = builder.build_all_with_symbols(&resolved_refs, Some(symbol_map));
     Ok(GraphResult {
         resolved: res_stats.resolved,
         edges_built: build_stats.edges_built,
@@ -721,7 +734,7 @@ mod tests {
         // the batch path.
         let stats = phase_write_batched(
             &store,
-            &extracted,
+            extracted,
             2,        // batch_size
             100,      // checkpoint_interval
             |_| {},   // on_progress (no-op)

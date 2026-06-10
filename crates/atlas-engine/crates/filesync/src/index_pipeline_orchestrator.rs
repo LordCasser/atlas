@@ -13,6 +13,7 @@ use anyhow::Result;
 use db::Store;
 #[cfg(test)]
 use extraction::ExtractionMode;
+use tracing::debug_span;
 use types::SymbolKind;
 
 use crate::cleanup::source_file_id;
@@ -158,6 +159,7 @@ impl IndexPipeline {
 
         // ── Phase 3: Cleanup ────────────────────────────────────────────
         check_cancelled!();
+        let _cleanup_span = debug_span!(target: "atlas_sync", "sync.full.cleanup").entered();
         sink.emit(ProgressEvent::PhaseStarted {
             phase: PhaseName::Cleanup,
             total: 0,
@@ -210,6 +212,7 @@ impl IndexPipeline {
             )),
         });
         last_phase = PhaseName::Cleanup;
+        drop(_cleanup_span);
 
         let files_to_extract = dirty_set.dirty;
 
@@ -313,7 +316,7 @@ impl IndexPipeline {
             };
 
             let write_stats =
-                phase_write_batched(&self.store, &extracted, 500, 500, write_progress, || {
+                phase_write_batched(&self.store, extracted, 500, 500, write_progress, || {
                     (*int_cell.lock().expect("cancellation check lock poisoned"))()
                 })?;
 

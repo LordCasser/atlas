@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use db::Store;
+use tracing::debug_span;
 use types::FileId;
 use workspace::SourcePath;
 
@@ -29,6 +30,7 @@ pub fn clean_stale_file_paths(store: &Arc<Store>, paths: &[PathBuf]) -> Result<V
 
 /// Clean stale facts for file IDs before deleting or replacing file facts.
 pub fn clean_stale_file_ids(store: &Arc<Store>, file_ids: &[FileId]) -> Result<()> {
+    let _span = debug_span!(target: "atlas_sync", "sync.incremental.cleanup", dirty_count = file_ids.len()).entered();
     for fid in file_ids {
         if let Err(e) = store.invalidate_references_to_symbols_in_file(fid) {
             tracing::warn!(

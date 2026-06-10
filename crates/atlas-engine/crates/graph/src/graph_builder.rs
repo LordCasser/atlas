@@ -16,6 +16,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use tracing::{debug_span, info_span};
 use db::Store;
 use rayon::prelude::*;
 use types::enums::{DataFlowKind, DataNodeKind};
@@ -40,8 +41,24 @@ impl GraphBuilder {
     /// P5: Edge creation is parallelized — each reference produces edges independently
     /// via Rayon. Results are collected and batch-inserted.
     pub fn build_all(&self, resolved: &[(ReferenceUse, ResolvedTarget)]) -> GraphBuilderStats {
-        // Preload target symbols to eliminate DB queries in the parallel loop.
-        let symbol_cache: HashMap<SymbolId, SymbolDef> = {
+        self.build_all_with_symbols(resolved, None)
+    }
+
+    /// Build edges with an optional pre-loaded symbol cache.
+    ///
+    /// When `symbol_override` is provided, skips the N×1 DB query loop entirely
+    /// (eliminates ~35K individual `find_symbol_by_id` calls for the TS project).
+    pub fn build_all_with_symbols(
+        &self,
+        resolved: &[(ReferenceUse, ResolvedTarget)],
+        symbol_override: Option<HashMap<SymbolId, SymbolDef>>,
+    ) -> GraphBuilderStats {
+        let _span = info_span!(target: "atlas_graph", "graph.build_all").entered();
+        // Use pre-loaded symbols if provided; otherwise fall back to N×1 DB queries.
+        let symbol_cache: HashMap<SymbolId, SymbolDef> = if let Some(override_map) = symbol_override {
+            override_map
+        } else {
+            let _cache_span = debug_span!(target: "atlas_graph", "graph.symbol_cache").entered();
             let mut ids = HashSet::new();
             for (_, target) in resolved {
                 ids.insert(target.symbol_id);

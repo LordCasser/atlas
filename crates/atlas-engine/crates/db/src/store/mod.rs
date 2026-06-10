@@ -304,6 +304,7 @@ impl Store {
 
     /// Shared implementation: one transaction, one lock, N files.
     fn insert_file_facts_impl(&self, batch: &[FileFacts]) -> anyhow::Result<()> {
+        let _span = tracing::info_span!(target: "atlas_db", "db.insert_file_facts_impl", file_count = batch.len()).entered();
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 

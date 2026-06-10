@@ -8,6 +8,7 @@
 //! requiring the external `streaming_iterator` crate.
 
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator};
+use tracing::debug_span;
 
 use crate::cancel::CancelCheck;
 use crate::error::{ExtractionFailure, ExtractionFailureKind};
@@ -30,16 +31,19 @@ pub(crate) fn collect_captures<'a>(
         return Ok(Vec::new());
     }
 
-    let query = match Query::new(ts_lang, trimmed) {
-        Ok(q) => q,
-        Err(e) => {
-            return Err(ExtractionFailure {
-                kind: ExtractionFailureKind::QueryCompile,
-                file_path: String::new(), // caller fills if needed
-                language: types::Language::TypeScript, // placeholder — caller fills
-                slot: Some(slot),
-                message: format!("{e}"),
-            });
+    let query = {
+        let _query_span = debug_span!(target: "atlas_extract", "extract.query_compile", slot = slot).entered();
+        match Query::new(ts_lang, trimmed) {
+            Ok(q) => q,
+            Err(e) => {
+                return Err(ExtractionFailure {
+                    kind: ExtractionFailureKind::QueryCompile,
+                    file_path: String::new(), // caller fills if needed
+                    language: types::Language::TypeScript, // placeholder — caller fills
+                    slot: Some(slot),
+                    message: format!("{e}"),
+                });
+            }
         }
     };
 

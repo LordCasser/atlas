@@ -2,6 +2,7 @@
 //! plus `replace_dataflow_for_unit` and `update_callsite_arg_data_nodes`.
 
 use rusqlite::params;
+use tracing::debug_span;
 use types::*;
 
 use super::Store;
@@ -108,6 +109,7 @@ impl Store {
         cfg_nodes: &[CfgNode],
         cfg_edges: &[CfgEdge],
     ) -> anyhow::Result<()> {
+        let _span = debug_span!(target: "atlas_db", "db.replace_dataflow").entered();
         // Always run the delete+insert transaction, even when the new payload
         // is empty.  An empty replacement means the unit no longer has any
         // dataflow — but stale rows from a previous build must still be

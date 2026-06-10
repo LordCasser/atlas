@@ -9,6 +9,7 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
+use tracing::info_span;
 use tree_sitter::Parser;
 
 use types::Language;
@@ -95,6 +96,7 @@ pub fn extract_file_with_mode_cancellable(
     mode: ExtractionMode,
     token: &dyn CancelCheck,
 ) -> Result<FileFacts> {
+    let _span = info_span!(target: "atlas_extract", "extract.file", path = %file_path.display()).entered();
     let mut diagnostics = Vec::new();
 
     // CP1: Check cancellation before expensive parse.

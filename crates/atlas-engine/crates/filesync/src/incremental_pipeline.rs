@@ -306,7 +306,7 @@ impl IncrementalPipeline {
 
             let write_stats = phase_write_batched(
                 &self.store,
-                &extracted,
+                extracted,
                 500,
                 500,
                 |written| {
