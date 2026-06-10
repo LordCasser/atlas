@@ -28,6 +28,41 @@ use self::name_matcher::NameMatcher;
 
 pub mod builtins;
 pub mod config;
+
+// Per-strategy hit counters (zero overhead: AtomicU64 inc is lock-free)
+static S1_COUNT: AtomicU64 = AtomicU64::new(0);
+static S2_COUNT: AtomicU64 = AtomicU64::new(0);
+static S3_COUNT: AtomicU64 = AtomicU64::new(0);
+static S4_COUNT: AtomicU64 = AtomicU64::new(0);
+static S5_COUNT: AtomicU64 = AtomicU64::new(0);
+static S6_COUNT: AtomicU64 = AtomicU64::new(0);
+static S6_EXACT_COUNT: AtomicU64 = AtomicU64::new(0);
+static S6_FUZZY_PROX_COUNT: AtomicU64 = AtomicU64::new(0);
+static S6_FUZZY_GLOBAL_COUNT: AtomicU64 = AtomicU64::new(0);
+static MISS_COUNT: AtomicU64 = AtomicU64::new(0);
+
+// Per-strategy cumulative time counters (nanosecond resolution)
+static S1_TIME_NS: AtomicU64 = AtomicU64::new(0);
+static S2_TIME_NS: AtomicU64 = AtomicU64::new(0);
+static S3_TIME_NS: AtomicU64 = AtomicU64::new(0);
+static S4_TIME_NS: AtomicU64 = AtomicU64::new(0);
+static S5_TIME_NS: AtomicU64 = AtomicU64::new(0);
+static S6_TIME_NS: AtomicU64 = AtomicU64::new(0);
+
+/// RAII timer that records elapsed nanoseconds to a static AtomicU64 on drop.
+/// Used for per-strategy timing with zero per-call overhead beyond Instant::now().
+struct StrategyTimer(&'static AtomicU64, std::time::Instant);
+impl StrategyTimer {
+    #[inline(always)]
+    fn new(counter: &'static AtomicU64) -> Self {
+        Self(counter, std::time::Instant::now())
+    }
+}
+impl Drop for StrategyTimer {
+    fn drop(&mut self) {
+        self.0.fetch_add(self.1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+}
 pub mod context;
 pub mod frameworks;
 pub mod import_resolver;
@@ -64,14 +99,21 @@ fn resolve_one_core(
     proximity_file_id: Option<FileId>,
 ) -> Option<ResolvedTarget> {
     // Strategy 1: Built-in / external filter
-    if BuiltinFilter::is_builtin(&reference.name, ctx.file.language) {
-        return None;
+    {
+        let _timer = StrategyTimer::new(&S1_TIME_NS);
+        if BuiltinFilter::is_builtin(&reference.name, ctx.file.language) {
+            S1_COUNT.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
     }
 
     // Strategy 2: Scope-local exact match
-    if let Some(scope_id) = reference.scope_id {
-        if let Some(sym) = ctx.lookup_scoped(scope_id, &reference.name) {
-            return Some(ResolvedTarget {
+    {
+        let _timer = StrategyTimer::new(&S2_TIME_NS);
+        if let Some(scope_id) = reference.scope_id {
+            if let Some(sym) = ctx.lookup_scoped(scope_id, &reference.name) {
+                S2_COUNT.fetch_add(1, Ordering::Relaxed);
+                return Some(ResolvedTarget {
                 symbol_id: sym.id,
                 confidence: Confidence::certain(),
                 strategy: ResolutionStrategy::ExactMatch,
@@ -79,21 +121,25 @@ fn resolve_one_core(
             });
         }
     }
+    }
 
     // Strategy 3: Container/class-local
-    if let Some(source_sym) = reference.source_symbol {
-        if let Some(source) = ctx.symbols_by_id.get(&source_sym) {
-            // If the source symbol is a method, look for the target in its containing class
-            if let Some(container) = source.container {
-                if let Some(container_sym) = ctx.symbols_by_id.get(&container) {
-                    if let Some(scope) = container_sym.scope_id {
-                        if let Some(sym) = ctx.lookup_scoped(scope, &reference.name) {
-                            return Some(ResolvedTarget {
-                                symbol_id: sym.id,
-                                confidence: Confidence::certain(),
-                                strategy: ResolutionStrategy::ExactMatch,
-                                provenance: Provenance::TreeSitter,
-                            });
+    {
+        let _timer = StrategyTimer::new(&S3_TIME_NS);
+        if let Some(source_sym) = reference.source_symbol {
+            if let Some(source) = ctx.symbols_by_id.get(&source_sym) {
+                if let Some(container) = source.container {
+                    if let Some(container_sym) = ctx.symbols_by_id.get(&container) {
+                        if let Some(scope) = container_sym.scope_id {
+                            if let Some(sym) = ctx.lookup_scoped(scope, &reference.name) {
+                                S3_COUNT.fetch_add(1, Ordering::Relaxed);
+                                return Some(ResolvedTarget {
+                                    symbol_id: sym.id,
+                                    confidence: Confidence::certain(),
+                                    strategy: ResolutionStrategy::ExactMatch,
+                                    provenance: Provenance::TreeSitter,
+                                });
+                            }
                         }
                     }
                 }
@@ -102,58 +148,59 @@ fn resolve_one_core(
     }
 
     // Strategy 4: Same-file exact match
-    let same_file = ctx.find_in_file_by_name(&reference.name);
-    if let Some(matched) =
-        name_matcher.best_match(&same_file, &reference.name, Confidence::certain())
     {
-        return Some(ResolvedTarget {
-            symbol_id: matched.symbol_id,
-            confidence: matched.confidence,
-            strategy: matched.strategy,
-            provenance: matched.provenance,
-        });
+        let _timer = StrategyTimer::new(&S4_TIME_NS);
+        let same_file = ctx.find_in_file_by_name(&reference.name);
+        if let Some(matched) =
+            name_matcher.best_match(&same_file, &reference.name, Confidence::certain())
+        {
+            S4_COUNT.fetch_add(1, Ordering::Relaxed);
+            return Some(ResolvedTarget {
+                symbol_id: matched.symbol_id,
+                confidence: matched.confidence,
+                strategy: matched.strategy,
+                provenance: matched.provenance,
+            });
+        }
     }
 
     // Strategy 5: Import/include resolution
-    //
-    // Uses the pre-built imports_by_name index for O(1) lookup instead of
-    // iterating all imports per reference.  The index maps import imported_name
-    // and local_name (alias) to indices into ctx.imports.
-    if let Some(import_indices) = ctx.imports_by_name.get(&reference.name) {
-        for &idx in import_indices {
-            let import = &ctx.imports[idx];
-            let import_local = import.local_name.as_deref().unwrap_or("");
-            let matches_by_alias = !import_local.is_empty() && import_local == reference.name;
+    {
+        let _timer = StrategyTimer::new(&S5_TIME_NS);
+        if let Some(import_indices) = ctx.imports_by_name.get(&reference.name) {
+            for &idx in import_indices {
+                let import = &ctx.imports[idx];
+                let import_local = import.local_name.as_deref().unwrap_or("");
+                let matches_by_alias = !import_local.is_empty() && import_local == reference.name;
 
-            if let Ok(candidates) = import_resolver.resolve_import(import) {
-                if let Ok(chain_candidates) =
-                    import_resolver.resolve_through_reexports(import, candidates)
-                {
-                    // Alias match: trust the import relationship directly.
-                    if matches_by_alias {
-                        if let Some(first) = chain_candidates.first() {
+                if let Ok(candidates) = import_resolver.resolve_import(import) {
+                    if let Ok(chain_candidates) =
+                        import_resolver.resolve_through_reexports(import, candidates)
+                    {
+                        if matches_by_alias {
+                            if let Some(first) = chain_candidates.first() {
+                                S5_COUNT.fetch_add(1, Ordering::Relaxed);
+                                return Some(ResolvedTarget {
+                                    symbol_id: first.id,
+                                    confidence: Confidence::new(0.8),
+                                    strategy: ResolutionStrategy::ImportResolved,
+                                    provenance: Provenance::Heuristic,
+                                });
+                            }
+                        }
+                        if let Some(matched) = name_matcher.best_match(
+                            &chain_candidates,
+                            &reference.name,
+                            Confidence::certain(),
+                        ) {
+                            S5_COUNT.fetch_add(1, Ordering::Relaxed);
                             return Some(ResolvedTarget {
-                                symbol_id: first.id,
+                                symbol_id: matched.symbol_id,
                                 confidence: Confidence::new(0.8),
                                 strategy: ResolutionStrategy::ImportResolved,
                                 provenance: Provenance::Heuristic,
                             });
                         }
-                    }
-                    // Exact-name match: use name_matcher to filter candidates.
-                    // (The index only contains imports whose imported_name or
-                    // local_name equals reference.name, so we always match.)
-                    if let Some(matched) = name_matcher.best_match(
-                        &chain_candidates,
-                        &reference.name,
-                        Confidence::certain(),
-                    ) {
-                        return Some(ResolvedTarget {
-                            symbol_id: matched.symbol_id,
-                            confidence: Confidence::new(0.8),
-                            strategy: ResolutionStrategy::ImportResolved,
-                            provenance: Provenance::Heuristic,
-                        });
                     }
                 }
             }
@@ -161,41 +208,66 @@ fn resolve_one_core(
     }
 
     // Strategy 6: Project-wide name search + fuzzy fallback
-    if let Some(idx) = global_index {
-        let candidates = match proximity_file_id {
-            Some(fid) => idx.find_by_name_proximity(&reference.name, fid),
-            None => idx.find_by_name(&reference.name),
-        };
-        if !candidates.is_empty() {
-            if let Some(matched) =
-                name_matcher.best_match(&candidates, &reference.name, Confidence::new(0.6))
-            {
-                return Some(ResolvedTarget {
-                    symbol_id: matched.symbol_id,
-                    confidence: matched.confidence,
-                    strategy: matched.strategy,
-                    provenance: matched.provenance,
-                });
+    {
+        let _timer = StrategyTimer::new(&S6_TIME_NS);
+        if let Some(idx) = global_index {
+            let candidates = match proximity_file_id {
+                Some(fid) => idx.find_by_name_proximity(&reference.name, fid),
+                None => idx.find_by_name(&reference.name),
+            };
+            if !candidates.is_empty() {
+                if let Some(matched) =
+                    name_matcher.best_match(&candidates, &reference.name, Confidence::new(0.6))
+                {
+                    S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                    S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
+                    return Some(ResolvedTarget {
+                        symbol_id: matched.symbol_id,
+                        confidence: matched.confidence,
+                        strategy: matched.strategy,
+                        provenance: matched.provenance,
+                    });
+                }
             }
-        }
-        if !should_run_fuzzy_fallback(&reference.name) {
-            return None;
-        }
-        let fuzzy = idx.fuzzy_search(&reference.name, 2);
-        if !fuzzy.is_empty() {
-            if let Some(matched) =
-                name_matcher.best_match(&fuzzy, &reference.name, Confidence::new(0.4))
-            {
-                return Some(ResolvedTarget {
-                    symbol_id: matched.symbol_id,
-                    confidence: matched.confidence,
-                    strategy: ResolutionStrategy::FuzzyMatch,
-                    provenance: Provenance::Heuristic,
-                });
+            if !should_run_fuzzy_fallback(&reference.name) {
+                return None;
+            }
+            // Try fuzzy-with-proximity before full global scan.
+            if let Some(fid) = proximity_file_id {
+                let fuzzy_prox = idx.fuzzy_search_proximity(&reference.name, 2, fid);
+                if !fuzzy_prox.is_empty() {
+                    if let Some(matched) =
+                        name_matcher.best_match(&fuzzy_prox, &reference.name, Confidence::new(0.4))
+                    {
+                        S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                        S6_FUZZY_PROX_COUNT.fetch_add(1, Ordering::Relaxed);
+                        return Some(ResolvedTarget {
+                            symbol_id: matched.symbol_id,
+                            confidence: matched.confidence,
+                            strategy: ResolutionStrategy::FuzzyMatch,
+                            provenance: Provenance::Heuristic,
+                        });
+                    }
+                }
+            }
+            let fuzzy = idx.fuzzy_search(&reference.name, 2);
+            if !fuzzy.is_empty() {
+                if let Some(matched) =
+                    name_matcher.best_match(&fuzzy, &reference.name, Confidence::new(0.4))
+                {
+                    S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                    S6_FUZZY_GLOBAL_COUNT.fetch_add(1, Ordering::Relaxed);
+                    return Some(ResolvedTarget {
+                        symbol_id: matched.symbol_id,
+                        confidence: matched.confidence,
+                        strategy: ResolutionStrategy::FuzzyMatch,
+                        provenance: Provenance::Heuristic,
+                    });
+                }
             }
         }
     }
-
+    MISS_COUNT.fetch_add(1, Ordering::Relaxed);
     None
 }
 
@@ -203,7 +275,27 @@ fn should_run_fuzzy_fallback(name: &str) -> bool {
     // Very short identifiers (`i`, `x`, `id`, `ok`) produce large ambiguous
     // candidate sets and weak evidence. Exact project-wide name lookup above
     // still handles them; this only disables edit-distance fallback.
-    name.chars().count() >= 3
+    if name.chars().count() < 3 {
+        return false;
+    }
+    // Skip names containing non-identifier characters (dots, slashes, etc.).
+    // Symbol names are identifiers; a reference like `React.FC` can never
+    // fuzzy-match any symbol.  S5 (import resolution) already handles qualified
+    // paths; if it didn't resolve, fuzzy is guaranteed to miss.
+    is_valid_identifier(name)
+}
+
+/// Returns true if `name` looks like a valid code identifier
+/// (`[a-zA-Z_$][a-zA-Z0-9_$]*`). Characters outside this set cannot
+/// match any symbol name via edit distance.
+fn is_valid_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        None => return false,
+        Some(c) if !c.is_ascii_alphabetic() && c != '_' && c != '$' => return false,
+        _ => {}
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
 // ── ResolutionSession ──────────────────────────────────────────────────────
@@ -482,6 +574,8 @@ impl ReferenceResolver {
         let progress_atomic = progress_mutex.map(|a| Arc::clone(&a.lock().expect("progress_mutex lock poisoned").atomic_current));
 
         // Step A: build all contexts
+        let step_a_span = tracing::info_span!(target: "atlas_resolve", "resolution.step_a", file_count = by_file.len());
+        let _step_a = step_a_span.enter();
         let mut file_groups: Vec<(FileId, Vec<ReferenceUse>, ResolutionContext)> =
             Vec::with_capacity(by_file.len());
         for (fid, refs) in by_file {
@@ -490,6 +584,7 @@ impl ReferenceResolver {
                 Err(_e) => { /* skip */ }
             }
         }
+        drop(_step_a);
 
         // Bounded channel — capacity 4000 balances memory vs throughput.
         let (tx, rx) = mpsc::sync_channel::<(ReferenceUse, ResolvedTarget)>(4000);
@@ -499,6 +594,7 @@ impl ReferenceResolver {
         let writer_progress = progress_mutex.map(Arc::clone);
         let writer_handle = std::thread::spawn(
             move || -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
+                let _phase2_span = tracing::info_span!(target: "atlas_resolve", "resolution.phase2").entered();
                 let mut stats = ResolutionStats {
                     total_refs: total_refs as usize,
                     ..Default::default()
@@ -541,6 +637,9 @@ impl ReferenceResolver {
         }
 
         // Step B: pure-memory parallel resolution — send results to channel.
+        let step_b_span =
+            tracing::info_span!(target: "atlas_resolve", "resolution.step_b", file_count = file_groups.len());
+        let _step_b = step_b_span.enter();
         let mc = &matched_counter;
         file_groups.par_iter().for_each(|(_fid, refs, ctx)| {
             let results = session.resolve_refs_in_ctx(refs, ctx);
@@ -556,9 +655,58 @@ impl ReferenceResolver {
             }
         });
         drop(tx);
+        drop(_step_b);
 
         match writer_handle.join() {
-            Ok(Ok((all_resolved, stats))) => Ok((all_resolved, stats)),
+            Ok(Ok((all_resolved, stats))) => {
+                let s1 = S1_COUNT.load(Ordering::Relaxed);
+                let s2 = S2_COUNT.load(Ordering::Relaxed);
+                let s3 = S3_COUNT.load(Ordering::Relaxed);
+                let s4 = S4_COUNT.load(Ordering::Relaxed);
+                let s5 = S5_COUNT.load(Ordering::Relaxed);
+                let s6 = S6_COUNT.load(Ordering::Relaxed);
+                let miss = MISS_COUNT.load(Ordering::Relaxed);
+                let total = s1 + s2 + s3 + s4 + s5 + s6 + miss;
+                if total > 0 {
+                    let total_f = total as f64;
+                    tracing::info!(
+                        target: "atlas_resolve",
+                        s1 = s1, s1_pct = (100.0 * s1 as f64 / total_f),
+                        s2 = s2, s2_pct = (100.0 * s2 as f64 / total_f),
+                        s3 = s3, s3_pct = (100.0 * s3 as f64 / total_f),
+                        s4 = s4, s4_pct = (100.0 * s4 as f64 / total_f),
+                        s5 = s5, s5_pct = (100.0 * s5 as f64 / total_f),
+                        s6 = s6, s6_pct = (100.0 * s6 as f64 / total_f),
+                        miss = miss, miss_pct = (100.0 * miss as f64 / total_f),
+                        total = total,
+                        "resolution.summary"
+                    );
+                    let s6_exact = S6_EXACT_COUNT.load(Ordering::Relaxed);
+                    let s6_fuzzy_prox = S6_FUZZY_PROX_COUNT.load(Ordering::Relaxed);
+                    let s6_fuzzy_global = S6_FUZZY_GLOBAL_COUNT.load(Ordering::Relaxed);
+                    if s6 > 0 {
+                        let s6_f = s6 as f64;
+                        tracing::info!(
+                            target: "atlas_resolve",
+                            s6_exact = s6_exact, s6_exact_pct = (100.0 * s6_exact as f64 / s6_f),
+                            s6_fuzzy_prox = s6_fuzzy_prox, s6_fuzzy_prox_pct = (100.0 * s6_fuzzy_prox as f64 / s6_f),
+                            s6_fuzzy_global = s6_fuzzy_global, s6_fuzzy_global_pct = (100.0 * s6_fuzzy_global as f64 / s6_f),
+                            "resolution.s6_breakdown"
+                        );
+                    }
+                    tracing::info!(
+                        target: "atlas_resolve",
+                        s1_s = S1_TIME_NS.load(Ordering::Relaxed) as f64 / 1e9,
+                        s2_s = S2_TIME_NS.load(Ordering::Relaxed) as f64 / 1e9,
+                        s3_s = S3_TIME_NS.load(Ordering::Relaxed) as f64 / 1e9,
+                        s4_s = S4_TIME_NS.load(Ordering::Relaxed) as f64 / 1e9,
+                        s5_s = S5_TIME_NS.load(Ordering::Relaxed) as f64 / 1e9,
+                        s6_s = S6_TIME_NS.load(Ordering::Relaxed) as f64 / 1e9,
+                        "resolution.strategy_times"
+                    );
+                }
+                Ok((all_resolved, stats))
+            },
             Ok(Err(e)) => Err(e),
             Err(panic) => {
                 let msg = panic
@@ -668,6 +816,23 @@ mod tests {
         assert!(!should_run_fuzzy_fallback("i"));
         assert!(!should_run_fuzzy_fallback("id"));
         assert!(should_run_fuzzy_fallback("idx"));
+    }
+
+    #[test]
+    fn non_identifier_names_skip_fuzzy() {
+        // Dot-path references (e.g. React.FC) never match any symbol
+        assert!(!should_run_fuzzy_fallback("React.FC"));
+        assert!(!should_run_fuzzy_fallback("styled.div"));
+        // Special chars
+        assert!(!should_run_fuzzy_fallback("{createElement}"));
+    }
+
+    #[test]
+    fn valid_identifier_names_allow_fuzzy() {
+        assert!(should_run_fuzzy_fallback("logger"));
+        assert!(should_run_fuzzy_fallback("_private"));
+        assert!(should_run_fuzzy_fallback("$event"));
+        assert!(!should_run_fuzzy_fallback("7zip")); // starts with digit
     }
 
     /// Verifies that cross-file import → call creates a structural Calls edge
@@ -934,5 +1099,66 @@ main();
             caller_names.contains(&"main"),
             "expected main to be caller of greet (via aliased import 'hello'), got: {caller_names:?}"
         );
+    }
+
+    /// Smoke test: verify that all new tracing spans do not panic when
+    /// a subscriber is active.  Exercises resolve_one_core (6 strategies),
+    /// GlobalSymbolIndex::fuzzy_search, ResolutionContext::find_in_file_by_name,
+    /// and the resolve_all pipeline (step A/B spans, phase2 span).
+    #[test]
+    fn tracing_spans_do_not_panic() {
+        let subscriber = tracing_subscriber::fmt()
+            .with_test_writer()
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let store = Arc::new(Store::open_in_memory().unwrap());
+            store.init_schema().unwrap();
+
+            let lib_src = r#"export function greet(name: string): string { return 'Hello, ' + name; }"#;
+            let main_src = r#"import { greet } from './lib';
+function main() {
+    greet("World");
+}
+main();
+"#;
+            let ts = create_frontend(Language::TypeScript).unwrap();
+
+            let lib_id = FileId::generate("lib.ts");
+            let lib = extract_file(
+                &ts,
+                lib_id,
+                &PathBuf::from("lib.ts"),
+                lib_src,
+                "abc",
+            )
+            .unwrap();
+            store.insert_file_facts(&lib).unwrap();
+
+            let main_id = FileId::generate("main.ts");
+            let main = extract_file(
+                &ts,
+                main_id,
+                &PathBuf::from("main.ts"),
+                main_src,
+                "abc",
+            )
+            .unwrap();
+            store.insert_file_facts(&main).unwrap();
+
+            let mut resolver = ReferenceResolver::new(Arc::clone(&store));
+            let (_resolved, stats) = resolver.resolve_all().unwrap();
+            assert!(
+                stats.resolved > 0,
+                "expected at least 1 resolved reference, got {}",
+                stats.resolved
+            );
+            // Also exercise fuzzy_search directly to cover the cache path
+            let index = GlobalSymbolIndex::build(&store).unwrap();
+            let _ = index.fuzzy_search("greeet", 2);
+            let _ = index.fuzzy_search("greeet", 2); // cache hit path
+            // Exercise find_in_file_by_name span
+            let ctx = ResolutionContext::build(&store, lib_id).unwrap();
+            let _ = ctx.find_in_file_by_name("greet");
+        });
     }
 }
