@@ -8,10 +8,36 @@
 //! 3. Look up candidates by qualified name
 //! 4. Fallback: search by imported name
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use db::Store;
 use types::*;
 
 use super::path_alias::PathAliasResolver;
+
+thread_local! {
+    /// Per-thread QName → symbols cache. Empty vec = known miss.
+    /// Avoids Mutex contention in parallel resolution (rayon threads
+    /// are long-lived, so each thread builds its own private cache).
+    static QNAME_CACHE: RefCell<HashMap<String, Vec<SymbolDef>>> =
+        RefCell::new(HashMap::new());
+
+    /// Per-thread reexport chain cache.  Key: (caller_file_id, import_module, target_name).
+    /// Stores the final resolved symbols after traversing barrel reexport chains.
+    /// This is the dominant S5 hot path: follow_reexport_chain does recursive
+    /// DB queries (find_imports_by_file + resolve_relative_module + find_symbols_by_file)
+    /// per call, and the same (file, module, name) repeats across references.
+    static REEXPORT_CACHE: RefCell<HashMap<(FileId, String, String), Vec<SymbolDef>>> =
+        RefCell::new(HashMap::new());
+
+    /// Per-thread module-path resolution cache. Key: (module_path, target_name).
+    /// Caches `find_files_by_path_prefix` + per-file `find_symbols_by_file` results.
+    /// This is the QName-miss fallback path that resolves imports via file-system
+    /// module path matching when the qualified name is not in the symbol table.
+    static MODULE_PATH_CACHE: RefCell<HashMap<(String, String), Vec<SymbolDef>>> =
+        RefCell::new(HashMap::new());
+}
 
 /// Resolves import paths to potential symbols.
 ///
@@ -38,11 +64,20 @@ impl ImportResolver {
 
     /// Create an ImportResolver with a configured path alias resolver.
     pub fn with_path_alias(store: std::sync::Arc<Store>, path_alias: PathAliasResolver) -> Self {
-        Self { store, path_alias }
+        Self {
+            store,
+            path_alias,
+        }
     }
 
     /// Resolve an import definition into candidate symbols.
     pub fn resolve_import(&self, import: &ImportDef) -> anyhow::Result<Vec<SymbolDef>> {
+        let _span = tracing::debug_span!(target: "atlas_resolve",
+            "resolution.import_resolve",
+            module = %import.module,
+            name = %import.imported_name,
+        )
+        .entered();
         let _timer = std::time::Instant::now();
         // ── P2: Path-alias-scoped file lookup ──
         // When a path alias rewrites the module path, resolve the imported name
@@ -76,9 +111,23 @@ impl ImportResolver {
         let mut results = Vec::new();
         let db_start = std::time::Instant::now();
         for qname in &candidate_names {
+            // Thread-local cache: zero lock contention across rayon threads.
+            // Each rayon worker thread has its own HashMap — lookups are
+            // RefCell borrow (runtime no-aliasing check, zero atomics).
+            let cached = QNAME_CACHE.with(|c| c.borrow().get(qname).cloned());
+            if let Some(cached_syms) = cached {
+                if cached_syms.is_empty() {
+                    continue; // negative entry: known miss, skip DB
+                }
+                results.extend(cached_syms);
+                continue;
+            }
+
             if let Ok(syms) = self.store.find_symbols_by_qname(qname) {
+                QNAME_CACHE.with(|c| c.borrow_mut().insert(qname.clone(), syms.clone()));
                 results.extend(syms);
             }
+            // DB errors not cached — transient failures should be retried
         }
         let db_elapsed = db_start.elapsed();
 
@@ -160,6 +209,18 @@ impl ImportResolver {
             return Ok(candidates);
         }
 
+        // ── Per-thread reexport chain cache ──
+        // The same (caller file, import module, target name) recurs across
+        // many references in the same file.  Each miss costs multiple recursive
+        // DB queries (find_imports_by_file + resolve_relative_module +
+        // find_symbols_by_file) in follow_reexport_chain.
+        let cache_key = (import.file_id, import.module.clone(), target_name.to_string());
+        if let Some(cached) =
+            REEXPORT_CACHE.with(|c| c.borrow().get(&cache_key).cloned())
+        {
+            return Ok(cached);
+        }
+
         let mut resolved: Vec<SymbolDef> = Vec::new();
         let mut visited: std::collections::HashSet<FileId> = std::collections::HashSet::new();
 
@@ -173,6 +234,9 @@ impl ImportResolver {
                 resolved.push(sym.clone());
             }
         }
+        // Cache result for subsequent references with same (file, module, name)
+        let cache_key = (import.file_id, import.module.clone(), target_name.to_string());
+        REEXPORT_CACHE.with(|c| c.borrow_mut().insert(cache_key, resolved.clone()));
         Ok(resolved)
     }
 
@@ -238,10 +302,26 @@ impl ImportResolver {
     ///
     /// Uses a SQL `LIKE` query directly on the files table instead of loading
     /// all files and doing O(n) client-side `starts_with` scans.
+    ///
+    /// Results are cached per-thread via MODULE_PATH_CACHE (same pattern as
+    /// QNAME_CACHE and REEXPORT_CACHE) — the same (module, name) pair repeats
+    /// across many references in a monorepo.
     fn resolve_by_module_path(&self, resolved_module: &str, target_name: &str) -> Vec<SymbolDef> {
+        let cache_key = (resolved_module.to_string(), target_name.to_string());
+
+        // Check thread-local cache first
+        let cached = MODULE_PATH_CACHE.with(|c| c.borrow().get(&cache_key).cloned());
+        if let Some(cached_result) = cached {
+            return cached_result;
+        }
+
         let files = match self.store.find_files_by_path_prefix(resolved_module) {
             Ok(files) => files,
-            Err(_) => return Vec::new(),
+            Err(_) => {
+                // Cache negative result
+                MODULE_PATH_CACHE.with(|c| c.borrow_mut().insert(cache_key, Vec::new()));
+                return Vec::new();
+            }
         };
 
         let mut results = Vec::new();
@@ -250,6 +330,9 @@ impl ImportResolver {
                 results.extend(symbols.into_iter().filter(|s| s.name == target_name));
             }
         }
+
+        // Cache the result (empty vec = known miss)
+        MODULE_PATH_CACHE.with(|c| c.borrow_mut().insert(cache_key, results.clone()));
 
         results
     }
@@ -573,5 +656,145 @@ mod tests {
         let results = resolver.resolve_import(&import).unwrap();
         assert!(!results.is_empty(), "should fall back to global search");
         assert_eq!(results[0].name, "compute");
+    }
+
+    // ── QName cache tests ──
+
+    #[test]
+    fn qname_cache_hit_returns_cached_result() {
+        let store = std::sync::Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        // Insert a symbol whose qualified name will be a candidate
+        let file_id = FileId::generate("lib.ts");
+        let sym = test_symbol(file_id, "foo", SymbolKind::Function);
+        store
+            .insert_file_facts(&FileFacts {
+                file: FileInfo {
+                    file_id,
+                    path: "lib.ts".to_string(),
+                    language: Language::TypeScript,
+                    content_hash: "abc".to_string(),
+                    status: types::enums::ParseStatus::Success,
+                },
+                symbols: vec![sym],
+                ..Default::default()
+            })
+            .unwrap();
+
+        let resolver = ImportResolver::new(store);
+
+        let import = ImportDef {
+            id: ImportId::generate(
+                &FileId::generate("main.ts"),
+                ImportKind::Import.as_str(),
+                "lib",
+                Some("foo"),
+                0,
+            ),
+            file_id: FileId::generate("main.ts"),
+            kind: ImportKind::Import,
+            module: "lib".to_string(),
+            imported_name: "foo".to_string(),
+            local_name: None,
+            alias: None,
+            is_wildcard: false,
+            is_relative: false,
+            range: Default::default(),
+        };
+
+        // First call: cache miss → DB query
+        let results1 = resolver.resolve_import(&import).unwrap();
+        // Second call: cache hit → no DB query, same result
+        let results2 = resolver.resolve_import(&import).unwrap();
+
+        assert_eq!(results1, results2);
+        assert!(!results1.is_empty());
+    }
+
+    #[test]
+    fn qname_cache_stores_negative_entry() {
+        let store = std::sync::Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        let resolver = ImportResolver::new(store);
+
+        // Import a name that doesn't exist in the DB
+        let import = ImportDef {
+            id: ImportId::generate(
+                &FileId::generate("main.ts"),
+                ImportKind::Import.as_str(),
+                "missing",
+                Some("no_such_symbol"),
+                0,
+            ),
+            file_id: FileId::generate("main.ts"),
+            kind: ImportKind::Import,
+            module: "missing".to_string(),
+            imported_name: "no_such_symbol".to_string(),
+            local_name: None,
+            alias: None,
+            is_wildcard: false,
+            is_relative: false,
+            range: Default::default(),
+        };
+
+        // Both calls should return empty (second from negative cache)
+        let results1 = resolver.resolve_import(&import).unwrap();
+        let results2 = resolver.resolve_import(&import).unwrap();
+
+        assert!(results1.is_empty(), "first call should have no results");
+        assert!(results2.is_empty(), "second call should reuse negative cache entry");
+    }
+
+    #[test]
+    fn qname_cache_isolation() {
+        let store = std::sync::Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        // Insert only "foo", not "bar"
+        let file_id = FileId::generate("lib.ts");
+        let sym_foo = test_symbol(file_id, "foo", SymbolKind::Function);
+        store
+            .insert_file_facts(&FileFacts {
+                file: FileInfo {
+                    file_id,
+                    path: "lib.ts".to_string(),
+                    language: Language::TypeScript,
+                    content_hash: "abc".to_string(),
+                    status: types::enums::ParseStatus::Success,
+                },
+                symbols: vec![sym_foo],
+                ..Default::default()
+            })
+            .unwrap();
+
+        let resolver = ImportResolver::new(store);
+
+        let make_import = |name: &str, seq: u32| ImportDef {
+            id: ImportId::generate(
+                &FileId::generate("main.ts"),
+                ImportKind::Import.as_str(),
+                "lib",
+                Some(name),
+                seq,
+            ),
+            file_id: FileId::generate("main.ts"),
+            kind: ImportKind::Import,
+            module: "lib".to_string(),
+            imported_name: name.to_string(),
+            local_name: None,
+            alias: None,
+            is_wildcard: false,
+            is_relative: false,
+            range: Default::default(),
+        };
+
+        // Prime cache with "foo"
+        let results_foo = resolver.resolve_import(&make_import("foo", 0)).unwrap();
+        assert!(!results_foo.is_empty());
+
+        // Query "bar" — different QName, should NOT use foo's cache entry
+        let results_bar = resolver.resolve_import(&make_import("bar", 1)).unwrap();
+        assert!(results_bar.is_empty(), "bar should not match foo's cached result");
     }
 }
