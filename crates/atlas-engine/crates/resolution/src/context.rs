@@ -207,12 +207,8 @@ impl GlobalSymbolIndex {
                 true
             })
             .filter_map(|(s, s_lower)| {
-                let d = types::levenshtein(&lower, s_lower);
-                if d <= max_distance {
-                    Some((d, s.clone()))
-                } else {
-                    None
-                }
+                types::levenshtein_bounded(&lower, s_lower, max_distance)
+                    .map(|d| (d, s.clone()))
             })
             .collect();
 
@@ -225,6 +221,69 @@ impl GlobalSymbolIndex {
             cache.insert(key, result.clone());
         }
         result
+    }
+
+    /// Proximity-scoped fuzzy search: restrict to same-directory symbols first,
+    /// fall back to global fuzzy_search only when no proximity match is found.
+    pub fn fuzzy_search_proximity(
+        &self,
+        name: &str,
+        max_distance: usize,
+        file_id: FileId,
+    ) -> Vec<SymbolDef> {
+        let ref_parent = self.file_parent_dir.get(&file_id);
+        let lower = name.to_lowercase();
+        let name_len = lower.len();
+        let min_len = name_len.saturating_sub(max_distance);
+        let max_len = name_len.saturating_add(max_distance);
+
+        let trigrams: HashSet<&[u8]> = if name_len >= 3 {
+            lower
+                .as_bytes()
+                .windows(3)
+                .filter(|w| std::str::from_utf8(w).is_ok())
+                .collect()
+        } else {
+            HashSet::new()
+        };
+
+        let mut candidates: Vec<(usize, SymbolDef)> = self
+            .symbols
+            .iter()
+            .enumerate()
+            .filter(|(i, s)| {
+                let s_len = self.lower_names[*i].len();
+                s_len >= min_len && s_len <= max_len
+            })
+            .filter(|(i, _)| {
+                if trigrams.is_empty() {
+                    return true;
+                }
+                self.lower_names[*i]
+                    .as_bytes()
+                    .windows(3)
+                    .any(|w| trigrams.contains(w))
+            })
+            .filter(|(i, s)| {
+                let sym_parent = self.file_parent_dir.get(&s.file_id);
+                match (ref_parent, sym_parent) {
+                    (Some(r), Some(s)) => r == s || r.starts_with(s) || s.starts_with(r),
+                    _ => false,
+                }
+            })
+            .filter_map(|(i, _)| {
+                types::levenshtein_bounded(&lower, &self.lower_names[i], max_distance)
+                    .map(|d| (d, self.symbols[i].clone()))
+            })
+            .collect();
+
+        if candidates.is_empty() {
+            return self.fuzzy_search(name, max_distance);
+        }
+
+        candidates.sort_by_key(|(d, _)| *d);
+        candidates.truncate(20);
+        candidates.into_iter().map(|(_, s)| s).collect()
     }
 
     /// Find a symbol by ID.
