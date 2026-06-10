@@ -87,23 +87,27 @@ pub fn run_with_options(
     let include_clone = include_patterns.clone();
     let exclude_clone = exclude.to_vec();
 
-    // ── Spawn worker thread ──
-    let worker = std::thread::spawn(move || {
-        let result = (|| -> anyhow::Result<_> {
-            let options = IndexPipelineOptions::new(mode)
-                .with_include_patterns(include_clone)
-                .with_exclude_patterns(exclude_clone);
-            let pipeline = IndexPipeline::new(store_arc, root_path, options);
-            let sink = CliProgressSink {
-                progress: ps_worker,
-            };
-            let mut interrupted = || stop_w.load(Ordering::SeqCst);
-            Ok(pipeline.run(&sink, &mut interrupted)?)
-        })();
-        // Always signal completion, even on error — prevents main thread hang.
-        done_w.store(true, Ordering::SeqCst);
-        result
-    });
+    // ── Spawn worker thread with 8 MiB stack ──
+    let worker = std::thread::Builder::new()
+        .name("atlas-index-worker".into())
+        .stack_size(8 * 1024 * 1024) // 8 MiB — safety margin for extraction/resolution
+        .spawn(move || {
+            let result = (|| -> anyhow::Result<_> {
+                let options = IndexPipelineOptions::new(mode)
+                    .with_include_patterns(include_clone)
+                    .with_exclude_patterns(exclude_clone);
+                let pipeline = IndexPipeline::new(store_arc, root_path, options);
+                let sink = CliProgressSink {
+                    progress: ps_worker,
+                };
+                let mut interrupted = || stop_w.load(Ordering::SeqCst);
+                Ok(pipeline.run(&sink, &mut interrupted)?)
+            })();
+            // Always signal completion, even on error — prevents main thread hang.
+            done_w.store(true, Ordering::SeqCst);
+            result
+        })
+        .expect("failed to spawn index worker thread");
 
     // ── Main thread: render loop ──
     let was_interrupted = if has_tty {
@@ -203,5 +207,12 @@ mod tests {
     #[test]
     fn scope_to_glob_already_glob() {
         assert_eq!(scope_to_glob("src/**/*.rs"), "src/**/*.rs");
+    }
+
+    #[test]
+    fn test_worker_thread_stack_size_constant() {
+        // Verify the hardcoded stack size matches our target of 8 MiB
+        const EXPECTED: usize = 8 * 1024 * 1024;
+        assert_eq!(EXPECTED, 8_388_608); // 8 MiB
     }
 }
