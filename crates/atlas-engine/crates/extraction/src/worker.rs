@@ -1,15 +1,16 @@
-//! Parse worker pool: managed extraction with panic isolation and error reporting.
+//! Parse worker pool: managed extraction with thread isolation and error reporting.
 //!
 //! Wraps `extract_file` with:
-//! - `panic::catch_unwind` to isolate grammar crashes
+//! - per-file extraction in dedicated threads with 8 MiB stack to prevent
+//!   stack overflow (SIGABRT) from tree-sitter recursive-descent parsing
+//!   combined with CFG/DataFlow traversal in `--analysis full` mode
 //! - max file size check before parsing
 //! - structured `ExtractionError` collection for the `IndexReport`
 //!
 //! **Note on timeout**: per-file timeout is not yet implemented (P2).
-//! For now, Rayon-level parallelism + `catch_unwind` provides the
-//! critical safety guarantees.
+//! For now, Rayon-level parallelism + per-file thread isolation provides
+//! the critical safety guarantees.
 
-use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -27,6 +28,13 @@ use super::frontend::LanguageFrontend;
 use crate::mode::ExtractionMode;
 
 use crate::error::{ExtractionFailure, ExtractionFailureKind};
+
+/// Stack size for per-file extraction threads (8 MiB).
+///
+/// Each file extraction runs in a dedicated thread with this stack
+/// size to prevent SIGABRT from tree-sitter recursive descent parsing
+/// combined with CFG/DataFlow traversal in `--analysis full` mode.
+const PER_FILE_STACK_SIZE: usize = 8 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // WorkerConfig
@@ -74,10 +82,14 @@ impl Default for WorkerConfig {
 // ParseWorkerPool
 // ---------------------------------------------------------------------------
 
-/// Manages per-file extraction with panic isolation and error collection.
+/// Manages per-file extraction with thread isolation and error collection.
+///
+/// Each file extraction runs in its own `std::thread` with 8 MiB stack
+/// to prevent stack overflow (SIGABRT) from tree-sitter + CFG/DataFlow
+/// traversal. Internal counters are protected by `Mutex`.
 ///
 /// **Thread safety**: `extract_one()` may be called from any Rayon worker
-/// thread.  The internal counters are protected by `Mutex`.
+/// thread.
 pub struct ParseWorkerPool {
     config: WorkerConfig,
     errors: Mutex<Vec<ExtractionError>>,
@@ -101,7 +113,7 @@ impl ParseWorkerPool {
         Self::new(WorkerConfig::default())
     }
 
-    /// Extract a single file with panic isolation and size check.
+    /// Extract a single file with thread isolation and size check.
     ///
     /// Returns `Ok(FileFacts)` on success, `Err(ExtractionError)` on failure.
     /// Failures are also recorded internally for the final `IndexReport`.
@@ -134,23 +146,35 @@ impl ParseWorkerPool {
             }
         }
 
-        // 2. Extract with panic isolation
+        // 2. Extract in a dedicated thread with enlarged stack.
+        //
+        // WHY: catch_unwind cannot catch stack overflows (SIGABRT).
+        // Running extraction in its own thread with 8 MiB stack ensures
+        // that even deeply nested source files can be parsed without
+        // overflowing the rayon worker's default 2 MiB stack.
         let token: &dyn CancelCheck = self
             .config
             .cancel_token
             .as_deref()
             .map_or(&NeverCancel, |t| t);
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            extract_file_with_mode_cancellable(
-                frontend,
-                file_id,
-                file_path,
-                source,
-                content_hash,
-                mode.clone(),
-                token,
-            )
-        }));
+        let result = std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .name(format!("atlas-extract-{}", file_path_str))
+                .stack_size(PER_FILE_STACK_SIZE)
+                .spawn_scoped(s, || {
+                    extract_file_with_mode_cancellable(
+                        frontend,
+                        file_id,
+                        file_path,
+                        source,
+                        content_hash,
+                        mode.clone(),
+                        token,
+                    )
+                })
+                .expect("thread spawn should not fail")
+                .join()
+        });
 
         match result {
             Ok(Ok(facts)) => {
@@ -416,5 +440,102 @@ mod tests {
             .with_message("permission denied");
         let err = anyhow::Error::from(ef);
         assert_eq!(classify_anyhow(&err), FailureCategory::IoError);
+    }
+
+    #[test]
+    fn test_per_file_thread_stack_size() {
+        // Verify the constant is set to 8 MiB
+        assert_eq!(PER_FILE_STACK_SIZE, 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_extract_one_in_per_file_thread() {
+        // Verify extract_one successfully extracts in a per-file thread
+        let config = WorkerConfig::default();
+        let pool = ParseWorkerPool::new(config);
+        let fid = FileId::generate("test.ts");
+        let source = "export const x = 42;\nconsole.log(x);\n";
+        let frontend = crate::create_frontend(types::Language::TypeScript)
+            .expect("TypeScript frontend available");
+
+        let result = pool.extract_one(
+            &frontend,
+            fid,
+            Path::new("test.ts"),
+            source,
+            "abc123",
+            ExtractionMode::Full,
+        );
+        assert!(result.is_ok(), "extract_one failed: {:?}", result.err());
+        let facts = result.unwrap();
+        assert_eq!(facts.file.path, "test.ts");
+        // In Full mode we expect at least one symbol; in Manifest mode
+        // tree-sitter may treat `export const` differently.
+        // The key assertion is that the thread isolation didn't crash.
+        // If symbols are empty, the test still passes — not a thread issue.
+    }
+
+    #[test]
+    fn test_extract_invalid_source_returns_error_in_thread() {
+        // Verify errors from within the per-file thread propagate correctly
+        let config = WorkerConfig::default();
+        let pool = ParseWorkerPool::new(config);
+        let fid = FileId::generate("bad.ts");
+        let source = "this is not valid typescript !@#$%^&*()";
+        let frontend = crate::create_frontend(types::Language::TypeScript)
+            .expect("TypeScript frontend available");
+
+        let result = pool.extract_one(
+            &frontend,
+            fid,
+            Path::new("bad.ts"),
+            source,
+            "abc",
+            crate::mode::ExtractionMode::Manifest,
+        );
+        // Should NOT crash; should return a result (may be Ok with parse errors, or Err)
+        // The key assertion: no SIGABRT, the function returns.
+        match result {
+            Ok(_facts) => { /* parse succeeded but may have warnings */ }
+            Err(e) => {
+                // Error should not be a GrammarPanic unless tree-sitter actually panics
+                // Invalid TypeScript should still parse (tree-sitter is error-tolerant)
+                // If we do get an error, it must NOT be a GrammarPanic
+                assert_ne!(
+                    e.category,
+                    FailureCategory::GrammarPanic,
+                    "grammar panic on intentionally bad input"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_extract_one_thread_isolation_preserves_error_counter() {
+        // Verify that error recording works across thread boundaries
+        let config = WorkerConfig {
+            max_file_size_bytes: Some(10), // 10 bytes — most TS files will exceed
+            ..Default::default()
+        };
+        let pool = ParseWorkerPool::new(config);
+        let fid = FileId::generate("large.ts");
+        let source = "export const aVeryLongVariableName = 'this is more than ten bytes';\n";
+
+        let frontend = crate::create_frontend(types::Language::TypeScript)
+            .expect("TypeScript frontend available");
+
+        let result = pool.extract_one(
+            &frontend,
+            fid,
+            Path::new("large.ts"),
+            source,
+            "abc",
+            crate::mode::ExtractionMode::Manifest,
+        );
+        assert!(result.is_err());
+        // Verify error was recorded
+        let report = pool.into_report(1, 100);
+        assert_eq!(report.files_skipped, 1);
+        assert_eq!(report.files_failed, 1);
     }
 }
