@@ -18,6 +18,7 @@ mod dataflow_builder;
 pub mod error;
 mod extract;
 pub(crate) mod extraction_ctx;
+pub mod extraction_pool;
 pub mod frontend;
 mod grammar;
 pub(crate) mod languages;
@@ -39,6 +40,7 @@ pub use cfg_builder::{CfgBuilder, CfgResult};
 pub use dataflow_builder::{DataFlowBuilder, DataFlowResult};
 pub use error::{ExtractionFailure, ExtractionFailureKind};
 pub use extract::{extract_file, extract_file_with_mode, extract_file_with_mode_cancellable};
+pub use extraction_pool::{EXTRACTION_POOL, EXTRACTION_STACK_SIZE, extraction_pool};
 pub use frontend::{
     FrontendParts, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, ParserSpec,
     ReferenceExtractorSpec, ScopeExtractorSpec, SymbolExtractorSpec,

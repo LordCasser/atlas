@@ -588,6 +588,7 @@ version = "1.4.2"
 dependencies = [
  "anyhow",
  "db",
+ "rayon",
  "tempfile",
  "tracing",
  "tree-sitter",
