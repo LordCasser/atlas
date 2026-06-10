@@ -15,3 +15,4 @@ codegraph/
 *.log
 credentials.*
 secrets.*
+docs/user-guide.md
