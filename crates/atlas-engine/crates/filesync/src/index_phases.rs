@@ -38,7 +38,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use db::Store;
-use tracing::info_span;
+use tracing::{info, info_span};
 use extraction::{
     ExtractionMode, LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig,
     create_frontend,
@@ -679,24 +679,56 @@ pub fn phase_resolve_and_build(
     progress: Option<&Arc<Mutex<ProgressState>>>,
 ) -> Result<GraphResult> {
     let _span = info_span!(target: "atlas_sync", "sync.phase_resolve_and_build").entered();
+
+    // ── Alias check + optional invalidation ──
+    let t_alias = Instant::now();
     let path_alias = PathAliasConfig::resolver(root);
-    if PathAliasConfig::has_changed(store, root)? {
+    let alias_changed = PathAliasConfig::has_changed(store, root)?;
+    let alias_check_ms = t_alias.elapsed().as_millis() as u64;
+
+    let mut invalidate_ms: u64 = 0;
+    if alias_changed {
+        let t_inval = Instant::now();
         store.invalidate_all_references()?;
         store.delete_all_edges()?;
+        invalidate_ms = t_inval.elapsed().as_millis() as u64;
     }
+
+    // ── Resolution ──
+    let t_resolve = Instant::now();
     let mut resolver = ReferenceResolver::with_path_alias(store.clone(), path_alias);
     let (resolved_refs, res_stats) = resolver
         .resolve_all_parallel(store.clone(), progress, None)
         .context("Reference resolution failed")?;
+    let resolve_all_parallel_ms = t_resolve.elapsed().as_millis() as u64;
 
-    // Pre-load all symbols in a single DB query instead of N×1 find_symbol_by_id.
+    // ── Symbol pre-load ──
+    let t_symbols = Instant::now();
     let symbol_map: HashMap<SymbolId, SymbolDef> = store
         .get_all_symbols()
         .map(|syms| syms.into_iter().map(|s| (s.id, s)).collect())
         .unwrap_or_default();
+    let graph_symbol_load_ms = t_symbols.elapsed().as_millis() as u64;
 
+    // ── Edge building ──
+    let t_build = Instant::now();
     let builder = GraphBuilder::new(store.clone());
     let build_stats = builder.build_all_with_symbols(&resolved_refs, Some(symbol_map));
+    let graph_build_ms = t_build.elapsed().as_millis() as u64;
+
+    info!(
+        target: "atlas_sync",
+        alias_check_ms,
+        invalidate_ms,
+        resolve_all_parallel_ms,
+        graph_symbol_load_ms,
+        graph_build_ms,
+        resolved_refs = res_stats.resolved,
+        edges_built = build_stats.edges_built,
+        edges_written = build_stats.edges_written,
+        "sync.phase_resolve_and_build"
+    );
+
     Ok(GraphResult {
         resolved: res_stats.resolved,
         edges_built: build_stats.edges_built,
@@ -1078,5 +1110,41 @@ mod tests {
             None,
         );
         assert_eq!(result.items.len(), 2);
+    }
+
+    /// Exercises `phase_resolve_and_build` telemetry timing path with
+    /// cross-file TypeScript. Verifies that the decomposition timings
+    /// (alias check, resolution, graph build) run without panicking and
+    /// return a valid GraphResult.
+    #[test]
+    fn phase_resolve_and_build_telemetry_timings_collected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("lib.ts"),
+            "export function greet(name: string): string { return 'Hello, ' + name; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("main.ts"),
+            "import { greet } from './lib';\nfunction main() { greet('World'); }\nmain();\n",
+        )
+        .unwrap();
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        let files = vec![PathBuf::from("lib.ts"), PathBuf::from("main.ts")];
+        let frontends = phase_init_frontends(&files).unwrap();
+        let extracted = phase_extract_serial(
+            dir.path(),
+            &files,
+            &frontends,
+            ExtractionMode::Structural,
+            None,
+        );
+        phase_write_batched(&store, extracted, 500, 500, |_| {}, || false).unwrap();
+
+        let result = phase_resolve_and_build(&store, dir.path(), None);
+        assert!(result.is_ok(), "phase_resolve_and_build should not crash: {result:?}");
     }
 }

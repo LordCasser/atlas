@@ -9,12 +9,14 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use analysis::summary::SummaryBuilder;
 use anyhow::{Context, Result};
 use db::Store;
 use db::summary::SummaryStore;
 use extraction::ExtractionMode;
+use tracing;
 use types::SymbolKind;
 
 use crate::cleanup::source_file_id;
@@ -348,10 +350,24 @@ impl IncrementalPipeline {
                 return Ok(stats);
             }
 
+            // Get unresolved count for progress total (materializes full Vec).
+            // NOTE: resolve_all_parallel calls find_unresolved_references()
+            // again internally — for large projects this doubles memory/time.
+            let t_count = Instant::now();
             let unresolved_total = self
                 .store
                 .find_unresolved_references()
-                .map(|refs| refs.len() as u64)
+                .map(|refs| {
+                    let count = refs.len() as u64;
+                    let elapsed_ms = t_count.elapsed().as_millis() as u64;
+                    tracing::info!(
+                        target: "atlas_sync",
+                        progress_total_load_ms = elapsed_ms,
+                        unresolved_refs = count,
+                        "sync.progress_total_load (duplicate materialization)"
+                    );
+                    count
+                })
                 .unwrap_or(0);
             sink.emit(ProgressEvent::PhaseStarted {
                 phase,

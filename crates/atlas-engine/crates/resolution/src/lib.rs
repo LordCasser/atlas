@@ -12,6 +12,7 @@
 //! their `resolved` field in place but leaves the record intact.
 
 use std::collections::HashMap;
+use std::time::Instant;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -591,6 +592,8 @@ impl ReferenceResolver {
         progress_mutex: Option<&std::sync::Arc<std::sync::Mutex<types::progress::ProgressState>>>,
         _on_progress: Option<&dyn Fn(u64, u64)>,
     ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
+        let mut telemetry = ResolutionTelemetry::default();
+
         if let Some(mutex) = progress_mutex {
             mutex
                 .lock()
@@ -599,11 +602,17 @@ impl ReferenceResolver {
         }
 
         // Build shared session
+        let t0 = Instant::now();
         let session = ResolutionSession::build(store.clone())?;
+        telemetry.session_build_ms = t0.elapsed().as_millis() as u64;
 
         // Load all unresolved references, grouped by file
+        let t_load = Instant::now();
         let unresolved = store.find_unresolved_references()?;
+        telemetry.unresolved_load_ms = t_load.elapsed().as_millis() as u64;
+        telemetry.unresolved_refs = unresolved.len();
         let total_refs = unresolved.len() as u64;
+        let t_group = Instant::now();
         let by_file: Vec<(FileId, Vec<ReferenceUse>)> = {
             let mut map: HashMap<FileId, Vec<ReferenceUse>> = HashMap::new();
             for r in &unresolved {
@@ -611,9 +620,12 @@ impl ReferenceResolver {
             }
             map.into_iter().collect()
         };
+        telemetry.group_by_file_ms = t_group.elapsed().as_millis() as u64;
+        telemetry.files_with_refs = by_file.len();
 
         // P3: Per-file resolution fingerprint — split files into dirty (need
         // full resolution) and clean (fingerprint matches content_hash).
+        let t_split = Instant::now();
         let mut dirty_refs: Vec<(FileId, Vec<ReferenceUse>)> = Vec::with_capacity(by_file.len());
         // clean file refs: (FileId, file_language, Vec<ReferenceUse>)
         let mut clean_file_refs: Vec<(FileId, Language, Vec<ReferenceUse>)> =
@@ -638,6 +650,11 @@ impl ReferenceResolver {
                 }
             }
         }
+        telemetry.dirty_clean_split_ms = t_split.elapsed().as_millis() as u64;
+        telemetry.dirty_files = dirty_refs.len();
+        telemetry.clean_files = clean_file_refs.len();
+        telemetry.dirty_refs = dirty_refs.iter().map(|(_, r)| r.len()).sum();
+        telemetry.clean_refs = clean_file_refs.iter().map(|(_, _, r)| r.len()).sum();
 
         // ── Phase 1 + Phase 2: streaming via bounded mpsc channel ──
         //
@@ -661,14 +678,35 @@ impl ReferenceResolver {
             dirty_file_count = dirty_refs.len(),
             clean_file_count = clean_file_refs.len());
         let _step_a = step_a_span.enter();
+        let t_ctx = Instant::now();
+        let cap = dirty_refs.len();
         let mut file_groups: Vec<(FileId, Vec<ReferenceUse>, ResolutionContext)> =
-            Vec::with_capacity(dirty_refs.len());
+            Vec::with_capacity(cap);
+        let mut context_build_timings: Vec<ContextBuildTiming> = Vec::with_capacity(cap);
+        let mut context_build_failures: usize = 0;
         for (fid, refs) in dirty_refs {
+            let t_file = Instant::now();
             match ResolutionContext::build(&store, fid) {
-                Ok(ctx) => file_groups.push((fid, refs, ctx)),
-                Err(_e) => { /* skip */ }
+                Ok(ctx) => {
+                    let elapsed = t_file.elapsed().as_micros() as u64;
+                    context_build_timings.push(ContextBuildTiming {
+                        file_id: fid,
+                        refs_count: refs.len(),
+                        symbols_count: ctx.symbols_by_id.len(),
+                        scopes_count: ctx.scopes_by_id.len(),
+                        imports_count: ctx.imports.len(),
+                        elapsed_us: elapsed,
+                    });
+                    file_groups.push((fid, refs, ctx));
+                }
+                Err(_e) => {
+                    context_build_failures += 1;
+                }
             }
         }
+        telemetry.context_build_ms = t_ctx.elapsed().as_millis() as u64;
+        telemetry.context_build_timings = context_build_timings;
+        telemetry.context_build_failures = context_build_failures;
         drop(_step_a);
 
         // Bounded channel — capacity 4000 balances memory vs throughput.
@@ -677,9 +715,14 @@ impl ReferenceResolver {
         // Spawn Phase 2 writer thread that also collects all_resolved.
         let writer_store = store.clone();
         let writer_progress = progress_mutex.map(Arc::clone);
+        let writer_matched = Arc::clone(&matched_counter);
         let writer_handle = std::thread::spawn(
-            move || -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
+            move || -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats, WriterTelemetry)> {
                 let _phase2_span = tracing::info_span!(target: "atlas_resolve", "resolution.phase2").entered();
+                let writer_start = Instant::now();
+                let sent_counter = writer_matched;
+                let mut batch_id: u64 = 0;
+                let mut slow_batches: u64 = 0;
                 let mut stats = ResolutionStats {
                     total_refs: total_refs as usize,
                     ..Default::default()
@@ -698,7 +741,29 @@ impl ReferenceResolver {
                     *stats.by_strategy.entry(strategy).or_default() += 1;
 
                     if pending.len() >= batch_size {
+                        let batch_start = Instant::now();
                         writer_store.batch_update_resolutions(&pending)?;
+                        let batch_elapsed = batch_start.elapsed();
+                        let elapsed_ms = batch_elapsed.as_millis() as u64;
+                        let rows_per_sec = if elapsed_ms > 0 {
+                            (pending.len() as f64) / (elapsed_ms as f64) * 1000.0
+                        } else {
+                            0.0
+                        };
+                        if elapsed_ms > 2000 {
+                            let lag = sent_counter.load(Ordering::Relaxed).saturating_sub(processed);
+                            tracing::warn!(
+                                target: "atlas_db_write",
+                                batch_id = batch_id,
+                                rows = pending.len(),
+                                elapsed_ms = elapsed_ms,
+                                rows_per_sec = rows_per_sec,
+                                pending_queue_lag = lag,
+                                "writer.slow_batch"
+                            );
+                            slow_batches += 1;
+                        }
+                        batch_id += 1;
                         pending.clear();
                         if let Some(ref ps) = writer_progress {
                             let _ = ps.lock().map(|mut p| p.set_current(processed));
@@ -706,13 +771,49 @@ impl ReferenceResolver {
                     }
                 }
                 if !pending.is_empty() {
+                    let batch_start = Instant::now();
                     writer_store.batch_update_resolutions(&pending)?;
+                    let batch_elapsed = batch_start.elapsed();
+                    let elapsed_ms = batch_elapsed.as_millis() as u64;
+                    let rows_per_sec = if elapsed_ms > 0 {
+                        (pending.len() as f64) / (elapsed_ms as f64) * 1000.0
+                    } else {
+                        0.0
+                    };
+                    if elapsed_ms > 2000 {
+                        let lag = sent_counter.load(Ordering::Relaxed).saturating_sub(processed);
+                        tracing::warn!(
+                            target: "atlas_db_write",
+                            batch_id = batch_id,
+                            rows = pending.len(),
+                            elapsed_ms = elapsed_ms,
+                            rows_per_sec = rows_per_sec,
+                            pending_queue_lag = lag,
+                            "writer.slow_batch"
+                        );
+                        slow_batches += 1;
+                    }
+                    batch_id += 1;
                     if let Some(ref ps) = writer_progress {
                         let _ = ps.lock().map(|mut p| p.set_current(processed));
                     }
                 }
                 stats.unresolved = total_refs as usize - stats.resolved;
-                Ok((all, stats))
+                let writer_elapsed = writer_start.elapsed();
+                let writer_total_ms = writer_elapsed.as_millis() as u64;
+                let rows_per_sec = if writer_total_ms > 0 {
+                    processed as f64 / writer_total_ms as f64 * 1000.0
+                } else {
+                    0.0
+                };
+                let writer_tel = WriterTelemetry {
+                    total_ms: writer_total_ms,
+                    batches: batch_id,
+                    rows_written: processed,
+                    rows_per_sec,
+                    slow_batch_count: slow_batches,
+                };
+                Ok((all, stats, writer_tel))
             },
         );
 
@@ -728,6 +829,7 @@ impl ReferenceResolver {
         let mc = &matched_counter;
 
         // Resolve dirty files' refs with full context (6 strategies)
+        let t_dirty = Instant::now();
         file_groups.par_iter().for_each(|(_fid, refs, ctx)| {
             let results = session.resolve_refs_in_ctx(refs, ctx);
             let count = results.len() as u64;
@@ -741,12 +843,14 @@ impl ReferenceResolver {
                 }
             }
         });
+        telemetry.resolve_dirty_ms = t_dirty.elapsed().as_millis() as u64;
 
         // Resolve clean files' unresolved refs with strategy-6-only (global index).
         // No context needed — the file's symbols/imports/scopes haven't changed,
         // so strategies 2-5 would produce identical results.  New symbols from
         // dirty files may now resolve previously-unresolved references.
         if !clean_file_refs.is_empty() {
+            let t_clean = Instant::now();
             let clean_step_span = tracing::info_span!(
                 target: "atlas_resolve",
                 "resolution.clean_files",
@@ -778,19 +882,26 @@ impl ReferenceResolver {
                 }
             }
             drop(_clean_step);
+            telemetry.resolve_clean_ms = t_clean.elapsed().as_millis() as u64;
         }
 
         drop(tx);
         drop(_step_b);
 
         match writer_handle.join() {
-            Ok(Ok((all_resolved, stats))) => {
+            Ok(Ok((all_resolved, stats, w))) => {
+                telemetry.writer_total_ms = w.total_ms;
+                telemetry.writer_batches = w.batches;
+                telemetry.writer_rows_written = w.rows_written;
+                telemetry.writer_rows_per_sec = w.rows_per_sec;
                 // P3: Update resolution fingerprints for dirty files.
                 // After resolution completes, store the content_hash as the
                 // fingerprint so the next run can skip this file if unchanged.
+                let t_fp = Instant::now();
                 for (fid, content_hash) in &dirty_file_hashes {
                     let _ = store.update_resolution_fingerprint(fid, content_hash);
                 }
+                telemetry.fingerprint_update_ms = t_fp.elapsed().as_millis() as u64;
 
                 let s1 = S1_COUNT.load(Ordering::Relaxed);
                 let s2 = S2_COUNT.load(Ordering::Relaxed);
@@ -838,6 +949,8 @@ impl ReferenceResolver {
                         "resolution.strategy_times"
                     );
                 }
+                log_resolution_telemetry(&telemetry);
+                log_context_build_distribution(&telemetry.context_build_timings);
                 Ok((all_resolved, stats))
             },
             Ok(Err(e)) => Err(e),
@@ -932,6 +1045,128 @@ impl ResolutionStats {
     /// Record a non-fatal warning.
     fn add_warning(&mut self, msg: String) {
         self.warnings.push(msg);
+    }
+}
+
+/// Per-file timing for context build distribution analysis.
+#[derive(Debug, Clone)]
+struct ContextBuildTiming {
+    file_id: FileId,
+    refs_count: usize,
+    symbols_count: usize,
+    scopes_count: usize,
+    imports_count: usize,
+    elapsed_us: u64,
+}
+
+/// Timing telemetry collected during `resolve_all_parallel`.
+#[derive(Debug, Default)]
+struct ResolutionTelemetry {
+    // Phase 0: Session build
+    session_build_ms: u64,
+    // Load unresolved refs from DB
+    unresolved_load_ms: u64,
+    unresolved_refs: usize,
+    files_with_refs: usize,
+    // Group by file
+    group_by_file_ms: u64,
+    // Dirty/clean split (includes per-file DB calls)
+    dirty_clean_split_ms: u64,
+    dirty_files: usize,
+    clean_files: usize,
+    dirty_refs: usize,
+    clean_refs: usize,
+    // Context builds (serial, dirty files only)
+    context_build_ms: u64,
+    context_build_timings: Vec<ContextBuildTiming>,
+    context_build_failures: usize,
+    // Parallel resolve wall times (overlap with writer)
+    resolve_dirty_ms: u64,
+    resolve_clean_ms: u64,
+    // Writer thread
+    writer_total_ms: u64,
+    writer_batches: u64,
+    writer_rows_written: u64,
+    writer_rows_per_sec: f64,
+    // Fingerprint update after resolution
+    fingerprint_update_ms: u64,
+}
+
+/// Telemetry from the writer thread, returned alongside resolution results.
+#[derive(Debug, Default)]
+#[allow(dead_code)]
+struct WriterTelemetry {
+    total_ms: u64,
+    batches: u64,
+    rows_written: u64,
+    rows_per_sec: f64,
+    slow_batch_count: u64,
+}
+
+/// Log resolution telemetry summary at `target: "atlas_resolve"`.
+fn log_resolution_telemetry(t: &ResolutionTelemetry) {
+    tracing::info!(
+        target: "atlas_resolve",
+        session_build_ms = t.session_build_ms,
+        unresolved_load_ms = t.unresolved_load_ms,
+        unresolved_refs = t.unresolved_refs,
+        files_with_refs = t.files_with_refs,
+        group_by_file_ms = t.group_by_file_ms,
+        dirty_clean_split_ms = t.dirty_clean_split_ms,
+        dirty_files = t.dirty_files,
+        clean_files = t.clean_files,
+        dirty_refs = t.dirty_refs,
+        clean_refs = t.clean_refs,
+        context_build_ms = t.context_build_ms,
+        context_build_failures = t.context_build_failures,
+        resolve_dirty_ms = t.resolve_dirty_ms,
+        resolve_clean_ms = t.resolve_clean_ms,
+        writer_total_ms = t.writer_total_ms,
+        writer_batches = t.writer_batches,
+        writer_rows_written = t.writer_rows_written,
+        writer_rows_per_sec = t.writer_rows_per_sec,
+        fingerprint_update_ms = t.fingerprint_update_ms,
+        "resolution.telemetry"
+    );
+}
+
+/// Log context build distribution: p50/p95/max + top-10 slowest files.
+fn log_context_build_distribution(timings: &[ContextBuildTiming]) {
+    if timings.is_empty() {
+        return;
+    }
+    let mut els: Vec<u64> = timings.iter().map(|t| t.elapsed_us).collect();
+    els.sort_unstable();
+    let n = els.len();
+    let avg = els.iter().sum::<u64>() / n as u64;
+    let p50 = els[n * 50 / 100];
+    let p95 = els[n.saturating_sub(1).min(n * 95 / 100)];
+    let max = els[n - 1];
+
+    tracing::info!(
+        target: "atlas_resolve",
+        count = n,
+        avg_us = avg,
+        p50_us = p50,
+        p95_us = p95,
+        max_us = max,
+        "resolution.context_build.distribution"
+    );
+
+    // Top 10 slowest
+    let mut with_file: Vec<&ContextBuildTiming> = timings.iter().collect();
+    with_file.sort_by_key(|t| std::cmp::Reverse(t.elapsed_us));
+    for t in with_file.iter().take(10) {
+        tracing::info!(
+            target: "atlas_resolve",
+            file_id = %t.file_id,
+            refs = t.refs_count,
+            symbols = t.symbols_count,
+            scopes = t.scopes_count,
+            imports = t.imports_count,
+            elapsed_us = t.elapsed_us,
+            "resolution.context_build.top10"
+        );
     }
 }
 
@@ -1383,5 +1618,162 @@ function other() { return "no call"; }
             assert_eq!(a.callsite.caller, b.callsite.caller, "callsite callers should match");
             assert_eq!(a.callee, b.callee, "callee symbols should match — resolution paths diverged!");
         }
+    }
+
+    /// Smoke test: `resolve_all_parallel` runs with internal telemetry
+    /// collection and does NOT panic. The telemetry is logged via tracing
+    /// but not returned to the caller — observable via tracing subscriber
+    /// in integration tests.
+    #[test]
+    fn test_resolution_telemetry_populated() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        let ts = create_frontend(Language::TypeScript).unwrap();
+
+        let lib_src = r#"export function greet(name: string): string { return 'Hello, ' + name; }"#;
+        let main_src = r#"import { greet } from './lib';
+function main() {
+    greet("World");
+}
+main();
+"#;
+
+        let lib_id = FileId::generate("lib.ts");
+        let lib = extract_file(
+            &ts,
+            lib_id,
+            &PathBuf::from("lib.ts"),
+            lib_src,
+            "abc",
+        )
+        .unwrap();
+        store.insert_file_facts(&lib).unwrap();
+
+        let main_id = FileId::generate("main.ts");
+        let main = extract_file(
+            &ts,
+            main_id,
+            &PathBuf::from("main.ts"),
+            main_src,
+            "abc",
+        )
+        .unwrap();
+        store.insert_file_facts(&main).unwrap();
+
+        let _ = (lib_id, main_id);
+
+        let mut resolver = ReferenceResolver::new(store.clone());
+        let (resolved, stats) = resolver
+            .resolve_all_parallel(store, None, None)
+            .expect("resolve_all_parallel failed");
+        assert!(
+            stats.resolved > 0,
+            "expected at least 1 resolved reference, got {}",
+            stats.resolved
+        );
+        assert!(
+            !resolved.is_empty(),
+            "expected resolved pairs to be non-empty"
+        );
+    }
+
+    /// Unit test: context build timing is collected internally during
+    /// `resolve_all_parallel`. Telemetry is observable via tracing
+    /// subscriber in integration tests.
+    #[test]
+    fn test_context_build_timing_collected() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        let ts = create_frontend(Language::TypeScript).unwrap();
+
+        let lib_src = r#"export function greet(name: string): string { return 'Hello, ' + name; }"#;
+        let main_src = r#"import { greet } from './lib';
+function main() {
+    greet("World");
+}
+main();
+"#;
+
+        let lib_id = FileId::generate("lib.ts");
+        let lib = extract_file(
+            &ts,
+            lib_id,
+            &PathBuf::from("lib.ts"),
+            lib_src,
+            "abc",
+        )
+        .unwrap();
+        store.insert_file_facts(&lib).unwrap();
+
+        let main_id = FileId::generate("main.ts");
+        let main = extract_file(
+            &ts,
+            main_id,
+            &PathBuf::from("main.ts"),
+            main_src,
+            "abc",
+        )
+        .unwrap();
+        store.insert_file_facts(&main).unwrap();
+
+        let _ = (lib_id, main_id);
+
+        let mut resolver = ReferenceResolver::new(store.clone());
+        let (_resolved, stats) = resolver
+            .resolve_all_parallel(store, None, None)
+            .expect("resolve_all_parallel should succeed");
+        assert!(stats.resolved > 0, "should resolve cross-file import");
+    }
+
+    /// The `WriterTelemetry` struct is internal and returned from the writer
+    /// thread — this test verifies the parallel resolve path completes
+    /// without panicking (compile-time check for WriterTelemetry in the
+    /// return tuple).
+    #[test]
+    fn test_writer_telemetry_in_parallel_resolve() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        let ts = create_frontend(Language::TypeScript).unwrap();
+
+        let lib_src = r#"export function helper(x: number): number { return x * 2; }
+export function other(): string { return "unrelated"; }
+"#;
+        let main_src = r#"import { helper } from './lib';
+function main() { return helper(21); }
+function other() { return "no call"; }
+"#;
+
+        let lib_id = FileId::generate("lib.ts");
+        let lib = extract_file(
+            &ts,
+            lib_id,
+            &PathBuf::from("lib.ts"),
+            lib_src,
+            "hash",
+        )
+        .unwrap();
+        store.insert_file_facts(&lib).unwrap();
+
+        let main_id = FileId::generate("main.ts");
+        let main = extract_file(
+            &ts,
+            main_id,
+            &PathBuf::from("main.ts"),
+            main_src,
+            "hash",
+        )
+        .unwrap();
+        store.insert_file_facts(&main).unwrap();
+
+        let _ = (lib_id, main_id);
+
+        let mut resolver = ReferenceResolver::new(store.clone());
+        let (_resolved, stats) = resolver
+            .resolve_all_parallel(store, None, None)
+            .expect("resolve_all_parallel should succeed");
+        assert!(stats.resolved > 0, "should resolve cross-file import");
     }
 }

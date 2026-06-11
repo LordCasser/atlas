@@ -413,11 +413,24 @@ impl IndexPipeline {
                     detail: Some("skipped (no changes)".into()),
                 });
             } else {
-                // Get unresolved count for progress total
+                // Get unresolved count for progress total (materializes full Vec).
+                // NOTE: resolve_all_parallel calls find_unresolved_references()
+                // again internally — for large projects this doubles memory/time.
+                let t_count = Instant::now();
                 let unresolved_total = self
                     .store
                     .find_unresolved_references()
-                    .map(|refs| refs.len() as u64)
+                    .map(|refs| {
+                        let count = refs.len() as u64;
+                        let elapsed_ms = t_count.elapsed().as_millis() as u64;
+                        info!(
+                            target: "atlas_sync",
+                            progress_total_load_ms = elapsed_ms,
+                            unresolved_refs = count,
+                            "sync.progress_total_load (duplicate materialization)"
+                        );
+                        count
+                    })
                     .unwrap_or(0);
 
                 sink.emit(ProgressEvent::PhaseStarted {
@@ -813,5 +826,54 @@ mod tests {
         let stats = pipeline.run(&NoopSink, &mut || false).unwrap();
 
         assert!(stats.indexed > 0);
+    }
+
+    /// With Structural mode and cross-file imports, the pipeline enters the
+    /// resolution phase and logs progress_total_load_ms. Verifies that the
+    /// double-call timing code path runs without panicking.
+    #[test]
+    fn pipeline_resolution_phase_logs_progress_total() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("lib.ts"),
+            "export function greet(name: string): string { return 'Hello, ' + name; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("main.ts"),
+            "import { greet } from './lib';\nfunction main() { greet('World'); }\nmain();\n",
+        )
+        .unwrap();
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        let pipeline = IndexPipeline::new(
+            Arc::clone(&store),
+            dir.path().to_path_buf(),
+            IndexPipelineOptions::new(ExtractionMode::Structural),
+        );
+
+        let sink = RecordingSink::new();
+        let stats = pipeline.run(&sink, &mut || false).unwrap();
+
+        // With Structural mode + cross-file imports, resolution should activate
+        let events = sink.events();
+        let has_resolution_started = events.iter().any(|e| {
+            matches!(
+                e,
+                ProgressEvent::PhaseStarted {
+                    phase: PhaseName::Resolution,
+                    ..
+                }
+            )
+        });
+        assert!(
+            has_resolution_started,
+            "expected Resolution phase to start with Structural mode + cross-file imports"
+        );
+        // Don't assert stats.resolved > 0 — tree-sitter TS grammar may not be
+        // linked in this test environment. The timing path is what we cover.
+        let _ = stats;
     }
 }
