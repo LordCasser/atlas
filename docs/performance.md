@@ -108,6 +108,54 @@
 
 The proximity filter eliminates 99.8% of global fuzzy scans. A full trigram index for global fuzzy search would optimize only 318 calls per run — essentially worthless.
 
+---
+
+## Baseline 4: Elasticsearch (Large-Scale DB Write Benchmark)
+
+### Project Profile
+- **Files**: 30,059 indexed
+- **Languages**: Java, TypeScript, JavaScript, Python, Go, and others
+- **Symbols extracted**: 741,848
+- **References extracted**: 6,790,151
+- **Callsites extracted**: 3,992,876
+- **Imports extracted**: 485,254
+- **Scopes extracted**: 1,222,940
+
+### DB Write Phase — Per-Table Timing (debug build, after optimizations)
+
+| Table | Time (ms) | % of DB Write |
+|-------|-----------|---------------|
+| commit | 243,856 | 59.9% |
+| references | 65,888 | 16.2% |
+| callsites | 49,884 | 12.2% |
+| symbols | 15,487 | 3.8% |
+| scopes | 13,136 | 3.2% |
+| imports | 8,091 | 2.0% |
+| bindings | 6,312 | 1.6% |
+| **Total** | **~407,000** | 100% |
+
+### Chunk Distribution (weight-budget, max_weight=1,000,000)
+
+| Metric | Value |
+|--------|-------|
+| Total chunks | 154 |
+| Slow chunks (≥1s) | 56 |
+| Slow chunk p50 | 3,888ms |
+| Slow chunk p90 | 5,522ms |
+| Slow chunk p95 | 5,929ms |
+| Slow chunk max | 6,513ms |
+| Batch failures | 0 |
+
+### Chunking Model Comparison: Fixed 500 vs Weight-Budget
+
+| Metric | Fixed 500-file | Weight-Budget (1M) | Improvement |
+|--------|---------------|-------------------|-------------|
+| Max chunk time | ~52.1s | 25.7s | **−50.7%** |
+| Slow chunk p95 | ~52s range | 9.3s | **−82%** |
+| Tail latency shape | Many 25-52s spikes | All under 26s | Eliminated extreme tail |
+
+Weight-budget chunking replaced the fixed 500-file grouping with a `max_weight` budget of 1,000,000 (file weight = symbol count + reference count + callsite count). This prevents a single chunk from containing many symbol/reference-dense files, which was the root cause of the 50s+ tail spikes in the fixed-size model. The improvement is entirely in tail latency; total DB write time is similar because the same data must still be committed.
+
 ### Active Optimizations (verified zero regression)
 
 | Optimization | Mechanism | Effect |
@@ -142,18 +190,24 @@ The proximity filter eliminates 99.8% of global fuzzy scans. A full trigram inde
 
 ## 经验总结：能做 / 不能做 / 做了 / 没做
 
-### 做了什么（11 项已提交优化）
+### 做了什么（14 项已提交优化）
 
-从 53.29s → 18.82s（−64.7%），收益来自四个层次：
+从 53.29s → 18.82s（−64.7%），收益来自五个层次：
 
 | 层次 | 优化项 | 收益 | 核心手段 |
 |------|--------|------|---------|
 | **缓存层** | QName / reexport / module_path 三个 thread_local 缓存 | −32.5% | S5 import resolution 是隐藏瓶颈（74% CPU），缓存消除重复 DB 查询 |
 | **写入层** | 延迟索引创建（bulk-load deferred indexes）| −27.1% | 写入时只维护 PK，查询索引和 FTS 全部延后到 Phase 10 重建 |
 | **架构层** | P0 generation skip + P2 callsite batch + P3 per-file fingerprint + T1.2 cleanup tx | −19.1% | 改变"哪些工作不需要做"，而非"已有工作如何更快" |
+| **写入模型层** | weight-budget chunking + symbol 去重 + hot-table insert-only | 尾延迟 −50%，commit −34% | 削峰：固定 chunk→按权重组；减写放大：去重 symbol 26%，热表避免 OR REPLACE |
 | **算法层** | Levenshtein banding + S6 proximity 优先搜索 | −2.7% | 代码改动小（~40 行），收益确定但绝对值有限 |
 
-### 不能做什么（8 项已验证不可行）
+> **写入模型层明细**（Elasticsearch 30K-file benchmark）：
+> - **Weight-budget chunking**：固定 500-file → max_weight=1,000,000，max chunk time 52.1s→25.7s，慢 chunk p95 从 ~52s 降至 9.3s。
+> - **Symbol 去重**：chunk 内按 symbol_id last-write-wins，跳过 261,731 个重复 symbol（26%），symbols_ms −5.5%。
+> - **Hot-table insert-only**：references / callsites 在批量路径改 plain INSERT，避免 INSERT OR REPLACE 的冲突检查和 delete-insert 放大。references_ms −24.7%，callsites_ms −23.9%，commit_ms −33.8%，慢 chunk p95 −45.7%。
+
+### 不能做什么（11 项已验证不可行）
 
 | 优化项 | 回归量 | 根因 |
 |--------|--------|------|
@@ -165,12 +219,17 @@ The proximity filter eliminates 99.8% of global fuzzy scans. A full trigram inde
 | Symbol preload | 中性 | SQLite 内部缓存已足够快 |
 | T0.3 by_name HashMap | 中性 | S4 的 O(F) 中 F < 100，微秒级 |
 | has_name 快速路径 | 中性 | 额外 HashMap 查询抵消了收益 |
+| BEGIN EXCLUSIVE 替代 BEGIN IMMEDIATE | 不显著 | WAL 模式下差异有限，p95/max 无稳定改善 |
+| PRAGMA cache_spill=OFF | 恶化尾部 | dirty page 压力推迟到后半段/commit，尾部更差 |
+| Chunk-level 延迟写 references/callsites | 恶化尾部 | 表间重排未减少写放大，尾部明显恶化 |
 
 **核心教训**：
 1. **SQLite 的 prepared statement 缓存比动态 batch SQL 更快**——不要假设"批量一定比逐行快"。
 2. **SQL 改动前必须 EXPLAIN QUERY PLAN**——T0.5 的 +330s 回归来自无索引列的全表扫描。
 3. **高频路径的 tracing span 有隐性成本**——即使用 `debug_span!`（warn 级别下零开销），enter/exit 仍消耗 CPU。
 4. **小数据集的算法复杂度优化收益可忽略**——S4 的 O(F) 中 F 通常 < 100。
+5. **SQLite PRAGMA 调参不是银弹**——cache_spill、事务模式等调整在 bulk write 场景下效果不稳定或负面，应先优化写入模型本身。
+6. **写入重排不能替代写放大消除**——延迟写、表间调序不减少实际写入量，应优先减少不必要的 SQL 操作（如 OR REPLACE 冲突检查）。
 
 ### 没做什么（5 项推迟）
 
@@ -207,6 +266,35 @@ All 6 new DataflowBasic languages extracted correctly with 0 errors. Parse/extra
 ### 5. 1,931-file TypeScript monorepo indexes in ~18.8 seconds
 
 Acceptable for batch/CI use. The remaining optimization space (<10% further improvement) requires structural changes: extraction-resolution pipeline fusion, incremental index path optimization, or language-specific strategy tuning. These are diminishing returns compared to the 64.7% already achieved.
+
+### 6. Checkpoint is rarely the bottleneck in fresh bulk writes
+
+On the Elasticsearch 30K-file fresh index, 48 PASSIVE checkpoints all completed with 0ms elapsed and 0 remaining frames. The final checkpoint truncate took only 18-21ms. This definitively rules out WAL/checkpoint as a bottleneck for fresh bulk writes — the real bottleneck is transaction commit (SQLite dirty page flush). Adding checkpoint observability before optimizing checkpoint is essential: without it, you'd waste time tuning `wal_autocheckpoint` or `checkpoint_threshold` for a non-problem.
+
+### 7. Commit dominates large-scale SQLite writes; reducing write amplification beats tuning commit
+
+On Elasticsearch 30K-file DB write, `commit_ms` accounted for 60% of total DB write time. The largest chunk spent 92.8% of its time in `tx.commit()`. Three approaches were tested:
+
+| Approach | Result | Why |
+|----------|--------|-----|
+| BEGIN EXCLUSIVE vs IMMEDIATE | Inconclusive (~14% drop, but unstable p95/max) | WAL mode minimizes IMMEDIATE/EXCLUSIVE difference |
+| PRAGMA cache_spill=OFF | Worse tail | Delays dirty page pressure to later chunks |
+| INSERT OR REPLACE → plain INSERT (hot tables) | **commit_ms −33.8%** | Eliminated conflict-check overhead that inflated dirty page count |
+
+The winning approach addressed the root cause: fewer SQL operations per row means fewer dirty pages, which means less work for commit. Tuning the commit mechanism itself (PRAGMA, transaction mode) was strictly inferior to reducing what gets committed.
+
+### 8. INSERT OR REPLACE has hidden write amplification in bulk-clean-then-write paths
+
+When data is bulk-cleaned before write (stale file data deleted, then fresh data inserted), there should be zero primary key conflicts. But `INSERT OR REPLACE` still performs a conflict check (B-tree lookup) on every row, and if SQLite's internal state suggests a possible conflict, it does a delete-before-insert cycle — doubling the B-tree work. Switching to plain `INSERT` in the batch path eliminated this overhead:
+
+| Metric | OR REPLACE (baseline) | Plain INSERT | Change |
+|--------|----------------------|-------------|--------|
+| references_ms | 87,448 | 65,888 | **−24.7%** |
+| callsites_ms | 65,529 | 49,884 | **−23.9%** |
+| commit_ms | 368,507 | 243,856 | **−33.8%** |
+| Slow chunk p95 | 10,910ms | 5,929ms | **−45.7%** |
+
+**Critical constraint**: This optimization is only safe when data has been pre-cleaned. Single-file writes, incremental paths, and fallback paths must keep `INSERT OR REPLACE` semantics. The implementation uses a scoped helper that only activates plain INSERT in the bulk batch path (`batch.len() > 1`). A regression test verifies that repeated `insert_file_facts()` calls with the same data do not cause row duplication or errors on non-batch paths.
 
 ---
 
@@ -428,3 +516,32 @@ Before starting any performance optimization:
       measuring. If it regresses, revert immediately and document why.
 - [ ] Trust measurements over intuition. If static analysis says "this should
       be faster" but the benchmark disagrees, the benchmark is right.
+
+### 10. INSERT OR REPLACE Is Not Free — Even Without Conflicts
+
+SQLite's `INSERT OR REPLACE` has measurable overhead even when no actual key
+conflicts exist. On a 30K-file bulk write where all stale data was pre-cleaned
+(guaranteeing zero PK conflicts):
+
+| SQL Mode | references table | callsites table | commit |
+|----------|-----------------|-----------------|--------|
+| `INSERT OR REPLACE` | 87,448ms | 65,529ms | 368,507ms |
+| `INSERT` | 65,888ms (−24.7%) | 49,884ms (−23.9%) | 243,856ms (−33.8%) |
+
+The overhead has two sources:
+1. **Conflict check overhead**: SQLite must still do a B-tree probe to
+   determine whether a conflict exists, even when it never finds one.
+2. **Delete-insert amplification**: If SQLite's internal page state makes a
+   conflict appear possible, it performs a delete-then-insert cycle — doubling
+   the B-tree page modifications and the dirty page count that commit must
+   flush.
+
+**When this optimization applies**: Only when data has been explicitly
+pre-cleaned (e.g., bulk-clean-then-write, fresh index). In incremental or
+single-file paths where the same row may be written twice with different data,
+`INSERT OR REPLACE` is the correct semantics and must be preserved.
+
+**Implementation pattern**: Use a scoped helper with a `replace_on_conflict:
+bool` parameter. The batch path sets it to `false`; all other paths set it to
+`true`. Add a regression test that calls the write function twice with the
+same data and verifies no row duplication on the non-batch path.
