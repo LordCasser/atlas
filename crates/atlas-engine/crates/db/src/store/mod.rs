@@ -366,6 +366,15 @@ impl Store {
                 )"#,
                 params![file_id],
             )?;
+            // Delete incoming edges that target symbols belonging to this
+            // file. The target column has no FK, so CASCADE from files→symbols
+            // does not reach these rows.
+            tx.execute(
+                r#"DELETE FROM symbol_edges WHERE target IN (
+                    SELECT symbol_id FROM symbols WHERE file_id = ?1
+                )"#,
+                params![file_id],
+            )?;
             // Atomically delete old facts and insert new ones.
             tx.execute("DELETE FROM files WHERE file_id = ?1", params![file_id])?;
             write_file_facts(tx, facts)?;

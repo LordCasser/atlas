@@ -368,15 +368,25 @@ impl IncrementalPipeline {
                     e
                 })?;
 
-            stats.new_edges = graph_result.edges_built;
+            stats.new_edges = graph_result.edges_written;
+            if graph_result.edges_written < graph_result.edges_built {
+                sink.emit(ProgressEvent::Warning {
+                    phase,
+                    message: format!(
+                        "edge persistence partial: {} built, {} written",
+                        graph_result.edges_built, graph_result.edges_written,
+                    ),
+                });
+            }
 
             sink.emit(ProgressEvent::PhaseFinished {
                 phase,
                 succeeded: graph_result.resolved as u64,
                 failed: 0,
                 detail: Some(format!(
-                    "{} resolved, {} edges built",
-                    graph_result.resolved, graph_result.edges_built
+                    "{} resolved, {} edges built ({} written)",
+                    graph_result.resolved, graph_result.edges_built,
+                    graph_result.edges_written,
                 )),
             });
         }

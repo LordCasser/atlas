@@ -165,7 +165,8 @@ impl Store {
     }
 
     /// Atomically clean stale file facts: invalidate cross-file references,
-    /// delete outgoing edges, delete file records, and delete extraction state
+    /// delete outgoing edges, delete incoming edges targeting this file's
+    /// symbols, delete file records, and delete extraction state
     /// — all within a single transaction.
     ///
     /// This replaces the per-file, per-operation pattern that previously
@@ -190,6 +191,16 @@ impl Store {
                 tx.execute(
                     r#"DELETE FROM symbol_edges WHERE ref_id IN (
                         SELECT reference_id FROM "references" WHERE file_id = ?1
+                    )"#,
+                    params![fid],
+                )?;
+                // Delete incoming edges that target symbols belonging to this
+                // file. The target column has no FK (schema allows external /
+                // not-yet-indexed targets), so CASCADE from files→symbols does
+                // not reach these rows.
+                tx.execute(
+                    r#"DELETE FROM symbol_edges WHERE target IN (
+                        SELECT symbol_id FROM symbols WHERE file_id = ?1
                     )"#,
                     params![fid],
                 )?;

@@ -91,8 +91,11 @@ pub struct ExtractedFiles {
 pub struct GraphResult {
     /// Number of resolved references.
     pub resolved: usize,
-    /// Number of graph edges built.
+    /// Number of graph edges built in memory.
     pub edges_built: usize,
+    /// Number of edges actually written to store.
+    /// 0 when batch insert fails (even if edges_built > 0).
+    pub edges_written: usize,
 }
 
 /// Result of a batch DB write.
@@ -536,6 +539,7 @@ pub fn phase_resolve_and_build(
     Ok(GraphResult {
         resolved: res_stats.resolved,
         edges_built: build_stats.edges_built,
+        edges_written: build_stats.edges_written,
     })
 }
 

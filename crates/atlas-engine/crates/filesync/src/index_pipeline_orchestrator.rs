@@ -398,14 +398,24 @@ impl IndexPipeline {
                     }
                 };
                 stats.resolved = graph_result.resolved;
-                stats.edges_built = graph_result.edges_built;
+                stats.edges_built = graph_result.edges_written;
+                if graph_result.edges_written < graph_result.edges_built {
+                    sink.emit(ProgressEvent::Warning {
+                        phase: PhaseName::Resolution,
+                        message: format!(
+                            "edge persistence partial: {} built, {} written",
+                            graph_result.edges_built, graph_result.edges_written,
+                        ),
+                    });
+                }
                 sink.emit(ProgressEvent::PhaseFinished {
                     phase: PhaseName::Resolution,
                     succeeded: graph_result.resolved as u64,
                     failed: 0,
                     detail: Some(format!(
-                        "{} resolved, {} edges built",
+                        "{} resolved, {} edges built ({} written)",
                         graph_result.resolved, graph_result.edges_built,
+                        graph_result.edges_written,
                     )),
                 });
                 last_phase = PhaseName::Resolution;
