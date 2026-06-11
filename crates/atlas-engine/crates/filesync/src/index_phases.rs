@@ -580,7 +580,7 @@ pub fn phase_write_batched(
                     );
                     stats.slow_chunks.push(SlowWriteChunk {
                         chunk_index: chunk_idx,
-                        file_range: format!("{}-{}", file_start_idx, file_end_idx),
+                        file_range: format!("{file_start_idx}-{file_end_idx}"),
                         elapsed_ms: elapsed.as_millis(),
                         rows: rows.clone(),
                     });

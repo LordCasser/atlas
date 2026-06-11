@@ -332,7 +332,7 @@ impl App {
                 if let Some(ctx) = &self.detail_context {
                     let cancel = Arc::new(AtomicBool::new(false));
                     self.job_manager.submit(TuiJob::TraceCallers {
-                        symbol_id: ctx.subject.id.clone(),
+                        symbol_id: ctx.subject.id,
                         depth: 20,
                         cancel,
                     });

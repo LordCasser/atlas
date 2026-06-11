@@ -387,8 +387,7 @@ impl ToolRouter {
             } => {
                 return (
                     format!(
-                        "Symbol not found: {qname}. Suggestions: {:?}",
-                        suggestions
+                        "Symbol not found: {qname}. Suggestions: {suggestions:?}"
                     ),
                     true,
                 );
@@ -530,7 +529,7 @@ impl ToolRouter {
         for w in &root_warnings {
             tracing::warn!("include_roots: {}", w);
         }
-        let lazy_warnings;
+        
         let mut structural_tier = atlas_engine::structs::precision::PrecisionTier::Exact;
         let mut lazy_diag: Option<LazyDiagnostics> = None;
 
@@ -631,7 +630,7 @@ impl ToolRouter {
             investigation.as_ref(),
             Some(&query_id),
         );
-        lazy_warnings = outcome.warnings;
+        let lazy_warnings = outcome.warnings;
         structural_tier = std::cmp::min(structural_tier, outcome.precision_tier);
         if let Some(ref lo) = outcome.lazy_outcome {
             let stats = self.get_capability_stats();

@@ -557,7 +557,6 @@ impl IndexPipeline {
 
                 // Record that graph build completed successfully.
                 let _ = self.store.bump_generation(KEY_GRAPH_GENERATION);
-                last_phase = PhaseName::SummaryBuild;
             }
             stats.phases.summary_build_ms = _p_t0.elapsed().as_millis() as u64;
         }

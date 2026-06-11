@@ -92,7 +92,7 @@ pub fn run_with_options(
         .name("atlas-index-worker".into())
         .stack_size(8 * 1024 * 1024) // 8 MiB — safety margin for extraction/resolution
         .spawn(move || {
-            let result = (|| -> anyhow::Result<_> {
+            let result = {
                 let options = IndexPipelineOptions::new(mode)
                     .with_include_patterns(include_clone)
                     .with_exclude_patterns(exclude_clone);
@@ -101,8 +101,8 @@ pub fn run_with_options(
                     progress: ps_worker,
                 };
                 let mut interrupted = || stop_w.load(Ordering::SeqCst);
-                Ok(pipeline.run(&sink, &mut interrupted)?)
-            })();
+                pipeline.run(&sink, &mut interrupted)
+            };
             // Always signal completion, even on error — prevents main thread hang.
             done_w.store(true, Ordering::SeqCst);
             result

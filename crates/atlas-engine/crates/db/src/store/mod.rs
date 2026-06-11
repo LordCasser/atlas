@@ -362,10 +362,10 @@ impl Store {
         let mut sqls: Vec<String> = Vec::new();
 
         for idx in crate::bulk_schema::ALL_WRITE_INDEXES {
-            sqls.push(format!("DROP INDEX IF EXISTS {}", idx));
+            sqls.push(format!("DROP INDEX IF EXISTS {idx}"));
         }
         for trigger in crate::bulk_schema::FTS_TRIGGERS {
-            sqls.push(format!("DROP TRIGGER IF EXISTS {}", trigger));
+            sqls.push(format!("DROP TRIGGER IF EXISTS {trigger}"));
         }
 
         tracing::info!(
@@ -632,7 +632,7 @@ impl Store {
                 "CREATE INDEX IF NOT EXISTS idx_cfg_edges_kind ON cfg_edges(kind)".into(),
             _ => {
                 tracing::warn!(target: "atlas_db", index_name = name, "unknown index in repair — using generic CREATE INDEX");
-                format!("CREATE INDEX IF NOT EXISTS {} ON unknown_table(unknown_column)", name)
+                format!("CREATE INDEX IF NOT EXISTS {name} ON unknown_table(unknown_column)")
             }
         }
     }

@@ -92,8 +92,7 @@ pub(crate) fn resolution_to_symbol_ids_and_meta(
             let symbol_ids: Vec<SymbolId> = candidates.iter().map(|c| c.symbol_id).collect();
             if symbol_ids.is_empty() {
                 Err(format!(
-                    "Symbol '{}' resolved but no matching symbols found",
-                    qname
+                    "Symbol '{qname}' resolved but no matching symbols found"
                 ))
             } else {
                 let meta = build_resolution_meta(candidates, symbol_ids.len());
@@ -101,7 +100,7 @@ pub(crate) fn resolution_to_symbol_ids_and_meta(
             }
         }
         SymbolResolution::NotFound { qname, suggestions } => {
-            let mut err = format!("Symbol not found: {}", qname);
+            let mut err = format!("Symbol not found: {qname}");
             if !suggestions.is_empty() {
                 err.push_str(&format!(". Did you mean: {}?", suggestions.join(", ")));
             }

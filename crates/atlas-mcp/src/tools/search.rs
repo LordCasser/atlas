@@ -357,11 +357,10 @@ impl ToolRouter {
                     if normalized.is_empty() {
                         return None;
                     }
-                    let file_id = FileId::generate(&normalized);
+                    let file_id = FileId::generate(normalized);
                     if self.store.get_file(&file_id).ok().flatten().is_none() {
                         return Some(format!(
-                            "file_path '{}' does not match any file in the project",
-                            fp
+                            "file_path '{fp}' does not match any file in the project"
                         ));
                     }
                 }
