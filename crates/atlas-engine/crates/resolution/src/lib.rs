@@ -942,6 +942,7 @@ mod tests {
     use extraction::create_frontend;
     use extraction::extract_file;
     use graph::{GraphBuilder, GraphEngine};
+    use types::FileFacts;
     use std::path::PathBuf;
 
     #[test]
@@ -1293,5 +1294,94 @@ main();
             let ctx = ResolutionContext::build(&store, lib_id).unwrap();
             let _ = ctx.find_in_file_by_name("greet");
         });
+    }
+
+    /// Regression: after callsite.callee denormalization was eliminated,
+    /// `find_resolved_callsites_by_callee()` must return identical results
+    /// from both `resolve_all()` (synchronous path) and
+    /// `resolve_all_parallel()` (parallel path).
+    ///
+    /// If the two paths diverge, queries that JOIN callsites + references
+    /// would return different callees depending on which resolution path
+    /// was used.
+    #[test]
+    fn resolved_callsites_consistent_across_resolution_paths() {
+        let ts = create_frontend(Language::TypeScript).unwrap();
+        let lib_id = FileId::generate("lib.ts");
+        let main_id = FileId::generate("main.ts");
+
+        let lib_src = r#"export function helper(x: number): number { return x * 2; }
+export function other(): string { return "unrelated"; }
+"#;
+        let main_src = r#"import { helper } from './lib';
+function main() { return helper(21); }
+function other() { return "no call"; }
+"#;
+
+        let extract = |_store: Arc<Store>, fid: &FileId, src: &str, path: &str| -> FileFacts {
+            extract_file(&ts, *fid, &PathBuf::from(path), src, "hash").unwrap()
+        };
+
+        // ── Path A: resolve_all (synchronous) ──
+        let store_a = Arc::new(Store::open_in_memory().unwrap());
+        store_a.init_schema().unwrap();
+        let lib_facts_a = extract(store_a.clone(), &lib_id, lib_src, "lib.ts");
+        let main_facts_a = extract(store_a.clone(), &main_id, main_src, "main.ts");
+        store_a.insert_file_facts(&lib_facts_a).unwrap();
+        store_a.insert_file_facts(&main_facts_a).unwrap();
+
+        let mut resolver_a = ReferenceResolver::new(store_a.clone());
+        let (_resolved_a, stats_a) = resolver_a.resolve_all().unwrap();
+        assert!(stats_a.resolved > 0, "sync resolution should resolve at least one reference");
+
+        let callee_id = store_a
+            .find_symbols_by_qname("helper")
+            .unwrap()
+            .first()
+            .unwrap()
+            .id;
+
+        let callsites_a = store_a
+            .find_resolved_callsites_by_callee(&callee_id)
+            .unwrap();
+
+        // ── Path B: resolve_all_parallel (parallel) ──
+        let store_b = Arc::new(Store::open_in_memory().unwrap());
+        store_b.init_schema().unwrap();
+        let lib_facts_b = extract(store_b.clone(), &lib_id, lib_src, "lib.ts");
+        let main_facts_b = extract(store_b.clone(), &main_id, main_src, "main.ts");
+        store_b.insert_file_facts(&lib_facts_b).unwrap();
+        store_b.insert_file_facts(&main_facts_b).unwrap();
+
+        let mut resolver_b = ReferenceResolver::new(store_b.clone());
+        let (_resolved_b, stats_b) = resolver_b
+            .resolve_all_parallel(store_b.clone(), None, None)
+            .unwrap();
+        assert!(stats_b.resolved > 0, "parallel resolution should resolve at least one reference");
+
+        let callsites_b = store_b
+            .find_resolved_callsites_by_callee(&callee_id)
+            .unwrap();
+
+        // ── Assertions ──
+        assert!(
+            !callsites_a.is_empty(),
+            "sync path should find callsites targeting helper()"
+        );
+        assert!(
+            !callsites_b.is_empty(),
+            "parallel path should find callsites targeting helper()"
+        );
+        assert_eq!(
+            callsites_a.len(),
+            callsites_b.len(),
+            "both paths should find the same number of callsites targeting helper()"
+        );
+
+        for (a, b) in callsites_a.iter().zip(callsites_b.iter()) {
+            assert_eq!(a.callsite.id, b.callsite.id, "callsite ids should match");
+            assert_eq!(a.callsite.caller, b.callsite.caller, "callsite callers should match");
+            assert_eq!(a.callee, b.callee, "callee symbols should match — resolution paths diverged!");
+        }
     }
 }
