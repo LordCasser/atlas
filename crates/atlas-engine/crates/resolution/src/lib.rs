@@ -532,6 +532,7 @@ impl ReferenceResolver {
         };
 
         let mut pending_resolutions: Vec<(ReferenceId, ResolvedTarget)> = Vec::new();
+        let mut callsite_pairs: Vec<(ReferenceId, SymbolId)> = Vec::new();
         let mut all_resolved: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
         let batch_size = 500;
 
@@ -547,6 +548,7 @@ impl ReferenceResolver {
             for reference in refs {
                 match self.resolve_one(reference, &ctx) {
                     Some(target) => {
+                        callsite_pairs.push((reference.id, target.symbol_id));
                         pending_resolutions.push((reference.id, target.clone()));
                         all_resolved.push((reference.clone(), target.clone()));
                         stats.resolved += 1;
@@ -567,6 +569,9 @@ impl ReferenceResolver {
         }
 
         self.flush_resolutions(&mut pending_resolutions, &mut stats);
+        if !callsite_pairs.is_empty() {
+            self.store.update_callsite_callees_batch(&callsite_pairs)?;
+        }
         Ok((all_resolved, stats))
     }
 
