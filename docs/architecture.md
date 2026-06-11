@@ -15,11 +15,11 @@
 
 ### 2.1 Crate 结构
 
-项目是 15 个 Cargo package 的 workspace：
+项目是 16 个 Cargo package 的 workspace：
 
 ```text
 crates/
-  atlas-engine/        facade crate，re-export types/db/extraction/resolution/graph/analysis/search/context/filesync/lazy
+  atlas-engine/        facade crate，re-export types/db/extraction/resolution/graph/analysis/search/context/filesync/lazy, dossier
     crates/types/      ID、enum、IR、binding、dataflow、CFG、trace 查询类型、capability profiles
     crates/workspace/  ProjectRoot、WorkspacePaths、SourcePath
     crates/db/         SQLite schema v1、Store API、readers、schema 迁移基础设施
@@ -32,6 +32,7 @@ crates/
     crates/context/    Agent context builder (Markdown)
     crates/filesync/   file discovery、change detection、file lock、watcher
     crates/lazy/       Lazy dataflow engine — on-demand analysis with budget caps
+    crates/dossier/    Symbol Dossier builder
   atlas-mcp/           MCP server (rmcp stdio JSON-RPC)、18 tools
   atlas-cli/           CLI binary + commands + integration tests
 ```
@@ -41,7 +42,7 @@ crates/
 ```text
 atlas-cli → atlas-engine, atlas-mcp
 atlas-mcp → atlas-engine
-atlas-engine → types, workspace, db, extraction, resolution, graph, analysis, search, context, filesync, lazy, domain-rules
+atlas-engine → types, workspace, db, extraction, resolution, graph, analysis, search, context, filesync, lazy, dossier, domain-rules
 filesync → graph, resolution, extraction, analysis, db, types, workspace
 search / context → graph, db, types
 analysis → db, types, workspace, domain-rules
