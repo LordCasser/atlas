@@ -415,4 +415,44 @@ impl Store {
         let rows = stmt.query_map(params![symbol_id], row_to_reference)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
+
+    /// Batch-update callee for multiple callsites at once.
+    /// Uses CASE WHEN to update in chunks of 300 pairs (900 params, under 999 SQLite limit).
+    pub fn update_callsite_callees_batch(
+        &self,
+        pairs: &[(ReferenceId, SymbolId)],
+    ) -> anyhow::Result<()> {
+        if pairs.is_empty() {
+            return Ok(());
+        }
+        const CHUNK: usize = 300;
+        let conn = self.lock();
+        for chunk in pairs.chunks(CHUNK) {
+            let mut sql =
+                String::from("UPDATE callsites SET callee = CASE reference_id ");
+            for i in 0..chunk.len() {
+                let b = i * 3;
+                sql.push_str(&format!("WHEN ?{} THEN ?{} ", b + 1, b + 2));
+            }
+            sql.push_str("END WHERE reference_id IN (");
+            for i in 0..chunk.len() {
+                if i > 0 {
+                    sql.push(',');
+                }
+                sql.push_str(&format!("?{}", i * 3 + 3));
+            }
+            sql.push(')');
+            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+                Vec::with_capacity(chunk.len() * 3);
+            for (ref_id, callee) in chunk {
+                params.push(Box::new(*ref_id));
+                params.push(Box::new(*callee));
+                params.push(Box::new(*ref_id));
+            }
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
+            conn.execute(&sql, param_refs.as_slice())?;
+        }
+        Ok(())
+    }
 }

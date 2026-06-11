@@ -600,11 +600,13 @@ impl ReferenceResolver {
                     ..Default::default()
                 };
                 let mut pending: Vec<(ReferenceId, ResolvedTarget)> = Vec::with_capacity(2000);
+                let mut callsite_pairs: Vec<(ReferenceId, SymbolId)> = Vec::new();
                 let mut all: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
                 let batch_size = 2000;
                 let mut processed = 0u64;
 
                 for (reference, target) in rx {
+                    callsite_pairs.push((reference.id, target.symbol_id));
                     pending.push((reference.id, target.clone()));
                     let strategy = target.strategy.as_str().to_string();
                     all.push((reference, target));
@@ -625,6 +627,9 @@ impl ReferenceResolver {
                     if let Some(ref ps) = writer_progress {
                         let _ = ps.lock().map(|mut p| p.set_current(processed));
                     }
+                }
+                if !callsite_pairs.is_empty() {
+                    writer_store.update_callsite_callees_batch(&callsite_pairs)?;
                 }
                 stats.unresolved = total_refs as usize - stats.resolved;
                 Ok((all, stats))

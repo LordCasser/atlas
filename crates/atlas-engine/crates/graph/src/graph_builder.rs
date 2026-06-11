@@ -309,20 +309,6 @@ impl GraphBuilder {
             EdgeKind::Calls | EdgeKind::Instantiates | EdgeKind::Implements
         ) {
             edge.location = Some(reference.range);
-
-            // Connect the callsite to the resolved callee symbol.
-            // The callsite was created during extraction with callee: None;
-            // now that resolution has determined the target, update it.
-            if let Err(e) = self
-                .store
-                .update_callsite_callee(&reference.id, &target.symbol_id)
-            {
-                tracing::warn!(
-                    "Failed to update callsite callee for ref {:?}: {:?}",
-                    reference.id,
-                    e,
-                );
-            }
         }
 
         edges.push(edge);
@@ -724,6 +710,178 @@ main();
             result,
             Some(handler_id),
             "function pointer should resolve to handler"
+        );
+    }
+
+    /// Verify that `edges_written` equals `edges_built` in the normal success
+    /// path and that no warnings are emitted.
+    #[test]
+    fn test_graph_builder_stats_tracks_edges_written() {
+        let main_src = r#"import { greet } from './lib';
+
+function main() {
+    const msg = greet("World");
+}
+main();
+"#;
+        let main_id = FileId::generate("main.ts");
+        let frontend = ts_frontend();
+        let main_facts = extract_file(
+            &frontend,
+            main_id,
+            &PathBuf::from("main.ts"),
+            main_src,
+            "abc",
+        )
+        .expect("main.ts extraction failed");
+
+        let lib_src = r#"export function greet(name: string): string {
+    return `Hello, ${name}!`;
+}
+"#;
+        let lib_id = FileId::generate("lib.ts");
+        let lib_facts = extract_file(
+            &frontend,
+            lib_id,
+            &PathBuf::from("lib.ts"),
+            lib_src,
+            "abc",
+        )
+        .expect("lib.ts extraction failed");
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        store.insert_file_facts(&main_facts).expect("insert main.ts");
+        store.insert_file_facts(&lib_facts).expect("insert lib.ts");
+
+        let mut resolver = ReferenceResolver::new(store.clone());
+        let (resolved, _res_stats) = resolver.resolve_all().expect("resolution failed");
+
+        let builder = GraphBuilder::new(store.clone());
+        let stats = builder.build_all(&resolved);
+
+        assert!(
+            stats.edges_built > 0,
+            "Expected >0 edges, got {}",
+            stats.edges_built
+        );
+        assert_eq!(
+            stats.edges_built, stats.edges_written,
+            "edges_written should equal edges_built on success"
+        );
+        assert!(
+            stats.warnings.is_empty(),
+            "expected no warnings, got: {:?}",
+            stats.warnings
+        );
+    }
+
+    /// Verify that when `batch_insert_edges` fails (e.g. FK violation),
+    /// `edges_written` is 0 while `edges_built` reflects the number of
+    /// edges constructed.
+    #[test]
+    fn test_graph_builder_stats_edges_written_zero_on_failure() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        let file_id = FileId::generate("src/test.ts");
+        let range = TextRange {
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 11,
+        };
+
+        // Insert the target symbol (exists in the DB) so create_edges_for_reference
+        // can look it up.
+        let target_id = SymbolId::generate(&file_id, "typescript", "target", "function", None);
+        let target_sym = SymbolDef {
+            id: target_id,
+            kind: SymbolKind::Function,
+            name: "target".to_string(),
+            qualified_name: "target".to_string(),
+            symbol_path: vec!["target".to_string()],
+            file_id,
+            language: Language::TypeScript,
+            range,
+            name_range: range,
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".to_string(),
+        };
+
+        store
+            .insert_file_facts(&FileFacts {
+                file: FileInfo {
+                    file_id,
+                    path: "src/test.ts".into(),
+                    language: Language::TypeScript,
+                    content_hash: "abc".into(),
+                    status: ParseStatus::Success,
+                },
+                symbols: vec![target_sym],
+                ..Default::default()
+            })
+            .unwrap();
+
+        // Create a source SymbolId that is NOT inserted into the store.
+        // The FK constraint on symbol_edges.source will reject the edge.
+        let ghost_source = SymbolId::generate(&file_id, "typescript", "ghost", "function", None);
+
+        let ref_id = ReferenceId::generate(
+            &file_id,
+            Some(&ghost_source),
+            0,
+            6,
+            "target",
+            ReferenceKind::Usage,
+        );
+        let reference = ReferenceUse {
+            id: ref_id,
+            file_id,
+            source_symbol: Some(ghost_source),
+            scope_id: None,
+            kind: ReferenceKind::Usage,
+            text: "target".to_string(),
+            name: "target".to_string(),
+            receiver: None,
+            arity: None,
+            range,
+            binding_id: None,
+            resolved: None,
+        };
+
+        let resolved_target = ResolvedTarget {
+            symbol_id: target_id,
+            confidence: Confidence::certain(),
+            strategy: ResolutionStrategy::ExactMatch,
+            provenance: Provenance::TreeSitter,
+        };
+
+        let builder = GraphBuilder::new(store.clone());
+        let stats = builder.build_all_with_symbols(&[(reference, resolved_target)], None);
+
+        assert!(
+            stats.edges_built > 0,
+            "Expected >0 edges built, got {}",
+            stats.edges_built
+        );
+        assert_eq!(
+            stats.edges_written, 0,
+            "edges_written should be 0 when batch insert fails"
+        );
+        assert!(
+            !stats.warnings.is_empty(),
+            "expected warnings on insert failure"
         );
     }
 }
