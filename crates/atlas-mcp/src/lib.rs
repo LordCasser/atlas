@@ -47,8 +47,15 @@ impl McpServer {
     /// Start the MCP server loop (blocking).
     ///
     /// Initializes a tokio runtime and runs the async serve loop.
+    ///
+    /// Uses a multi-thread runtime so that the progress-forwarder task
+    /// (`tokio::spawn` in `call_tool`) can run on a separate worker while
+    /// the primary tool dispatch holds the router mutex for synchronous
+    /// CPU/IO work.  Two workers are sufficient: one for the rmcp
+    /// serve loop, one for progress forwarding and `wait_for_task` polls.
     pub fn serve(self) -> anyhow::Result<()> {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_all()
             .build()?;
         rt.block_on(self.serve_async())
