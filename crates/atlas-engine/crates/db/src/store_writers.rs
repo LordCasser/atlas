@@ -15,13 +15,51 @@ use std::time::Instant;
 use tracing::debug_span;
 use types::*;
 
-/// Total wall-clock time of a `write_file_facts` call, in μs.
+/// Per-chunk DB write timing breakdown (nanoseconds).
 ///
-/// Collected only when the caller passes `Some(&mut timing)`; otherwise
-/// the function has zero additional overhead.
+/// Each field measures wall-clock time spent writing to the corresponding
+/// SQLite table during a single `write_file_facts` call.  `references_ns`
+/// includes both the `references` and `symbol_edges` table writes.
+///
+/// `commit_ns` is zero when returned from `write_file_facts` itself; the
+/// caller (`insert_file_facts_impl`) measures the transaction commit and
+/// adds it to the accumulated timing.
 #[derive(Debug, Default, Clone)]
 pub struct DbWriteTiming {
-    pub total_us: u64,
+    pub files_ns: u64,
+    pub symbols_ns: u64,
+    pub scopes_ns: u64,
+    pub references_ns: u64,
+    pub imports_ns: u64,
+    pub callsites_ns: u64,
+    pub bindings_ns: u64,
+    pub binding_uses_ns: u64,
+    pub data_nodes_ns: u64,
+    pub dataflow_edges_ns: u64,
+    pub cfg_nodes_ns: u64,
+    pub cfg_edges_ns: u64,
+    pub extraction_state_ns: u64,
+    pub commit_ns: u64,
+}
+
+impl DbWriteTiming {
+    /// Accumulate another timing into self.
+    pub fn accumulate(&mut self, other: &DbWriteTiming) {
+        self.files_ns += other.files_ns;
+        self.symbols_ns += other.symbols_ns;
+        self.scopes_ns += other.scopes_ns;
+        self.references_ns += other.references_ns;
+        self.imports_ns += other.imports_ns;
+        self.callsites_ns += other.callsites_ns;
+        self.bindings_ns += other.bindings_ns;
+        self.binding_uses_ns += other.binding_uses_ns;
+        self.data_nodes_ns += other.data_nodes_ns;
+        self.dataflow_edges_ns += other.dataflow_edges_ns;
+        self.cfg_nodes_ns += other.cfg_nodes_ns;
+        self.cfg_edges_ns += other.cfg_edges_ns;
+        self.extraction_state_ns += other.extraction_state_ns;
+        self.commit_ns += other.commit_ns;
+    }
 }
 
 /// Cached empty JSON array string — `Vec::new()` → `"[]"` is constant.
@@ -692,15 +730,17 @@ pub(crate) fn write_cfg_edges(conn: &Connection, edges: &[CfgEdge]) -> anyhow::R
 
 /// Write all components of a single [`FileFacts`] to the given connection.
 ///
-/// Used by both `insert_file_facts_impl` (batch insert) and
-/// `replace_file_facts` (atomic delete+insert for lazy structural).
+/// Returns per-table write timing in nanoseconds.  Used by both
+/// `insert_file_facts_impl` (batch insert) and `replace_file_facts`
+/// (atomic delete+insert for lazy structural).
 pub(crate) fn write_file_facts(
     conn: &Connection,
     facts: &FileFacts,
-    timing: Option<&mut DbWriteTiming>,
-) -> anyhow::Result<()> {
-    let _timer = timing.as_ref().map(|_| Instant::now());
+) -> anyhow::Result<DbWriteTiming> {
+    let mut timing = DbWriteTiming::default();
+
     // File info
+    let t0 = Instant::now();
     conn.execute(
         r#"INSERT OR REPLACE INTO files
            (file_id, path, language, content_hash, status, index_time)
@@ -713,200 +753,254 @@ pub(crate) fn write_file_facts(
             facts.file.status.as_str(),
         ],
     )?;
+    timing.files_ns = t0.elapsed().as_nanos() as u64;
 
     if !facts.symbols.is_empty() {
+        let t0 = Instant::now();
         write_symbols(conn, &facts.symbols, &facts.layer)?;
+        timing.symbols_ns = t0.elapsed().as_nanos() as u64;
     }
     if !facts.scopes.is_empty() {
+        let t0 = Instant::now();
         write_scopes(conn, &facts.scopes)?;
+        timing.scopes_ns = t0.elapsed().as_nanos() as u64;
     }
     if !facts.references.is_empty() {
+        let t0 = Instant::now();
         write_references(conn, &facts.references)?;
+        timing.references_ns = t0.elapsed().as_nanos() as u64;
     }
     if !facts.imports.is_empty() {
+        let t0 = Instant::now();
         write_imports(conn, &facts.imports)?;
+        timing.imports_ns = t0.elapsed().as_nanos() as u64;
     }
-    // Defensive FK guard
-    let _fk_span = debug_span!(target: "atlas_db", "db.fk_guard", file = %facts.file.path).entered();
-    let valid_sources: HashSet<_> = facts.symbols.iter().map(|s| s.id).collect();
-    if !facts.raw_edges.is_empty() {
-        if facts.raw_edges.iter().all(|e| valid_sources.contains(&e.source)) {
-            write_edges(conn, &facts.raw_edges)?;
-        } else {
-            let valid_edges: Vec<_> = facts
-                .raw_edges
-                .iter()
-                .filter(|e| valid_sources.contains(&e.source))
-                .cloned()
-                .collect();
-            if !valid_edges.is_empty() {
-                write_edges(conn, &valid_edges)?;
+
+    // Defensive FK guard — edges + callsites
+    if !facts.raw_edges.is_empty() || !facts.callsites.is_empty() {
+        let _fk_span = debug_span!(target: "atlas_db", "db.fk_guard", file = %facts.file.path).entered();
+        let valid_sources: HashSet<_> = facts.symbols.iter().map(|s| s.id).collect();
+
+        if !facts.raw_edges.is_empty() {
+            let t0 = Instant::now();
+            if facts.raw_edges.iter().all(|e| valid_sources.contains(&e.source)) {
+                write_edges(conn, &facts.raw_edges)?;
+            } else {
+                let valid_edges: Vec<_> = facts
+                    .raw_edges
+                    .iter()
+                    .filter(|e| valid_sources.contains(&e.source))
+                    .cloned()
+                    .collect();
+                if !valid_edges.is_empty() {
+                    write_edges(conn, &valid_edges)?;
+                }
             }
+            timing.references_ns += t0.elapsed().as_nanos() as u64;
         }
-    }
-    if !facts.callsites.is_empty() {
-        if facts.callsites.iter().all(|cs| valid_sources.contains(&cs.caller)) {
-            write_callsites(conn, &facts.callsites)?;
-        } else {
-            let valid_callsites: Vec<_> = facts
-                .callsites
-                .iter()
-                .filter(|cs| valid_sources.contains(&cs.caller))
-                .cloned()
-                .collect();
-            if !valid_callsites.is_empty() {
-                write_callsites(conn, &valid_callsites)?;
+        if !facts.callsites.is_empty() {
+            let t0 = Instant::now();
+            if facts.callsites.iter().all(|cs| valid_sources.contains(&cs.caller)) {
+                write_callsites(conn, &facts.callsites)?;
+            } else {
+                let valid_callsites: Vec<_> = facts
+                    .callsites
+                    .iter()
+                    .filter(|cs| valid_sources.contains(&cs.caller))
+                    .cloned()
+                    .collect();
+                if !valid_callsites.is_empty() {
+                    write_callsites(conn, &valid_callsites)?;
+                }
             }
+            timing.callsites_ns = t0.elapsed().as_nanos() as u64;
         }
+        drop(_fk_span);
     }
 
     // Binding data — FK guarded
-    let valid_scope_ids: HashSet<_> = facts.scopes.iter().map(|s| s.id).collect();
-    let (_valid_bindings, valid_binding_ids): (Vec<_>, HashSet<BindingId>) =
-        if facts.bindings.iter().all(|b| {
-            b.function_id.is_none_or(|fid| valid_sources.contains(&fid))
-                && valid_scope_ids.contains(&b.scope_id)
-                && b.symbol_id.is_none_or(|sid| valid_sources.contains(&sid))
-        }) {
-            if !facts.bindings.is_empty() {
+    if !facts.bindings.is_empty() || !facts.binding_uses.is_empty() {
+        let valid_sources: HashSet<_> = facts.symbols.iter().map(|s| s.id).collect();
+        let valid_scope_ids: HashSet<_> = facts.scopes.iter().map(|s| s.id).collect();
+        let valid_binding_ids: HashSet<BindingId>;
+
+        if !facts.bindings.is_empty() {
+            let t0 = Instant::now();
+            valid_binding_ids = if facts.bindings.iter().all(|b| {
+                b.function_id.is_none_or(|fid| valid_sources.contains(&fid))
+                    && valid_scope_ids.contains(&b.scope_id)
+                    && b.symbol_id.is_none_or(|sid| valid_sources.contains(&sid))
+            }) {
                 write_bindings(conn, &facts.bindings)?;
-            }
-            let ids: HashSet<BindingId> = facts.bindings.iter().map(|b| b.id).collect();
-            (Vec::new(), ids)
+                facts.bindings.iter().map(|b| b.id).collect()
+            } else {
+                let valid: Vec<_> = facts
+                    .bindings
+                    .iter()
+                    .filter(|b| {
+                        b.function_id.is_none_or(|fid| valid_sources.contains(&fid))
+                            && valid_scope_ids.contains(&b.scope_id)
+                            && b.symbol_id.is_none_or(|sid| valid_sources.contains(&sid))
+                    })
+                    .cloned()
+                    .collect();
+                if !valid.is_empty() {
+                    write_bindings(conn, &valid)?;
+                }
+                valid.iter().map(|b| b.id).collect()
+            };
+            timing.bindings_ns = t0.elapsed().as_nanos() as u64;
         } else {
-            let valid: Vec<_> = facts
-                .bindings
-                .iter()
+            valid_binding_ids = HashSet::new();
+        }
+
+        if !facts.binding_uses.is_empty() {
+            let t0 = Instant::now();
+            if facts.binding_uses.iter().all(|bu| {
+                bu.binding_id.is_some_and(|bid| valid_binding_ids.contains(&bid))
+                    && valid_scope_ids.contains(&bu.scope_id)
+            }) {
+                write_binding_uses(conn, &facts.binding_uses)?;
+            } else {
+                let valid_uses: Vec<_> = facts
+                    .binding_uses
+                    .iter()
+                    .filter(|bu| {
+                        bu.binding_id.is_some_and(|bid| valid_binding_ids.contains(&bid))
+                            && valid_scope_ids.contains(&bu.scope_id)
+                    })
+                    .cloned()
+                    .collect();
+                if !valid_uses.is_empty() {
+                    write_binding_uses(conn, &valid_uses)?;
+                }
+            }
+            timing.binding_uses_ns = t0.elapsed().as_nanos() as u64;
+        }
+    }
+
+    // Dataflow + CFG data — FK guarded
+    if !facts.data_nodes.is_empty() || !facts.dataflow_edges.is_empty()
+        || !facts.cfg_nodes.is_empty() || !facts.cfg_edges.is_empty()
+    {
+        let valid_sources: HashSet<_> = facts.symbols.iter().map(|s| s.id).collect();
+        let valid_scope_ids: HashSet<_> = facts.scopes.iter().map(|s| s.id).collect();
+        let valid_binding_ids: HashSet<BindingId> = if facts.bindings.is_empty() {
+            HashSet::new()
+        } else {
+            facts.bindings.iter()
                 .filter(|b| {
                     b.function_id.is_none_or(|fid| valid_sources.contains(&fid))
                         && valid_scope_ids.contains(&b.scope_id)
                         && b.symbol_id.is_none_or(|sid| valid_sources.contains(&sid))
                 })
-                .cloned()
-                .collect();
-            if !valid.is_empty() {
-                write_bindings(conn, &valid)?;
-            }
-            let ids: HashSet<BindingId> = valid.iter().map(|b| b.id).collect();
-            (valid, ids)
-        };
-    if !facts.binding_uses.is_empty() {
-        if facts.binding_uses.iter().all(|bu| {
-            bu.binding_id.is_some_and(|bid| valid_binding_ids.contains(&bid))
-                && valid_scope_ids.contains(&bu.scope_id)
-        }) {
-            write_binding_uses(conn, &facts.binding_uses)?;
-        } else {
-            let valid_uses: Vec<_> = facts
-                .binding_uses
-                .iter()
-                .filter(|bu| {
-                    bu.binding_id.is_some_and(|bid| valid_binding_ids.contains(&bid))
-                        && valid_scope_ids.contains(&bu.scope_id)
-                })
-                .cloned()
-                .collect();
-            if !valid_uses.is_empty() {
-                write_binding_uses(conn, &valid_uses)?;
-            }
-        }
-    }
-
-    // Dataflow + CFG data — FK guarded
-    if !facts.data_nodes.is_empty() {
-        if facts.data_nodes.iter().all(|dn| {
-            dn.function_id.is_none_or(|fid| valid_sources.contains(&fid))
-                && dn.binding_id.is_none_or(|bid| valid_binding_ids.contains(&bid))
-        }) {
-            write_data_nodes(conn, &facts.data_nodes)?;
-        } else {
-            let safe_nodes: Vec<_> = facts
-                .data_nodes
-                .iter()
-                .filter(|dn| {
-                    dn.function_id.is_none_or(|fid| valid_sources.contains(&fid))
-                        && dn.binding_id.is_none_or(|bid| valid_binding_ids.contains(&bid))
-                })
-                .cloned()
-                .collect();
-            if !safe_nodes.is_empty() {
-                write_data_nodes(conn, &safe_nodes)?;
-            }
-        }
-    }
-    if !facts.dataflow_edges.is_empty() {
-        let valid_node_ids: HashSet<_> = if facts.data_nodes.is_empty() {
-            HashSet::new()
-        } else {
-            facts.data_nodes.iter()
-                .filter(|dn| {
-                    dn.function_id.is_none_or(|fid| valid_sources.contains(&fid))
-                        && dn.binding_id.is_none_or(|bid| valid_binding_ids.contains(&bid))
-                })
-                .map(|dn| dn.id)
+                .map(|b| b.id)
                 .collect()
         };
-        if facts.dataflow_edges.iter().all(|e| {
-            valid_node_ids.contains(&e.source) && valid_node_ids.contains(&e.target)
-        }) {
-            write_dataflow_edges(conn, &facts.dataflow_edges)?;
-        } else {
-            let safe_edges: Vec<_> = facts
-                .dataflow_edges
-                .iter()
-                .filter(|e| {
-                    valid_node_ids.contains(&e.source) && valid_node_ids.contains(&e.target)
-                })
-                .cloned()
-                .collect();
-            if !safe_edges.is_empty() {
-                write_dataflow_edges(conn, &safe_edges)?;
+
+        if !facts.data_nodes.is_empty() {
+            let t0 = Instant::now();
+            if facts.data_nodes.iter().all(|dn| {
+                dn.function_id.is_none_or(|fid| valid_sources.contains(&fid))
+                    && dn.binding_id.is_none_or(|bid| valid_binding_ids.contains(&bid))
+            }) {
+                write_data_nodes(conn, &facts.data_nodes)?;
+            } else {
+                let safe_nodes: Vec<_> = facts
+                    .data_nodes
+                    .iter()
+                    .filter(|dn| {
+                        dn.function_id.is_none_or(|fid| valid_sources.contains(&fid))
+                            && dn.binding_id.is_none_or(|bid| valid_binding_ids.contains(&bid))
+                    })
+                    .cloned()
+                    .collect();
+                if !safe_nodes.is_empty() {
+                    write_data_nodes(conn, &safe_nodes)?;
+                }
             }
+            timing.data_nodes_ns = t0.elapsed().as_nanos() as u64;
         }
-    }
-    if !facts.cfg_nodes.is_empty() {
-        if facts.cfg_nodes.iter().all(|cn| valid_sources.contains(&cn.function_id)) {
-            write_cfg_nodes(conn, &facts.cfg_nodes)?;
-        } else {
-            let safe_cfg: Vec<_> = facts
+        if !facts.dataflow_edges.is_empty() {
+            let valid_node_ids: HashSet<_> = if facts.data_nodes.is_empty() {
+                HashSet::new()
+            } else {
+                facts.data_nodes.iter()
+                    .filter(|dn| {
+                        dn.function_id.is_none_or(|fid| valid_sources.contains(&fid))
+                            && dn.binding_id.is_none_or(|bid| valid_binding_ids.contains(&bid))
+                    })
+                    .map(|dn| dn.id)
+                    .collect()
+            };
+            let t0 = Instant::now();
+            if facts.dataflow_edges.iter().all(|e| {
+                valid_node_ids.contains(&e.source) && valid_node_ids.contains(&e.target)
+            }) {
+                write_dataflow_edges(conn, &facts.dataflow_edges)?;
+            } else {
+                let safe_edges: Vec<_> = facts
+                    .dataflow_edges
+                    .iter()
+                    .filter(|e| {
+                        valid_node_ids.contains(&e.source) && valid_node_ids.contains(&e.target)
+                    })
+                    .cloned()
+                    .collect();
+                if !safe_edges.is_empty() {
+                    write_dataflow_edges(conn, &safe_edges)?;
+                }
+            }
+            timing.dataflow_edges_ns = t0.elapsed().as_nanos() as u64;
+        }
+        if !facts.cfg_nodes.is_empty() {
+            let t0 = Instant::now();
+            if facts.cfg_nodes.iter().all(|cn| valid_sources.contains(&cn.function_id)) {
+                write_cfg_nodes(conn, &facts.cfg_nodes)?;
+            } else {
+                let safe_cfg: Vec<_> = facts
+                    .cfg_nodes
+                    .iter()
+                    .filter(|cn| valid_sources.contains(&cn.function_id))
+                    .cloned()
+                    .collect();
+                if !safe_cfg.is_empty() {
+                    write_cfg_nodes(conn, &safe_cfg)?;
+                }
+            }
+            timing.cfg_nodes_ns = t0.elapsed().as_nanos() as u64;
+        }
+        if !facts.cfg_edges.is_empty() {
+            let valid_cfg_ids: HashSet<_> = facts
                 .cfg_nodes
                 .iter()
                 .filter(|cn| valid_sources.contains(&cn.function_id))
-                .cloned()
+                .map(|cn| cn.id)
                 .collect();
-            if !safe_cfg.is_empty() {
-                write_cfg_nodes(conn, &safe_cfg)?;
+            let t0 = Instant::now();
+            if facts.cfg_edges.iter().all(|e| {
+                valid_cfg_ids.contains(&e.source) && valid_cfg_ids.contains(&e.target)
+            }) {
+                write_cfg_edges(conn, &facts.cfg_edges)?;
+            } else {
+                let safe_cfg_edges: Vec<_> = facts
+                    .cfg_edges
+                    .iter()
+                    .filter(|e| {
+                        valid_cfg_ids.contains(&e.source) && valid_cfg_ids.contains(&e.target)
+                    })
+                    .cloned()
+                    .collect();
+                if !safe_cfg_edges.is_empty() {
+                    write_cfg_edges(conn, &safe_cfg_edges)?;
+                }
             }
+            timing.cfg_edges_ns = t0.elapsed().as_nanos() as u64;
         }
     }
-    if !facts.cfg_edges.is_empty() {
-        let valid_cfg_ids: HashSet<_> = facts
-            .cfg_nodes
-            .iter()
-            .filter(|cn| valid_sources.contains(&cn.function_id))
-            .map(|cn| cn.id)
-            .collect();
-        if facts.cfg_edges.iter().all(|e| {
-            valid_cfg_ids.contains(&e.source) && valid_cfg_ids.contains(&e.target)
-        }) {
-            write_cfg_edges(conn, &facts.cfg_edges)?;
-        } else {
-            let safe_cfg_edges: Vec<_> = facts
-                .cfg_edges
-                .iter()
-                .filter(|e| {
-                    valid_cfg_ids.contains(&e.source) && valid_cfg_ids.contains(&e.target)
-                })
-                .cloned()
-                .collect();
-            if !safe_cfg_edges.is_empty() {
-                write_cfg_edges(conn, &safe_cfg_edges)?;
-            }
-        }
-    }
-    drop(_fk_span);
 
     // Record per-file per-layer index status.
+    let t0 = Instant::now();
     let status = if facts.budget_exceeded {
         "partial"
     } else {
@@ -933,14 +1027,9 @@ pub(crate) fn write_file_facts(
             capability_mask.bits() as i64,
         ],
     )?;
+    timing.extraction_state_ns = t0.elapsed().as_nanos() as u64;
 
-    if let Some(t) = timing {
-        if let Some(start) = _timer {
-            t.total_us += start.elapsed().as_micros() as u64;
-        }
-    }
-
-    Ok(())
+    Ok(timing)
 }
 
 #[cfg(test)]
@@ -1919,7 +2008,7 @@ mod tests {
             ..Default::default()
         };
 
-        write_file_facts(&conn, &facts, None).unwrap();
+        write_file_facts(&conn, &facts).unwrap();
 
         // Verify all data was written (fast-path = no filtering needed)
         assert_eq!(count_rows(&conn, "files"), 1);
@@ -1972,7 +2061,7 @@ mod tests {
             ..Default::default()
         };
 
-        write_file_facts(&conn, &facts, None).unwrap();
+        write_file_facts(&conn, &facts).unwrap();
 
         // Only the valid edge should be written; no error for invalid one
         assert_eq!(count_rows(&conn, "symbol_edges"), 1);
@@ -2014,7 +2103,7 @@ mod tests {
             ..Default::default()
         };
 
-        write_file_facts(&conn, &facts, None).unwrap();
+        write_file_facts(&conn, &facts).unwrap();
 
         // valid_scope_ids is empty → all bindings filtered
         assert_eq!(count_rows(&conn, "bindings"), 0);
@@ -2061,9 +2150,111 @@ mod tests {
             ..Default::default()
         };
 
-        write_file_facts(&conn, &facts, None).unwrap();
+        write_file_facts(&conn, &facts).unwrap();
 
         // Only 2 bindings with valid scope FK should be written
         assert_eq!(count_rows(&conn, "bindings"), 2);
+    }
+
+    #[test]
+    fn test_db_write_timing_default_all_zeros() {
+        let t = DbWriteTiming::default();
+        assert_eq!(t.files_ns, 0);
+        assert_eq!(t.symbols_ns, 0);
+        assert_eq!(t.scopes_ns, 0);
+        assert_eq!(t.references_ns, 0);
+        assert_eq!(t.imports_ns, 0);
+        assert_eq!(t.callsites_ns, 0);
+        assert_eq!(t.bindings_ns, 0);
+        assert_eq!(t.binding_uses_ns, 0);
+        assert_eq!(t.data_nodes_ns, 0);
+        assert_eq!(t.dataflow_edges_ns, 0);
+        assert_eq!(t.cfg_nodes_ns, 0);
+        assert_eq!(t.cfg_edges_ns, 0);
+        assert_eq!(t.extraction_state_ns, 0);
+        assert_eq!(t.commit_ns, 0);
+    }
+
+    #[test]
+    fn test_db_write_timing_nonzero_on_populated_tables() {
+        let conn = facts_test_conn();
+        let file_id = FileId::generate("test.rs");
+
+        let sym0 = facts_help_sym(file_id, "func_a", 0);
+        let sym1 = facts_help_sym(file_id, "func_b", 1);
+        let scope = facts_help_scope(file_id, 0);
+        let edge = facts_help_edge(file_id, sym0.id, sym1.id, 0);
+        let cs = facts_help_cs(file_id, sym0.id, sym1.id, 0);
+        let binding = facts_help_binding(file_id, Some(sym1.id), scope.id, Some(sym0.id), 0);
+        let bu = facts_help_bu(file_id, binding.id, scope.id, 0);
+        let dn0 = facts_help_dn(file_id, Some(sym1.id), Some(binding.id), 0);
+        let dn1 = facts_help_dn(file_id, Some(sym1.id), Some(binding.id), 1);
+        let dfe = facts_help_dfe(dn0.id, dn1.id, 0);
+        let cn0 = facts_help_cn(file_id, sym1.id, 0);
+        let cn1 = facts_help_cn(file_id, sym1.id, 1);
+        let ce = facts_help_ce(cn0.id, cn1.id);
+
+        let facts = FileFacts {
+            file: FileInfo {
+                file_id,
+                path: "test.rs".into(),
+                language: Language::Rust,
+                content_hash: "hash".into(),
+                status: ParseStatus::Success,
+            },
+            symbols: vec![sym0, sym1],
+            scopes: vec![scope],
+            references: vec![],
+            imports: vec![],
+            exports: vec![],
+            raw_edges: vec![edge],
+            callsites: vec![cs],
+            diagnostics: vec![],
+            bindings: vec![binding],
+            binding_uses: vec![bu],
+            data_nodes: vec![dn0, dn1],
+            dataflow_edges: vec![dfe],
+            cfg_nodes: vec![cn0, cn1],
+            cfg_edges: vec![ce],
+            layer: "structural".to_string(),
+            ..Default::default()
+        };
+
+        let timing = write_file_facts(&conn, &facts).unwrap();
+
+        // file insert always runs → should be non-zero
+        assert!(timing.files_ns > 0, "files_ns should be >0, got {}", timing.files_ns);
+        // extraction_state write always runs
+        assert!(timing.extraction_state_ns > 0, "extraction_state_ns should be >0, got {}", timing.extraction_state_ns);
+        // symbols were written
+        assert!(timing.symbols_ns > 0, "symbols_ns should be >0, got {}", timing.symbols_ns);
+        // scopes were written
+        assert!(timing.scopes_ns > 0, "scopes_ns should be >0, got {}", timing.scopes_ns);
+        // edges were written (included in references_ns)
+        assert!(timing.references_ns > 0, "references_ns should be >0, got {}", timing.references_ns);
+        // callsites were written
+        assert!(timing.callsites_ns > 0, "callsites_ns should be >0, got {}", timing.callsites_ns);
+        // bindings were written
+        assert!(timing.bindings_ns > 0, "bindings_ns should be >0, got {}", timing.bindings_ns);
+        // binding_uses were written
+        assert!(timing.binding_uses_ns > 0, "binding_uses_ns should be >0, got {}", timing.binding_uses_ns);
+        // data_nodes were written
+        assert!(timing.data_nodes_ns > 0, "data_nodes_ns should be >0, got {}", timing.data_nodes_ns);
+        // dataflow_edges were written
+        assert!(timing.dataflow_edges_ns > 0, "dataflow_edges_ns should be >0, got {}", timing.dataflow_edges_ns);
+        // cfg_nodes were written
+        assert!(timing.cfg_nodes_ns > 0, "cfg_nodes_ns should be >0, got {}", timing.cfg_nodes_ns);
+        // cfg_edges were written
+        assert!(timing.cfg_edges_ns > 0, "cfg_edges_ns should be >0, got {}", timing.cfg_edges_ns);
+        // imports had nothing to write
+        assert_eq!(timing.imports_ns, 0);
+        // commit is not measured in write_file_facts
+        assert_eq!(timing.commit_ns, 0);
+
+        // verify accumulate works
+        let mut acc = DbWriteTiming::default();
+        acc.accumulate(&timing);
+        assert_eq!(acc.files_ns, timing.files_ns);
+        assert_eq!(acc.symbols_ns, timing.symbols_ns);
     }
 }

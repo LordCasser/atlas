@@ -108,6 +108,9 @@ pub struct IndexPipelineStats {
     pub symbols: usize,
     pub resolved: usize,
     pub edges_built: usize,
+    /// Number of schema objects (indexes/triggers) restored by
+    /// [`Store::ensure_required_schema_objects`] during finalization.
+    pub schema_repaired: usize,
     /// Per-phase wall-clock timing breakdown.
     pub phases: PhaseTiming,
 }

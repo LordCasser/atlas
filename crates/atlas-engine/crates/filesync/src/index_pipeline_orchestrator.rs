@@ -596,6 +596,18 @@ impl IndexPipeline {
             });
             return Err(e);
         }
+
+        // Repair any schema objects (indexes/triggers) that may have been
+        // lost during bulk-load deferred index optimization.
+        let repaired = self.store.ensure_required_schema_objects()?;
+        stats.schema_repaired = repaired;
+        if repaired > 0 {
+            info!(
+                target: "atlas_sync",
+                "Schema repaired: {} missing indexes/triggers restored", repaired
+            );
+        }
+
         sink.emit(ProgressEvent::PhaseFinished {
             phase: PhaseName::Finalize,
             succeeded: 1,

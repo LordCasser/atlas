@@ -38,7 +38,8 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use db::Store;
-use tracing::{info, info_span};
+use db::DbWriteTiming;
+use tracing::{debug, info, info_span};
 use extraction::{
     ExtractionMode, LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig,
     create_frontend,
@@ -109,6 +110,114 @@ impl WriteRows {
         self.cfg_nodes += other.cfg_nodes;
         self.cfg_edges += other.cfg_edges;
         self.raw_edges += other.raw_edges;
+    }
+}
+
+// ── Weight-budget chunking ─────────────────────────────────────────────
+
+/// Row-count budget for weight-based chunking.
+#[allow(dead_code)]
+pub struct WeightBudget {
+    /// Maximum weighted row count per chunk
+    max_weight: usize,
+    /// Maximum files per chunk (hard cap, prevents single giant file from blocking)
+    max_files: usize,
+}
+
+impl Default for WeightBudget {
+    fn default() -> Self {
+        Self {
+            // Target: ~100K references equivalent per chunk
+            // 100K * 10 (reference weight) = 1,000,000 weight units
+            max_weight: 1_000_000,
+            max_files: 500, // same as current hard cap
+        }
+    }
+}
+
+impl WeightBudget {
+    fn total(&self) -> usize {
+        self.max_weight
+    }
+}
+
+/// Split FileFacts into chunks where each chunk stays within a row-count budget.
+///
+/// Uses per-entity weights to estimate row count from FileFacts. A greedy
+/// accumulation algorithm — files are added to the current chunk until adding
+/// the next file would exceed the budget.
+fn chunk_by_weight_budget<'a>(
+    facts: &'a [FileFacts],
+    budget: &WeightBudget,
+) -> Vec<&'a [FileFacts]> {
+    let mut chunks: Vec<&[FileFacts]> = Vec::new();
+    let mut chunk_start = 0;
+    let mut current_weight = WeightAccumulator::default();
+
+    for (i, fact) in facts.iter().enumerate() {
+        let file_weight = WeightAccumulator::from_facts(fact);
+        let projected = current_weight.total() + file_weight.total();
+
+        // Start a new chunk if this file would push us over budget
+        // AND we already have files in the current chunk
+        if projected > budget.total() && i > chunk_start {
+            chunks.push(&facts[chunk_start..i]);
+            chunk_start = i;
+            current_weight = file_weight; // reset to just this file
+        } else {
+            current_weight.add(&file_weight);
+        }
+    }
+
+    // Final chunk
+    if chunk_start < facts.len() {
+        chunks.push(&facts[chunk_start..]);
+    }
+
+    chunks
+}
+
+#[derive(Debug, Default, Clone)]
+struct WeightAccumulator {
+    references: usize,
+    callsites: usize,
+    symbols: usize,
+    scopes: usize,
+    imports: usize,
+    bindings: usize,
+}
+
+impl WeightAccumulator {
+    fn from_facts(fact: &FileFacts) -> Self {
+        Self {
+            references: fact.references.len(),
+            callsites: fact.callsites.len(),
+            symbols: fact.symbols.len(),
+            scopes: fact.scopes.len(),
+            imports: fact.imports.len(),
+            bindings: fact.bindings.len(),
+        }
+    }
+
+    fn add(&mut self, other: &Self) {
+        self.references += other.references;
+        self.callsites += other.callsites;
+        self.symbols += other.symbols;
+        self.scopes += other.scopes;
+        self.imports += other.imports;
+        self.bindings += other.bindings;
+    }
+
+    fn total(&self) -> usize {
+        // Weights from user specification:
+        // references * 1.0, callsites * 1.2, symbols * 1.5, scopes * 0.8, imports * 0.6, bindings * 0.5
+        // Using fixed-point arithmetic (multiply by 10 to keep integer math):
+        (self.references * 10)
+            + (self.callsites * 12)
+            + (self.symbols * 15)
+            + (self.scopes * 8)
+            + (self.imports * 6)
+            + (self.bindings * 5)
     }
 }
 
@@ -546,23 +655,75 @@ pub fn phase_write_batched(
     let mut next_checkpoint = checkpoint_interval;
 
     let all_facts: Vec<FileFacts> = extracted.items.into_iter().map(|ef| ef.facts).collect();
-    let chunks_total = all_facts.chunks(batch_size).count();
+    let budget = WeightBudget::default();
+    let chunks = chunk_by_weight_budget(&all_facts, &budget);
+    let chunks_total = chunks.len();
 
-    for (chunk_idx, chunk) in all_facts.chunks(batch_size).enumerate() {
+    debug!(
+        target: "atlas_db_write",
+        chunk_count = chunks.len(),
+        "Weight-budget chunking: {} files → {} chunks",
+        all_facts.len(),
+        chunks.len(),
+    );
+
+    let mut running_file_offset = 0;
+    let mut total_timing = DbWriteTiming::default();
+    let mut slowest_chunk_timing: Option<(usize, DbWriteTiming)> = None; // (chunk_idx, timing)
+    for (chunk_idx, chunk) in chunks.iter().copied().enumerate() {
         if interrupted() {
             return Ok(stats);
         }
 
         let rows = WriteRows::from_facts(chunk);
         let chunk_started = Instant::now();
-        let file_start_idx = chunk_idx * batch_size;
-        let file_end_idx = file_start_idx + chunk.len();
+        let file_start_idx = running_file_offset;
+        let file_end_idx = running_file_offset + chunk.len();
 
         let write_result = store.insert_file_facts_batch(chunk);
         let elapsed = chunk_started.elapsed();
 
         match write_result {
-            Ok(_) => {
+            Ok(chunk_timing) => {
+                // Accumulate per-table timing
+                total_timing.accumulate(&chunk_timing);
+                // Track slowest chunk by total wall time
+                let chunk_total_ns = chunk_timing.files_ns
+                    + chunk_timing.symbols_ns
+                    + chunk_timing.scopes_ns
+                    + chunk_timing.references_ns
+                    + chunk_timing.imports_ns
+                    + chunk_timing.callsites_ns
+                    + chunk_timing.bindings_ns
+                    + chunk_timing.binding_uses_ns
+                    + chunk_timing.data_nodes_ns
+                    + chunk_timing.dataflow_edges_ns
+                    + chunk_timing.cfg_nodes_ns
+                    + chunk_timing.cfg_edges_ns
+                    + chunk_timing.extraction_state_ns
+                    + chunk_timing.commit_ns;
+                if slowest_chunk_timing
+                    .as_ref()
+                    .is_none_or(|(_, prev)| {
+                        let prev_total = prev.files_ns
+                            + prev.symbols_ns
+                            + prev.scopes_ns
+                            + prev.references_ns
+                            + prev.imports_ns
+                            + prev.callsites_ns
+                            + prev.bindings_ns
+                            + prev.binding_uses_ns
+                            + prev.data_nodes_ns
+                            + prev.dataflow_edges_ns
+                            + prev.cfg_nodes_ns
+                            + prev.cfg_edges_ns
+                            + prev.extraction_state_ns
+                            + prev.commit_ns;
+                        chunk_total_ns > prev_total
+                    })
+                {
+                    slowest_chunk_timing = Some((chunk_idx, chunk_timing));
+                }
                 // Record slow chunks (same threshold as logging)
                 let slow = elapsed.as_secs() > 2 || rows.references > 100_000;
                 if slow {
@@ -645,12 +806,15 @@ pub fn phase_write_batched(
         }
 
         on_progress(stats.written as u64);
+
+        running_file_offset += chunk.len();
     }
 
     let _ = store.checkpoint_wal_truncate();
     stats.rows = total_rows.clone();
 
-    tracing::info!(
+    // Log per-table write timing breakdown
+    info!(
         target: "atlas_db_write",
         written = stats.written,
         batch_failures = stats.batch_failures,
@@ -661,6 +825,50 @@ pub fn phase_write_batched(
         total_callsites = total_rows.callsites,
         "db write phase complete"
     );
+
+    // Per-table timing summary (ms)
+    let ns_to_ms = |ns: u64| -> f64 { ns as f64 / 1_000_000.0 };
+    info!(
+        target: "atlas_db_write",
+        files_ms = ns_to_ms(total_timing.files_ns),
+        symbols_ms = ns_to_ms(total_timing.symbols_ns),
+        scopes_ms = ns_to_ms(total_timing.scopes_ns),
+        references_ms = ns_to_ms(total_timing.references_ns),
+        imports_ms = ns_to_ms(total_timing.imports_ns),
+        callsites_ms = ns_to_ms(total_timing.callsites_ns),
+        bindings_ms = ns_to_ms(total_timing.bindings_ns),
+        binding_uses_ms = ns_to_ms(total_timing.binding_uses_ns),
+        data_nodes_ms = ns_to_ms(total_timing.data_nodes_ns),
+        dataflow_edges_ms = ns_to_ms(total_timing.dataflow_edges_ns),
+        cfg_nodes_ms = ns_to_ms(total_timing.cfg_nodes_ns),
+        cfg_edges_ms = ns_to_ms(total_timing.cfg_edges_ns),
+        extraction_state_ms = ns_to_ms(total_timing.extraction_state_ns),
+        commit_ms = ns_to_ms(total_timing.commit_ns),
+        "per-table DB write timing (ms)"
+    );
+
+    // Slowest chunk breakdown
+    if let Some((slow_idx, slow_timing)) = &slowest_chunk_timing {
+        info!(
+            target: "atlas_db_write",
+            slowest_chunk_index = slow_idx,
+            files_ms = ns_to_ms(slow_timing.files_ns),
+            symbols_ms = ns_to_ms(slow_timing.symbols_ns),
+            scopes_ms = ns_to_ms(slow_timing.scopes_ns),
+            references_ms = ns_to_ms(slow_timing.references_ns),
+            imports_ms = ns_to_ms(slow_timing.imports_ns),
+            callsites_ms = ns_to_ms(slow_timing.callsites_ns),
+            bindings_ms = ns_to_ms(slow_timing.bindings_ns),
+            binding_uses_ms = ns_to_ms(slow_timing.binding_uses_ns),
+            data_nodes_ms = ns_to_ms(slow_timing.data_nodes_ns),
+            dataflow_edges_ms = ns_to_ms(slow_timing.dataflow_edges_ns),
+            cfg_nodes_ms = ns_to_ms(slow_timing.cfg_nodes_ns),
+            cfg_edges_ms = ns_to_ms(slow_timing.cfg_edges_ns),
+            extraction_state_ms = ns_to_ms(slow_timing.extraction_state_ns),
+            commit_ms = ns_to_ms(slow_timing.commit_ns),
+            "slowest DB write chunk breakdown (ms)"
+        );
+    }
 
     Ok(stats)
 }
@@ -1146,5 +1354,65 @@ mod tests {
 
         let result = phase_resolve_and_build(&store, dir.path(), None);
         assert!(result.is_ok(), "phase_resolve_and_build should not crash: {result:?}");
+    }
+
+    /// Verify weight-budget chunking produces reasonable splits.
+    ///
+    /// Creates 3 FileFacts with known reference counts and checks that the
+    /// greedy algorithm keeps fact1+fact2 together (their combined weight
+    /// fits) while fact3 gets its own chunk (adding it would exceed the budget).
+    #[test]
+    fn weight_budget_chunking() {
+        use types::{ReferenceId, ReferenceKind, ReferenceUse, TextRange};
+
+        let fid = FileId::generate("dummy.ts");
+
+        fn make_ref(file_id: &FileId, idx: u32) -> ReferenceUse {
+            ReferenceUse {
+                id: ReferenceId::generate(file_id, None, idx, idx + 1, &format!("r{idx}"), ReferenceKind::Usage),
+                file_id: *file_id,
+                source_symbol: None,
+                scope_id: None,
+                kind: ReferenceKind::Usage,
+                text: format!("r{idx}"),
+                name: format!("r{idx}"),
+                receiver: None,
+                arity: None,
+                range: TextRange::default(),
+                binding_id: None,
+                resolved: None,
+            }
+        }
+
+        // fact1: 5 refs → weight 50  (5 × 10)
+        // fact2: 4 refs → weight 40  (4 × 10)
+        // fact3: 6 refs → weight 60  (6 × 10)
+        let facts = vec![
+            FileFacts {
+                references: (0..5).map(|i| make_ref(&fid, i)).collect(),
+                ..Default::default()
+            },
+            FileFacts {
+                references: (0..4).map(|i| make_ref(&fid, i + 100)).collect(),
+                ..Default::default()
+            },
+            FileFacts {
+                references: (0..6).map(|i| make_ref(&fid, i + 200)).collect(),
+                ..Default::default()
+            },
+        ];
+
+        // Budget: 95 weight units → allows 9 refs (weight 90) but not 15 (weight 150)
+        let budget = WeightBudget {
+            max_weight: 95,
+            max_files: 500,
+        };
+        let chunks = chunk_by_weight_budget(&facts, &budget);
+
+        // fact1 (50) + fact2 (40) = 90 < 95 → same chunk
+        // fact3 (60) alone: 90+60=150 > 95 → new chunk
+        assert_eq!(chunks.len(), 2, "expected 2 chunks, got {}", chunks.len());
+        assert_eq!(chunks[0].len(), 2, "first chunk should contain facts 1+2");
+        assert_eq!(chunks[1].len(), 1, "second chunk should contain fact3 alone");
     }
 }

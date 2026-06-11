@@ -445,7 +445,9 @@ impl Store {
     /// Ensure all canonical schema objects exist.
     /// Called after `init_schema()` or during read-only open.
     /// Detects missing indexes/triggers and creates them if possible.
-    pub fn ensure_required_schema_objects(&self) -> anyhow::Result<()> {
+    /// Returns the number of schema objects (indexes + triggers) that were
+    /// repaired.  A fresh schema returns 0.
+    pub fn ensure_required_schema_objects(&self) -> anyhow::Result<usize> {
         let conn = self.lock();
         // Gather all expected indexes from schema
         let mut expected: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -465,6 +467,7 @@ impl Store {
             .filter_map(|r| r.ok())
             .collect();
 
+        let mut repaired: usize = 0;
         let missing: Vec<&String> = expected.difference(&existing).collect();
         if !missing.is_empty() {
             tracing::warn!(
@@ -478,6 +481,7 @@ impl Store {
                 sqls.push(self.index_create_sql(name));
             }
             crate::bulk_schema::execute_batch_ddl(&conn, &sqls)?;
+            repaired += missing.len();
         }
 
         // Check FTS triggers
@@ -495,9 +499,10 @@ impl Store {
                 crate::bulk_schema::SYMBOLS_AU_TRIGGER.to_string(),
             ];
             crate::bulk_schema::execute_batch_ddl(&conn, &fts_sqls)?;
+            repaired += 3 - existing_triggers.len();
         }
 
-        Ok(())
+        Ok(repaired)
     }
 
     /// Map an index name to its CREATE INDEX IF NOT EXISTS SQL.
@@ -657,7 +662,8 @@ impl Store {
     /// Insert all components of a `FileFacts` in a single transaction.
     /// This is the primary write path from extraction.
     pub fn insert_file_facts(&self, facts: &FileFacts) -> anyhow::Result<()> {
-        self.insert_file_facts_impl(std::slice::from_ref(facts))
+        self.insert_file_facts_impl(std::slice::from_ref(facts))?;
+        Ok(())
     }
 
     /// Batch-insert multiple `FileFacts` in a single transaction (P3: bulk write).
@@ -665,25 +671,31 @@ impl Store {
     /// This avoids per-file transaction overhead. All files are committed
     /// atomically. Use this for fresh/rebuild indexes; incremental sync may
     /// prefer the single-file path for finer-grained failure isolation.
-    pub fn insert_file_facts_batch(&self, batch: &[FileFacts]) -> anyhow::Result<()> {
+    ///
+    /// Returns per-table write timing for observability.
+    pub fn insert_file_facts_batch(&self, batch: &[FileFacts]) -> anyhow::Result<DbWriteTiming> {
         if batch.is_empty() {
-            return Ok(());
+            return Ok(DbWriteTiming::default());
         }
         self.insert_file_facts_impl(batch)
     }
 
     /// Shared implementation: one transaction, one lock, N files.
-    fn insert_file_facts_impl(&self, batch: &[FileFacts]) -> anyhow::Result<()> {
+    fn insert_file_facts_impl(&self, batch: &[FileFacts]) -> anyhow::Result<DbWriteTiming> {
         let _span = tracing::info_span!(target: "atlas_db", "db.insert_file_facts_impl", file_count = batch.len()).entered();
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
+        let mut total_timing = DbWriteTiming::default();
         for facts in batch {
-            write_file_facts(&tx, facts, None)?;
+            let timing = write_file_facts(&tx, facts)?;
+            total_timing.accumulate(&timing);
         }
 
+        let t0 = Instant::now();
         tx.commit()?;
-        Ok(())
+        total_timing.commit_ns = t0.elapsed().as_nanos() as u64;
+        Ok(total_timing)
     }
 
     /// Atomically delete existing file data and insert new facts in one transaction.
@@ -698,7 +710,7 @@ impl Store {
     pub fn replace_file_facts(&self, file_id: &FileId, facts: &FileFacts) -> anyhow::Result<()> {
         self.with_transaction(|tx| {
             tx.execute("DELETE FROM files WHERE file_id = ?1", params![file_id])?;
-            write_file_facts(tx, facts, None)?;
+            write_file_facts(tx, facts)?;
             Ok(())
         })
     }
@@ -745,7 +757,7 @@ impl Store {
             )?;
             // Atomically delete old facts and insert new ones.
             tx.execute("DELETE FROM files WHERE file_id = ?1", params![file_id])?;
-            write_file_facts(tx, facts, None)?;
+            write_file_facts(tx, facts)?;
             Ok(())
         })
     }
@@ -2557,6 +2569,30 @@ mod tests {
                     "index {name} should still exist"
                 );
             }
+        }
+
+        #[test]
+        fn ensure_required_schema_objects_returns_count() {
+            let store = test_store();
+
+            // When everything is present, 0 objects are repaired.
+            let repaired = store.ensure_required_schema_objects().unwrap();
+            assert_eq!(
+                repaired, 0,
+                "fresh schema should require no repair"
+            );
+
+            // Drop one index — now exactly 1 object is missing.
+            {
+                let conn = store.lock();
+                conn.execute_batch("DROP INDEX IF EXISTS idx_symbols_kind")
+                    .unwrap();
+            }
+            let repaired = store.ensure_required_schema_objects().unwrap();
+            assert_eq!(
+                repaired, 1,
+                "one missing index should be reported as single repair"
+            );
         }
 
         #[test]
