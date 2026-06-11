@@ -31,7 +31,7 @@ impl AsyncState {
             - std::time::Duration::from_secs(QUERY_SNAPSHOT_TTL_SECS);
         self.query_snapshots
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .retain(|_, s| s.created_at > cutoff);
     }
 }

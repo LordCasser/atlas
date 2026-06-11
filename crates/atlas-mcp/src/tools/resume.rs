@@ -25,7 +25,7 @@ impl ToolRouter {
         // Prune expired snapshots before lookup
         self.async_state.prune_expired_snapshots();
 
-        let snapshot = match self.async_state.query_snapshots.lock().unwrap().get(query_id).cloned() {
+        let snapshot = match self.async_state.query_snapshots.lock().unwrap_or_else(|e| e.into_inner()).get(query_id).cloned() {
             Some(s) => s,
             None => {
                 return (
@@ -39,7 +39,7 @@ impl ToolRouter {
         };
 
         // Update snapshot status
-        if let Some(s) = self.async_state.query_snapshots.lock().unwrap().get_mut(query_id) {
+        if let Some(s) = self.async_state.query_snapshots.lock().unwrap_or_else(|e| e.into_inner()).get_mut(query_id) {
             s.status = QueryStatus::Refining;
         }
 
@@ -151,7 +151,7 @@ impl ToolRouter {
         if let Some(s) = self
             .async_state.query_snapshots
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get_mut(&original_query_id)
         {
             s.status = QueryStatus::Ready;

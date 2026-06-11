@@ -36,7 +36,7 @@ impl CacheState {
             &*self
                 .cached_manual_full_index
                 .read()
-                .expect("cached_manual_full_index lock poisoned")
+                .unwrap_or_else(|e| e.into_inner())
             && *cached_signature == signature
         {
             return *cached;
@@ -48,7 +48,7 @@ impl CacheState {
         *self
             .cached_manual_full_index
             .write()
-            .expect("cached_manual_full_index lock poisoned") = Some((signature, result));
+            .unwrap_or_else(|e| e.into_inner()) = Some((signature, result));
         result
     }
 
@@ -60,6 +60,6 @@ impl CacheState {
         *self
             .cached_manual_full_index
             .write()
-            .expect("cached_manual_full_index lock poisoned") = None;
+            .unwrap_or_else(|e| e.into_inner()) = None;
     }
 }

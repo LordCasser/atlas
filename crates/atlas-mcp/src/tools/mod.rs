@@ -372,7 +372,7 @@ impl ToolRouter {
             self.graph.last_graph_signature = current.clone();
             // Re-check whether a manual full index now exists (layer distribution
             // may have changed after external index/sync or lazy structural).
-            *self.cache.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = None;
+            *self.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) = None;
         }
         self.cache.cached_signature = current;
         Ok(())
@@ -403,7 +403,7 @@ impl ToolRouter {
             Self::project_runtime(store.clone(), &project_root);
         self.project_root = project_root.clone();
         self.store = store.clone();
-        *self.engine.lock().expect("engine lock poisoned") = engine;
+        *self.engine.lock().unwrap_or_else(|e| e.into_inner()) = engine;
         self.lazy_service = lazy_service;
         self.source_extractor = source_extractor;
         self.graph.search = None;
@@ -412,8 +412,8 @@ impl ToolRouter {
         self.cache.cached_signature.clear();
         self.graph.last_graph_signature.clear();
         self.cache.last_signature_check = std::time::Instant::now();
-        *self.cache.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = None;
-        self.async_state.query_snapshots.lock().expect("query_snapshots lock poisoned").clear();
+        *self.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) = None;
+        self.async_state.query_snapshots.lock().unwrap_or_else(|e| e.into_inner()).clear();
         self.investigation_state = InvestigationState::default();
     }
 
@@ -451,7 +451,7 @@ impl ToolRouter {
         self.graph.refresh_graph_for_files(&self.store, &batch)?;
         // Cache invalidation: new store data may have changed layer distribution.
         if !batch.is_empty() {
-            *self.cache.cached_manual_full_index.write().expect("cached_manual_full_index lock poisoned") = None;
+            *self.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) = None;
         }
 
         // Step 2: Deferred full rebuild — try to apply a background-built graph,
