@@ -472,18 +472,20 @@ impl Store {
 
     /// Read the resolution fingerprint for a file (P3: per-file resolution skip).
     ///
-    /// Returns `None` if no fingerprint record exists (file has never been resolved).
+    /// Returns `None` if no fingerprint record exists (file has never been resolved),
+    /// or if the fingerprint was explicitly cleared (NULL).
     /// The fingerprint is stored in `extraction_state` with layer = 'resolution'.
     pub fn get_resolution_fingerprint(&self, file_id: &FileId) -> anyhow::Result<Option<String>> {
         let conn = self.lock_read();
-        let result: Result<String, _> = conn.query_row(
+        let result: Result<Option<String>, _> = conn.query_row(
             "SELECT resolution_fingerprint FROM extraction_state
              WHERE file_id = ?1 AND unit_id IS NULL AND layer = 'resolution'",
             params![file_id],
             |row| row.get(0),
         );
         match result {
-            Ok(fp) => Ok(Some(fp)),
+            Ok(Some(fp)) => Ok(Some(fp)),
+            Ok(None) => Ok(None),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }

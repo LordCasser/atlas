@@ -177,6 +177,27 @@ impl Store {
         }
         self.with_transaction(|tx| {
             for fid in file_ids {
+                // P3: Clear resolution fingerprints for files whose references
+                // are resolved to symbols in this deleted file.  The references
+                // themselves are nullified below — but if we don't clear the
+                // fingerprint, the owning files will enter the clean-file fast
+                // path (resolve_global_only) on the next resolution run and
+                // may match a wrong symbol via global name search (strategy 6).
+                //
+                // Clearing the fingerprint forces full-resolution (strategies
+                // 1–6 with import/scope context) so the stale cross-file
+                // dependency is handled correctly.
+                tx.execute(
+                    r#"UPDATE extraction_state SET resolution_fingerprint = NULL
+                       WHERE layer = 'resolution' AND unit_id IS NULL
+                         AND file_id IN (
+                           SELECT DISTINCT r.file_id FROM "references" r
+                           WHERE r.resolved_symbol_id IN (
+                               SELECT symbol_id FROM symbols WHERE file_id = ?1
+                           )
+                       )"#,
+                    params![fid],
+                )?;
                 tx.execute(
                     r#"UPDATE "references" SET
                         resolved_symbol_id = NULL,
