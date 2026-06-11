@@ -485,8 +485,7 @@ impl IndexPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::progress::{CallbackSink, NoopSink};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use crate::progress::NoopSink;
 
     /// A sink that records every event into a Vec for assertions.
     struct RecordingSink {

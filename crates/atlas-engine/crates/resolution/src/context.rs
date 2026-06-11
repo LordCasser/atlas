@@ -251,7 +251,7 @@ impl GlobalSymbolIndex {
             .symbols
             .iter()
             .enumerate()
-            .filter(|(i, s)| {
+            .filter(|(i, _s)| {
                 let s_len = self.lower_names[*i].len();
                 s_len >= min_len && s_len <= max_len
             })
@@ -264,7 +264,7 @@ impl GlobalSymbolIndex {
                     .windows(3)
                     .any(|w| trigrams.contains(w))
             })
-            .filter(|(i, s)| {
+            .filter(|(_i, s)| {
                 let sym_parent = self.file_parent_dir.get(&s.file_id);
                 match (ref_parent, sym_parent) {
                     (Some(r), Some(s)) => r == s || r.starts_with(s) || s.starts_with(r),

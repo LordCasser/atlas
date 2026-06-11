@@ -22,6 +22,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::LazyLock;
 
 use anyhow::Result;
 use db::Store;
@@ -531,10 +532,21 @@ impl ClosurePlanner {
 /// Distinguishes local from system includes per the C standard:
 /// - `#include "..."` → always relative (searches including file's directory first)
 /// - `#include <...>` → never relative (system/library include paths)
+/// Compiled once, then reused for every scanned C file. Avoids per-call
+/// re-compilation of a static regex pattern.
+static QUOTE_INCLUDE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r##"#include\s+"([^"]+)""##).unwrap()
+});
+
+/// Compiled once, then reused for every scanned C file. Avoids per-call
+/// re-compilation of a static regex pattern.
+static ANGLE_INCLUDE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"#include\s+<([^>]+)>"#).unwrap()
+});
+
 pub(crate) fn scan_c_includes(file_id: &FileId, source: &str) -> Vec<ImportDef> {
-    // Separate patterns for quoted (local) vs angle (system) includes
-    let quote_re = Regex::new(r##"#include\s+"([^"]+)""##).unwrap();
-    let angle_re = Regex::new(r#"#include\s+<([^>]+)>"#).unwrap();
+    let quote_re = &QUOTE_INCLUDE_RE;
+    let angle_re = &ANGLE_INCLUDE_RE;
     let mut imports = Vec::new();
 
     // Quoted includes: always relative (C standard §6.10.2)
@@ -694,6 +706,23 @@ mod tests {
             !stdlib.is_relative,
             "#include <stdlib.h> must NOT be relative"
         );
+    }
+
+    #[test]
+    fn bootstrap_scanner_empty_source_returns_empty() {
+        use types::ids::FileId;
+        let file_id = FileId::generate("src/empty.c");
+        let imports = scan_c_includes(&file_id, "");
+        assert!(imports.is_empty(), "empty source should produce no imports");
+    }
+
+    #[test]
+    fn bootstrap_scanner_no_includes_returns_empty() {
+        use types::ids::FileId;
+        let file_id = FileId::generate("src/main.c");
+        let source = "int main() { return 0; }\n";
+        let imports = scan_c_includes(&file_id, source);
+        assert!(imports.is_empty(), "source without includes should produce no imports");
     }
 
     #[test]
