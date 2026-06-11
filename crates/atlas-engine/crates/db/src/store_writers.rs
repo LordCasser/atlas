@@ -405,11 +405,11 @@ pub(crate) fn write_callsites(conn: &Connection, callsites: &[Callsite]) -> anyh
     }
     let _span = debug_span!(target: "atlas_db", "db.write_callsites", count = callsites.len()).entered();
 
-    const PARAMS_PER_ROW: usize = 18;
+    const PARAMS_PER_ROW: usize = 17;
     const CHUNK_SIZE: usize = 900 / PARAMS_PER_ROW; // 50
 
     let base_sql = r#"INSERT OR REPLACE INTO callsites
-        (callsite_id, reference_id, caller, callee, receiver, args_json,
+        (callsite_id, reference_id, caller, receiver, args_json,
          range_start_byte, range_end_byte, range_start_line, range_start_column,
          range_end_line, range_end_column,
          callee_start_line, callee_start_column, callee_end_line, callee_end_column,
@@ -422,12 +422,12 @@ pub(crate) fn write_callsites(conn: &Connection, callsites: &[Callsite]) -> anyh
                 let o = i * PARAMS_PER_ROW;
                 format!(
                     "(?{o1},?{o2},?{o3},?{o4},?{o5},?{o6},?{o7},?{o8},?{o9},\
-                      ?{o10},?{o11},?{o12},?{o13},?{o14},?{o15},?{o16},?{o17},?{o18})",
+                      ?{o10},?{o11},?{o12},?{o13},?{o14},?{o15},?{o16},?{o17})",
                     o1 = o + 1, o2 = o + 2, o3 = o + 3, o4 = o + 4,
                     o5 = o + 5, o6 = o + 6, o7 = o + 7, o8 = o + 8,
                     o9 = o + 9, o10 = o + 10, o11 = o + 11, o12 = o + 12,
                     o13 = o + 13, o14 = o + 14, o15 = o + 15, o16 = o + 16,
-                    o17 = o + 17, o18 = o + 18,
+                    o17 = o + 17,
                 )
             })
             .collect();
@@ -455,7 +455,6 @@ pub(crate) fn write_callsites(conn: &Connection, callsites: &[Callsite]) -> anyh
             all_params.push(Box::new(cs.id));
             all_params.push(Box::new(cs.reference_id));
             all_params.push(Box::new(cs.caller));
-            all_params.push(Box::new(cs.callee));
             all_params.push(Box::new(cs.receiver.clone()));
             all_params.push(Box::new(args_json));
             all_params.push(Box::new(cs.range.start_byte));
@@ -731,19 +730,13 @@ pub(crate) fn write_file_facts(conn: &Connection, facts: &FileFacts) -> anyhow::
         }
     }
     if !facts.callsites.is_empty() {
-        if facts.callsites.iter().all(|cs| {
-            valid_sources.contains(&cs.caller)
-                && cs.callee.is_none_or(|callee| valid_sources.contains(&callee))
-        }) {
+        if facts.callsites.iter().all(|cs| valid_sources.contains(&cs.caller)) {
             write_callsites(conn, &facts.callsites)?;
         } else {
             let valid_callsites: Vec<_> = facts
                 .callsites
                 .iter()
-                .filter(|cs| {
-                    valid_sources.contains(&cs.caller)
-                        && cs.callee.is_none_or(|callee| valid_sources.contains(&callee))
-                })
+                .filter(|cs| valid_sources.contains(&cs.caller))
                 .cloned()
                 .collect();
             if !valid_callsites.is_empty() {
@@ -1478,7 +1471,7 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS callsites (
                 callsite_id TEXT PRIMARY KEY, reference_id INTEGER,
-                caller TEXT, callee TEXT, receiver TEXT, args_json TEXT,
+                caller TEXT, receiver TEXT, args_json TEXT,
                 range_start_byte INTEGER, range_end_byte INTEGER,
                 range_start_line INTEGER, range_start_column INTEGER,
                 range_end_line INTEGER, range_end_column INTEGER,
@@ -1499,13 +1492,6 @@ mod tests {
             "function",
             None,
         );
-        let callee = SymbolId::generate(
-            &file_id,
-            "typescript",
-            &format!("callee_{i}"),
-            "function",
-            None,
-        );
         let ref_id = ReferenceId::generate(
             &file_id,
             Some(&caller),
@@ -1519,7 +1505,6 @@ mod tests {
             id: callsite_id,
             reference_id: Some(ref_id),
             caller,
-            callee: Some(callee),
             receiver: None,
             args: vec![],
             range: TextRange {
@@ -1580,7 +1565,7 @@ mod tests {
 
         let mut stmt = conn
             .prepare(
-                "SELECT callsite_id, caller, callee, args_json, range_start_byte
+                "SELECT callsite_id, caller, args_json, range_start_byte
                  FROM callsites WHERE callsite_id = ?1",
             )
             .unwrap();
@@ -1590,17 +1575,15 @@ mod tests {
                     Ok((
                         row.get::<_, Vec<u8>>(0)?,
                         row.get::<_, Vec<u8>>(1)?,
-                        row.get::<_, Vec<u8>>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
                     ))
                 })
                 .unwrap();
             assert_eq!(&row.0, cs.id.as_bytes());
             assert_eq!(&row.1, cs.caller.as_bytes());
-            assert_eq!(&row.2, cs.callee.as_ref().unwrap().as_bytes());
-            assert_eq!(row.3, "[]");
-            assert_eq!(row.4, cs.range.start_byte as i64);
+            assert_eq!(row.2, "[]");
+            assert_eq!(row.3, cs.range.start_byte as i64);
         }
     }
 
@@ -1788,7 +1771,7 @@ mod tests {
         }
     }
 
-    fn facts_help_cs(file_id: FileId, caller: SymbolId, callee: SymbolId, idx: u32) -> Callsite {
+    fn facts_help_cs(file_id: FileId, caller: SymbolId, _callee: SymbolId, idx: u32) -> Callsite {
         let ref_id = ReferenceId::generate(
             &file_id, Some(&caller), idx * 100, idx * 100 + 20,
             "target", ReferenceKind::Call,
@@ -1798,7 +1781,6 @@ mod tests {
             id: CallsiteId::generate(&ref_id, Some(&caller), idx * 100),
             reference_id: Some(ref_id),
             caller,
-            callee: Some(callee),
             receiver: None,
             args: vec![],
             range: rng,

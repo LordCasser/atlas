@@ -784,8 +784,13 @@ function main() {
     let main_callsites = store.find_callsites_by_file(&main_id).unwrap();
     // Find the callsite that has a callee symbol named "helper"
     let call_cs = main_callsites.iter().find(|cs| {
-        cs.callee
-            .and_then(|sym_id| store.find_symbol_by_id(&sym_id).ok().flatten())
+        store.find_resolved_callsites_by_id(&cs.id)
+            .ok()
+            .and_then(|resolved| {
+                resolved.first().and_then(|r| {
+                    store.find_symbol_by_id(&r.callee).ok().flatten()
+                })
+            })
             .map(|sym| sym.name == "helper")
             .unwrap_or(false)
     });
@@ -795,7 +800,7 @@ function main() {
         main_callsites.len(),
         main_callsites
             .iter()
-            .map(|cs| format!("callee_sym={:?} receiver={:?}", cs.callee, cs.receiver))
+            .map(|cs| format!("cs_id={:?} receiver={:?}", cs.id, cs.receiver))
             .collect::<Vec<_>>()
     );
     let call_cs = call_cs.unwrap();

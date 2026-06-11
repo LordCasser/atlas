@@ -658,8 +658,8 @@ impl CallGraphReader for Store {
     fn find_callsites_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<Callsite>> {
         Store::find_callsites_by_file(self, file_id)
     }
-    fn find_callsites_by_callee(&self, callee: &SymbolId) -> anyhow::Result<Vec<Callsite>> {
-        Store::find_callsites_by_callee(self, callee)
+    fn find_resolved_callsites_by_callee(&self, callee: &SymbolId) -> anyhow::Result<Vec<ResolvedCallsite>> {
+        Store::find_resolved_callsites_by_callee(self, callee)
     }
     fn find_callsites_by_id(&self, id: &CallsiteId) -> anyhow::Result<Vec<Callsite>> {
         Store::find_callsites_by_id(self, id)
@@ -669,6 +669,15 @@ impl CallGraphReader for Store {
         reference_id: &ReferenceId,
     ) -> anyhow::Result<Option<Callsite>> {
         Store::find_callsite_by_reference_id(self, reference_id)
+    }
+    fn find_resolved_callsites_by_id(&self, id: &CallsiteId) -> anyhow::Result<Vec<ResolvedCallsite>> {
+        Store::find_resolved_callsites_by_id(self, id)
+    }
+    fn find_resolved_callsite_by_reference_id(
+        &self,
+        reference_id: &ReferenceId,
+    ) -> anyhow::Result<Option<ResolvedCallsite>> {
+        Store::find_resolved_callsite_by_reference_id(self, reference_id)
     }
     fn find_bindings_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<BindingDef>> {
         Store::find_bindings_by_file(self, file_id)

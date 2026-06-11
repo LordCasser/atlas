@@ -161,7 +161,6 @@ CREATE TABLE IF NOT EXISTS callsites (
     -- no FK on reference_id: callsite may be provisional (before reference is finalized)
     reference_id         BLOB,
     caller               BLOB NOT NULL REFERENCES symbols(symbol_id) ON DELETE CASCADE,
-    callee               BLOB REFERENCES symbols(symbol_id) ON DELETE SET NULL,
     receiver             TEXT,
     args_json            TEXT NOT NULL DEFAULT '[]',
     range_start_byte     INTEGER NOT NULL,
@@ -485,8 +484,8 @@ CREATE INDEX IF NOT EXISTS idx_symbol_edges_source_kind
 
 CREATE INDEX IF NOT EXISTS idx_callsites_caller
     ON callsites(caller);
-CREATE INDEX IF NOT EXISTS idx_callsites_callee
-    ON callsites(callee);
+CREATE INDEX IF NOT EXISTS idx_callsites_reference
+    ON callsites(reference_id);
 
 -- Binding + Dataflow indexes
 CREATE INDEX IF NOT EXISTS idx_bindings_file

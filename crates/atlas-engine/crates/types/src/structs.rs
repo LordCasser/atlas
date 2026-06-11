@@ -412,10 +412,6 @@ pub struct Callsite {
     /// Symbol that contains the call (the caller).
     pub caller: SymbolId,
 
-    /// Symbol that is called (the callee), if resolved.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub callee: Option<SymbolId>,
-
     /// Receiver expression (e.g. "obj" in obj.method()).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub receiver: Option<String>,
@@ -431,6 +427,19 @@ pub struct Callsite {
     /// This is always a sub-range of `range`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callee_range: Option<TextRange>,
+}
+
+/// A callsite joined with its resolved callee.
+///
+/// This is a query-time view: the callee is derived from
+/// `callsites.reference_id -> references.resolved_symbol_id`,
+/// not stored in the `Callsite` struct itself.
+#[derive(Debug, Clone)]
+pub struct ResolvedCallsite {
+    /// The raw callsite fact.
+    pub callsite: Callsite,
+    /// The resolved callee symbol.
+    pub callee: SymbolId,
 }
 
 // ---------------------------------------------------------------------------

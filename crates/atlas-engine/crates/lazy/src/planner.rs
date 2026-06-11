@@ -282,9 +282,11 @@ fn expand_frontier(
                 if let Ok(callsites) = store.find_callsites_by_file(&unit.file_id) {
                     for cs in callsites {
                         if cs.caller == sid {
-                            if let Some(callee) = cs.callee {
-                                if let Ok(Some(sym)) = store.find_symbol_by_id(&callee) {
-                                    add_if_new(&sym, units, seen, &mut next_frontier);
+                            if let Ok(resolved) = store.find_resolved_callsites_by_id(&cs.id) {
+                                for r in resolved {
+                                    if let Ok(Some(sym)) = store.find_symbol_by_id(&r.callee) {
+                                        add_if_new(&sym, units, seen, &mut next_frontier);
+                                    }
                                 }
                             }
                         }

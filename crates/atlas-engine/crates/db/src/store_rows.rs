@@ -309,37 +309,37 @@ pub(crate) fn row_to_dataflow_edge(row: &Row) -> rusqlite::Result<DataFlowEdge> 
 }
 
 pub(crate) fn row_to_callsite(row: &Row) -> rusqlite::Result<Callsite> {
-    let args_str: String = row.get(5)?;
+    let args_str: String = row.get(4)?;
     let args: Vec<ArgumentFact> = serde_json::from_str(&args_str)
-        .map_err(|e| parse_err(5, &args_str, &format!("Callsite args JSON: {e}")))?;
+        .map_err(|e| parse_err(4, &args_str, &format!("Callsite args JSON: {e}")))?;
     let callee_start_line: Option<u32> = row
-        .get(12)
-        .map_err(|e| tracing::warn!(?e, col = 12, "Callsite callee_start_line decode error"))
+        .get(11)
+        .map_err(|e| tracing::warn!(?e, col = 11, "Callsite callee_start_line decode error"))
         .ok()
         .flatten();
     let callee_start_column: Option<u32> = row
-        .get(13)
-        .map_err(|e| tracing::warn!(?e, col = 13, "Callsite callee_start_column decode error"))
+        .get(12)
+        .map_err(|e| tracing::warn!(?e, col = 12, "Callsite callee_start_column decode error"))
         .ok()
         .flatten();
     let callee_end_line: Option<u32> = row
-        .get(14)
-        .map_err(|e| tracing::warn!(?e, col = 14, "Callsite callee_end_line decode error"))
+        .get(13)
+        .map_err(|e| tracing::warn!(?e, col = 13, "Callsite callee_end_line decode error"))
         .ok()
         .flatten();
     let callee_end_column: Option<u32> = row
-        .get(15)
-        .map_err(|e| tracing::warn!(?e, col = 15, "Callsite callee_end_column decode error"))
+        .get(14)
+        .map_err(|e| tracing::warn!(?e, col = 14, "Callsite callee_end_column decode error"))
         .ok()
         .flatten();
     let callee_start_byte: Option<i64> = row
-        .get(16)
-        .map_err(|e| tracing::warn!(?e, col = 16, "Callsite callee_start_byte decode error"))
+        .get(15)
+        .map_err(|e| tracing::warn!(?e, col = 15, "Callsite callee_start_byte decode error"))
         .ok()
         .flatten();
     let callee_end_byte: Option<i64> = row
-        .get(17)
-        .map_err(|e| tracing::warn!(?e, col = 17, "Callsite callee_end_byte decode error"))
+        .get(16)
+        .map_err(|e| tracing::warn!(?e, col = 16, "Callsite callee_end_byte decode error"))
         .ok()
         .flatten();
     let callee_range = match (
@@ -364,16 +364,15 @@ pub(crate) fn row_to_callsite(row: &Row) -> rusqlite::Result<Callsite> {
         id: row.get(0)?,
         reference_id: row.get(1)?,
         caller: row.get(2)?,
-        callee: row.get(3)?,
-        receiver: row.get(4)?,
+        receiver: row.get(3)?,
         args,
         range: TextRange {
-            start_byte: row.get(6)?,
-            end_byte: row.get(7)?,
-            start_line: row.get(8)?,
-            start_column: row.get(9)?,
-            end_line: row.get(10)?,
-            end_column: row.get(11)?,
+            start_byte: row.get(5)?,
+            end_byte: row.get(6)?,
+            start_line: row.get(7)?,
+            start_column: row.get(8)?,
+            end_line: row.get(9)?,
+            end_column: row.get(10)?,
         },
         callee_range,
     })

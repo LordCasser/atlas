@@ -125,14 +125,15 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                 };
 
                 // Layer 1: direct callers
-                let direct_callers = store.find_callsites_by_callee(&function_id)?;
+                let direct_callers = store.find_resolved_callsites_by_callee(&function_id)?;
                 let callee_params = store.find_data_nodes_by_function(&function_id)?;
                 let param_index = callee_params
                     .iter()
                     .filter(|dn| dn.kind == DataNodeKind::Parameter)
                     .position(|dn| &dn.id == target_id);
 
-                for cs in &direct_callers {
+                for rc in &direct_callers {
+                    let cs = &rc.callsite;
                     for (arg_idx, arg) in cs.args.iter().enumerate() {
                         let arg_dn_id = match &arg.data_node_id {
                             Some(dn_id) => dn_id,
@@ -161,7 +162,8 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                 // For each direct caller arg at this parameter position,
                 // if the arg is a call result (CallReturn/Expr with callsite_id),
                 // bridge from the inner callee's return sources to this param.
-                for cs in &direct_callers {
+                for rc in &direct_callers {
+                    let cs = &rc.callsite;
                     if let Some(param_idx) = param_index {
                         for (arg_idx, arg) in cs.args.iter().enumerate() {
                             if arg_idx != param_idx {
@@ -177,12 +179,12 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                                     || arg_dn.kind == DataNodeKind::Expr
                                 {
                                     if let Some(inner_csid) = arg_dn.callsite_id {
-                                        if let Ok(inner_cs) =
-                                            store.find_callsites_by_id(&inner_csid)
+                                        if let Ok(inner_rcs) =
+                                            store.find_resolved_callsites_by_id(&inner_csid)
                                         {
-                                            if let Some(inner_callee) =
-                                                inner_cs.first().and_then(|cs| cs.callee.as_ref())
+                                            if let Some(inner_rc) = inner_rcs.first()
                                             {
+                                                let inner_callee = &inner_rc.callee;
                                                 if let Ok(inner_summary) =
                                                     crate::summary::SummaryBuilder::build(
                                                         store,
@@ -255,9 +257,9 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                 };
 
                 // Find the callsite → get the callee symbol
-                let callsites = store.find_callsites_by_id(callsite_id)?;
-                let callee_sym_id = match callsites.first().and_then(|cs| cs.callee.as_ref()) {
-                    Some(sid) => *sid,
+                let resolved = store.find_resolved_callsites_by_id(callsite_id)?;
+                let callee_sym_id = match resolved.first() {
+                    Some(rc) => rc.callee,
                     None => return Ok(vec![]),
                 };
 
@@ -378,11 +380,12 @@ fn find_indirect_callers(
         if depth >= max_depth {
             continue;
         }
-        let callers = match store.find_callsites_by_callee(&current_fid) {
+        let callers = match store.find_resolved_callsites_by_callee(&current_fid) {
             Ok(c) => c,
             Err(_) => continue,
         };
-        for cs in callers {
+        for rc in callers {
+            let cs = &rc.callsite;
             let caller_sym = cs.caller;
             if visited.contains(&caller_sym) {
                 continue;

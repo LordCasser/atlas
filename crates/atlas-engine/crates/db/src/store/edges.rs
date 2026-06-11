@@ -394,7 +394,7 @@ impl Store {
     pub fn find_callsites_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<Callsite>> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
-            "SELECT callsite_id, reference_id, caller, callee, receiver, args_json,
+            "SELECT callsite_id, reference_id, caller, receiver, args_json,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
                     range_end_line, range_end_column,
                     callee_start_line, callee_start_column, callee_end_line, callee_end_column,
@@ -407,20 +407,27 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    /// Find all callsites that target a specific callee symbol.
+    /// Find all callsites whose resolved callee is the given symbol.
     ///
-    /// Used by summary-bridge trace to find callers of a function.
-    pub fn find_callsites_by_callee(&self, callee: &SymbolId) -> anyhow::Result<Vec<Callsite>> {
+    /// JOINs `callsites` with `references` to filter by `resolved_symbol_id`.
+    pub fn find_resolved_callsites_by_callee(&self, callee: &SymbolId) -> anyhow::Result<Vec<ResolvedCallsite>> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
-            "SELECT callsite_id, reference_id, caller, callee, receiver, args_json,
-                    range_start_byte, range_end_byte, range_start_line, range_start_column,
-                    range_end_line, range_end_column,
-                    callee_start_line, callee_start_column, callee_end_line, callee_end_column,
-                    callee_start_byte, callee_end_byte
-             FROM callsites WHERE callee = ?1",
+            "SELECT cs.callsite_id, cs.reference_id, cs.caller, cs.receiver, cs.args_json,
+                    cs.range_start_byte, cs.range_end_byte, cs.range_start_line, cs.range_start_column,
+                    cs.range_end_line, cs.range_end_column,
+                    cs.callee_start_line, cs.callee_start_column, cs.callee_end_line, cs.callee_end_column,
+                    cs.callee_start_byte, cs.callee_end_byte,
+                    r.resolved_symbol_id
+             FROM callsites cs
+             JOIN \"references\" r ON r.reference_id = cs.reference_id
+             WHERE r.resolved_symbol_id = ?1",
         )?;
-        let rows = stmt.query_map(params![callee], row_to_callsite)?;
+        let rows = stmt.query_map(params![callee], |row| {
+            let cs = row_to_callsite(row)?;
+            let callee: SymbolId = row.get(17)?;
+            Ok(ResolvedCallsite { callsite: cs, callee })
+        })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -428,7 +435,7 @@ impl Store {
     pub fn find_callsites_by_id(&self, callsite_id: &CallsiteId) -> anyhow::Result<Vec<Callsite>> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
-            "SELECT callsite_id, reference_id, caller, callee, receiver, args_json,
+            "SELECT callsite_id, reference_id, caller, receiver, args_json,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
                     range_end_line, range_end_column,
                     callee_start_line, callee_start_column, callee_end_line, callee_end_column,
@@ -446,7 +453,7 @@ impl Store {
     ) -> anyhow::Result<Option<Callsite>> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
-            "SELECT callsite_id, reference_id, caller, callee, receiver, args_json,
+            "SELECT callsite_id, reference_id, caller, receiver, args_json,
                     range_start_byte, range_end_byte, range_start_line, range_start_column,
                     range_end_line, range_end_column,
                     callee_start_line, callee_start_column, callee_end_line, callee_end_column,
@@ -461,21 +468,55 @@ impl Store {
         }
     }
 
-    /// Update the `callee` field of the callsite linked to a given reference.
-    ///
-    /// Called by GraphBuilder when a Calls/Instantiates edge is resolved,
-    /// linking the callsite to the resolved target symbol.
-    pub fn update_callsite_callee(
+    /// Find all callsites with resolved callee, filtered by callsite ID.
+    pub fn find_resolved_callsites_by_id(&self, callsite_id: &CallsiteId) -> anyhow::Result<Vec<ResolvedCallsite>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT cs.callsite_id, cs.reference_id, cs.caller, cs.receiver, cs.args_json,
+                    cs.range_start_byte, cs.range_end_byte, cs.range_start_line, cs.range_start_column,
+                    cs.range_end_line, cs.range_end_column,
+                    cs.callee_start_line, cs.callee_start_column, cs.callee_end_line, cs.callee_end_column,
+                    cs.callee_start_byte, cs.callee_end_byte,
+                    r.resolved_symbol_id
+             FROM callsites cs
+             JOIN \"references\" r ON r.reference_id = cs.reference_id
+             WHERE cs.callsite_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![callsite_id], |row| {
+            let cs = row_to_callsite(row)?;
+            let callee: SymbolId = row.get(17)?;
+            Ok(ResolvedCallsite { callsite: cs, callee })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find a single callsite with resolved callee, by reference ID.
+    pub fn find_resolved_callsite_by_reference_id(
         &self,
         ref_id: &ReferenceId,
-        callee: &SymbolId,
-    ) -> anyhow::Result<()> {
-        let conn = self.lock();
-        conn.execute(
-            "UPDATE callsites SET callee = ?1 WHERE reference_id = ?2",
-            params![callee, ref_id],
+    ) -> anyhow::Result<Option<ResolvedCallsite>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT cs.callsite_id, cs.reference_id, cs.caller, cs.receiver, cs.args_json,
+                    cs.range_start_byte, cs.range_end_byte, cs.range_start_line, cs.range_start_column,
+                    cs.range_end_line, cs.range_end_column,
+                    cs.callee_start_line, cs.callee_start_column, cs.callee_end_line, cs.callee_end_column,
+                    cs.callee_start_byte, cs.callee_end_byte,
+                    r.resolved_symbol_id
+             FROM callsites cs
+             JOIN \"references\" r ON r.reference_id = cs.reference_id
+             WHERE cs.reference_id = ?1",
         )?;
-        Ok(())
+        let mut rows = stmt.query_map(params![ref_id], |row| {
+            let cs = row_to_callsite(row)?;
+            let callee: SymbolId = row.get(17)?;
+            Ok(ResolvedCallsite { callsite: cs, callee })
+        })?;
+        match rows.next() {
+            Some(Ok(cs)) => Ok(Some(cs)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
     }
 
     /// Find all references that resolve to a given symbol (usages).
@@ -491,43 +532,5 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    /// Batch-update callee for multiple callsites at once.
-    /// Uses CASE WHEN to update in chunks of 300 pairs (900 params, under 999 SQLite limit).
-    pub fn update_callsite_callees_batch(
-        &self,
-        pairs: &[(ReferenceId, SymbolId)],
-    ) -> anyhow::Result<()> {
-        if pairs.is_empty() {
-            return Ok(());
-        }
-        const CHUNK: usize = 300;
-        let conn = self.lock();
-        for chunk in pairs.chunks(CHUNK) {
-            let mut sql =
-                String::from("UPDATE callsites SET callee = CASE reference_id ");
-            for i in 0..chunk.len() {
-                let b = i * 3;
-                sql.push_str(&format!("WHEN ?{} THEN ?{} ", b + 1, b + 2));
-            }
-            sql.push_str("END WHERE reference_id IN (");
-            for i in 0..chunk.len() {
-                if i > 0 {
-                    sql.push(',');
-                }
-                sql.push_str(&format!("?{}", i * 3 + 3));
-            }
-            sql.push(')');
-            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
-                Vec::with_capacity(chunk.len() * 3);
-            for (ref_id, callee) in chunk {
-                params.push(Box::new(*ref_id));
-                params.push(Box::new(*callee));
-                params.push(Box::new(*ref_id));
-            }
-            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-                params.iter().map(|p| p.as_ref()).collect();
-            conn.execute(&sql, param_refs.as_slice())?;
-        }
-        Ok(())
-    }
+
 }

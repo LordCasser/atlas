@@ -553,7 +553,6 @@ pub fn extract_file_with_mode_cancellable(
                 id: cs_id,
                 reference_id: Some(r.id),
                 caller,
-                callee: None, // resolved later by the resolution pipeline
                 receiver,
                 args,
                 range: callsite_range,

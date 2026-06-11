@@ -59,8 +59,8 @@ pub use enums::{
 pub use structs::{
     ArgumentFact, Callsite, CapabilityMask, DiagnosticLevel, ExtractDiagnostic, ExtractionError,
     FailureCategory, FileFacts, FileInfo, FpAnnotation, ImportDef, IndexReport, RawEdge,
-    ReferenceUse, ResolvedTarget, ScopeDef, SymbolDef, TextRange, canonicalize_field_path, layer,
-    status,
+    ReferenceUse, ResolvedCallsite, ResolvedTarget, ScopeDef, SymbolDef, TextRange,
+    canonicalize_field_path, layer, status,
 };
 
 // --- Binding types ---

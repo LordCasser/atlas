@@ -64,14 +64,15 @@ impl CrossFunctionBridge {
             .filter(|dn| dn.kind == DataNodeKind::Parameter)
             .position(|dn| &dn.id == param_id);
 
-        let direct_callers = match store.find_callsites_by_callee(&function_id) {
+        let direct_callers = match store.find_resolved_callsites_by_callee(&function_id) {
             Ok(c) => c,
             Err(_) => return Ok(vec![]),
         };
 
         let mut edges: Vec<TraceEdge> = Vec::new();
 
-        for cs in &direct_callers {
+        for rc in &direct_callers {
+            let cs = &rc.callsite;
             let caller_function_id = cs.caller;
 
             if let Some(param_idx) = param_index {
@@ -132,12 +133,12 @@ impl CrossFunctionBridge {
             None => return Ok(vec![]),
         };
 
-        let callsites = match store.find_callsites_by_id(callsite_id) {
+        let resolved = match store.find_resolved_callsites_by_id(callsite_id) {
             Ok(c) => c,
             Err(_) => return Ok(vec![]),
         };
-        let callee_sym_id = match callsites.first().and_then(|cs| cs.callee.as_ref()) {
-            Some(sid) => *sid,
+        let callee_sym_id = match resolved.first() {
+            Some(rc) => rc.callee,
             None => return Ok(vec![]),
         };
 
@@ -183,9 +184,9 @@ mod tests {
     use super::*;
     use db::Store;
     use db::summary::SummaryStore;
-    use types::enums::SymbolKind;
+    use types::enums::{Confidence, Provenance, ReferenceKind, ResolutionStrategy, SymbolKind};
     use types::ids::{CallsiteId, FileId, SymbolId};
-    use types::structs::{ArgumentFact, Callsite, TextRange};
+    use types::structs::{ArgumentFact, Callsite, ReferenceUse, ResolvedTarget, TextRange};
 
     fn test_store() -> Store {
         let store = Store::open_in_memory().unwrap();
@@ -418,7 +419,6 @@ mod tests {
             id: cs_id,
             reference_id: Some(ref_id),
             caller: caller_id,
-            callee: Some(callee_id),
             receiver: None,
             args: vec![ArgumentFact {
                 index: 0,
@@ -431,6 +431,29 @@ mod tests {
             callee_range: None,
         };
         store.insert_callsites(&[callsite])?;
+
+        // Insert a resolved reference so that
+        // find_resolved_callsites_by_callee can join callsite → reference → callee.
+        let reference = ReferenceUse {
+            id: ref_id,
+            file_id,
+            source_symbol: Some(caller_id),
+            scope_id: None,
+            kind: ReferenceKind::Call,
+            text: "callee3".into(),
+            name: "callee3".into(),
+            receiver: None,
+            arity: Some(1),
+            range,
+            binding_id: None,
+            resolved: Some(ResolvedTarget {
+                symbol_id: callee_id,
+                confidence: Confidence::certain(),
+                strategy: ResolutionStrategy::ExactMatch,
+                provenance: Provenance::TreeSitter,
+            }),
+        };
+        store.insert_references(&[reference])?;
 
         // Build summary for caller
         #[allow(deprecated)]
