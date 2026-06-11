@@ -699,7 +699,11 @@ impl Store {
 
         let mut total_timing = DbWriteTiming::default();
         for facts in batch {
-            let timing = write_file_facts(&tx, facts)?;
+            let timing = if batch.len() > 1 {
+                write_file_facts_insert_only_hot_tables(&tx, facts)?
+            } else {
+                write_file_facts(&tx, facts)?
+            };
             total_timing.accumulate(&timing);
         }
 
@@ -1323,6 +1327,78 @@ mod tests {
         let stats = store.get_stats().unwrap();
         assert_eq!(stats.total_files, 1);
         assert_eq!(stats.total_symbols, 1);
+    }
+
+    #[test]
+    fn insert_file_facts_keeps_replace_semantics_for_hot_tables() {
+        let store = test_store();
+        let file_id = FileId::generate("src/repeat.ts");
+        let sym = test_symbol(file_id, "caller", SymbolKind::Function);
+        let range = TextRange {
+            start_byte: 10,
+            end_byte: 20,
+            start_line: 2,
+            start_column: 1,
+            end_line: 2,
+            end_column: 11,
+        };
+        let ref_id = ReferenceId::generate(
+            &file_id,
+            Some(&sym.id),
+            range.start_byte,
+            range.end_byte,
+            "target",
+            ReferenceKind::Call,
+        );
+        let reference = ReferenceUse {
+            id: ref_id,
+            file_id,
+            source_symbol: Some(sym.id),
+            scope_id: None,
+            kind: ReferenceKind::Call,
+            text: "target()".to_string(),
+            name: "target".to_string(),
+            receiver: None,
+            arity: Some(0),
+            range,
+            binding_id: None,
+            resolved: None,
+        };
+        let callsite = Callsite {
+            id: CallsiteId::generate(&ref_id, Some(&sym.id), range.start_byte),
+            reference_id: Some(ref_id),
+            caller: sym.id,
+            receiver: None,
+            args: vec![],
+            range,
+            callee_range: Some(range),
+        };
+        let facts = FileFacts {
+            file: FileInfo {
+                file_id,
+                path: "src/repeat.ts".into(),
+                language: Language::TypeScript,
+                content_hash: "hash".into(),
+                status: ParseStatus::Success,
+            },
+            symbols: vec![sym],
+            references: vec![reference],
+            callsites: vec![callsite],
+            ..Default::default()
+        };
+
+        store.insert_file_facts(&facts).unwrap();
+        store.insert_file_facts(&facts).unwrap();
+
+        let conn = store.lock_read();
+        let refs: i64 = conn
+            .query_row(r#"SELECT COUNT(*) FROM "references""#, [], |row| row.get(0))
+            .unwrap();
+        let callsites: i64 = conn
+            .query_row("SELECT COUNT(*) FROM callsites", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(refs, 1);
+        assert_eq!(callsites, 1);
     }
 
     #[test]

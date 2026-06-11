@@ -300,16 +300,38 @@ pub(crate) fn write_references(conn: &Connection, refs: &[ReferenceUse]) -> anyh
     if refs.is_empty() {
         return Ok(());
     }
+    write_references_impl(conn, refs, true)
+}
 
+fn write_references_insert_only(conn: &Connection, refs: &[ReferenceUse]) -> anyhow::Result<()> {
+    write_references_impl(conn, refs, false)
+}
+
+fn write_references_impl(
+    conn: &Connection,
+    refs: &[ReferenceUse],
+    replace_on_conflict: bool,
+) -> anyhow::Result<()> {
     const REF_PARAMS: usize = 20;
-    let base_sql = r#"INSERT OR REPLACE INTO "references"
+    let base_sql = if replace_on_conflict {
+        r#"INSERT OR REPLACE INTO "references"
         (reference_id, file_id, source_symbol, scope_id, kind, text, name,
         receiver, arity,
         range_start_byte, range_end_byte, range_start_line, range_start_column,
         range_end_line, range_end_column,
         resolved_symbol_id, resolved_confidence, resolved_strategy, resolved_provenance,
         binding_id)
-     VALUES "#;
+     VALUES "#
+    } else {
+        r#"INSERT INTO "references"
+        (reference_id, file_id, source_symbol, scope_id, kind, text, name,
+        receiver, arity,
+        range_start_byte, range_end_byte, range_start_line, range_start_column,
+        range_end_line, range_end_column,
+        resolved_symbol_id, resolved_confidence, resolved_strategy, resolved_provenance,
+        binding_id)
+     VALUES "#
+    };
 
     for chunk in refs.chunks(BATCH_CHUNK_SIZE) {
         let placeholders: Vec<String> = (0..chunk.len())
@@ -480,17 +502,39 @@ pub(crate) fn write_callsites(conn: &Connection, callsites: &[Callsite]) -> anyh
         return Ok(());
     }
     let _span = debug_span!(target: "atlas_db", "db.write_callsites", count = callsites.len()).entered();
+    write_callsites_impl(conn, callsites, true)
+}
+
+fn write_callsites_insert_only(conn: &Connection, callsites: &[Callsite]) -> anyhow::Result<()> {
+    write_callsites_impl(conn, callsites, false)
+}
+
+fn write_callsites_impl(
+    conn: &Connection,
+    callsites: &[Callsite],
+    replace_on_conflict: bool,
+) -> anyhow::Result<()> {
 
     const PARAMS_PER_ROW: usize = 17;
     const CHUNK_SIZE: usize = 900 / PARAMS_PER_ROW; // 50
 
-    let base_sql = r#"INSERT OR REPLACE INTO callsites
+    let base_sql = if replace_on_conflict {
+        r#"INSERT OR REPLACE INTO callsites
         (callsite_id, reference_id, caller, receiver, args_json,
          range_start_byte, range_end_byte, range_start_line, range_start_column,
          range_end_line, range_end_column,
          callee_start_line, callee_start_column, callee_end_line, callee_end_column,
          callee_start_byte, callee_end_byte)
-     VALUES "#;
+     VALUES "#
+    } else {
+        r#"INSERT INTO callsites
+        (callsite_id, reference_id, caller, receiver, args_json,
+         range_start_byte, range_end_byte, range_start_line, range_start_column,
+         range_end_line, range_end_column,
+         callee_start_line, callee_start_column, callee_end_line, callee_end_column,
+         callee_start_byte, callee_end_byte)
+     VALUES "#
+    };
 
     for chunk in callsites.chunks(CHUNK_SIZE) {
         let placeholders: Vec<String> = (0..chunk.len())
@@ -765,6 +809,25 @@ pub(crate) fn write_file_facts(
     conn: &Connection,
     facts: &FileFacts,
 ) -> anyhow::Result<DbWriteTiming> {
+    write_file_facts_inner(conn, facts, false)
+}
+
+/// Batch-write variant used after stale file data has already been cleaned.
+///
+/// Only the largest hot tables use insert-only writes; single-file and replace
+/// paths keep `INSERT OR REPLACE` semantics.
+pub(crate) fn write_file_facts_insert_only_hot_tables(
+    conn: &Connection,
+    facts: &FileFacts,
+) -> anyhow::Result<DbWriteTiming> {
+    write_file_facts_inner(conn, facts, true)
+}
+
+fn write_file_facts_inner(
+    conn: &Connection,
+    facts: &FileFacts,
+    hot_tables_insert_only: bool,
+) -> anyhow::Result<DbWriteTiming> {
     let mut timing = DbWriteTiming::default();
 
     // File info
@@ -796,7 +859,11 @@ pub(crate) fn write_file_facts(
     }
     if !facts.references.is_empty() {
         let t0 = Instant::now();
-        write_references(conn, &facts.references)?;
+        if hot_tables_insert_only {
+            write_references_insert_only(conn, &facts.references)?;
+        } else {
+            write_references(conn, &facts.references)?;
+        }
         timing.references_ns = t0.elapsed().as_nanos() as u64;
     }
     if !facts.imports.is_empty() {
@@ -830,7 +897,11 @@ pub(crate) fn write_file_facts(
         if !facts.callsites.is_empty() {
             let t0 = Instant::now();
             if facts.callsites.iter().all(|cs| valid_sources.contains(&cs.caller)) {
-                write_callsites(conn, &facts.callsites)?;
+                if hot_tables_insert_only {
+                    write_callsites_insert_only(conn, &facts.callsites)?;
+                } else {
+                    write_callsites(conn, &facts.callsites)?;
+                }
             } else {
                 let valid_callsites: Vec<_> = facts
                     .callsites
@@ -839,7 +910,11 @@ pub(crate) fn write_file_facts(
                     .cloned()
                     .collect();
                 if !valid_callsites.is_empty() {
-                    write_callsites(conn, &valid_callsites)?;
+                    if hot_tables_insert_only {
+                        write_callsites_insert_only(conn, &valid_callsites)?;
+                    } else {
+                        write_callsites(conn, &valid_callsites)?;
+                    }
                 }
             }
             timing.callsites_ns = t0.elapsed().as_nanos() as u64;
