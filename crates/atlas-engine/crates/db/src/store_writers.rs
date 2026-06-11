@@ -10,7 +10,7 @@
 //! per-row `serde_json::to_string()` overhead.
 
 use rusqlite::{Connection, params};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 use tracing::debug_span;
 use types::*;
@@ -40,6 +40,7 @@ pub struct DbWriteTiming {
     pub cfg_edges_ns: u64,
     pub extraction_state_ns: u64,
     pub commit_ns: u64,
+    pub symbol_duplicates_skipped: u64,
 }
 
 impl DbWriteTiming {
@@ -59,6 +60,7 @@ impl DbWriteTiming {
         self.cfg_edges_ns += other.cfg_edges_ns;
         self.extraction_state_ns += other.extraction_state_ns;
         self.commit_ns += other.commit_ns;
+        self.symbol_duplicates_skipped += other.symbol_duplicates_skipped;
     }
 }
 
@@ -72,12 +74,38 @@ pub(crate) fn write_symbols(
     conn: &Connection,
     symbols: &[SymbolDef],
     layer: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<usize> {
     let _span = debug_span!(target: "atlas_db", "db.write_symbols", count = symbols.len(), layer = %layer).entered();
     if symbols.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
-    let valid_symbol_ids: HashSet<_> = symbols.iter().map(|s| s.id).collect();
+    let mut valid_symbol_ids = HashSet::with_capacity(symbols.len());
+    let mut has_duplicates = false;
+    for s in symbols {
+        if !valid_symbol_ids.insert(s.id) {
+            has_duplicates = true;
+        }
+    }
+
+    let symbols_to_write: Vec<&SymbolDef>;
+    let symbol_rows: Vec<&SymbolDef> = if has_duplicates {
+        let mut last_index_by_id: HashMap<SymbolId, usize> = HashMap::with_capacity(symbols.len());
+        for (idx, s) in symbols.iter().enumerate() {
+            last_index_by_id.insert(s.id, idx);
+        }
+        symbols_to_write = symbols
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, s)| {
+                (last_index_by_id.get(&s.id) == Some(&idx)).then_some(s)
+            })
+            .collect();
+        valid_symbol_ids = symbols_to_write.iter().map(|s| s.id).collect();
+        symbols_to_write
+    } else {
+        symbols.iter().collect()
+    };
+    let duplicates_skipped = symbols.len() - symbol_rows.len();
 
     let base_sql = r#"INSERT OR REPLACE INTO symbols
         (symbol_id, file_id, kind, name, qualified_name, symbol_path_json,
@@ -91,7 +119,7 @@ pub(crate) fn write_symbols(
          layer)
      VALUES "#;
 
-    for chunk in symbols.chunks(BATCH_CHUNK_SIZE) {
+    for chunk in symbol_rows.chunks(BATCH_CHUNK_SIZE) {
         let placeholders: Vec<String> = (0..chunk.len())
             .map(|i| {
                 let o = i * 29;
@@ -194,13 +222,13 @@ pub(crate) fn write_symbols(
            SET container_id = ?2
            WHERE symbol_id = ?1"#,
     )?;
-    for s in symbols {
+    for s in symbol_rows {
         if let Some(container_id) = s.container.filter(|id| valid_symbol_ids.contains(id)) {
             update_container.execute(params![s.id, container_id])?;
         }
     }
 
-    Ok(())
+    Ok(duplicates_skipped)
 }
 
 pub(crate) fn write_scopes(conn: &Connection, scopes: &[ScopeDef]) -> anyhow::Result<()> {
@@ -757,7 +785,8 @@ pub(crate) fn write_file_facts(
 
     if !facts.symbols.is_empty() {
         let t0 = Instant::now();
-        write_symbols(conn, &facts.symbols, &facts.layer)?;
+        timing.symbol_duplicates_skipped +=
+            write_symbols(conn, &facts.symbols, &facts.layer)? as u64;
         timing.symbols_ns = t0.elapsed().as_nanos() as u64;
     }
     if !facts.scopes.is_empty() {
@@ -1078,6 +1107,31 @@ mod tests {
             let result = write_symbols(&conn, &[], "structural");
             assert!(result.is_ok());
         });
+    }
+
+    #[test]
+    fn write_symbols_dedupes_duplicate_ids_last_wins() {
+        let conn = in_memory_conn();
+        let file_id = FileId::generate("dup.rs");
+        let first = facts_help_sym(file_id, "dup", 0);
+        let mut second = first.clone();
+        second.signature = Some("fn dup_last()".to_string());
+
+        let skipped = write_symbols(&conn, &[first.clone(), second], "structural").unwrap();
+
+        assert_eq!(skipped, 1);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM symbols", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        let signature: Option<String> = conn
+            .query_row(
+                "SELECT signature FROM symbols WHERE symbol_id = ?1",
+                params![first.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(signature.as_deref(), Some("fn dup_last()"));
     }
 
     #[test]

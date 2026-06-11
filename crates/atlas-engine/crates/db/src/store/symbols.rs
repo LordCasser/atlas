@@ -15,7 +15,10 @@ impl Store {
         if symbols.is_empty() {
             return Ok(());
         }
-        self.with_transaction(|tx| write_symbols(tx, symbols, "structural"))
+        self.with_transaction(|tx| {
+            write_symbols(tx, symbols, "structural")?;
+            Ok(())
+        })
     }
 
     /// Find all symbols in a file.

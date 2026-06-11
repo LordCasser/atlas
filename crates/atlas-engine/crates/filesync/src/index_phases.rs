@@ -294,6 +294,20 @@ pub struct WriteBatchStats {
     pub rows: WriteRows,
     /// Chunks whose elapsed time exceeded the slow threshold.
     pub slow_chunks: Vec<SlowWriteChunk>,
+    /// Number of passive WAL checkpoints attempted during the write phase.
+    pub checkpoint_count: usize,
+    /// Total elapsed time spent in passive WAL checkpoints.
+    pub checkpoint_elapsed_ms: u128,
+    /// Total WAL log frames observed across passive checkpoints.
+    pub checkpoint_log_frames: i64,
+    /// Total WAL frames checkpointed across passive checkpoints.
+    pub checkpointed_frames: i64,
+    /// Elapsed time spent in the final TRUNCATE checkpoint.
+    pub final_checkpoint_elapsed_ms: u128,
+    /// WAL log frames observed by the final TRUNCATE checkpoint.
+    pub final_checkpoint_log_frames: i64,
+    /// WAL frames checkpointed by the final TRUNCATE checkpoint.
+    pub final_checkpointed_frames: i64,
 }
 
 // ── Phase 1: Discovery ─────────────────────────────────────────────────
@@ -776,6 +790,20 @@ pub fn phase_write_batched(
         if stats.written as u64 >= next_checkpoint {
             match store.checkpoint_wal() {
                 Ok(ckpt) => {
+                    stats.checkpoint_count += 1;
+                    stats.checkpoint_elapsed_ms += ckpt.elapsed_ms;
+                    stats.checkpoint_log_frames += ckpt.log_frames;
+                    stats.checkpointed_frames += ckpt.checkpointed_frames;
+                    tracing::info!(
+                        target: "atlas_db_write",
+                        checkpoint_index = stats.checkpoint_count,
+                        busy = ckpt.busy,
+                        log_frames = ckpt.log_frames,
+                        checkpointed_frames = ckpt.checkpointed_frames,
+                        remaining_frames = ckpt.log_frames - ckpt.checkpointed_frames,
+                        elapsed_ms = ckpt.elapsed_ms,
+                        "wal checkpoint complete"
+                    );
                     if ckpt.busy > 0 {
                         tracing::warn!(
                             target: "atlas_db_write",
@@ -810,7 +838,29 @@ pub fn phase_write_batched(
         running_file_offset += chunk.len();
     }
 
-    let _ = store.checkpoint_wal_truncate();
+    match store.checkpoint_wal_truncate() {
+        Ok(ckpt) => {
+            stats.final_checkpoint_elapsed_ms = ckpt.elapsed_ms;
+            stats.final_checkpoint_log_frames = ckpt.log_frames;
+            stats.final_checkpointed_frames = ckpt.checkpointed_frames;
+            tracing::info!(
+                target: "atlas_db_write",
+                busy = ckpt.busy,
+                log_frames = ckpt.log_frames,
+                checkpointed_frames = ckpt.checkpointed_frames,
+                remaining_frames = ckpt.log_frames - ckpt.checkpointed_frames,
+                elapsed_ms = ckpt.elapsed_ms,
+                "final wal truncate checkpoint complete"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "atlas_db_write",
+                error = %e,
+                "final wal truncate checkpoint failed"
+            );
+        }
+    }
     stats.rows = total_rows.clone();
 
     // Log per-table write timing breakdown
@@ -823,6 +873,13 @@ pub fn phase_write_batched(
         total_symbols = total_rows.symbols,
         total_scopes = total_rows.scopes,
         total_callsites = total_rows.callsites,
+        checkpoint_count = stats.checkpoint_count,
+        checkpoint_elapsed_ms = stats.checkpoint_elapsed_ms,
+        checkpoint_log_frames = stats.checkpoint_log_frames,
+        checkpointed_frames = stats.checkpointed_frames,
+        final_checkpoint_elapsed_ms = stats.final_checkpoint_elapsed_ms,
+        final_checkpoint_log_frames = stats.final_checkpoint_log_frames,
+        final_checkpointed_frames = stats.final_checkpointed_frames,
         "db write phase complete"
     );
 
@@ -844,6 +901,7 @@ pub fn phase_write_batched(
         cfg_edges_ms = ns_to_ms(total_timing.cfg_edges_ns),
         extraction_state_ms = ns_to_ms(total_timing.extraction_state_ns),
         commit_ms = ns_to_ms(total_timing.commit_ns),
+        symbol_duplicates_skipped = total_timing.symbol_duplicates_skipped,
         "per-table DB write timing (ms)"
     );
 
@@ -866,6 +924,7 @@ pub fn phase_write_batched(
             cfg_edges_ms = ns_to_ms(slow_timing.cfg_edges_ns),
             extraction_state_ms = ns_to_ms(slow_timing.extraction_state_ns),
             commit_ms = ns_to_ms(slow_timing.commit_ns),
+            symbol_duplicates_skipped = slow_timing.symbol_duplicates_skipped,
             "slowest DB write chunk breakdown (ms)"
         );
     }

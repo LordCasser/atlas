@@ -203,10 +203,21 @@ impl Store {
 
     /// Force a full WAL checkpoint and truncate the WAL file to zero bytes.
     /// Blocks writers.  Use at the end of a bulk write phase.
-    pub fn checkpoint_wal_truncate(&self) -> anyhow::Result<()> {
+    pub fn checkpoint_wal_truncate(&self) -> anyhow::Result<WalCheckpointStats> {
         let conn = self.lock();
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
-        Ok(())
+        let started = Instant::now();
+        let mut stmt = conn.prepare("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        let (busy, log_frames, checkpointed_frames): (i64, i64, i64) =
+            stmt.query_row([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+        let elapsed = started.elapsed();
+        Ok(WalCheckpointStats {
+            busy,
+            log_frames,
+            checkpointed_frames,
+            elapsed_ms: elapsed.as_millis(),
+        })
     }
 
     /// Enter bulk-write mode for maximum throughput during rebuilds.
