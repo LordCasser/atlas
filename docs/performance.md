@@ -81,8 +81,8 @@
 
 | Metric | Pre-Optimization | Post-Optimization | Improvement |
 |--------|-----------------|-------------------|-------------|
-| Wall clock | 53.29s | 25.81s | **51.6%** |
-| CPU utilization | 232% | 522% | 2.3x higher throughput |
+| Wall clock | 53.29s | 18.82s | **64.7%** |
+| CPU utilization | 232% | 713% | 3.1x higher throughput |
 | Resolution S5 time (cumulative) | 252.80s | 51.11s | **79.8%** reduction |
 | Resolution S6 time (cumulative) | 87.66s | 48.19s | 45.0% reduction |
 
@@ -121,6 +121,7 @@ The proximity filter eliminates 99.8% of global fuzzy scans. A full trigram inde
 | **P2: callsite batch backfill** | Collect `(ref_id, callee)` pairs in Phase 2, single batch UPDATE | Eliminates 9,372 per-edge UPDATEs |
 | **P3: per-file resolution fingerprint** | `content_hash` in `extraction_state`; clean files skip Step A context build | 27.34s → 25.99s (−5%) |
 | **T1.2: cleanup transaction wrapping** | Single transaction for stale file cleanup (was 3N+1 transactions) | Atomic cleanup, no partial state |
+| **Deferred index creation (bulk-load)** | Drop all non-PK indexes before write, recreate after. FTS rebuilt at Phase 10. | 25.81s → 18.82s (−27%) |
 
 ### Rejected Optimizations (verified regression)
 
@@ -141,13 +142,14 @@ The proximity filter eliminates 99.8% of global fuzzy scans. A full trigram inde
 
 ## 经验总结：能做 / 不能做 / 做了 / 没做
 
-### 做了什么（10 项已提交优化）
+### 做了什么（11 项已提交优化）
 
-从 53.29s → 25.81s（−51.6%），收益来自三个层次：
+从 53.29s → 18.82s（−64.7%），收益来自四个层次：
 
 | 层次 | 优化项 | 收益 | 核心手段 |
 |------|--------|------|---------|
 | **缓存层** | QName / reexport / module_path 三个 thread_local 缓存 | −32.5% | S5 import resolution 是隐藏瓶颈（74% CPU），缓存消除重复 DB 查询 |
+| **写入层** | 延迟索引创建（bulk-load deferred indexes）| −27.1% | 写入时只维护 PK，查询索引和 FTS 全部延后到 Phase 10 重建 |
 | **架构层** | P0 generation skip + P2 callsite batch + P3 per-file fingerprint + T1.2 cleanup tx | −19.1% | 改变"哪些工作不需要做"，而非"已有工作如何更快" |
 | **算法层** | Levenshtein banding + S6 proximity 优先搜索 | −2.7% | 代码改动小（~40 行），收益确定但绝对值有限 |
 
@@ -194,24 +196,24 @@ Pre-optimization strategy distribution suggested fuzzy matching was 73% of the b
 
 After banding + proximity filtering, global fuzzy search triggers only 318 times out of 176,860 S6 calls (0.2%). A full trigram index or BK-tree for global fuzzy would optimize less than 0.2% of the workload. The proximity directory filter (search same-directory symbols first) eliminated the need for a global index.
 
-### 3. DB write is not the bottleneck at scale
+### 3. DB write is cheap at small scale, expensive at large scale — and fixable
 
-At 1,931 files, extraction and DB writes combined account for <20% of wall clock. Resolution dominates. Batch write paths (commit d6c9517b) already addressed the per-file write overhead from earlier baselines.
+At 1,931 files (~35K symbols, ~314K refs), extraction and DB writes combined account for <20% of wall clock when indexes are deferred. However, on a 14G production DB with 13.8M references, `references` 100K-row inserts cost 21.9s with all indexes online — a 150x slowdown vs writing to an index-less table. The bottleneck is B-tree index maintenance on the 4 `references` secondary indexes. **Deferring index creation until after bulk write (Phase 10)** eliminates this cost: drop all non-PK indexes and FTS triggers before extraction, write with only PK constraints, recreate indexes and rebuild FTS at finalize. TS project: 25.81s → 18.82s (−27.1% even at 35K-symbol scale).
 
 ### 4. New language extraction is fast and reliable
 
 All 6 new DataflowBasic languages extracted correctly with 0 errors. Parse/extract speeds: Go 2.3ms/file, Rust 14.9ms/file, Ruby 59ms/file. Tree-sitter grammars are mature enough for production use.
 
-### 5. 1,931-file TypeScript monorepo indexes in ~25.8 seconds
+### 5. 1,931-file TypeScript monorepo indexes in ~18.8 seconds
 
-Acceptable for batch/CI use. The remaining optimization space (<10% further improvement) requires structural changes: extraction-resolution pipeline fusion, incremental index path optimization, or language-specific strategy tuning. These are diminishing returns compared to the 51.6% already achieved.
+Acceptable for batch/CI use. The remaining optimization space (<10% further improvement) requires structural changes: extraction-resolution pipeline fusion, incremental index path optimization, or language-specific strategy tuning. These are diminishing returns compared to the 64.7% already achieved.
 
 ---
 
 ## Performance Optimization Methodology
 
 > Lessons learned from the 2026-06-10/11 optimization cycle that reduced a 1,931-file
-> TypeScript project index from 53.29s to 25.81s (51.6% improvement). These are
+> TypeScript project index from 53.29s to 18.82s (64.7% improvement). These are
 > process-level principles, not code-specific recipes.
 
 ### 0. The Golden Rule: Measure First, Optimize Never in the Dark
@@ -230,9 +232,11 @@ In our cycle, the initial performance plan identified 10 candidate optimizations
 based on static code analysis. Only 4 survived A/B verification. One was
 targeting a code path that didn't exist (SummaryBuilder O(N²) — the code had
 already been fixed). Two introduced regressions larger than their benefit. The
-remaining 3 were neutral. The real breakthrough (import resolution caches,
-responsible for >70% of the 51.6% improvement) was **not in the original plan at all**
-— it was discovered through strategy timing counters added during profiling.
+remaining 3 were neutral. The largest breakthroughs — import resolution caches
+(responsible for >50% of the 64.7% improvement) and deferred index creation
+(27% improvement on its own) — were **not in the original plan at all**.
+Import caches were discovered through strategy timing counters; the bulk-load
+approach came from analyzing production DB write behavior on a 14G real index.
 
 ### 1. Cumulative CPU Time ≠ Wall Clock Time
 
@@ -356,6 +360,15 @@ more expensive the compilation.
 fixed prepared statement that SQLite can cache, it may outperform "smarter"
 batching. Always measure. This is counter-intuitive for engineers coming from
 PostgreSQL or MySQL where batching is almost always a win.
+
+**A better approach at scale: defer index maintenance.** On a 14G production DB,
+writing 100K rows to `references` with 4 secondary indexes online costs 21.9s.
+The same data written without indexes, with indexes created afterward via
+`CREATE INDEX`, costs a fraction of that. `CREATE INDEX` does a single sorted
+B-tree build rather than incremental per-row insertion. The principle: **write
+first, index later**. Drop all query indexes before bulk write, keep only PK
+constraints, then recreate indexes and rebuild FTS in one pass at the end. TS
+project: 25.81s → 18.82s (−27.1%).
 
 ### 7. Cut Negative Experiments Quickly
 
