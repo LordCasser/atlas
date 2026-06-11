@@ -67,6 +67,39 @@ impl IndexPipelineOptions {
 }
 
 /// Statistics from one index pipeline run.
+/// Per-phase wall-clock timing, in milliseconds.
+///
+/// All fields default to 0 — phases are filled in as the pipeline executes.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PhaseTiming {
+    pub discovery_ms: u64,
+    pub hash_check_ms: u64,
+    pub cleanup_ms: u64,
+    pub language_init_ms: u64,
+    pub extraction_ms: u64,
+    pub db_write_ms: u64,
+    pub resolution_graph_ms: u64,
+    pub annotation_ms: u64,
+    pub summary_build_ms: u64,
+    pub finalize_ms: u64,
+}
+
+impl PhaseTiming {
+    /// Total wall-clock time across all phases, in ms.
+    pub fn total_ms(&self) -> u64 {
+        self.discovery_ms
+            + self.hash_check_ms
+            + self.cleanup_ms
+            + self.language_init_ms
+            + self.extraction_ms
+            + self.db_write_ms
+            + self.resolution_graph_ms
+            + self.annotation_ms
+            + self.summary_build_ms
+            + self.finalize_ms
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct IndexPipelineStats {
     pub discovered: usize,
@@ -75,6 +108,8 @@ pub struct IndexPipelineStats {
     pub symbols: usize,
     pub resolved: usize,
     pub edges_built: usize,
+    /// Per-phase wall-clock timing breakdown.
+    pub phases: PhaseTiming,
 }
 
 /// Run the shared index pipeline against `project_root`.

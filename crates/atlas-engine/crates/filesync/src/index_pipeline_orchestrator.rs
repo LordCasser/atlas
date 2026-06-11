@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use db::{FullRebuildGuard, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION, IndexMode, Store};
@@ -82,6 +83,7 @@ impl IndexPipeline {
         }
 
         // ── Phase 1: Discovery ──────────────────────────────────────────
+        let _p_t0 = Instant::now();
         check_cancelled!();
         sink.emit(ProgressEvent::PhaseStarted {
             phase: PhaseName::Discovery,
@@ -108,6 +110,7 @@ impl IndexPipeline {
             failed: 0,
             detail: Some(format!("{} files discovered", discovered.len())),
         });
+        stats.phases.discovery_ms = _p_t0.elapsed().as_millis() as u64;
         last_phase = PhaseName::Discovery;
 
         if discovered.is_empty() {
@@ -115,6 +118,7 @@ impl IndexPipeline {
         }
 
         // ── Phase 2: HashCheck ──────────────────────────────────────────
+        let _p_t0 = Instant::now();
         check_cancelled!();
         sink.emit(ProgressEvent::PhaseStarted {
             phase: PhaseName::HashCheck,
@@ -155,12 +159,14 @@ impl IndexPipeline {
                 dirty_set.deleted.len(),
             )),
         });
+        stats.phases.hash_check_ms = _p_t0.elapsed().as_millis() as u64;
         last_phase = PhaseName::HashCheck;
 
         // Save counts for skip-resolution check.
         let dirty_count = dirty_set.dirty.len();
 
         // ── Phase 3: Cleanup ────────────────────────────────────────────
+        let _p_t0 = Instant::now();
         check_cancelled!();
         let _cleanup_span = debug_span!(target: "atlas_sync", "sync.full.cleanup").entered();
         sink.emit(ProgressEvent::PhaseStarted {
@@ -214,6 +220,7 @@ impl IndexPipeline {
                 "{deleted_count} deleted, {stale_count} stale cleaned",
             )),
         });
+        stats.phases.cleanup_ms = _p_t0.elapsed().as_millis() as u64;
         last_phase = PhaseName::Cleanup;
         drop(_cleanup_span);
 
@@ -248,6 +255,7 @@ impl IndexPipeline {
         // ── Phases 4-6 only when there are dirty files ──────────────────
         if !files_to_extract.is_empty() {
             // ── Phase 4: LanguageInit ───────────────────────────────────
+            let _p_t0 = Instant::now();
             check_cancelled!();
             sink.emit(ProgressEvent::PhaseStarted {
                 phase: PhaseName::LanguageInit,
@@ -270,6 +278,7 @@ impl IndexPipeline {
                 failed: 0,
                 detail: Some(format!("{lang_count} language frontends initialized")),
             });
+            stats.phases.language_init_ms = _p_t0.elapsed().as_millis() as u64;
             last_phase = PhaseName::LanguageInit;
 
             // ── Bulk-load optimization: drop indexes before mass writes ──
@@ -277,6 +286,7 @@ impl IndexPipeline {
             bulk_guard = Some(FullRebuildGuard::new(&self.store));
 
             // ── Phase 5: Extraction ─────────────────────────────────────
+            let _p_t0 = Instant::now();
             check_cancelled!();
             let extract_total = files_to_extract.len();
             sink.emit(ProgressEvent::PhaseStarted {
@@ -329,12 +339,14 @@ impl IndexPipeline {
                     extracted.stats.succeeded, extracted.stats.failed, extracted.stats.symbols,
                 )),
             });
+            stats.phases.extraction_ms = _p_t0.elapsed().as_millis() as u64;
             last_phase = PhaseName::Extraction;
 
             stats.failed += extracted.stats.failed;
             stats.symbols = extracted.stats.symbols;
 
             // ── Phase 6: DbWrite ────────────────────────────────────────
+            let _p_t0 = Instant::now();
             check_cancelled!();
             sink.emit(ProgressEvent::PhaseStarted {
                 phase: PhaseName::DbWrite,
@@ -364,6 +376,7 @@ impl IndexPipeline {
                     write_stats.written, write_stats.batch_failures, write_stats.single_failures,
                 )),
             });
+            stats.phases.db_write_ms = _p_t0.elapsed().as_millis() as u64;
             last_phase = PhaseName::DbWrite;
 
             // ── Bulk-load: recreate resolution indexes before Phase 7 ───
@@ -374,6 +387,7 @@ impl IndexPipeline {
 
         // ── Phase 7: Resolution (Structural / Full only) ────────────────
         if self.options.mode.produces_references() {
+            let _p_t0 = Instant::now();
             check_cancelled!();
 
             if skip_resolution {
@@ -472,6 +486,7 @@ impl IndexPipeline {
                 }
                 last_phase = PhaseName::AnnotationMaterialize;
             }
+            stats.phases.resolution_graph_ms = _p_t0.elapsed().as_millis() as u64;
         }
 
         // ── Bulk-load: rebuild final indexes + FTS after resolution ────
@@ -481,6 +496,7 @@ impl IndexPipeline {
 
         // ── Phase 9: Build summaries (Full mode only) ───────────────────
         if self.options.mode.produces_dataflow() {
+            let _p_t0 = Instant::now();
             check_cancelled!();
 
             if skip_resolution {
@@ -543,10 +559,9 @@ impl IndexPipeline {
                 let _ = self.store.bump_generation(KEY_GRAPH_GENERATION);
                 last_phase = PhaseName::SummaryBuild;
             }
+            stats.phases.summary_build_ms = _p_t0.elapsed().as_millis() as u64;
         }
-
-        // ── Phase 10: Finalize ──────────────────────────────────────────
-        check_cancelled!();
+        let _p_t0 = Instant::now();
         sink.emit(ProgressEvent::PhaseStarted {
             phase: PhaseName::Finalize,
             total: 0,
@@ -585,6 +600,23 @@ impl IndexPipeline {
         if let Some(guard) = bulk_guard {
             guard.commit();
         }
+
+        stats.phases.finalize_ms = _p_t0.elapsed().as_millis() as u64;
+
+        info!(
+            target: "atlas_sync",
+            "Pipeline phase timings (ms): discovery={}, hash_check={}, cleanup={}, lang_init={}, extraction={}, db_write={}, res_graph={}, summary_build={}, finalize={}, total={}",
+            stats.phases.discovery_ms,
+            stats.phases.hash_check_ms,
+            stats.phases.cleanup_ms,
+            stats.phases.language_init_ms,
+            stats.phases.extraction_ms,
+            stats.phases.db_write_ms,
+            stats.phases.resolution_graph_ms,
+            stats.phases.summary_build_ms,
+            stats.phases.finalize_ms,
+            stats.phases.total_ms(),
+        );
 
         Ok(stats)
     }
