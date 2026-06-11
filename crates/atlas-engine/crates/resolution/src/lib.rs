@@ -599,7 +599,7 @@ impl ReferenceResolver {
         if let Some(mutex) = progress_mutex {
             mutex
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .start_phase(ProgressPhase::Resolution, None);
         }
 
@@ -659,7 +659,7 @@ impl ReferenceResolver {
         let matched_counter = Arc::new(AtomicU64::new(0));
         let session = &session;
 
-        let progress_atomic = progress_mutex.map(|a| Arc::clone(&a.lock().expect("progress_mutex lock poisoned").atomic_current));
+        let progress_atomic = progress_mutex.map(|a| Arc::clone(&a.lock().unwrap_or_else(|e| e.into_inner()).atomic_current));
 
         // Step A: build contexts for dirty files only
         let step_a_span = tracing::info_span!(target: "atlas_resolve", "resolution.step_a",

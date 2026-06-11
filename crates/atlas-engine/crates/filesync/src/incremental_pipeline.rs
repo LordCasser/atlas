@@ -370,13 +370,10 @@ impl IncrementalPipeline {
 
             stats.new_edges = graph_result.edges_written;
             if graph_result.edges_written < graph_result.edges_built {
-                sink.emit(ProgressEvent::Warning {
-                    phase,
-                    message: format!(
-                        "edge persistence partial: {} built, {} written",
-                        graph_result.edges_built, graph_result.edges_written,
-                    ),
-                });
+                return Err(anyhow::anyhow!(
+                    "edge persistence failed: {} built, {} written — structural index is incomplete",
+                    graph_result.edges_built, graph_result.edges_written,
+                ));
             }
 
             sink.emit(ProgressEvent::PhaseFinished {
