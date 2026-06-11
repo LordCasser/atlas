@@ -147,7 +147,7 @@ impl Store {
     /// Delete all edges that were created from references belonging to a file.
     ///
     /// When a file is modified, the edges derived from its references become
-    /// invalid. This deletes edges whose `ref_id` points to a reference in
+    /// invalid.  This deletes edges whose `ref_id` points to a reference in
     /// the given file.
     ///
     /// Returns the number of edges deleted.
@@ -162,6 +162,49 @@ impl Store {
             params![file_id],
         )?;
         Ok(count)
+    }
+
+    /// Atomically clean stale file facts: invalidate cross-file references,
+    /// delete outgoing edges, delete file records, and delete extraction state
+    /// — all within a single transaction.
+    ///
+    /// This replaces the per-file, per-operation pattern that previously
+    /// required 4N+1 individual transactions for N stale files.
+    pub fn clean_stale_file_facts(&self, file_ids: &[FileId]) -> anyhow::Result<()> {
+        if file_ids.is_empty() {
+            return Ok(());
+        }
+        self.with_transaction(|tx| {
+            for fid in file_ids {
+                tx.execute(
+                    r#"UPDATE "references" SET
+                        resolved_symbol_id = NULL,
+                        resolved_confidence = NULL,
+                        resolved_strategy = NULL,
+                        resolved_provenance = NULL
+                       WHERE resolved_symbol_id IN (
+                           SELECT symbol_id FROM symbols WHERE file_id = ?1
+                       )"#,
+                    params![fid],
+                )?;
+                tx.execute(
+                    r#"DELETE FROM symbol_edges WHERE ref_id IN (
+                        SELECT reference_id FROM "references" WHERE file_id = ?1
+                    )"#,
+                    params![fid],
+                )?;
+            }
+            for fid in file_ids {
+                tx.execute("DELETE FROM files WHERE file_id = ?1", params![fid])?;
+            }
+            for fid in file_ids {
+                tx.execute(
+                    "DELETE FROM extraction_state WHERE file_id = ?1 AND unit_id IS NULL",
+                    params![fid],
+                )?;
+            }
+            Ok(())
+        })
     }
 
     /// Invalidate ALL resolved references (clear resolution columns).

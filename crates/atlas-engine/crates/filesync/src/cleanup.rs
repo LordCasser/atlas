@@ -29,28 +29,15 @@ pub fn clean_stale_file_paths(store: &Arc<Store>, paths: &[PathBuf]) -> Result<V
 }
 
 /// Clean stale facts for file IDs before deleting or replacing file facts.
+///
+/// Delegates to `Store::clean_stale_file_facts` which wraps all operations
+/// in a single transaction for atomicity.
 pub fn clean_stale_file_ids(store: &Arc<Store>, file_ids: &[FileId]) -> Result<()> {
+    if file_ids.is_empty() {
+        return Ok(());
+    }
     let _span = debug_span!(target: "atlas_sync", "sync.incremental.cleanup", dirty_count = file_ids.len()).entered();
-    for fid in file_ids {
-        if let Err(e) = store.invalidate_references_to_symbols_in_file(fid) {
-            tracing::warn!(
-                "Failed to invalidate cross-file references for file {}: {}",
-                fid,
-                e
-            );
-        }
-        if let Err(e) = store.delete_edges_for_file_references(fid) {
-            tracing::warn!("Failed to delete outgoing edges for file {}: {}", fid, e);
-        }
-    }
-
-    store.delete_files_batch(file_ids)?;
-
-    for fid in file_ids {
-        let _ = store.delete_file_extraction_state(fid);
-    }
-
-    Ok(())
+    store.clean_stale_file_facts(file_ids)
 }
 
 #[cfg(test)]
