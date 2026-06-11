@@ -679,7 +679,7 @@ impl Store {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         for facts in batch {
-            write_file_facts(&tx, facts)?;
+            write_file_facts(&tx, facts, None)?;
         }
 
         tx.commit()?;
@@ -698,7 +698,7 @@ impl Store {
     pub fn replace_file_facts(&self, file_id: &FileId, facts: &FileFacts) -> anyhow::Result<()> {
         self.with_transaction(|tx| {
             tx.execute("DELETE FROM files WHERE file_id = ?1", params![file_id])?;
-            write_file_facts(tx, facts)?;
+            write_file_facts(tx, facts, None)?;
             Ok(())
         })
     }
@@ -745,7 +745,7 @@ impl Store {
             )?;
             // Atomically delete old facts and insert new ones.
             tx.execute("DELETE FROM files WHERE file_id = ?1", params![file_id])?;
-            write_file_facts(tx, facts)?;
+            write_file_facts(tx, facts, None)?;
             Ok(())
         })
     }

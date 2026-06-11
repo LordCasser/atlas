@@ -159,6 +159,19 @@ pub struct GraphResult {
     pub edges_written: usize,
 }
 
+/// A slow write chunk recorded for diagnostics.
+#[derive(Debug, Clone)]
+pub struct SlowWriteChunk {
+    /// 0-based chunk index.
+    pub chunk_index: usize,
+    /// File range "[start]-[end]".
+    pub file_range: String,
+    /// Elapsed wall time in ms.
+    pub elapsed_ms: u128,
+    /// Row counts for this chunk.
+    pub rows: WriteRows,
+}
+
 /// Result of a batch DB write.
 #[derive(Debug, Clone, Default)]
 pub struct WriteBatchStats {
@@ -168,6 +181,10 @@ pub struct WriteBatchStats {
     pub batch_failures: usize,
     /// Number of individual file insert failures.
     pub single_failures: usize,
+    /// Row counts aggregated across all chunks.
+    pub rows: WriteRows,
+    /// Chunks whose elapsed time exceeded the slow threshold.
+    pub slow_chunks: Vec<SlowWriteChunk>,
 }
 
 // ── Phase 1: Discovery ─────────────────────────────────────────────────
@@ -522,11 +539,7 @@ pub fn phase_write_batched(
     let _span = info_span!(target: "atlas_sync", "sync.phase_write_batched", file_count = extracted.items.len()).entered();
     anyhow::ensure!(batch_size > 0, "batch_size must be > 0, got {batch_size}");
 
-    let mut stats = WriteBatchStats {
-        written: 0,
-        batch_failures: 0,
-        single_failures: 0,
-    };
+    let mut stats = WriteBatchStats::default();
     let mut total_rows = WriteRows::default();
 
     let _bulk = store.enter_bulk_write()?;
@@ -550,8 +563,9 @@ pub fn phase_write_batched(
 
         match write_result {
             Ok(_) => {
-                // Log slow chunks (>2s or >100K references)
-                if elapsed.as_secs() > 2 || rows.references > 100_000 {
+                // Record slow chunks (same threshold as logging)
+                let slow = elapsed.as_secs() > 2 || rows.references > 100_000;
+                if slow {
                     tracing::info!(
                         target: "atlas_db_write",
                         chunk_index = chunk_idx,
@@ -564,6 +578,12 @@ pub fn phase_write_batched(
                         rows.imports,
                         "slow db write chunk"
                     );
+                    stats.slow_chunks.push(SlowWriteChunk {
+                        chunk_index: chunk_idx,
+                        file_range: format!("{}-{}", file_start_idx, file_end_idx),
+                        elapsed_ms: elapsed.as_millis(),
+                        rows: rows.clone(),
+                    });
                 }
                 total_rows.accumulate(&rows);
                 stats.written += chunk.len();
@@ -628,6 +648,7 @@ pub fn phase_write_batched(
     }
 
     let _ = store.checkpoint_wal_truncate();
+    stats.rows = total_rows.clone();
 
     tracing::info!(
         target: "atlas_db_write",

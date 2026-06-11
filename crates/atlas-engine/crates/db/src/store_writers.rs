@@ -11,8 +11,18 @@
 
 use rusqlite::{Connection, params};
 use std::collections::HashSet;
+use std::time::Instant;
 use tracing::debug_span;
 use types::*;
+
+/// Total wall-clock time of a `write_file_facts` call, in μs.
+///
+/// Collected only when the caller passes `Some(&mut timing)`; otherwise
+/// the function has zero additional overhead.
+#[derive(Debug, Default, Clone)]
+pub struct DbWriteTiming {
+    pub total_us: u64,
+}
 
 /// Cached empty JSON array string — `Vec::new()` → `"[]"` is constant.
 const EMPTY_JSON_ARRAY: &str = "[]";
@@ -684,7 +694,12 @@ pub(crate) fn write_cfg_edges(conn: &Connection, edges: &[CfgEdge]) -> anyhow::R
 ///
 /// Used by both `insert_file_facts_impl` (batch insert) and
 /// `replace_file_facts` (atomic delete+insert for lazy structural).
-pub(crate) fn write_file_facts(conn: &Connection, facts: &FileFacts) -> anyhow::Result<()> {
+pub(crate) fn write_file_facts(
+    conn: &Connection,
+    facts: &FileFacts,
+    timing: Option<&mut DbWriteTiming>,
+) -> anyhow::Result<()> {
+    let _timer = timing.as_ref().map(|_| Instant::now());
     // File info
     conn.execute(
         r#"INSERT OR REPLACE INTO files
@@ -918,6 +933,12 @@ pub(crate) fn write_file_facts(conn: &Connection, facts: &FileFacts) -> anyhow::
             capability_mask.bits() as i64,
         ],
     )?;
+
+    if let Some(t) = timing {
+        if let Some(start) = _timer {
+            t.total_us += start.elapsed().as_micros() as u64;
+        }
+    }
 
     Ok(())
 }
@@ -1898,7 +1919,7 @@ mod tests {
             ..Default::default()
         };
 
-        write_file_facts(&conn, &facts).unwrap();
+        write_file_facts(&conn, &facts, None).unwrap();
 
         // Verify all data was written (fast-path = no filtering needed)
         assert_eq!(count_rows(&conn, "files"), 1);
@@ -1951,7 +1972,7 @@ mod tests {
             ..Default::default()
         };
 
-        write_file_facts(&conn, &facts).unwrap();
+        write_file_facts(&conn, &facts, None).unwrap();
 
         // Only the valid edge should be written; no error for invalid one
         assert_eq!(count_rows(&conn, "symbol_edges"), 1);
@@ -1993,7 +2014,7 @@ mod tests {
             ..Default::default()
         };
 
-        write_file_facts(&conn, &facts).unwrap();
+        write_file_facts(&conn, &facts, None).unwrap();
 
         // valid_scope_ids is empty → all bindings filtered
         assert_eq!(count_rows(&conn, "bindings"), 0);
@@ -2040,7 +2061,7 @@ mod tests {
             ..Default::default()
         };
 
-        write_file_facts(&conn, &facts).unwrap();
+        write_file_facts(&conn, &facts, None).unwrap();
 
         // Only 2 bindings with valid scope FK should be written
         assert_eq!(count_rows(&conn, "bindings"), 2);
