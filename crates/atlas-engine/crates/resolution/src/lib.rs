@@ -398,6 +398,62 @@ impl ResolutionSession {
             Some(ctx.file.file_id),
         )
     }
+
+    /// Lightweight resolution for clean files: only strategy 1 (builtin) +
+    /// strategy 6 (global name search).  Strategies 2–5 are file-context-dependent
+    /// and would produce the same results as last time (file hasn't changed).
+    ///
+    /// This is used by P3 per-file resolution fingerprints: clean files skip
+    /// the expensive `ResolutionContext::build()` but their unresolved refs
+    /// may now resolve against new symbols from dirty files.
+    pub fn resolve_global_only(
+        &self,
+        reference: &ReferenceUse,
+        file_language: Language,
+    ) -> Option<ResolvedTarget> {
+        // Strategy 1: Built-in / external filter
+        if BuiltinFilter::is_builtin(&reference.name, file_language) {
+            return None;
+        }
+
+        // Strategy 6: Project-wide name search + fuzzy fallback
+        let candidates = self.global_index.find_by_name(&reference.name);
+        if !candidates.is_empty() {
+            if let Some(matched) =
+                self.name_matcher
+                    .best_match(&candidates, &reference.name, Confidence::new(0.6))
+            {
+                S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
+                return Some(ResolvedTarget {
+                    symbol_id: matched.symbol_id,
+                    confidence: matched.confidence,
+                    strategy: matched.strategy,
+                    provenance: matched.provenance,
+                });
+            }
+        }
+        if should_run_fuzzy_fallback(&reference.name) {
+            let fuzzy = self.global_index.fuzzy_search(&reference.name, 2);
+            if !fuzzy.is_empty() {
+                if let Some(matched) =
+                    self.name_matcher
+                        .best_match(&fuzzy, &reference.name, Confidence::new(0.4))
+                {
+                    S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                    S6_FUZZY_GLOBAL_COUNT.fetch_add(1, Ordering::Relaxed);
+                    return Some(ResolvedTarget {
+                        symbol_id: matched.symbol_id,
+                        confidence: matched.confidence,
+                        strategy: ResolutionStrategy::FuzzyMatch,
+                        provenance: Provenance::Heuristic,
+                    });
+                }
+            }
+        }
+        MISS_COUNT.fetch_add(1, Ordering::Relaxed);
+        None
+    }
 }
 
 // ── ReferenceResolver ──────────────────────────────────────────────────────
@@ -556,14 +612,41 @@ impl ReferenceResolver {
             map.into_iter().collect()
         };
 
+        // P3: Per-file resolution fingerprint — split files into dirty (need
+        // full resolution) and clean (fingerprint matches content_hash).
+        let mut dirty_refs: Vec<(FileId, Vec<ReferenceUse>)> = Vec::with_capacity(by_file.len());
+        // clean file refs: (FileId, file_language, Vec<ReferenceUse>)
+        let mut clean_file_refs: Vec<(FileId, Language, Vec<ReferenceUse>)> =
+            Vec::with_capacity(by_file.len() / 2);
+        // Track dirty file (id, content_hash) for fingerprint update after resolution.
+        let mut dirty_file_hashes: Vec<(FileId, String)> = Vec::with_capacity(by_file.len());
+        for (fid, refs) in by_file {
+            let file_info = store.get_file(&fid).ok().flatten();
+            let fp = store.get_resolution_fingerprint(&fid).ok().flatten();
+            let is_clean = match (&fp, &file_info) {
+                (Some(fp), Some(info)) => *fp == info.content_hash,
+                _ => false,
+            };
+            if is_clean {
+                // file_info is guaranteed Some here (is_clean requires it)
+                let info = file_info.unwrap();
+                clean_file_refs.push((fid, info.language, refs));
+            } else {
+                dirty_refs.push((fid, refs));
+                if let Some(info) = file_info {
+                    dirty_file_hashes.push((fid, info.content_hash));
+                }
+            }
+        }
+
         // ── Phase 1 + Phase 2: streaming via bounded mpsc channel ──
         //
-        // Step A (serial, 1 lock): Pre-build ResolutionContext for every file.
+        // Step A (serial, 1 lock): Pre-build ResolutionContext for dirty files only.
+        // Clean files skip context build — their context hasn't changed.
         //
-        // Step B (parallel, rayon): Each thread resolves its file's refs
-        // against its pre-built context and sends results through a bounded
-        // sync_channel.  Phase 2 (DB writes) runs in a dedicated thread that
-        // starts consuming as soon as the first batch of results arrives.
+        // Step B (parallel, rayon): Resolve dirty files' refs against pre-built
+        // contexts.  Then resolve clean files' refs using strategy-6-only
+        // (global name search, no context needed).
         //
         // Phase 2 (writer thread): Accumulates batches of 2000 resolved refs,
         // writes them to the DB, and updates progress.  Also collects the full
@@ -573,12 +656,14 @@ impl ReferenceResolver {
 
         let progress_atomic = progress_mutex.map(|a| Arc::clone(&a.lock().expect("progress_mutex lock poisoned").atomic_current));
 
-        // Step A: build all contexts
-        let step_a_span = tracing::info_span!(target: "atlas_resolve", "resolution.step_a", file_count = by_file.len());
+        // Step A: build contexts for dirty files only
+        let step_a_span = tracing::info_span!(target: "atlas_resolve", "resolution.step_a",
+            dirty_file_count = dirty_refs.len(),
+            clean_file_count = clean_file_refs.len());
         let _step_a = step_a_span.enter();
         let mut file_groups: Vec<(FileId, Vec<ReferenceUse>, ResolutionContext)> =
-            Vec::with_capacity(by_file.len());
-        for (fid, refs) in by_file {
+            Vec::with_capacity(dirty_refs.len());
+        for (fid, refs) in dirty_refs {
             match ResolutionContext::build(&store, fid) {
                 Ok(ctx) => file_groups.push((fid, refs, ctx)),
                 Err(_e) => { /* skip */ }
@@ -643,9 +728,11 @@ impl ReferenceResolver {
 
         // Step B: pure-memory parallel resolution — send results to channel.
         let step_b_span =
-            tracing::info_span!(target: "atlas_resolve", "resolution.step_b", file_count = file_groups.len());
+            tracing::info_span!(target: "atlas_resolve", "resolution.step_b", dirty_file_count = file_groups.len());
         let _step_b = step_b_span.enter();
         let mc = &matched_counter;
+
+        // Resolve dirty files' refs with full context (6 strategies)
         file_groups.par_iter().for_each(|(_fid, refs, ctx)| {
             let results = session.resolve_refs_in_ctx(refs, ctx);
             let count = results.len() as u64;
@@ -659,11 +746,57 @@ impl ReferenceResolver {
                 }
             }
         });
+
+        // Resolve clean files' unresolved refs with strategy-6-only (global index).
+        // No context needed — the file's symbols/imports/scopes haven't changed,
+        // so strategies 2-5 would produce identical results.  New symbols from
+        // dirty files may now resolve previously-unresolved references.
+        if !clean_file_refs.is_empty() {
+            let clean_step_span = tracing::info_span!(
+                target: "atlas_resolve",
+                "resolution.clean_files",
+                count = clean_file_refs.len()
+            );
+            let _clean_step = clean_step_span.enter();
+            let tx_ref = &tx;
+            let mc_ref = mc;
+            let progress_atomic_ref = progress_atomic.as_ref();
+
+            for (_fid, lang, refs) in &clean_file_refs {
+                let clean_results: Vec<_> = refs
+                    .iter()
+                    .filter_map(|r| {
+                        session
+                            .resolve_global_only(r, *lang)
+                            .map(|t| (r.clone(), t))
+                    })
+                    .collect();
+                let count = clean_results.len() as u64;
+                let total = mc_ref.fetch_add(count, Ordering::Relaxed) + count;
+                if let Some(ac) = progress_atomic_ref {
+                    ac.store(total, Ordering::Relaxed);
+                }
+                for r in clean_results {
+                    if tx_ref.send(r).is_err() {
+                        break;
+                    }
+                }
+            }
+            drop(_clean_step);
+        }
+
         drop(tx);
         drop(_step_b);
 
         match writer_handle.join() {
             Ok(Ok((all_resolved, stats))) => {
+                // P3: Update resolution fingerprints for dirty files.
+                // After resolution completes, store the content_hash as the
+                // fingerprint so the next run can skip this file if unchanged.
+                for (fid, content_hash) in &dirty_file_hashes {
+                    let _ = store.update_resolution_fingerprint(fid, content_hash);
+                }
+
                 let s1 = S1_COUNT.load(Ordering::Relaxed);
                 let s2 = S2_COUNT.load(Ordering::Relaxed);
                 let s3 = S3_COUNT.load(Ordering::Relaxed);

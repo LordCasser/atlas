@@ -460,6 +460,50 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(names)
     }
+
+    /// Read the resolution fingerprint for a file (P3: per-file resolution skip).
+    ///
+    /// Returns `None` if no fingerprint record exists (file has never been resolved).
+    /// The fingerprint is stored in `extraction_state` with layer = 'resolution'.
+    pub fn get_resolution_fingerprint(&self, file_id: &FileId) -> anyhow::Result<Option<String>> {
+        let conn = self.lock_read();
+        let result: Result<String, _> = conn.query_row(
+            "SELECT resolution_fingerprint FROM extraction_state
+             WHERE file_id = ?1 AND unit_id IS NULL AND layer = 'resolution'",
+            params![file_id],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(fp) => Ok(Some(fp)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Update the resolution fingerprint for a file (P3: per-file resolution skip).
+    ///
+    /// Stores the file's `content_hash` as the fingerprint. After resolution
+    /// completes, this fingerprint acts as a cache key: if the file's content
+    /// hasn't changed, resolution can be skipped on the next run.
+    pub fn update_resolution_fingerprint(
+        &self,
+        file_id: &FileId,
+        fingerprint: &str,
+    ) -> anyhow::Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "DELETE FROM extraction_state
+             WHERE file_id = ?1 AND unit_id IS NULL AND layer = 'resolution'",
+            params![file_id],
+        )?;
+        conn.execute(
+            "INSERT INTO extraction_state
+                (file_id, unit_id, layer, content_hash, status, resolution_fingerprint, capability_mask, updated_at)
+             VALUES (?1, NULL, 'resolution', '', 'complete', ?2, 0, datetime('now'))",
+            params![file_id, fingerprint],
+        )?;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

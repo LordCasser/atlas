@@ -282,6 +282,7 @@ CREATE TABLE IF NOT EXISTS extraction_state (
     edge_count      INTEGER,
     budget_exceeded INTEGER NOT NULL DEFAULT 0,
     capability_mask INTEGER NOT NULL DEFAULT 0,
+    resolution_fingerprint TEXT,
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
 );

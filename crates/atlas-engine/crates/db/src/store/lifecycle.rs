@@ -147,6 +147,14 @@ impl Store {
         let conn = self.lock();
         conn.execute_batch(SCHEMA_DDL)?;
 
+        // Migration: P3 per-file resolution fingerprint column.
+        // New DBs get it from CREATE TABLE; existing DBs get it via ALTER TABLE.
+        // Ignore error if column already exists (idempotent).
+        let _ = conn.execute(
+            "ALTER TABLE extraction_state ADD COLUMN resolution_fingerprint TEXT",
+            [],
+        );
+
         Ok(())
     }
 
