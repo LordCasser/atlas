@@ -34,7 +34,11 @@ pub fn run_with_options(project: &str, analysis: &str, force_reindex: bool) -> R
 
     let engine = atlas_engine::SyncEngine::with_mode(ctx.store.clone(), root.clone(), mode);
 
-    // Detect and report changes
+    // Detect and report changes for display / early-return only.
+    // IncrementalPipeline::sync() re-detects after FileLock acquisition
+    // so the pre-check here has a benign TOCTOU window — at worst the
+    // CLI prints slightly outdated change counts and the pipeline
+    // no-ops on clean state.
     let changed = engine.detect_changes()?;
     // P2: path alias config changes are independent of file changes.
     // Even when no files changed, a tsconfig.json update requires

@@ -666,11 +666,8 @@ mod tests {
             true, // include BlockExit
         );
 
-        // Replace the PythonWith context with JavaTryWith
-        if let Some(node) = cfg.nodes.get(&node_id) {
-            // Rebuild the graph with the corrected call context
-        }
-        // Actually, we need to build a fresh graph with JavaTryWith context.
+        // Replace the PythonWith context with JavaTryWith — WIP: build a fresh
+        // graph with JavaTryWith context through make_cfg_with_alloc_node.
         // Rebuild with make_cfg_with_alloc_node but modify to use JavaTryWith.
         drop(cfg); // discard the PythonWith graph
 
