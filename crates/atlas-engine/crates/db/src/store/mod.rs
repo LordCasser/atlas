@@ -28,7 +28,8 @@
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use types::*;
 
 use crate::store_rows::*;
@@ -51,6 +52,19 @@ mod stats;
 pub mod summary;
 mod symbols;
 mod unit_extraction_state;
+
+// ---------------------------------------------------------------------------
+// WalCheckpointStats — WAL checkpoint result statistics
+// ---------------------------------------------------------------------------
+
+/// WAL checkpoint result statistics.
+#[derive(Debug, Default, Clone)]
+pub struct WalCheckpointStats {
+    pub busy: i64,
+    pub log_frames: i64,
+    pub checkpointed_frames: i64,
+    pub elapsed_ms: u128,
+}
 
 // ---------------------------------------------------------------------------
 // StoreReader — read-only query interface
@@ -160,7 +174,7 @@ impl Store {
         &self.db_path
     }
 
-    /// Trigger a PASSIVE WAL checkpoint.
+    /// Trigger a PASSIVE WAL checkpoint and return statistics.
     ///
     /// Under heavy writes (e.g. bulk indexing), the WAL can grow without
     /// bound and each subsequent transaction incurs O(WAL-size) overhead.
@@ -170,10 +184,21 @@ impl Store {
     /// PASSIVE mode does not block concurrent writers — it checkpoints as
     /// much as it can without interfering.  Callers that want a hard flush
     /// after the write phase should use `checkpoint_wal_truncate`.
-    pub fn checkpoint_wal(&self) -> anyhow::Result<()> {
+    pub fn checkpoint_wal(&self) -> anyhow::Result<WalCheckpointStats> {
         let conn = self.lock();
-        conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE)")?;
-        Ok(())
+        let started = Instant::now();
+        let mut stmt = conn.prepare("PRAGMA wal_checkpoint(PASSIVE);")?;
+        let (busy, log_frames, checkpointed_frames): (i64, i64, i64) =
+            stmt.query_row([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+        let elapsed = started.elapsed();
+        Ok(WalCheckpointStats {
+            busy,
+            log_frames,
+            checkpointed_frames,
+            elapsed_ms: elapsed.as_millis(),
+        })
     }
 
     /// Force a full WAL checkpoint and truncate the WAL file to zero bytes.
@@ -201,6 +226,47 @@ impl Store {
              PRAGMA mmap_size = 1073741824; -- 1 GB",
         )?;
         Ok(BulkWriteGuard { store: self })
+    }
+}
+
+/// RAII guard that attempts best-effort schema repair on drop.
+///
+/// If the process crashes during a full rebuild between dropping and
+/// recreating indexes, the next `init_schema()` run will detect missing
+/// objects via `ensure_required_schema_objects()`. This guard provides
+/// an additional safety net by attempting cleanup during normal shutdown.
+#[allow(dead_code)]
+pub struct FullRebuildGuard {
+    store: Arc<Store>,
+    active: bool,
+}
+
+#[allow(dead_code)]
+impl FullRebuildGuard {
+    pub fn new(store: &Arc<Store>) -> Self {
+        Self { store: Arc::clone(store), active: true }
+    }
+
+    /// Commit the guard — schema is complete, don't repair on drop.
+    pub fn commit(mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for FullRebuildGuard {
+    fn drop(&mut self) {
+        if self.active {
+            // Best-effort: on panic/unexpected exit, try to restore schema.
+            // Errors are swallowed — this is crash recovery, not normal path.
+            let conn_guard = self.store.lock();
+            let store_ref: &Store = self.store.as_ref();
+            let _ = crate::bulk_schema::execute_batch_ddl(
+                &conn_guard,
+                &store_ref.build_final_ddl_sqls(),
+            );
+            // Restore FK enforcement
+            let _ = conn_guard.execute_batch("PRAGMA foreign_keys = ON;");
+        }
     }
 }
 
@@ -280,6 +346,308 @@ impl Store {
         let result = f(&tx)?;
         tx.commit()?;
         Ok(result)
+    }
+
+    // ============================================================
+    // Bulk-load schema management (full index rebuild optimization)
+    // ============================================================
+
+    /// Drop all non-PK indexes and FTS triggers before bulk write (Phase 6).
+    /// Used only during full index rebuild, NOT incremental sync.
+    ///
+    /// `must_rebuild` is set to `true` so that the caller knows to
+    /// recreate indexes after writing.
+    pub fn drop_writable_indexes(&self, must_rebuild: &mut bool) -> anyhow::Result<()> {
+        let conn = self.lock();
+        let mut sqls: Vec<String> = Vec::new();
+
+        for idx in crate::bulk_schema::ALL_WRITE_INDEXES {
+            sqls.push(format!("DROP INDEX IF EXISTS {}", idx));
+        }
+        for trigger in crate::bulk_schema::FTS_TRIGGERS {
+            sqls.push(format!("DROP TRIGGER IF EXISTS {}", trigger));
+        }
+
+        tracing::info!(
+            target: "atlas_db",
+            drop_count = sqls.len(),
+            "dropping indexes and FTS triggers for bulk write"
+        );
+        crate::bulk_schema::execute_batch_ddl(&conn, &sqls)?;
+        *must_rebuild = true;
+        Ok(())
+    }
+
+    /// Create minimal indexes needed before Phase 7 resolution.
+    /// Called after Phase 6 write, before `phase_resolve_and_build`.
+    pub fn create_resolution_indexes(&self) -> anyhow::Result<()> {
+        let conn = self.lock();
+        let mut sqls: Vec<String> = Vec::new();
+        for idx in crate::bulk_schema::RESOLUTION_INDEXES {
+            sqls.push(self.index_create_sql(idx));
+        }
+        tracing::info!(
+            target: "atlas_db",
+            index_count = sqls.len(),
+            "creating resolution indexes"
+        );
+        crate::bulk_schema::execute_batch_ddl(&conn, &sqls)
+    }
+
+    /// Create summary-only indexes (dataflow/CFG) before SummaryBuild.
+    /// Called only for `--analysis full`, after Phase 7, before Phase 9.
+    pub fn create_summary_indexes_if_needed(&self) -> anyhow::Result<()> {
+        let conn = self.lock();
+        let mut sqls: Vec<String> = Vec::new();
+        for idx in crate::bulk_schema::SUMMARY_INDEXES {
+            sqls.push(self.index_create_sql(idx));
+        }
+        tracing::info!(
+            target: "atlas_db",
+            index_count = sqls.len(),
+            "creating summary indexes"
+        );
+        crate::bulk_schema::execute_batch_ddl(&conn, &sqls)
+    }
+
+    /// Create all remaining indexes + rebuild FTS at Phase 10 finalize.
+    /// Also commits the FullRebuildGuard if one is active.
+    pub fn create_final_indexes_and_rebuild_fts(&self) -> anyhow::Result<()> {
+        let conn = self.lock();
+
+        // 1. Create all remaining query indexes
+        let mut sqls: Vec<String> = Vec::new();
+        for idx in crate::bulk_schema::FINAL_QUERY_INDEXES {
+            sqls.push(self.index_create_sql(idx));
+        }
+        crate::bulk_schema::execute_batch_ddl(&conn, &sqls)?;
+
+        // 2. Restore FTS triggers
+        let fts_sqls = vec![
+            crate::bulk_schema::SYMBOLS_AI_TRIGGER.to_string(),
+            crate::bulk_schema::SYMBOLS_AD_TRIGGER.to_string(),
+            crate::bulk_schema::SYMBOLS_AU_TRIGGER.to_string(),
+        ];
+        crate::bulk_schema::execute_batch_ddl(&conn, &fts_sqls)?;
+
+        // 3. Rebuild FTS index
+        tracing::info!(target: "atlas_db", "rebuilding FTS index");
+        conn.execute_batch(crate::bulk_schema::FTS_REBUILD)?;
+
+        tracing::info!(
+            target: "atlas_db",
+            index_count = crate::bulk_schema::FINAL_QUERY_INDEXES.len(),
+            "final indexes and FTS complete"
+        );
+        Ok(())
+    }
+
+    /// Ensure all canonical schema objects exist.
+    /// Called after `init_schema()` or during read-only open.
+    /// Detects missing indexes/triggers and creates them if possible.
+    pub fn ensure_required_schema_objects(&self) -> anyhow::Result<()> {
+        let conn = self.lock();
+        // Gather all expected indexes from schema
+        let mut expected: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for idx in crate::bulk_schema::ALL_WRITE_INDEXES {
+            expected.insert(idx.to_string());
+        }
+        // Extraction + summary indexes — kept during bulk write, but still checkable
+        for idx in crate::bulk_schema::EXTRACTION_AND_SUMMARY_INDEXES {
+            expected.insert(idx.to_string());
+        }
+        // Query existing indexes
+        let mut stmt = conn.prepare(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'"
+        )?;
+        let existing: std::collections::HashSet<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let missing: Vec<&String> = expected.difference(&existing).collect();
+        if !missing.is_empty() {
+            tracing::warn!(
+                target: "atlas_db",
+                missing_count = missing.len(),
+                missing = ?missing.iter().take(10).collect::<Vec<_>>(),
+                "detected missing schema indexes"
+            );
+            let mut sqls: Vec<String> = Vec::new();
+            for name in &missing {
+                sqls.push(self.index_create_sql(name));
+            }
+            crate::bulk_schema::execute_batch_ddl(&conn, &sqls)?;
+        }
+
+        // Check FTS triggers
+        let mut stmt = conn.prepare(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND name IN ('symbols_ai','symbols_ad','symbols_au')"
+        )?;
+        let existing_triggers: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        if existing_triggers.len() < 3 {
+            let fts_sqls = vec![
+                crate::bulk_schema::SYMBOLS_AI_TRIGGER.to_string(),
+                crate::bulk_schema::SYMBOLS_AD_TRIGGER.to_string(),
+                crate::bulk_schema::SYMBOLS_AU_TRIGGER.to_string(),
+            ];
+            crate::bulk_schema::execute_batch_ddl(&conn, &fts_sqls)?;
+        }
+
+        Ok(())
+    }
+
+    /// Map an index name to its CREATE INDEX IF NOT EXISTS SQL.
+    /// This MUST stay in sync with the DDL in schema.rs.
+    fn index_create_sql(&self, name: &str) -> String {
+        match name {
+            // extraction tables (kept during bulk write, but available for repair)
+            "idx_extraction_state_file_layer" =>
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_extraction_state_file_layer ON extraction_state(file_id, layer) WHERE unit_id IS NULL".into(),
+            "idx_extraction_state_unit_layer" =>
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_extraction_state_unit_layer ON extraction_state(file_id, unit_id, layer) WHERE unit_id IS NOT NULL".into(),
+            "idx_extraction_state_file" =>
+                "CREATE INDEX IF NOT EXISTS idx_extraction_state_file ON extraction_state(file_id)".into(),
+            "idx_extraction_state_layer_status" =>
+                "CREATE INDEX IF NOT EXISTS idx_extraction_state_layer_status ON extraction_state(layer, status)".into(),
+            "idx_extraction_jobs_file_layer_status" =>
+                "CREATE INDEX IF NOT EXISTS idx_extraction_jobs_file_layer_status ON extraction_jobs(file_id, layer, status)".into(),
+            "idx_extraction_jobs_status" =>
+                "CREATE INDEX IF NOT EXISTS idx_extraction_jobs_status ON extraction_jobs(status)".into(),
+            "idx_extraction_jobs_active_file_layer" =>
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_extraction_jobs_active_file_layer ON extraction_jobs(file_id, layer) WHERE status = 'active'".into(),
+            "idx_extraction_jobs_active_unit_layer" =>
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_extraction_jobs_active_unit_layer ON extraction_jobs(file_id, unit_id, layer) WHERE status = 'active'".into(),
+            // summary (not bulk-written, kept for repair)
+            "idx_spr_function" =>
+                "CREATE INDEX IF NOT EXISTS idx_spr_function ON summary_param_reaches(function_id)".into(),
+            "idx_spr_param" =>
+                "CREATE INDEX IF NOT EXISTS idx_spr_param ON summary_param_reaches(param_id)".into(),
+            "idx_srs_function" =>
+                "CREATE INDEX IF NOT EXISTS idx_srs_function ON summary_return_sources(function_id)".into(),
+            "idx_srs_return" =>
+                "CREATE INDEX IF NOT EXISTS idx_srs_return ON summary_return_sources(return_id)".into(),
+            "idx_scas_function" =>
+                "CREATE INDEX IF NOT EXISTS idx_scas_function ON summary_call_arg_sources(function_id)".into(),
+            "idx_scas_callsite" =>
+                "CREATE INDEX IF NOT EXISTS idx_scas_callsite ON summary_call_arg_sources(callsite_id)".into(),
+            // fpa
+            "idx_fpa_source_field" =>
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_fpa_source_field ON function_pointer_annotations(source_symbol, field_name)".into(),
+            "idx_fpa_source" =>
+                "CREATE INDEX IF NOT EXISTS idx_fpa_source ON function_pointer_annotations(source_symbol)".into(),
+            "idx_fpa_target" =>
+                "CREATE INDEX IF NOT EXISTS idx_fpa_target ON function_pointer_annotations(target_symbol)".into(),
+            // files
+            "idx_files_path" =>
+                "CREATE INDEX IF NOT EXISTS idx_files_path ON files(path)".into(),
+            "idx_files_language" =>
+                "CREATE INDEX IF NOT EXISTS idx_files_language ON files(language)".into(),
+            // symbols
+            "idx_symbols_file" =>
+                "CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id)".into(),
+            "idx_symbols_qname" =>
+                "CREATE INDEX IF NOT EXISTS idx_symbols_qname ON symbols(qualified_name)".into(),
+            "idx_symbols_kind" =>
+                "CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind)".into(),
+            "idx_symbols_container" =>
+                "CREATE INDEX IF NOT EXISTS idx_symbols_container ON symbols(container_id)".into(),
+            "idx_symbols_name" =>
+                "CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name)".into(),
+            // scopes
+            "idx_scopes_file" =>
+                "CREATE INDEX IF NOT EXISTS idx_scopes_file ON scopes(file_id)".into(),
+            "idx_scopes_parent" =>
+                "CREATE INDEX IF NOT EXISTS idx_scopes_parent ON scopes(parent_id)".into(),
+            // references
+            "idx_references_file" =>
+                "CREATE INDEX IF NOT EXISTS idx_references_file ON \"references\"(file_id)".into(),
+            "idx_references_source" =>
+                "CREATE INDEX IF NOT EXISTS idx_references_source ON \"references\"(source_symbol)".into(),
+            "idx_references_resolved" =>
+                "CREATE INDEX IF NOT EXISTS idx_references_resolved ON \"references\"(resolved_symbol_id)".into(),
+            "idx_references_unresolved" =>
+                "CREATE INDEX IF NOT EXISTS idx_references_unresolved ON \"references\"(resolved_symbol_id) WHERE resolved_symbol_id IS NULL".into(),
+            // imports
+            "idx_imports_file" =>
+                "CREATE INDEX IF NOT EXISTS idx_imports_file ON imports(file_id)".into(),
+            "idx_imports_module" =>
+                "CREATE INDEX IF NOT EXISTS idx_imports_module ON imports(module)".into(),
+            // symbol_edges
+            "idx_symbol_edges_source" =>
+                "CREATE INDEX IF NOT EXISTS idx_symbol_edges_source ON symbol_edges(source)".into(),
+            "idx_symbol_edges_target" =>
+                "CREATE INDEX IF NOT EXISTS idx_symbol_edges_target ON symbol_edges(target)".into(),
+            "idx_symbol_edges_kind" =>
+                "CREATE INDEX IF NOT EXISTS idx_symbol_edges_kind ON symbol_edges(kind)".into(),
+            "idx_symbol_edges_source_kind" =>
+                "CREATE INDEX IF NOT EXISTS idx_symbol_edges_source_kind ON symbol_edges(source, kind)".into(),
+            // callsites
+            "idx_callsites_caller" =>
+                "CREATE INDEX IF NOT EXISTS idx_callsites_caller ON callsites(caller)".into(),
+            "idx_callsites_reference" =>
+                "CREATE INDEX IF NOT EXISTS idx_callsites_reference ON callsites(reference_id)".into(),
+            // bindings
+            "idx_bindings_file" =>
+                "CREATE INDEX IF NOT EXISTS idx_bindings_file ON bindings(file_id)".into(),
+            "idx_bindings_function" =>
+                "CREATE INDEX IF NOT EXISTS idx_bindings_function ON bindings(function_id)".into(),
+            "idx_bindings_symbol" =>
+                "CREATE INDEX IF NOT EXISTS idx_bindings_symbol ON bindings(symbol_id)".into(),
+            // binding_uses
+            "idx_binding_uses_file" =>
+                "CREATE INDEX IF NOT EXISTS idx_binding_uses_file ON binding_uses(file_id)".into(),
+            "idx_binding_uses_binding" =>
+                "CREATE INDEX IF NOT EXISTS idx_binding_uses_binding ON binding_uses(binding_id)".into(),
+            "idx_binding_uses_reference" =>
+                "CREATE INDEX IF NOT EXISTS idx_binding_uses_reference ON binding_uses(reference_id)".into(),
+            // data_nodes
+            "idx_data_nodes_file" =>
+                "CREATE INDEX IF NOT EXISTS idx_data_nodes_file ON data_nodes(file_id)".into(),
+            "idx_data_nodes_function" =>
+                "CREATE INDEX IF NOT EXISTS idx_data_nodes_function ON data_nodes(function_id)".into(),
+            "idx_data_nodes_binding" =>
+                "CREATE INDEX IF NOT EXISTS idx_data_nodes_binding ON data_nodes(binding_id)".into(),
+            // dataflow_edges
+            "idx_dataflow_edges_source" =>
+                "CREATE INDEX IF NOT EXISTS idx_dataflow_edges_source ON dataflow_edges(source)".into(),
+            "idx_dataflow_edges_target" =>
+                "CREATE INDEX IF NOT EXISTS idx_dataflow_edges_target ON dataflow_edges(target)".into(),
+            "idx_dataflow_edges_kind" =>
+                "CREATE INDEX IF NOT EXISTS idx_dataflow_edges_kind ON dataflow_edges(kind)".into(),
+            // cfg_nodes
+            "idx_cfg_nodes_function" =>
+                "CREATE INDEX IF NOT EXISTS idx_cfg_nodes_function ON cfg_nodes(function_id)".into(),
+            "idx_cfg_nodes_kind" =>
+                "CREATE INDEX IF NOT EXISTS idx_cfg_nodes_kind ON cfg_nodes(kind)".into(),
+            // cfg_edges
+            "idx_cfg_edges_source" =>
+                "CREATE INDEX IF NOT EXISTS idx_cfg_edges_source ON cfg_edges(source_node)".into(),
+            "idx_cfg_edges_target" =>
+                "CREATE INDEX IF NOT EXISTS idx_cfg_edges_target ON cfg_edges(target_node)".into(),
+            "idx_cfg_edges_kind" =>
+                "CREATE INDEX IF NOT EXISTS idx_cfg_edges_kind ON cfg_edges(kind)".into(),
+            _ => {
+                tracing::warn!(target: "atlas_db", index_name = name, "unknown index in repair — using generic CREATE INDEX");
+                format!("CREATE INDEX IF NOT EXISTS {} ON unknown_table(unknown_column)", name)
+            }
+        }
+    }
+
+    /// Build DDL SQL strings for all final indexes + FTS (used by FullRebuildGuard).
+    fn build_final_ddl_sqls(&self) -> Vec<String> {
+        let mut sqls: Vec<String> = Vec::new();
+        for idx in crate::bulk_schema::ALL_WRITE_INDEXES {
+            sqls.push(self.index_create_sql(idx));
+        }
+        sqls.push(crate::bulk_schema::SYMBOLS_AI_TRIGGER.to_string());
+        sqls.push(crate::bulk_schema::SYMBOLS_AD_TRIGGER.to_string());
+        sqls.push(crate::bulk_schema::SYMBOLS_AU_TRIGGER.to_string());
+        sqls.push(crate::bulk_schema::FTS_REBUILD.to_string());
+        sqls
     }
 
     // -----------------------------------------------------------------------
@@ -2012,5 +2380,203 @@ mod tests {
         // The fresh structural row should still contribute via layer fallback
         assert!(mask.has(CapabilityMask::MANIFEST));
         assert!(mask.has(CapabilityMask::STRUCTURAL));
+    }
+
+    // ── Bulk schema management tests ─────────────────────────────────────
+
+    #[cfg(test)]
+    mod bulk_tests {
+        use super::*;
+        use std::sync::Arc;
+
+        fn test_store() -> Store {
+            let store = Store::open_in_memory().unwrap();
+            store.init_schema().unwrap();
+            store
+        }
+
+        fn list_indexes(store: &Store) -> Vec<String> {
+            let conn = store.lock();
+            let mut stmt = conn
+                .prepare("SELECT name FROM sqlite_master WHERE type='index' ORDER BY name")
+                .unwrap();
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        }
+
+        fn index_exists(store: &Store, name: &str) -> bool {
+            list_indexes(store).contains(&name.to_string())
+        }
+
+        #[test]
+        fn full_rebuild_guard_drop_repairs_schema() {
+            let store = Arc::new(test_store());
+
+            // Drop one index to simulate partial schema
+            {
+                let conn = store.lock();
+                conn.execute_batch("DROP INDEX IF EXISTS idx_symbols_qname").unwrap();
+            }
+            assert!(
+                !index_exists(&store, "idx_symbols_qname"),
+                "index should be dropped"
+            );
+
+            // Guard should recreate the missing index on drop
+            {
+                let _guard = FullRebuildGuard::new(&store);
+                // guard goes out of scope here — triggers repair
+            }
+
+            assert!(
+                index_exists(&store, "idx_symbols_qname"),
+                "guard drop should recreate missing index"
+            );
+        }
+
+        #[test]
+        fn full_rebuild_guard_commit_skips_repair() {
+            let store = Arc::new(test_store());
+
+            // Drop one index
+            {
+                let conn = store.lock();
+                conn.execute_batch("DROP INDEX IF EXISTS idx_symbols_qname").unwrap();
+            }
+            assert!(!index_exists(&store, "idx_symbols_qname"));
+
+            // Commit the guard — should NOT repair on drop
+            {
+                let guard = FullRebuildGuard::new(&store);
+                guard.commit();
+            }
+
+            assert!(
+                !index_exists(&store, "idx_symbols_qname"),
+                "committed guard should NOT repair schema"
+            );
+        }
+
+        #[test]
+        fn drop_writable_indexes_removes_all() {
+            let store = test_store();
+
+            // Sanity: init_schema created many indexes
+            let before = list_indexes(&store);
+            assert!(
+                before.iter().any(|n| n.starts_with("idx_")),
+                "init_schema should create indexes"
+            );
+
+            let mut rebuild = false;
+            store.drop_writable_indexes(&mut rebuild).unwrap();
+            assert!(rebuild, "must_rebuild should be set to true");
+
+            // After drop_writable_indexes, only PK autoindexes and
+            // extraction/summary indexes (not in ALL_WRITE_INDEXES) should remain.
+            let after = list_indexes(&store);
+            let dropped: Vec<&str> = crate::bulk_schema::ALL_WRITE_INDEXES.to_vec();
+            for name in &dropped {
+                assert!(
+                    !after.contains(&name.to_string()),
+                    "index {name} should have been dropped"
+                );
+            }
+
+            // Extraction and summary indexes should still exist
+            for name in crate::bulk_schema::EXTRACTION_AND_SUMMARY_INDEXES {
+                assert!(
+                    after.contains(&name.to_string()),
+                    "kept index {name} should still exist"
+                );
+            }
+        }
+
+        #[test]
+        fn create_resolution_indexes_creates_correct_set() {
+            let store = test_store();
+
+            // Drop everything first
+            let mut rebuild = false;
+            store.drop_writable_indexes(&mut rebuild).unwrap();
+
+            // Create resolution-only indexes
+            store.create_resolution_indexes().unwrap();
+
+            for name in crate::bulk_schema::RESOLUTION_INDEXES {
+                assert!(
+                    index_exists(&store, name),
+                    "resolution index {name} should exist"
+                );
+            }
+
+            // Non-resolution indexes should NOT exist
+            for name in crate::bulk_schema::FINAL_QUERY_INDEXES {
+                assert!(
+                    !index_exists(&store, name),
+                    "final index {name} should NOT exist yet"
+                );
+            }
+        }
+
+        #[test]
+        fn ensure_required_schema_objects_fixes_missing_index() {
+            let store = test_store();
+
+            // Drop one index
+            {
+                let conn = store.lock();
+                conn.execute_batch("DROP INDEX IF EXISTS idx_symbols_kind").unwrap();
+            }
+            assert!(
+                !index_exists(&store, "idx_symbols_kind"),
+                "index should be dropped"
+            );
+
+            store.ensure_required_schema_objects().unwrap();
+
+            assert!(
+                index_exists(&store, "idx_symbols_kind"),
+                "ensure_required should recreate missing index"
+            );
+        }
+
+        #[test]
+        fn ensure_required_schema_objects_noop_when_all_present() {
+            let store = test_store();
+
+            // Should succeed without errors when nothing is missing
+            store.ensure_required_schema_objects().unwrap();
+
+            // All expected indexes should still exist
+            for name in crate::bulk_schema::ALL_WRITE_INDEXES {
+                assert!(
+                    index_exists(&store, name),
+                    "index {name} should still exist"
+                );
+            }
+        }
+
+        #[test]
+        fn create_final_indexes_and_rebuild_fts_works() {
+            let store = test_store();
+
+            // Drop all writable indexes first
+            let mut rebuild = false;
+            store.drop_writable_indexes(&mut rebuild).unwrap();
+
+            // Create final indexes + rebuild FTS
+            store.create_final_indexes_and_rebuild_fts().unwrap();
+
+            // All final query indexes should exist
+            for name in crate::bulk_schema::FINAL_QUERY_INDEXES {
+                assert!(
+                    index_exists(&store, name),
+                    "final index {name} should exist after create_final_indexes_and_rebuild_fts"
+                );
+            }
+        }
     }
 }

@@ -34,6 +34,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use db::Store;
@@ -50,6 +51,66 @@ use types::{FileFacts, FileId, Language, SymbolDef, SymbolId};
 use crate::cleanup::{clean_stale_file_ids, clean_stale_file_paths, source_file_id};
 use crate::dirty::{DirtySet, build_dirty_set_for_mode};
 use crate::discovery::{DiscoveryConfig, discover_files};
+
+// ── Write metrics types ─────────────────────────────────────────────────
+
+/// Row counts for a single write chunk.
+#[derive(Debug, Default, Clone)]
+pub struct WriteRows {
+    pub files: usize,
+    pub symbols: usize,
+    pub scopes: usize,
+    pub references: usize,
+    pub imports: usize,
+    pub callsites: usize,
+    pub bindings: usize,
+    pub binding_uses: usize,
+    pub data_nodes: usize,
+    pub dataflow_edges: usize,
+    pub cfg_nodes: usize,
+    pub cfg_edges: usize,
+    pub raw_edges: usize,
+}
+
+impl WriteRows {
+    /// Extract row counts from a slice of FileFacts.
+    pub fn from_facts(facts: &[FileFacts]) -> Self {
+        let mut rows = Self::default();
+        for f in facts {
+            rows.files += 1;
+            rows.symbols += f.symbols.len();
+            rows.scopes += f.scopes.len();
+            rows.references += f.references.len();
+            rows.imports += f.imports.len();
+            rows.callsites += f.callsites.len();
+            rows.bindings += f.bindings.len();
+            rows.binding_uses += f.binding_uses.len();
+            rows.data_nodes += f.data_nodes.len();
+            rows.dataflow_edges += f.dataflow_edges.len();
+            rows.cfg_nodes += f.cfg_nodes.len();
+            rows.cfg_edges += f.cfg_edges.len();
+            rows.raw_edges += f.raw_edges.len();
+        }
+        rows
+    }
+
+    /// Accumulate another WriteRows into self.
+    pub fn accumulate(&mut self, other: &WriteRows) {
+        self.files += other.files;
+        self.symbols += other.symbols;
+        self.scopes += other.scopes;
+        self.references += other.references;
+        self.imports += other.imports;
+        self.callsites += other.callsites;
+        self.bindings += other.bindings;
+        self.binding_uses += other.binding_uses;
+        self.data_nodes += other.data_nodes;
+        self.dataflow_edges += other.dataflow_edges;
+        self.cfg_nodes += other.cfg_nodes;
+        self.cfg_edges += other.cfg_edges;
+        self.raw_edges += other.raw_edges;
+    }
+}
 
 // ── Public types ───────────────────────────────────────────────────────
 
@@ -466,34 +527,100 @@ pub fn phase_write_batched(
         batch_failures: 0,
         single_failures: 0,
     };
+    let mut total_rows = WriteRows::default();
 
     let _bulk = store.enter_bulk_write()?;
     let mut next_checkpoint = checkpoint_interval;
 
     let all_facts: Vec<FileFacts> = extracted.items.into_iter().map(|ef| ef.facts).collect();
+    let chunks_total = all_facts.chunks(batch_size).count();
 
-    for chunk in all_facts.chunks(batch_size) {
+    for (chunk_idx, chunk) in all_facts.chunks(batch_size).enumerate() {
         if interrupted() {
             return Ok(stats);
         }
-        if store.insert_file_facts_batch(chunk).is_err() {
-            stats.batch_failures += 1;
-            for facts in chunk {
-                match store.insert_file_facts(facts) {
-                    Ok(_) => {
-                        stats.written += 1;
-                    }
-                    Err(_) => {
-                        stats.single_failures += 1;
+
+        let rows = WriteRows::from_facts(chunk);
+        let chunk_started = Instant::now();
+        let file_start_idx = chunk_idx * batch_size;
+        let file_end_idx = file_start_idx + chunk.len();
+
+        let write_result = store.insert_file_facts_batch(chunk);
+        let elapsed = chunk_started.elapsed();
+
+        match write_result {
+            Ok(_) => {
+                // Log slow chunks (>2s or >100K references)
+                if elapsed.as_secs() > 2 || rows.references > 100_000 {
+                    tracing::info!(
+                        target: "atlas_db_write",
+                        chunk_index = chunk_idx,
+                        files = format!("{}-{}", file_start_idx, file_end_idx),
+                        elapsed_ms = elapsed.as_millis(),
+                        rows.references,
+                        rows.symbols,
+                        rows.scopes,
+                        rows.callsites,
+                        rows.imports,
+                        "slow db write chunk"
+                    );
+                }
+                total_rows.accumulate(&rows);
+                stats.written += chunk.len();
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "atlas_db_write",
+                    chunk_index = chunk_idx,
+                    file_count = chunk.len(),
+                    ?rows,
+                    elapsed_ms = elapsed.as_millis(),
+                    error = %e,
+                    "batch write failed; falling back to single-file writes"
+                );
+                stats.batch_failures += 1;
+                for facts in chunk {
+                    match store.insert_file_facts(facts) {
+                        Ok(_) => {
+                            stats.written += 1;
+                        }
+                        Err(_) => {
+                            stats.single_failures += 1;
+                        }
                     }
                 }
             }
-        } else {
-            stats.written += chunk.len();
         }
 
         if stats.written as u64 >= next_checkpoint {
-            let _ = store.checkpoint_wal();
+            match store.checkpoint_wal() {
+                Ok(ckpt) => {
+                    if ckpt.busy > 0 {
+                        tracing::warn!(
+                            target: "atlas_db_write",
+                            busy = ckpt.busy,
+                            log_frames = ckpt.log_frames,
+                            checkpointed_frames = ckpt.checkpointed_frames,
+                            "wal checkpoint busy — reader may be active"
+                        );
+                    } else if ckpt.log_frames - ckpt.checkpointed_frames > 100_000 {
+                        tracing::info!(
+                            target: "atlas_db_write",
+                            log_frames = ckpt.log_frames,
+                            checkpointed_frames = ckpt.checkpointed_frames,
+                            elapsed_ms = ckpt.elapsed_ms,
+                            "wal log size large; checkpoint lagging"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "atlas_db_write",
+                        error = %e,
+                        "wal checkpoint failed"
+                    );
+                }
+            }
             next_checkpoint = stats.written as u64 + checkpoint_interval;
         }
 
@@ -501,6 +628,19 @@ pub fn phase_write_batched(
     }
 
     let _ = store.checkpoint_wal_truncate();
+
+    tracing::info!(
+        target: "atlas_db_write",
+        written = stats.written,
+        batch_failures = stats.batch_failures,
+        chunks = chunks_total,
+        total_references = total_rows.references,
+        total_symbols = total_rows.symbols,
+        total_scopes = total_rows.scopes,
+        total_callsites = total_rows.callsites,
+        "db write phase complete"
+    );
+
     Ok(stats)
 }
 

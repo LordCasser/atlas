@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use db::{KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION, IndexMode, Store};
+use db::{FullRebuildGuard, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION, IndexMode, Store};
 use extraction::ExtractionMode;
 use resolution::PathAliasConfig;
 use tracing::{debug_span, info};
@@ -240,6 +240,11 @@ impl IndexPipeline {
 
         let files_to_extract = dirty_set.dirty;
 
+        // Bulk-load optimization state: indexes are dropped before mass
+        // writes and re-created progressively through the pipeline.
+        let mut must_rebuild = false;
+        let mut bulk_guard: Option<FullRebuildGuard> = None;
+
         // ── Phases 4-6 only when there are dirty files ──────────────────
         if !files_to_extract.is_empty() {
             // ── Phase 4: LanguageInit ───────────────────────────────────
@@ -266,6 +271,10 @@ impl IndexPipeline {
                 detail: Some(format!("{lang_count} language frontends initialized")),
             });
             last_phase = PhaseName::LanguageInit;
+
+            // ── Bulk-load optimization: drop indexes before mass writes ──
+            self.store.drop_writable_indexes(&mut must_rebuild)?;
+            bulk_guard = Some(FullRebuildGuard::new(&self.store));
 
             // ── Phase 5: Extraction ─────────────────────────────────────
             check_cancelled!();
@@ -356,6 +365,11 @@ impl IndexPipeline {
                 )),
             });
             last_phase = PhaseName::DbWrite;
+
+            // ── Bulk-load: recreate resolution indexes before Phase 7 ───
+            if must_rebuild {
+                self.store.create_resolution_indexes()?;
+            }
         }
 
         // ── Phase 7: Resolution (Structural / Full only) ────────────────
@@ -460,6 +474,11 @@ impl IndexPipeline {
             }
         }
 
+        // ── Bulk-load: rebuild final indexes + FTS after resolution ────
+        if must_rebuild {
+            self.store.create_final_indexes_and_rebuild_fts()?;
+        }
+
         // ── Phase 9: Build summaries (Full mode only) ───────────────────
         if self.options.mode.produces_dataflow() {
             check_cancelled!();
@@ -489,6 +508,11 @@ impl IndexPipeline {
                     phase: PhaseName::SummaryBuild,
                     total: function_count,
                 });
+
+                // ── Bulk-load: create summary indexes before build ──────
+                if must_rebuild {
+                    self.store.create_summary_indexes_if_needed()?;
+                }
 
                 let on_summary_progress = |completed: u64| {
                     sink.emit(ProgressEvent::ItemProgress {
@@ -555,6 +579,12 @@ impl IndexPipeline {
         // Cancelled events between phases also reflect the correct
         // last-completed phase.
         // last_phase = PhaseName::Finalize; (not needed — no more phases)
+
+        // ── Bulk-load: commit guard (indexes already rebuilt); prevent
+        //    double-create on drop if the guard outlives this scope.
+        if let Some(guard) = bulk_guard {
+            guard.commit();
+        }
 
         Ok(stats)
     }
