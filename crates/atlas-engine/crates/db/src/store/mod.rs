@@ -44,6 +44,8 @@ mod file_extraction_state;
 mod files;
 mod fk_guards;
 mod lifecycle;
+#[allow(unused_imports)]
+pub use lifecycle::{IndexMode, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION};
 mod scopes;
 mod stats;
 pub mod summary;

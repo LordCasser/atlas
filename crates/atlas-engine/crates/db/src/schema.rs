@@ -550,6 +550,10 @@ CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
     INSERT INTO symbols_fts(rowid, name, qualified_name)
     VALUES (new.rowid, new.name, new.qualified_name);
 END;
+
+-- Seed generation counters to 0 so they exist after a fresh init_schema().
+INSERT OR IGNORE INTO project_metadata (key, value) VALUES ('resolution_generation_version', '0');
+INSERT OR IGNORE INTO project_metadata (key, value) VALUES ('graph_generation_version', '0');
 "#;
 
 #[cfg(test)]

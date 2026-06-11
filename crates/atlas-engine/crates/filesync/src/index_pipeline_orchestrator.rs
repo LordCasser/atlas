@@ -10,10 +10,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use db::Store;
-#[cfg(test)]
+use db::{KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION, IndexMode, Store};
 use extraction::ExtractionMode;
-use tracing::debug_span;
+use tracing::{debug_span, info};
 use types::SymbolKind;
 
 use crate::cleanup::source_file_id;
@@ -157,6 +156,9 @@ impl IndexPipeline {
         });
         last_phase = PhaseName::HashCheck;
 
+        // Save counts for skip-resolution check.
+        let dirty_count = dirty_set.dirty.len();
+
         // ── Phase 3: Cleanup ────────────────────────────────────────────
         check_cancelled!();
         let _cleanup_span = debug_span!(target: "atlas_sync", "sync.full.cleanup").entered();
@@ -213,6 +215,16 @@ impl IndexPipeline {
         });
         last_phase = PhaseName::Cleanup;
         drop(_cleanup_span);
+
+        // ── Skip-resolution check ────────────────────────────────────────
+        // Determines whether resolution (Phase 7), annotation materialise
+        // (Phase 8), and summary rebuild (Phase 9) can be skipped because
+        // nothing has changed since the last successful run.
+        let skip_resolution = if self.options.mode.produces_references() {
+            self.should_skip_resolution(dirty_count, deleted_count, stale_count)?
+        } else {
+            false
+        };
 
         let files_to_extract = dirty_set.dirty;
 
@@ -338,109 +350,156 @@ impl IndexPipeline {
         if self.options.mode.produces_references() {
             check_cancelled!();
 
-            // Get unresolved count for progress total
-            let unresolved_total = self
-                .store
-                .find_unresolved_references()
-                .map(|refs| refs.len() as u64)
-                .unwrap_or(0);
+            if skip_resolution {
+                info!("Skipping resolution — no changes detected");
+                sink.emit(ProgressEvent::PhaseStarted {
+                    phase: PhaseName::Resolution,
+                    total: 0,
+                });
+                sink.emit(ProgressEvent::PhaseFinished {
+                    phase: PhaseName::Resolution,
+                    succeeded: 0,
+                    failed: 0,
+                    detail: Some("skipped (no changes)".into()),
+                });
+                sink.emit(ProgressEvent::PhaseStarted {
+                    phase: PhaseName::AnnotationMaterialize,
+                    total: 0,
+                });
+                sink.emit(ProgressEvent::PhaseFinished {
+                    phase: PhaseName::AnnotationMaterialize,
+                    succeeded: 0,
+                    failed: 0,
+                    detail: Some("skipped (no changes)".into()),
+                });
+            } else {
+                // Get unresolved count for progress total
+                let unresolved_total = self
+                    .store
+                    .find_unresolved_references()
+                    .map(|refs| refs.len() as u64)
+                    .unwrap_or(0);
 
-            sink.emit(ProgressEvent::PhaseStarted {
-                phase: PhaseName::Resolution,
-                total: unresolved_total,
-            });
+                sink.emit(ProgressEvent::PhaseStarted {
+                    phase: PhaseName::Resolution,
+                    total: unresolved_total,
+                });
 
-            let ps = sink.progress_state();
-            let graph_result = match phase_resolve_and_build(&self.store, &self.project_root, ps) {
-                Ok(gr) => gr,
-                Err(e) => {
-                    sink.emit(ProgressEvent::Warning {
-                        phase: PhaseName::Resolution,
-                        message: format!("{e:#}"),
-                    });
-                    return Err(e);
-                }
-            };
-            stats.resolved = graph_result.resolved;
-            stats.edges_built = graph_result.edges_built;
-            sink.emit(ProgressEvent::PhaseFinished {
-                phase: PhaseName::Resolution,
-                succeeded: graph_result.resolved as u64,
-                failed: 0,
-                detail: Some(format!(
-                    "{} resolved, {} edges built",
-                    graph_result.resolved, graph_result.edges_built,
-                )),
-            });
-            last_phase = PhaseName::Resolution;
+                let ps = sink.progress_state();
+                let graph_result = match phase_resolve_and_build(&self.store, &self.project_root, ps)
+                {
+                    Ok(gr) => gr,
+                    Err(e) => {
+                        sink.emit(ProgressEvent::Warning {
+                            phase: PhaseName::Resolution,
+                            message: format!("{e:#}"),
+                        });
+                        return Err(e);
+                    }
+                };
+                stats.resolved = graph_result.resolved;
+                stats.edges_built = graph_result.edges_built;
+                sink.emit(ProgressEvent::PhaseFinished {
+                    phase: PhaseName::Resolution,
+                    succeeded: graph_result.resolved as u64,
+                    failed: 0,
+                    detail: Some(format!(
+                        "{} resolved, {} edges built",
+                        graph_result.resolved, graph_result.edges_built,
+                    )),
+                });
+                last_phase = PhaseName::Resolution;
 
-            // ── Phase 8: Materialize annotations ────────────────────────
-            check_cancelled!();
-            sink.emit(ProgressEvent::PhaseStarted {
-                phase: PhaseName::AnnotationMaterialize,
-                total: 0,
-            });
-            match phase_materialize_annotations(&self.store) {
-                Ok(()) => {
-                    sink.emit(ProgressEvent::PhaseFinished {
-                        phase: PhaseName::AnnotationMaterialize,
-                        succeeded: 1,
-                        failed: 0,
-                        detail: None,
-                    });
+                // Record that resolution completed successfully so next
+                // run can detect no-op scenarios.
+                self.record_resolution_complete()?;
+
+                // ── Phase 8: Materialize annotations ────────────────────
+                check_cancelled!();
+                sink.emit(ProgressEvent::PhaseStarted {
+                    phase: PhaseName::AnnotationMaterialize,
+                    total: 0,
+                });
+                match phase_materialize_annotations(&self.store) {
+                    Ok(()) => {
+                        sink.emit(ProgressEvent::PhaseFinished {
+                            phase: PhaseName::AnnotationMaterialize,
+                            succeeded: 1,
+                            failed: 0,
+                            detail: None,
+                        });
+                    }
+                    Err(e) => {
+                        sink.emit(ProgressEvent::Warning {
+                            phase: PhaseName::AnnotationMaterialize,
+                            message: format!("{e:#}"),
+                        });
+                        return Err(e);
+                    }
                 }
-                Err(e) => {
-                    sink.emit(ProgressEvent::Warning {
-                        phase: PhaseName::AnnotationMaterialize,
-                        message: format!("{e:#}"),
-                    });
-                    return Err(e);
-                }
+                last_phase = PhaseName::AnnotationMaterialize;
             }
-            last_phase = PhaseName::AnnotationMaterialize;
         }
 
         // ── Phase 9: Build summaries (Full mode only) ───────────────────
         if self.options.mode.produces_dataflow() {
             check_cancelled!();
 
-            // Get function count for progress total
-            let all_symbols = self.store.get_all_symbols().unwrap_or_default();
-            let function_count = all_symbols
-                .iter()
-                .filter(|s| s.kind == SymbolKind::Function)
-                .count() as u64;
-
-            sink.emit(ProgressEvent::PhaseStarted {
-                phase: PhaseName::SummaryBuild,
-                total: function_count,
-            });
-
-            let on_summary_progress = |completed: u64| {
-                sink.emit(ProgressEvent::ItemProgress {
+            if skip_resolution {
+                // skip_graph = skip_resolution (graph depends on resolution)
+                info!("Skipping graph rebuild — no changes detected");
+                sink.emit(ProgressEvent::PhaseStarted {
                     phase: PhaseName::SummaryBuild,
-                    completed,
+                    total: 0,
                 });
-            };
+                sink.emit(ProgressEvent::PhaseFinished {
+                    phase: PhaseName::SummaryBuild,
+                    succeeded: 0,
+                    failed: 0,
+                    detail: Some("skipped (no changes)".into()),
+                });
+            } else {
+                // Get function count for progress total
+                let all_symbols = self.store.get_all_symbols().unwrap_or_default();
+                let function_count = all_symbols
+                    .iter()
+                    .filter(|s| s.kind == SymbolKind::Function)
+                    .count() as u64;
 
-            match phase_build_summaries(&self.store, Some(&on_summary_progress)) {
-                Ok(n) => {
-                    sink.emit(ProgressEvent::PhaseFinished {
+                sink.emit(ProgressEvent::PhaseStarted {
+                    phase: PhaseName::SummaryBuild,
+                    total: function_count,
+                });
+
+                let on_summary_progress = |completed: u64| {
+                    sink.emit(ProgressEvent::ItemProgress {
                         phase: PhaseName::SummaryBuild,
-                        succeeded: n as u64,
-                        failed: 0,
-                        detail: Some(format!("{n} functions summarized")),
+                        completed,
                     });
+                };
+
+                match phase_build_summaries(&self.store, Some(&on_summary_progress)) {
+                    Ok(n) => {
+                        sink.emit(ProgressEvent::PhaseFinished {
+                            phase: PhaseName::SummaryBuild,
+                            succeeded: n as u64,
+                            failed: 0,
+                            detail: Some(format!("{n} functions summarized")),
+                        });
+                    }
+                    Err(e) => {
+                        sink.emit(ProgressEvent::Warning {
+                            phase: PhaseName::SummaryBuild,
+                            message: format!("{e:#}"),
+                        });
+                        return Err(e);
+                    }
                 }
-                Err(e) => {
-                    sink.emit(ProgressEvent::Warning {
-                        phase: PhaseName::SummaryBuild,
-                        message: format!("{e:#}"),
-                    });
-                    return Err(e);
-                }
+
+                // Record that graph build completed successfully.
+                let _ = self.store.bump_generation(KEY_GRAPH_GENERATION);
+                last_phase = PhaseName::SummaryBuild;
             }
-            last_phase = PhaseName::SummaryBuild;
         }
 
         // ── Phase 10: Finalize ──────────────────────────────────────────
@@ -479,6 +538,76 @@ impl IndexPipeline {
         // last_phase = PhaseName::Finalize; (not needed — no more phases)
 
         Ok(stats)
+    }
+
+    // ── Skip-resolution helpers ─────────────────────────────────────────
+
+    /// Decide whether resolution and downstream phases can be skipped
+    /// because nothing has changed since the last successful run.
+    ///
+    /// Returns `true` when ALL of these hold:
+    /// 1. No dirty files (content hashes match stored state)
+    /// 2. No stale files were cleaned (no files deleted or re-indexed)
+    /// 3. Resolution config hash matches the stored baseline
+    fn should_skip_resolution(
+        &self,
+        dirty_count: usize,
+        deleted_count: usize,
+        stale_count: usize,
+    ) -> anyhow::Result<bool> {
+        if dirty_count > 0 || deleted_count > 0 || stale_count > 0 {
+            return Ok(false);
+        }
+
+        let stored_hash = self
+            .store
+            .get_metadata(KEY_RESOLUTION_CONFIG_HASH)?;
+
+        let index_mode = match &self.options.mode {
+            ExtractionMode::Manifest => IndexMode::Manifest,
+            ExtractionMode::ResolutionSymbols => {
+                // ResolutionSymbols is the lightweight variant that doesn't
+                // produce references — the skip check above already returns
+                // false via produces_references().  Map to Manifest for the
+                // config-hash computation so it has a stable identity.
+                IndexMode::Manifest
+            }
+            ExtractionMode::Structural => IndexMode::Structural,
+            ExtractionMode::LazyDataflow { .. } => IndexMode::Full,
+            ExtractionMode::Full => IndexMode::Full,
+        };
+        // Path aliases are not tracked per-run; pass None.  Path-alias
+        // config files (tsconfig.json / jsconfig.json) are detected by
+        // phase_resolve_and_build's own change-detection logic.
+        let current_hash = self
+            .store
+            .resolution_config_hash(&index_mode, None)?;
+
+        Ok(stored_hash == Some(current_hash))
+    }
+
+    /// Record that resolution completed successfully: bump the generation
+    /// counter and store the current config hash so the next run can detect
+    /// a no-op scenario.
+    fn record_resolution_complete(&self) -> anyhow::Result<()> {
+        let index_mode = match &self.options.mode {
+            ExtractionMode::Manifest => IndexMode::Manifest,
+            ExtractionMode::ResolutionSymbols => IndexMode::Manifest,
+            ExtractionMode::Structural => IndexMode::Structural,
+            ExtractionMode::LazyDataflow { .. } => IndexMode::Full,
+            ExtractionMode::Full => IndexMode::Full,
+        };
+        let current_hash = self
+            .store
+            .resolution_config_hash(&index_mode, None)?;
+
+        // Store config hash as plain metadata (string) so
+        // should_skip_resolution can compare with lock_read().
+        self.store
+            .set_metadata(KEY_RESOLUTION_CONFIG_HASH, &current_hash)?;
+        // Bump monotonic generation counter.
+        self.store.bump_generation(KEY_RESOLUTION_GENERATION)?;
+        Ok(())
     }
 }
 
