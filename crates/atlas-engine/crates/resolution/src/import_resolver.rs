@@ -8,36 +8,12 @@
 //! 3. Look up candidates by qualified name
 //! 4. Fallback: search by imported name
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 use db::Store;
 use types::*;
 
 use super::path_alias::PathAliasResolver;
-
-thread_local! {
-    /// Per-thread QName → symbols cache. Empty vec = known miss.
-    /// Avoids Mutex contention in parallel resolution (rayon threads
-    /// are long-lived, so each thread builds its own private cache).
-    static QNAME_CACHE: RefCell<HashMap<String, Vec<SymbolDef>>> =
-        RefCell::new(HashMap::new());
-
-    /// Per-thread reexport chain cache.  Key: (caller_file_id, import_module, target_name).
-    /// Stores the final resolved symbols after traversing barrel reexport chains.
-    /// This is the dominant S5 hot path: follow_reexport_chain does recursive
-    /// DB queries (find_imports_by_file + resolve_relative_module + find_symbols_by_file)
-    /// per call, and the same (file, module, name) repeats across references.
-    static REEXPORT_CACHE: RefCell<HashMap<(FileId, String, String), Vec<SymbolDef>>> =
-        RefCell::new(HashMap::new());
-
-    /// Per-thread module-path resolution cache. Key: (module_path, target_name).
-    /// Caches `find_files_by_path_prefix` + per-file `find_symbols_by_file` results.
-    /// This is the QName-miss fallback path that resolves imports via file-system
-    /// module path matching when the qualified name is not in the symbol table.
-    static MODULE_PATH_CACHE: RefCell<HashMap<(String, String), Vec<SymbolDef>>> =
-        RefCell::new(HashMap::new());
-}
 
 /// Resolves import paths to potential symbols.
 ///
@@ -52,6 +28,13 @@ thread_local! {
 pub struct ImportResolver {
     store: std::sync::Arc<Store>,
     path_alias: PathAliasResolver,
+    /// QName → symbols cache. Empty vec = known miss.
+    /// Scoped to this resolver instance (fresh per ResolutionSession::build).
+    qname_cache: std::sync::Mutex<HashMap<String, Vec<SymbolDef>>>,
+    /// Reexport chain cache. Key: (caller_file_id, import_module, target_name).
+    reexport_cache: std::sync::Mutex<HashMap<(FileId, String, String), Vec<SymbolDef>>>,
+    /// Module-path resolution cache. Key: (module_path, target_name).
+    module_path_cache: std::sync::Mutex<HashMap<(String, String), Vec<SymbolDef>>>,
 }
 
 impl ImportResolver {
@@ -59,6 +42,9 @@ impl ImportResolver {
         Self {
             store,
             path_alias: PathAliasResolver::empty(),
+            qname_cache: std::sync::Mutex::new(HashMap::new()),
+            reexport_cache: std::sync::Mutex::new(HashMap::new()),
+            module_path_cache: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -67,6 +53,9 @@ impl ImportResolver {
         Self {
             store,
             path_alias,
+            qname_cache: std::sync::Mutex::new(HashMap::new()),
+            reexport_cache: std::sync::Mutex::new(HashMap::new()),
+            module_path_cache: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -111,10 +100,9 @@ impl ImportResolver {
         let mut results = Vec::new();
         let db_start = std::time::Instant::now();
         for qname in &candidate_names {
-            // Thread-local cache: zero lock contention across rayon threads.
-            // Each rayon worker thread has its own HashMap — lookups are
-            // RefCell borrow (runtime no-aliasing check, zero atomics).
-            let cached = QNAME_CACHE.with(|c| c.borrow().get(qname).cloned());
+            // Instance-scoped cache: Mutex-held for HashMap ops only (microseconds).
+            // Fresh per ResolutionSession::build(), avoiding stale cross-session entries.
+            let cached = self.qname_cache.lock().unwrap().get(qname).cloned();
             if let Some(cached_syms) = cached {
                 if cached_syms.is_empty() {
                     continue; // negative entry: known miss, skip DB
@@ -124,7 +112,7 @@ impl ImportResolver {
             }
 
             if let Ok(syms) = self.store.find_symbols_by_qname(qname) {
-                QNAME_CACHE.with(|c| c.borrow_mut().insert(qname.clone(), syms.clone()));
+                self.qname_cache.lock().unwrap().insert(qname.clone(), syms.clone());
                 results.extend(syms);
             }
             // DB errors not cached — transient failures should be retried
@@ -209,14 +197,14 @@ impl ImportResolver {
             return Ok(candidates);
         }
 
-        // ── Per-thread reexport chain cache ──
+        // ── Reexport chain cache ──
         // The same (caller file, import module, target name) recurs across
         // many references in the same file.  Each miss costs multiple recursive
         // DB queries (find_imports_by_file + resolve_relative_module +
         // find_symbols_by_file) in follow_reexport_chain.
         let cache_key = (import.file_id, import.module.clone(), target_name.to_string());
         if let Some(cached) =
-            REEXPORT_CACHE.with(|c| c.borrow().get(&cache_key).cloned())
+            self.reexport_cache.lock().unwrap().get(&cache_key).cloned()
         {
             return Ok(cached);
         }
@@ -236,7 +224,7 @@ impl ImportResolver {
         }
         // Cache result for subsequent references with same (file, module, name)
         let cache_key = (import.file_id, import.module.clone(), target_name.to_string());
-        REEXPORT_CACHE.with(|c| c.borrow_mut().insert(cache_key, resolved.clone()));
+        self.reexport_cache.lock().unwrap().insert(cache_key, resolved.clone());
         Ok(resolved)
     }
 
@@ -303,14 +291,14 @@ impl ImportResolver {
     /// Uses a SQL `LIKE` query directly on the files table instead of loading
     /// all files and doing O(n) client-side `starts_with` scans.
     ///
-    /// Results are cached per-thread via MODULE_PATH_CACHE (same pattern as
-    /// QNAME_CACHE and REEXPORT_CACHE) — the same (module, name) pair repeats
+    /// Results are cached via the instance-scoped module_path_cache (same pattern as
+    /// qname_cache and reexport_cache) — the same (module, name) pair repeats
     /// across many references in a monorepo.
     fn resolve_by_module_path(&self, resolved_module: &str, target_name: &str) -> Vec<SymbolDef> {
         let cache_key = (resolved_module.to_string(), target_name.to_string());
 
-        // Check thread-local cache first
-        let cached = MODULE_PATH_CACHE.with(|c| c.borrow().get(&cache_key).cloned());
+        // Check instance-scoped cache first
+        let cached = self.module_path_cache.lock().unwrap().get(&cache_key).cloned();
         if let Some(cached_result) = cached {
             return cached_result;
         }
@@ -319,7 +307,7 @@ impl ImportResolver {
             Ok(files) => files,
             Err(_) => {
                 // Cache negative result
-                MODULE_PATH_CACHE.with(|c| c.borrow_mut().insert(cache_key, Vec::new()));
+                self.module_path_cache.lock().unwrap().insert(cache_key, Vec::new());
                 return Vec::new();
             }
         };
@@ -332,7 +320,7 @@ impl ImportResolver {
         }
 
         // Cache the result (empty vec = known miss)
-        MODULE_PATH_CACHE.with(|c| c.borrow_mut().insert(cache_key, results.clone()));
+        self.module_path_cache.lock().unwrap().insert(cache_key, results.clone());
 
         results
     }
@@ -796,5 +784,117 @@ mod tests {
         // Query "bar" — different QName, should NOT use foo's cache entry
         let results_bar = resolver.resolve_import(&make_import("bar", 1)).unwrap();
         assert!(results_bar.is_empty(), "bar should not match foo's cached result");
+    }
+
+    /// Cache is scoped to the ImportResolver instance, not global.
+    ///
+    /// Verifies that a negative cache hit in one resolver does not poison
+    /// a fresh resolver against the same store after a symbol is inserted.
+    #[test]
+    fn cache_scoped_to_resolver_instance() {
+        let store = std::sync::Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        // Resolver A: query a QName that doesn't exist yet
+        let resolver_a = ImportResolver::new(store.clone());
+        let import = ImportDef {
+            id: ImportId::generate(
+                &FileId::generate("main.ts"),
+                ImportKind::Import.as_str(),
+                "lib",
+                Some("new_symbol"),
+                0,
+            ),
+            file_id: FileId::generate("main.ts"),
+            kind: ImportKind::Import,
+            module: "lib".to_string(),
+            imported_name: "new_symbol".to_string(),
+            local_name: None,
+            alias: None,
+            is_wildcard: false,
+            is_relative: false,
+            range: Default::default(),
+        };
+        let results_a = resolver_a.resolve_import(&import).unwrap();
+        assert!(
+            results_a.is_empty(),
+            "resolver A: expected empty (symbol not yet in store)"
+        );
+
+        // Insert the symbol into the store after resolver A's miss
+        let file_id = FileId::generate("lib.ts");
+        let sym = test_symbol(file_id, "new_symbol", SymbolKind::Function);
+        store
+            .insert_file_facts(&FileFacts {
+                file: FileInfo {
+                    file_id,
+                    path: "lib.ts".to_string(),
+                    language: Language::TypeScript,
+                    content_hash: "abc".to_string(),
+                    status: types::enums::ParseStatus::Success,
+                },
+                symbols: vec![sym],
+                ..Default::default()
+            })
+            .unwrap();
+
+        // Resolver B (fresh, same store): should find the symbol
+        let resolver_b = ImportResolver::new(store.clone());
+        let results_b = resolver_b.resolve_import(&import).unwrap();
+        assert!(
+            !results_b.is_empty(),
+            "resolver B: expected to find 'new_symbol' — cache is instance-scoped, not global"
+        );
+        assert_eq!(results_b[0].name, "new_symbol");
+    }
+
+    /// Within a single resolver instance, repeated lookups return cached results.
+    #[test]
+    fn within_instance_cache_hit_works() {
+        let store = std::sync::Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        let file_id = FileId::generate("lib.ts");
+        let sym = test_symbol(file_id, "cached_sym", SymbolKind::Function);
+        store
+            .insert_file_facts(&FileFacts {
+                file: FileInfo {
+                    file_id,
+                    path: "lib.ts".to_string(),
+                    language: Language::TypeScript,
+                    content_hash: "def".to_string(),
+                    status: types::enums::ParseStatus::Success,
+                },
+                symbols: vec![sym],
+                ..Default::default()
+            })
+            .unwrap();
+
+        let resolver = ImportResolver::new(store);
+        let import = ImportDef {
+            id: ImportId::generate(
+                &FileId::generate("main.ts"),
+                ImportKind::Import.as_str(),
+                "lib",
+                Some("cached_sym"),
+                0,
+            ),
+            file_id: FileId::generate("main.ts"),
+            kind: ImportKind::Import,
+            module: "lib".to_string(),
+            imported_name: "cached_sym".to_string(),
+            local_name: None,
+            alias: None,
+            is_wildcard: false,
+            is_relative: false,
+            range: Default::default(),
+        };
+
+        // First call: cache miss → DB query
+        let r1 = resolver.resolve_import(&import).unwrap();
+        assert!(!r1.is_empty());
+        // Second call: cache hit → same result without DB query
+        let r2 = resolver.resolve_import(&import).unwrap();
+        assert_eq!(r1, r2);
     }
 }
