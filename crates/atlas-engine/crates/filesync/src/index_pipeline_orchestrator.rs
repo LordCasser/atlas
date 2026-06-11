@@ -12,6 +12,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use db::{KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION, IndexMode, Store};
 use extraction::ExtractionMode;
+use resolution::PathAliasConfig;
 use tracing::{debug_span, info};
 use types::SymbolKind;
 
@@ -216,11 +217,22 @@ impl IndexPipeline {
         last_phase = PhaseName::Cleanup;
         drop(_cleanup_span);
 
+        // Force re-resolution when path alias config changed.
+        // path-alias change is NOT tracked by resolution_config_hash (which
+        // passes None for alias), so it would be silently skipped otherwise.
+        let alias_changed = if self.options.mode.produces_references() {
+            PathAliasConfig::has_changed(&self.store, &self.project_root)?
+        } else {
+            false
+        };
+
         // ── Skip-resolution check ────────────────────────────────────────
         // Determines whether resolution (Phase 7), annotation materialise
         // (Phase 8), and summary rebuild (Phase 9) can be skipped because
         // nothing has changed since the last successful run.
-        let skip_resolution = if self.options.mode.produces_references() {
+        let skip_resolution = if alias_changed {
+            false // Force re-resolution so phase_resolve_and_build can invalidate
+        } else if self.options.mode.produces_references() {
             self.should_skip_resolution(dirty_count, deleted_count, stale_count)?
         } else {
             false
@@ -400,13 +412,10 @@ impl IndexPipeline {
                 stats.resolved = graph_result.resolved;
                 stats.edges_built = graph_result.edges_written;
                 if graph_result.edges_written < graph_result.edges_built {
-                    sink.emit(ProgressEvent::Warning {
-                        phase: PhaseName::Resolution,
-                        message: format!(
-                            "edge persistence partial: {} built, {} written",
-                            graph_result.edges_built, graph_result.edges_written,
-                        ),
-                    });
+                    return Err(anyhow::anyhow!(
+                        "edge persistence failed: {} built, {} written — structural index is incomplete",
+                        graph_result.edges_built, graph_result.edges_written,
+                    ));
                 }
                 sink.emit(ProgressEvent::PhaseFinished {
                     phase: PhaseName::Resolution,

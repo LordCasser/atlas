@@ -663,3 +663,212 @@ export function multiply(a: number, b: number): number {\n\
         "expected at least one symbol in Full mode"
     );
 }
+
+// ── Test 7: index pipeline path alias no-op skip fix ────────────────────────
+
+/// Regression: when only `tsconfig.json` path aliases change (no source files
+/// changed), `IndexPipeline` must NOT skip the resolution phase.  The path
+/// alias hash is tracked separately from the resolution config hash, so the
+/// `should_skip_resolution` helper would otherwise return `true`.
+///
+/// Verifies: `PathAliasConfig::has_changed()` is checked before the skip
+/// decision, forcing `skip_resolution = false` when aliases differ.
+#[test]
+fn index_pipeline_does_not_skip_resolution_when_only_alias_config_changed() {
+    use db::{KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION};
+
+    let project = tempfile::tempdir().unwrap();
+    create_ts_project(project.path());
+
+    // ── Write initial tsconfig.json with path aliases ──
+    let tsconfig_v1 =
+        r#"{"compilerOptions":{"baseUrl":".","paths":{"@lib/*":["lib/*"]}}}"#;
+    std::fs::write(project.path().join("tsconfig.json"), tsconfig_v1).unwrap();
+
+    // ── Run 1: initial full index (commits alias config hash, builds edges) ──
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+
+    let pipeline = IndexPipeline::new(
+        Arc::clone(&store),
+        project.path().to_path_buf(),
+        IndexPipelineOptions::new(ExtractionMode::Structural),
+    );
+    let stats1 = pipeline.run(&NoopSink, &mut || false).unwrap();
+
+    // First run should have resolved references and built edges.
+    assert!(
+        stats1.resolved > 0,
+        "first index pipeline should resolve references, got {} resolved",
+        stats1.resolved,
+    );
+    assert!(
+        store.get_metadata(KEY_RESOLUTION_CONFIG_HASH).unwrap().is_some(),
+        "resolution config hash should be stored after first run"
+    );
+    let gen1 = store
+        .get_metadata(KEY_RESOLUTION_GENERATION)
+        .unwrap()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    assert!(gen1 > 0, "resolution generation should be bumped after first run");
+
+    // ── Modify ONLY tsconfig.json — no source file changes ──
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let tsconfig_v2 =
+        r#"{"compilerOptions":{"baseUrl":".","paths":{"@shared/*":["src/shared/*"]}}}"#;
+    std::fs::write(project.path().join("tsconfig.json"), tsconfig_v2).unwrap();
+
+    // ── Run 2: same store, no source changes — alias config changed ──
+    // Before the fix, should_skip_resolution would return true (no dirty/stale
+    // files + matching resolution config hash) and skip resolution entirely,
+    // despite the path alias config change.
+    let pipeline2 = IndexPipeline::new(
+        Arc::clone(&store),
+        project.path().to_path_buf(),
+        IndexPipelineOptions::new(ExtractionMode::Structural),
+    );
+    let stats2 = pipeline2.run(&NoopSink, &mut || false).unwrap();
+
+    // After the fix: resolution should run because PathAliasConfig::has_changed()
+    // returns true, forcing skip_resolution = false.
+    assert!(
+        stats2.resolved > 0,
+        "second index pipeline should re-resolve after alias config change, got {} resolved (was resolution skipped?)",
+        stats2.resolved,
+    );
+
+    // Generation counter should be bumped again (resolution completed a second time).
+    let gen2 = store
+        .get_metadata(KEY_RESOLUTION_GENERATION)
+        .unwrap()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    assert!(
+        gen2 > gen1,
+        "resolution generation should be bumped after second run (gen1={}, gen2={})",
+        gen1,
+        gen2,
+    );
+
+    // The config hash stored after second run should match the new config.
+    assert!(
+        store.get_metadata(KEY_RESOLUTION_CONFIG_HASH).unwrap().is_some(),
+        "resolution config hash should be stored after second run"
+    );
+}
+
+// ── Test 8: clean-file fast path doesn't resolve to wrong symbol after deletion ──
+
+/// Regression: P3 clean-file fast path (`resolve_global_only`) only uses
+/// strategy 1 (builtin filter) + strategy 6 (global name search), ignoring
+/// imports, scopes, and path aliases.  When a cross-file dependency is
+/// deleted, stale cleanup invalidates the importing file's resolved
+/// references — but the importing file's content hasn't changed, so it
+/// enters the clean fast path.  `resolve_global_only` may then resolve a
+/// now-orphaned reference to a name-colliding symbol in an unrelated file.
+///
+/// Fix: `clean_stale_file_facts` now also clears the `resolution_fingerprint`
+/// for files whose cross-file refs were invalidated, forcing them into full
+/// resolution (with import context) next time.
+///
+/// This test verifies the mechanism: after stale cleanup of a dependency
+/// file, the importing file's resolution fingerprint is cleared, causing it
+/// to enter the full resolution path (not the clean fast path) on the next
+/// run.
+#[test]
+fn clean_fast_path_does_not_resolve_stale_import_to_wrong_symbol() {
+    use db::Store;
+    use filesync::cleanup::source_file_id;
+
+    let project = tempfile::tempdir().unwrap();
+
+    // ── Create project with cross-file import ────────────────────
+    //
+    //   main.ts  imports { add } from ./math
+    //   math.ts  exports function add()
+    //
+    // After deleting math.ts, main.ts's reference to `add` should
+    // be invalidated AND main.ts's resolution fingerprint should be
+    // cleared — so that the next resolution run uses full resolution
+    // (with import context), not the clean fast path.
+
+    std::fs::write(
+        project.path().join("main.ts"),
+        "\
+import { add } from './math';\n\
+\n\
+export function compute(a: number, b: number): number {\n\
+    return add(a, b);\n\
+}\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        project.path().join("math.ts"),
+        "\
+export function add(a: number, b: number): number {\n\
+    return a + b;\n\
+}\n",
+    )
+    .unwrap();
+
+    // ── Step 1: full index with Structural mode ──────────────────
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+
+    run_index_pipeline(
+        &store,
+        project.path(),
+        IndexPipelineOptions::new(ExtractionMode::Structural),
+    )
+    .unwrap();
+
+    let main_fid = source_file_id(Path::new("main.ts")).unwrap();
+    let math_fid = source_file_id(Path::new("math.ts")).unwrap();
+
+    // ── Step 2: verify fingerprint exists after resolution ───────
+    let fp_before = store.get_resolution_fingerprint(&main_fid).unwrap();
+    assert!(
+        fp_before.is_some(),
+        "main.ts should have a resolution fingerprint after full index"
+    );
+
+    // ── Step 3: verify cross-file reference is resolved ──────────
+    let main_refs = store.find_references_by_file(&main_fid).unwrap();
+    let add_ref = main_refs
+        .iter()
+        .find(|r| r.name == "add")
+        .expect("main.ts should have a reference named 'add'");
+    assert!(
+        add_ref.resolved.is_some(),
+        "'add' reference in main.ts should be resolved after full index"
+    );
+
+    // ── Step 4: simulate deletion — clean stale facts for math.ts ─
+    // This is what phase_cleanup_stale calls internally.
+    store.clean_stale_file_facts(&[math_fid]).unwrap();
+
+    // ── Step 5: verify fingerprint was cleared ───────────────────
+    // Because main.ts had a resolved ref pointing to math.ts's `add`
+    // symbol, clean_stale_file_facts must clear main.ts's fingerprint
+    // so it doesn't enter the clean fast path on the next resolution.
+    let fp_after = store.get_resolution_fingerprint(&main_fid).unwrap();
+    assert!(
+        fp_after.is_none(),
+        "BUG: main.ts's resolution fingerprint was NOT cleared after math.ts deletion.\
+         \nOn next resolution, main.ts would enter the clean fast path (resolve_global_only)\
+         \nand may match a wrong symbol via global name search."
+    );
+
+    // ── Step 6: verify the reference was invalidated ─────────────
+    let main_refs_after = store.find_references_by_file(&main_fid).unwrap();
+    let add_ref_after = main_refs_after
+        .iter()
+        .find(|r| r.name == "add")
+        .expect("main.ts should still have a reference named 'add' after cleanup");
+    assert!(
+        add_ref_after.resolved.is_none(),
+        "'add' reference in main.ts should be unresolved after math.ts cleanup"
+    );
+}
