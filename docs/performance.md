@@ -81,10 +81,10 @@
 
 | Metric | Pre-Optimization | Post-Optimization | Improvement |
 |--------|-----------------|-------------------|-------------|
-| Wall clock | 53.29s | 31.25s | **41.4%** |
-| CPU utilization | 232% | 447% | 1.9x higher throughput |
-| Resolution S5 time (cumulative) | 252.80s | 53.36s | **78.9%** reduction |
-| Resolution S6 time (cumulative) | 87.66s | 47.96s | 45.3% reduction |
+| Wall clock | 53.29s | 25.81s | **51.6%** |
+| CPU utilization | 232% | 522% | 2.3x higher throughput |
+| Resolution S5 time (cumulative) | 252.80s | 51.11s | **79.8%** reduction |
+| Resolution S6 time (cumulative) | 87.66s | 48.19s | 45.0% reduction |
 
 ### Resolution Strategy Distribution (313,985 references)
 
@@ -112,11 +112,15 @@ The proximity filter eliminates 99.8% of global fuzzy scans. A full trigram inde
 
 | Optimization | Mechanism | Effect |
 |-------------|-----------|--------|
-| Import resolution caches | 3x `thread_local! RefCell<HashMap>` (QName, reexport chain, module path) | S5 cumulative 252.8s → 53.4s |
+| Import resolution caches | 3x `thread_local! RefCell<HashMap>` (QName, reexport chain, module path) | S5 cumulative 252.8s → 51.1s |
 | Levenshtein bounded distance | Early termination when row min > max_dist | +2.6s benefit (verified by revert) |
 | Proximity-aware fuzzy search | Directory-scoped candidate pool before global fallback | 99.8% reduction in global scans, +289 edge matches |
 | `fuzzy_cache` / `proximity_cache` | `thread_local! RefCell<HashMap>` (was `Mutex`) | Eliminated Mutex contention |
 | Strategy counters and timers | 7 `AtomicU64` counters + 6 nanosecond timers | Profiling infra, zero overhead |
+| **P0: project-level generation skip** | Skip resolution/graph when no files changed + config unchanged | No-op re-run: 33s → 0.22s (150x) |
+| **P2: callsite batch backfill** | Collect `(ref_id, callee)` pairs in Phase 2, single batch UPDATE | Eliminates 9,372 per-edge UPDATEs |
+| **P3: per-file resolution fingerprint** | `content_hash` in `extraction_state`; clean files skip Step A context build | 27.34s → 25.99s (−5%) |
+| **T1.2: cleanup transaction wrapping** | Single transaction for stale file cleanup (was 3N+1 transactions) | Atomic cleanup, no partial state |
 
 ### Rejected Optimizations (verified regression)
 
@@ -135,11 +139,54 @@ The proximity filter eliminates 99.8% of global fuzzy scans. A full trigram inde
 
 ---
 
+## 经验总结：能做 / 不能做 / 做了 / 没做
+
+### 做了什么（10 项已提交优化）
+
+从 53.29s → 25.81s（−51.6%），收益来自三个层次：
+
+| 层次 | 优化项 | 收益 | 核心手段 |
+|------|--------|------|---------|
+| **缓存层** | QName / reexport / module_path 三个 thread_local 缓存 | −32.5% | S5 import resolution 是隐藏瓶颈（74% CPU），缓存消除重复 DB 查询 |
+| **架构层** | P0 generation skip + P2 callsite batch + P3 per-file fingerprint + T1.2 cleanup tx | −19.1% | 改变"哪些工作不需要做"，而非"已有工作如何更快" |
+| **算法层** | Levenshtein banding + S6 proximity 优先搜索 | −2.7% | 代码改动小（~40 行），收益确定但绝对值有限 |
+
+### 不能做什么（8 项已验证不可行）
+
+| 优化项 | 回归量 | 根因 |
+|--------|--------|------|
+| T0.5 子查询批量 DELETE | +330s | 子查询对无索引列做全表扫描 |
+| T1.1 动态 SQL 批量 INSERT | +22.8s | SQLite prepared stmt cache > 动态 SQL |
+| T1.5 批量 symbol 查询 | +2.17s | 同 T1.1 |
+| T0.1 Mutex QName 缓存 | +5.8s | 并发锁竞争（249% CPU） |
+| Hot-path debug_span | +16% | 19K 调用 × per-span 开销 |
+| Symbol preload | 中性 | SQLite 内部缓存已足够快 |
+| T0.3 by_name HashMap | 中性 | S4 的 O(F) 中 F < 100，微秒级 |
+| has_name 快速路径 | 中性 | 额外 HashMap 查询抵消了收益 |
+
+**核心教训**：
+1. **SQLite 的 prepared statement 缓存比动态 batch SQL 更快**——不要假设"批量一定比逐行快"。
+2. **SQL 改动前必须 EXPLAIN QUERY PLAN**——T0.5 的 +330s 回归来自无索引列的全表扫描。
+3. **高频路径的 tracing span 有隐性成本**——即使用 `debug_span!`（warn 级别下零开销），enter/exit 仍消耗 CPU。
+4. **小数据集的算法复杂度优化收益可忽略**——S4 的 O(F) 中 F 通常 < 100。
+
+### 没做什么（5 项推迟）
+
+| 方向 | 预估收益 | 推迟原因 |
+|------|---------|---------|
+| **T2.1 文件本地预解析** | 20-40% 引用在 extraction 阶段解析 | 需修改 architecture.md 约束（"不做跨文件 resolution"→允许同文件 resolution） |
+| **T3.1 BK-Tree 模糊索引** | S6 fuzzy_prox 从 O(候选集) 降至 O(26²×L) | 当前候选集约 50，收益有限 |
+| **Step A 并行化** | <0.5s | P3 已将 Step A 减至单文件 context build |
+| **P4 path prefix range query** | <0.5s | REEXPORT/MODULE_PATH 缓存已覆盖 99% 查询 |
+| **增量同步优化** | 场景依赖 | T1.2 已为增量清理铺路，但增量 resolution 路径仍需优化 |
+
+---
+
 ## Key Findings
 
 ### 1. The real bottleneck was import resolution, not fuzzy matching
 
-Pre-optimization strategy distribution suggested fuzzy matching was 73% of the bottleneck. Strategy timing counters revealed the opposite: **S5 (import resolution) was 74% of CPU time** despite being only 8.5% of calls — each import resolution cost ~9.4ms via recursive DB queries through reexport chains. Adding three `thread_local!` caches (QName, reexport chain, module path) reduced S5 cumulative time from 252.8s to 53.4s.
+Pre-optimization strategy distribution suggested fuzzy matching was 73% of the bottleneck. Strategy timing counters revealed the opposite: **S5 (import resolution) was 74% of CPU time** despite being only 8.5% of calls — each import resolution cost ~9.4ms via recursive DB queries through reexport chains. Adding three `thread_local!` caches (QName, reexport chain, module path) reduced S5 cumulative time from 252.8s to 51.1s.
 
 **Lesson**: Call count distribution alone is misleading. Always add per-strategy timing before prioritizing. What looks like a volume problem may be a per-call cost problem.
 
@@ -155,16 +202,16 @@ At 1,931 files, extraction and DB writes combined account for <20% of wall clock
 
 All 6 new DataflowBasic languages extracted correctly with 0 errors. Parse/extract speeds: Go 2.3ms/file, Rust 14.9ms/file, Ruby 59ms/file. Tree-sitter grammars are mature enough for production use.
 
-### 5. 1,931-file TypeScript monorepo indexes in ~31 seconds
+### 5. 1,931-file TypeScript monorepo indexes in ~25.8 seconds
 
-Acceptable for batch/CI use. The remaining optimization space (<10% further improvement) requires structural changes: extraction-resolution pipeline fusion, incremental index path optimization, or language-specific strategy tuning. These are diminishing returns compared to the 41% already achieved.
+Acceptable for batch/CI use. The remaining optimization space (<10% further improvement) requires structural changes: extraction-resolution pipeline fusion, incremental index path optimization, or language-specific strategy tuning. These are diminishing returns compared to the 51.6% already achieved.
 
 ---
 
 ## Performance Optimization Methodology
 
-> Lessons learned from the 2026-06-10 optimization cycle that reduced a 1,931-file
-> TypeScript project index from 53.3s to 31.3s (41% improvement). These are
+> Lessons learned from the 2026-06-10/11 optimization cycle that reduced a 1,931-file
+> TypeScript project index from 53.29s to 25.81s (51.6% improvement). These are
 > process-level principles, not code-specific recipes.
 
 ### 0. The Golden Rule: Measure First, Optimize Never in the Dark
@@ -184,7 +231,7 @@ based on static code analysis. Only 4 survived A/B verification. One was
 targeting a code path that didn't exist (SummaryBuilder O(N²) — the code had
 already been fixed). Two introduced regressions larger than their benefit. The
 remaining 3 were neutral. The real breakthrough (import resolution caches,
-responsible for >70% of the 41% improvement) was **not in the original plan at all**
+responsible for >70% of the 51.6% improvement) was **not in the original plan at all**
 — it was discovered through strategy timing counters added during profiling.
 
 ### 1. Cumulative CPU Time ≠ Wall Clock Time
@@ -194,12 +241,12 @@ cumulative CPU. Example from our profiling:
 
 | Strategy | Calls | Wall Impact | Cumulative CPU | % of CPU |
 |----------|-------|-------------|----------------|----------|
-| S6 (global+fuzzy) | 176,860 | ~12.7s | 48.0s | 47% |
-| S5 (import) | 26,716 | ~3.3s | 53.4s | 53% |
+| S6 (global+fuzzy) | 176,860 | ~12.7s | 48.2s | 47% |
+| S5 (import) | 26,716 | ~3.3s | 51.1s | 53% |
 
 Wall clock alone would suggest S6 is the dominant bottleneck (12.7s vs 3.3s).
 But cumulative CPU reveals S5 costs more total work — it's just better spread
-across threads. After caching, S5 cumulative dropped from 253s to 53s: the 200s
+across threads. After caching, S5 cumulative dropped from 252.8s to 51.1s: the 201.7s
 saving was invisible in wall clock because it was parallelized, but it freed
 CPU capacity that other work could use.
 
@@ -312,7 +359,7 @@ PostgreSQL or MySQL where batching is almost always a win.
 
 ### 7. Cut Negative Experiments Quickly
 
-Of 11 optimization attempts, 5 were verified regressions and 2 were neutral.
+Of 11 optimization attempts, 5 were verified regressions and 3 were neutral.
 Average time from implementation to verified rejection: ~20 minutes per attempt.
 
 The discipline:
