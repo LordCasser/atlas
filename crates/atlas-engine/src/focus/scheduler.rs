@@ -83,7 +83,7 @@ pub struct FocusScheduler {
     store: Arc<Store>,
     engine: Option<ClosureEngine>,
     queues: Vec<VecDeque<FocusJob>>,
-    coordinator: ProjectWriteCoordinator,
+    pub(crate) coordinator: ProjectWriteCoordinator,
     running: AtomicBool,
 }
 
@@ -164,19 +164,21 @@ impl FocusScheduler {
     /// and own the [`JoinHandle`] for clean shutdown.
     pub(crate) fn background_worker_loop(scheduler: Arc<Mutex<FocusScheduler>>) {
         loop {
-            // Check cancellation flag before acquiring the lock.
-            // We peek at running without holding the lock to avoid
-            // contention during shutdown.
             {
                 let mut s = scheduler.lock().unwrap();
                 if !s.running.load(Ordering::SeqCst) {
                     break;
                 }
+                // Check cancellation before processing — a Sync job may have
+                // been enqueued from another thread.
+                if s.coordinator.is_background_cancelled() {
+                    s.coordinator.reset_cancellation();
+                    continue; // let Sync preempt
+                }
                 // Process all queues.
                 if let Err(e) = s.process_all_queues() {
                     tracing::warn!("FocusScheduler background worker error: {e:#}");
                 }
-                // If all queues are empty, the worker goes idle.
             }
             std::thread::sleep(Duration::from_millis(500));
         }
@@ -186,26 +188,33 @@ impl FocusScheduler {
     ///
     /// Requires the engine to be set via [`with_engine`] or [`set_engine`].
     /// Returns 0 (no-op) silently if the engine is not yet initialized.
+    ///
+    /// Acquires the write coordinator with [`FocusPriority::Sync`] so that
+    /// background workers are preempted.
     pub fn process_sync(&mut self) -> anyhow::Result<usize> {
         let engine = match self.engine.as_ref() {
             Some(e) => e,
             None => return Ok(0),
         };
-
+        let _guard = self.coordinator.acquire(FocusPriority::Sync);
         let mut processed = 0;
         while let Some(mut job) = self.queues[0].pop_front() {
             let closure_id = next_job_id();
             job.closure_id = Some(closure_id.clone());
-            let _closure = engine.build_closure(&job.window, &closure_id)?;
+            let closure = engine.build_closure(&job.window, &closure_id)?;
             processed += 1;
+            // Trigger dataflow for closure files (opportunistic, background)
+            let _ = engine.build_dataflow_for_closure(&closure_id, &closure.files);
         }
+        self.coordinator.reset_cancellation();
         Ok(processed)
     }
 
     /// Process all jobs across ALL priority levels.
     ///
     /// Drains queues in priority order: Sync → UserFocus → Recent → Speculative.
-    /// This is the main drain path used by the background worker thread.
+    /// Each priority level acquires its own write guard so that a Sync job
+    /// enqueued from another thread can preempt lower-priority processing.
     ///
     /// Returns 0 (no-op) silently if the engine is not yet initialized.
     pub fn process_all_queues(&mut self) -> anyhow::Result<usize> {
@@ -217,35 +226,70 @@ impl FocusScheduler {
         let mut processed = 0;
 
         // Drain Sync first (highest priority)
-        while let Some(mut job) = self.queues[0].pop_front() {
-            let closure_id = next_job_id();
-            job.closure_id = Some(closure_id.clone());
-            let _closure = engine.build_closure(&job.window, &closure_id)?;
-            processed += 1;
+        {
+            let _guard = self.coordinator.acquire(FocusPriority::Sync);
+            while let Some(mut job) = self.queues[0].pop_front() {
+                let closure_id = next_job_id();
+                job.closure_id = Some(closure_id.clone());
+                let closure = engine.build_closure(&job.window, &closure_id)?;
+                processed += 1;
+                let _ = engine.build_dataflow_for_closure(&closure_id, &closure.files);
+            }
+        }
+        self.coordinator.reset_cancellation();
+
+        // Check cancellation before UserFocus
+        if self.coordinator.is_background_cancelled() {
+            return Ok(processed);
         }
 
         // Then UserFocus
-        while let Some(mut job) = self.queues[1].pop_front() {
-            let closure_id = next_job_id();
-            job.closure_id = Some(closure_id.clone());
-            let _closure = engine.build_closure(&job.window, &closure_id)?;
-            processed += 1;
+        {
+            let _guard = self.coordinator.acquire(FocusPriority::UserFocus);
+            while let Some(mut job) = self.queues[1].pop_front() {
+                let closure_id = next_job_id();
+                job.closure_id = Some(closure_id.clone());
+                let closure = engine.build_closure(&job.window, &closure_id)?;
+                processed += 1;
+                let _ = engine.build_dataflow_for_closure(&closure_id, &closure.files);
+            }
+        }
+        // UserFocus acquire sets the flag; clear it so lower levels
+        // are only preempted by a truly new cancellation.
+        self.coordinator.reset_cancellation();
+
+        // Check cancellation before Recent
+        if self.coordinator.is_background_cancelled() {
+            return Ok(processed);
         }
 
         // Then Recent
-        while let Some(mut job) = self.queues[2].pop_front() {
-            let closure_id = next_job_id();
-            job.closure_id = Some(closure_id.clone());
-            let _closure = engine.build_closure(&job.window, &closure_id)?;
-            processed += 1;
+        {
+            let _guard = self.coordinator.acquire(FocusPriority::Recent);
+            while let Some(mut job) = self.queues[2].pop_front() {
+                let closure_id = next_job_id();
+                job.closure_id = Some(closure_id.clone());
+                let closure = engine.build_closure(&job.window, &closure_id)?;
+                processed += 1;
+                let _ = engine.build_dataflow_for_closure(&closure_id, &closure.files);
+            }
+        }
+
+        // Check cancellation before Speculative
+        if self.coordinator.is_background_cancelled() {
+            return Ok(processed);
         }
 
         // Then Speculative (lowest priority)
-        while let Some(mut job) = self.queues[3].pop_front() {
-            let closure_id = next_job_id();
-            job.closure_id = Some(closure_id.clone());
-            let _closure = engine.build_closure(&job.window, &closure_id)?;
-            processed += 1;
+        {
+            let _guard = self.coordinator.acquire(FocusPriority::Speculative);
+            while let Some(mut job) = self.queues[3].pop_front() {
+                let closure_id = next_job_id();
+                job.closure_id = Some(closure_id.clone());
+                let closure = engine.build_closure(&job.window, &closure_id)?;
+                processed += 1;
+                let _ = engine.build_dataflow_for_closure(&closure_id, &closure.files);
+            }
         }
 
         Ok(processed)

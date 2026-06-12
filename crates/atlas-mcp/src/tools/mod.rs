@@ -816,6 +816,18 @@ impl ToolRouter {
                             .unwrap_or(PrecisionTier::Unavailable);
                         let built_file_ids = result.built_files;
 
+                        // Notify focus scheduler of file reads for predictive
+                        // pre-warming of import neighborhoods.
+                        if !built_file_ids.is_empty() {
+                            if let Some(ref fr) = self.focus_runtime {
+                                if let Ok(rt) = fr.lock() {
+                                    for file_id in &built_file_ids {
+                                        rt.on_file_read(*file_id);
+                                    }
+                                }
+                            }
+                        }
+
                         if !built_file_ids.is_empty() {
                             self.lazy_refresh_queue.record_lazy_writes(&built_file_ids);
                             if let Err(e) = self.maybe_refresh_graph() {
@@ -931,6 +943,18 @@ impl ToolRouter {
                             .map(|p| atlas_engine::structs::precision::PrecisionTier::from(p))
                             .unwrap_or(PrecisionTier::Unavailable);
                         let built_file_ids = result.built_files;
+
+                        // Notify focus scheduler of file reads for predictive
+                        // pre-warming of import neighborhoods.
+                        if !built_file_ids.is_empty() {
+                            if let Some(ref fr) = self.focus_runtime {
+                                if let Ok(rt) = fr.lock() {
+                                    for file_id in &built_file_ids {
+                                        rt.on_file_read(*file_id);
+                                    }
+                                }
+                            }
+                        }
 
                         if !built_file_ids.is_empty() {
                             self.lazy_refresh_queue.record_lazy_writes(&built_file_ids);

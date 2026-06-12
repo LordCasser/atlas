@@ -5,6 +5,8 @@
 //! visibility for MCP queries: only data at or below the committed generation
 //! is visible.
 
+use std::collections::HashMap;
+
 use super::Store;
 use rusqlite::params;
 
@@ -96,6 +98,25 @@ impl Store {
             })
             .ok();
         Ok(result)
+    }
+
+    /// Count closures by state.
+    ///
+    /// Returns a map of state → count (e.g. `{"building": 3, "committed": 12, "stale": 0}`).
+    pub fn get_closure_counts(&self) -> anyhow::Result<HashMap<String, usize>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT state, COUNT(*) FROM closure_generations GROUP BY state",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        let mut counts = HashMap::new();
+        for row in rows {
+            let (state, count) = row?;
+            counts.insert(state, count as usize);
+        }
+        Ok(counts)
     }
 }
 

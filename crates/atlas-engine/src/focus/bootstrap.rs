@@ -14,7 +14,7 @@
 //! Tier 0 is the minimum barrier for focus queries to work.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -43,6 +43,9 @@ pub struct BootstrapManager {
     running: Arc<AtomicBool>,
     tier0_complete: Arc<AtomicBool>,
     tier1_hot_complete: Arc<AtomicBool>,
+    /// Number of files successfully extracted during Tier 2
+    /// (opportunistic manifest extraction).
+    tier2_extracted: Arc<AtomicU64>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -55,6 +58,7 @@ impl BootstrapManager {
             running: Arc::new(AtomicBool::new(false)),
             tier0_complete: Arc::new(AtomicBool::new(false)),
             tier1_hot_complete: Arc::new(AtomicBool::new(false)),
+            tier2_extracted: Arc::new(AtomicU64::new(0)),
             handle: None,
         }
     }
@@ -73,6 +77,7 @@ impl BootstrapManager {
         let running = Arc::clone(&self.running);
         let tier0_complete = Arc::clone(&self.tier0_complete);
         let tier1_hot_complete = Arc::clone(&self.tier1_hot_complete);
+        let tier2_extracted = Arc::clone(&self.tier2_extracted);
 
         running.store(true, Ordering::SeqCst);
 
@@ -90,6 +95,7 @@ impl BootstrapManager {
                 &running,
                 &tier0_complete,
                 &tier1_hot_complete,
+                &tier2_extracted,
             ) {
                 tracing::error!(?e, "bootstrap background thread failed");
             }
@@ -114,6 +120,22 @@ impl BootstrapManager {
         while !self.tier0_complete.load(Ordering::SeqCst) {
             thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// Check if Tier 0 (file_inventory) is complete.
+    pub fn is_tier0_complete(&self) -> bool {
+        self.tier0_complete.load(Ordering::SeqCst)
+    }
+
+    /// Check if Tier 1 (symbol_hints for hot files) is complete.
+    pub fn is_tier1_hot_complete(&self) -> bool {
+        self.tier1_hot_complete.load(Ordering::SeqCst)
+    }
+
+    /// Number of files successfully extracted during Tier 2
+    /// (opportunistic manifest extraction).
+    pub fn tier2_extracted(&self) -> u64 {
+        self.tier2_extracted.load(Ordering::SeqCst)
     }
 
     /// Cancel background work. Thread will finish current batch then exit.
@@ -143,6 +165,7 @@ fn run_bootstrap(
     running: &AtomicBool,
     tier0_complete: &AtomicBool,
     tier1_hot_complete: &AtomicBool,
+    tier2_extracted: &AtomicU64,
 ) -> Result<()> {
     let Some(ref root) = project_root else {
         // No project root — mark as complete trivially
@@ -175,7 +198,8 @@ fn run_bootstrap(
     if !running.load(Ordering::SeqCst) {
         return Ok(());
     }
-    bootstrap_tier2(&store, root, running)?;
+    let extracted = bootstrap_tier2(&store, root, running)?;
+    tier2_extracted.store(extracted as u64, Ordering::SeqCst);
 
     Ok(())
 }

@@ -27,10 +27,12 @@ use db::Store;
 use types::enums::Language;
 use types::ids::{FileId, SymbolId};
 use types::structs::{
-    CoverageTier, KnownGap, Precision, SemanticConfidence, SymbolTier,
+    CapabilityMask, CoverageTier, KnownGap, Precision, SemanticConfidence, SymbolTier,
 };
 
+use crate::investigation::{Investigation, InvestigationFocus};
 use crate::lazy_structural::{CandidateProvider, DefaultCandidateProvider, LazyStructuralService};
+use crate::LazyDataflowService;
 
 use super::bootstrap::BootstrapManager;
 use super::engine::ClosureEngine;
@@ -249,6 +251,27 @@ impl FocusRuntime {
         let mut pending_ids = pending_closure_ids;
         pending_ids.push(bg_closure_id);
 
+        // 7. Pre-warm investigation for the built files so their import
+        //    neighborhoods are ready before the user queries them.
+        if !built_files.is_empty() {
+            let investigation = Investigation {
+                focus: InvestigationFocus::Position {
+                    file_id: built_files[0],
+                    line: 0,
+                    col: 0,
+                },
+                related_symbols: Vec::new(),
+                related_files: built_files.clone(),
+                desired_capabilities: CapabilityMask::from_bits(
+                    CapabilityMask::MANIFEST | CapabilityMask::STRUCTURAL,
+                ),
+            };
+            self.scheduler
+                .lock()
+                .unwrap()
+                .prewarm_investigation(&investigation);
+        }
+
         Ok(FocusResult {
             mode: IndexMode::Focus,
             precision: Some(precision),
@@ -302,9 +325,45 @@ impl FocusRuntime {
         self.bootstrap.is_minimum_ready()
     }
 
+    /// Check if Tier 0 (file_inventory) bootstrap is complete.
+    pub fn is_tier0_complete(&self) -> bool {
+        self.bootstrap.is_tier0_complete()
+    }
+
+    /// Check if Tier 1 (symbol hints for hot files) bootstrap is complete.
+    pub fn is_tier1_hot_complete(&self) -> bool {
+        self.bootstrap.is_tier1_hot_complete()
+    }
+
+    /// Number of files extracted during Tier 2 bootstrap.
+    pub fn tier2_extracted(&self) -> u64 {
+        self.bootstrap.tier2_extracted()
+    }
+
+    /// Whether the bootstrap/background worker has been started.
+    pub fn is_started(&self) -> bool {
+        self.started.load(Ordering::SeqCst)
+    }
+
+    /// Access the underlying store for DB queries.
+    pub fn db_store(&self) -> &Arc<Store> {
+        &self.store
+    }
+
     /// Check if the scheduler has pending background jobs.
     pub fn has_pending_jobs(&self) -> bool {
         self.scheduler.lock().unwrap().has_pending()
+    }
+
+    /// Called when a file is structurally ensured — pre-warm its imports
+    /// so the import neighborhood is ready before the user queries it.
+    pub fn on_file_read(&self, file_id: FileId) {
+        self.scheduler.lock().unwrap().on_file_read(file_id);
+    }
+
+    /// Get queue depths by priority.
+    pub fn queue_depths(&self) -> Vec<(FocusPriority, usize)> {
+        self.scheduler.lock().unwrap().queue_depths()
     }
 
     /// Shut down the background worker thread.
@@ -414,9 +473,14 @@ impl FocusRuntime {
             self.store.clone(),
             self.project_root.clone(),
         );
+        let lazy_dataflow = LazyDataflowService::new(
+            self.store.clone(),
+            self.project_root.clone(),
+        );
         let engine = ClosureEngine::new(
             self.store.clone(),
             lazy_structural,
+            lazy_dataflow,
             self.project_root.clone(),
             vec![], // include_roots can be set later via engine configuration
         );
@@ -426,9 +490,14 @@ impl FocusRuntime {
             self.store.clone(),
             self.project_root.clone(),
         );
+        let sched_dataflow = LazyDataflowService::new(
+            self.store.clone(),
+            self.project_root.clone(),
+        );
         let sched_engine = ClosureEngine::new(
             self.store.clone(),
             sched_lazy,
+            sched_dataflow,
             self.project_root.clone(),
             vec![],
         );

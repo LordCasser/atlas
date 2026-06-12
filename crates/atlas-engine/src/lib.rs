@@ -377,9 +377,14 @@ impl Engine {
             self.store.clone(),
             Some(project_root.to_path_buf()),
         );
+        let lazy_dataflow = LazyDataflowService::new(
+            self.store.clone(),
+            Some(project_root.to_path_buf()),
+        );
         let engine = ClosureEngine::new(
             self.store.clone(),
             lazy_structural,
+            lazy_dataflow,
             Some(project_root.to_path_buf()),
             include_roots,
         );

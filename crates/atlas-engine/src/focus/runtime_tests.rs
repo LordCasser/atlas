@@ -16,6 +16,7 @@ use types::{layer, status};
 use crate::focus::bootstrap::BootstrapManager;
 use crate::focus::query::QueryIntent;
 use crate::focus::runtime::{FocusRuntime, IndexMode};
+use crate::focus::scheduler::FocusPriority;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -382,4 +383,49 @@ fn test_prepare_focus_coverage_counts_with_symbol_id() {
         result.coverage_counts.is_some(),
         "coverage_counts should be populated for symbol_id seed"
     );
+}
+
+// ── Tests: prewarm_investigation via prepare() ──────────────────────────
+
+#[test]
+fn test_prewarm_called_after_prepare() {
+    let store = test_store();
+    let file_id = insert_file_structural_complete(&store, "src/main.c");
+    let mut rt = FocusRuntime::new(store, None);
+    let intent = QueryIntent::Calls {
+        symbol_name: "main".to_string(),
+        file_id: Some(file_id),
+        symbol_id: None,
+    };
+    let _result = rt.prepare(&intent).unwrap();
+
+    // After prepare(), the scheduler should have:
+    // - UserFocus job (background expansion)
+    // - Recent job(s) (from prewarm_investigation)
+    assert!(rt.has_pending_jobs(),
+        "scheduler should have pending jobs after prepare()");
+
+    let depths = rt.queue_depths();
+    // Recent queue (index 2) must have at least 1 job from prewarm
+    assert!(
+        depths[2].1 > 0,
+        "Recent queue should have prewarm jobs, got depth: {}",
+        depths[2].1
+    );
+}
+
+#[test]
+fn test_on_file_read_queues_recent_job() {
+    let store = test_store();
+    let file_id = FileId::generate("src/read_file.rs");
+    let rt = FocusRuntime::new(store, None);
+
+    rt.on_file_read(file_id);
+
+    assert!(rt.has_pending_jobs(),
+        "scheduler should have pending jobs after on_file_read");
+
+    let depths = rt.queue_depths();
+    assert_eq!(depths[2], (FocusPriority::Recent, 1),
+        "on_file_read should create one Recent-priority job");
 }

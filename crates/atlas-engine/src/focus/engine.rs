@@ -30,14 +30,16 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use db::Store;
 use resolution::ReferenceResolver;
-use types::enums::{ReferenceKind, SymbolKind};
+use types::enums::{Language, ReferenceKind, SymbolKind};
 use types::ids::FileId;
-use types::structs::KnownGap;
+use types::structs::{KnownGap, SymbolDef};
 
 use crate::closure_planner::{ClosurePlanner, IncludeRoot};
 use crate::focus::focus_graph_builder::FocusGraphBuilder;
+use crate::focus::visibility_filter::{VisibilityContext, VisibilityFilterRegistry};
 use crate::lazy_budget::LazyBudget;
 use crate::lazy_structural::{EnsureStructuralResult, LazyStructuralService};
+use crate::LazyDataflowService;
 
 use super::types::{
     ClosureStrategy, Direction, FocusClosure, FocusSeed, FocusWindow,
@@ -50,6 +52,7 @@ use super::types::{
 pub struct ClosureEngine {
     pub(crate) store: Arc<Store>,
     pub(crate) lazy_structural: LazyStructuralService,
+    pub(crate) dataflow: LazyDataflowService,
     pub(crate) resolver: RefCell<ReferenceResolver>,
     pub(crate) graph_builder: FocusGraphBuilder,
     pub(crate) project_root: Option<std::path::PathBuf>,
@@ -60,6 +63,7 @@ impl ClosureEngine {
     pub fn new(
         store: Arc<Store>,
         lazy_structural: LazyStructuralService,
+        lazy_dataflow: LazyDataflowService,
         project_root: Option<std::path::PathBuf>,
         include_roots: Vec<IncludeRoot>,
     ) -> Self {
@@ -68,6 +72,7 @@ impl ClosureEngine {
         ClosureEngine {
             store,
             lazy_structural,
+            dataflow: lazy_dataflow,
             resolver,
             graph_builder,
             project_root,
@@ -214,14 +219,40 @@ impl ClosureEngine {
             }
         }
 
-        // Resolve references scoped to this closure (writes to reference_resolutions)
+        // Resolve references scoped to this closure (writes to reference_resolutions).
+        // Language-specific visibility filter excludes symbols that are not
+        // reachable from the reference's file (e.g., C static, Rust private).
         let closure_files: Vec<FileId> = closure.files.iter().copied().collect();
         if !closure_files.is_empty() {
+            let language: Option<Language> = closure
+                .files
+                .iter()
+                .filter_map(|file_id| self.store.get_file(file_id).ok().flatten())
+                .map(|file_info| file_info.language)
+                .next();
+
+            let registry = VisibilityFilterRegistry::new();
+            let visibility_filter: Option<Box<dyn Fn(&SymbolDef, FileId) -> bool>> =
+                language.map(|lang| {
+                    let filter = registry.get(lang);
+                    let ctx = VisibilityContext {
+                        from_file: FileId::default(),
+                        from_crate_root: None,
+                        target_crate_root: None,
+                    };
+                    Box::new(move |sym: &SymbolDef, from_file: FileId| -> bool {
+                        filter.is_visible(sym, from_file, &ctx)
+                    })
+                        as Box<dyn Fn(&SymbolDef, FileId) -> bool>
+                });
+
+            let filter_ref: Option<&dyn Fn(&SymbolDef, FileId) -> bool> =
+                visibility_filter.as_deref();
             self.resolver.borrow_mut().resolve_for_closure(
                 closure_id,
                 last_generation,
                 &closure_files,
-                None, // visibility_filter = None means all symbols visible (MVP)
+                filter_ref,
             )?;
         }
 
@@ -243,6 +274,37 @@ impl ClosureEngine {
         );
 
         Ok(closure)
+    }
+
+    /// Trigger dataflow extraction for all functions in closure files.
+    ///
+    /// Called after [`build_closure`] completes graph building at the
+    /// structural level.  Walks every file in the closure, finds
+    /// Function/Method symbols, and invokes
+    /// [`LazyDataflowService::ensure_for_function`] for each.  Errors are
+    /// logged at debug level and do not propagate — dataflow building is
+    /// opportunistic background work.
+    ///
+    /// Returns the number of functions for which dataflow was successfully
+    /// planned and ensured.
+    pub fn build_dataflow_for_closure(
+        &self,
+        closure_id: &str,
+        files: &HashSet<FileId>,
+    ) -> Result<usize> {
+        let mut built = 0;
+        for file_id in files {
+            let symbols = self.store.find_symbols_by_file(file_id)?;
+            for sym in &symbols {
+                if matches!(sym.kind, SymbolKind::Function | SymbolKind::Method) {
+                    match self.dataflow.ensure_for_function(&sym.id, Some(closure_id)) {
+                        Ok(_) => built += 1,
+                        Err(e) => tracing::debug!(%e, symbol=%sym.name, "dataflow build failed"),
+                    }
+                }
+            }
+        }
+        Ok(built)
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────

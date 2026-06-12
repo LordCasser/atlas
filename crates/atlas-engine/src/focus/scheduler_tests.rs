@@ -65,7 +65,9 @@ fn test_file_with_structural_complete(store: &Store, path: &str) -> types::ids::
 fn test_engine_for_store(store: Arc<Store>) -> super::engine::ClosureEngine {
     let lazy_structural =
         crate::lazy_structural::LazyStructuralService::new(store.clone(), None);
-    super::engine::ClosureEngine::new(store, lazy_structural, None, vec![])
+    let lazy_dataflow =
+        crate::LazyDataflowService::new(store.clone(), None);
+    super::engine::ClosureEngine::new(store, lazy_structural, lazy_dataflow, None, vec![])
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -591,4 +593,135 @@ fn test_background_worker_processes_in_correct_order() {
     // All queues drained.
     let s = scheduler.lock().unwrap();
     assert!(!s.has_pending(), "background worker should drain all queues");
+}
+
+// ── Write coordinator integration tests ─────────────────────────────────────
+
+#[test]
+fn test_coordinator_acquired_for_sync_jobs() {
+    let store = test_store();
+    let file_id = test_file_with_structural_complete(&store, "main.c");
+    let engine = test_engine_for_store(store.clone());
+    let mut scheduler = FocusScheduler::new(store).with_engine(engine);
+
+    assert!(
+        !scheduler.coordinator.is_background_cancelled(),
+        "coordinator should not be cancelled initially"
+    );
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id,
+            language: Default::default(),
+        },
+        strategies: vec![],
+        budget: WindowBudget::default(),
+        language: Default::default(),
+        max_iterations: 1,
+    };
+    scheduler.enqueue(window, FocusPriority::Sync);
+
+    let processed = scheduler
+        .process_sync()
+        .expect("process_sync should succeed");
+    assert_eq!(processed, 1, "should process 1 sync job");
+
+    // After process_sync, the flag should be reset (was set by acquire, reset at end).
+    assert!(
+        !scheduler.coordinator.is_background_cancelled(),
+        "coordinator should be reset after sync processing"
+    );
+    assert!(!scheduler.has_pending(), "sync queue should be drained");
+}
+
+#[test]
+fn test_userfocus_acquires_coordinator() {
+    let store = test_store();
+    let file_id = test_file_with_structural_complete(&store, "main.c");
+    let engine = test_engine_for_store(store.clone());
+    let mut scheduler = FocusScheduler::new(store).with_engine(engine);
+
+    assert!(!scheduler.coordinator.is_background_cancelled());
+
+    let guard = scheduler.coordinator.acquire(FocusPriority::UserFocus);
+    assert!(
+        scheduler.coordinator.is_background_cancelled(),
+        "acquiring UserFocus should set background_cancelled"
+    );
+    drop(guard);
+    scheduler.coordinator.reset_cancellation();
+    assert!(
+        !scheduler.coordinator.is_background_cancelled(),
+        "reset_cancellation should clear the flag"
+    );
+}
+
+#[test]
+fn test_background_worker_yields_to_cancellation() {
+    let scheduler = test_scheduler_arc();
+    let file_id = FileId::generate("main.c");
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id,
+            language: Default::default(),
+        },
+        strategies: vec![],
+        budget: WindowBudget::default(),
+        language: Default::default(),
+        max_iterations: 1,
+    };
+
+    // Set up: running=true, enqueue Speculative job, then set cancellation flag.
+    {
+        let mut s = scheduler.lock().unwrap();
+        s.set_running(true);
+        s.enqueue(window, FocusPriority::Speculative);
+        // Acquire Sync to set the flag, then drop guard (flag stays set).
+        let guard = s.coordinator.acquire(FocusPriority::Sync);
+        drop(guard);
+    }
+
+    assert!(
+        {
+            let s = scheduler.lock().unwrap();
+            s.coordinator.is_background_cancelled()
+        },
+        "flag should be set before starting worker"
+    );
+
+    // Spawn background worker. It will:
+    //   1. acquire scheduler lock
+    //   2. see is_background_cancelled() == true
+    //   3. reset_cancellation()
+    //   4. continue → skips process_all_queues and does not sleep
+    //   5. immediately re-enters loop, acquires lock
+    //   6. flag is now false → calls process_all_queues (processes the job)
+    //
+    // We stop the background worker in a brief window after step 2.
+    let sched_clone = Arc::clone(&scheduler);
+    let handle = std::thread::spawn(move || {
+        FocusScheduler::background_worker_loop(sched_clone);
+    });
+
+    // Allow worker a small window to detect cancellation and reset the flag.
+    // The continue creates a tight loop (no sleep), so the worker will
+    // re-enter immediately. We race to set running=false before step 5.
+    std::thread::sleep(Duration::from_millis(30));
+
+    {
+        let s = scheduler.lock().unwrap();
+        s.stop_background();
+    }
+    let _ = handle.join();
+
+    let s = scheduler.lock().unwrap();
+    // The flag must have been reset by the worker's cancellation check,
+    // proving that the check ran.
+    assert!(
+        !s.coordinator.is_background_cancelled(),
+        "worker should have checked and reset the cancellation flag"
+    );
+    // Whether the job was processed depends on whether we stopped before
+    // step 5 (process_all_queues). Either outcome is acceptable for this
+    // test — the important invariant is that the cancellation check fired.
 }

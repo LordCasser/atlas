@@ -21,6 +21,7 @@ mod tests {
     use crate::focus::types::{ClosureStrategy, FocusSeed, FocusWindow, WindowBudget};
     use crate::focus::visibility_filter::{CVisibilityFilter, VisibilityContext, VisibilityFilter};
     use crate::lazy_structural::LazyStructuralService;
+use crate::LazyDataflowService;
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -54,7 +55,8 @@ mod tests {
 
     fn test_engine(store: Arc<Store>) -> ClosureEngine {
         let lazy_structural = LazyStructuralService::new(store.clone(), None);
-        ClosureEngine::new(store, lazy_structural, None, vec![])
+        let lazy_dataflow = LazyDataflowService::new(store.clone(), None);
+        ClosureEngine::new(store, lazy_structural, lazy_dataflow, None, vec![])
     }
 
     // ── Test: E2E Full Closure Build ────────────────────────────────────────

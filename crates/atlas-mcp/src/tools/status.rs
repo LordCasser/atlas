@@ -1,6 +1,6 @@
 //! Status tools: project overview and file listing.
 
-use atlas_engine::{Language, LanguageCapabilityProfile, Store};
+use atlas_engine::{FocusPriority, Language, LanguageCapabilityProfile, Store};
 
 use super::ToolRouter;
 
@@ -104,6 +104,35 @@ impl ToolRouter {
             "persistent"
         };
 
+        // ── Focus section ───────────────────────────────────────────────────
+        let focus_section = if let Some(ref fr) = self.focus_runtime {
+            let runtime = fr.lock().unwrap_or_else(|e| e.into_inner());
+            let closure_counts = runtime.db_store().get_closure_counts().unwrap_or_default();
+            let queue_depths: Vec<(FocusPriority, usize)> = runtime.queue_depths();
+
+            json!({
+                "initialized": true,
+                "bootstrap": {
+                    "tier0_complete": runtime.is_tier0_complete(),
+                    "tier1_complete": runtime.is_tier1_hot_complete(),
+                    "tier2_extracted": runtime.tier2_extracted(),
+                },
+                "closures": {
+                    "active": closure_counts.get("building").copied().unwrap_or(0),
+                    "committed": closure_counts.get("committed").copied().unwrap_or(0),
+                    "stale": closure_counts.get("stale").copied().unwrap_or(0),
+                },
+                "pending_jobs": {
+                    "sync": queue_depths.iter().find(|(p, _)| *p == FocusPriority::Sync).map(|(_, c)| *c).unwrap_or(0),
+                    "user_focus": queue_depths.iter().find(|(p, _)| *p == FocusPriority::UserFocus).map(|(_, c)| *c).unwrap_or(0),
+                    "recent": queue_depths.iter().find(|(p, _)| *p == FocusPriority::Recent).map(|(_, c)| *c).unwrap_or(0),
+                    "speculative": queue_depths.iter().find(|(p, _)| *p == FocusPriority::Speculative).map(|(_, c)| *c).unwrap_or(0),
+                },
+            })
+        } else {
+            json!({ "initialized": false })
+        };
+
         (
             serde_json::to_string_pretty(&json!({
                 "project": {
@@ -130,6 +159,7 @@ impl ToolRouter {
                     "hint": index_hint,
                     "next_action": next_action,
                 },
+                "focus": focus_section,
                 "database": {
                     "sqlite_version": stats.sqlite_version,
                 },

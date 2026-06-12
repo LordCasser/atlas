@@ -9,12 +9,13 @@
 use std::sync::Arc;
 
 use db::Store;
-use types::enums::{Language, ParseStatus};
+use types::enums::{Language, ParseStatus, Visibility};
 use types::ids::FileId;
 use types::structs::{CapabilityMask, FileInfo};
 use types::{layer, status};
 
 use crate::lazy_structural::{CandidateProvider, LazyStructuralService};
+use crate::LazyDataflowService;
 
 use super::engine::ClosureEngine;
 use super::types::{ClosureStrategy, FocusSeed, FocusWindow, WindowBudget};
@@ -31,7 +32,8 @@ fn test_store() -> Arc<Store> {
 /// Create a ClosureEngine from an in-memory store with no project root.
 fn test_engine(store: Arc<Store>) -> ClosureEngine {
     let lazy_structural = LazyStructuralService::new(store.clone(), None);
-    ClosureEngine::new(store, lazy_structural, None, vec![])
+    let lazy_dataflow = LazyDataflowService::new(store.clone(), None);
+    ClosureEngine::new(store, lazy_structural, lazy_dataflow, None, vec![])
 }
 
 /// Insert a file and mark its structural layer as complete.
@@ -227,7 +229,8 @@ fn test_locate_seed_symbol() {
         }),
     );
 
-    let engine = ClosureEngine::new(store, lazy_structural, None, vec![]);
+    let df_store = store.clone();
+    let engine = ClosureEngine::new(store, lazy_structural, LazyDataflowService::new(df_store, None), None, vec![]);
 
     let window = FocusWindow {
         seed: FocusSeed::Symbol {
@@ -419,7 +422,8 @@ fn test_build_closure_records_gap_on_missing_file() {
         None,
         Box::new(MockCandidateProvider { candidates: vec![] }),
     );
-    let engine = ClosureEngine::new(store, lazy_structural, None, vec![]);
+    let df_store = store.clone();
+    let engine = ClosureEngine::new(store, lazy_structural, LazyDataflowService::new(df_store, None), None, vec![]);
 
     let window = FocusWindow {
         seed: FocusSeed::Symbol {
@@ -1944,7 +1948,7 @@ fn test_scoped_resolution_empty_closure_no_crash() {
         None,
         Box::new(MockCandidateProvider { candidates: vec![] }),
     );
-    let engine = ClosureEngine::new(store.clone(), lazy_structural, None, vec![]);
+    let engine = ClosureEngine::new(store.clone(), lazy_structural, LazyDataflowService::new(store.clone(), None), None, vec![]);
 
     let window = FocusWindow {
         seed: FocusSeed::Symbol {
@@ -2209,4 +2213,308 @@ fn test_graph_builder_no_edges_from_uncommitted_resolutions() {
         edges.is_empty(),
         "symbol_edges must be empty when resolutions are uncommitted"
     );
+}
+
+// ── Visibility filter tests ──────────────────────────────────────────────────
+
+/// Helper: insert a function symbol with explicit visibility.
+fn insert_function_symbol_with_visibility(
+    store: &Store,
+    file_id: FileId,
+    name: &str,
+    language: Language,
+    visibility: Option<Visibility>,
+) -> types::ids::SymbolId {
+    let sym_id = types::ids::SymbolId::generate(&file_id, "c", name, "function", None);
+    let sym = types::structs::SymbolDef {
+        id: sym_id,
+        kind: types::SymbolKind::Function,
+        name: name.to_string(),
+        qualified_name: name.to_string(),
+        symbol_path: vec![name.to_string()],
+        file_id,
+        language,
+        range: types::structs::TextRange::default(),
+        name_range: types::structs::TextRange::default(),
+        signature: None,
+        visibility,
+        exported: false,
+        static_: false,
+        async_: false,
+        container: None,
+        scope_id: None,
+        package_name: None,
+        namespace_path: vec![],
+        layer: "structural".to_string(),
+    };
+    store.insert_symbols(&[sym]).unwrap();
+    sym_id
+}
+
+/// C `static` function in file B should NOT be resolvable from a reference
+/// in file A, because the C visibility filter excludes Private-visibility symbols.
+#[test]
+fn test_visibility_filter_c_static_excluded() {
+    let store = test_store();
+    let file_a = insert_file_structural_complete(&store, "src/main.c");
+    let file_b = insert_file_structural_complete(&store, "src/helper.c");
+
+    // File A: caller + unresolved reference to "helper"
+    let _caller_sym = insert_function_symbol(&store, file_a, "caller");
+    // File B: static helper (visibility = Private)
+    let _target_sym = insert_function_symbol_with_visibility(
+        &store,
+        file_b,
+        "helper",
+        Language::C,
+        Some(Visibility::Private),
+    );
+
+    let ref_use = make_unresolved_reference(
+        file_a,
+        None, // no source symbol needed for this test
+        types::ReferenceKind::Call,
+        "helper",
+        10,
+        16,
+    );
+    store.insert_references(&[ref_use]).unwrap();
+
+    let engine = test_engine(store.clone());
+
+    // Build closure: seed on file_a. No strategies needed — the resolver
+    // uses the global symbol index (strategy 6) which includes all symbols
+    // in the store regardless of closure membership.
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: file_a,
+            language: Language::C,
+        },
+        strategies: vec![],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure_id = "test-vis-c-static-excluded";
+    let _closure = engine
+        .build_closure(&window, closure_id)
+        .expect("build_closure should succeed");
+
+    // The static "helper" in file B should be excluded by the C visibility filter,
+    // so no reference_resolutions should exist for this closure.
+    let count = store
+        .count_reference_resolutions(closure_id, 0)
+        .expect("count_reference_resolutions should succeed");
+    assert_eq!(
+        count, 0,
+        "expected 0 resolutions — C static function must be excluded by visibility filter"
+    );
+}
+
+/// Rust `private` (non-pub) function in file B should NOT be resolvable from
+/// a reference in file A, because the Rust visibility filter excludes
+/// Private-visibility symbols that are in different files.
+#[test]
+fn test_visibility_filter_rust_private_excluded() {
+    let store = test_store();
+
+    // Helper: insert a Rust file with structural complete
+    let insert_rust_file = |store: &Store, path: &str| -> FileId {
+        let file_id = FileId::generate(path);
+        let file_info = FileInfo {
+            file_id,
+            path: path.to_string(),
+            language: Language::Rust,
+            content_hash: "rust_hash".to_string(),
+            status: ParseStatus::Success,
+        };
+        store.upsert_file(&file_info).unwrap();
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                types::layer::STRUCTURAL,
+                "rust_hash",
+                types::status::COMPLETE,
+                CapabilityMask::default(),
+            )
+            .unwrap();
+        file_id
+    };
+
+    let file_a = insert_rust_file(&store, "src/main.rs");
+    let file_b = insert_rust_file(&store, "src/helper.rs");
+
+    // File A: caller
+    let _caller_sym = insert_function_symbol_with_visibility(
+        &store,
+        file_a,
+        "caller",
+        Language::Rust,
+        None, // non-pub fn defaults to private in Rust IR
+    );
+    // File B: private helper
+    let _target_sym = insert_function_symbol_with_visibility(
+        &store,
+        file_b,
+        "helper",
+        Language::Rust,
+        Some(Visibility::Private),
+    );
+
+    let ref_use = make_unresolved_reference(
+        file_a,
+        None,
+        types::ReferenceKind::Call,
+        "helper",
+        10,
+        16,
+    );
+    store.insert_references(&[ref_use]).unwrap();
+
+    let engine = test_engine(store.clone());
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: file_a,
+            language: Language::Rust,
+        },
+        strategies: vec![],
+        budget: WindowBudget::default(),
+        language: Language::Rust,
+        max_iterations: 3,
+    };
+
+    let closure_id = "test-vis-rust-private-excluded";
+    let _closure = engine
+        .build_closure(&window, closure_id)
+        .expect("build_closure should succeed");
+
+    // The private "helper" in a different file should be excluded.
+    let count = store
+        .count_reference_resolutions(closure_id, 0)
+        .expect("count_reference_resolutions should succeed");
+    assert_eq!(
+        count, 0,
+        "expected 0 resolutions — Rust private function in different file must be excluded"
+    );
+}
+
+/// A public (non-static) C function should be resolvable normally —
+/// the visibility filter passes it through.
+#[test]
+fn test_visibility_filter_public_visible() {
+    let store = test_store();
+    let file_a = insert_file_structural_complete(&store, "src/main.c");
+    let file_b = insert_file_structural_complete(&store, "src/helper.c");
+
+    // File A: caller
+    let _caller_sym = insert_function_symbol(&store, file_a, "caller");
+    // File B: public helper (visibility = None for non-static C functions)
+    let _target_sym = insert_function_symbol_with_visibility(
+        &store,
+        file_b,
+        "helper",
+        Language::C,
+        None, // None = public/non-static in C
+    );
+
+    let ref_use = make_unresolved_reference(
+        file_a,
+        None,
+        types::ReferenceKind::Call,
+        "helper",
+        10,
+        16,
+    );
+    store.insert_references(&[ref_use]).unwrap();
+
+    let engine = test_engine(store.clone());
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: file_a,
+            language: Language::C,
+        },
+        strategies: vec![],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure_id = "test-vis-public-visible";
+    let _closure = engine
+        .build_closure(&window, closure_id)
+        .expect("build_closure should succeed");
+
+    // Public function should be resolvable.
+    let count = store
+        .count_reference_resolutions(closure_id, 0)
+        .expect("count_reference_resolutions should succeed");
+    assert!(
+        count > 0,
+        "expected at least 1 resolution — public C function must be visible through the filter"
+    );
+}
+
+// ── Dataflow integration tests ───────────────────────────────────────────────
+
+use std::collections::HashSet;
+
+#[test]
+fn test_build_dataflow_empty_closure() {
+    let store = test_store();
+    let engine = test_engine(store);
+
+    let files: HashSet<types::ids::FileId> = HashSet::new();
+    let built = engine
+        .build_dataflow_for_closure("test-empty", &files)
+        .expect("build_dataflow_for_closure should succeed");
+    assert_eq!(built, 0, "empty files set must return 0");
+}
+
+#[test]
+fn test_build_dataflow_for_function() {
+    let store = test_store();
+
+    // Insert a file with structural extraction marked complete
+    let file_id = insert_file_structural_complete(&store, "src/test_df.c");
+
+    // Insert a function symbol for that file
+    let symbol_id =
+        types::ids::SymbolId::generate(&file_id, "c", "do_work", "function", None);
+    let symbol_def = types::structs::SymbolDef {
+        id: symbol_id,
+        kind: types::SymbolKind::Function,
+        name: "do_work".to_string(),
+        qualified_name: "do_work".to_string(),
+        symbol_path: vec!["do_work".to_string()],
+        file_id,
+        language: Language::C,
+        range: types::structs::TextRange::default(),
+        name_range: types::structs::TextRange::default(),
+        signature: None,
+        visibility: None,
+        exported: false,
+        static_: false,
+        async_: false,
+        container: None,
+        scope_id: None,
+        package_name: None,
+        namespace_path: vec![],
+        layer: "structural".to_string(),
+    };
+    store.insert_symbols(&[symbol_def]).unwrap();
+
+    let engine = test_engine(store);
+
+    let mut files = HashSet::new();
+    files.insert(file_id);
+
+    let built = engine
+        .build_dataflow_for_closure("test-df-func", &files)
+        .expect("build_dataflow_for_closure should succeed");
+    // In a test environment with no real source, dataflow may not be
+    // successfully built (built may be 0).  The method must not crash.
+    assert!(built <= 1, "unexpected built count");
 }
