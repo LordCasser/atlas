@@ -210,6 +210,67 @@ pub mod precision {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Focus-driven incremental analysis: precision model
+// ---------------------------------------------------------------------------
+
+/// Symbol-level extraction tier for boundary precision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SymbolTier {
+    /// Complete structural + dataflow for this symbol.
+    Full,
+    /// Structural only, no dataflow.
+    Partial,
+    /// Only top-level declaration (manifest).
+    Manifest,
+}
+
+/// A known gap in analysis completeness.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KnownGap {
+    UnresolvedImport { from: String, import_path: String },
+    IndirectCall { callsite: String, reason: String },
+    TypeOutside { type_name: String, ref_by: String },
+    BudgetExhausted { strategy: String, remaining: usize },
+    ConditionalBranch { symbol: String, guard: String, branches: usize },
+    CodeGenerationNotExpanded { at: String, generator: String },
+    HighFanoutName { name: String, candidates: usize, action: String },
+    /// Coverage percentage as integer 0–100 (avoids floating-point Eq issue).
+    SymbolHintsIncomplete { name: String, coverage_pct: u32 },
+    VisibilityHidden { symbol: String, reason: String },
+}
+
+/// Coverage tier — how much of the repository's relevant data was analyzed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CoverageTier {
+    /// Full repository coverage (all files indexed).
+    RepoComplete,
+    /// Focus closure is complete for the specified closure.
+    ClosureComplete { closure_id: String },
+    /// At boundary of closure — data exists but not all dependencies analyzed.
+    Boundary { target_tier: SymbolTier },
+    /// Partial coverage with known gaps.
+    Partial { gaps: Vec<KnownGap> },
+    /// Only manifest (top-level symbol) data available.
+    Manifest,
+}
+
+/// Semantic confidence — how certain we are about each individual match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum SemanticConfidence {
+    Low = 0,
+    Medium = 1,
+    High = 2,
+    Certain = 3,
+}
+
+/// Combined precision: coverage scope × semantic certainty.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Precision {
+    pub coverage: CoverageTier,
+    pub confidence: SemanticConfidence,
+}
+
 impl SymbolDef {
     /// Human-readable label for this symbol.
     pub fn display_name(&self) -> &str {

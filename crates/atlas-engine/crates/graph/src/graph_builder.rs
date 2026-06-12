@@ -14,6 +14,7 @@
 #![allow(clippy::items_after_test_module)]
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tracing::{debug_span, info_span};
@@ -53,6 +54,26 @@ impl GraphBuilder {
         resolved: &[(ReferenceUse, ResolvedTarget)],
         symbol_override: Option<HashMap<SymbolId, SymbolDef>>,
     ) -> GraphBuilderStats {
+        self.build_all_inner(resolved, symbol_override, None)
+    }
+
+    /// Build edges with progress reporting via an AtomicU64 counter.
+    /// The counter is incremented once per processed reference.
+    pub fn build_all_with_progress(
+        &self,
+        resolved: &[(ReferenceUse, ResolvedTarget)],
+        symbol_override: Option<HashMap<SymbolId, SymbolDef>>,
+        progress: &AtomicU64,
+    ) -> GraphBuilderStats {
+        self.build_all_inner(resolved, symbol_override, Some(progress))
+    }
+
+    fn build_all_inner(
+        &self,
+        resolved: &[(ReferenceUse, ResolvedTarget)],
+        symbol_override: Option<HashMap<SymbolId, SymbolDef>>,
+        progress: Option<&AtomicU64>,
+    ) -> GraphBuilderStats {
         let _span = info_span!(target: "atlas_graph", "graph.build_all").entered();
         // Use pre-loaded symbols if provided; otherwise fall back to N×1 DB queries.
         let symbol_cache: HashMap<SymbolId, SymbolDef> = if let Some(override_map) = symbol_override {
@@ -77,7 +98,7 @@ impl GraphBuilder {
         let edges: Vec<RawEdge> = resolved
             .par_iter()
             .filter_map(|(reference, target)| {
-                match self.create_edges_for_reference(reference, target, Some(&symbol_cache)) {
+                let result = match self.create_edges_for_reference(reference, target, Some(&symbol_cache)) {
                     Ok(edges) => Some(edges),
                     Err(e) => {
                         if let Ok(mut w) = warnings.lock() {
@@ -88,7 +109,11 @@ impl GraphBuilder {
                         }
                         None
                     }
+                };
+                if let Some(p) = progress {
+                    p.fetch_add(1, Ordering::Relaxed);
                 }
+                result
             })
             .flatten()
             .collect();

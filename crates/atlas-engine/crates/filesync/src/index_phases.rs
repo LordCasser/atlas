@@ -33,6 +33,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -46,7 +47,7 @@ use extraction::{
 };
 use graph::GraphBuilder;
 use resolution::{PathAliasConfig, ReferenceResolver};
-use types::progress::ProgressState;
+use types::progress::{ProgressPhase, ProgressState};
 use types::{FileFacts, FileId, Language, SymbolDef, SymbolId};
 
 use crate::cleanup::{clean_stale_file_ids, clean_stale_file_paths, source_file_id};
@@ -980,7 +981,25 @@ pub fn phase_resolve_and_build(
     // ── Edge building ──
     let t_build = Instant::now();
     let builder = GraphBuilder::new(store.clone());
-    let build_stats = builder.build_all_with_symbols(&resolved_refs, Some(symbol_map));
+
+    // Transition progress to EdgeBuilding phase
+    let edge_progress: Option<Arc<AtomicU64>> = if let Some(ps_mutex) = progress {
+        if let Ok(mut ps) = ps_mutex.lock() {
+            ps.start_phase(ProgressPhase::EdgeBuilding, None);
+            ps.set_total(resolved_refs.len() as u64);
+            Some(Arc::clone(&ps.atomic_current))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let build_stats = if let Some(ref counter) = edge_progress {
+        builder.build_all_with_progress(&resolved_refs, Some(symbol_map), counter)
+    } else {
+        builder.build_all_with_symbols(&resolved_refs, Some(symbol_map))
+    };
     let graph_build_ms = t_build.elapsed().as_millis() as u64;
 
     info!(
