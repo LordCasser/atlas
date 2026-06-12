@@ -550,6 +550,31 @@ analysis_contract
 
 `Investigation` 是 MCP session 级隐式调查上下文，不提供用户可见的 create/close API。分析类工具会根据 symbol、position 或 field focus 更新 active investigation，并把相关文件/符号和期望能力传给 lazy 调度器。TTL 同样为 5 分钟。
 
+#### 10.1.10 Focus Runtime 与 Lazy 的关系
+
+Focus 是查询时 lazy 机制的下一代控制平面，不是新的 extraction
+pipeline。Lazy 负责按需构建 facts；Focus 负责围绕用户意图决定构建哪些
+facts、按什么顺序构建、在哪个 closure scope 中可见，以及如何声明
+precision/gaps/pending。
+
+长期边界：
+
+- `LazyStructuralService`、`LazyDataflowService`、`ExtractionMode`、
+  `extraction_state` 和 `extraction_jobs` 保留为事实构建、缓存、freshness、
+  in-flight dedup 和可观测性边界。
+- `FocusRuntime` 是 MCP 查询时唯一控制入口。MCP handler 只生成
+  `QueryIntent`，不得直接组合 lazy structural/dataflow、resolver 或 graph
+  builder。
+- `LazyOrchestrator`、`LazyCoordinator` 和 MCP `ensure_structural_for_*`
+  属于旧控制平面。它们的 job claim、budget、query_id、prewarm 和
+  diagnostics 语义迁入 `FocusRuntime` / `ClosureEngine` /
+  `BootstrapManager` 后，应删除或内化。
+- Focus resolution 写 closure-scoped `reference_resolutions` 和 scoped graph
+  overlay；只有 full-index/shared pipeline 可以更新全局
+  `references.resolved_*` 和 repo-wide `symbol_edges`。
+- `Precision { coverage, confidence }` 是 Focus 结果的主语义；
+  `PrecisionTier` 只作为迁移兼容字段保留。
+
 ### 内容哈希一致性
 
 当 `upsert_resolution_symbols` 检测到磁盘上的文件内容自上次 `files` 行写入以来已经变更（内容哈希不同），它会在同一事务中原子性地更新 `files.content_hash`。所有之前存在的更丰富层（structural、dataflow）变为过期状态，因为它们记录的 layer hash 不再匹配更新后的 file hash。在下次 lazy 访问时它们将从当前内容重建。

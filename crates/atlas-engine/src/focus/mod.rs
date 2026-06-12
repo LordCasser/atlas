@@ -19,6 +19,7 @@ pub mod visibility_filter;
 pub mod edge_policy;
 pub mod scheduler;
 pub mod writer_coordinator;
+pub mod focus_graph_builder;
 
 #[cfg(test)]
 mod engine_tests;
@@ -36,3 +37,7 @@ mod writer_coordinator_tests;
 mod integration_tests;
 #[cfg(test)]
 mod integration_tests_extended;
+#[cfg(test)]
+mod focus_graph_builder_tests;
+#[cfg(test)]
+mod scoped_resolver_tests;

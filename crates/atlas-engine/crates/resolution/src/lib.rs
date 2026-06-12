@@ -287,6 +287,39 @@ fn is_valid_identifier(name: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
+/// Map a resolved target's strategy to resolution scope and coverage tier.
+///
+/// Strategies 1-5 (local scope) → ClosureComplete
+/// Strategy 6 (project-wide name search) → Boundary
+fn scope_and_tier(target: &ResolvedTarget) -> (&'static str, &'static str) {
+    match target.strategy {
+        ResolutionStrategy::ExactMatch | ResolutionStrategy::ImportResolved => {
+            ("ClosureComplete", "ClosureComplete")
+        }
+        ResolutionStrategy::NameOnly
+        | ResolutionStrategy::FuzzyMatch
+        | ResolutionStrategy::Heuristic => {
+            ("Boundary", "Boundary")
+        }
+        ResolutionStrategy::Builtin | ResolutionStrategy::DataflowPointer => {
+            ("Boundary", "Boundary")
+        }
+    }
+}
+
+/// Map a confidence value to a [`SemanticConfidence`] string.
+fn confidence_to_semantic(confidence: f64) -> String {
+    if confidence >= 0.95 {
+        "certain".to_string()
+    } else if confidence >= 0.75 {
+        "high".to_string()
+    } else if confidence >= 0.5 {
+        "medium".to_string()
+    } else {
+        "low".to_string()
+    }
+}
+
 // ── ResolutionSession ──────────────────────────────────────────────────────
 //
 // A thread-safe, read-only resolution context that can be shared across
@@ -1080,6 +1113,320 @@ impl ReferenceResolver {
 
         let total_refs: usize = by_file.values().map(|v| v.len()).sum();
         self.resolve_grouped_refs(by_file, total_refs)
+    }
+
+    /// Resolve references scoped to a closure, writing results to the
+    /// `reference_resolutions` table instead of `references.resolved_*` columns.
+    ///
+    /// This preserves the global full-index resolution data while adding
+    /// closure-scoped resolution that only applies within this focus closure.
+    ///
+    /// `visibility_filter` is an optional predicate `(symbol, from_file) -> bool`
+    /// that returns true if a symbol is visible from the reference's file.
+    /// Applied during strategy 6 (project-wide name search) to exclude symbols
+    /// that exist in closure files but are not visible (e.g., C `static`
+    /// functions, Rust `private` items).
+    pub fn resolve_for_closure(
+        &mut self,
+        closure_id: &str,
+        generation: i64,
+        closure_files: &[FileId],
+        visibility_filter: Option<&dyn Fn(&SymbolDef, FileId) -> bool>,
+    ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
+        let mut by_file: HashMap<FileId, Vec<ReferenceUse>> = HashMap::new();
+        for fid in closure_files {
+            for r in self.store.find_references_by_file(fid)? {
+                by_file.entry(r.file_id).or_default().push(r);
+            }
+        }
+
+        let total_refs: usize = by_file.values().map(|v| v.len()).sum();
+
+        if self.global_index.is_none() {
+            self.global_index = Some(GlobalSymbolIndex::build(&self.store)?);
+        }
+
+        let mut stats = ResolutionStats {
+            total_refs,
+            ..Default::default()
+        };
+
+        let mut resolved_pairs: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
+        let mut batch: Vec<(
+            String,
+            i64,
+            Vec<u8>,
+            String,
+            Option<Vec<u8>>,
+            String,
+            String,
+            String,
+            Option<String>,
+        )> = Vec::new();
+        let batch_size = 500;
+
+        for (file_id, refs) in &by_file {
+            let ctx = match ResolutionContext::build(&self.store, *file_id) {
+                Ok(c) => c,
+                Err(e) => {
+                    stats.add_warning(format!("failed to build context: {e}"));
+                    continue;
+                }
+            };
+
+            for reference in refs {
+                let target = self.resolve_one_scoped(reference, &ctx, visibility_filter);
+                match target {
+                    Some(target) => {
+                        let (resolution_scope, coverage_tier) = scope_and_tier(&target);
+                        let semantic_confidence = confidence_to_semantic(target.confidence.as_f32() as f64);
+                        let provenance_str = format!(
+                            "{}:{}:{}",
+                            ctx.file.path,
+                            target.strategy.as_str(),
+                            target.provenance.as_str()
+                        );
+
+                        batch.push((
+                            closure_id.to_string(),
+                            generation,
+                            reference.id.as_bytes().to_vec(),
+                            resolution_scope.to_string(),
+                            Some(target.symbol_id.as_bytes().to_vec()),
+                            coverage_tier.to_string(),
+                            semantic_confidence,
+                            target.strategy.as_str().to_string(),
+                            Some(provenance_str),
+                        ));
+
+                        resolved_pairs.push((reference.clone(), target.clone()));
+                        stats.resolved += 1;
+                        *stats
+                            .by_strategy
+                            .entry(target.strategy.as_str().to_string())
+                            .or_default() += 1;
+                    }
+                    None => {
+                        stats.unresolved += 1;
+                    }
+                }
+            }
+
+            if batch.len() >= batch_size {
+                if let Err(e) = self.store.batch_insert_reference_resolutions(&batch) {
+                    stats.add_warning(format!("batch insert failed: {e}"));
+                }
+                batch.clear();
+            }
+        }
+
+        if !batch.is_empty() {
+            if let Err(e) = self.store.batch_insert_reference_resolutions(&batch) {
+                stats.add_warning(format!("batch insert failed: {e}"));
+            }
+        }
+
+        Ok((resolved_pairs, stats))
+    }
+
+    /// Resolve a single reference for scoped closure resolution.
+    ///
+    /// Same 6-strategy pipeline as [`resolve_one`], but strategy 6
+    /// (project-wide name search) applies an optional visibility filter.
+    fn resolve_one_scoped(
+        &self,
+        reference: &ReferenceUse,
+        ctx: &ResolutionContext,
+        visibility_filter: Option<&dyn Fn(&SymbolDef, FileId) -> bool>,
+    ) -> Option<ResolvedTarget> {
+        // Strategies 1-5: same as resolve_one_core, no visibility filter needed
+        // Strategy 1: Built-in / external filter
+        {
+            let _timer = StrategyTimer::new(&S1_TIME_NS);
+            if BuiltinFilter::is_builtin(&reference.name, ctx.file.language) {
+                S1_COUNT.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+        }
+
+        // Strategy 2: Scope-local exact match
+        {
+            let _timer = StrategyTimer::new(&S2_TIME_NS);
+            if let Some(scope_id) = reference.scope_id {
+                if let Some(sym) = ctx.lookup_scoped(scope_id, &reference.name) {
+                    S2_COUNT.fetch_add(1, Ordering::Relaxed);
+                    return Some(ResolvedTarget {
+                        symbol_id: sym.id,
+                        confidence: Confidence::certain(),
+                        strategy: ResolutionStrategy::ExactMatch,
+                        provenance: Provenance::TreeSitter,
+                    });
+                }
+            }
+        }
+
+        // Strategy 3: Container/class-local
+        {
+            let _timer = StrategyTimer::new(&S3_TIME_NS);
+            if let Some(source_sym) = reference.source_symbol {
+                if let Some(source) = ctx.symbols_by_id.get(&source_sym) {
+                    if let Some(container) = source.container {
+                        if let Some(container_sym) = ctx.symbols_by_id.get(&container) {
+                            if let Some(scope) = container_sym.scope_id {
+                                if let Some(sym) = ctx.lookup_scoped(scope, &reference.name) {
+                                    S3_COUNT.fetch_add(1, Ordering::Relaxed);
+                                    return Some(ResolvedTarget {
+                                        symbol_id: sym.id,
+                                        confidence: Confidence::certain(),
+                                        strategy: ResolutionStrategy::ExactMatch,
+                                        provenance: Provenance::TreeSitter,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Strategy 4: Same-file exact match
+        {
+            let _timer = StrategyTimer::new(&S4_TIME_NS);
+            let same_file = ctx.find_in_file_by_name(&reference.name);
+            if let Some(matched) =
+                self.name_matcher.best_match(&same_file, &reference.name, Confidence::certain())
+            {
+                S4_COUNT.fetch_add(1, Ordering::Relaxed);
+                return Some(ResolvedTarget {
+                    symbol_id: matched.symbol_id,
+                    confidence: matched.confidence,
+                    strategy: matched.strategy,
+                    provenance: matched.provenance,
+                });
+            }
+        }
+
+        // Strategy 5: Import/include resolution
+        {
+            let _timer = StrategyTimer::new(&S5_TIME_NS);
+            if let Some(import_indices) = ctx.imports_by_name.get(&reference.name) {
+                for &idx in import_indices {
+                    let import = &ctx.imports[idx];
+                    let import_local = import.local_name.as_deref().unwrap_or("");
+                    let matches_by_alias = !import_local.is_empty() && import_local == reference.name;
+
+                    if let Ok(candidates) = self.import_resolver.resolve_import(import) {
+                        if let Ok(chain_candidates) =
+                            self.import_resolver.resolve_through_reexports(import, candidates)
+                        {
+                            if matches_by_alias {
+                                if let Some(first) = chain_candidates.first() {
+                                    S5_COUNT.fetch_add(1, Ordering::Relaxed);
+                                    return Some(ResolvedTarget {
+                                        symbol_id: first.id,
+                                        confidence: Confidence::new(0.8),
+                                        strategy: ResolutionStrategy::ImportResolved,
+                                        provenance: Provenance::Heuristic,
+                                    });
+                                }
+                            }
+                            if let Some(matched) = self.name_matcher.best_match(
+                                &chain_candidates,
+                                &reference.name,
+                                Confidence::certain(),
+                            ) {
+                                S5_COUNT.fetch_add(1, Ordering::Relaxed);
+                                return Some(ResolvedTarget {
+                                    symbol_id: matched.symbol_id,
+                                    confidence: Confidence::new(0.8),
+                                    strategy: ResolutionStrategy::ImportResolved,
+                                    provenance: Provenance::Heuristic,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Strategy 6: Project-wide name search + fuzzy fallback
+        // Apply visibility filter: exclude symbols not visible from the reference's file.
+        {
+            let _timer = StrategyTimer::new(&S6_TIME_NS);
+            if let Some(idx) = self.global_index.as_ref() {
+                // Try exact match first
+                if let Some(matched) = idx.find_exact_name_target(&reference.name, None) {
+                    if let Some(filter) = visibility_filter {
+                        if let Some(sym) = idx.get(&matched.symbol_id) {
+                            if !filter(sym, reference.file_id) {
+                                // Not visible — skip this match, let next strategy try
+                            } else {
+                                S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                                S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
+                                return Some(matched);
+                            }
+                        } else {
+                            // Symbol not in index (shouldn't happen) — accept the match
+                            S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                            S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
+                            return Some(matched);
+                        }
+                    } else {
+                        S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                        S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
+                        return Some(matched);
+                    }
+                }
+
+                if !should_run_fuzzy_fallback(&reference.name) {
+                    return None;
+                }
+
+                // Fuzzy search
+                let fuzzy = idx.fuzzy_search(&reference.name, 2);
+                if !fuzzy.is_empty() {
+                    if let Some(filter) = visibility_filter {
+                        let filtered: Vec<SymbolDef> = fuzzy
+                            .into_iter()
+                            .filter(|s| filter(s, reference.file_id))
+                            .collect();
+                        if !filtered.is_empty() {
+                            if let Some(matched) = self.name_matcher.best_match(
+                                &filtered,
+                                &reference.name,
+                                Confidence::new(0.4),
+                            ) {
+                                S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                                S6_FUZZY_GLOBAL_COUNT.fetch_add(1, Ordering::Relaxed);
+                                return Some(ResolvedTarget {
+                                    symbol_id: matched.symbol_id,
+                                    confidence: matched.confidence,
+                                    strategy: ResolutionStrategy::FuzzyMatch,
+                                    provenance: Provenance::Heuristic,
+                                });
+                            }
+                        }
+                    } else {
+                        if let Some(matched) = self.name_matcher.best_match(
+                            &fuzzy,
+                            &reference.name,
+                            Confidence::new(0.4),
+                        ) {
+                            S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                            S6_FUZZY_GLOBAL_COUNT.fetch_add(1, Ordering::Relaxed);
+                            return Some(ResolvedTarget {
+                                symbol_id: matched.symbol_id,
+                                confidence: matched.confidence,
+                                strategy: ResolutionStrategy::FuzzyMatch,
+                                provenance: Provenance::Heuristic,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        MISS_COUNT.fetch_add(1, Ordering::Relaxed);
+        None
     }
 
     /// Flush pending resolution updates to the store in batch.

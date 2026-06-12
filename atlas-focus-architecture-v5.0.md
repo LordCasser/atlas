@@ -1,14 +1,81 @@
 # Atlas Focus-driven Incremental Analysis — Implementation Plan v5.0
 
 > **Scope**: Atlas only. Corpus compatibility confirmed via `SourceUniverse` trait (see v4.0).
-> **Strategy**: Evolve existing lazy infrastructure. Don't rewrite.
+> **Strategy**: Focus is the next control plane for the existing lazy execution layer.
 > **Constraint**: Focus is internal infrastructure. Zero user-facing surface.
 > No CLI commands, no manual pre-warm, no coverage dashboard. Activation is
 > silent and automatic when the project has no full index.
 
 ---
 
-## 0. What Changes vs What Stays
+## 0. Architecture Relationship: Focus vs Lazy
+
+Focus does **not** replace lazy extraction with a second implementation.
+Focus replaces the scattered query-time lazy **control plane**.
+
+```text
+Lazy = demand-built fact execution layer
+Focus = query-intent scheduling, closure planning, visibility, precision, and background expansion
+```
+
+The existing lazy layer already owns the mechanics that must remain stable:
+
+- `ExtractionMode::{Manifest, ResolutionSymbols, Structural, LazyDataflow, Full}`
+- `extraction_state` freshness and capability masks
+- `extraction_jobs` in-flight deduplication and task observability
+- cancellable structural extraction
+- unit/function-scoped dataflow extraction
+- high-level `Engine` vs raw analysis separation
+
+Focus must not fork those mechanics. It should drive them through one runtime:
+
+```text
+MCP Tool
+  → QueryIntent
+  → FocusRuntime::prepare(intent)
+      → BootstrapManager
+      → SeedLocator
+      → ClosureEngine
+          → LazyStructuralService
+          → LazyDataflowService
+      → ScopedResolver
+      → FocusGraphBuilder
+      → FocusResponseBuilder
+```
+
+The old lazy services become execution engines under `FocusRuntime`. The old
+lazy orchestration entry points are removed after their responsibilities are
+migrated.
+
+**Preserve as long-term boundaries**
+
+| Boundary | Why it stays |
+|----------|--------------|
+| `LazyStructuralService` | Builds structural facts for selected files; reuses cache, stale checks, cancellation, and extraction modes. |
+| `LazyDataflowService` | Builds unit/function dataflow facts; preserves unit-scoped `extraction_state` and dataflow cache semantics. |
+| `ExtractionMode` | Defines persistent fact layers. Focus chooses modes; it does not redefine them. |
+| `extraction_state` | Source of truth for freshness and capability masks. |
+| `extraction_jobs` | Source of truth for in-flight dedup, pending state, and task observability. |
+| Raw analysis engines | Consume existing facts only. High-level runtime prepares facts first. |
+
+**Remove or internalize as old control-plane boundaries**
+
+| Boundary | Target |
+|----------|--------|
+| `LazyOrchestrator` | Delete after `FocusRuntime` owns policy, budget, diagnostics, and prewarm scheduling. |
+| `LazyCoordinator` | Migrate useful responsibilities into `FocusRuntime` / `ClosureEngine` / `BootstrapManager`, then delete or make private implementation detail. |
+| MCP `ensure_structural_for_files/name` helpers | Replace with `FocusRuntime::prepare(QueryIntent)`. |
+| `PrecisionTier` as primary response semantic | Keep only as migration compatibility; `Precision { coverage, confidence }` is authoritative. |
+
+The core invariant:
+
+> Lazy builds facts. Focus decides which facts are needed, in what order, in
+> which closure scope, under which visibility gate, and with what precision
+> contract.
+
+---
+
+## 0.1 What Changes vs What Stays
 
 | Existing | Action |
 |----------|--------|
@@ -16,13 +83,14 @@
 | `Investigation` | **Upgrade** → `FocusWindow` (add budget + strategies + max_iterations) |
 | `ClosurePlanner` | **Extend** → `ImportNeighborhood` strategy in the closure strategy catalog |
 | `LazyBudget` | **Extend** → `WindowBudget` (add symbol/edge/fanout/bytes limits) |
-| `LazyCoordinator` | **Upgrade** → `ClosureEngine` (bounded fixed-point) |
+| `LazyCoordinator` | **Migrate responsibilities** → `FocusRuntime` + `ClosureEngine` + `BootstrapManager`; delete/internalize after migration |
+| `LazyOrchestrator` | **Replace** → `FocusRuntime` as the single query-time control plane |
 | `PrecisionTier` (6-tier enum) | **Bridge** → `Precision { coverage, confidence }` with migration adapter |
-| `LazyStructuralService` | **Keep**, now called by ClosureEngine |
-| `LazyDataflowService` | **Keep**, now called by ClosureEngine |
+| `LazyStructuralService` | **Keep as execution engine**, called only under FocusRuntime/ClosureEngine |
+| `LazyDataflowService` | **Keep as execution engine**, called only under FocusRuntime/ClosureEngine |
 | `CandidateProvider` trait | **Keep**, becomes Tier 1 `SymbolHints` implementation |
 | `extraction_jobs` table | **Extend** → add `closure_id`, `generation` columns |
-| `symbols`, `references`, `symbol_edges` tables | **Untouched** |
+| `symbols`, `references`, `symbol_edges` tables | **Keep global semantics**; focus does not write `references.resolved_*` or unscoped global graph state |
 | `extraction_state` table | **Untouched** |
 | `files` table | **Untouched** |
 
@@ -82,7 +150,8 @@ struct McpResponse {
 }
 ```
 
-Remove `precision_tier` in Phase 4.
+Remove `precision_tier` after all query tools route through `FocusRuntime` and
+clients consume `precision` + `analysis_contract` as authoritative.
 
 ---
 
@@ -107,7 +176,10 @@ CREATE TABLE file_inventory (
 );
 ```
 
-Filled on `atlas open` by reusing existing `filesync::phase_discover` output. Cost: a single `readdir` walk. For 60K files on modern SSD: ~0.3s.
+Filled lazily by the MCP process on first query for a project. It may reuse
+the same discovery primitives as `filesync::phase_discover`, but there is no
+`atlas open` daemon and no user-visible bootstrap command. Cost: a single
+`readdir` walk. For 60K files on modern SSD: ~0.3s.
 
 ### 2.2 Tier 0.5: Content Fingerprints (background)
 
@@ -172,7 +244,50 @@ Hints are stored in-memory (dashmap) + persisted as `symbol_hints` table for ses
 
 ---
 
-## 3. Phase 2: Focus Primitives + ClosureEngine (3 weeks)
+## 3. Phase 2: FocusRuntime + Focus Primitives (3 weeks)
+
+### 3.0 FocusRuntime: the only query-time control plane
+
+MCP tools must not directly call `LazyOrchestrator`, `LazyCoordinator`,
+`LazyStructuralService`, `LazyDataflowService`, `ReferenceResolver`, or
+`GraphBuilder`. They produce `QueryIntent` and call `FocusRuntime::prepare`.
+
+```rust
+pub enum QueryIntent {
+    Calls { symbol: SymbolSelector, direction: Direction, depth: u32 },
+    Explore { symbol: SymbolSelector },
+    Search { query: String, scope: Option<PathScope> },
+    TracePoint { file: FileRef, line: u32, column: u32 },
+    TraceVariable { file: FileRef, line: u32, column: u32 },
+    Context { symbol: SymbolSelector },
+}
+
+pub struct FocusRuntime {
+    store: Arc<Store>,
+    bootstrap: BootstrapManager,
+    seed_locator: SeedLocator,
+    closure_engine: ClosureEngine,
+    scoped_resolver: ScopedResolver,
+    graph_builder: FocusGraphBuilder,
+    response_builder: FocusResponseBuilder,
+}
+
+impl FocusRuntime {
+    pub fn prepare(&self, intent: QueryIntent) -> Result<FocusPreparedResult> {
+        // 1. Detect index mode via Store::read_index_mode() + is_rich_index_mode().
+        //    Do NOT use project_metadata key existence; generation keys are seeded
+        //    even for empty DBs.
+        // 2. If rich/full index is available, execute the DB-backed query path.
+        // 3. Otherwise run focus path:
+        //    bootstrap minimum → locate seed → build closure → scoped resolve
+        //    → scoped graph overlay → response contract → background expansion.
+        todo!()
+    }
+}
+```
+
+This is the architectural replacement for the old query-time lazy control
+plane. The old lazy execution services remain below it.
 
 ### 3.1 New types in `atlas-engine/src/focus/`
 
@@ -249,7 +364,11 @@ impl From<&LazyBudget> for WindowBudget {
 
 ### 3.2 Bounded Fixed-Point Engine
 
-Upgrades `LazyCoordinator::ensure_structural_with_closure` from single-pass BFS to iterative expansion.
+`ClosureEngine` owns closure planning and iterative expansion. It migrates the
+useful semantics from `LazyCoordinator::ensure_structural_with_closure`
+(include closure, job claim, budget, query_id propagation), but it is not a
+second extraction engine. File and unit facts are still built by the lazy
+execution services.
 
 ```rust
 // ── file: atlas-engine/src/focus/engine.rs ──
@@ -286,11 +405,12 @@ impl ClosureEngine {
                 break;
             }
 
-            // 3. Extract: use existing LazyStructuralService
+            // 3. Extract: use existing LazyStructuralService through
+            //    extraction_jobs claim + extraction_state freshness checks.
             for file_id in &additions {
-                // Reuses existing ensure_structural_with_tracking
+                // Reuses lazy structural execution; Focus owns the policy.
                 let result = self.lazy_structural
-                    .ensure_structural_for_files(&[file_id], &budget)?;
+                    .ensure_structural_for_file(file_id, &budget)?;
                 closure.mark_extracted(file_id, result.precision_tier);
             }
 
@@ -668,22 +788,32 @@ Tier 6 (`ClosureReachable`) applies `VisibilityFilter` per language. Filters are
 ### 7.1 Conflict Rules
 
 ```
-Certain edges are immutable — never overwritten.
-Higher coverage wins.
-Same coverage, higher confidence wins.
-Medium/Low confidence → symbol_edge_candidates table, not symbol_edges.
+Full-index/global edges are immutable unless the full-index pipeline rebuilds them.
+Focus edges are closure-scoped and never overwrite global graph state.
+Higher coverage wins inside the same closure scope.
+Same coverage, higher confidence wins inside the same closure scope.
+Medium/Low confidence → scoped candidate table, not global symbol_edges.
 High fanout names → KnownGap, no edge.
 ```
 
-### 7.2 Durable vs Response-Only (from v3.1 Section 4.11, unchanged)
+### 7.2 Focus Persistence Policy
+
+Focus graph results are scoped to `closure_id + generation`. They are durable
+inside that scope, not globally durable. Only the full-index pipeline writes
+repo-wide canonical `symbol_edges`.
 
 | Confidence | Persistence |
 |-----------|-------------|
-| Certain | `symbol_edges` |
-| High | `symbol_edges` |
-| Medium | `symbol_edge_candidates` (response-only) |
+| Certain | scoped focus edge overlay |
+| High | scoped focus edge overlay |
+| Medium | scoped candidate edge |
 | Low | Not persisted, returned in gaps |
 | High fanout | KnownGap |
+
+Implementation may start with `symbol_edge_candidates` as the overlay table if
+it carries `closure_id`, `generation`, coverage, and confidence. If canonical
+closure-scoped edges need separate query semantics, introduce a dedicated
+`closure_symbol_edges` table rather than writing global `symbol_edges`.
 
 ---
 
@@ -714,15 +844,22 @@ The focus mechanism is **internal infrastructure — zero user-facing surface**.
 ## 9. Implementation Sequence
 
 ```
-Phase 0 ── Precision bridge + compat          (Week 1)
-Phase 1 ── Bootstrap: file_inventory,          (Week 2-3)
-           content fingerprints, SymbolHints
-Phase 2 ── Focus types + ClosureEngine         (Week 3-6)
-           + DB schema (new tables only)
-Phase 3 ── FocusScheduler + background jobs    (Week 6-8)
-Phase 4 ── MCP response contract + gaps        (Week 8-9)
-Phase 5 ── Visibility filters                  (Week 9-10)
-Phase 6 ── Edge conflict policy                (Week 10-11)
+Phase 0 ── Precision bridge + schema safety       (Week 1)
+Phase 1 ── BootstrapManager                       (Week 2-3)
+           file_inventory, fingerprints, SymbolHints
+Phase 2 ── FocusRuntime + QueryIntent             (Week 3-4)
+           single query-time control-plane entry
+Phase 3 ── ClosureEngine                          (Week 4-6)
+           bounded fixed-point over lazy execution engines
+Phase 4 ── ScopedResolver + FocusGraphBuilder     (Week 6-8)
+           reference_resolutions + scoped graph overlay
+Phase 5 ── MCP integration, one tool first         (Week 8-9)
+           calls → FocusRuntime::prepare
+Phase 6 ── Migrate remaining query tools          (Week 9-11)
+           explore/search/context/trace/lifecycle/branch_diff/resume
+Phase 7 ── Remove old lazy control-plane entries   (Week 11-12)
+           LazyOrchestrator, direct MCP ensure_* helpers,
+           LazyCoordinator after responsibilities have moved
 ```
 
 ---
@@ -731,15 +868,27 @@ Phase 6 ── Edge conflict policy                (Week 10-11)
 
 | Component | Status |
 |-----------|--------|
-| `LazyStructuralService` | Stays. Called by ClosureEngine as extract backend. |
-| `LazyDataflowService` | Stays. Called by ClosureEngine for dataflow after structural. |
+| `LazyStructuralService` | Stays as an execution engine. FocusRuntime/ClosureEngine decides when to call it. |
+| `LazyDataflowService` | Stays as an execution engine. FocusRuntime decides when dataflow is required for the query intent. |
 | `CandidateProvider` trait | Stays. Used for Tier 1 SymbolHints bootstrap. |
-| `extraction_state` table | Stays. ClosureEngine checks it for cache decisions. |
-| `symbols`, `references`, `symbol_edges` tables | Untouched. Focus writes to overlay tables. |
+| `extraction_state` table | Stays. Freshness and capability masks remain source-of-truth. |
+| `extraction_jobs` table | Stays. Focus jobs must use the same in-flight dedup and pending observability boundary. |
+| `symbols`, `references`, `symbol_edges` tables | Keep their global semantics. Focus writes scoped results to overlay tables and never mutates `references.resolved_*`. |
 | `ExtractionMode` enum | Untouched. Focus requests use existing modes. |
 | `tree-sitter` frontends | Untouched. 14 languages. |
 | `filesync` pipeline | Untouched. `atlas index --full` unchanged. |
 | All 14 language adapters | Untouched. |
+
+## 10.1 What Must Be Removed After Migration
+
+These boundaries are useful only as temporary migration scaffolding:
+
+| Component | Removal condition |
+|-----------|-------------------|
+| `LazyOrchestrator` | Remove once `FocusRuntime` owns query policy, budget, diagnostics, and background prewarm. |
+| `LazyCoordinator` | Remove or make private once job claim, closure planning, query_id propagation, and prewarm are migrated. |
+| MCP `ensure_structural_for_files/name` helpers | Remove after all MCP query tools route through `FocusRuntime::prepare(QueryIntent)`. |
+| Legacy `precision_tier` response field | Remove after clients consume `precision` and `analysis_contract` as authoritative. |
 
 ---
 
@@ -747,9 +896,11 @@ Phase 6 ── Edge conflict policy                (Week 10-11)
 
 | Risk | Mitigation |
 |------|------------|
-| ClosureEngine breaks existing lazy coordinator | New code in `atlas-engine/src/focus/`. Old `LazyCoordinator` stays. Feature-gate the new path. |
+| FocusRuntime bypasses lazy cache/job semantics | FocusRuntime must call the lazy execution layer through `extraction_state` and `extraction_jobs`; no ad-hoc extraction path. |
+| Double control plane persists | Treat `LazyOrchestrator`, MCP `ensure_*`, and `LazyCoordinator` as migration scaffolding with explicit removal conditions. |
+| Scoped resolution pollutes global DB state | Focus path writes `reference_resolutions` and scoped graph overlay only; full index remains the only path that updates global `references.resolved_*`. |
 | Background jobs corrupt DB state | `closure_coverage.visibility_state='staged'` until `Committed`. MCP reads only `visible`. |
 | SymbolHints missing gives false "not found" | Hint-not-truth semantics. MCP response distinguishes "not in hints" from "not found." |
 | Fixed-point explodes (Linux headers) | `max_iterations=3`, budget per-iteration. C header depth limited by `ImportNeighborhood.depth`. |
-| Existing MCP tools break | PrecisionTier adapter in Phase 0. Both old and new fields until Phase 4. |
+| Existing MCP tools break | Migrate one intent at a time through `FocusRuntime`; keep compatibility envelope until all query tools have moved. |
 | Write contention (sync vs background) | `ProjectWriteCoordinator` with Sync-preempt. Checkpoint at file boundary. |

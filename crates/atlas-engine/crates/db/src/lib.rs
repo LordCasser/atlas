@@ -18,6 +18,10 @@ pub use store::{FullRebuildGuard, Store, StoreStats, WalCheckpointStats};
 pub use store_writers::DbWriteTiming;
 pub use store::{IndexMode, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION};
 
+// Focus closure types
+pub use store::reference_resolutions::ClosureResolution;
+pub use store::symbol_edge_candidates::CandidateEdge;
+
 // Re-export summary types for the analysis layer
 pub mod summary {
     //! Re-exports from `store::summary` for cross-crate access.

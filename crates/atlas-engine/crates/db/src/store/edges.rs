@@ -532,5 +532,50 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Look up a single reference by its ID.
+    pub fn get_reference_by_id(
+        &self,
+        reference_id: &[u8],
+    ) -> anyhow::Result<Option<ReferenceUse>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(&format!(
+            "{REFERENCE_SELECT_NO_WHERE} WHERE reference_id = ?1"
+        ))?;
+        let mut rows = stmt.query_map(params![reference_id], row_to_reference)?;
+        match rows.next() {
+            Some(Ok(r)) => Ok(Some(r)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Find a specific edge by (source, target, kind).  Returns the first match
+    /// if any exists; used for conflict detection during focus graph building.
+    pub fn find_edge_by_source_target_kind(
+        &self,
+        source: &SymbolId,
+        target: &SymbolId,
+        kind: &EdgeKind,
+    ) -> anyhow::Result<Option<RawEdge>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT edge_id, source, target, kind, confidence, provenance,
+                    ref_id, location_0, location_1, location_2, location_3, location_4, location_5,
+                    metadata, resolved_by
+             FROM symbol_edges
+             WHERE source = ?1 AND target = ?2 AND kind = ?3
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(
+            params![source, target, kind.as_str()],
+            row_to_edge,
+        )?;
+        match rows.next() {
+            Some(Ok(e)) => Ok(Some(e)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
 
 }
