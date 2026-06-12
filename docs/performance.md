@@ -4,7 +4,7 @@
 
 - **Machine**: Apple Silicon (aarch64), macOS
 - **Atlas build**: `cargo build --release -p atlas-cli`
-- **Date**: 2026-05-23 (Baselines 1-2), 2026-06-10 (Baseline 3), 2026-06-11 (Baseline 4)
+- **Date**: 2026-05-23 (Baselines 1-2), 2026-06-10 (Baseline 3), 2026-06-11 (Baseline 4), 2026-06-12 (Baseline 5)
 
 ## Baseline 1: TypeScript Project (project-graph)
 
@@ -169,6 +169,7 @@ Weight-budget chunking replaced the fixed 500-file grouping with a `max_weight` 
 | **P3: per-file resolution fingerprint** | `content_hash` in `extraction_state`; clean files skip Step A context build | 27.34s → 25.99s (−5%) |
 | **T1.2: cleanup transaction wrapping** | Single transaction for stale file cleanup (was 3N+1 transactions) | Atomic cleanup, no partial state |
 | **Deferred index creation (bulk-load)** | Drop all non-PK indexes before write, recreate after. FTS rebuilt at Phase 10. | 25.81s → 18.82s (−27%) |
+| **S6 exact direct target selection** | Resolve exact global name target inside `GlobalSymbolIndex` without cloning/sorting candidate Vec or running `NameMatcher` again | Kept after Elasticsearch short-window validation; full-run gain still TBD |
 
 ### Rejected Optimizations (verified regression)
 
@@ -221,6 +222,10 @@ Weight-budget chunking replaced the fixed 500-file grouping with a `max_weight` 
 | BEGIN EXCLUSIVE 替代 BEGIN IMMEDIATE | 不显著 | WAL 模式下差异有限，p95/max 无稳定改善 |
 | PRAGMA cache_spill=OFF | 恶化尾部 | dirty page 压力推迟到后半段/commit，尾部更差 |
 | Chunk-level 延迟写 references/callsites | 恶化尾部 | 表间重排未减少写放大，尾部明显恶化 |
+| S6 exact-case extra index | Neutral/negative | Extra index memory and lookup path did not reduce S6 CPU on Elasticsearch |
+| S6 high-fanout shared cache | Negative | Mutex/cache overhead exceeded saved candidate scans |
+| S6 per-file exact memo | Neutral/negative | Same-file repeated-name locality was insufficient; HashMap maintenance erased benefit |
+| S6 tier-0 exact early return | Neutral/negative | Candidate ordering did not make early exits frequent enough |
 
 **核心教训**：
 1. **SQLite 的 prepared statement 缓存比动态 batch SQL 更快**——不要假设"批量一定比逐行快"。
@@ -229,6 +234,149 @@ Weight-budget chunking replaced the fixed 500-file grouping with a `max_weight` 
 4. **小数据集的算法复杂度优化收益可忽略**——S4 的 O(F) 中 F 通常 < 100。
 5. **SQLite PRAGMA 调参不是银弹**——cache_spill、事务模式等调整在 bulk write 场景下效果不稳定或负面，应先优化写入模型本身。
 6. **写入重排不能替代写放大消除**——延迟写、表间调序不减少实际写入量，应优先减少不必要的 SQL 操作（如 OR REPLACE 冲突检查）。
+
+---
+
+## Baseline 5: Elasticsearch Resolving refs Investigation
+
+### Context
+
+After DB write optimization, the next visible large-scale bottleneck moved to
+`Resolving refs` on the Elasticsearch example. The investigation used the
+existing extracted Elasticsearch `.atlas` database and repeatedly reset only the
+resolution/edge state:
+
+```sql
+UPDATE "references"
+SET resolved_symbol_id=NULL,
+    resolved_confidence=NULL,
+    resolved_strategy=NULL,
+    resolved_provenance=NULL;
+DELETE FROM symbol_edges;
+DELETE FROM project_metadata
+WHERE key IN ('resolution_config_hash',
+              'resolution_generation_version',
+              'graph_generation_version');
+DELETE FROM extraction_state WHERE layer='resolution';
+```
+
+This keeps extraction and DB-write facts stable while making each resolution
+run start from `6,790,151` unresolved references and `0` edges.
+
+### Observability Added
+
+Resolution now emits periodic `resolution.progress` records during Step B:
+
+| Field | Why it matters |
+|-------|----------------|
+| `scanned_refs` / `scan_refs_per_sec` | Resolution-side throughput, including misses |
+| `matched_refs` / `match_rate_pct` | How much work becomes writer input |
+| `writer_rows_written` / `write_refs_per_sec` | DB writer throughput |
+| `queued_resolved` | Backpressure indicator between resolver and writer |
+| `dirty_files_done` / `clean_files_done` | File-level progress and skew |
+| `s5_count`, `s5_time_s`, `s6_count`, `s6_exact`, `s6_time_s` | Live strategy attribution without waiting for final summary |
+
+The CLI progress bar also tracks scanned references instead of resolved rows.
+This avoids under-reporting progress on workloads with many misses.
+
+### Experimental Facts
+
+All short-window tests below were debug builds on the same Elasticsearch DB
+state. They are used for directional bottleneck isolation, not for release-mode
+end-to-end claims.
+
+| Observation | Evidence | Conclusion |
+|-------------|----------|------------|
+| DB writer was not the primary `Resolving refs` bottleneck | `queued_resolved` stayed around 0-2K while the bounded channel capacity is 4K; `writer_rows_written` closely followed `matched_refs` | Continue optimizing resolver CPU before SQLite writer |
+| S6 dominated CPU, not S5 | At ~90s Step B: `s6_time_s≈1068s`, `s5_time_s≈7.2s` | Import-resolution caches already solved S5 for this workload |
+| S6 exact dominated S6 | At ~90s Step B: `s6_exact=33,403` out of `s6_count=34,267` | Optimize exact global name matching before fuzzy |
+| Progress-total duplicate load is measurable but not dominant | `progress_total_load_ms` was 13-20s on a 6.79M-ref DB | Worth cleaning later, but far smaller than S6 CPU |
+| High-fanout names explain S6 cost | SQL fanout examples: `builder` 83,282 refs × 3,113 symbols = 259M candidate-pairs; `get` 95,906 × 1,457 = 140M; `request` 44,386 × 3,090 = 137M | Name-only resolution on common identifiers is the structural problem |
+
+High-fanout query used:
+
+```sql
+WITH sc AS (
+  SELECT lower(name) n, COUNT(*) symbols
+  FROM symbols
+  GROUP BY lower(name)
+),
+rc AS (
+  SELECT lower(name) n, COUNT(*) refs
+  FROM "references"
+  GROUP BY lower(name)
+)
+SELECT rc.n, refs, symbols, refs * symbols AS fanout
+FROM rc JOIN sc USING(n)
+ORDER BY fanout DESC
+LIMIT 30;
+```
+
+Top fanout examples:
+
+| Name | Refs | Symbols | Refs × Symbols |
+|------|------|---------|----------------|
+| `builder` | 83,282 | 3,113 | 259,256,866 |
+| `get` | 95,906 | 1,457 | 139,735,042 |
+| `request` | 44,386 | 3,090 | 137,152,740 |
+| `tostring` | 18,187 | 4,072 | 74,057,464 |
+| `name` | 22,044 | 3,221 | 71,003,724 |
+
+### Kept Change
+
+`S6 exact direct target selection` was kept and committed as:
+
+```
+79742181 perf(resolution): observe and streamline S6 exact matching
+```
+
+Mechanism:
+
+- Move exact global-name target selection into `GlobalSymbolIndex`.
+- Avoid cloning the whole candidate Vec from `find_by_name()` /
+  `find_by_name_proximity()`.
+- Avoid running `NameMatcher::best_match()` on candidates that are already
+  lower-name matches.
+- Preserve semantics: exact-case matches beat case-insensitive matches; within
+  the same confidence class, directory proximity breaks ties.
+
+Tests added/kept:
+
+- `exact_name_target_prefers_exact_case_before_proximity`
+- `exact_name_target_uses_proximity_within_same_confidence`
+- `resolved_callsites_consistent_across_resolution_paths`
+
+### Rejected Attempts
+
+Each attempt was implemented, compiled, run on the Elasticsearch DB, then
+reverted when the short-window evidence did not support keeping it.
+
+| Attempt | Expected | Short-window result | Decision |
+|---------|----------|---------------------|----------|
+| Exact-case side index | Avoid `to_lowercase()` allocation for exact-case hits | ~180s Step B: `scanned_refs=103,498` vs previous direct path `108,227`; no S6 improvement | Reverted |
+| High-fanout shared cache keyed by `(name,file)` | Avoid repeated scans for names with ≥64 candidates | ~80s Step B: `scanned_refs=43,305` vs direct path `50,102`; S6 time unchanged | Reverted |
+| Per-file S6 exact memo | Avoid shared mutex while caching repeated names inside one file | ~90s Step B: `scanned_refs=55,149` vs direct path `58,567`; no S6 time improvement | Reverted |
+| Tier-0 exact early return | Stop scanning once same-directory exact-case candidate is found | ~80s Step B: `scanned_refs=46,905` vs direct path `50,102`; no S6 time improvement | Reverted |
+
+### Lessons
+
+1. **Large-project S6 is a different workload than Baseline 3 S6.** In the
+   TypeScript monorepo, global fuzzy was already almost eliminated. In
+   Elasticsearch, S6 exact name-only matching is the dominant CPU consumer
+   because common identifiers have thousands of symbols.
+2. **Backpressure fields prevent false DB blame.** Without `queued_resolved`
+   and `writer_rows_written`, it is easy to blame SQLite when the real issue is
+   that the resolver is not feeding the writer fast enough.
+3. **Caches are not automatically good.** Shared caches introduced contention;
+   per-file caches lacked enough locality. Both were plausible from code review
+   and rejected by measurement.
+4. **Micro-optimizations are noisy at this scale.** Extra indexes, early exits,
+   and memoization changed local code shape but did not move S6 cumulative time.
+   The next meaningful optimization likely needs to reduce the candidate set for
+   ambiguous names rather than make the same scan slightly cheaper.
+5. **Do not extrapolate from short-window tests to final wall-clock claims.**
+   Short runs are useful to reject regressions and locate bottlenecks. Any kept
+   performance claim still needs a clean release-mode full run.
 
 ### 没做什么（5 项推迟）
 
