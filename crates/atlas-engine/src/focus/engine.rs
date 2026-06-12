@@ -231,19 +231,16 @@ impl ClosureEngine {
         // Build scoped graph edges from closure resolutions.
         // FocusGraphBuilder reads from reference_resolutions (is_visible=1)
         // and routes edges via EdgeConflictPolicy.
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let stats = self
-                .graph_builder
-                .build_for_closure(closure_id, last_generation)?;
-            tracing::debug!(
-                closure_id = %closure_id,
-                edges_built = stats.stats.edges_built,
-                edges_written = stats.stats.edges_written,
-                candidate_count = stats.candidate_count,
-                "FocusGraphBuilder completed"
-            );
-        }
+        let stats = self
+            .graph_builder
+            .build_for_closure(closure_id, last_generation)?;
+        tracing::debug!(
+            closure_id = %closure_id,
+            edges_built = stats.stats.edges_built,
+            edges_written = stats.stats.edges_written,
+            candidate_count = stats.candidate_count,
+            "FocusGraphBuilder completed"
+        );
 
         Ok(closure)
     }
