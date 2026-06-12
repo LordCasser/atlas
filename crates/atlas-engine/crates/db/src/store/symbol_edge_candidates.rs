@@ -56,6 +56,69 @@ impl Store {
         })
     }
 
+    /// Find visible candidate edges originating from a source symbol.
+    ///
+    /// Queries `symbol_edge_candidates` for rows where `source = ?1`
+    /// and `is_visible = 1`.  Used by CallGraph closure expansion to
+    /// discover Medium/Low confidence edges alongside canonical edges.
+    pub fn find_visible_candidate_edges_by_source(
+        &self,
+        source_id: &types::ids::SymbolId,
+    ) -> anyhow::Result<Vec<CandidateEdge>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT source, target, kind, coverage_tier, semantic_confidence,
+                    candidate_count, closure_id, generation
+             FROM symbol_edge_candidates
+             WHERE source = ?1 AND is_visible = 1",
+        )?;
+        let rows = stmt.query_map(params![source_id], |row| {
+            Ok(CandidateEdge {
+                source: row.get(0)?,
+                target: row.get(1)?,
+                kind: row.get(2)?,
+                coverage_tier: row.get(3)?,
+                semantic_confidence: row.get(4)?,
+                candidate_count: row.get(5)?,
+                closure_id: row.get(6)?,
+                generation: row.get(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find visible candidate edges targeting a symbol.
+    ///
+    /// Queries `symbol_edge_candidates` for rows where `target = ?1`
+    /// and `is_visible = 1`.  Used by CallGraph closure expansion in
+    /// `Direction::Incoming` to discover Medium/Low confidence caller
+    /// edges alongside canonical incoming edges.
+    pub fn find_visible_candidate_edges_by_target(
+        &self,
+        target_symbol_id: &types::ids::SymbolId,
+    ) -> anyhow::Result<Vec<CandidateEdge>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT source, target, kind, coverage_tier, semantic_confidence,
+                    candidate_count, closure_id, generation
+             FROM symbol_edge_candidates
+             WHERE target = ?1 AND is_visible = 1",
+        )?;
+        let rows = stmt.query_map(params![target_symbol_id], |row| {
+            Ok(CandidateEdge {
+                source: row.get(0)?,
+                target: row.get(1)?,
+                kind: row.get(2)?,
+                coverage_tier: row.get(3)?,
+                semantic_confidence: row.get(4)?,
+                candidate_count: row.get(5)?,
+                closure_id: row.get(6)?,
+                generation: row.get(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Make all staged candidate edges for a closure+generation visible.
     /// Returns the number of rows updated.
     pub fn make_candidate_edges_visible(

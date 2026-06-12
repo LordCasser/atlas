@@ -450,6 +450,33 @@ impl Store {
 
     // ── Counts ──────────────────────────────────────────────────────────────
 
+    /// Look up a single symbol's kind by its ID.
+    ///
+    /// Returns `None` if the symbol does not exist.  Used by TypeGraph
+    /// strategy to determine whether a resolved target is a type definition.
+    pub fn get_symbol_kind(&self, symbol_id: &SymbolId) -> anyhow::Result<Option<SymbolKind>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare("SELECT kind FROM symbols WHERE symbol_id = ?1")?;
+        let mut rows = stmt.query_map(params![symbol_id], |row| {
+            let kind_str: String = row.get(0)?;
+            SymbolKind::from_str(&kind_str).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("invalid SymbolKind in DB: {kind_str}"),
+                    )),
+                )
+            })
+        })?;
+        match rows.next() {
+            Some(Ok(kind)) => Ok(Some(kind)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
     /// Total number of symbols in the database.
     pub fn count_symbols(&self) -> anyhow::Result<usize> {
         let conn = self.lock_read();

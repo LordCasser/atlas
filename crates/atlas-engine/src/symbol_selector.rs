@@ -457,12 +457,11 @@ pub fn compute_ignored_mismatches(
 // Store-dependent resolution functions
 // =========================================================================
 
-/// Look up candidates by qualified name, with optional lazy structural fallback.
+/// Look up candidates by qualified name.
 ///
 /// Returns `Vec` of `(SymbolDef, resolved_file_path)` tuples.
 pub fn lookup_candidates(
     store: &Store,
-    lazy_orchestrator: Option<&crate::LazyOrchestrator>,
     qname: &str,
 ) -> Result<Vec<(SymbolDef, String)>, String> {
     let symbols = store
@@ -484,16 +483,6 @@ pub fn lookup_candidates(
             .collect());
     }
 
-    // Lazy structural fallback: extract simple name
-    if let Some(orchestrator) = lazy_orchestrator {
-        let simple = qname.rsplit(&['.', ':']).next().unwrap_or(qname);
-        if simple != qname {
-            // Trigger lazy structural for this name (timeout ~2s)
-            // For now, skip — the MCP layer handles lazy extraction separately
-            let _ = orchestrator;
-        }
-    }
-
     Ok(vec![])
 }
 
@@ -502,7 +491,7 @@ pub(crate) fn score_candidates(
     store: &Store,
     sel: &SymbolSelector,
 ) -> Result<Vec<CandidateScore>, String> {
-    let candidates = lookup_candidates(store, None, &sel.qualified_name)?;
+    let candidates = lookup_candidates(store, &sel.qualified_name)?;
 
     let mut scored: Vec<CandidateScore> = candidates
         .iter()
@@ -538,7 +527,7 @@ pub fn resolve_by_name(
     qname: &str,
     _policy: SymbolResolutionPolicy,
 ) -> Result<SymbolResolution, String> {
-    let candidates = lookup_candidates(store, None, qname)?;
+    let candidates = lookup_candidates(store, qname)?;
 
     match candidates.len() {
         0 => Ok(SymbolResolution::NotFound {
@@ -779,7 +768,6 @@ pub fn find_similar_names(store: &Store, qname: &str, limit: usize) -> Vec<Strin
 mod tests {
     use super::*;
     use crate::{FileId, FileInfo, Language, ParseStatus, Store, SymbolKind, TextRange};
-    use crate::LazyOrchestrator;
     use std::sync::Arc;
 
     /// Helper: build a minimal SymbolDef for testing.
@@ -1176,31 +1164,8 @@ mod tests {
         store.init_schema().unwrap();
 
         let result =
-            lookup_candidates(&store, None, "nonexistent::symbol").unwrap();
+            lookup_candidates(&store, "nonexistent::symbol").unwrap();
         assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_lookup_candidates_not_found_with_lazy_placeholder() {
-        let store = Store::open_in_memory().unwrap();
-        store.init_schema().unwrap();
-        let store_arc = Arc::new(store);
-        let orchestrator =
-            LazyOrchestrator::new(store_arc.clone(), None, vec![]);
-
-        // "missing::fn" has simple="fn" != qname, so the lazy fallback
-        // branch is entered. The placeholder `let _ = orchestrator`
-        // should not panic.
-        let result = lookup_candidates(
-            store_arc.as_ref(),
-            Some(&orchestrator),
-            "missing::fn",
-        )
-        .unwrap();
-        assert!(
-            result.is_empty(),
-            "placeholder fallback should not panic, returns empty"
-        );
     }
 
     #[test]
@@ -1224,7 +1189,7 @@ mod tests {
         sym.id = SymbolId::generate(&file_id, "rust", "Engine.run", "function", None);
         store.insert_symbols(&[sym]).unwrap();
 
-        let result = lookup_candidates(&store, None, "Engine.run").unwrap();
+        let result = lookup_candidates(&store, "Engine.run").unwrap();
         assert_eq!(result.len(), 1, "should find exactly one candidate");
         assert_eq!(result[0].0.qualified_name, "Engine.run");
         assert!(

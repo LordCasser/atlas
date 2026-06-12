@@ -7,7 +7,8 @@
 //!
 //! 1. **Plan**: ask strategies what files to add next
 //! 2. **Extract**: use [`LazyStructuralService`] to extract un-visited files
-//! 3. **Resolve**: (stub — full resolution in T6)
+//! 3. **Resolve**: call [`ReferenceResolver::resolve_for_closure`] to resolve
+//!    references within the closure scope
 //! 4. Repeat until fixed point, budget exhausted, or max iterations reached
 //!
 //! # Strategies
@@ -22,20 +23,24 @@
 //! Built closures are committed atomically via [`Store::commit_closure_generation`]
 //! and [`Store::make_coverage_visible`], which gates MCP query results.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use db::Store;
+use resolution::ReferenceResolver;
+use types::enums::{ReferenceKind, SymbolKind};
 use types::ids::FileId;
 use types::structs::KnownGap;
 
 use crate::closure_planner::{ClosurePlanner, IncludeRoot};
+use crate::focus::focus_graph_builder::FocusGraphBuilder;
 use crate::lazy_budget::LazyBudget;
 use crate::lazy_structural::{EnsureStructuralResult, LazyStructuralService};
 
 use super::types::{
-    ClosureStrategy, FocusClosure, FocusSeed, FocusWindow,
+    ClosureStrategy, Direction, FocusClosure, FocusSeed, FocusWindow,
 };
 
 /// Engine for building focus closures around a user's seed.
@@ -45,6 +50,8 @@ use super::types::{
 pub struct ClosureEngine {
     pub(crate) store: Arc<Store>,
     pub(crate) lazy_structural: LazyStructuralService,
+    pub(crate) resolver: RefCell<ReferenceResolver>,
+    pub(crate) graph_builder: FocusGraphBuilder,
     pub(crate) project_root: Option<std::path::PathBuf>,
     pub(crate) include_roots: Vec<IncludeRoot>,
 }
@@ -56,9 +63,13 @@ impl ClosureEngine {
         project_root: Option<std::path::PathBuf>,
         include_roots: Vec<IncludeRoot>,
     ) -> Self {
+        let resolver = RefCell::new(ReferenceResolver::new(store.clone()));
+        let graph_builder = FocusGraphBuilder::new(store.clone());
         ClosureEngine {
             store,
             lazy_structural,
+            resolver,
+            graph_builder,
             project_root,
             include_roots,
         }
@@ -69,9 +80,9 @@ impl ClosureEngine {
     /// 1. Initialize closure from seed
     /// 2. Plan additions via strategies
     /// 3. Extract new files using LazyStructuralService
-    /// 4. Resolve scoped to closure (stub — full resolution in T6)
+    /// 4. Resolve references scoped to closure (writes to reference_resolutions)
     /// 5. Repeat until termination
-    /// 6. Commit visibility atomically
+    /// 6. Commit visibility atomically (coverage + resolutions)
     pub fn build_closure(
         &self,
         window: &FocusWindow,
@@ -90,6 +101,14 @@ impl ClosureEngine {
             let result = self.extract_file(file_id)?;
             closure.mark_extracted(*file_id, result.precision_tier);
 
+            // Populate closure symbols from the extracted file so graph-based
+            // strategies (CallGraph, TypeGraph) can query edges by source symbol.
+            if let Ok(symbols) = self.store.find_symbols_by_file(file_id) {
+                for sym in &symbols {
+                    closure.symbols.insert(sym.id);
+                }
+            }
+
             // Record coverage for the seed file
             self.store.insert_closure_coverage(
                 closure_id,
@@ -101,12 +120,39 @@ impl ClosureEngine {
             )?;
         }
 
-        // Phase 2: bounded fixed-point expansion
+        // Phase 2: pre-compute TypeGraph expansion (single-pass, not iterative).
+        // TypeGraph handles its own depth internally — we do NOT re-invoke it
+        // inside the fixed-point loop below.
+        let mut pre_additions = Vec::new();
+        for strategy in &window.strategies {
+            if let ClosureStrategy::TypeGraph { max_depth } = strategy {
+                let type_files = self.expand_types(&closure, *max_depth)?;
+                for f in type_files {
+                    if !closure.visited.contains(&f) {
+                        pre_additions.push(f);
+                    }
+                }
+            }
+        }
+
+        // Phase 3: bounded fixed-point expansion
+        let mut last_generation: i64 = 0; // generation 0 = seed extraction
         loop {
             iteration += 1;
 
-            // Plan: ask strategies what to add next
-            let additions = self.plan_additions(&window.strategies, &closure)?;
+            // Plan: ask strategies what to add next.
+            // Merge pre-computed TypeGraph results into the first iteration.
+            let additions = if iteration == 1 && !pre_additions.is_empty() {
+                let mut plan = self.plan_additions(&window.strategies, &closure)?;
+                for f in &pre_additions {
+                    if !plan.contains(f) {
+                        plan.push(*f);
+                    }
+                }
+                plan
+            } else {
+                self.plan_additions(&window.strategies, &closure)?
+            };
 
             if additions.is_empty() {
                 break; // fixed point reached
@@ -135,9 +181,17 @@ impl ClosureEngine {
 
             // Extract new files using LazyStructuralService
             let generation = iteration as i64;
+            last_generation = generation;
             for file_id in &new_files {
                 let result = self.extract_file(file_id)?;
                 closure.mark_extracted(*file_id, result.precision_tier);
+
+                // Populate closure symbols from the extracted file
+                if let Ok(symbols) = self.store.find_symbols_by_file(file_id) {
+                    for sym in &symbols {
+                        closure.symbols.insert(sym.id);
+                    }
+                }
 
                 // Record coverage
                 self.store.insert_closure_coverage(
@@ -160,8 +214,36 @@ impl ClosureEngine {
             }
         }
 
+        // Resolve references scoped to this closure (writes to reference_resolutions)
+        let closure_files: Vec<FileId> = closure.files.iter().copied().collect();
+        if !closure_files.is_empty() {
+            self.resolver.borrow_mut().resolve_for_closure(
+                closure_id,
+                last_generation,
+                &closure_files,
+                None, // visibility_filter = None means all symbols visible (MVP)
+            )?;
+        }
+
         // Commit: atomic visibility switch
-        self.commit_closure(closure_id)?;
+        self.commit_closure(closure_id, last_generation)?;
+
+        // Build scoped graph edges from closure resolutions.
+        // FocusGraphBuilder reads from reference_resolutions (is_visible=1)
+        // and routes edges via EdgeConflictPolicy.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let stats = self
+                .graph_builder
+                .build_for_closure(closure_id, last_generation)?;
+            tracing::debug!(
+                closure_id = %closure_id,
+                edges_built = stats.stats.edges_built,
+                edges_written = stats.stats.edges_written,
+                candidate_count = stats.candidate_count,
+                "FocusGraphBuilder completed"
+            );
+        }
 
         Ok(closure)
     }
@@ -188,6 +270,144 @@ impl ClosureEngine {
                     .find_symbol_by_id(struct_sym)?
                     .context("Seed struct symbol not found")?;
                 Ok(vec![sym.file_id])
+            }
+        }
+    }
+
+    /// Expand closure through call-graph edges.
+    ///
+    /// For `Direction::Outgoing`: queries canonical edges (`symbol_edges`) and
+    /// visible candidate edges (`symbol_edge_candidates`) for each symbol in
+    /// the closure, resolves **target** symbols to their containing files, and
+    /// returns deduplicated file IDs not already in `closure.visited`.
+    ///
+    /// For `Direction::Incoming`: queries canonical and candidate edges where
+    /// the closure symbol is the **target** (i.e. "who calls us?"), resolves
+    /// the edge's **source** symbol to its file, and returns those files.
+    ///
+    /// For `Direction::Both`: combines Outgoing + Incoming results.
+    ///
+    /// `depth != 1` returns empty because multi-hop expansion is deferred to
+    /// fixed-point iteration.
+    fn expand_callgraph(
+        &self,
+        closure: &FocusClosure,
+        direction: Direction,
+        depth: u32,
+    ) -> Result<Vec<FileId>> {
+        // Only single-level expansion is supported; multi-hop is handled by
+        // the fixed-point loop (each iteration re-queries with newly extracted
+        // symbols).
+        if depth != 1 {
+            return Ok(Vec::new());
+        }
+
+        match direction {
+            Direction::Incoming => {
+                let mut source_files: Vec<FileId> = Vec::new();
+
+                for symbol_id in &closure.symbols {
+                    // Canonical incoming edges (symbol_edges table)
+                    if let Ok(edges) = self.store.find_edges_by_target(symbol_id) {
+                        for edge in &edges {
+                            if let Ok(Some(file_id)) =
+                                self.store.find_symbol_file(&edge.source)
+                            {
+                                if !closure.visited.contains(&file_id) {
+                                    source_files.push(file_id);
+                                }
+                            }
+                        }
+                    }
+
+                    // Candidate incoming edges (symbol_edge_candidates table)
+                    if let Ok(candidates) =
+                        self.store.find_visible_candidate_edges_by_target(symbol_id)
+                    {
+                        for cand in &candidates {
+                            let source_blob = &cand.source;
+                            if source_blob.len() == 32 {
+                                let mut arr = [0u8; 32];
+                                arr.copy_from_slice(source_blob);
+                                let sym_id =
+                                    types::ids::SymbolId::from_bytes(arr);
+                                if let Ok(Some(file_id)) =
+                                    self.store.find_symbol_file(&sym_id)
+                                {
+                                    if !closure.visited.contains(&file_id) {
+                                        source_files.push(file_id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                source_files.sort();
+                source_files.dedup();
+                Ok(source_files)
+            }
+            Direction::Outgoing => {
+                let mut target_files: Vec<FileId> = Vec::new();
+
+                for symbol_id in &closure.symbols {
+                    // Canonical edges (symbol_edges table)
+                    if let Ok(edges) = self.store.find_edges_by_source(symbol_id) {
+                        for edge in &edges {
+                            if let Ok(Some(file_id)) =
+                                self.store.find_symbol_file(&edge.target)
+                            {
+                                if !closure.visited.contains(&file_id) {
+                                    target_files.push(file_id);
+                                }
+                            }
+                        }
+                    }
+
+                    // Candidate edges (symbol_edge_candidates table)
+                    if let Ok(candidates) =
+                        self.store.find_visible_candidate_edges_by_source(symbol_id)
+                    {
+                        for cand in &candidates {
+                            if let Some(ref target_blob) = cand.target {
+                                if target_blob.len() == 32 {
+                                    let mut arr = [0u8; 32];
+                                    arr.copy_from_slice(target_blob);
+                                    let sym_id =
+                                        types::ids::SymbolId::from_bytes(arr);
+                                    if let Ok(Some(file_id)) =
+                                        self.store.find_symbol_file(&sym_id)
+                                    {
+                                        if !closure.visited.contains(&file_id) {
+                                            target_files.push(file_id);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                target_files.sort();
+                target_files.dedup();
+                Ok(target_files)
+            }
+            Direction::Both => {
+                // Combine Outgoing (callee files) and Incoming (caller files).
+                let mut outgoing = self.expand_callgraph(
+                    closure,
+                    Direction::Outgoing,
+                    depth,
+                )?;
+                let mut incoming = self.expand_callgraph(
+                    closure,
+                    Direction::Incoming,
+                    depth,
+                )?;
+                outgoing.append(&mut incoming);
+                outgoing.sort();
+                outgoing.dedup();
+                Ok(outgoing)
             }
         }
     }
@@ -243,15 +463,14 @@ impl ClosureEngine {
                         }
                     }
                 }
-                ClosureStrategy::CallGraph { .. } => {
-                    // Stub: expand through call graph edges.
-                    // Full implementation will use GraphEngine for callee/caller
-                    // expansion when graph-based strategy support is added.
+                ClosureStrategy::CallGraph { direction, depth } => {
+                    let callee_files =
+                        self.expand_callgraph(closure, *direction, *depth)?;
+                    additions.extend(callee_files);
                 }
                 ClosureStrategy::TypeGraph { .. } => {
-                    // Stub: expand through type references.
-                    // Full implementation will use type-definition resolution
-                    // when type-graph traversal is added.
+                    // TypeGraph is pre-computed before the fixed-point loop.
+                    // See Phase 2 in build_closure().
                 }
             }
         }
@@ -275,14 +494,16 @@ impl ClosureEngine {
         Ok(result)
     }
 
-    /// Commit closure: make all staged coverage entries visible.
-    fn commit_closure(&self, closure_id: &str) -> Result<i64> {
+    /// Commit closure: make all staged coverage and resolution entries visible.
+    fn commit_closure(&self, closure_id: &str, resolution_generation: i64) -> Result<i64> {
         // P1a fix: make ALL staged rows visible regardless of generation.
         // Seed files are written with generation=0, expansion files with
         // generation=iteration. We must flip all of them, not just the
         // committed generation number.
         let generation = self.store.commit_closure_generation(closure_id)?;
         self.store.make_all_staged_coverage_visible(closure_id)?;
+        // T6/D: make scoped reference resolutions visible too
+        self.store.make_resolutions_visible(closure_id, resolution_generation)?;
         Ok(generation)
     }
 
@@ -299,5 +520,88 @@ impl ClosureEngine {
         // An empty string is the project root, which the scope function
         // normalizes — for a specific directory we pass the directory path.
         self.store.list_file_ids_in_scope(dir, 100)
+    }
+
+    /// Expand closure through type dependencies.
+    ///
+    /// For each file in scope, find references whose resolved target is a
+    /// type definition (Struct/Class/Enum/Interface/Trait).  Add the file
+    /// containing that type definition to the closure.  When `max_depth > 1`,
+    /// repeat the process for the newly added files to discover transitive
+    /// type dependencies.
+    fn expand_types(
+        &self,
+        closure: &FocusClosure,
+        max_depth: u32,
+    ) -> Result<Vec<FileId>> {
+        let type_ref_kinds = [
+            ReferenceKind::Usage,
+            ReferenceKind::Inheritance,
+            ReferenceKind::Implementation,
+        ];
+        let type_symbol_kinds = [
+            SymbolKind::Struct,
+            SymbolKind::Class,
+            SymbolKind::Enum,
+            SymbolKind::Interface,
+            SymbolKind::Trait,
+        ];
+
+        let mut all_additions: Vec<FileId> = Vec::new();
+        // At each depth level we only search the files added in the previous
+        // level so that each depth step corresponds to one hop in the type
+        // dependency chain.
+        let mut current_scope: HashSet<FileId> = closure.files.iter().copied().collect();
+
+        for _depth in 0..max_depth {
+            let mut depth_additions = Vec::new();
+
+            for file_id in &current_scope {
+                let refs = self.store.find_references_by_file_and_kinds(
+                    file_id,
+                    &type_ref_kinds,
+                )?;
+
+                for r in &refs {
+                    let target_id = match &r.resolved {
+                        Some(resolved) => &resolved.symbol_id,
+                        None => continue,
+                    };
+
+                    // Check if the resolved target is a type definition
+                    let kind = match self.store.get_symbol_kind(target_id)? {
+                        Some(k) => k,
+                        None => continue,
+                    };
+
+                    if !type_symbol_kinds.contains(&kind) {
+                        continue;
+                    }
+
+                    // Get the file containing this type symbol
+                    let sym = match self.store.find_symbol_by_id(target_id)? {
+                        Some(s) => s,
+                        None => continue,
+                    };
+
+                    let target_file = sym.file_id;
+                    if !closure.visited.contains(&target_file)
+                        && !all_additions.contains(&target_file)
+                        && !depth_additions.contains(&target_file)
+                    {
+                        depth_additions.push(target_file);
+                    }
+                }
+            }
+
+            if depth_additions.is_empty() {
+                break; // no more transitive type deps to discover
+            }
+
+            all_additions.extend(depth_additions.iter().copied());
+            current_scope = depth_additions.into_iter().collect();
+        }
+
+        Ok(all_additions)
     }
 }

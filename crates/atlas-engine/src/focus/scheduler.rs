@@ -19,11 +19,12 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::SystemTime;
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, SystemTime};
 use std::time::UNIX_EPOCH;
 
 use db::Store;
-use std::sync::Arc;
 use types::ids::FileId;
 
 use super::engine::ClosureEngine;
@@ -108,6 +109,16 @@ impl FocusScheduler {
         self
     }
 
+    /// Set the closure engine on an existing scheduler (without consuming it).
+    pub fn set_engine(&mut self, engine: ClosureEngine) {
+        self.engine = Some(engine);
+    }
+
+    /// Set the running flag (controls background worker lifecycle).
+    pub fn set_running(&mut self, running: bool) {
+        self.running.store(running, Ordering::SeqCst);
+    }
+
     /// Enqueue a focus window for background building.
     pub fn enqueue(&mut self, window: FocusWindow, priority: FocusPriority) -> String {
         let job = FocusJob::new(window, priority);
@@ -119,32 +130,67 @@ impl FocusScheduler {
 
     /// Start background processing. Returns immediately after spawning worker thread.
     ///
-    /// In a full implementation, this spawns a background thread that:
-    /// 1. Waits for coordinator write access
-    /// 2. Pops highest priority job
-    /// 3. Builds closure via engine.build_closure()
-    /// 4. Marks job as Committed
-    /// 5. Loops
+    /// On first call:
+    /// 1. Processes all pending queues synchronously (Sync → UserFocus → Recent → Speculative)
+    /// 2. Spawns a background worker thread that periodically drains all priority levels
     ///
-    /// For now, sets the running flag and processes the sync queue synchronously.
-    /// Full background threading is deferred to post-MVP.
-    pub fn start_background(&mut self) -> anyhow::Result<()> {
-        self.running.store(true, Ordering::SeqCst);
-        // Process any sync jobs immediately (user is waiting).
-        if self.has_pending() {
-            self.process_sync()?;
+    /// The background thread polls cancellable queues, holding the lock only briefly
+    /// per job, so MCP tool calls (which also need the lock) are not blocked.
+    pub fn start_background(scheduler: Arc<Mutex<FocusScheduler>>) -> anyhow::Result<()> {
+        // Process all pending jobs synchronously first.
+        {
+            let mut s = scheduler.lock().unwrap();
+            // Only start once; if already running, do nothing.
+            if s.running.swap(true, Ordering::SeqCst) {
+                return Ok(());
+            }
+            s.process_all_queues()?;
         }
+
+        // Spawn background worker thread.
+        let sched = Arc::clone(&scheduler);
+        std::thread::Builder::new()
+            .name("atlas-focus-bg".into())
+            .spawn(move || {
+                Self::background_worker_loop(sched);
+            })?;
+
         Ok(())
+    }
+
+    /// Background worker loop: periodically drain all priority queues.
+    ///
+    /// Public so that [`FocusRuntime::ensure_started`] can spawn it directly
+    /// and own the [`JoinHandle`] for clean shutdown.
+    pub(crate) fn background_worker_loop(scheduler: Arc<Mutex<FocusScheduler>>) {
+        loop {
+            // Check cancellation flag before acquiring the lock.
+            // We peek at running without holding the lock to avoid
+            // contention during shutdown.
+            {
+                let mut s = scheduler.lock().unwrap();
+                if !s.running.load(Ordering::SeqCst) {
+                    break;
+                }
+                // Process all queues.
+                if let Err(e) = s.process_all_queues() {
+                    tracing::warn!("FocusScheduler background worker error: {e:#}");
+                }
+                // If all queues are empty, the worker goes idle.
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
     }
 
     /// Process all jobs in the sync queue synchronously.
     ///
-    /// Requires the engine to be set via [`with_engine`].
+    /// Requires the engine to be set via [`with_engine`] or [`set_engine`].
+    /// Returns 0 (no-op) silently if the engine is not yet initialized.
     pub fn process_sync(&mut self) -> anyhow::Result<usize> {
-        let engine = self
-            .engine
-            .as_ref()
-            .expect("ClosureEngine must be set before processing");
+        let engine = match self.engine.as_ref() {
+            Some(e) => e,
+            None => return Ok(0),
+        };
 
         let mut processed = 0;
         while let Some(mut job) = self.queues[0].pop_front() {
@@ -154,6 +200,79 @@ impl FocusScheduler {
             processed += 1;
         }
         Ok(processed)
+    }
+
+    /// Process all jobs across ALL priority levels.
+    ///
+    /// Drains queues in priority order: Sync → UserFocus → Recent → Speculative.
+    /// This is the main drain path used by the background worker thread.
+    ///
+    /// Returns 0 (no-op) silently if the engine is not yet initialized.
+    pub fn process_all_queues(&mut self) -> anyhow::Result<usize> {
+        let engine = match self.engine.as_ref() {
+            Some(e) => e,
+            None => return Ok(0),
+        };
+
+        let mut processed = 0;
+
+        // Drain Sync first (highest priority)
+        while let Some(mut job) = self.queues[0].pop_front() {
+            let closure_id = next_job_id();
+            job.closure_id = Some(closure_id.clone());
+            let _closure = engine.build_closure(&job.window, &closure_id)?;
+            processed += 1;
+        }
+
+        // Then UserFocus
+        while let Some(mut job) = self.queues[1].pop_front() {
+            let closure_id = next_job_id();
+            job.closure_id = Some(closure_id.clone());
+            let _closure = engine.build_closure(&job.window, &closure_id)?;
+            processed += 1;
+        }
+
+        // Then Recent
+        while let Some(mut job) = self.queues[2].pop_front() {
+            let closure_id = next_job_id();
+            job.closure_id = Some(closure_id.clone());
+            let _closure = engine.build_closure(&job.window, &closure_id)?;
+            processed += 1;
+        }
+
+        // Then Speculative (lowest priority)
+        while let Some(mut job) = self.queues[3].pop_front() {
+            let closure_id = next_job_id();
+            job.closure_id = Some(closure_id.clone());
+            let _closure = engine.build_closure(&job.window, &closure_id)?;
+            processed += 1;
+        }
+
+        Ok(processed)
+    }
+
+    /// Signal the background worker to stop.
+    ///
+    /// After this call the background thread will exit its next loop iteration.
+    /// Call [`shutdown`] to block until the thread exits.
+    pub fn stop_background(&self) {
+        self.running.store(false, Ordering::SeqCst);
+    }
+
+    /// Block until the background worker thread exits.
+    ///
+    /// Returns `true` if the thread was joined, `false` if no join handle was
+    /// available (caller is responsible for lifecycle).
+    ///
+    /// This is a convenience wrapper around [`stop_background`] + join.
+    /// The caller passes the join handle obtained when spawning the thread.
+    pub fn shutdown(scheduler: Arc<Mutex<FocusScheduler>>, handle: JoinHandle<()>) {
+        {
+            let s = scheduler.lock().unwrap();
+            s.stop_background();
+        }
+        // Best-effort join — don't unwrap to avoid panicking on drop.
+        let _ = handle.join();
     }
 
     /// Queue pre-warming for an investigation.

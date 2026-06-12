@@ -57,6 +57,27 @@ impl Store {
         Ok(rows)
     }
 
+    /// Get files that have been fingerprinted (content_hash IS NOT NULL),
+    /// ordered by path for hot-directory-first processing.
+    /// Returns (file_id, path) pairs up to `limit`, starting at `offset`.
+    pub fn get_fingerprinted_files(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> anyhow::Result<Vec<(Vec<u8>, String)>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT file_id, path FROM file_inventory WHERE content_hash IS NOT NULL ORDER BY path LIMIT ?1 OFFSET ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![limit as i64, offset as i64], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
     /// Get the file_inventory row count.
     pub fn file_inventory_count(&self) -> anyhow::Result<usize> {
         let conn = self.lock_read();
@@ -92,6 +113,35 @@ impl Store {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Get fingerprinted files that lack manifest extraction state.
+    ///
+    /// Returns (file_id, path) pairs for files with `content_hash IS NOT NULL`
+    /// that have NOT been recorded in `extraction_state` with layer='manifest'
+    /// and status='complete'.  Used by Tier 2 bootstrap.
+    pub fn get_fingerprinted_files_without_manifest(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> anyhow::Result<Vec<(Vec<u8>, String)>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT fi.file_id, fi.path FROM file_inventory fi
+             WHERE fi.content_hash IS NOT NULL
+               AND fi.file_id NOT IN (
+                 SELECT file_id FROM extraction_state
+                  WHERE layer = 'manifest' AND status = 'complete'
+               )
+             ORDER BY fi.path LIMIT ?1 OFFSET ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![limit as i64, offset as i64], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
     }
 
     /// Look up a file in inventory by FileId — returns just the path.

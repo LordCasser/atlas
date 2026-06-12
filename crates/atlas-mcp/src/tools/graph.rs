@@ -365,18 +365,20 @@ impl ToolRouter {
             );
         }
         // Lazy structural response — merge warnings from both outcomes
-        let mut lazy_warnings: Vec<String> = outcome_files.warnings;
-        lazy_warnings.extend(outcome_name.warnings);
+        let mut lazy_warnings: Vec<String> = outcome_files.warnings.clone();
+        lazy_warnings.extend(outcome_name.warnings.clone());
         let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
         let lazy_diag: Option<LazyDiagnostics> = outcome_files
             .lazy_outcome
             .as_ref()
             .map(LazyDiagnostics::from_structural);
 
-        lr.with_precision_tier(tier)
+        let lr = lr.with_precision_tier(tier)
             .with_lazy_warnings(lazy_warnings)
-            .with_lazy_diag(lazy_diag)
-            .build_with_args(resp, args, self)
+            .with_lazy_diag(lazy_diag);
+        let lr = outcome_files.apply_focus_to_lr(lr);
+        let lr = outcome_name.apply_focus_to_lr(lr);
+        lr.build_with_args(resp, args, self)
     }
 
     pub(crate) fn handle_callees(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -469,18 +471,20 @@ impl ToolRouter {
             );
         }
         // Lazy structural response — merge warnings from both outcomes
-        let mut lazy_warnings: Vec<String> = outcome_files.warnings;
-        lazy_warnings.extend(outcome_name.warnings);
+        let mut lazy_warnings: Vec<String> = outcome_files.warnings.clone();
+        lazy_warnings.extend(outcome_name.warnings.clone());
         let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
         let lazy_diag: Option<LazyDiagnostics> = outcome_files
             .lazy_outcome
             .as_ref()
             .map(LazyDiagnostics::from_structural);
 
-        lr.with_precision_tier(tier)
+        let lr = lr.with_precision_tier(tier)
             .with_lazy_warnings(lazy_warnings)
-            .with_lazy_diag(lazy_diag)
-            .build_with_args(resp, args, self)
+            .with_lazy_diag(lazy_diag);
+        let lr = outcome_files.apply_focus_to_lr(lr);
+        let lr = outcome_name.apply_focus_to_lr(lr);
+        lr.build_with_args(resp, args, self)
     }
 
     pub(crate) fn handle_callgraph(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -528,52 +532,35 @@ impl ToolRouter {
                 file_ids_set.insert(sym.file_id);
             }
         }
+        let outcome_files = self.ensure_structural_for_files(
+            file_ids_set.clone(),
+            vec![],
+            investigation.as_ref(),
+            Some(&query_id),
+        );
+        let outcome_name = self.ensure_structural_for_symbol_name(
+            qname,
+            vec![],
+            investigation.as_ref(),
+            Some(&query_id),
+        );
+
         let (lazy_warnings, tier, lazy_outcome) = match direction {
             "incoming" => {
-                let f = self.ensure_structural_for_files(
-                    file_ids_set.clone(),
-                    vec![],
-                    investigation.as_ref(),
-                    Some(&query_id),
-                );
-                let n = self.ensure_structural_for_symbol_name(
-                    qname,
-                    vec![],
-                    investigation.as_ref(),
-                    Some(&query_id),
-                );
-                let mut w = f.warnings;
-                w.extend(n.warnings);
-                let tier = std::cmp::min(f.precision_tier, n.precision_tier);
-                (w, tier, f.lazy_outcome)
+                let mut w = outcome_files.warnings.clone();
+                w.extend(outcome_name.warnings.clone());
+                let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
+                (w, tier, outcome_files.lazy_outcome.clone())
             }
             "outgoing" => {
-                let f = self.ensure_structural_for_files(
-                    file_ids_set,
-                    vec![],
-                    investigation.as_ref(),
-                    Some(&query_id),
-                );
-                (f.warnings, f.precision_tier, f.lazy_outcome)
+                (outcome_files.warnings.clone(), outcome_files.precision_tier, outcome_files.lazy_outcome.clone())
             }
             // "both" or default — need both directions
             _ => {
-                let f = self.ensure_structural_for_files(
-                    file_ids_set.clone(),
-                    vec![],
-                    investigation.as_ref(),
-                    Some(&query_id),
-                );
-                let n = self.ensure_structural_for_symbol_name(
-                    qname,
-                    vec![],
-                    investigation.as_ref(),
-                    Some(&query_id),
-                );
-                let mut w = f.warnings;
-                w.extend(n.warnings);
-                let tier = std::cmp::min(f.precision_tier, n.precision_tier);
-                (w, tier, f.lazy_outcome)
+                let mut w = outcome_files.warnings.clone();
+                w.extend(outcome_name.warnings.clone());
+                let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
+                (w, tier, outcome_files.lazy_outcome.clone())
             }
         };
 
@@ -723,10 +710,12 @@ impl ToolRouter {
         let lazy_diag: Option<LazyDiagnostics> =
             lazy_outcome.as_ref().map(LazyDiagnostics::from_structural);
 
-        lr.with_precision_tier(tier)
+        let lr = lr.with_precision_tier(tier)
             .with_lazy_warnings(lazy_warnings)
-            .with_lazy_diag(lazy_diag)
-            .build_with_args(resp, args, self)
+            .with_lazy_diag(lazy_diag);
+        let lr = outcome_files.apply_focus_to_lr(lr);
+        let lr = outcome_name.apply_focus_to_lr(lr);
+        lr.build_with_args(resp, args, self)
     }
 
     pub(crate) fn handle_path(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -820,7 +809,7 @@ impl ToolRouter {
             investigation.as_ref(),
             Some(&query_id),
         );
-        let lazy_warnings = outcome.warnings;
+        let lazy_warnings = outcome.warnings.clone();
         let stats = self.get_capability_stats();
         let lazy_diag = outcome
             .lazy_outcome
@@ -1115,12 +1104,13 @@ impl ToolRouter {
 
             resp["path_quality"] = insight;
 
-            lr.with_precision_tier(tier)
+            let lr = lr.with_precision_tier(tier)
                 .with_root_warnings(root_warnings)
                 .with_lazy_warnings(lazy_warnings)
                 .with_lazy_diag(lazy_diag)
-                .with_partial_result(tier != atlas_engine::structs::precision::PrecisionTier::Exact)
-                .build(resp, self)
+                .with_partial_result(tier != atlas_engine::structs::precision::PrecisionTier::Exact);
+            let lr = outcome.apply_focus_to_lr(lr);
+            lr.build(resp, self)
         } else {
             // No path found — diagnostic frontier.
             let total_pairs = from_ids.len() * to_ids.len();
@@ -1230,12 +1220,13 @@ impl ToolRouter {
                 resp["hint"] = json!("Use a SymbolSelector object (e.g. {\"qualified_name\": \"...\", \"file_path\": \"...\"}) to disambiguate. symbol_ref from search/symbol results can be reused directly.");
             }
 
-            lr.with_precision_tier(tier)
+            let lr = lr.with_precision_tier(tier)
                 .with_root_warnings(root_warnings)
                 .with_lazy_warnings(lazy_warnings)
                 .with_lazy_diag(lazy_diag)
-                .with_partial_result(tier != atlas_engine::structs::precision::PrecisionTier::Exact)
-                .build(resp, self)
+                .with_partial_result(tier != atlas_engine::structs::precision::PrecisionTier::Exact);
+            let lr = outcome.apply_focus_to_lr(lr);
+            lr.build(resp, self)
         }
     }
 
@@ -1452,8 +1443,8 @@ impl ToolRouter {
         source_repo.clear_cache();
 
         // Merge lazy warnings into dossier warnings
-        let mut lazy_warnings: Vec<String> = outcome_files.warnings;
-        lazy_warnings.extend(outcome_name.warnings);
+        let mut lazy_warnings: Vec<String> = outcome_files.warnings.clone();
+        lazy_warnings.extend(outcome_name.warnings.clone());
         dossier.warnings.extend(lazy_warnings);
 
         let lazy_diag: Option<LazyDiagnostics> = outcome_files
@@ -1472,10 +1463,12 @@ impl ToolRouter {
             });
         }
 
-        lr.with_precision_tier(tier)
+        let lr = lr.with_precision_tier(tier)
             .with_lazy_warnings(dossier.warnings)
-            .with_lazy_diag(lazy_diag)
-            .build_with_args(resp_value, args, self)
+            .with_lazy_diag(lazy_diag);
+        let lr = outcome_files.apply_focus_to_lr(lr);
+        let lr = outcome_name.apply_focus_to_lr(lr);
+        lr.build_with_args(resp_value, args, self)
     }
 
     pub(crate) fn handle_impact(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -1848,14 +1841,15 @@ impl ToolRouter {
             );
         }
 
-        let lazy_warnings = outcome.warnings;
+        let lazy_warnings = outcome.warnings.clone();
         let tier = outcome.precision_tier;
 
-        lr.with_precision_tier(tier)
+        let lr = lr.with_precision_tier(tier)
             .with_root_warnings(Vec::new())
             .with_lazy_warnings(lazy_warnings)
-            .with_lazy_diag(lazy_diag)
-            .build(resp, self)
+            .with_lazy_diag(lazy_diag);
+        let lr = outcome.apply_focus_to_lr(lr);
+        lr.build(resp, self)
     }
 }
 
@@ -2201,15 +2195,14 @@ mod tests {
         assert!(!is_error, "expected success, got error: {resp_str}");
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
-        // With empty store, ensure returns early -> no warnings
-        // Field may be absent (not printed) or present as empty array
+        // When neither full index nor FocusRuntime is available, the fallback
+        // path now produces a diagnostic warning about the missing index/runtime.
         let warnings = resp.get("warnings");
         if let Some(w) = warnings {
             assert!(w.is_array(), "warnings should be an array");
-            assert!(
-                w.as_array().unwrap().is_empty(),
-                "warnings should be empty for empty store"
-            );
+            // Warning expected: "No full index and FocusRuntime not initialized."
+            assert!(!w.as_array().unwrap().is_empty(),
+                "warnings should be non-empty when no index or FocusRuntime is configured");
         }
         // precision_tier must be present
         assert!(
@@ -2875,5 +2868,167 @@ mod tests {
             matches!(dispatch, crate::tools::CallsDispatch::Error(_)),
             "unknown direction should return Error"
         );
+    }
+
+    // ── Focus runtime wiring tests ────────────────────────────────────
+
+    #[test]
+    fn init_focus_sets_focus_runtime() {
+        let store = test_store();
+        let fid = FileId::generate("test.ts");
+        store
+            .upsert_file(&atlas_engine::FileInfo {
+                file_id: fid,
+                path: "test.ts".into(),
+                language: atlas_engine::Language::TypeScript,
+                content_hash: "hash1".into(),
+                status: atlas_engine::ParseStatus::Success,
+            })
+            .unwrap();
+        let mut router = test_router(store);
+        // Before init_focus, focus_runtime should be None
+        assert!(
+            router.focus_runtime.is_none(),
+            "focus_runtime should be None before init_focus"
+        );
+        router.init_focus();
+        assert!(
+            router.focus_runtime.is_some(),
+            "focus_runtime should be Some after init_focus"
+        );
+    }
+
+    #[test]
+    fn graph_response_without_focus_has_no_focus_fields() {
+        let store = test_store();
+        let fid = FileId::generate("test.ts");
+        store
+            .upsert_file(&atlas_engine::FileInfo {
+                file_id: fid,
+                path: "test.ts".into(),
+                language: atlas_engine::Language::TypeScript,
+                content_hash: "hash1".into(),
+                status: atlas_engine::ParseStatus::Success,
+            })
+            .unwrap();
+        let sym = atlas_engine::SymbolDef {
+            id: atlas_engine::SymbolId::generate(
+                &fid,
+                "typescript",
+                "focus_test_fn",
+                "function",
+                None,
+            ),
+            kind: atlas_engine::SymbolKind::Function,
+            name: "focus_test_fn".into(),
+            qualified_name: "focus_test_fn".into(),
+            symbol_path: vec!["focus_test_fn".into()],
+            file_id: fid,
+            language: atlas_engine::Language::TypeScript,
+            range: atlas_engine::TextRange::default(),
+            name_range: atlas_engine::TextRange::default(),
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".into(),
+        };
+        store.insert_symbols(&[sym]).unwrap();
+
+        let mut router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+        // focus_runtime is NOT initialized — focus fields should NOT appear
+        let (resp_str, is_error) =
+            router.handle_impact(&json!({"symbol": "focus_test_fn"}));
+        assert!(!is_error, "expected success, got: {resp_str}");
+        let resp: serde_json::Value =
+            serde_json::from_str(&resp_str).expect("response should be valid JSON");
+
+        // Backward compat: focus-specific fields must NOT appear when focus is not active
+        assert!(
+            resp.get("coverage_counts").is_none(),
+            "coverage_counts should NOT appear when focus is not initialized"
+        );
+        assert!(
+            resp.get("known_gaps").is_none(),
+            "known_gaps should NOT appear when focus is not initialized"
+        );
+        assert!(
+            resp.get("pending_closures").is_none(),
+            "pending_closures should NOT appear when focus is not initialized"
+        );
+        // precision_tier (legacy) should still be present
+        assert!(
+            resp.get("precision_tier").is_some(),
+            "legacy precision_tier should still be present"
+        );
+    }
+
+    #[test]
+    fn apply_focus_to_lr_is_noop_with_no_focus_data() {
+        use crate::tools::StructuralEnsureOutcome;
+        use crate::tools::lazy_response::LazyResponse;
+        use atlas_engine::structs::precision::PrecisionTier;
+
+        let outcome = StructuralEnsureOutcome {
+            warnings: vec![],
+            built_file_ids: vec![],
+            precision_tier: PrecisionTier::Exact,
+            lazy_outcome: None,
+            focus_precision: None,
+            focus_coverage_counts: None,
+            focus_gaps: None,
+            focus_pending: None,
+        };
+
+        let args = json!({"symbol": "test"});
+        let lr = LazyResponse::new("test", &args)
+            .with_precision_tier(PrecisionTier::Exact)
+            .with_is_error(false);
+        let lr = outcome.apply_focus_to_lr(lr);
+
+        // Build with a mock store to verify no crash
+        let mut store = MockStore::new();
+        let body = json!({"ok": true});
+        let (json_str, is_err) = lr.build(body, &mut store);
+        assert!(!is_err, "should succeed with no focus data");
+        // No focus fields should be injected
+        assert!(
+            !json_str.contains("coverage_counts"),
+            "coverage_counts should not be present when focus data is None"
+        );
+        assert!(
+            !json_str.contains("known_gaps"),
+            "known_gaps should not be present when focus data is None"
+        );
+        assert!(
+            !json_str.contains("pending_closures"),
+            "pending_closures should not be present when focus data is None"
+        );
+    }
+
+    // Mock SnapshotStore for isolated LazyResponse tests
+    struct MockStore {
+        snapshots: Vec<crate::tools::query_snapshot::QuerySnapshot>,
+    }
+    impl MockStore {
+        fn new() -> Self {
+            Self {
+                snapshots: Vec::new(),
+            }
+        }
+    }
+    impl crate::tools::lazy_response::SnapshotStore for MockStore {
+        fn store_query_snapshot(
+            &mut self,
+            snapshot: crate::tools::query_snapshot::QuerySnapshot,
+        ) {
+            self.snapshots.push(snapshot);
+        }
     }
 }

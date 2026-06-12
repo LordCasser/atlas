@@ -46,8 +46,7 @@ pub mod investigation;
 /// Unified job context: shared cancellation and progress for long-running operations.
 pub mod job_context;
 mod lazy_budget;
-mod lazy_coordinator;
-mod lazy_orchestrator;
+mod lazy_outcome;
 mod lazy_structural;
 mod linux_augment;
 /// Precision tier computation for lazy extraction transparency.
@@ -106,8 +105,8 @@ pub use scoped_search::{
     ScopedSearchRequest, ScopedSearchResponse, ScopedSearchService, SearchAnalysis, SearchCoverage,
 };
 
-/// Unified lazy extraction orchestration: policy presets, outcomes, orchestrator.
-pub use lazy_orchestrator::{LazyOrchestrator, LazyOutcome, LazyPolicy};
+/// Unified lazy extraction outcome: consumed by MCP response builders.
+pub use lazy_outcome::LazyOutcome;
 
 /// Lazy structural service: on-demand full structural extraction.
 pub use lazy_structural::LazyStructuralService;
@@ -122,6 +121,10 @@ pub use investigation::{Investigation, InvestigationFocus};
 pub use focus::types::{ClosureStrategy, FocusClosure, FocusSeed, FocusWindow, WindowBudget};
 /// Focus-driven incremental analysis: closure engine.
 pub use focus::engine::ClosureEngine;
+/// Focus-driven incremental analysis: query intent (MCP tool request).
+pub use focus::query::QueryIntent;
+/// Focus-driven incremental analysis: runtime entry point.
+pub use focus::runtime::{FocusResult, FocusRuntime, IndexMode};
 /// Focus-driven incremental analysis: priority scheduler.
 pub use focus::scheduler::{FocusPriority, FocusScheduler};
 /// Focus-driven incremental analysis: visibility filter registry.
@@ -148,9 +151,6 @@ pub use types::*;
 
 /// Closure planner internals: planner, dependency closure, prioritized worksets.
 pub use closure_planner::{ClosurePlanner, DependencyClosure, PrioritizedWorkset};
-
-/// Lazy coordinator: orchestrates lazy extraction with job tracking and in-flight dedup.
-pub use lazy_coordinator::LazyCoordinator;
 
 /// Index precision internals: mode names and downgrade detection helpers.
 pub use index_precision::{

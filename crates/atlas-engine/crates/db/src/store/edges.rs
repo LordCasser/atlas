@@ -29,6 +29,36 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Find references in a file filtered by kind.
+    ///
+    /// Used by TypeGraph strategy to discover type-related references
+    /// (Usage, Inheritance, Implementation) from closure files.
+    pub fn find_references_by_file_and_kinds(
+        &self,
+        file_id: &FileId,
+        kinds: &[ReferenceKind],
+    ) -> anyhow::Result<Vec<ReferenceUse>> {
+        if kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.lock_read();
+        let placeholders: Vec<String> = kinds.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "{REFERENCE_SELECT_NO_WHERE} WHERE file_id = ?1 AND kind IN ({})",
+            placeholders.join(",")
+        );
+        let kind_strs: Vec<String> = kinds.iter().map(|k| k.as_str().to_string()).collect();
+        let mut params: Vec<&dyn rusqlite::types::ToSql> =
+            Vec::with_capacity(1 + kinds.len());
+        params.push(file_id as &dyn rusqlite::types::ToSql);
+        for k in &kind_strs {
+            params.push(k as &dyn rusqlite::types::ToSql);
+        }
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params.as_slice(), row_to_reference)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Find unresolved references (no resolved target).
     pub fn find_unresolved_references(&self) -> anyhow::Result<Vec<ReferenceUse>> {
         let conn = self.lock_read();

@@ -739,10 +739,279 @@ fn test_build_closure_callgraph_stub() {
     );
 }
 
+// ── TypeGraph tests ─────────────────────────────────────────────────────────
+
+/// Helper: create a `ReferenceUse` with a resolved target pointing to a
+/// type symbol in another file.
+fn make_type_reference(
+    file_id: FileId,
+    source_symbol: Option<types::ids::SymbolId>,
+    ref_kind: types::ReferenceKind,
+    ref_name: &str,
+    target_symbol_id: types::ids::SymbolId,
+) -> types::structs::ReferenceUse {
+    let range = types::structs::TextRange {
+        start_byte: 0,
+        end_byte: 10,
+        start_line: 1,
+        start_column: 1,
+        end_line: 1,
+        end_column: 11,
+    };
+    let ref_id = types::ids::ReferenceId::generate(
+        &file_id,
+        source_symbol.as_ref(),
+        range.start_byte,
+        range.end_byte,
+        ref_name,
+        ref_kind,
+    );
+    types::structs::ReferenceUse {
+        id: ref_id,
+        file_id,
+        source_symbol,
+        scope_id: None,
+        kind: ref_kind,
+        text: ref_name.to_string(),
+        name: ref_name.to_string(),
+        receiver: None,
+        arity: None,
+        range,
+        binding_id: None,
+        resolved: Some(types::structs::ResolvedTarget {
+            symbol_id: target_symbol_id,
+            confidence: types::Confidence::certain(),
+            strategy: types::ResolutionStrategy::ExactMatch,
+            provenance: types::Provenance::TreeSitter,
+        }),
+    }
+}
+
+/// Helper: insert a function symbol into a file.
+fn insert_function_symbol(store: &Store, file_id: FileId, name: &str) -> types::ids::SymbolId {
+    let sym_id = types::ids::SymbolId::generate(&file_id, "c", name, "function", None);
+    let sym = types::structs::SymbolDef {
+        id: sym_id,
+        kind: types::SymbolKind::Function,
+        name: name.to_string(),
+        qualified_name: name.to_string(),
+        symbol_path: vec![name.to_string()],
+        file_id,
+        language: Language::C,
+        range: types::structs::TextRange::default(),
+        name_range: types::structs::TextRange::default(),
+        signature: None,
+        visibility: None,
+        exported: false,
+        static_: false,
+        async_: false,
+        container: None,
+        scope_id: None,
+        package_name: None,
+        namespace_path: vec![],
+        layer: "structural".to_string(),
+    };
+    store.insert_symbols(&[sym]).unwrap();
+    sym_id
+}
+
+/// Helper: insert a struct (type) symbol into a file.
+fn insert_struct_symbol(store: &Store, file_id: FileId, name: &str) -> types::ids::SymbolId {
+    let sym_id = types::ids::SymbolId::generate(&file_id, "c", name, "struct", None);
+    let sym = types::structs::SymbolDef {
+        id: sym_id,
+        kind: types::SymbolKind::Struct,
+        name: name.to_string(),
+        qualified_name: name.to_string(),
+        symbol_path: vec![name.to_string()],
+        file_id,
+        language: Language::C,
+        range: types::structs::TextRange::default(),
+        name_range: types::structs::TextRange::default(),
+        signature: None,
+        visibility: None,
+        exported: false,
+        static_: false,
+        async_: false,
+        container: None,
+        scope_id: None,
+        package_name: None,
+        namespace_path: vec![],
+        layer: "structural".to_string(),
+    };
+    store.insert_symbols(&[sym]).unwrap();
+    sym_id
+}
+
+/// Test A: File A uses struct from file B → TypeGraph adds file B.
 #[test]
-fn test_build_closure_typegraph_stub() {
+fn test_typegraph_adds_direct_type_dependency() {
+    let store = test_store();
+    let file_a = insert_file_structural_complete(&store, "src/main.c");
+    let file_b = insert_file_structural_complete(&store, "src/types.h");
+
+    // Function in file A
+    let func_id = insert_function_symbol(&store, file_a, "process");
+    // Struct in file B
+    let struct_id = insert_struct_symbol(&store, file_b, "MyStruct");
+
+    // Usage reference in file A → MyStruct in file B
+    let ref_use = make_type_reference(
+        file_a,
+        Some(func_id),
+        types::ReferenceKind::Usage,
+        "MyStruct",
+        struct_id,
+    );
+    store.insert_references(&[ref_use]).unwrap();
+
+    let engine = test_engine(store);
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: file_a,
+            language: Language::C,
+        },
+        strategies: vec![ClosureStrategy::TypeGraph { max_depth: 1 }],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure = engine
+        .build_closure(&window, "test-typegraph-direct")
+        .expect("build_closure should succeed");
+
+    assert!(
+        closure.files.contains(&file_b),
+        "TypeGraph must add file B (contains the struct referenced by file A)"
+    );
+    assert!(
+        closure.files.contains(&file_a),
+        "seed file must be in closure"
+    );
+}
+
+/// Test B: max_depth=1 only adds direct type dependencies, not transitive.
+#[test]
+fn test_typegraph_max_depth_1_direct_only() {
+    let store = test_store();
+    let file_a = insert_file_structural_complete(&store, "src/main.c");
+    let file_b = insert_file_structural_complete(&store, "src/types.h");
+    let file_c = insert_file_structural_complete(&store, "src/nested.h");
+
+    // File A has a function; file B has StructA; file C has NestedStruct
+    let func_id = insert_function_symbol(&store, file_a, "process");
+    let struct_a_id = insert_struct_symbol(&store, file_b, "StructA");
+    let nested_id = insert_struct_symbol(&store, file_c, "NestedStruct");
+
+    // Reference in file A → StructA in file B
+    let ref_a_to_b = make_type_reference(
+        file_a,
+        Some(func_id),
+        types::ReferenceKind::Usage,
+        "StructA",
+        struct_a_id,
+    );
+    // Reference in file B → NestedStruct in file C (would be depth 2)
+    let ref_b_to_c = make_type_reference(
+        file_b,
+        Some(struct_a_id),
+        types::ReferenceKind::Usage,
+        "NestedStruct",
+        nested_id,
+    );
+    store.insert_references(&[ref_a_to_b, ref_b_to_c]).unwrap();
+
+    let engine = test_engine(store);
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: file_a,
+            language: Language::C,
+        },
+        strategies: vec![ClosureStrategy::TypeGraph { max_depth: 1 }],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure = engine
+        .build_closure(&window, "test-typegraph-depth1")
+        .expect("build_closure should succeed");
+
+    assert!(
+        closure.files.contains(&file_b),
+        "depth=1 must add direct type dependency (file B)"
+    );
+    assert!(
+        !closure.files.contains(&file_c),
+        "depth=1 must NOT add transitive type dependency (file C)"
+    );
+}
+
+/// Test C: max_depth=2 follows transitive type dependencies.
+#[test]
+fn test_typegraph_max_depth_2_transitive() {
+    let store = test_store();
+    let file_a = insert_file_structural_complete(&store, "src/main.c");
+    let file_b = insert_file_structural_complete(&store, "src/types.h");
+    let file_c = insert_file_structural_complete(&store, "src/nested.h");
+
+    let func_id = insert_function_symbol(&store, file_a, "process");
+    let struct_a_id = insert_struct_symbol(&store, file_b, "StructA");
+    let nested_id = insert_struct_symbol(&store, file_c, "NestedStruct");
+
+    // A → B (direct), B → C (transitive)
+    let ref_a_to_b = make_type_reference(
+        file_a,
+        Some(func_id),
+        types::ReferenceKind::Usage,
+        "StructA",
+        struct_a_id,
+    );
+    let ref_b_to_c = make_type_reference(
+        file_b,
+        Some(struct_a_id),
+        types::ReferenceKind::Usage,
+        "NestedStruct",
+        nested_id,
+    );
+    store.insert_references(&[ref_a_to_b, ref_b_to_c]).unwrap();
+
+    let engine = test_engine(store);
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: file_a,
+            language: Language::C,
+        },
+        strategies: vec![ClosureStrategy::TypeGraph { max_depth: 2 }],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure = engine
+        .build_closure(&window, "test-typegraph-depth2")
+        .expect("build_closure should succeed");
+
+    assert!(closure.files.contains(&file_b));
+    assert!(
+        closure.files.contains(&file_c),
+        "depth=2 must follow transitive type dependency to file C"
+    );
+}
+
+/// Test D: Closure with no type references returns empty additions.
+#[test]
+fn test_typegraph_empty_closure() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "main.c");
+
+    // Insert a function symbol but NO references at all
+    let _func_id = insert_function_symbol(&store, file_id, "process");
+
     let engine = test_engine(store);
 
     let window = FocusWindow {
@@ -757,17 +1026,1187 @@ fn test_build_closure_typegraph_stub() {
     };
 
     let closure = engine
-        .build_closure(&window, "test-typegraph-stub")
-        .expect("build_closure with TypeGraph stub should succeed");
+        .build_closure(&window, "test-typegraph-empty")
+        .expect("build_closure should succeed");
 
-    assert!(
-        closure.files.contains(&file_id),
-        "seed file must be in closure even with stub strategy"
-    );
-    // TypeGraph is a stub — returns no additions
+    // Only the seed file — no type references means no additions
     assert_eq!(
         closure.files.len(),
         1,
-        "closure must contain only the seed file (TypeGraph stub returns empty)"
+        "closure must contain only the seed file when no type references exist"
+    );
+    assert!(closure.files.contains(&file_id));
+}
+
+/// Test E: Same type file found via multiple references is added only once.
+#[test]
+fn test_typegraph_dedup_same_type_multiple_refs() {
+    let store = test_store();
+    let file_a = insert_file_structural_complete(&store, "src/main.c");
+    let file_b = insert_file_structural_complete(&store, "src/types.h");
+
+    let func_id = insert_function_symbol(&store, file_a, "process");
+    let struct_id = insert_struct_symbol(&store, file_b, "MyStruct");
+
+    // Two references in file A both pointing to the same struct in file B
+    let ref1 = make_type_reference(
+        file_a,
+        Some(func_id),
+        types::ReferenceKind::Usage,
+        "MyStruct",
+        struct_id,
+    );
+    // Use a different byte range for the second reference to get a distinct ID
+    let mut ref2 = make_type_reference(
+        file_a,
+        Some(func_id),
+        types::ReferenceKind::Inheritance,
+        "MyStruct",
+        struct_id,
+    );
+    // Adjust the name range to create a different reference ID
+    ref2.range.start_byte = 20;
+    ref2.range.end_byte = 30;
+    ref2.id = types::ids::ReferenceId::generate(
+        &file_a,
+        Some(&func_id),
+        20,
+        30,
+        "MyStruct",
+        types::ReferenceKind::Inheritance,
+    );
+
+    store.insert_references(&[ref1, ref2]).unwrap();
+
+    let engine = test_engine(store);
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: file_a,
+            language: Language::C,
+        },
+        strategies: vec![ClosureStrategy::TypeGraph { max_depth: 1 }],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure = engine
+        .build_closure(&window, "test-typegraph-dedup")
+        .expect("build_closure should succeed");
+
+    assert!(
+        closure.files.contains(&file_b),
+        "file B must be in closure"
+    );
+    // file B should appear exactly once: seed (file_a) + type dep (file_b) = 2
+    assert_eq!(
+        closure.files.len(),
+        2,
+        "dedup: two references to same type must not double-add file B"
+    );
+}
+
+// ── CallGraph tests ─────────────────────────────────────────────────────────
+
+/// Test A: Two files where main.c calls helper.c — after building a closure
+/// with CallGraph (Outgoing, depth=1), the helper file is found via the edge.
+#[test]
+fn test_callgraph_expansion_finds_callee_file() {
+    let store = test_store();
+    let main_id = insert_file_structural_complete(&store, "main.c");
+    let helper_id = insert_file_structural_complete(&store, "helper.c");
+
+    // Create function symbols in both files
+    let main_sym = insert_function_symbol(&store, main_id, "main");
+    let helper_sym = insert_function_symbol(&store, helper_id, "helper");
+
+    // Create a "calls" edge: main → helper
+    let edge_id = types::ids::EdgeId::generate(&main_sym, &helper_sym, "calls", None, "tree_sitter");
+    let edge = types::RawEdge {
+        id: edge_id,
+        source: main_sym,
+        target: helper_sym,
+        kind: types::EdgeKind::Calls,
+        confidence: types::Confidence::certain(),
+        provenance: types::Provenance::TreeSitter,
+        ref_id: None,
+        location: None,
+        metadata: None,
+        resolved_by: None,
+    };
+    store.insert_edges(&[edge]).unwrap();
+
+    let engine = test_engine(store);
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: main_id,
+            language: Language::C,
+        },
+        strategies: vec![ClosureStrategy::CallGraph {
+            direction: super::types::Direction::Outgoing,
+            depth: 1,
+        }],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure = engine
+        .build_closure(&window, "test-callgraph-finds-callee")
+        .expect("build_closure should succeed");
+
+    assert!(
+        closure.files.contains(&main_id),
+        "seed file must be in closure"
+    );
+    assert!(
+        closure.files.contains(&helper_id),
+        "helper file must be found via outgoing call graph edge"
+    );
+}
+
+/// Test B: Depth=1 only adds direct callees; depth=2 is beyond budget
+/// (multi-hop is deferred to the fixed-point loop, so it returns empty).
+#[test]
+fn test_callgraph_depth_control() {
+    let store = test_store();
+    let main_id = insert_file_structural_complete(&store, "main.c");
+    let helper_id = insert_file_structural_complete(&store, "helper.c");
+
+    let main_sym = insert_function_symbol(&store, main_id, "main");
+    let helper_sym = insert_function_symbol(&store, helper_id, "helper");
+
+    let edge_id =
+        types::ids::EdgeId::generate(&main_sym, &helper_sym, "calls", None, "tree_sitter");
+    let edge = types::RawEdge {
+        id: edge_id,
+        source: main_sym,
+        target: helper_sym,
+        kind: types::EdgeKind::Calls,
+        confidence: types::Confidence::certain(),
+        provenance: types::Provenance::TreeSitter,
+        ref_id: None,
+        location: None,
+        metadata: None,
+        resolved_by: None,
+    };
+    store.insert_edges(&[edge]).unwrap();
+
+    // depth=1: helper file should be added
+    {
+        let engine = test_engine(store.clone());
+        let window = FocusWindow {
+            seed: FocusSeed::File {
+                file_id: main_id,
+                language: Language::C,
+            },
+            strategies: vec![ClosureStrategy::CallGraph {
+                direction: super::types::Direction::Outgoing,
+                depth: 1,
+            }],
+            budget: WindowBudget::default(),
+            language: Language::C,
+            max_iterations: 3,
+        };
+        let closure = engine
+            .build_closure(&window, "test-cg-depth-1")
+            .expect("depth=1 build should succeed");
+        assert!(
+            closure.files.contains(&helper_id),
+            "depth=1 must add direct callee file"
+        );
+    }
+
+    // depth=2: beyond single-hop — returns empty, helper file NOT added
+    {
+        let engine = test_engine(store);
+        let window = FocusWindow {
+            seed: FocusSeed::File {
+                file_id: main_id,
+                language: Language::C,
+            },
+            strategies: vec![ClosureStrategy::CallGraph {
+                direction: super::types::Direction::Outgoing,
+                depth: 2,
+            }],
+            budget: WindowBudget::default(),
+            language: Language::C,
+            max_iterations: 3,
+        };
+        let closure = engine
+            .build_closure(&window, "test-cg-depth-2")
+            .expect("depth=2 build should succeed");
+        assert!(
+            !closure.files.contains(&helper_id),
+            "depth=2 must NOT add callee file (beyond single-hop budget)"
+        );
+        assert_eq!(
+            closure.files.len(),
+            1,
+            "depth=2 closure must contain only the seed file"
+        );
+    }
+}
+
+/// Test C: Dedup — same callee file reached via multiple caller symbols
+/// must appear only once in the returned additions.
+#[test]
+fn test_callgraph_dedup_same_callee_file() {
+    let store = test_store();
+    let main_id = insert_file_structural_complete(&store, "main.c");
+    let helper_id = insert_file_structural_complete(&store, "helper.c");
+
+    // Two caller symbols in main.c, both calling the same helper
+    let caller_a = insert_function_symbol(&store, main_id, "caller_a");
+    let caller_b = insert_function_symbol(&store, main_id, "caller_b");
+    let helper_sym = insert_function_symbol(&store, helper_id, "helper");
+
+    // Edge: caller_a → helper
+    let edge_a =
+        types::ids::EdgeId::generate(&caller_a, &helper_sym, "calls", None, "tree_sitter");
+    let edge_b =
+        types::ids::EdgeId::generate(&caller_b, &helper_sym, "calls", None, "tree_sitter");
+
+    store
+        .insert_edges(&[
+            types::RawEdge {
+                id: edge_a,
+                source: caller_a,
+                target: helper_sym,
+                kind: types::EdgeKind::Calls,
+                confidence: types::Confidence::certain(),
+                provenance: types::Provenance::TreeSitter,
+                ref_id: None,
+                location: None,
+                metadata: None,
+                resolved_by: None,
+            },
+            types::RawEdge {
+                id: edge_b,
+                source: caller_b,
+                target: helper_sym,
+                kind: types::EdgeKind::Calls,
+                confidence: types::Confidence::certain(),
+                provenance: types::Provenance::TreeSitter,
+                ref_id: None,
+                location: None,
+                metadata: None,
+                resolved_by: None,
+            },
+        ])
+        .unwrap();
+
+    let engine = test_engine(store);
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: main_id,
+            language: Language::C,
+        },
+        strategies: vec![ClosureStrategy::CallGraph {
+            direction: super::types::Direction::Outgoing,
+            depth: 1,
+        }],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure = engine
+        .build_closure(&window, "test-callgraph-dedup")
+        .expect("build_closure should succeed");
+
+    assert!(
+        closure.files.contains(&main_id),
+        "seed file must be in closure"
+    );
+    assert!(
+        closure.files.contains(&helper_id),
+        "helper file must be in closure"
+    );
+    // seed (1) + helper (1) = 2 files total; helper must NOT appear twice
+    assert_eq!(
+        closure.files.len(),
+        2,
+        "dedup: helper file must appear exactly once (seed + helper = 2)"
+    );
+}
+
+/// Test D: Empty closure with no symbols → CallGraph returns empty.
+#[test]
+fn test_callgraph_empty_closure_no_symbols() {
+    let store = test_store();
+    let main_id = insert_file_structural_complete(&store, "main.c");
+    // Do NOT insert any symbols — the file has structural extraction
+    // but no symbols in the DB.
+
+    let engine = test_engine(store);
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: main_id,
+            language: Language::C,
+        },
+        strategies: vec![ClosureStrategy::CallGraph {
+            direction: super::types::Direction::Outgoing,
+            depth: 1,
+        }],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure = engine
+        .build_closure(&window, "test-callgraph-empty-symbols")
+        .expect("build_closure should succeed");
+
+    assert!(
+        closure.files.contains(&main_id),
+        "seed file must be in closure"
+    );
+    assert_eq!(
+        closure.files.len(),
+        1,
+        "closure with no symbols must contain only the seed file (CallGraph returns empty)"
+    );
+}
+
+/// Test E: Direction::Incoming finds callers (the files containing symbols
+/// that call into the seed file). Edge: helper→main, seed=main → helper found.
+#[test]
+fn test_callgraph_incoming_finds_caller_file() {
+    let store = test_store();
+    let main_id = insert_file_structural_complete(&store, "main.c");
+    let helper_id = insert_file_structural_complete(&store, "helper.c");
+
+    let main_sym = insert_function_symbol(&store, main_id, "main");
+    let helper_sym = insert_function_symbol(&store, helper_id, "helper");
+
+    // Edge: helper → main (so main is the callee, helper is the caller)
+    // Incoming traversal would go "main ← helper"
+    let edge_id =
+        types::ids::EdgeId::generate(&helper_sym, &main_sym, "calls", None, "tree_sitter");
+    let edge = types::RawEdge {
+        id: edge_id,
+        source: helper_sym,
+        target: main_sym,
+        kind: types::EdgeKind::Calls,
+        confidence: types::Confidence::certain(),
+        provenance: types::Provenance::TreeSitter,
+        ref_id: None,
+        location: None,
+        metadata: None,
+        resolved_by: None,
+    };
+    store.insert_edges(&[edge]).unwrap();
+
+    let engine = test_engine(store);
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: main_id,
+            language: Language::C,
+        },
+        strategies: vec![ClosureStrategy::CallGraph {
+            direction: super::types::Direction::Incoming,
+            depth: 1,
+        }],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure = engine
+        .build_closure(&window, "test-callgraph-incoming-caller")
+        .expect("build_closure should succeed");
+
+    assert!(
+        closure.files.contains(&main_id),
+        "seed file must be in closure"
+    );
+    // Incoming direction: helper (caller of main) IS now found
+    assert!(
+        closure.files.contains(&helper_id),
+        "Incoming direction must find caller file (helper)"
+    );
+    assert_eq!(
+        closure.files.len(),
+        2,
+        "Incoming direction must add caller file → seed + helper = 2"
+    );
+}
+
+// ── CallGraph Incoming + Both tests ────────────────────────────────────────
+
+/// Test F: Direction::Both finds both callees (Outgoing) and callers (Incoming).
+/// Edge A→B, seed on B's file → Both must find A (incoming) and B's callees.
+#[test]
+fn test_callgraph_both_finds_both_directions() {
+    let store = test_store();
+    let file_a = insert_file_structural_complete(&store, "a.c");
+    let file_b = insert_file_structural_complete(&store, "b.c");
+    let file_c = insert_file_structural_complete(&store, "c.c");
+
+    let sym_a = insert_function_symbol(&store, file_a, "a");
+    let sym_b = insert_function_symbol(&store, file_b, "b");
+    let sym_c = insert_function_symbol(&store, file_c, "c");
+
+    // Edge: A → B (incoming: A calls B)
+    let edge_a_to_b =
+        types::ids::EdgeId::generate(&sym_a, &sym_b, "calls", None, "tree_sitter");
+    // Edge: B → C (outgoing: B calls C)
+    let edge_b_to_c =
+        types::ids::EdgeId::generate(&sym_b, &sym_c, "calls", None, "tree_sitter");
+
+    store
+        .insert_edges(&[
+            types::RawEdge {
+                id: edge_a_to_b,
+                source: sym_a,
+                target: sym_b,
+                kind: types::EdgeKind::Calls,
+                confidence: types::Confidence::certain(),
+                provenance: types::Provenance::TreeSitter,
+                ref_id: None,
+                location: None,
+                metadata: None,
+                resolved_by: None,
+            },
+            types::RawEdge {
+                id: edge_b_to_c,
+                source: sym_b,
+                target: sym_c,
+                kind: types::EdgeKind::Calls,
+                confidence: types::Confidence::certain(),
+                provenance: types::Provenance::TreeSitter,
+                ref_id: None,
+                location: None,
+                metadata: None,
+                resolved_by: None,
+            },
+        ])
+        .unwrap();
+
+    let engine = test_engine(store);
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: file_b,
+            language: Language::C,
+        },
+        strategies: vec![ClosureStrategy::CallGraph {
+            direction: super::types::Direction::Both,
+            depth: 1,
+        }],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure = engine
+        .build_closure(&window, "test-callgraph-both")
+        .expect("build_closure should succeed");
+
+    assert!(
+        closure.files.contains(&file_b),
+        "seed file must be in closure"
+    );
+    assert!(
+        closure.files.contains(&file_a),
+        "Both: incoming must find caller file A"
+    );
+    assert!(
+        closure.files.contains(&file_c),
+        "Both: outgoing must find callee file C"
+    );
+    assert_eq!(
+        closure.files.len(),
+        3,
+        "Both must find seed + caller A + callee C = 3 files"
+    );
+}
+
+/// Test G: Incoming with multiple edges X→Z and Y→Z, seed on Z's file
+/// → both caller files (X, Y) must be found.
+#[test]
+fn test_callgraph_incoming_crosses_multiple_edges() {
+    let store = test_store();
+    let file_x = insert_file_structural_complete(&store, "x.c");
+    let file_y = insert_file_structural_complete(&store, "y.c");
+    let file_z = insert_file_structural_complete(&store, "z.c");
+
+    let sym_x = insert_function_symbol(&store, file_x, "x");
+    let sym_y = insert_function_symbol(&store, file_y, "y");
+    let sym_z = insert_function_symbol(&store, file_z, "z");
+
+    // Edge: X → Z
+    let edge_x_to_z =
+        types::ids::EdgeId::generate(&sym_x, &sym_z, "calls", None, "tree_sitter");
+    // Edge: Y → Z
+    let edge_y_to_z =
+        types::ids::EdgeId::generate(&sym_y, &sym_z, "calls", None, "tree_sitter");
+
+    store
+        .insert_edges(&[
+            types::RawEdge {
+                id: edge_x_to_z,
+                source: sym_x,
+                target: sym_z,
+                kind: types::EdgeKind::Calls,
+                confidence: types::Confidence::certain(),
+                provenance: types::Provenance::TreeSitter,
+                ref_id: None,
+                location: None,
+                metadata: None,
+                resolved_by: None,
+            },
+            types::RawEdge {
+                id: edge_y_to_z,
+                source: sym_y,
+                target: sym_z,
+                kind: types::EdgeKind::Calls,
+                confidence: types::Confidence::certain(),
+                provenance: types::Provenance::TreeSitter,
+                ref_id: None,
+                location: None,
+                metadata: None,
+                resolved_by: None,
+            },
+        ])
+        .unwrap();
+
+    let engine = test_engine(store);
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: file_z,
+            language: Language::C,
+        },
+        strategies: vec![ClosureStrategy::CallGraph {
+            direction: super::types::Direction::Incoming,
+            depth: 1,
+        }],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure = engine
+        .build_closure(&window, "test-callgraph-incoming-multi")
+        .expect("build_closure should succeed");
+
+    assert!(
+        closure.files.contains(&file_z),
+        "seed file must be in closure"
+    );
+    assert!(
+        closure.files.contains(&file_x),
+        "Incoming must find caller file X"
+    );
+    assert!(
+        closure.files.contains(&file_y),
+        "Incoming must find caller file Y"
+    );
+    assert_eq!(
+        closure.files.len(),
+        3,
+        "Incoming must find seed + X + Y = 3 files"
+    );
+}
+
+/// Test H: Incoming dedup — edges X→Z and X→W (same caller), seed on Z's file
+/// → X must appear only once in the closure files.
+#[test]
+fn test_callgraph_incoming_dedup_caller_files() {
+    let store = test_store();
+    let file_x = insert_file_structural_complete(&store, "x.c");
+    let file_z = insert_file_structural_complete(&store, "z.c");
+    let file_w = insert_file_structural_complete(&store, "w.c");
+
+    let sym_x = insert_function_symbol(&store, file_x, "x");
+    let sym_z = insert_function_symbol(&store, file_z, "z");
+    let sym_w = insert_function_symbol(&store, file_w, "w");
+
+    // Edge: X → Z (X calls Z)
+    let edge_x_to_z =
+        types::ids::EdgeId::generate(&sym_x, &sym_z, "calls", None, "tree_sitter");
+    // Edge: X → W (X calls W — different target in same caller file)
+    let edge_x_to_w =
+        types::ids::EdgeId::generate(&sym_x, &sym_w, "calls", None, "tree_sitter");
+
+    store
+        .insert_edges(&[
+            types::RawEdge {
+                id: edge_x_to_z,
+                source: sym_x,
+                target: sym_z,
+                kind: types::EdgeKind::Calls,
+                confidence: types::Confidence::certain(),
+                provenance: types::Provenance::TreeSitter,
+                ref_id: None,
+                location: None,
+                metadata: None,
+                resolved_by: None,
+            },
+            types::RawEdge {
+                id: edge_x_to_w,
+                source: sym_x,
+                target: sym_w,
+                kind: types::EdgeKind::Calls,
+                confidence: types::Confidence::certain(),
+                provenance: types::Provenance::TreeSitter,
+                ref_id: None,
+                location: None,
+                metadata: None,
+                resolved_by: None,
+            },
+        ])
+        .unwrap();
+
+    let engine = test_engine(store);
+
+    // Seed on Z's file. Incoming on Z finds X→Z.
+    // Even though X→W also exists (same source X), X should only appear once.
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: file_z,
+            language: Language::C,
+        },
+        strategies: vec![ClosureStrategy::CallGraph {
+            direction: super::types::Direction::Incoming,
+            depth: 1,
+        }],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure = engine
+        .build_closure(&window, "test-callgraph-incoming-dedup")
+        .expect("build_closure should succeed");
+
+    assert!(
+        closure.files.contains(&file_z),
+        "seed file must be in closure"
+    );
+    assert!(
+        closure.files.contains(&file_x),
+        "Incoming must find caller file X"
+    );
+    // file_w is NOT a caller of Z, so it should NOT appear (edge X→W targets W, not Z)
+    assert!(
+        !closure.files.contains(&file_w),
+        "file_w must not appear (X→W does not target seed symbol Z)"
+    );
+    // X must appear only once (dedup from two edges sharing same source)
+    assert_eq!(
+        closure.files.len(),
+        2,
+        "Incoming dedup: seed + X (no duplicate) = 2 files"
+    );
+}
+
+// ── Scoped resolution tests (Task D: wire resolve_for_closure) ──────────────
+
+/// Helper: create an unresolved ReferenceUse (no resolved target).
+fn make_unresolved_reference(
+    file_id: FileId,
+    source_symbol: Option<types::ids::SymbolId>,
+    ref_kind: types::ReferenceKind,
+    ref_name: &str,
+    range_start: usize,
+    range_end: usize,
+) -> types::structs::ReferenceUse {
+    let range = types::structs::TextRange {
+        start_byte: range_start as u32,
+        end_byte: range_end as u32,
+        start_line: 1,
+        start_column: 1,
+        end_line: 1,
+        end_column: (range_end - range_start + 1) as u32,
+    };
+    let ref_id = types::ids::ReferenceId::generate(
+        &file_id,
+        source_symbol.as_ref(),
+        range.start_byte,
+        range.end_byte,
+        ref_name,
+        ref_kind,
+    );
+    types::structs::ReferenceUse {
+        id: ref_id,
+        file_id,
+        source_symbol,
+        scope_id: None,
+        kind: ref_kind,
+        text: ref_name.to_string(),
+        name: ref_name.to_string(),
+        receiver: None,
+        arity: None,
+        range,
+        binding_id: None,
+        resolved: None, // unresolved reference — should be resolved by scoped resolver
+    }
+}
+
+/// After build_closure, reference_resolutions table should have rows.
+#[test]
+fn test_scoped_resolution_writes_reference_resolutions() {
+    let store = test_store();
+    let file_a = insert_file_structural_complete(&store, "src/main.c");
+    let file_b = insert_file_structural_complete(&store, "src/helper.c");
+
+    // Function symbol in file A (the source of the reference)
+    let caller_sym = insert_function_symbol(&store, file_a, "caller");
+    // Function symbol in file B (target to resolve against)
+    let _target_sym = insert_function_symbol(&store, file_b, "helper");
+
+    // Unresolved reference in file A → "helper" (should resolve to helper in file B)
+    let ref_use = make_unresolved_reference(
+        file_a,
+        Some(caller_sym),
+        types::ReferenceKind::Call,
+        "helper",
+        10,
+        16,
+    );
+    store.insert_references(&[ref_use]).unwrap();
+
+    // Build closure with CallGraph to pull in file B
+    let engine = test_engine(store.clone());
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: file_a,
+            language: Language::C,
+        },
+        strategies: vec![ClosureStrategy::CallGraph {
+            direction: super::types::Direction::Outgoing,
+            depth: 1,
+        }],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure_id = "test-scoped-res-writes";
+    let _closure = engine
+        .build_closure(&window, closure_id)
+        .expect("build_closure should succeed");
+
+    // Resolution rows should exist (generation=0 since no expansion occurred)
+    let count = store
+        .count_reference_resolutions(closure_id, 0)
+        .expect("count_reference_resolutions should succeed");
+    assert!(
+        count > 0,
+        "expected at least 1 reference_resolutions row, got {count}"
+    );
+}
+
+/// After build_closure (which calls commit_closure internally),
+/// reference_resolutions rows should be visible (is_visible=1).
+#[test]
+fn test_scoped_resolution_committed_visible() {
+    let store = test_store();
+    let file_a = insert_file_structural_complete(&store, "src/main.c");
+    let file_b = insert_file_structural_complete(&store, "src/helper.c");
+
+    let caller_sym = insert_function_symbol(&store, file_a, "caller");
+    let _target_sym = insert_function_symbol(&store, file_b, "helper");
+
+    let ref_use = make_unresolved_reference(
+        file_a,
+        Some(caller_sym),
+        types::ReferenceKind::Call,
+        "helper",
+        10,
+        16,
+    );
+    store.insert_references(&[ref_use]).unwrap();
+
+    let engine = test_engine(store.clone());
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: file_a,
+            language: Language::C,
+        },
+        strategies: vec![ClosureStrategy::CallGraph {
+            direction: super::types::Direction::Outgoing,
+            depth: 1,
+        }],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure_id = "test-scoped-res-visible";
+    let _closure = engine
+        .build_closure(&window, closure_id)
+        .expect("build_closure should succeed");
+
+    // Verify resolution rows exist and are visible
+    let count = store
+        .count_reference_resolutions(closure_id, 0)
+        .expect("count_reference_resolutions should succeed");
+    assert!(count > 0, "expected at least 1 resolution row, got {count}");
+
+    // Verify the resolution is visible (after commit_closure)
+    // get_visible_resolution requires exact reference_id bytes; since we
+    // can't easily predict the resolution row's reference_id, verify via
+    // the closure-level query.
+    let visible = store
+        .get_visible_resolutions_for_closure(closure_id)
+        .expect("get_visible_resolutions_for_closure should succeed");
+    assert!(
+        !visible.is_empty(),
+        "expected visible resolutions after commit"
+    );
+}
+
+/// Scoped resolver writes to reference_resolutions — NOT to references.resolved_*.
+/// The global table must stay unaffected.
+#[test]
+fn test_scoped_resolution_does_not_pollute_references_table() {
+    let store = test_store();
+    let file_a = insert_file_structural_complete(&store, "src/main.c");
+    let file_b = insert_file_structural_complete(&store, "src/helper.c");
+
+    let caller_sym = insert_function_symbol(&store, file_a, "caller");
+    let _target_sym = insert_function_symbol(&store, file_b, "helper");
+
+    // Insert an unresolved reference
+    let ref_use = make_unresolved_reference(
+        file_a,
+        Some(caller_sym),
+        types::ReferenceKind::Call,
+        "helper",
+        10,
+        16,
+    );
+    store.insert_references(&[ref_use.clone()]).unwrap();
+
+    let engine = test_engine(store.clone());
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: file_a,
+            language: Language::C,
+        },
+        strategies: vec![ClosureStrategy::CallGraph {
+            direction: super::types::Direction::Outgoing,
+            depth: 1,
+        }],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure_id = "test-scoped-res-no-pollute";
+    let _closure = engine
+        .build_closure(&window, closure_id)
+        .expect("build_closure should succeed");
+
+    // The original reference in the references table must still be unresolved
+    let refs_after = store
+        .find_references_by_file(&file_a)
+        .expect("find_references_by_file should succeed");
+
+    for r in &refs_after {
+        // The scoped resolver writes to reference_resolutions, NOT references
+        assert!(
+            r.resolved.is_none(),
+            "scoped resolver must not modify references.resolved; found resolved={:?}",
+            r.resolved
+        );
+    }
+
+    // But reference_resolutions should have entries
+    let res_count = store
+        .count_reference_resolutions(closure_id, 0)
+        .expect("count_reference_resolutions should succeed");
+    assert!(
+        res_count > 0,
+        "reference_resolutions table should have entries (scoped resolver writes here)"
+    );
+}
+
+/// Empty closure (no files) must not crash the resolve step.
+#[test]
+fn test_scoped_resolution_empty_closure_no_crash() {
+    let store = test_store();
+    // Empty store, seed via Symbol that yields no candidates
+    let lazy_structural = LazyStructuralService::with_provider(
+        store.clone(),
+        None,
+        Box::new(MockCandidateProvider { candidates: vec![] }),
+    );
+    let engine = ClosureEngine::new(store.clone(), lazy_structural, None, vec![]);
+
+    let window = FocusWindow {
+        seed: FocusSeed::Symbol {
+            name: "nonexistent".to_string(),
+            kind: None,
+            language: Language::C,
+        },
+        strategies: vec![],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure_id = "test-scoped-res-empty";
+    let result = engine.build_closure(&window, closure_id);
+    assert!(
+        result.is_ok(),
+        "build_closure with empty closure must not crash during resolution"
+    );
+
+    // Verify no resolution rows were written for the empty closure
+    let count = store
+        .count_reference_resolutions(closure_id, 0)
+        .expect("count_reference_resolutions should succeed");
+    assert_eq!(
+        count, 0,
+        "empty closure must produce zero reference_resolutions rows"
+    );
+}
+
+// ── FocusGraphBuilder integration tests (Task C) ─────────────────────────────
+
+/// After build_closure completes (resolve + commit + graph build), the
+/// FocusGraphBuilder should produce canonical `symbol_edges` rows for
+/// resolved Call references.
+#[test]
+fn test_graph_builder_produces_canonical_edges() {
+    let store = test_store();
+    let file_a = insert_file_structural_complete(&store, "src/caller.c");
+    let file_b = insert_file_structural_complete(&store, "src/callee.c");
+
+    // Function symbols in both files
+    let caller_sym = insert_function_symbol(&store, file_a, "caller");
+    let callee_sym = insert_function_symbol(&store, file_b, "callee");
+
+    // Unresolved Call reference in file A → "callee"
+    let ref_use = make_unresolved_reference(
+        file_a,
+        Some(caller_sym),
+        types::ReferenceKind::Call,
+        "callee",
+        10,
+        16,
+    );
+    store.insert_references(&[ref_use]).unwrap();
+
+    let engine = test_engine(store.clone());
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: file_a,
+            language: Language::C,
+        },
+        strategies: vec![ClosureStrategy::CallGraph {
+            direction: super::types::Direction::Outgoing,
+            depth: 1,
+        }],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure_id = "test-gb-canonical-edges";
+    let _closure = engine
+        .build_closure(&window, closure_id)
+        .expect("build_closure should succeed");
+
+    // Verify canonical edges exist for caller symbol
+    let edges = store
+        .find_edges_by_source(&caller_sym)
+        .expect("find_edges_by_source should succeed");
+    assert!(
+        !edges.is_empty(),
+        "expected at least 1 canonical edge from caller symbol"
+    );
+
+    // Verify at least one Calls edge to the callee
+    let calls_edge = edges
+        .iter()
+        .find(|e| e.kind == types::EdgeKind::Calls && e.target == callee_sym);
+    assert!(
+        calls_edge.is_some(),
+        "expected a Calls edge from caller to callee; found edges: {:?}",
+        edges.iter().map(|e| (e.kind.as_str(), &e.target)).collect::<Vec<_>>()
+    );
+}
+
+/// Building graph on closure B that covers the same symbols as closure A
+/// must not overwrite A's existing canonical edges (EdgeConflictPolicy::Keep).
+#[test]
+fn test_graph_builder_preserves_existing_edges() {
+    let store = test_store();
+    let file_a = insert_file_structural_complete(&store, "src/caller.c");
+    let file_b = insert_file_structural_complete(&store, "src/callee.c");
+
+    let caller_sym = insert_function_symbol(&store, file_a, "caller");
+    let callee_sym = insert_function_symbol(&store, file_b, "callee");
+
+    let ref_use = make_unresolved_reference(
+        file_a,
+        Some(caller_sym),
+        types::ReferenceKind::Call,
+        "callee",
+        10,
+        16,
+    );
+    store.insert_references(&[ref_use]).unwrap();
+
+    // Closure A — first build, edges created
+    {
+        let engine = test_engine(store.clone());
+        let window = FocusWindow {
+            seed: FocusSeed::File {
+                file_id: file_a,
+                language: Language::C,
+            },
+            strategies: vec![ClosureStrategy::CallGraph {
+                direction: super::types::Direction::Outgoing,
+                depth: 1,
+            }],
+            budget: WindowBudget::default(),
+            language: Language::C,
+            max_iterations: 3,
+        };
+        let _closure = engine
+            .build_closure(&window, "test-gb-preserve-a")
+            .expect("closure A build should succeed");
+    }
+
+    // Snapshot edges after closure A
+    let edges_after_a = store
+        .find_edges_by_source(&caller_sym)
+        .expect("find_edges_by_source should succeed");
+    assert!(
+        !edges_after_a.is_empty(),
+        "closure A must produce canonical edges"
+    );
+    let edge_ids_after_a: Vec<_> = edges_after_a.iter().map(|e| e.id).collect();
+
+    // Closure B — same symbols, different closure_id
+    {
+        let engine = test_engine(store.clone());
+        let window = FocusWindow {
+            seed: FocusSeed::File {
+                file_id: file_a,
+                language: Language::C,
+            },
+            strategies: vec![ClosureStrategy::CallGraph {
+                direction: super::types::Direction::Outgoing,
+                depth: 1,
+            }],
+            budget: WindowBudget::default(),
+            language: Language::C,
+            max_iterations: 3,
+        };
+        let _closure = engine
+            .build_closure(&window, "test-gb-preserve-b")
+            .expect("closure B build should succeed");
+    }
+
+    // Verify edges after closure B still contain the same edge from A
+    let edges_after_b = store
+        .find_edges_by_source(&caller_sym)
+        .expect("find_edges_by_source should succeed");
+
+    // All edges from closure A must still be present
+    for id_a in &edge_ids_after_a {
+        assert!(
+            edges_after_b.iter().any(|e| e.id == *id_a),
+            "edge {:?} from closure A must survive closure B (EdgeConflictPolicy::Keep)",
+            id_a
+        );
+    }
+
+    // There should not be duplicate edges to the same target
+    let calls_to_callee: Vec<_> = edges_after_b
+        .iter()
+        .filter(|e| e.kind == types::EdgeKind::Calls && e.target == callee_sym)
+        .collect();
+    assert!(
+        calls_to_callee.len() <= 1,
+        "at most one Calls edge to callee (no duplicates), got {}",
+        calls_to_callee.len()
+    );
+}
+
+/// Running graph builder on uncommitted (is_visible=0) resolutions must
+/// produce zero edges — the builder only reads visible rows.
+#[test]
+fn test_graph_builder_no_edges_from_uncommitted_resolutions() {
+    let store = test_store();
+    let file_a = insert_file_structural_complete(&store, "src/caller.c");
+    let file_b = insert_file_structural_complete(&store, "src/callee.c");
+
+    let caller_sym = insert_function_symbol(&store, file_a, "caller");
+    let _callee_sym = insert_function_symbol(&store, file_b, "callee");
+
+    // Unresolved Call reference
+    let ref_use = make_unresolved_reference(
+        file_a,
+        Some(caller_sym),
+        types::ReferenceKind::Call,
+        "callee",
+        10,
+        16,
+    );
+    store.insert_references(&[ref_use]).unwrap();
+
+    let engine = test_engine(store.clone());
+    let closure_id = "test-gb-uncommitted";
+
+    // Insert closure generation record (normally done by build_closure)
+    store
+        .insert_closure_generation(closure_id)
+        .expect("insert_closure_generation should succeed");
+
+    // Resolve (writes is_visible=0 rows)
+    engine
+        .resolver
+        .borrow_mut()
+        .resolve_for_closure(closure_id, 0, &[file_a, file_b], None)
+        .expect("resolve_for_closure should succeed");
+
+    // Verify staged (invisible) resolutions exist
+    let count = store
+        .count_reference_resolutions(closure_id, 0)
+        .expect("count_reference_resolutions should succeed");
+    assert!(
+        count > 0,
+        "staged resolutions must exist before commit; got {count}"
+    );
+
+    // Build graph — should see zero visible rows
+    let result = engine
+        .graph_builder
+        .build_for_closure(closure_id, 0)
+        .expect("build_for_closure should succeed");
+    assert_eq!(
+        result.stats.edges_built, 0,
+        "graph builder must produce zero edges from uncommitted (is_visible=0) resolutions"
+    );
+    assert_eq!(
+        result.candidate_count, 0,
+        "graph builder must produce zero candidates from uncommitted resolutions"
+    );
+
+    // Also verify no edges exist in symbol_edges
+    let edges = store
+        .find_edges_by_source(&caller_sym)
+        .expect("find_edges_by_source should succeed");
+    assert!(
+        edges.is_empty(),
+        "symbol_edges must be empty when resolutions are uncommitted"
     );
 }

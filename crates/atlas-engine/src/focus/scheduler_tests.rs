@@ -1,6 +1,7 @@
 //! Tests for FocusScheduler — priority-queue based focus job scheduling.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use db::Store;
 use types::ids::FileId;
@@ -317,8 +318,14 @@ fn test_scheduler_no_store_panic() {
     // has_pending() should not panic — it just checks queue emptiness.
     assert!(scheduler.has_pending(), "should have a pending job");
 
-    // process_sync without engine panics (expect), so we don't call it here.
-    // But has_pending and enqueue should be safe without an engine.
+    // process_sync without engine returns Ok(0) (graceful no-op).
+    let processed = scheduler.process_sync().expect("process_sync should not panic");
+    assert_eq!(processed, 0, "process_sync without engine returns 0");
+
+    // process_all_queues without engine also returns Ok(0).
+    let processed_all = scheduler.process_all_queues().expect("process_all_queues should not panic");
+    assert_eq!(processed_all, 0, "process_all_queues without engine returns 0");
+
     let depths = scheduler.queue_depths();
     assert_eq!(
         depths[3],
@@ -334,4 +341,254 @@ fn test_next_job_id_sequential_unique() {
     assert_ne!(id1, id2, "sequential next_job_id() calls must produce different IDs");
     assert!(id1.starts_with("cl_"), "IDs should start with cl_");
     assert!(id2.starts_with("cl_"), "IDs should start with cl_");
+}
+
+// ── process_all_queues tests ────────────────────────────────────────────────
+
+#[test]
+fn test_process_all_queues_drains_all_levels() {
+    let store = test_store();
+    let file_id = test_file_with_structural_complete(&store, "main.c");
+    let engine = test_engine_for_store(store.clone());
+    let mut scheduler = FocusScheduler::new(store).with_engine(engine);
+
+    let make_window = || FocusWindow {
+        seed: FocusSeed::File { file_id, language: Default::default() },
+        strategies: vec![],
+        budget: WindowBudget::default(),
+        language: Default::default(),
+        max_iterations: 1,
+    };
+
+    // Enqueue one job at each priority level.
+    scheduler.enqueue(make_window(), FocusPriority::Sync);
+    scheduler.enqueue(make_window(), FocusPriority::UserFocus);
+    scheduler.enqueue(make_window(), FocusPriority::Recent);
+    scheduler.enqueue(make_window(), FocusPriority::Speculative);
+
+    assert!(scheduler.has_pending());
+
+    let processed = scheduler
+        .process_all_queues()
+        .expect("process_all_queues should succeed");
+    assert_eq!(processed, 4, "should process 4 jobs (one per level)");
+
+    // All queues should be empty.
+    assert!(!scheduler.has_pending());
+    for (_priority, depth) in scheduler.queue_depths() {
+        assert_eq!(depth, 0, "all queues should be empty after process_all_queues");
+    }
+}
+
+#[test]
+fn test_process_all_queues_returns_zero_without_engine() {
+    let mut scheduler = test_scheduler();
+    let window = test_file_window();
+    scheduler.enqueue(window, FocusPriority::UserFocus);
+
+    let processed = scheduler
+        .process_all_queues()
+        .expect("process_all_queues without engine should not panic");
+    assert_eq!(processed, 0, "should return 0 when engine is not set");
+    // The job should still be in the queue (process_all_queues is a no-op without engine).
+    assert!(scheduler.has_pending(), "job should still be pending");
+}
+
+#[test]
+fn test_process_all_queues_priority_order() {
+    // Enqueue jobs out of priority order; process_all_queues drains all,
+    // but Sync is drained first, Speculative last.
+    let store = test_store();
+    let file_id = test_file_with_structural_complete(&store, "main.c");
+    let engine = test_engine_for_store(store.clone());
+    let mut scheduler = FocusScheduler::new(store).with_engine(engine);
+
+    let make_window = || FocusWindow {
+        seed: FocusSeed::File { file_id, language: Default::default() },
+        strategies: vec![],
+        budget: WindowBudget::default(),
+        language: Default::default(),
+        max_iterations: 1,
+    };
+
+    // Enqueue in reverse priority order.
+    scheduler.enqueue(make_window(), FocusPriority::Speculative);
+    scheduler.enqueue(make_window(), FocusPriority::Recent);
+    scheduler.enqueue(make_window(), FocusPriority::UserFocus);
+    scheduler.enqueue(make_window(), FocusPriority::Sync);
+
+    let depths_before = scheduler.queue_depths();
+    assert_eq!(depths_before[0].1, 1, "Sync queue has 1 job");
+    assert_eq!(depths_before[1].1, 1, "UserFocus queue has 1 job");
+    assert_eq!(depths_before[2].1, 1, "Recent queue has 1 job");
+    assert_eq!(depths_before[3].1, 1, "Speculative queue has 1 job");
+
+    let processed = scheduler
+        .process_all_queues()
+        .expect("process_all_queues should succeed");
+    assert_eq!(processed, 4);
+
+    // All queues empty after processing.
+    assert!(!scheduler.has_pending());
+}
+
+// ── Background worker thread tests ───────────────────────────────────────────
+
+/// Helper: create a scheduler with engine, wrap in Arc<Mutex<>>.
+fn test_scheduler_arc() -> Arc<std::sync::Mutex<FocusScheduler>> {
+    let store = test_store();
+    let file_id = test_file_with_structural_complete(&store, "main.c");
+    // Need at least one file present so closure builds don't fail.
+    let _ = file_id;
+    let engine = test_engine_for_store(store.clone());
+    let scheduler = FocusScheduler::new(store).with_engine(engine);
+    Arc::new(std::sync::Mutex::new(scheduler))
+}
+
+#[test]
+fn test_background_worker_drains_all_queues() {
+    let scheduler = test_scheduler_arc();
+
+    // Set running before enqueuing so the worker doesn't exit immediately.
+    {
+        let mut s = scheduler.lock().unwrap();
+        s.set_running(true);
+    }
+
+    let file_id = FileId::generate("main.c");
+    let make_window = || FocusWindow {
+        seed: FocusSeed::File { file_id, language: Default::default() },
+        strategies: vec![],
+        budget: WindowBudget::default(),
+        language: Default::default(),
+        max_iterations: 1,
+    };
+
+    // Enqueue jobs at all priority levels.
+    {
+        let mut s = scheduler.lock().unwrap();
+        s.enqueue(make_window(), FocusPriority::UserFocus);
+        s.enqueue(make_window(), FocusPriority::Recent);
+        s.enqueue(make_window(), FocusPriority::Speculative);
+    }
+
+    // Spawn background worker.
+    let sched_clone = Arc::clone(&scheduler);
+    let handle = std::thread::spawn(move || {
+        FocusScheduler::background_worker_loop(sched_clone);
+    });
+
+    // Wait for the worker to drain the queues.
+    std::thread::sleep(Duration::from_millis(800));
+
+    // Stop the worker.
+    {
+        let s = scheduler.lock().unwrap();
+        s.stop_background();
+    }
+    let _ = handle.join();
+
+    // All queues should be empty.
+    let s = scheduler.lock().unwrap();
+    assert!(!s.has_pending(), "all queues should be drained by background worker");
+    for (_priority, depth) in s.queue_depths() {
+        assert_eq!(depth, 0, "queue should be empty");
+    }
+}
+
+#[test]
+fn test_background_worker_stops_on_cancel() {
+    let scheduler = test_scheduler_arc();
+
+    {
+        let mut s = scheduler.lock().unwrap();
+        s.set_running(true);
+    }
+
+    // Enqueue a job so the worker has something to process.
+    let file_id = FileId::generate("main.c");
+    let window = FocusWindow {
+        seed: FocusSeed::File { file_id, language: Default::default() },
+        strategies: vec![],
+        budget: WindowBudget::default(),
+        language: Default::default(),
+        max_iterations: 1,
+    };
+    {
+        let mut s = scheduler.lock().unwrap();
+        s.enqueue(window, FocusPriority::UserFocus);
+    }
+
+    let sched_clone = Arc::clone(&scheduler);
+    let handle = std::thread::spawn(move || {
+        FocusScheduler::background_worker_loop(sched_clone);
+    });
+
+    // Give the worker a moment to start.
+    std::thread::sleep(Duration::from_millis(100));
+
+    // Signal cancel.
+    {
+        let s = scheduler.lock().unwrap();
+        s.stop_background();
+    }
+
+    // Worker should exit within a reasonable time.
+    let result = handle.join();
+    assert!(result.is_ok(), "background worker should join cleanly after cancel");
+}
+
+#[test]
+fn test_background_worker_processes_in_correct_order() {
+    // Enqueue jobs at different priorities, verify all get drained.
+    // The priority order is guaranteed by process_all_queues which drains
+    // Sync → UserFocus → Recent → Speculative in that sequence.
+    let scheduler = test_scheduler_arc();
+
+    {
+        let mut s = scheduler.lock().unwrap();
+        s.set_running(true);
+    }
+
+    let file_id = FileId::generate("main.c");
+    let make_window = || FocusWindow {
+        seed: FocusSeed::File { file_id, language: Default::default() },
+        strategies: vec![],
+        budget: WindowBudget::default(),
+        language: Default::default(),
+        max_iterations: 1,
+    };
+
+    // Enqueue high-priority first, then low. Worker should drain all.
+    {
+        let mut s = scheduler.lock().unwrap();
+        s.enqueue(make_window(), FocusPriority::UserFocus);
+        s.enqueue(make_window(), FocusPriority::Speculative);
+    }
+
+    // Confirm jobs are in the queues.
+    {
+        let s = scheduler.lock().unwrap();
+        let depths = s.queue_depths();
+        assert_eq!(depths[1].1, 1, "UserFocus queue has 1 job");
+        assert_eq!(depths[3].1, 1, "Speculative queue has 1 job");
+    }
+
+    let sched_clone = Arc::clone(&scheduler);
+    let handle = std::thread::spawn(move || {
+        FocusScheduler::background_worker_loop(sched_clone);
+    });
+
+    std::thread::sleep(Duration::from_millis(800));
+
+    // Stop and join.
+    {
+        let s = scheduler.lock().unwrap();
+        s.stop_background();
+    }
+    let _ = handle.join();
+
+    // All queues drained.
+    let s = scheduler.lock().unwrap();
+    assert!(!s.has_pending(), "background worker should drain all queues");
 }

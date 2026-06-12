@@ -14,7 +14,9 @@
 
 pub mod engine;
 pub mod types;
-pub mod atlas;
+pub mod bootstrap;
+pub mod query;
+pub mod runtime;
 pub mod visibility_filter;
 pub mod edge_policy;
 pub mod scheduler;
@@ -41,3 +43,5 @@ mod integration_tests_extended;
 mod focus_graph_builder_tests;
 #[cfg(test)]
 mod scoped_resolver_tests;
+#[cfg(test)]
+mod bootstrap_tests;

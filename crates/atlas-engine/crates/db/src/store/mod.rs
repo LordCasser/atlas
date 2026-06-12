@@ -130,6 +130,24 @@ impl StoreReader {
         }
     }
 
+    /// Find the file_id for a symbol (lightweight — only queries one column).
+    ///
+    /// Returns `Ok(Some(file_id))` when the symbol exists, `Ok(None)` when
+    /// the symbol is not found, or `Err(...)` on database errors.
+    pub fn find_symbol_file(&self, symbol_id: &SymbolId) -> anyhow::Result<Option<FileId>> {
+        let conn = self.lock_read();
+        let result: Result<Option<FileId>, _> = conn.query_row(
+            "SELECT file_id FROM symbols WHERE symbol_id = ?1",
+            params![symbol_id],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(file_id) => Ok(file_id),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Batch-lookup symbols by IDs in a single query.
     pub fn find_symbols_by_ids(&self, ids: &[SymbolId]) -> anyhow::Result<Vec<SymbolDef>> {
         if ids.is_empty() {
