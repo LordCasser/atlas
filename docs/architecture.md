@@ -165,7 +165,10 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 
 ### 6.1 Schema（当前版本：V1）
 
-当前 schema 版本为 V1。新库以主 DDL 为准；为兼容已有 V1 数据库，允许在 `Store::init_schema` 中保留少量幂等 compatibility ALTER，但每个兼容 ALTER 必须同步反映到主 DDL 并在架构文档中说明。更大的不兼容 schema 变化必须提升 schema version 并提供显式迁移。
+当前 schema 版本为 V1。软件处于快速原型期，新库以主 DDL 为准，不保留
+旧 schema 运行时补丁路径。schema contract 改变时直接更新主
+DDL、调用方和文档，并要求重新建库/重索引；不得在 `Store::init_schema`
+中累积旧版本补丁路径。
 
 主要表（23 张）：
 
@@ -329,7 +332,8 @@ trace             = inter-procedural, by composing summaries along call graph
 - `SummaryBuilder` 从 dataflow_edges BFS 计算函数摘要。
 - `SummaryStore` 持久化 4 张摘要表，支持全量构建（`build_all`）和增量构建（`build_for_function`）。
 - `CrossFunctionBridge` 替代了旧的 runtime `SummaryEdgeProvider`，实现 ArgToParam 和 ReturnToCall 桥接。
-- 向后兼容：旧 DB 无摘要表时降级为 runtime BFS。
+- 旧 DB 无摘要表时不做 runtime BFS fallback；要求按当前 schema 重新建库
+  或重索引。
 - 增量失效：sync 时删除受影响函数的摘要行并重建。
 
 ## 8. Resolution 与 Graph 约束
@@ -376,7 +380,7 @@ import { bar } from 'lodash'  → bar() 无 edge ❌
 LanguageCapabilityProfile
   language
   capability_level       → None / Symbolic / DataflowBasic / DataflowFull
-  supported_features     → 向后兼容的字符串列表
+  supported_features     → 人类可读的 feature 名称列表
   unsupported_features
   known_limitations
   confidence_floor       → 0.0-1.0
@@ -514,14 +518,14 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
 
 - **完成状态**：文件级状态以 `extraction_state.unit_id IS NULL` 为准，必须与 `files.content_hash` 匹配；单元级 dataflow cache 以 `extraction_state.unit_id IS NOT NULL` 为准。
 - **进行中状态**：所有 on-demand structural、resolution_symbols 和 dataflow 构建都必须 claim extraction job。dataflow 使用 unit-scoped job key，避免同一函数/顶层单元被前台 trace 和后台 prewarm 重复构建。
-- **MCP 可观测性**：`status` 只根据 fresh layer 分布推导 `manifest`、`partial_structural`、`structural`、`structural+lazy`、`full`，不能把 manifest-only 误报为 structural。`tasks` 暴露 active extraction jobs，供代理在 pending/partial 响应后决定重试时机。
+- **MCP 可观测性**：`status` 只根据 fresh layer 分布推导 `manifest`、`partial_structural`、`structural`、`structural+lazy`、`full`，不能把 manifest-only 误报为 structural。Agent 判断是否可用、是否等待、是否重试只能读取 public `analysis` 和 `work`，不能读取 raw extraction job 或 pending/partial 旧字段。
 - **Search 执行模型**：MCP search 先做 store-backed manifest 查询，再对候选文件做定向 lazy structural；只有候选为空且 scope 很小时才同步解析整个 scope。大 scope 不做同步全量 structural，避免把一次搜索变成隐式全项目索引。
 
 #### 10.1.8 CancellationToken 可中断提取
 
 Lazy extraction 的 budget 约束已从"循环守卫"升级为"可中断提取"：
 
-- **`CancelCheck` trait**（`extraction/cancel.rs`）：`fn is_cancelled(&self) -> bool`。`NeverCancel` 作为向后兼容 sentinel。
+- **`CancelCheck` trait**（`extraction/cancel.rs`）：`fn is_cancelled(&self) -> bool`。`NeverCancel` 作为不需要取消能力的 no-op sentinel。
 - **`extract_file_with_mode_cancellable`**（`extraction/extract.rs`）：在以下检查点插入 token 检查（CP1-CP4）：
   - CP1: `tl_parse()` 之前 — 进入时预算已耗尽则跳过 parse
   - CP2: 符号查询之后
@@ -543,19 +547,74 @@ analysis_contract
   safe_conclusions       当前 capability mask 支持的结论
   unsafe_conclusions     缺失能力导致不能证明的结论
   capability_summary     mask bits、best capability、文件能力分布
-  refinement_jobs        可提升结果质量的后台/后续构建建议
+  refinement_available   当前结果是否可通过后台构建继续提升
 ```
+
+`analysis_contract` 只声明当前结果能证明什么、不能证明什么，以及是否存在
+可提升空间；它不承载后台任务列表。所有后台工作、重试和等待语义统一进入
+public `work` envelope，并由 `tasks` / `task_status` / `wait_for_task`
+观察或等待。
 
 `query_id` 是 MCP 层概念，不复用 extraction job id。查询快照保存在 MCP session 内存中，默认 TTL 5 分钟；`resume_task(query_id)` 使用原 tool 参数和 `LazyWindow` 重新执行查询，返回完整增强结果而不是 diff。MCP server 重启后 query snapshot 丢失。
 
 `Investigation` 是 MCP session 级隐式调查上下文，不提供用户可见的 create/close API。分析类工具会根据 symbol、position 或 field focus 更新 active investigation，并把相关文件/符号和期望能力传给 lazy 调度器。TTL 同样为 5 分钟。
 
-#### 10.1.10 Focus Runtime 与 Lazy 的关系
+#### 10.1.10 统一对外分析认知界面
+
+MCP 分析响应必须提供一套稳定的 public analysis view，作为 Agent 判断
+“当前结果是否可用、覆盖到哪里、还缺什么、是否需要等待”的唯一认知界面。
+内部可以有多套状态机，但外部不能要求 Agent 理解 lazy/focus/bootstrap/
+resolver/graph/corpus 的内部生命周期。
+
+```text
+analysis
+  state       ready | usable_partial | building | blocked | failed | stale
+  scope       repo | local | file | symbol | query | corpus
+  summary     当前可用事实和限制的短说明
+  next_action use_result | use_result_or_wait_for_refinement | wait |
+              narrow_scope | run_full_index | retry | inspect_gaps
+```
+
+外部响应只允许通过以下字段表达分析状态：
+
+| Public field | 职责 |
+|--------------|------|
+| `analysis` | 当前结果的可用性、范围和下一步动作。 |
+| `precision` | 覆盖范围和语义置信度。 |
+| `coverage_counts` | 公开 coverage label 的数量分布。 |
+| `gaps` | 明确、可解释的已知缺口。 |
+| `analysis_contract` | 当前数据能支持/不能支持的结论。 |
+| `work` | 后台提升、等待和重试状态。 |
+
+内部状态源包括 `extraction_state`、`extraction_jobs`、query snapshot、
+lazy diagnostics、focus closure coverage、bootstrap tiers、scoped resolution、
+graph refresh、TaskManager、以及未来 atlas-corpus 的 repo/version/branch
+状态。它们必须先归一化成 public analysis view，不得直接泄漏为新的
+public 字段或要求 Agent 组合多个内部状态自行判断。
+
+状态归一规则：
+
+| Internal condition | Public interpretation |
+|--------------------|-----------------------|
+| full-index facts fresh and query evidence complete | `analysis.state=ready`, `precision.coverage=repo_complete` |
+| closure/local scope complete, repo boundary未展开 | `analysis.state=ready` 或 `usable_partial`, `precision.coverage=local_complete`/`boundary` |
+| manifest/basic facts only but result仍可用于名称定位 | `analysis.state=usable_partial`, `precision.coverage=basic` |
+| background work can improve result | `analysis.next_action=use_result_or_wait_for_refinement`, `work.status=running|queued` |
+| current query cannot be answered without more work | `analysis.state=building`, `analysis.next_action=wait` |
+| budget、fanout、语言能力或配置限制阻止证明 | `analysis.state=blocked`, `analysis.next_action=inspect_gaps|narrow_scope` |
+| source hash or layer freshness mismatch | `analysis.state=stale`, `analysis.next_action=retry` |
+
+`lazy_diagnostics`、`focus`、closure id、bootstrap tier、scheduler priority、
+raw extraction job id、corpus version worker id 等只能作为内部诊断或 debug
+信息存在；默认 MCP 契约不得暴露它们。旧 public 字段必须删除，不做双写、
+别名或过渡输出。
+
+#### 10.1.11 Focus Runtime 与 Lazy 的关系
 
 Focus 是查询时 lazy 机制的下一代控制平面，不是新的 extraction
 pipeline。Lazy 负责按需构建 facts；Focus 负责围绕用户意图决定构建哪些
 facts、按什么顺序构建、在哪个 closure scope 中可见，以及如何声明
-precision/gaps/pending。
+analysis/precision/gaps/work。
 
 长期边界：
 
@@ -573,7 +632,12 @@ precision/gaps/pending。
   overlay；只有 full-index/shared pipeline 可以更新全局
   `references.resolved_*` 和 repo-wide `symbol_edges`。
 - `Precision { coverage, confidence }` 是 Focus 结果的主语义；
-  `PrecisionTier` 只作为迁移兼容字段保留。
+  `PrecisionTier` 不进入 public MCP contract。仍存在的内部使用点必须改为
+  `Precision` 或局部私有 adapter，不能作为响应字段保留。
+- Focus 是内部机制，不是 public response surface。默认 MCP 响应和
+  `atlas_status` 不暴露 `focus`、closure id、scheduler priority、
+  bootstrap tier 或 focus-specific pending queue；只暴露公开语义的
+  `precision`、`coverage_counts`、`gaps` 和统一 `work`。
 
 ### 内容哈希一致性
 
@@ -605,7 +669,7 @@ discover files
 - HashCheck 的 clean 定义是“content hash 相同 + fresh complete file-level `extraction_state` 覆盖本次 `ExtractionMode` 所需 capability”。hash 相同但缺目标 capability 的文件必须进入 dirty set，以支持 manifest → structural → full 的无源码变更升级。
 - 目标 capability 映射为：`Manifest`/`ResolutionSymbols` 需要 manifest，`Structural` 需要 structural，`Full` 需要 dataflow；更高层 capability 可满足低层要求。
 - `project_metadata` 中 `last_index_time`、`last_sync_time` 等可选键不存在时表示未知/尚未发生，不是错误，不得产生 warning；只有表/列/SQL 等真实查询失败才记录 warning/error。
-- 当前版本未发布，不做旧 schema 运行时兼容 fallback；如果 schema contract 改变，应更新 DDL 和调用方，并要求重新建库/重索引。
+- 当前版本未发布，不保留旧 schema 运行时 fallback；如果 schema contract 改变，应更新 DDL 和调用方，并要求重新建库/重索引。
 - `filesync::clean_stale_file_*` 是 stale facts 清理边界；所有入口必须先清理 incoming refs 和 outgoing edges，再删除旧 facts。
 - path alias 配置文件集合由 `resolution::PATH_ALIAS_CONFIG_FILES` 定义，当前为 `tsconfig.json` 和 `jsconfig.json`；检测、提交 hash、加载 resolver 必须使用同一来源。
 - 此契约（入口管参数/锁/UI/进度，管线管索引机制）是核心架构不变式，由 `pipeline_equivalence` 集成测试验证：同一项目通过不同入口索引必须产生相同 DB 状态（files/symbols/edges/summaries）。`IndexPipeline`（全量）与 `IncrementalPipeline`（增量）是仅有的 DB 变更编排路径；CLI/TUI 不得复制 phase 逻辑。
@@ -624,7 +688,62 @@ discover files
 
 - `ProgressSink` trait：入口注入终端进度、MCP notification 或 no-op。
 - `CancelToken`：前台/后台均可中断执行，取消是正常降级路径。
-- `task_id`：所有异步操作注册到 `TaskManager`，通过 `tasks`/`task_status`/`wait_for_task` 可观测。
+- `WorkRegistry`：所有异步或后台提升工作注册到统一 work registry，
+  包括 full index、lazy extraction、focus refinement、graph refresh、
+  project activation 和后续 atlas-corpus 版本/分支分析任务。
+- `task_id`：MCP `TaskManager` 是 `WorkRegistry` 的 public adapter。
+  可等待工作必须映射到 public `task_id`，通过 `tasks` / `task_status` /
+  `wait_for_task` 可观测。不可等待的后台预热仍可出现在响应 `work.items`
+  中，但必须标记 `waitable=false` 并提供 `retry_after_ms` 或 next action。
+
+Public `work` 是唯一的后台状态模型，但不是每个 MCP tool response 的必
+带字段。普通分析响应只解释本次结果；全局后台运行状态只能通过显式
+`project(status)`、`tasks`、`task_status`、`wait_for_task` 或后续
+`work_status` 查询获得。
+
+分析类 tool response 只有在后台工作和本次结果直接相关时才携带 `work`：
+
+- 本次查询触发了 lazy extraction、focus refinement、graph refresh 或 corpus
+  局部构建。
+- 当前结果是 `usable_partial` / `building` / `stale`，且后台工作会改变本次
+  查询的质量或可用性。
+- `analysis.next_action` 是 `wait` 或 `use_result_or_wait_for_refinement`。
+- 响应需要给出本次查询可等待的 public `task_id`。
+
+不得把无关的全局 indexing、project activation、corpus sync、预热队列深度
+塞进每个 tool response。无关后台状态属于 status/task 工具，不属于普通查
+询结果 envelope。
+
+```text
+analysis response
+  analysis          required for analysis tools
+  precision         required when semantic confidence matters
+  coverage_counts   optional; include when coverage distribution explains result quality
+  gaps              optional; include when non-empty or state is partial/blocked
+  analysis_contract required for tools that make semantic claims
+  work              optional; include only when relevant to this response
+```
+
+`work` 形态：
+
+```text
+work
+  relevant      true
+  status        idle | queued | running | partial | blocked | complete | failed
+  items[]       public work/task items relevant to the current response
+    id          public task/work id, never closure id or extraction row id
+    kind        indexing | analysis_refinement | graph_refresh | project_activation | corpus_sync
+    state       queued | running | complete | failed | cancelled | blocked
+    scope       project | query | local | file | symbol | corpus
+    reason      user/agent-readable reason for the background work
+    progress    optional percent or done/total
+    waitable    whether wait_for_task/task_status can observe this item
+```
+
+不得再新增 `pending`、`pending_closures`、`pending_job_ids`、
+`refinement_jobs`、focus-specific queue depth 等平行字段。已有 public
+历史字段必须删除，语义并入同一个 `WorkRegistry` 和 public `work`
+envelope；但 `work` 只在与本次响应相关时出现。
 
 ### 10.5 v1.4.1 以来的架构收敛约束
 
@@ -634,8 +753,8 @@ v1.4.1 之后的清理目标不是单纯减少行数，而是把重复实现压�
 - **入口层只做编排**：CLI、TUI、MCP 只解释参数、处理锁、进度、后台任务和用户可见错误。dirty check、stale cleanup、capability upgrade、precision downgrade guard、resolution、graph build 和 summary build 都必须走 engine/filesync/service 层的共享入口。
 - **抽取层 helper 只承载机械一致性**：`languages::shared` 可以统一 `TextRange`、deterministic ID、`ScopeDef`、`BindingDef`、`ReferenceUse`、常见 `DataNode` 默认字段和 call-expression 查找。语言语义差异、特殊 AST 形状、return/callsite/field 规则必须留在各语言 adapter；禁止回到大型 `GenericExtractor`。
 - **trait 默认实现只表达真正相同的规则**：如 `LanguageRuleKinds::validate_rule` 这类跨语言完全一致的校验可以进入 trait default；只要某语言的 rule kind、pattern、metadata 或展示名语义不同，就必须在 registry 中显式覆盖，而不是在默认实现里堆条件分支。
-- **MCP lazy envelope 只有一个构建路径**：触发 lazy structural/dataflow 的 tool 响应必须通过 `LazyResponse` 或等价共享 builder 注入 `precision_tier`、`hint`、`warnings`、`lazy_diagnostics`、`analysis_contract`、`query_id` 和 `QuerySnapshot`。Graph、trace、search、context handler 不得手写同一 envelope，以免字段、status 或 retry 语义漂移。
-- **public facade 改造必须保留调用者 ergonomics**：`atlas-engine` stable re-export 是外部契约。用 trait 替代 type alias、闭包或函数指针时，必须提供 blanket impl、兼容 wrapper 或迁移期 API，确保旧的自然调用方式不会无意中失效。`Internal / Prelude` re-export 可以服务 workspace 内部，但不得被文档描述为稳定外部 API。
+- **MCP analysis envelope 只有一个构建路径**：触发 lazy structural/dataflow、focus refinement 或 corpus 局部分析的 tool 响应必须通过 `AnalysisResponse` 等共享 builder 注入 `analysis`、`precision`、`coverage_counts`、`gaps`、`analysis_contract`、`query_id` 和 `QuerySnapshot`；`work` 由 builder 按“是否与本次响应相关”决定是否附带。`precision_tier`、`hint`、`lazy_diagnostics` 等旧 public 字段必须删除；需要保留的低层诊断只能进入内部 debug 日志或显式 debug-only 工具。Graph、trace、search、context handler 不得手写同一 envelope，以免字段、status 或 retry 语义漂移。
+- **public facade 改造以目标 API 为准**：快速原型期允许 breaking change。`atlas-engine` re-export 应保持调用者 ergonomics，但不得为了旧调用方式保留 wrapper、别名或过渡 API。`Internal / Prelude` re-export 可以服务 workspace 内部，但不得被文档描述为稳定外部 API。
 - **测试支撑 API 不等同于死代码**：仅测试使用的构造器或 provider 注入点必须通过 `pub(crate)`、`#[cfg(test)]` 或注释明确用途；不能因为生产路径零调用就删除，也不能用无理由的 `#[allow(dead_code)]` 掩盖。
 - **policy module 可以优先于 policy struct**：当规则只是一组纯函数和一个 guard（例如 index precision downgrade）时，保持自由函数模块更清晰。只有当对象需要携带跨入口生命周期、统一日志/遥测、或多条规则共同依赖的状态时，才引入 `Policy` struct。
 
@@ -711,7 +830,7 @@ pub fn resolve_symbol_input(
 
 ### 11.3 MCP
 - 基于 `rmcp` 的 stdio JSON-RPC transport。
-- **18 个工具**：v1.3.1 将 33 个旧工具合并精简为 18 个。所有工具使用短名（无 `atlas_` 前缀）。Breaking change，不保留别名兼容。
+- **18 个工具**：v1.3.1 将 33 个旧工具合并精简为 18 个。所有工具使用短名（无 `atlas_` 前缀）。Breaking change，不保留旧别名。
 
 | 组 | 工具 |
 |----|------|
@@ -783,7 +902,7 @@ Atlas 不包含污点分析（taint analysis）。产品主线为变量来源追
 
 Trace/MCP lazy contract：
 - MCP trace 入口必须优先通过 high-level `Engine`，由 engine 触发必要的 lazy dataflow；raw analysis consumer 不负责触发 lazy。
-- 只要 lazy structural 或 lazy dataflow 被触发，响应就必须暴露 `lazy_diagnostics` 和 `analysis_contract`。即使 trace 没有找到 path，也必须说明已尝试的 lazy 层、partial/pending 状态和下一步动作。
+- 只要 lazy structural、lazy dataflow 或 focus refinement 被触发，响应就必须通过统一 public analysis view 暴露 `analysis`、`precision`、`gaps` 和 `analysis_contract`；只有当后台工作会影响本次 trace 结果时才附带 `work`。即使 trace 没有找到 path，也必须说明当前结果可用性、已知缺口和下一步动作；默认契约不暴露 `lazy_diagnostics`。
 - CFG-consuming tools（如 `branch_diff`、`lifecycle`）如果已经 re-query 到 CFG 并基于 CFG 产出结果，`analysis_contract` 必须反映“本次工具已证明 CFG 可用”；不能同时返回 CFG 分析结果又声明 CFG 不可分析。
 - `analysis_contract.safe_conclusions` 和 `unsafe_conclusions` 必须直接来源于 capability mask 或本次工具已验证的事实，不允许使用推测性默认值。
 

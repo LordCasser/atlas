@@ -22,6 +22,9 @@ pub mod edge_policy;
 pub mod scheduler;
 pub mod writer_coordinator;
 pub mod focus_graph_builder;
+pub mod work_registry;
+
+pub use work_registry::{WorkRegistry, WorkView, WorkItem, WorkStatus, WorkSource};
 
 #[cfg(test)]
 mod engine_tests;

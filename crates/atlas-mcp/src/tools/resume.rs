@@ -50,12 +50,22 @@ impl ToolRouter {
             let file_ids: Vec<atlas_engine::FileId> =
                 window.units.iter().map(|u| u.file_id).collect();
             let investigation = self.investigation_state.active_investigation.clone();
+            let intent = window
+                .seed_unit
+                .symbol_id
+                .and_then(|sid| self.store.find_symbol_by_id(&sid).ok().flatten())
+                .map(|sym| atlas_engine::QueryIntent::Calls {
+                    symbol_name: sym.name.clone(),
+                    file_id: Some(sym.file_id),
+                    symbol_id: None,
+                });
             if !file_ids.is_empty() {
                 let _ = self.ensure_structural_for_files(
                     file_ids,
                     include_roots,
                     investigation.as_ref(),
                     None,
+                    intent,
                 );
             }
 

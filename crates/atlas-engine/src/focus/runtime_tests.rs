@@ -429,3 +429,153 @@ fn test_on_file_read_queues_recent_job() {
     assert_eq!(depths[2], (FocusPriority::Recent, 1),
         "on_file_read should create one Recent-priority job");
 }
+
+// ── Tests: Explore intent ────────────────────────────────────────────────────
+
+#[test]
+fn test_prepare_explore_intent() {
+    let store = test_store();
+    let file_id = insert_file_structural_complete(&store, "src/main.c");
+    let mut rt = FocusRuntime::new(store, None);
+    let intent = QueryIntent::Explore {
+        symbol_name: "main".to_string(),
+        file_id: Some(file_id),
+        symbol_id: None,
+    };
+    let result = rt.prepare(&intent).unwrap();
+    assert_eq!(result.mode, IndexMode::Focus);
+    assert!(result.closure_id.is_some(), "focus path should produce a closure_id");
+    assert_eq!(result.seed_file_id, Some(file_id),
+        "seed file should match provided file_id");
+}
+
+// ── Tests: Context intent ────────────────────────────────────────────────────
+
+#[test]
+fn test_prepare_context_intent() {
+    let store = test_store();
+    let file_id = insert_file_structural_complete(&store, "src/main.c");
+    let mut rt = FocusRuntime::new(store, None);
+    let intent = QueryIntent::Context {
+        symbol_name: "main".to_string(),
+        file_id: Some(file_id),
+        symbol_id: None,
+    };
+    let result = rt.prepare(&intent).unwrap();
+    assert_eq!(result.mode, IndexMode::Focus);
+    assert!(result.closure_id.is_some(), "focus path should produce a closure_id");
+}
+
+// ── Tests: TraceVariable intent ──────────────────────────────────────────────
+
+#[test]
+fn test_prepare_trace_variable_intent() {
+    let store = test_store();
+    let file_id = insert_file_structural_complete(&store, "src/main.c");
+    let mut rt = FocusRuntime::new(store, None);
+    let intent = QueryIntent::TraceVariable {
+        file_id,
+        line: 10,
+        column: 5,
+    };
+    let result = rt.prepare(&intent).unwrap();
+    assert_eq!(result.mode, IndexMode::Focus);
+    assert_eq!(result.seed_file_id, Some(file_id),
+        "seed file should match trace variable file");
+}
+
+// ── Tests: Search intent ─────────────────────────────────────────────────────
+
+#[test]
+fn test_prepare_search_intent() {
+    let store = test_store();
+    let _file_id = insert_file_structural_complete(&store, "src/main.c");
+    let mut rt = FocusRuntime::new(store, None);
+    let intent = QueryIntent::Search {
+        query: "foo".to_string(),
+        scope: None,
+    };
+    let result = rt.prepare(&intent).unwrap();
+    assert_eq!(result.mode, IndexMode::Focus,
+        "search should enter focus path");
+    assert!(result.closure_id.is_some(), "search should produce a closure_id");
+}
+
+// ── Tests: FullIndex for all intents ─────────────────────────────────────────
+
+#[test]
+fn test_prepare_full_index_all_intents() {
+    let store = test_store();
+    store.set_metadata("resolution_generation_version", "1").unwrap();
+    let file_id = insert_file_structural_complete(&store, "src/main.c");
+    let mut rt = FocusRuntime::new(store, None);
+
+    // Test all 6 variants return FullIndex when metadata present
+    let intents: Vec<QueryIntent> = vec![
+        QueryIntent::Calls {
+            symbol_name: "test".into(),
+            file_id: Some(file_id),
+            symbol_id: None,
+        },
+        QueryIntent::Explore {
+            symbol_name: "test".into(),
+            file_id: Some(file_id),
+            symbol_id: None,
+        },
+        QueryIntent::Search {
+            query: "test".into(),
+            scope: None,
+        },
+        QueryIntent::Context {
+            symbol_name: "test".into(),
+            file_id: Some(file_id),
+            symbol_id: None,
+        },
+        QueryIntent::TracePoint {
+            file_id,
+            line: 1,
+            column: 1,
+        },
+        QueryIntent::TraceVariable {
+            file_id,
+            line: 1,
+            column: 1,
+        },
+    ];
+
+    for intent in &intents {
+        let result = rt.prepare(intent).unwrap();
+        assert_eq!(result.mode, IndexMode::FullIndex,
+            "all intents should return FullIndex when metadata present");
+        assert!(result.precision.is_none(),
+            "FullIndex mode should have no precision");
+    }
+}
+
+// ── Tests: Explore vs Calls same seed behavior ───────────────────────────────
+
+#[test]
+fn test_locate_seed_explore_vs_calls_same_behavior() {
+    let store = test_store();
+    let file_id = insert_file_structural_complete(&store, "src/main.c");
+    let mut rt = FocusRuntime::new(store, None);
+
+    let calls_intent = QueryIntent::Calls {
+        symbol_name: "main".to_string(),
+        file_id: Some(file_id),
+        symbol_id: None,
+    };
+    let explore_intent = QueryIntent::Explore {
+        symbol_name: "main".to_string(),
+        file_id: Some(file_id),
+        symbol_id: None,
+    };
+
+    let calls_result = rt.prepare(&calls_intent).unwrap();
+    let explore_result = rt.prepare(&explore_intent).unwrap();
+
+    assert_eq!(calls_result.mode, IndexMode::Focus);
+    assert_eq!(explore_result.mode, IndexMode::Focus);
+    assert_eq!(calls_result.seed_file_id, explore_result.seed_file_id,
+        "Explore and Calls should produce same seed_file_id");
+}

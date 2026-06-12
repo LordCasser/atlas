@@ -230,8 +230,7 @@ impl ToolRouter {
         ctx.send_progress(1.0, &format!("Search complete ({} results)", hits.len()));
 
         let lr = LazyResponse::new("search", args);
-        lr.with_precision_tier(engine_resp.precision_tier)
-            .with_root_warnings(root_warnings)
+        lr.with_root_warnings(root_warnings)
             .with_lazy_warnings(engine_resp.warnings)
             .with_is_error(false)
             .build(response, self)
@@ -415,7 +414,6 @@ impl ToolRouter {
         );
         let sym;
         let lazy_warnings;
-        let structural_tier;
         let mut lazy_diag: Option<LazyDiagnostics> = None;
         match resolution {
             Ok(SymbolResolution::Single { symbol_id, .. }) => {
@@ -430,9 +428,13 @@ impl ToolRouter {
                         include_roots.clone(),
                         investigation.as_ref(),
                         Some(&query_id),
+                        Some(atlas_engine::QueryIntent::Context {
+                            symbol_name: qname.to_string(),
+                            file_id: Some(s.file_id),
+                            symbol_id: None,
+                        }),
                     );
                     lazy_warnings = outcome.warnings;
-                    structural_tier = outcome.precision_tier;
                     if let Some(ref lo) = outcome.lazy_outcome {
                         let stats = self.get_capability_stats();
                         lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
@@ -455,9 +457,7 @@ impl ToolRouter {
                             let diag = self.file_path_diagnostic(&symbol_input);
                             let amb_resp = Self::build_ambiguous_symbol_body(&qname, &candidates, diag.as_deref());
                             return lr.with_is_error(true)
-                                     .with_precision_tier(structural_tier)
                                      .with_lazy_warnings(lazy_warnings)
-                                     .with_lazy_diag(lazy_diag)
                                      .build_with_args(amb_resp, args, self);
                         }
                         _ => s,
@@ -481,9 +481,13 @@ impl ToolRouter {
                     include_roots.clone(),
                     None,
                     Some(&query_id),
+                    Some(atlas_engine::QueryIntent::Context {
+                        symbol_name: qname.to_string(),
+                        file_id: None,
+                        symbol_id: None,
+                    }),
                 );
                 lazy_warnings = outcome.warnings;
-                structural_tier = outcome.precision_tier;
                 if let Some(ref lo) = outcome.lazy_outcome {
                     let stats = self.get_capability_stats();
                     lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
@@ -509,9 +513,7 @@ impl ToolRouter {
                         let diag = self.file_path_diagnostic(&symbol_input);
                         let amb_resp = Self::build_ambiguous_symbol_body(&qname, &candidates, diag.as_deref());
                         return lr.with_is_error(true)
-                                 .with_precision_tier(structural_tier)
                                  .with_lazy_warnings(lazy_warnings)
-                                 .with_lazy_diag(lazy_diag)
                                  .build_with_args(amb_resp, args, self);
                     }
                     Ok(SymbolResolution::NotFound { .. }) => {
@@ -570,10 +572,8 @@ impl ToolRouter {
             obj.insert("view".into(), serde_json::Value::String("detail".into()));
         }
 
-        lr.with_precision_tier(structural_tier)
-            .with_root_warnings(Vec::new()) // already merged via add_json_warnings above
+        lr.with_root_warnings(Vec::new()) // already merged via add_json_warnings above
             .with_lazy_warnings(Vec::new()) // already merged via add_json_warnings above
-            .with_lazy_diag(lazy_diag)
             .with_analysis_contract(false) // symbol detail does not include analysis_contract
             .with_is_error(false)
             .build_with_args(result, &stored_args, self)

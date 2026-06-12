@@ -4,7 +4,7 @@
 //! with effect annotations to produce a state-machine view of the field's
 //! lifecycle: allocation, use, escape, free, and suspicious patterns (use-after-free, double-free).
 
-use super::lazy_response::{LazyDiagnostics, LazyResponse};
+use super::lazy_response::LazyResponse;
 use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str};
 use crate::tools::symbol_selector::{
     parse_symbol_input, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
@@ -70,7 +70,17 @@ impl ToolRouter {
         // Ensure structural data is available (may trigger lazy extraction)
         if let Ok(Some(sym)) = self.store.find_symbol_by_id(&sid) {
             let (roots, _warnings) = self.include_roots_from_args(args);
-            let _ = self.ensure_structural_for_files([sym.file_id], roots, None, Some(&query_id));
+            let _ = self.ensure_structural_for_files(
+                [sym.file_id],
+                roots,
+                None,
+                Some(&query_id),
+                Some(atlas_engine::QueryIntent::Calls {
+                    symbol_name: sym.name.clone(),
+                    file_id: Some(sym.file_id),
+                    symbol_id: None,
+                }),
+            );
         }
 
         // Load CFG nodes for this function, with lazy CFG fallback
@@ -107,7 +117,6 @@ impl ToolRouter {
                 }
                 Err(e) => {
                     // Lazy extraction itself failed — return graceful diagnostics
-                    let diagnostics = LazyDiagnostics::from_layers(None, None, None);
                     let resp = json!({
                         "ok": false,
                         "function": symbol,
@@ -115,7 +124,6 @@ impl ToolRouter {
                         "error": format!("CFG not available for lifecycle analysis: {:#}", e),
                     });
                     return lr.with_is_error(true)
-                        .with_lazy_diag(diagnostics)
                         .build(resp, self);
                 }
             }
@@ -123,15 +131,13 @@ impl ToolRouter {
 
         // After all attempts, if CFG is still unavailable, return graceful diagnostics
         if cfg_nodes.is_empty() {
-            let diagnostics = LazyDiagnostics::from_layers(None, lazy_window.as_ref(), None);
             let resp = json!({
                 "ok": false,
                 "function": symbol,
                 "field_path": field,
-                "message": "CFG not available for lifecycle analysis. The function may be in a language that does not yet support CFG extraction, or the source file could not be read. Consider running 'index' with full structural analysis first.",
+                "message": "CFG not available for lifecycle analysis...",
             });
             return lr.with_is_error(true)
-                .with_lazy_diag(diagnostics)
                 .build(resp, self);
         }
 
@@ -233,13 +239,7 @@ impl ToolRouter {
             })).collect::<Vec<_>>(),
         });
 
-        // Build lazy_diag from lazy_window if dataflow was triggered
-        let lazy_diag: Option<LazyDiagnostics> = lazy_window
-            .as_ref()
-            .and_then(|window| LazyDiagnostics::from_layers(None, Some(window), None));
-
         lr.with_is_error(false)
-            .with_lazy_diag(lazy_diag)
             .build(resp, self)
     }
 }

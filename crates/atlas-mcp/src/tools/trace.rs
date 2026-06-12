@@ -100,14 +100,8 @@ impl ToolRouter {
             include_roots,
             investigation.as_ref(),
             Some(&query_id),
+            Some(atlas_engine::QueryIntent::TracePoint { file_id, line, column }),
         );
-        // Capture lazy diagnostics before outcome fields are moved.
-        let stats = self.get_capability_stats();
-        let lazy_diag: Option<LazyDiagnostics> = outcome
-            .lazy_outcome
-            .as_ref()
-            .map(|lo| LazyDiagnostics::from_structural_with_stats(lo, stats.as_ref()));
-
         ctx.send_progress(0.8, "Running trace point...");
         let mut resp = self
             .engine
@@ -129,13 +123,9 @@ impl ToolRouter {
 
         let is_error = !resp.ok;
 
-        let tier = outcome.precision_tier;
         let resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
 
-        lr.with_structural_keys()
-            .with_precision_tier(tier)
-            .with_lazy_diag(lazy_diag)
-            .with_partial_result(resp.partial_result)
+        lr.with_partial_result(resp.partial_result)
             .with_is_error(is_error)
             .build(resp_value, self)
     }
@@ -224,10 +214,8 @@ impl ToolRouter {
             include_roots,
             investigation.as_ref(),
             Some(&query_id),
+            Some(atlas_engine::QueryIntent::TraceVariable { file_id, line, column }),
         );
-        // Capture structural lazy outcome before fields are moved.
-        let structural_lo = outcome.lazy_outcome.clone();
-
         // Engine::trace_variable handles lazy dataflow orchestration + trace
         // in a single call.  The response already carries lazy_summary,
         // diagnostics, and partial_result from the dataflow layer.
@@ -236,36 +224,6 @@ impl ToolRouter {
             .lock()
             .unwrap()
             .trace_variable(&file_id, line, column, max_depth);
-
-        // Build combined lazy diagnostics from the structural outcome.
-        // Engine already injects dataflow-layer diagnostics into resp.diagnostics;
-        // we surface the structural layer separately so the agent sees both.
-        let stats = self.get_capability_stats();
-        let mut combined_lazy_diag: Option<LazyDiagnostics> = structural_lo
-            .as_ref()
-            .map(|lo| LazyDiagnostics::from_structural_with_stats(lo, stats.as_ref()));
-
-        // Populate dataflow diagnostics from Engine's LazySummary (P2#14).
-        // After routing through Engine, the MCP layer no longer has a direct
-        // LazyWindow from dataflow extraction — but Engine's response carries
-        // the summary.  Convert it so the agent sees both structural AND
-        // dataflow layer stats in the lazy_diagnostics block.
-        //
-        // When structural_lo is None (already cached), the dataflow summary
-        // must still be surfaced on its own.  When structural_lo is Some, the
-        // dataflow layer is populated alongside the existing structural layer.
-        // This check runs independently of resp.result — dataflow extraction
-        // may succeed even when no trace path is found.
-        if let Some(ref summary) = resp.lazy_summary {
-            match combined_lazy_diag {
-                Some(ref mut diag) => {
-                    diag.dataflow = Some(LazyLayerDiagnostics::from_lazy_summary(summary));
-                }
-                None => {
-                    combined_lazy_diag = Some(LazyDiagnostics::from_dataflow_summary(summary));
-                }
-            }
-        }
 
         // Merge structural-partial flag into Engine's dataflow partial_result.
         let lazy_partial = !outcome.warnings.is_empty();
@@ -280,13 +238,9 @@ impl ToolRouter {
         ));
         let is_error = !resp.ok;
 
-        let tier = outcome.precision_tier;
         let resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
 
-        lr.with_structural_keys()
-            .with_precision_tier(tier)
-            .with_lazy_diag(combined_lazy_diag)
-            .with_partial_result(resp.partial_result)
+        lr.with_partial_result(resp.partial_result)
             .with_is_error(is_error)
             .build(resp_value, self)
     }
@@ -339,7 +293,6 @@ impl ToolRouter {
             tracing::warn!("include_roots: {}", w);
         }
         let mut lazy_warnings = Vec::new();
-        let mut structural_tier = atlas_engine::structs::precision::PrecisionTier::Exact;
         let mut lazy_diag: Option<LazyDiagnostics> = None;
 
         let lr = LazyResponse::new("trace", args);
@@ -404,9 +357,13 @@ impl ToolRouter {
                 include_roots.clone(),
                 investigation.as_ref(),
                 Some(&query_id),
+                Some(atlas_engine::QueryIntent::Calls {
+                    symbol_name: sym.name.clone(),
+                    file_id: Some(sym.file_id),
+                    symbol_id: None,
+                }),
             );
             lazy_warnings = outcome.warnings;
-            structural_tier = outcome.precision_tier;
             if let Some(ref lo) = outcome.lazy_outcome {
                 let stats = self.get_capability_stats();
                 lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
@@ -445,10 +402,7 @@ impl ToolRouter {
             }
         }
 
-        lr.with_structural_keys()
-            .with_precision_tier(structural_tier)
-            .with_lazy_diag(lazy_diag)
-            .with_is_error(is_error)
+        lr.with_is_error(is_error)
             .build(resp_value, self)
     }
 
@@ -530,7 +484,6 @@ impl ToolRouter {
             tracing::warn!("include_roots: {}", w);
         }
         
-        let mut structural_tier = atlas_engine::structs::precision::PrecisionTier::Exact;
         let mut lazy_diag: Option<LazyDiagnostics> = None;
 
         let lr = LazyResponse::new("trace", args);
@@ -624,14 +577,24 @@ impl ToolRouter {
                 file_set.insert(sym.file_id);
             }
         }
+        let intent = self
+            .store
+            .find_symbol_by_id(&from_id)
+            .ok()
+            .flatten()
+            .map(|sym| atlas_engine::QueryIntent::Calls {
+                symbol_name: sym.name.clone(),
+                file_id: Some(sym.file_id),
+                symbol_id: None,
+            });
         let outcome = self.ensure_structural_for_files(
             file_set,
             include_roots,
             investigation.as_ref(),
             Some(&query_id),
+            intent,
         );
         let lazy_warnings = outcome.warnings;
-        structural_tier = std::cmp::min(structural_tier, outcome.precision_tier);
         if let Some(ref lo) = outcome.lazy_outcome {
             let stats = self.get_capability_stats();
             lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
@@ -675,10 +638,7 @@ impl ToolRouter {
             }
         }
 
-        lr.with_structural_keys()
-            .with_precision_tier(structural_tier)
-            .with_lazy_diag(lazy_diag)
-            .with_is_error(is_error)
+        lr.with_is_error(is_error)
             .build(resp_value, self)
     }
 }

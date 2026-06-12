@@ -132,8 +132,7 @@ impl ToolRouter {
                     "candidates": candidates,
                     "next_query": "Pick a candidate and use its symbol_ref as symbol parameter.",
                 });
-                lr.with_precision_tier(PrecisionTier::Exact)
-                    .with_root_warnings(root_warnings)
+                lr.with_root_warnings(root_warnings)
                     .with_is_error(false)
                     .build_with_args(result, args, self)
             }
@@ -275,10 +274,8 @@ impl ToolRouter {
             obj.insert("view".into(), serde_json::Value::String("context".into()));
         }
 
-        lr.with_precision_tier(tier)
-            .with_root_warnings(root_warnings)
+        lr.with_root_warnings(root_warnings)
             .with_lazy_warnings(lazy_warnings)
-            .with_lazy_diag(lazy_diag)
             .with_is_error(false)
             .build_with_args(result, &stored_args, self)
     }
@@ -323,9 +320,13 @@ impl ToolRouter {
                         include_roots,
                         investigation,
                         query_id,
+                        Some(atlas_engine::QueryIntent::Context {
+                            symbol_name: qname.to_string(),
+                            file_id: Some(sym.file_id),
+                            symbol_id: None,
+                        }),
                     );
                     warnings.extend(outcome.warnings);
-                    worst_tier = cmp::min(worst_tier, outcome.precision_tier);
                     if let Some(ref lo) = outcome.lazy_outcome {
                         let stats = self.get_capability_stats();
                         lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
@@ -363,9 +364,13 @@ impl ToolRouter {
                 include_roots,
                 investigation,
                 query_id,
+                Some(atlas_engine::QueryIntent::Context {
+                    symbol_name: qname.to_string(),
+                    file_id: Some(name_matches[0].file_id),
+                    symbol_id: None,
+                }),
             );
             warnings.extend(outcome.warnings);
-            worst_tier = cmp::min(worst_tier, outcome.precision_tier);
             if let Some(ref lo) = outcome.lazy_outcome {
                 let stats = self.get_capability_stats();
                 lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
@@ -394,9 +399,13 @@ impl ToolRouter {
                     include_roots,
                     investigation,
                     query_id,
+                    Some(atlas_engine::QueryIntent::Context {
+                        symbol_name: qname.to_string(),
+                        file_id: Some(matching_qnames[0].file_id),
+                        symbol_id: None,
+                    }),
                 );
                 warnings.extend(outcome.warnings);
-                worst_tier = cmp::min(worst_tier, outcome.precision_tier);
                 if let Some(ref lo) = outcome.lazy_outcome {
                     let stats = self.get_capability_stats();
                     lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
@@ -451,9 +460,13 @@ impl ToolRouter {
                 include_roots.clone(),
                 investigation,
                 query_id,
+                Some(atlas_engine::QueryIntent::Context {
+                    symbol_name: qname.to_string(),
+                    file_id: None,
+                    symbol_id: None,
+                }),
             );
             warnings.extend(outcome.warnings);
-            worst_tier = cmp::min(worst_tier, outcome.precision_tier);
             if let Some(ref lo) = outcome.lazy_outcome {
                 let stats = self.get_capability_stats();
                 lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(

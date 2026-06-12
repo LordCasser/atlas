@@ -4,7 +4,7 @@
 //! within a function. Detects suspicious asymmetries like one branch freeing
 //! a field while the other does not.
 
-use super::lazy_response::{LazyDiagnostics, LazyResponse};
+use super::lazy_response::LazyResponse;
 use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter};
 use crate::tools::symbol_selector::{
     parse_symbol_input, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
@@ -65,7 +65,17 @@ impl ToolRouter {
         // Ensure structural data is available
         if let Ok(Some(sym)) = self.store.find_symbol_by_id(&sid) {
             let (roots, _warnings) = self.include_roots_from_args(args);
-            let _ = self.ensure_structural_for_files([sym.file_id], roots, None, Some(&query_id));
+            let _ = self.ensure_structural_for_files(
+                [sym.file_id],
+                roots,
+                None,
+                Some(&query_id),
+                Some(atlas_engine::QueryIntent::Calls {
+                    symbol_name: sym.name.clone(),
+                    file_id: Some(sym.file_id),
+                    symbol_id: None,
+                }),
+            );
         }
 
         // Load CFG nodes for this function, with lazy CFG fallback
@@ -94,14 +104,12 @@ impl ToolRouter {
                 }
                 Err(e) => {
                     // Lazy extraction itself failed — return graceful diagnostics
-                    let diagnostics = LazyDiagnostics::from_layers(None, None, None);
                     let resp = json!({
                         "ok": false,
                         "function": symbol,
                         "error": format!("CFG not available for branch diff analysis: {:#}", e),
                     });
                     return lr.with_is_error(true)
-                        .with_lazy_diag(diagnostics)
                         .build(resp, self);
                 }
             }
@@ -109,14 +117,12 @@ impl ToolRouter {
 
         // After all attempts, if CFG is still unavailable, return graceful diagnostics
         if cfg_nodes.is_empty() {
-            let diagnostics = LazyDiagnostics::from_layers(None, lazy_window.as_ref(), None);
             let resp = json!({
                 "ok": false,
                 "function": symbol,
                 "message": "CFG not available for branch diff analysis. The function may be in a language that does not yet support CFG extraction, or the source file could not be read. Consider running 'index' with full structural analysis first.",
             });
             return lr.with_is_error(true)
-                .with_lazy_diag(diagnostics)
                 .build(resp, self);
         }
 
@@ -213,13 +219,7 @@ impl ToolRouter {
             })).collect::<Vec<_>>(),
         });
 
-        // Build lazy_diag from lazy_window if dataflow was triggered
-        let lazy_diag: Option<LazyDiagnostics> = lazy_window
-            .as_ref()
-            .and_then(|window| LazyDiagnostics::from_layers(None, Some(window), None));
-
         lr.with_is_error(false)
-            .with_lazy_diag(lazy_diag)
             .build(resp, self)
     }
 }

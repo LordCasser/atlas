@@ -7,7 +7,7 @@ use atlas_engine::analysis;
 use atlas_engine::{EdgeKind, InvestigationFocus, Store, SymbolId, SymbolKind, TraversalDirection};
 use atlas_engine::dossier::SourceRepository;
 
-use super::lazy_response::{LazyDiagnostics, LazyResponse};
+use super::lazy_response::LazyResponse;
 use super::{MAX_AMBIGUOUS_CANDIDATES, MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str, get_str_opt, get_u64};
 use crate::tools::symbol_selector::{
     ScoredCandidate, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
@@ -313,17 +313,24 @@ impl ToolRouter {
                 file_ids_set.insert(sym.file_id);
             }
         }
+        let intent = Some(atlas_engine::QueryIntent::Calls {
+            symbol_name: qname.to_string(),
+            file_id: file_ids_set.iter().next().copied(),
+            symbol_id: None,
+        });
         let outcome_files = self.ensure_structural_for_files(
             file_ids_set,
             vec![],
             investigation.as_ref(),
             Some(&query_id),
+            intent.clone(),
         );
         let outcome_name = self.ensure_structural_for_symbol_name(
             qname,
             vec![],
             investigation.as_ref(),
             Some(&query_id),
+            intent,
         );
 
         let cb = match self.context_builder() {
@@ -367,15 +374,8 @@ impl ToolRouter {
         // Lazy structural response — merge warnings from both outcomes
         let mut lazy_warnings: Vec<String> = outcome_files.warnings.clone();
         lazy_warnings.extend(outcome_name.warnings.clone());
-        let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
-        let lazy_diag: Option<LazyDiagnostics> = outcome_files
-            .lazy_outcome
-            .as_ref()
-            .map(LazyDiagnostics::from_structural);
 
-        let lr = lr.with_precision_tier(tier)
-            .with_lazy_warnings(lazy_warnings)
-            .with_lazy_diag(lazy_diag);
+        let lr = lr.with_lazy_warnings(lazy_warnings);
         let lr = outcome_files.apply_focus_to_lr(lr);
         let lr = outcome_name.apply_focus_to_lr(lr);
         lr.build_with_args(resp, args, self)
@@ -419,17 +419,24 @@ impl ToolRouter {
                 file_ids_set.insert(sym.file_id);
             }
         }
+        let intent = Some(atlas_engine::QueryIntent::Calls {
+            symbol_name: qname.to_string(),
+            file_id: file_ids_set.iter().next().copied(),
+            symbol_id: None,
+        });
         let outcome_files = self.ensure_structural_for_files(
             file_ids_set,
             vec![],
             investigation.as_ref(),
             Some(&query_id),
+            intent.clone(),
         );
         let outcome_name = self.ensure_structural_for_symbol_name(
             qname,
             vec![],
             investigation.as_ref(),
             Some(&query_id),
+            intent,
         );
 
         let cb = match self.context_builder() {
@@ -473,15 +480,8 @@ impl ToolRouter {
         // Lazy structural response — merge warnings from both outcomes
         let mut lazy_warnings: Vec<String> = outcome_files.warnings.clone();
         lazy_warnings.extend(outcome_name.warnings.clone());
-        let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
-        let lazy_diag: Option<LazyDiagnostics> = outcome_files
-            .lazy_outcome
-            .as_ref()
-            .map(LazyDiagnostics::from_structural);
 
-        let lr = lr.with_precision_tier(tier)
-            .with_lazy_warnings(lazy_warnings)
-            .with_lazy_diag(lazy_diag);
+        let lr = lr.with_lazy_warnings(lazy_warnings);
         let lr = outcome_files.apply_focus_to_lr(lr);
         let lr = outcome_name.apply_focus_to_lr(lr);
         lr.build_with_args(resp, args, self)
@@ -532,35 +532,40 @@ impl ToolRouter {
                 file_ids_set.insert(sym.file_id);
             }
         }
+        let intent = Some(atlas_engine::QueryIntent::Calls {
+            symbol_name: qname.to_string(),
+            file_id: file_ids_set.iter().next().copied(),
+            symbol_id: None,
+        });
         let outcome_files = self.ensure_structural_for_files(
             file_ids_set.clone(),
             vec![],
             investigation.as_ref(),
             Some(&query_id),
+            intent.clone(),
         );
         let outcome_name = self.ensure_structural_for_symbol_name(
             qname,
             vec![],
             investigation.as_ref(),
             Some(&query_id),
+            intent,
         );
 
-        let (lazy_warnings, tier, lazy_outcome) = match direction {
+        let (lazy_warnings, _lazy_outcome) = match direction {
             "incoming" => {
                 let mut w = outcome_files.warnings.clone();
                 w.extend(outcome_name.warnings.clone());
-                let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
-                (w, tier, outcome_files.lazy_outcome.clone())
+                (w, outcome_files.lazy_outcome.clone())
             }
             "outgoing" => {
-                (outcome_files.warnings.clone(), outcome_files.precision_tier, outcome_files.lazy_outcome.clone())
+                (outcome_files.warnings.clone(), outcome_files.lazy_outcome.clone())
             }
             // "both" or default — need both directions
             _ => {
                 let mut w = outcome_files.warnings.clone();
                 w.extend(outcome_name.warnings.clone());
-                let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
-                (w, tier, outcome_files.lazy_outcome.clone())
+                (w, outcome_files.lazy_outcome.clone())
             }
         };
 
@@ -707,12 +712,7 @@ impl ToolRouter {
             );
         }
 
-        let lazy_diag: Option<LazyDiagnostics> =
-            lazy_outcome.as_ref().map(LazyDiagnostics::from_structural);
-
-        let lr = lr.with_precision_tier(tier)
-            .with_lazy_warnings(lazy_warnings)
-            .with_lazy_diag(lazy_diag);
+        let lr = lr.with_lazy_warnings(lazy_warnings);
         let lr = outcome_files.apply_focus_to_lr(lr);
         let lr = outcome_name.apply_focus_to_lr(lr);
         lr.build_with_args(resp, args, self)
@@ -803,19 +803,19 @@ impl ToolRouter {
                 file_ids_set.insert(sym.file_id);
             }
         }
+        let intent = Some(atlas_engine::QueryIntent::Calls {
+            symbol_name: from_qname.to_string(),
+            file_id: file_ids_set.iter().next().copied(),
+            symbol_id: None,
+        });
         let outcome = self.ensure_structural_for_files(
             file_ids_set,
             roots,
             investigation.as_ref(),
             Some(&query_id),
+            intent,
         );
         let lazy_warnings = outcome.warnings.clone();
-        let stats = self.get_capability_stats();
-        let lazy_diag = outcome
-            .lazy_outcome
-            .as_ref()
-            .map(|lo| LazyDiagnostics::from_structural_with_stats(lo, stats.as_ref()));
-        let tier = outcome.precision_tier;
         // Cache for no-path diagnostics below (used in user-facing messages).
         let is_manual_full = self.cache.has_manual_full_index(&self.store);
 
@@ -1104,11 +1104,9 @@ impl ToolRouter {
 
             resp["path_quality"] = insight;
 
-            let lr = lr.with_precision_tier(tier)
-                .with_root_warnings(root_warnings)
+            let lr = lr.with_root_warnings(root_warnings)
                 .with_lazy_warnings(lazy_warnings)
-                .with_lazy_diag(lazy_diag)
-                .with_partial_result(tier != atlas_engine::structs::precision::PrecisionTier::Exact);
+                .with_partial_result(false);
             let lr = outcome.apply_focus_to_lr(lr);
             lr.build(resp, self)
         } else {
@@ -1220,11 +1218,9 @@ impl ToolRouter {
                 resp["hint"] = json!("Use a SymbolSelector object (e.g. {\"qualified_name\": \"...\", \"file_path\": \"...\"}) to disambiguate. symbol_ref from search/symbol results can be reused directly.");
             }
 
-            let lr = lr.with_precision_tier(tier)
-                .with_root_warnings(root_warnings)
+            let lr = lr.with_root_warnings(root_warnings)
                 .with_lazy_warnings(lazy_warnings)
-                .with_lazy_diag(lazy_diag)
-                .with_partial_result(tier != atlas_engine::structs::precision::PrecisionTier::Exact);
+                .with_partial_result(false);
             let lr = outcome.apply_focus_to_lr(lr);
             lr.build(resp, self)
         }
@@ -1383,17 +1379,24 @@ impl ToolRouter {
         // Lazy structural: ensure graph edges exist before querying
         let file_ids: Vec<atlas_engine::FileId> =
             std::iter::once(sym.file_id).collect();
+        let intent = Some(atlas_engine::QueryIntent::Explore {
+            symbol_name: qname.to_string(),
+            file_id: Some(sym.file_id),
+            symbol_id: None,
+        });
         let outcome_files = self.ensure_structural_for_files(
             file_ids,
             vec![],
             investigation.as_ref(),
             Some(&query_id),
+            intent.clone(),
         );
         let outcome_name = self.ensure_structural_for_symbol_name(
             qname,
             vec![],
             investigation.as_ref(),
             Some(&query_id),
+            intent,
         );
 
         let sym_repo = atlas_engine::dossier::SymbolRepo::new(self.store());
@@ -1423,8 +1426,7 @@ impl ToolRouter {
             include_recommendations,
         };
 
-        let tier = std::cmp::min(outcome_files.precision_tier, outcome_name.precision_tier);
-        let tier_str = format!("{tier:?}");
+        let tier_str = "unknown".to_string();
 
         let mut dossier = match atlas_engine::dossier::builder::ExploreDossierBuilder::build(
             &sym,
@@ -1447,11 +1449,6 @@ impl ToolRouter {
         lazy_warnings.extend(outcome_name.warnings.clone());
         dossier.warnings.extend(lazy_warnings);
 
-        let lazy_diag: Option<LazyDiagnostics> = outcome_files
-            .lazy_outcome
-            .as_ref()
-            .map(LazyDiagnostics::from_structural);
-
         let mut resp_value = serde_json::to_value(&dossier)
             .unwrap_or_else(|e| json!({"error": e.to_string()}));
 
@@ -1463,9 +1460,7 @@ impl ToolRouter {
             });
         }
 
-        let lr = lr.with_precision_tier(tier)
-            .with_lazy_warnings(dossier.warnings)
-            .with_lazy_diag(lazy_diag);
+        let lr = lr.with_lazy_warnings(dossier.warnings);
         let lr = outcome_files.apply_focus_to_lr(lr);
         let lr = outcome_name.apply_focus_to_lr(lr);
         lr.build_with_args(resp_value, args, self)
@@ -1567,16 +1562,18 @@ impl ToolRouter {
             .flatten()
             .map(|s| s.file_id);
         let file_ids: Vec<atlas_engine::FileId> = file_id.into_iter().collect();
+        let intent = Some(atlas_engine::QueryIntent::Explore {
+            symbol_name: qname.to_string(),
+            file_id: file_ids.first().copied(),
+            symbol_id: None,
+        });
         let outcome = self.ensure_structural_for_files(
             file_ids,
             vec![],
             investigation.as_ref(),
             Some(&query_id),
+            intent,
         );
-        let lazy_diag: Option<LazyDiagnostics> = outcome
-            .lazy_outcome
-            .as_ref()
-            .map(LazyDiagnostics::from_structural);
 
         let cb = match self.context_builder() {
             Ok(cb) => cb,
@@ -1842,12 +1839,9 @@ impl ToolRouter {
         }
 
         let lazy_warnings = outcome.warnings.clone();
-        let tier = outcome.precision_tier;
 
-        let lr = lr.with_precision_tier(tier)
-            .with_root_warnings(Vec::new())
-            .with_lazy_warnings(lazy_warnings)
-            .with_lazy_diag(lazy_diag);
+        let lr = lr.with_root_warnings(Vec::new())
+            .with_lazy_warnings(lazy_warnings);
         let lr = outcome.apply_focus_to_lr(lr);
         lr.build(resp, self)
     }
@@ -2204,11 +2198,6 @@ mod tests {
             assert!(!w.as_array().unwrap().is_empty(),
                 "warnings should be non-empty when no index or FocusRuntime is configured");
         }
-        // precision_tier must be present
-        assert!(
-            resp.get("precision_tier").is_some(),
-            "precision_tier field missing"
-        );
     }
 
     #[test]
@@ -2297,10 +2286,6 @@ mod tests {
         let (resp_str, is_error) = router.handle_callees(&json!({"symbol": "g"}));
         assert!(!is_error, "expected success, got: {resp_str}");
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
-        assert!(
-            resp.get("precision_tier").is_some(),
-            "precision_tier missing from callees response"
-        );
     }
 
     #[test]
@@ -2344,10 +2329,6 @@ mod tests {
         let (resp_str, is_error) = router.handle_callers(&json!({"symbol": "h"}));
         assert!(!is_error, "expected success, got: {resp_str}");
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
-        assert!(
-            resp.get("precision_tier").is_some(),
-            "precision_tier missing from callers response"
-        );
     }
 
     /// Verify `handle_callers` deduplicates when aggregating multiple
@@ -2962,23 +2943,16 @@ mod tests {
             resp.get("pending_closures").is_none(),
             "pending_closures should NOT appear when focus is not initialized"
         );
-        // precision_tier (legacy) should still be present
-        assert!(
-            resp.get("precision_tier").is_some(),
-            "legacy precision_tier should still be present"
-        );
     }
 
     #[test]
     fn apply_focus_to_lr_is_noop_with_no_focus_data() {
         use crate::tools::StructuralEnsureOutcome;
         use crate::tools::lazy_response::LazyResponse;
-        use atlas_engine::structs::precision::PrecisionTier;
 
         let outcome = StructuralEnsureOutcome {
             warnings: vec![],
             built_file_ids: vec![],
-            precision_tier: PrecisionTier::Exact,
             lazy_outcome: None,
             focus_precision: None,
             focus_coverage_counts: None,
@@ -2988,7 +2962,6 @@ mod tests {
 
         let args = json!({"symbol": "test"});
         let lr = LazyResponse::new("test", &args)
-            .with_precision_tier(PrecisionTier::Exact)
             .with_is_error(false);
         let lr = outcome.apply_focus_to_lr(lr);
 

@@ -1,6 +1,6 @@
 # Atlas Focus-driven Incremental Analysis — Implementation Plan v5.0
 
-> **Scope**: Atlas only. Corpus compatibility confirmed via `SourceUniverse` trait (see v4.0).
+> **Scope**: Atlas only. Corpus reuse path confirmed via `SourceUniverse` trait (see v4.0).
 > **Strategy**: Focus is the next control plane for the existing lazy execution layer.
 > **Constraint**: Focus is internal infrastructure. Zero user-facing surface.
 > No CLI commands, no manual pre-warm, no coverage dashboard. Activation is
@@ -63,9 +63,9 @@ migrated.
 | Boundary | Target |
 |----------|--------|
 | `LazyOrchestrator` | Delete after `FocusRuntime` owns policy, budget, diagnostics, and prewarm scheduling. |
-| `LazyCoordinator` | Migrate useful responsibilities into `FocusRuntime` / `ClosureEngine` / `BootstrapManager`, then delete or make private implementation detail. |
+| `LazyCoordinator` | Move useful responsibilities into `FocusRuntime` / `ClosureEngine` / `BootstrapManager`, then delete or make private implementation detail. |
 | MCP `ensure_structural_for_files/name` helpers | Replace with `FocusRuntime::prepare(QueryIntent)`. |
-| `PrecisionTier` as primary response semantic | Keep only as migration compatibility; `Precision { coverage, confidence }` is authoritative. |
+| `PrecisionTier` as primary response semantic | Delete from public responses; `Precision { coverage, confidence }` is authoritative. |
 
 The core invariant:
 
@@ -83,9 +83,9 @@ The core invariant:
 | `Investigation` | **Upgrade** → `FocusWindow` (add budget + strategies + max_iterations) |
 | `ClosurePlanner` | **Extend** → `ImportNeighborhood` strategy in the closure strategy catalog |
 | `LazyBudget` | **Extend** → `WindowBudget` (add symbol/edge/fanout/bytes limits) |
-| `LazyCoordinator` | **Migrate responsibilities** → `FocusRuntime` + `ClosureEngine` + `BootstrapManager`; delete/internalize after migration |
+| `LazyCoordinator` | **Move responsibilities** → `FocusRuntime` + `ClosureEngine` + `BootstrapManager`; delete/internalize afterward |
 | `LazyOrchestrator` | **Replace** → `FocusRuntime` as the single query-time control plane |
-| `PrecisionTier` (6-tier enum) | **Bridge** → `Precision { coverage, confidence }` with migration adapter |
+| `PrecisionTier` (6-tier enum) | **Replace** → `Precision { coverage, confidence }`; no public adapter |
 | `LazyStructuralService` | **Keep as execution engine**, called only under FocusRuntime/ClosureEngine |
 | `LazyDataflowService` | **Keep as execution engine**, called only under FocusRuntime/ClosureEngine |
 | `CandidateProvider` trait | **Keep**, becomes Tier 1 `SymbolHints` implementation |
@@ -96,9 +96,10 @@ The core invariant:
 
 ---
 
-## 1. Phase 0: Precision Migration Bridge (1 week)
+## 1. Phase 0: Precision Replacement (1 week)
 
-**Don't break existing MCP tools.** Add adapter, then migrate.
+Replace public response precision semantics directly. MCP responses must not
+return both `precision_tier` and `precision`.
 
 ### New types in `types/src/structs.rs`
 
@@ -140,18 +141,23 @@ impl From<Precision> for PrecisionTier {
 }
 ```
 
-### MCP tools: return both fields
+### MCP tools: return only the public analysis envelope
 
 ```rust
 struct McpResponse {
-    precision_tier: PrecisionTier,  // keep for old clients
-    precision: Precision,            // new for focus-aware clients
+    analysis: AnalysisView,
+    precision: Precision,
+    coverage_counts: CoverageCounts,
+    gaps: Vec<KnownGap>,
+    work: WorkView,
     // ...
 }
 ```
 
-Remove `precision_tier` after all query tools route through `FocusRuntime` and
-clients consume `precision` + `analysis_contract` as authoritative.
+`precision_tier` is not part of the public MCP contract and must be removed
+from default tool responses when the analysis envelope is introduced. If a
+local conversion helper is still needed internally, it must stay private and
+must not appear in MCP JSON.
 
 ---
 
@@ -302,7 +308,7 @@ pub enum FocusSeed {
     File { file_id: FileId },
 }
 
-/// Migration from existing InvestigationFocus:
+/// Internal conversion from existing InvestigationFocus:
 impl From<InvestigationFocus> for FocusSeed {
     fn from(f: InvestigationFocus) -> Self {
         match f {
@@ -411,7 +417,7 @@ impl ClosureEngine {
                 // Reuses lazy structural execution; Focus owns the policy.
                 let result = self.lazy_structural
                     .ensure_structural_for_file(file_id, &budget)?;
-                closure.mark_extracted(file_id, result.precision_tier);
+                closure.mark_extracted(file_id, result.precision);
             }
 
             // 4. Resolve: scoped to current closure
@@ -497,7 +503,8 @@ CREATE TABLE closure_coverage (
     visibility_state TEXT NOT NULL DEFAULT 'staged',  -- staged | visible | stale
     generation INTEGER NOT NULL,
     content_hash TEXT,
-    precision_tier TEXT NOT NULL,
+    coverage TEXT NOT NULL,
+    confidence TEXT NOT NULL,
     extracted_at TIMESTAMP DEFAULT (datetime('now')),
     PRIMARY KEY (closure_id, file_id, generation)
 );
@@ -653,19 +660,36 @@ impl FocusScheduler {
 
 ### 5.1 Response Envelope (all MCP tools)
 
+The MCP envelope exposes analysis quality and background work state, not the
+focus implementation. Public responses must not contain `focus`, `closure_id`,
+`FocusPriority`, `ClosureComplete`, scheduler queue names, or any other
+implementation-specific focus vocabulary.
+
+Every MCP analysis response is also an external cognitive interface for agents:
+it must summarize the current analysis state in stable, user-facing terms. The
+agent should never infer readiness, completeness, or retry behavior by reading
+internal lazy/focus/job fields.
+
 ```json
 {
   "result": { "...": "tool-specific" },
 
+  "analysis": {
+    "state": "usable_partial",
+    "scope": "local",
+    "summary": "Local structural facts are available; boundary references are still being refined.",
+    "next_action": "use_result_or_wait_for_refinement"
+  },
+
   "precision": {
-    "coverage": "ClosureComplete",
-    "confidence": "Certain"
+    "coverage": "local_complete",
+    "confidence": "high"
   },
 
   "coverage_counts": {
-    "ClosureComplete": 8,
-    "Boundary": 12,
-    "Manifest": 45
+    "local_complete": 8,
+    "boundary": 12,
+    "basic": 45
   },
 
   "gaps": [
@@ -681,31 +705,89 @@ impl FocusScheduler {
     }
   ],
 
-  "pending": [
-    {
-      "closure_id": "cl_a1b2c3d4",
-      "state": "Resolving",
-      "percent": 68,
-      "eta_ms": 2100
-    }
-  ]
+  "work": {
+    "relevant": true,
+    "status": "running",
+    "items": [
+      {
+        "id": "task-00012",
+        "kind": "analysis_refinement",
+        "state": "running",
+        "scope": "local",
+        "reason": "building more local reference and call graph evidence",
+        "progress": { "percent": 68 },
+        "waitable": true,
+        "retry_after_ms": 1000
+      }
+    ]
+  }
 }
 ```
 
+`analysis` is the canonical public interpretation of all internal analysis
+state:
+
+| Field | Meaning |
+|-------|---------|
+| `state` | One of `ready`, `usable_partial`, `building`, `blocked`, `failed`, `stale`. |
+| `scope` | One of `repo`, `local`, `file`, `symbol`, `query`, `corpus`. |
+| `summary` | Short, user/agent-readable explanation of what is currently known. |
+| `next_action` | One of `use_result`, `use_result_or_wait_for_refinement`, `wait`, `narrow_scope`, `run_full_index`, `retry`, `inspect_gaps`. |
+
+Internal states from `extraction_state`, `extraction_jobs`, focus closures,
+bootstrap tiers, resolver coverage, graph refresh, query snapshots, and corpus
+version work must be normalized into this `analysis` view plus `precision`,
+`coverage_counts`, `gaps`, and `work`. They must not be exposed as independent
+public state machines.
+
+`coverage_counts` uses public coverage labels only:
+
+| Public label | Meaning |
+|--------------|---------|
+| `repo_complete` | Full-index facts cover the repository-wide query. |
+| `local_complete` | The current local analysis scope is structurally complete. |
+| `boundary` | Results are complete inside the local scope but stop at declared boundaries. |
+| `partial` | Some requested evidence is missing or budget-limited. |
+| `basic` | Manifest/name-level facts only. |
+
+`work` is the only public background-work model, but ordinary tool responses
+include it only when background work is relevant to the current result. A tool
+response must not include unrelated global indexing, project activation, corpus
+sync, speculative prewarm, or scheduler queue state. Global work state is
+available only through explicit status/task tools.
+
+Include `work` when:
+
+- the current query triggered background refinement;
+- the current result is partial/building/stale and background work can change
+  its quality or availability;
+- `analysis.next_action` is `wait` or `use_result_or_wait_for_refinement`;
+- the response needs to expose a waitable public task/work id.
+
+`work.items[].id` is a public task/work id; it must not be a closure id,
+extraction job row id, scheduler generation, or internal queue key. If
+`waitable=true`, the id must be accepted by the public task waiting API. If a
+background item is advisory only, expose `waitable=false` and a
+`retry_after_ms` hint instead.
+
 ### 5.2 Integration Points (existing MCP tools)
 
-Each existing MCP tool adds the response envelope. Example for `atlas_calls`:
+Each existing MCP tool returns the unified response envelope. Example for
+`atlas_calls`:
 
 ```
-Before: { "callers": [...], "callees": [...], "precision_tier": "Exact" }
-After:  {
+{
           "callers": [...], "callees": [...],
-          "precision_tier": "Exact",       // backward compat
-          "precision": { "coverage": "ClosureComplete", "confidence": "Certain" },
-          "coverage_counts": { "ClosureComplete": 5, "Boundary": 2, "Manifest": 0 },
-          "gaps": [],
-          "pending": []
-        }
+          "analysis": {
+            "state": "ready",
+            "scope": "local",
+            "summary": "Local call graph evidence is available.",
+            "next_action": "use_result"
+          },
+          "precision": { "coverage": "local_complete", "confidence": "high" },
+          "coverage_counts": { "local_complete": 5, "boundary": 2, "basic": 0 },
+          "gaps": []
+}
 ```
 
 ### 5.3 Known Gap Reporting
@@ -835,6 +917,11 @@ The focus mechanism is **internal infrastructure — zero user-facing surface**.
   index (or incomplete coverage), the focus engine activates automatically in
   background threads. The user sees only improved response quality over time,
   never a "focus mode" indicator.
+- **No default `focus` response/status section.** MCP tools and `atlas_status`
+  may expose analysis quality (`precision`, `coverage_counts`, `gaps`) and
+  background work (`work` / task APIs), but must not expose focus bootstrap
+  tiers, closure ids, scheduler priorities, closure counts, or focus-specific
+  pending queues as default public fields.
 - **`atlas index --full` remains the explicit path.** For repos where full
   indexing is feasible, the user invokes it once and focus is never needed.
   Focus fills the gap for repos where full indexing is impractical.
@@ -879,16 +966,18 @@ Phase 7 ── Remove old lazy control-plane entries   (Week 11-12)
 | `filesync` pipeline | Untouched. `atlas index --full` unchanged. |
 | All 14 language adapters | Untouched. |
 
-## 10.1 What Must Be Removed After Migration
+## 10.1 What Must Be Removed Before Completion
 
-These boundaries are useful only as temporary migration scaffolding:
+These boundaries are temporary scaffolding only. The target architecture does
+keeps only the target MCP contract:
 
 | Component | Removal condition |
 |-----------|-------------------|
 | `LazyOrchestrator` | Remove once `FocusRuntime` owns query policy, budget, diagnostics, and background prewarm. |
 | `LazyCoordinator` | Remove or make private once job claim, closure planning, query_id propagation, and prewarm are migrated. |
 | MCP `ensure_structural_for_files/name` helpers | Remove after all MCP query tools route through `FocusRuntime::prepare(QueryIntent)`. |
-| Legacy `precision_tier` response field | Remove after clients consume `precision` and `analysis_contract` as authoritative. |
+| Focus-specific public pending/status fields | Replace with the unified `work` envelope and task APIs. |
+| Old public response fields such as `precision_tier`, `pending_closures`, `pending_job_ids`, `lazy_diagnostics` | Delete from the MCP contract; do not preserve aliases. |
 
 ---
 
@@ -897,10 +986,10 @@ These boundaries are useful only as temporary migration scaffolding:
 | Risk | Mitigation |
 |------|------------|
 | FocusRuntime bypasses lazy cache/job semantics | FocusRuntime must call the lazy execution layer through `extraction_state` and `extraction_jobs`; no ad-hoc extraction path. |
-| Double control plane persists | Treat `LazyOrchestrator`, MCP `ensure_*`, and `LazyCoordinator` as migration scaffolding with explicit removal conditions. |
+| Double control plane persists | Treat `LazyOrchestrator`, MCP `ensure_*`, and `LazyCoordinator` as temporary old-control-plane scaffolding with explicit removal conditions. |
 | Scoped resolution pollutes global DB state | Focus path writes `reference_resolutions` and scoped graph overlay only; full index remains the only path that updates global `references.resolved_*`. |
 | Background jobs corrupt DB state | `closure_coverage.visibility_state='staged'` until `Committed`. MCP reads only `visible`. |
 | SymbolHints missing gives false "not found" | Hint-not-truth semantics. MCP response distinguishes "not in hints" from "not found." |
 | Fixed-point explodes (Linux headers) | `max_iterations=3`, budget per-iteration. C header depth limited by `ImportNeighborhood.depth`. |
-| Existing MCP tools break | Migrate one intent at a time through `FocusRuntime`; keep compatibility envelope until all query tools have moved. |
+| Existing MCP tools break while being rewired | Move one intent at a time through `FocusRuntime`; update each tool directly to the unified analysis envelope before considering it complete. |
 | Write contention (sync vs background) | `ProjectWriteCoordinator` with Sync-preempt. Checkpoint at file boundary. |

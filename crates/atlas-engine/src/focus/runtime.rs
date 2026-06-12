@@ -85,7 +85,7 @@ pub struct FocusResult {
     /// For Focus mode: FileIds that were structurally built during preparation.
     pub built_files: Vec<FileId>,
     /// For Focus mode: distribution of results by coverage tier
-    /// (e.g. {"ClosureComplete": 8, "Boundary": 5, "Manifest": 12}).
+    /// (e.g. {"local_complete": 8, "boundary": 5, "basic": 12}).
     /// None in FullIndex mode or when coverage data is unavailable.
     pub coverage_counts: Option<HashMap<String, usize>>,
 }
@@ -197,7 +197,22 @@ impl FocusRuntime {
         // 4. Build minimal closure synchronously
         let minimal_window = FocusWindow {
             seed: seed.clone(),
-            strategies: vec![ClosureStrategy::ImportNeighborhood { depth: 1 }],
+            strategies: match intent {
+                QueryIntent::Calls { .. } | QueryIntent::Explore { .. } => vec![
+                    ClosureStrategy::ImportNeighborhood { depth: 1 },
+                ],
+                QueryIntent::Search { .. } => vec![
+                    ClosureStrategy::ImportNeighborhood { depth: 1 },
+                    ClosureStrategy::SameDirectory,
+                ],
+                QueryIntent::Context { .. } => vec![
+                    ClosureStrategy::ImportNeighborhood { depth: 2 },
+                ],
+                QueryIntent::TracePoint { .. } | QueryIntent::TraceVariable { .. } => vec![
+                    ClosureStrategy::ImportNeighborhood { depth: 1 },
+                    ClosureStrategy::SameDirectory,
+                ],
+            },
             budget: WindowBudget::default(),
             language,
             max_iterations: 1,
@@ -235,10 +250,19 @@ impl FocusRuntime {
         // 6. Enqueue background expansion
         let bg_window = FocusWindow {
             seed,
-            strategies: vec![
-                ClosureStrategy::ImportNeighborhood { depth: 2 },
-                ClosureStrategy::SameDirectory,
-            ],
+            strategies: match intent {
+                QueryIntent::Calls { .. } | QueryIntent::Explore { .. } | QueryIntent::Context { .. } => vec![
+                    ClosureStrategy::ImportNeighborhood { depth: 2 },
+                ],
+                QueryIntent::Search { .. } => vec![
+                    ClosureStrategy::ImportNeighborhood { depth: 2 },
+                    ClosureStrategy::SameDirectory,
+                ],
+                QueryIntent::TracePoint { .. } | QueryIntent::TraceVariable { .. } => vec![
+                    ClosureStrategy::ImportNeighborhood { depth: 2 },
+                    ClosureStrategy::SameDirectory,
+                ],
+            },
             budget: WindowBudget::background(),
             language,
             max_iterations: 3,
@@ -393,7 +417,39 @@ impl FocusRuntime {
             QueryIntent::Calls { symbol_name, file_id, symbol_id } => {
                 self.locate_calls_seed(symbol_name, file_id, symbol_id)
             }
+            QueryIntent::Explore { symbol_name, file_id, symbol_id } => {
+                // Explore uses the same symbol-based seed location as Calls
+                self.locate_calls_seed(symbol_name, file_id, symbol_id)
+            }
+            QueryIntent::Context { symbol_name, file_id, symbol_id } => {
+                // Context uses the same symbol-based seed location as Calls
+                self.locate_calls_seed(symbol_name, file_id, symbol_id)
+            }
+            QueryIntent::Search { query: _query, scope } => {
+                // Search: use scope to find a starting file, then fall back
+                let language = Language::default();
+                // If scope is provided, try to locate a file matching the scope prefix.
+                // For now, return a generic seed — the closure will expand from
+                // the scope's file inventory.
+                let seed = FocusSeed::Symbol {
+                    name: format!("search:{}", scope.as_deref().unwrap_or("*")),
+                    kind: None,
+                    language,
+                };
+                Ok((seed, None, None, language))
+            }
             QueryIntent::TracePoint { file_id, line, column } => {
+                let language = self.resolve_language_for_file(file_id)
+                    .unwrap_or_default();
+                let seed = FocusSeed::Position {
+                    file_id: *file_id,
+                    line: *line,
+                    column: *column,
+                };
+                Ok((seed, Some(*file_id), None, language))
+            }
+            QueryIntent::TraceVariable { file_id, line, column } => {
+                // TraceVariable uses same position-based seed as TracePoint
                 let language = self.resolve_language_for_file(file_id)
                     .unwrap_or_default();
                 let seed = FocusSeed::Position {
@@ -522,9 +578,9 @@ impl FocusRuntime {
 /// Map a raw `closure_coverage.source` value to a human-readable coverage tier name.
 fn map_coverage_source_to_tier(source: &str) -> String {
     match source {
-        "extracted_structural" => "ClosureComplete".to_string(),
-        "extracted_resolution_symbols" => "Boundary".to_string(),
-        "extracted_manifest" => "Manifest".to_string(),
+        "extracted_structural" => "local_complete".to_string(),
+        "extracted_resolution_symbols" => "boundary".to_string(),
+        "extracted_manifest" => "basic".to_string(),
         other => other.to_string(),
     }
 }

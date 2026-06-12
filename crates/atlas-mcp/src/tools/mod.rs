@@ -19,11 +19,13 @@ use atlas_engine::SourceExtractor;
 use atlas_engine::Store;
 use atlas_engine::SymbolId;
 use atlas_engine::TraceDiagnostic;
+use atlas_engine::structs::SemanticConfidence;
 
 use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolInputSchema};
 
 use serde_json::{Value, json};
 
+use crate::tools::analysis_response::{WorkItem, WorkProgress, precision_to_view};
 use crate::tools::async_state::AsyncState;
 use crate::tools::cache_state::CacheState;
 use crate::tools::lazy_response::{CapabilityStats, SnapshotStore};
@@ -126,6 +128,7 @@ pub(crate) const MAX_ANNOTATION_QNAME_LENGTH: usize = 512;
 /// Maximum length of a file path.
 pub(crate) const MAX_FILE_PATH_LENGTH: usize = 4096;
 
+pub(crate) mod analysis_response;
 pub(crate) mod annotations;
 pub(crate) mod async_state;
 pub(crate) mod atlas_jobs;
@@ -160,7 +163,6 @@ pub(crate) mod wait_for;
 pub(crate) struct StructuralEnsureOutcome {
     pub warnings: Vec<String>,
     pub built_file_ids: Vec<atlas_engine::FileId>,
-    pub precision_tier: atlas_engine::structs::precision::PrecisionTier,
     /// Full lazy outcome when extraction actually ran (None if skipped,
     /// e.g., when a manual full index already exists).
     pub lazy_outcome: Option<atlas_engine::LazyOutcome>,
@@ -182,6 +184,8 @@ impl StructuralEnsureOutcome {
     /// Takes &self so it can be called on multiple outcomes (e.g. files + name).
     pub(crate) fn apply_focus_to_lr(&self, lr: lazy_response::LazyResponse) -> lazy_response::LazyResponse {
         let mut lr = lr;
+
+        // ── Precision / coverage / gaps (keep existing) ──
         if let Some(ref precision) = self.focus_precision {
             lr = lr.with_precision(precision.clone());
         }
@@ -191,18 +195,54 @@ impl StructuralEnsureOutcome {
         if let Some(ref gaps) = self.focus_gaps {
             lr = lr.with_gaps(gaps.clone());
         }
-        if let Some(ref pending) = self.focus_pending {
-            let closures: Vec<lazy_response::PendingClosure> = pending
-                .iter()
-                .map(|id| lazy_response::PendingClosure {
-                    closure_id: id.clone(),
-                    state: "building".to_string(),
-                    percent: 0,
-                    eta_ms: None,
-                })
-                .collect();
-            lr = lr.with_pending(closures);
+
+        // ── New analysis envelope (focus-aware) ──
+        if let Some(ref precision) = self.focus_precision {
+            let view = precision_to_view(precision);
+            // analysis state: if we have focus precision with high confidence, we're ready
+            let state = if precision.confidence == SemanticConfidence::Certain {
+                "ready"
+            } else if precision.confidence == SemanticConfidence::High {
+                "usable_partial"
+            } else {
+                "building"
+            };
+            lr = lr.with_analysis_state(state.to_string());
+            lr = lr.with_analysis_scope("local".to_string());
+            lr = lr.with_analysis_summary(format!(
+                "focus analysis: {} coverage, {} confidence",
+                view.coverage, view.confidence
+            ));
+            lr = lr.with_analysis_next_action("use_result".to_string());
+        } else if let Some(ref counts) = self.focus_coverage_counts {
+            // Coverage counts without precision — partial focus data
+            lr = lr.with_analysis_state("building".to_string());
+            lr = lr.with_analysis_scope("local".to_string());
+            let total: usize = counts.values().sum();
+            lr = lr.with_analysis_summary(format!("focus partial: {total} items across {} tiers", counts.len()));
+            lr = lr.with_analysis_next_action("use_result_or_wait_for_refinement".to_string());
         }
+
+        // ── Work items from pending closures ──
+        if let Some(ref pending) = self.focus_pending {
+            if !pending.is_empty() {
+                let items: Vec<WorkItem> = pending
+                    .iter()
+                    .map(|id| WorkItem {
+                        id: id.clone(),
+                        kind: "extraction".to_string(),
+                        state: "building".to_string(),
+                        scope: "local".to_string(),
+                        reason: "focus_closure".to_string(),
+                        progress: Some(WorkProgress { percent: 0 }),
+                        waitable: true,
+                        retry_after_ms: None,
+                    })
+                    .collect();
+                lr = lr.with_work_items(items);
+            }
+        }
+
         lr
     }
 }
@@ -750,16 +790,14 @@ impl ToolRouter {
         include_roots: Vec<atlas_engine::IncludeRoot>,
         investigation: Option<&atlas_engine::Investigation>,
         query_id: Option<&str>,
+        query_intent: Option<atlas_engine::QueryIntent>,
     ) -> StructuralEnsureOutcome {
-        use atlas_engine::structs::precision::PrecisionTier;
-
         let mut warnings = Vec::new();
         let mut built_file_ids = Vec::new();
         if self.cache.has_manual_full_index(&self.store) {
             return StructuralEnsureOutcome {
                 warnings,
                 built_file_ids,
-                precision_tier: PrecisionTier::Exact,
                 lazy_outcome: None,
                 focus_precision: None,
                 focus_coverage_counts: None,
@@ -773,7 +811,6 @@ impl ToolRouter {
             return StructuralEnsureOutcome {
                 warnings,
                 built_file_ids,
-                precision_tier: PrecisionTier::Exact,
                 lazy_outcome: None,
                 focus_precision: None,
                 focus_coverage_counts: None,
@@ -788,11 +825,13 @@ impl ToolRouter {
             let focus_outcome = {
                 let mut runtime = fr.lock().unwrap_or_else(|e| e.into_inner());
                 if runtime.detect_index_mode() == atlas_engine::focus::runtime::IndexMode::Focus {
-                    let intent = atlas_engine::QueryIntent::Calls {
-                        symbol_name: String::new(),
-                        file_id: file_vec.first().copied(),
-                        symbol_id: None,
-                    };
+                    let intent = query_intent.unwrap_or_else(|| {
+                        atlas_engine::QueryIntent::Calls {
+                            symbol_name: String::new(),
+                            file_id: file_vec.first().copied(),
+                            symbol_id: None,
+                        }
+                    });
                     Some(runtime.prepare(&intent))
                 } else {
                     None
@@ -810,10 +849,6 @@ impl ToolRouter {
                             .iter()
                             .map(|g| format!("{:?}", g))
                             .collect();
-                        let precision_tier = result
-                            .precision
-                            .map(|p| atlas_engine::structs::precision::PrecisionTier::from(p))
-                            .unwrap_or(PrecisionTier::Unavailable);
                         let built_file_ids = result.built_files;
 
                         // Notify focus scheduler of file reads for predictive
@@ -839,7 +874,6 @@ impl ToolRouter {
                         StructuralEnsureOutcome {
                             warnings: focus_warnings,
                             built_file_ids,
-                            precision_tier,
                             lazy_outcome: None,
                             focus_precision,
                             focus_coverage_counts: result.coverage_counts.clone(),
@@ -850,7 +884,6 @@ impl ToolRouter {
                     Err(e) => StructuralEnsureOutcome {
                         warnings: vec![format!("Focus preparation failed: {e:#}")],
                         built_file_ids: Vec::new(),
-                        precision_tier: PrecisionTier::Unavailable,
                         lazy_outcome: None,
                         focus_precision: None,
                         focus_coverage_counts: None,
@@ -871,7 +904,6 @@ impl ToolRouter {
         StructuralEnsureOutcome {
             warnings,
             built_file_ids: Vec::new(),
-            precision_tier: PrecisionTier::Unavailable,
             lazy_outcome: None,
             focus_precision: None,
             focus_coverage_counts: None,
@@ -893,16 +925,14 @@ impl ToolRouter {
         include_roots: Vec<atlas_engine::IncludeRoot>,
         investigation: Option<&atlas_engine::Investigation>,
         query_id: Option<&str>,
+        query_intent: Option<atlas_engine::QueryIntent>,
     ) -> StructuralEnsureOutcome {
-        use atlas_engine::structs::precision::PrecisionTier;
-
         let mut warnings = Vec::new();
         let mut built_file_ids = Vec::new();
         if self.cache.has_manual_full_index(&self.store) {
             return StructuralEnsureOutcome {
                 warnings,
                 built_file_ids,
-                precision_tier: PrecisionTier::Exact,
                 lazy_outcome: None,
                 focus_precision: None,
                 focus_coverage_counts: None,
@@ -916,11 +946,13 @@ impl ToolRouter {
             let focus_outcome = {
                 let mut runtime = fr.lock().unwrap_or_else(|e| e.into_inner());
                 if runtime.detect_index_mode() == atlas_engine::focus::runtime::IndexMode::Focus {
-                    let intent = atlas_engine::QueryIntent::Calls {
-                        symbol_name: symbol_name.to_string(),
-                        file_id: None,
-                        symbol_id: None,
-                    };
+                    let intent = query_intent.unwrap_or_else(|| {
+                        atlas_engine::QueryIntent::Calls {
+                            symbol_name: symbol_name.to_string(),
+                            file_id: None,
+                            symbol_id: None,
+                        }
+                    });
                     Some(runtime.prepare(&intent))
                 } else {
                     None
@@ -938,10 +970,6 @@ impl ToolRouter {
                             .iter()
                             .map(|g| format!("{:?}", g))
                             .collect();
-                        let precision_tier = result
-                            .precision
-                            .map(|p| atlas_engine::structs::precision::PrecisionTier::from(p))
-                            .unwrap_or(PrecisionTier::Unavailable);
                         let built_file_ids = result.built_files;
 
                         // Notify focus scheduler of file reads for predictive
@@ -967,7 +995,6 @@ impl ToolRouter {
                         StructuralEnsureOutcome {
                             warnings: focus_warnings,
                             built_file_ids,
-                            precision_tier,
                             lazy_outcome: None,
                             focus_precision,
                             focus_coverage_counts: result.coverage_counts.clone(),
@@ -980,7 +1007,6 @@ impl ToolRouter {
                             "Focus preparation failed for '{symbol_name}': {e:#}"
                         )],
                         built_file_ids: Vec::new(),
-                        precision_tier: PrecisionTier::Unavailable,
                         lazy_outcome: None,
                         focus_precision: None,
                         focus_coverage_counts: None,
@@ -998,7 +1024,6 @@ impl ToolRouter {
         StructuralEnsureOutcome {
             warnings,
             built_file_ids: Vec::new(),
-            precision_tier: PrecisionTier::Unavailable,
             lazy_outcome: None,
             focus_precision: None,
             focus_coverage_counts: None,
@@ -1842,7 +1867,6 @@ impl ToolRouter {
         // ── structural mode ─────────────────────────────────────────────
         let mut lazy_warnings = Vec::new();
         let mut built_file_count = 0usize;
-        let mut structural_tier = atlas_engine::structs::precision::PrecisionTier::Exact;
         let mut capability_mask = atlas_engine::structs::CapabilityMask::default();
         let mut coverage = "full";
         let mut reason: Option<&str> = None;
@@ -1865,10 +1889,9 @@ impl ToolRouter {
                 }
                 _ => vec![file_id],
             };
-            let outcome = self.ensure_structural_for_files(file_ids, vec![], None, None);
+            let outcome = self.ensure_structural_for_files(file_ids, vec![], None, None, None);
             lazy_warnings = outcome.warnings;
             built_file_count = outcome.built_file_ids.len();
-            structural_tier = outcome.precision_tier;
 
             if let Some(ref lo) = outcome.lazy_outcome {
                 capability_mask = lo.capability_mask;
@@ -1880,11 +1903,6 @@ impl ToolRouter {
                 {
                     coverage = "partial";
                 }
-            }
-
-            if structural_tier == atlas_engine::structs::precision::PrecisionTier::Unavailable {
-                reason = Some("no_structural_capability");
-                coverage = "partial";
             }
         } else {
             capability_mask = self.store.derive_capability_for_files(&[file_id]);
@@ -1904,7 +1922,6 @@ impl ToolRouter {
                 (
                     add_dependency_analysis_contract(
                         out,
-                        structural_tier,
                         built_file_count,
                         lazy_warnings,
                         coverage,
@@ -1919,7 +1936,6 @@ impl ToolRouter {
                 (
                     add_dependency_analysis_contract(
                         out,
-                        structural_tier,
                         built_file_count,
                         lazy_warnings,
                         coverage,
@@ -1936,14 +1952,12 @@ impl ToolRouter {
                     "outgoing": serde_json::from_str::<Value>(&out_str).unwrap_or_default(),
                     "incoming": serde_json::from_str::<Value>(&in_str).unwrap_or_default(),
                     "analysis": {
-                        "structural_precision_tier": structural_tier,
                         "lazy_built_files": built_file_count,
                         "warnings": lazy_warnings,
                     },
                     "analysis_contract": {
                         "coverage": coverage,
                         "reason": reason,
-                        "precision_tier": structural_tier,
                         "capability_mask": capability_mask,
                     },
                 });
@@ -2351,7 +2365,6 @@ impl ToolRouter {
 
 fn add_dependency_analysis_contract(
     response: String,
-    structural_tier: atlas_engine::structs::precision::PrecisionTier,
     built_file_count: usize,
     warnings: Vec<String>,
     coverage: &str,
@@ -2363,7 +2376,6 @@ fn add_dependency_analysis_contract(
         obj.insert(
             "analysis".into(),
             json!({
-                "structural_precision_tier": structural_tier,
                 "lazy_built_files": built_file_count,
                 "warnings": warnings,
             }),
@@ -2373,7 +2385,6 @@ fn add_dependency_analysis_contract(
             json!({
                 "coverage": coverage,
                 "reason": reason,
-                "precision_tier": structural_tier,
                 "capability_mask": capability_mask,
             }),
         );
@@ -2550,6 +2561,7 @@ impl ToolRouter {
             include_roots,
             investigation.as_ref(),
             Some(&query_id),
+            None,
         );
         let mut warnings: Vec<String> = root_warnings;
         warnings.extend(outcome.warnings);
@@ -2787,7 +2799,6 @@ mod tests {
         let outcome = StructuralEnsureOutcome {
             warnings: vec![],
             built_file_ids: vec![],
-            precision_tier: atlas_engine::structs::precision::PrecisionTier::Unavailable,
             lazy_outcome: None,
             focus_precision: None,
             focus_coverage_counts: None,
@@ -3228,10 +3239,10 @@ mod tests {
             contract.get("coverage").is_some(),
             "analysis_contract missing coverage field: {resp_str}"
         );
-        // structural mode should have precision_tier and capability_mask
+        // structural mode should have coverage and capability_mask
         assert!(
-            contract.get("precision_tier").is_some(),
-            "analysis_contract missing precision_tier: {resp_str}"
+            contract.get("coverage").is_some(),
+            "analysis_contract missing coverage field: {resp_str}"
         );
         assert!(
             contract.get("capability_mask").is_some(),
@@ -3710,13 +3721,13 @@ mod tests {
             Some("trace_variable"),
             "Expected kind=trace_variable, got: {resp_str}"
         );
-        // Check for analysis_contract or lazy_diagnostics as evidence the
-        // structural layer injected its metadata
-        let has_contract = resp.get("analysis_contract").is_some();
-        let has_lazy_diag = resp.get("lazy_diagnostics").is_some();
+        // Check for the analysis block as evidence the
+        // envelope injected its metadata
+        let has_analysis = resp.get("analysis").is_some();
+        let has_query_id = resp.get("query_id").is_some();
         assert!(
-            has_contract || has_lazy_diag,
-            "Expected analysis_contract or lazy_diagnostics field, got: {resp_str}"
+            has_analysis || has_query_id,
+            "Expected analysis or query_id field, got: {resp_str}"
         );
     }
 
@@ -4332,6 +4343,7 @@ mod tests {
             vec![],
             None,
             None,
+            None,
         );
         // Without a full index and without focus, the lazy orchestrator runs.
         // It may succeed or fail depending on extraction capability, but it
@@ -4352,6 +4364,7 @@ mod tests {
             vec![],
             None,
             None,
+            None,
         );
         // Without a full index and without focus, the lazy orchestrator runs.
         assert!(
@@ -4368,6 +4381,7 @@ mod tests {
         let outcome = router.ensure_structural_for_files(
             Vec::<FileId>::new(),
             vec![],
+            None,
             None,
             None,
         );
@@ -4394,13 +4408,12 @@ mod tests {
         }
 
         let mut coverage_counts = HashMap::new();
-        coverage_counts.insert("ClosureComplete".to_string(), 3usize);
-        coverage_counts.insert("Manifest".to_string(), 1usize);
+        coverage_counts.insert("local_complete".to_string(), 3usize);
+        coverage_counts.insert("basic".to_string(), 1usize);
 
         let outcome = StructuralEnsureOutcome {
             warnings: vec![],
             built_file_ids: vec![],
-            precision_tier: PrecisionTier::Exact,
             lazy_outcome: None,
             focus_precision: None,
             focus_coverage_counts: Some(coverage_counts),
@@ -4410,7 +4423,6 @@ mod tests {
 
         let args = json!({"symbol": "test"});
         let lr = LazyResponse::new("test", &args)
-            .with_precision_tier(PrecisionTier::Exact)
             .with_is_error(false);
         let lr = outcome.apply_focus_to_lr(lr);
 
@@ -4424,8 +4436,110 @@ mod tests {
             "coverage_counts should be present in response when focus provides them"
         );
         assert!(
-            json_str.contains("ClosureComplete"),
+            json_str.contains("local_complete"),
             "coverage_counts should include tier names"
         );
+        // Parse JSON to verify analysis block
+        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(
+            v.get("analysis").is_some(),
+            "analysis block should be present when focus provides coverage_counts"
+        );
+        // With focus_coverage_counts but no focus_precision, state should be "building"
+        assert_eq!(
+            v["analysis"]["state"], "building",
+            "analysis state should be building when focus has coverage_counts but no precision"
+        );
+    }
+
+    #[test]
+    fn structural_ensure_focus_precision_flows_to_analysis_block() {
+        use crate::tools::lazy_response::{LazyResponse, SnapshotStore};
+        use atlas_engine::structs::precision::PrecisionTier;
+        use atlas_engine::structs::{CoverageTier, Precision, SemanticConfidence};
+
+        struct MockStore;
+        impl MockStore {
+            fn new() -> Self { MockStore }
+        }
+        impl SnapshotStore for MockStore {
+            fn store_query_snapshot(
+                &mut self,
+                _snapshot: crate::tools::query_snapshot::QuerySnapshot,
+            ) {}
+        }
+
+        let precision = Precision {
+            coverage: CoverageTier::ClosureComplete {
+                closure_id: "cl_test".into(),
+            },
+            confidence: SemanticConfidence::High,
+        };
+
+        let outcome = StructuralEnsureOutcome {
+            warnings: vec![],
+            built_file_ids: vec![],
+            lazy_outcome: None,
+            focus_precision: Some(precision),
+            focus_coverage_counts: None,
+            focus_gaps: None,
+            focus_pending: None,
+        };
+
+        let args = json!({"symbol": "test"});
+        let lr = LazyResponse::new("test", &args)
+            .with_is_error(false);
+        let lr = outcome.apply_focus_to_lr(lr);
+
+        let mut store = MockStore::new();
+        let body = json!({"ok": true});
+        let (json_str, is_err) = lr.build(body, &mut store);
+        assert!(!is_err);
+        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(v["analysis"]["state"], "usable_partial");
+        assert!(v["analysis"]["summary"].as_str().unwrap().contains("focus analysis"));
+    }
+
+    #[test]
+    fn structural_ensure_focus_pending_sets_work_items() {
+        use crate::tools::lazy_response::{LazyResponse, SnapshotStore};
+        use atlas_engine::structs::precision::PrecisionTier;
+
+        struct MockStore;
+        impl MockStore {
+            fn new() -> Self { MockStore }
+        }
+        impl SnapshotStore for MockStore {
+            fn store_query_snapshot(
+                &mut self,
+                _snapshot: crate::tools::query_snapshot::QuerySnapshot,
+            ) {}
+        }
+
+        let outcome = StructuralEnsureOutcome {
+            warnings: vec![],
+            built_file_ids: vec![],
+            lazy_outcome: None,
+            focus_precision: None,
+            focus_coverage_counts: None,
+            focus_gaps: None,
+            focus_pending: Some(vec!["cl_a".into(), "cl_b".into()]),
+        };
+
+        let args = json!({"symbol": "test"});
+        let lr = LazyResponse::new("test", &args)
+            .with_is_error(false);
+        let lr = outcome.apply_focus_to_lr(lr);
+
+        let mut store = MockStore::new();
+        let body = json!({"ok": true});
+        let (json_str, is_err) = lr.build(body, &mut store);
+        assert!(!is_err);
+        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(v["work"]["relevant"], true);
+        assert_eq!(v["work"]["status"], "running");
+        assert_eq!(v["work"]["items"].as_array().unwrap().len(), 2);
+        assert_eq!(v["work"]["items"][0]["id"], "cl_a");
+        assert_eq!(v["work"]["items"][1]["id"], "cl_b");
     }
 }
