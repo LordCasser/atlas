@@ -55,6 +55,22 @@ fn test_get_committed_generation_not_found() {
 }
 
 #[test]
+fn test_double_insert_idempotent() {
+    let store = test_store();
+
+    // First insert succeeds
+    store.insert_closure_generation("cl_idem_1").unwrap();
+
+    // Second insert with same closure_id should be ignored, not error
+    store.insert_closure_generation("cl_idem_1").unwrap();
+
+    // Verify still only one row in 'building' state
+    let cg = store.get_closure_generation("cl_idem_1").unwrap().unwrap();
+    assert_eq!(cg.state, "building");
+    assert_eq!(cg.committed_generation, 0);
+}
+
+#[test]
 fn test_double_commit_increments() {
     let store = test_store();
 

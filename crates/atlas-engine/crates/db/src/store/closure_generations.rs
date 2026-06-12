@@ -23,7 +23,7 @@ impl Store {
     pub fn insert_closure_generation(&self, closure_id: &str) -> anyhow::Result<()> {
         let conn = self.lock();
         conn.execute(
-            "INSERT INTO closure_generations (closure_id) VALUES (?1)",
+            "INSERT OR IGNORE INTO closure_generations (closure_id) VALUES (?1)",
             params![closure_id],
         )?;
         Ok(())

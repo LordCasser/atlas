@@ -706,31 +706,44 @@ impl LazyResponse {
 /// Derive an approximate [`Precision`] from a legacy [`PrecisionTier`].
 /// This provides backward compatibility: tools that only set `precision_tier`
 /// still produce a `precision` field in the response envelope.
+///
+/// NOTE: `PrecisionTier::Exact` only means "lazy structural + dataflow for the
+/// requested files was complete" — it does NOT mean the entire repo was indexed.
+/// Therefore we use `ClosureComplete` rather than `RepoComplete`. `RepoComplete`
+/// should ONLY be set when the system has definitively indexed every file in
+/// the repository (e.g., `atlas index --full` completed).
 fn precision_from_tier(tier: PrecisionTier) -> Option<Precision> {
     match tier {
         PrecisionTier::Exact => Some(Precision {
-            coverage: CoverageTier::RepoComplete,
+            coverage: CoverageTier::ClosureComplete {
+                closure_id: "legacy".to_string(),
+            },
             confidence: SemanticConfidence::Certain,
         }),
         PrecisionTier::PartialExact => Some(Precision {
-            coverage: CoverageTier::Partial { gaps: Vec::new() },
+            coverage: CoverageTier::ClosureComplete {
+                closure_id: "legacy".to_string(),
+            },
             confidence: SemanticConfidence::High,
         }),
         PrecisionTier::DegradedStructural => Some(Precision {
-            coverage: CoverageTier::Partial { gaps: Vec::new() },
-            confidence: SemanticConfidence::Medium,
-        }),
-        PrecisionTier::LocalDataflowOnly => Some(Precision {
             coverage: CoverageTier::Boundary {
                 target_tier: SymbolTier::Partial,
             },
-            confidence: SemanticConfidence::Low,
+            confidence: SemanticConfidence::Medium,
+        }),
+        PrecisionTier::LocalDataflowOnly => Some(Precision {
+            coverage: CoverageTier::Partial { gaps: Vec::new() },
+            confidence: SemanticConfidence::Medium,
         }),
         PrecisionTier::ManifestOnly => Some(Precision {
             coverage: CoverageTier::Manifest,
+            confidence: SemanticConfidence::Medium,
+        }),
+        PrecisionTier::Unavailable => Some(Precision {
+            coverage: CoverageTier::Manifest,
             confidence: SemanticConfidence::Low,
         }),
-        PrecisionTier::Unavailable => None,
     }
 }
 
@@ -1244,16 +1257,23 @@ mod tests {
     }
 
     #[test]
-    fn test_precision_from_tier_unavailable_is_none() {
-        let precision = precision_from_tier(PrecisionTier::Unavailable);
-        assert!(precision.is_none(), "Unavailable tier should map to None");
+    fn test_precision_from_tier_unavailable_maps_to_manifest() {
+        let precision = precision_from_tier(PrecisionTier::Unavailable)
+            .expect("Unavailable should now map to Some(Manifest)");
+        assert_eq!(precision.coverage, CoverageTier::Manifest);
+        assert_eq!(precision.confidence, SemanticConfidence::Low);
     }
 
     #[test]
-    fn test_precision_from_tier_exact_maps_to_repo_complete() {
+    fn test_precision_from_tier_exact_maps_to_closure_complete() {
         let precision =
             precision_from_tier(PrecisionTier::Exact).expect("Exact should map to Some");
-        assert_eq!(precision.coverage, CoverageTier::RepoComplete);
+        assert_eq!(
+            precision.coverage,
+            CoverageTier::ClosureComplete {
+                closure_id: "legacy".to_string()
+            }
+        );
         assert_eq!(precision.confidence, SemanticConfidence::Certain);
     }
 }

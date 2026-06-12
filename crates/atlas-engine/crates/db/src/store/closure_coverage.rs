@@ -59,6 +59,24 @@ impl Store {
         Ok(updated)
     }
 
+    /// Make ALL staged entries for a closure visible, regardless of generation.
+    /// This is used at commit time when a closure may have files spread across
+    /// multiple generations (seed=0, iteration 1, iteration 2, ...).
+    /// Returns the number of rows updated.
+    pub fn make_all_staged_coverage_visible(
+        &self,
+        closure_id: &str,
+    ) -> anyhow::Result<usize> {
+        let conn = self.lock();
+        let updated = conn.execute(
+            "UPDATE closure_coverage
+                SET visibility_state = 'visible'
+             WHERE closure_id = ?1 AND visibility_state = 'staged'",
+            params![closure_id],
+        )?;
+        Ok(updated)
+    }
+
     /// Get all visible files for a closure.
     pub fn get_visible_coverage(
         &self,

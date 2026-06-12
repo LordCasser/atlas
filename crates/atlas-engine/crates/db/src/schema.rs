@@ -319,6 +319,8 @@ CREATE TABLE IF NOT EXISTS extraction_jobs (
     completed_at  TEXT,
     budget_ms     INTEGER,
     error_msg     TEXT,
+    closure_id    TEXT,
+    generation    INTEGER,
     FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
 );
 
@@ -639,14 +641,6 @@ CREATE INDEX IF NOT EXISTS idx_cfg_edges_kind
 -- Optimized lookups for reader traits (trace/analysis hot paths).
 CREATE INDEX IF NOT EXISTS idx_symbols_name
     ON symbols(name);
-
--- --- Schema v2 migration: add closure tracking to extraction_jobs ---
-
-ALTER TABLE extraction_jobs ADD COLUMN closure_id TEXT;
-ALTER TABLE extraction_jobs ADD COLUMN generation INTEGER;
-
-CREATE INDEX IF NOT EXISTS idx_extraction_jobs_closure
-    ON extraction_jobs(closure_id, generation);
 
 -- --- FTS Triggers ---
 

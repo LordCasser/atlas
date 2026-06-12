@@ -116,7 +116,7 @@ fn test_enqueue_returns_job_id() {
     let id = scheduler.enqueue(window, FocusPriority::Recent);
 
     assert!(!id.is_empty(), "enqueue should return a non-empty job ID");
-    assert!(id.starts_with("fj_"), "job ID should start with fj_");
+    assert!(id.starts_with("cl_"), "job ID should start with cl_");
 }
 
 #[test]
@@ -325,4 +325,13 @@ fn test_scheduler_no_store_panic() {
         (FocusPriority::Speculative, 1),
         "speculative queue should have 1 job"
     );
+}
+
+#[test]
+fn test_next_job_id_sequential_unique() {
+    let id1 = super::scheduler::next_job_id();
+    let id2 = super::scheduler::next_job_id();
+    assert_ne!(id1, id2, "sequential next_job_id() calls must produce different IDs");
+    assert!(id1.starts_with("cl_"), "IDs should start with cl_");
+    assert!(id2.starts_with("cl_"), "IDs should start with cl_");
 }

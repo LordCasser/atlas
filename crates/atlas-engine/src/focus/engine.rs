@@ -277,9 +277,12 @@ impl ClosureEngine {
 
     /// Commit closure: make all staged coverage entries visible.
     fn commit_closure(&self, closure_id: &str) -> Result<i64> {
-        // Atomically: increment committed_generation + make coverage visible
+        // P1a fix: make ALL staged rows visible regardless of generation.
+        // Seed files are written with generation=0, expansion files with
+        // generation=iteration. We must flip all of them, not just the
+        // committed generation number.
         let generation = self.store.commit_closure_generation(closure_id)?;
-        self.store.make_coverage_visible(closure_id, generation)?;
+        self.store.make_all_staged_coverage_visible(closure_id)?;
         Ok(generation)
     }
 

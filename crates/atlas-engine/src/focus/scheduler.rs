@@ -19,6 +19,8 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use db::Store;
 use std::sync::Arc;
@@ -31,9 +33,13 @@ use super::writer_coordinator::ProjectWriteCoordinator;
 /// Global counter for focus job IDs.
 static JOB_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn next_job_id() -> String {
-    let id = JOB_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("fj_{id:x}")
+pub(crate) fn next_job_id() -> String {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let counter = JOB_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("cl_{ts}_{counter}")
 }
 
 /// Priority levels for focus jobs.
@@ -142,7 +148,7 @@ impl FocusScheduler {
 
         let mut processed = 0;
         while let Some(mut job) = self.queues[0].pop_front() {
-            let closure_id = format!("cl_{}", next_job_id());
+            let closure_id = next_job_id();
             job.closure_id = Some(closure_id.clone());
             let _closure = engine.build_closure(&job.window, &closure_id)?;
             processed += 1;

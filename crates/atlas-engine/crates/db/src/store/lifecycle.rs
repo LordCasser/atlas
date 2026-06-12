@@ -10,6 +10,36 @@ use std::sync::Mutex;
 
 use super::{Store, StoreReader};
 
+// ── Focus schema migration ──────────────────────────────────────────────────
+
+/// Apply focus schema migration: add `closure_id` and `generation` columns
+/// to `extraction_jobs`, and create the supporting index.
+///
+/// Uses `PRAGMA table_info` to check column existence before ALTER TABLE,
+/// so repeated calls are idempotent without relying on error suppression.
+fn apply_focus_schema_migration(conn: &Connection) -> anyhow::Result<()> {
+    // Check existing columns on extraction_jobs
+    let mut stmt = conn.prepare("PRAGMA table_info('extraction_jobs')")?;
+    let columns: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))? // column name is at index 1
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if !columns.iter().any(|c| c == "closure_id") {
+        conn.execute("ALTER TABLE extraction_jobs ADD COLUMN closure_id TEXT", [])?;
+    }
+    if !columns.iter().any(|c| c == "generation") {
+        conn.execute("ALTER TABLE extraction_jobs ADD COLUMN generation INTEGER", [])?;
+    }
+
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_extraction_jobs_closure
+             ON extraction_jobs(closure_id, generation);",
+    )?;
+
+    Ok(())
+}
+
 // ── Generation tracking ─────────────────────────────────────────────────────
 
 /// Analysis mode for generation tracking.
@@ -154,6 +184,9 @@ impl Store {
             "ALTER TABLE extraction_state ADD COLUMN resolution_fingerprint TEXT",
             [],
         );
+
+        // Focus schema migration: extraction_jobs closure tracking columns.
+        apply_focus_schema_migration(&conn)?;
 
         Ok(())
     }
