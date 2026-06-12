@@ -2,6 +2,9 @@
 
 > **Scope**: Atlas only. Corpus compatibility confirmed via `SourceUniverse` trait (see v4.0).
 > **Strategy**: Evolve existing lazy infrastructure. Don't rewrite.
+> **Constraint**: Focus is internal infrastructure. Zero user-facing surface.
+> No CLI commands, no manual pre-warm, no coverage dashboard. Activation is
+> silent and automatic when the project has no full index.
 
 ---
 
@@ -687,12 +690,24 @@ High fanout names → KnownGap, no edge.
 ## 8. CLI
 
 ```
-atlas open                    # Start background bootstrap (Tier 0-2) + focus runtime
-atlas focus status            # Show bootstrap progress, active closures, coverage
-atlas focus expand <symbol>   # Pre-warm a focus closure for a symbol
-atlas focus gaps <symbol>     # List known gaps for a symbol's closure
 atlas index --full            # Explicit full index (unchanged)
 ```
+
+### 8.1 Transparency Constraint
+
+The focus mechanism is **internal infrastructure — zero user-facing surface**.
+
+- **No `atlas focus` command.** Users never pre-warm closures, check coverage, or
+  list gaps manually.
+- **No `atlas open` daemon.** Focus is an on-demand capability of the existing
+  `atlas-mcp` process, not a separate runtime.
+- **Activation is silent.** When an MCP query targets a project with no full
+  index (or incomplete coverage), the focus engine activates automatically in
+  background threads. The user sees only improved response quality over time,
+  never a "focus mode" indicator.
+- **`atlas index --full` remains the explicit path.** For repos where full
+  indexing is feasible, the user invokes it once and focus is never needed.
+  Focus fills the gap for repos where full indexing is impractical.
 
 ---
 
