@@ -31,7 +31,7 @@ use anyhow::{Context, Result};
 use db::Store;
 use resolution::ReferenceResolver;
 use types::enums::{Language, ReferenceKind, SymbolKind};
-use types::ids::FileId;
+use types::ids::{FileId, SymbolId};
 use types::structs::{KnownGap, SymbolDef};
 
 use crate::closure_planner::{ClosurePlanner, IncludeRoot};
@@ -125,6 +125,46 @@ impl ClosureEngine {
             )?;
         }
 
+        // Incremental resolution tracking: avoid re-resolving files that have
+        // already been resolved. Seed files are resolved immediately so that
+        // CallGraph can find their call targets on the first loop iteration.
+        let mut previously_resolved: HashSet<FileId> = HashSet::new();
+        if !seed_files.is_empty() {
+            // Build visibility filter for seed file resolution (same logic as
+            // the final pass at end of build_closure).
+            let language: Option<Language> = closure
+                .files
+                .iter()
+                .filter_map(|file_id| self.store.get_file(file_id).ok().flatten())
+                .map(|file_info| file_info.language)
+                .next();
+            let registry = VisibilityFilterRegistry::new();
+            let visibility_filter: Option<Box<dyn Fn(&SymbolDef, FileId) -> bool>> =
+                language.map(|lang| {
+                    let filter = registry.get(lang);
+                    let ctx = VisibilityContext {
+                        from_file: FileId::default(),
+                        from_crate_root: None,
+                        target_crate_root: None,
+                    };
+                    Box::new(move |sym: &SymbolDef, from_file: FileId| -> bool {
+                        filter.is_visible(sym, from_file, &ctx)
+                    })
+                        as Box<dyn Fn(&SymbolDef, FileId) -> bool>
+                });
+            let filter_ref: Option<&dyn Fn(&SymbolDef, FileId) -> bool> =
+                visibility_filter.as_deref();
+            self.resolver.borrow_mut().resolve_for_closure(
+                closure_id,
+                0, // generation 0 = seed resolution
+                &seed_files,
+                filter_ref,
+            )?;
+            for f in &seed_files {
+                previously_resolved.insert(*f);
+            }
+        }
+
         // Phase 2: pre-compute TypeGraph expansion (single-pass, not iterative).
         // TypeGraph handles its own depth internally — we do NOT re-invoke it
         // inside the fixed-point loop below.
@@ -148,7 +188,7 @@ impl ClosureEngine {
             // Plan: ask strategies what to add next.
             // Merge pre-computed TypeGraph results into the first iteration.
             let additions = if iteration == 1 && !pre_additions.is_empty() {
-                let mut plan = self.plan_additions(&window.strategies, &closure)?;
+                let mut plan = self.plan_additions(&window.strategies, &closure, closure_id)?;
                 for f in &pre_additions {
                     if !plan.contains(f) {
                         plan.push(*f);
@@ -156,7 +196,7 @@ impl ClosureEngine {
                 }
                 plan
             } else {
-                self.plan_additions(&window.strategies, &closure)?
+                self.plan_additions(&window.strategies, &closure, closure_id)?
             };
 
             if additions.is_empty() {
@@ -207,6 +247,26 @@ impl ClosureEngine {
                     None,
                     &format!("{:?}", result.precision_tier),
                 )?;
+            }
+
+            // Incremental resolution: resolve only newly extracted files so
+            // that the next iteration's CallGraph expansion can discover call
+            // targets via reference_resolutions.
+            let truly_new: Vec<FileId> = new_files
+                .iter()
+                .filter(|f| !previously_resolved.contains(f))
+                .copied()
+                .collect();
+            if !truly_new.is_empty() {
+                self.resolver.borrow_mut().resolve_for_closure(
+                    closure_id,
+                    generation,
+                    &truly_new,
+                    None, // no visibility filter during incremental resolution
+                )?;
+                for f in &truly_new {
+                    previously_resolved.insert(*f);
+                }
             }
 
             // Termination check
@@ -333,16 +393,17 @@ impl ClosureEngine {
         }
     }
 
-    /// Expand closure through call-graph edges.
+    /// Expand closure through call-graph references.
     ///
-    /// For `Direction::Outgoing`: queries canonical edges (`symbol_edges`) and
-    /// visible candidate edges (`symbol_edge_candidates`) for each symbol in
-    /// the closure, resolves **target** symbols to their containing files, and
-    /// returns deduplicated file IDs not already in `closure.visited`.
+    /// Queries `reference_resolutions` (populated by incremental scoped
+    /// resolution) instead of `symbol_edges` / `symbol_edge_candidates`
+    /// (which are built after the fixed-point loop completes).
     ///
-    /// For `Direction::Incoming`: queries canonical and candidate edges where
-    /// the closure symbol is the **target** (i.e. "who calls us?"), resolves
-    /// the edge's **source** symbol to its file, and returns those files.
+    /// For `Direction::Outgoing`: finds Call references made by closure
+    /// symbols and resolves their targets to containing files.
+    ///
+    /// For `Direction::Incoming`: finds Call references whose resolved
+    /// target is a closure symbol and resolves the source symbol to its file.
     ///
     /// For `Direction::Both`: combines Outgoing + Incoming results.
     ///
@@ -351,6 +412,7 @@ impl ClosureEngine {
     fn expand_callgraph(
         &self,
         closure: &FocusClosure,
+        closure_id: &str,
         direction: Direction,
         depth: u32,
     ) -> Result<Vec<FileId>> {
@@ -361,114 +423,57 @@ impl ClosureEngine {
             return Ok(Vec::new());
         }
 
-        match direction {
-            Direction::Incoming => {
-                let mut source_files: Vec<FileId> = Vec::new();
+        let mut result: HashSet<FileId> = HashSet::new();
+        let ref_kind = ReferenceKind::Call.as_str();
 
-                for symbol_id in &closure.symbols {
-                    // Canonical incoming edges (symbol_edges table)
-                    if let Ok(edges) = self.store.find_edges_by_target(symbol_id) {
-                        for edge in &edges {
-                            if let Ok(Some(file_id)) =
-                                self.store.find_symbol_file(&edge.source)
-                            {
-                                if !closure.visited.contains(&file_id) {
-                                    source_files.push(file_id);
-                                }
-                            }
-                        }
-                    }
+        let do_outgoing = matches!(direction, Direction::Outgoing | Direction::Both);
+        let do_incoming = matches!(direction, Direction::Incoming | Direction::Both);
 
-                    // Candidate incoming edges (symbol_edge_candidates table)
-                    if let Ok(candidates) =
-                        self.store.find_visible_candidate_edges_by_target(symbol_id)
-                    {
-                        for cand in &candidates {
-                            let source_blob = &cand.source;
-                            if source_blob.len() == 32 {
-                                let mut arr = [0u8; 32];
-                                arr.copy_from_slice(source_blob);
-                                let sym_id =
-                                    types::ids::SymbolId::from_bytes(arr);
-                                if let Ok(Some(file_id)) =
-                                    self.store.find_symbol_file(&sym_id)
-                                {
-                                    if !closure.visited.contains(&file_id) {
-                                        source_files.push(file_id);
-                                    }
-                                }
+        if do_outgoing {
+            for sym_id in &closure.symbols {
+                let targets = self.store.get_resolved_targets_for_symbol_in_closure(
+                    closure_id,
+                    sym_id.as_bytes(),
+                    ref_kind,
+                )?;
+                for target_blob in &targets {
+                    if target_blob.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(target_blob);
+                        let target_sym_id = SymbolId::from_bytes(arr);
+                        if let Ok(Some(file_id)) = self.store.find_symbol_file(&target_sym_id) {
+                            if !closure.visited.contains(&file_id) {
+                                result.insert(file_id);
                             }
                         }
                     }
                 }
-
-                source_files.sort();
-                source_files.dedup();
-                Ok(source_files)
-            }
-            Direction::Outgoing => {
-                let mut target_files: Vec<FileId> = Vec::new();
-
-                for symbol_id in &closure.symbols {
-                    // Canonical edges (symbol_edges table)
-                    if let Ok(edges) = self.store.find_edges_by_source(symbol_id) {
-                        for edge in &edges {
-                            if let Ok(Some(file_id)) =
-                                self.store.find_symbol_file(&edge.target)
-                            {
-                                if !closure.visited.contains(&file_id) {
-                                    target_files.push(file_id);
-                                }
-                            }
-                        }
-                    }
-
-                    // Candidate edges (symbol_edge_candidates table)
-                    if let Ok(candidates) =
-                        self.store.find_visible_candidate_edges_by_source(symbol_id)
-                    {
-                        for cand in &candidates {
-                            if let Some(ref target_blob) = cand.target {
-                                if target_blob.len() == 32 {
-                                    let mut arr = [0u8; 32];
-                                    arr.copy_from_slice(target_blob);
-                                    let sym_id =
-                                        types::ids::SymbolId::from_bytes(arr);
-                                    if let Ok(Some(file_id)) =
-                                        self.store.find_symbol_file(&sym_id)
-                                    {
-                                        if !closure.visited.contains(&file_id) {
-                                            target_files.push(file_id);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                target_files.sort();
-                target_files.dedup();
-                Ok(target_files)
-            }
-            Direction::Both => {
-                // Combine Outgoing (callee files) and Incoming (caller files).
-                let mut outgoing = self.expand_callgraph(
-                    closure,
-                    Direction::Outgoing,
-                    depth,
-                )?;
-                let mut incoming = self.expand_callgraph(
-                    closure,
-                    Direction::Incoming,
-                    depth,
-                )?;
-                outgoing.append(&mut incoming);
-                outgoing.sort();
-                outgoing.dedup();
-                Ok(outgoing)
             }
         }
+
+        if do_incoming {
+            for sym_id in &closure.symbols {
+                let callers = self.store.get_callers_for_symbol_in_closure(
+                    closure_id,
+                    sym_id.as_bytes(),
+                    ref_kind,
+                )?;
+                for source_blob in &callers {
+                    if source_blob.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(source_blob);
+                        let source_sym_id = SymbolId::from_bytes(arr);
+                        if let Ok(Some(file_id)) = self.store.find_symbol_file(&source_sym_id) {
+                            if !closure.visited.contains(&file_id) {
+                                result.insert(file_id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(result.into_iter().collect())
     }
 
     /// Plan additions based on strategies + current closure state.
@@ -476,6 +481,7 @@ impl ClosureEngine {
         &self,
         strategies: &[ClosureStrategy],
         closure: &FocusClosure,
+        closure_id: &str,
     ) -> Result<Vec<FileId>> {
         let mut additions = Vec::new();
 
@@ -524,7 +530,7 @@ impl ClosureEngine {
                 }
                 ClosureStrategy::CallGraph { direction, depth } => {
                     let callee_files =
-                        self.expand_callgraph(closure, *direction, *depth)?;
+                        self.expand_callgraph(closure, closure_id, *direction, *depth)?;
                     additions.extend(callee_files);
                 }
                 ClosureStrategy::TypeGraph { .. } => {

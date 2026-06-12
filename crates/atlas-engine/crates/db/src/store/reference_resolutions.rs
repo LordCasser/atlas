@@ -223,6 +223,57 @@ impl Store {
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
+
+    /// Get resolved target symbol IDs for references of a specific kind
+    /// made by a source symbol within a closure.
+    ///
+    /// Queries ALL rows (staged or visible) so that incremental resolution
+    /// results are readable during the fixed-point expansion loop.
+    pub fn get_resolved_targets_for_symbol_in_closure(
+        &self,
+        closure_id: &str,
+        source_symbol_id: &[u8],
+        reference_kind: &str,
+    ) -> anyhow::Result<Vec<Vec<u8>>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT rr.target_symbol_id
+             FROM reference_resolutions rr
+             JOIN \"references\" r ON rr.reference_id = r.reference_id
+             WHERE rr.closure_id = ?1 AND r.source_symbol = ?2 AND r.kind = ?3
+               AND rr.target_symbol_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(
+            params![closure_id, source_symbol_id, reference_kind],
+            |row| row.get(0),
+        )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Get source symbols that call a given target symbol within a closure.
+    ///
+    /// Queries ALL rows (staged or visible) so that incremental resolution
+    /// results are readable during the fixed-point expansion loop.
+    pub fn get_callers_for_symbol_in_closure(
+        &self,
+        closure_id: &str,
+        target_symbol_id: &[u8],
+        reference_kind: &str,
+    ) -> anyhow::Result<Vec<Vec<u8>>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT r.source_symbol
+             FROM reference_resolutions rr
+             JOIN \"references\" r ON rr.reference_id = r.reference_id
+             WHERE rr.closure_id = ?1 AND rr.target_symbol_id = ?2 AND r.kind = ?3
+               AND r.source_symbol IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(
+            params![closure_id, target_symbol_id, reference_kind],
+            |row| row.get(0),
+        )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
 }
 
 // ── Row mapping ─────────────────────────────────────────────────────────────
