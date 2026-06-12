@@ -265,10 +265,34 @@ pub enum SemanticConfidence {
 }
 
 /// Combined precision: coverage scope × semantic certainty.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Precision {
     pub coverage: CoverageTier,
     pub confidence: SemanticConfidence,
+}
+
+// ---------------------------------------------------------------------------
+// Precision migration: new Precision → legacy PrecisionTier
+// ---------------------------------------------------------------------------
+
+impl From<Precision> for precision::PrecisionTier {
+    fn from(p: Precision) -> precision::PrecisionTier {
+        use precision::PrecisionTier;
+        match (p.coverage, p.confidence) {
+            (
+                CoverageTier::RepoComplete | CoverageTier::ClosureComplete { .. },
+                SemanticConfidence::Certain,
+            ) => PrecisionTier::Exact,
+            (CoverageTier::ClosureComplete { .. }, _) => PrecisionTier::PartialExact,
+            (CoverageTier::Boundary { .. }, SemanticConfidence::High) => {
+                PrecisionTier::PartialExact
+            }
+            (CoverageTier::Boundary { .. }, _) => PrecisionTier::DegradedStructural,
+            (CoverageTier::Partial { .. }, _) => PrecisionTier::LocalDataflowOnly,
+            (CoverageTier::Manifest, _) => PrecisionTier::ManifestOnly,
+            _ => PrecisionTier::Unavailable,
+        }
+    }
 }
 
 impl SymbolDef {

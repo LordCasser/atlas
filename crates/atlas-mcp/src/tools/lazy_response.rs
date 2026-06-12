@@ -12,10 +12,17 @@
 //! merging warnings, adding `lazy_diagnostics`/`analysis_contract`,
 //! and storing a [`super::query_snapshot::QuerySnapshot`].
 
+use std::collections::HashMap;
+
 use atlas_engine::LazyOutcome;
 use atlas_engine::LazyWindow;
 use atlas_engine::precision::next_action_structural;
 use atlas_engine::structs::CapabilityMask;
+use atlas_engine::structs::CoverageTier;
+use atlas_engine::structs::KnownGap;
+use atlas_engine::structs::Precision;
+use atlas_engine::structs::SemanticConfidence;
+use atlas_engine::structs::SymbolTier;
 use atlas_engine::structs::precision::PrecisionTier;
 use serde::Serialize;
 use serde_json::json;
@@ -413,6 +420,15 @@ pub(crate) trait SnapshotStore {
 
 // ── LazyResponse builder ──────────────────────────────────────────────
 
+/// Info about a background focus closure being built.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub(crate) struct PendingClosure {
+    pub closure_id: String,
+    pub state: String,
+    pub percent: u8,
+    pub eta_ms: Option<u64>,
+}
+
 /// Envelope wrapper that adds common lazy-analysis fields to MCP tool
 /// responses.
 ///
@@ -444,6 +460,14 @@ pub(crate) struct LazyResponse {
     status: Option<QueryStatus>,
     is_error_override: Option<bool>,
     partial_result: bool,
+    /// Focus-aware precision (from new type system).
+    precision: Option<Precision>,
+    /// Distribution of results by coverage tier.
+    coverage_counts: Option<HashMap<String, usize>>,
+    /// Known gaps in analysis completeness.
+    known_gaps: Option<Vec<KnownGap>>,
+    /// Pending background focus closure jobs.
+    pending_closures: Option<Vec<PendingClosure>>,
 }
 
 impl LazyResponse {
@@ -466,6 +490,10 @@ impl LazyResponse {
             status: None,
             is_error_override: None,
             partial_result: false,
+            precision: None,
+            coverage_counts: None,
+            known_gaps: None,
+            pending_closures: None,
         }
     }
 
@@ -526,6 +554,30 @@ impl LazyResponse {
     /// Mark that the result is partial (affects snapshot status).
     pub fn with_partial_result(mut self, partial: bool) -> Self {
         self.partial_result = partial;
+        self
+    }
+
+    /// Set the new Precision (focus-aware).
+    pub fn with_precision(mut self, precision: Precision) -> Self {
+        self.precision = Some(precision);
+        self
+    }
+
+    /// Set coverage distribution counts.
+    pub fn with_coverage_counts(mut self, counts: HashMap<String, usize>) -> Self {
+        self.coverage_counts = Some(counts);
+        self
+    }
+
+    /// Set known gaps.
+    pub fn with_gaps(mut self, gaps: Vec<KnownGap>) -> Self {
+        self.known_gaps = Some(gaps);
+        self
+    }
+
+    /// Set pending closure info.
+    pub fn with_pending(mut self, pending: Vec<PendingClosure>) -> Self {
+        self.pending_closures = Some(pending);
         self
     }
 
@@ -591,6 +643,33 @@ impl LazyResponse {
         // 5. Inject query_id
         body["query_id"] = json!(self.query_id);
 
+        // 5b. Inject focus-aware precision (new type system).
+        // If new precision not set but precision_tier is, auto-convert for
+        // backward compatibility.
+        let precision = if self.precision.is_some() {
+            self.precision
+        } else {
+            precision_from_tier(self.precision_tier)
+        };
+        if let Some(ref p) = precision {
+            body["precision"] = serde_json::to_value(p).unwrap_or(json!(null));
+        }
+
+        // 5c. Inject coverage distribution counts
+        if let Some(ref counts) = self.coverage_counts {
+            body["coverage_counts"] = serde_json::to_value(counts).unwrap_or(json!({}));
+        }
+
+        // 5d. Inject known gaps
+        if let Some(ref gaps) = self.known_gaps {
+            body["known_gaps"] = serde_json::to_value(gaps).unwrap_or(json!([]));
+        }
+
+        // 5e. Inject pending closures
+        if let Some(ref pending) = self.pending_closures {
+            body["pending_closures"] = serde_json::to_value(pending).unwrap_or(json!([]));
+        }
+
         // 6. Store snapshot
         let status = self.status.unwrap_or_else(|| {
             if self.precision_tier == PrecisionTier::Exact && !self.partial_result {
@@ -621,6 +700,37 @@ impl LazyResponse {
             serde_json::to_string_pretty(&body).unwrap_or_else(|e| e.to_string()),
             is_error,
         )
+    }
+}
+
+/// Derive an approximate [`Precision`] from a legacy [`PrecisionTier`].
+/// This provides backward compatibility: tools that only set `precision_tier`
+/// still produce a `precision` field in the response envelope.
+fn precision_from_tier(tier: PrecisionTier) -> Option<Precision> {
+    match tier {
+        PrecisionTier::Exact => Some(Precision {
+            coverage: CoverageTier::RepoComplete,
+            confidence: SemanticConfidence::Certain,
+        }),
+        PrecisionTier::PartialExact => Some(Precision {
+            coverage: CoverageTier::Partial { gaps: Vec::new() },
+            confidence: SemanticConfidence::High,
+        }),
+        PrecisionTier::DegradedStructural => Some(Precision {
+            coverage: CoverageTier::Partial { gaps: Vec::new() },
+            confidence: SemanticConfidence::Medium,
+        }),
+        PrecisionTier::LocalDataflowOnly => Some(Precision {
+            coverage: CoverageTier::Boundary {
+                target_tier: SymbolTier::Partial,
+            },
+            confidence: SemanticConfidence::Low,
+        }),
+        PrecisionTier::ManifestOnly => Some(Precision {
+            coverage: CoverageTier::Manifest,
+            confidence: SemanticConfidence::Low,
+        }),
+        PrecisionTier::Unavailable => None,
     }
 }
 
@@ -899,19 +1009,32 @@ mod tests {
         assert!(json.contains("analysis_contract"), "json should contain analysis_contract");
     }
 
+    // ── Shared test infrastructure ─────────────────────────────────────
+
+    use crate::tools::query_snapshot::QuerySnapshot;
+
+    struct MockStore {
+        snapshots: Vec<QuerySnapshot>,
+    }
+
+    impl MockStore {
+        fn new() -> Self {
+            Self {
+                snapshots: Vec::new(),
+            }
+        }
+    }
+
+    impl super::SnapshotStore for MockStore {
+        fn store_query_snapshot(&mut self, snapshot: QuerySnapshot) {
+            self.snapshots.push(snapshot);
+        }
+    }
+
     // ── LazyResponse builder tests ────────────────────────────────────
 
     #[test]
     fn lazy_response_injects_query_id_and_diagnostics() {
-        use crate::tools::query_snapshot::QuerySnapshot;
-
-        struct MockStore { snapshots: Vec<QuerySnapshot> }
-        impl super::SnapshotStore for MockStore {
-            fn store_query_snapshot(&mut self, snapshot: QuerySnapshot) {
-                self.snapshots.push(snapshot);
-            }
-        }
-
         let args = json!({"symbol": "test_fn"});
         let lr = LazyResponse::new("test_tool", &args);
         let qid = lr.query_id().to_string();
@@ -925,5 +1048,212 @@ mod tests {
         assert!(json_str.contains("query_id"), "response must contain query_id");
         assert!(!store.snapshots.is_empty(), "snapshot must be stored");
         assert_eq!(store.snapshots[0].query_id, qid);
+    }
+
+    // ── Focus envelope tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_lazy_response_with_precision() {
+        let args = json!({"symbol": "test_fn"});
+        let lr = LazyResponse::new("test_tool", &args)
+            .with_precision(Precision {
+                coverage: CoverageTier::ClosureComplete {
+                    closure_id: "c1".into(),
+                },
+                confidence: SemanticConfidence::High,
+            })
+            .with_is_error(false);
+
+        let body = json!({"result": "ok"});
+        let (json_str, is_err) = lr.build(body, &mut MockStore::new());
+
+        assert!(!is_err);
+        assert!(json_str.contains("\"precision\""), "should contain precision field");
+        assert!(
+            json_str.contains("ClosureComplete") || json_str.contains("\"c1\""),
+            "should contain closure precision info"
+        );
+    }
+
+    #[test]
+    fn test_lazy_response_with_coverage_counts() {
+        let args = json!({"symbol": "test_fn"});
+        let mut counts = HashMap::new();
+        counts.insert("RepoComplete".to_string(), 12usize);
+        counts.insert("Partial".to_string(), 3usize);
+
+        let lr = LazyResponse::new("test_tool", &args)
+            .with_coverage_counts(counts)
+            .with_is_error(false);
+
+        let body = json!({"result": "ok"});
+        let (json_str, is_err) = lr.build(body, &mut MockStore::new());
+
+        assert!(!is_err);
+        assert!(
+            json_str.contains("coverage_counts"),
+            "should contain coverage_counts field"
+        );
+        assert!(
+            json_str.contains("RepoComplete"),
+            "should contain RepoComplete key"
+        );
+    }
+
+    #[test]
+    fn test_lazy_response_with_gaps() {
+        let args = json!({"symbol": "test_fn"});
+        let gaps = vec![KnownGap::UnresolvedImport {
+            from: "foo.c".into(),
+            import_path: "bar.h".into(),
+        }];
+
+        let lr = LazyResponse::new("test_tool", &args)
+            .with_gaps(gaps)
+            .with_is_error(false);
+
+        let body = json!({"result": "ok"});
+        let (json_str, is_err) = lr.build(body, &mut MockStore::new());
+
+        assert!(!is_err);
+        assert!(json_str.contains("known_gaps"), "should contain known_gaps field");
+        assert!(
+            json_str.contains("UnresolvedImport"),
+            "should contain the gap variant"
+        );
+    }
+
+    #[test]
+    fn test_lazy_response_with_pending() {
+        let args = json!({"symbol": "test_fn"});
+        let pending = vec![PendingClosure {
+            closure_id: "cl_001".into(),
+            state: "extracting".into(),
+            percent: 45,
+            eta_ms: Some(5000),
+        }];
+
+        let lr = LazyResponse::new("test_tool", &args)
+            .with_pending(pending)
+            .with_is_error(false);
+
+        let body = json!({"result": "ok"});
+        let (json_str, is_err) = lr.build(body, &mut MockStore::new());
+
+        assert!(!is_err);
+        assert!(
+            json_str.contains("pending_closures"),
+            "should contain pending_closures field"
+        );
+        assert!(json_str.contains("cl_001"), "should contain closure id");
+    }
+
+    #[test]
+    fn test_backward_compat_precision_tier() {
+        // Set only precision_tier (old field), verify new precision is auto-derived.
+        let args = json!({"symbol": "test_fn"});
+        let lr = LazyResponse::new("test_tool", &args)
+            .with_precision_tier(PrecisionTier::Exact)
+            .with_is_error(false);
+
+        let body = json!({"result": "ok"});
+        let (json_str, is_err) = lr.build(body, &mut MockStore::new());
+
+        assert!(!is_err);
+        assert!(
+            json_str.contains("\"precision\""),
+            "backward compat: should auto-derive precision from precision_tier"
+        );
+    }
+
+    #[test]
+    fn test_precision_overrides_tier() {
+        // When both are set, the explicit precision wins over tier-derived.
+        let args = json!({"symbol": "test_fn"});
+        let lr = LazyResponse::new("test_tool", &args)
+            .with_precision_tier(PrecisionTier::ManifestOnly)
+            .with_precision(Precision {
+                coverage: CoverageTier::RepoComplete,
+                confidence: SemanticConfidence::Certain,
+            })
+            .with_is_error(false);
+
+        let body = json!({"result": "ok"});
+        let (json_str, is_err) = lr.build(body, &mut MockStore::new());
+
+        assert!(!is_err);
+        assert!(
+            json_str.contains("RepoComplete"),
+            "explicit precision should override tier-derived"
+        );
+    }
+
+    #[test]
+    fn test_full_response_envelope() {
+        let args = json!({"symbol": "test_fn"});
+        let mut counts = HashMap::new();
+        counts.insert("RepoComplete".to_string(), 5usize);
+
+        let lr = LazyResponse::new("test_tool", &args)
+            .with_precision(Precision {
+                coverage: CoverageTier::RepoComplete,
+                confidence: SemanticConfidence::Certain,
+            })
+            .with_coverage_counts(counts)
+            .with_gaps(vec![KnownGap::UnresolvedImport {
+                from: "a.c".into(),
+                import_path: "b.h".into(),
+            }])
+            .with_pending(vec![PendingClosure {
+                closure_id: "cl_001".into(),
+                state: "done".into(),
+                percent: 100,
+                eta_ms: None,
+            }])
+            .with_is_error(false);
+
+        let body = json!({"result": "ok"});
+        let (json_str, is_err) = lr.build(body, &mut MockStore::new());
+
+        assert!(!is_err);
+        assert!(json_str.contains("precision"), "should contain precision");
+        assert!(json_str.contains("coverage_counts"), "should contain coverage_counts");
+        assert!(json_str.contains("known_gaps"), "should contain known_gaps");
+        assert!(json_str.contains("pending_closures"), "should contain pending_closures");
+        assert!(json_str.contains("query_id"), "should contain query_id");
+        assert!(json_str.contains("precision_tier"), "should contain precision_tier");
+    }
+
+    #[test]
+    fn test_coverage_counts_empty() {
+        let args = json!({"symbol": "test_fn"});
+        let counts: HashMap<String, usize> = HashMap::new();
+
+        let lr = LazyResponse::new("test_tool", &args)
+            .with_coverage_counts(counts)
+            .with_is_error(false);
+
+        let body = json!({"result": "ok"});
+        let (json_str, is_err) = lr.build(body, &mut MockStore::new());
+
+        assert!(!is_err);
+        assert!(
+            json_str.contains("coverage_counts"),
+            "should contain coverage_counts even when empty"
+        );
+    }
+
+    #[test]
+    fn test_precision_from_tier_unavailable_is_none() {
+        let precision = precision_from_tier(PrecisionTier::Unavailable);
+        assert!(precision.is_none(), "Unavailable tier should map to None");
+    }
+
+    #[test]
+    fn test_precision_from_tier_exact_maps_to_repo_complete() {
+        let precision =
+            precision_from_tier(PrecisionTier::Exact).expect("Exact should map to Some");
+        assert_eq!(precision.coverage, CoverageTier::RepoComplete);
+        assert_eq!(precision.confidence, SemanticConfidence::Certain);
     }
 }

@@ -37,11 +37,15 @@ use crate::store_writers::*;
 
 mod annotations;
 mod cfg;
+mod closure_coverage;
+mod closure_generations;
 mod dataflow;
+mod reference_resolutions;
 pub(crate) mod domain_rules;
 mod edges;
 pub(crate) mod extraction_jobs;
 mod file_extraction_state;
+pub mod file_inventory;
 mod files;
 mod fk_guards;
 mod lifecycle;
@@ -50,6 +54,7 @@ pub use lifecycle::{IndexMode, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH,
 mod scopes;
 mod stats;
 pub mod summary;
+pub mod symbol_hints;
 mod symbols;
 mod unit_extraction_state;
 
@@ -1118,6 +1123,18 @@ impl FileReader for Store {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod closure_generations_tests;
+#[cfg(test)]
+mod closure_coverage_tests;
+#[cfg(test)]
+mod reference_resolutions_tests;
+
+#[cfg(test)]
+mod file_inventory_tests;
+#[cfg(test)]
+mod symbol_hints_tests;
 
 #[cfg(test)]
 mod tests {

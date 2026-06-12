@@ -1,6 +1,6 @@
 //! Atlas-native SQLite schema DDL.
 //!
-//! Schema version: 1
+//! Schema version: 2
 //!
 //! ## Tables
 //! - `files`          — per-file metadata
@@ -26,9 +26,14 @@
 //! - `function_pointer_annotations` — user-declared function-pointer dispatch annotations
 //! - `domain_rules`   — user-defined and learned ownership rules for lifecycle analysis
 //! - `symbols_fts`    — FTS5 index on symbol names
+//! - `closure_generations`    — focus closure generation tracking
+//! - `closure_coverage`       — closure-to-file coverage with per-generation visibility
+//! - `reference_resolutions`  — scoped reference resolutions for focus closures
+//! - `symbol_edge_candidates` — candidate graph edges (Medium/Low confidence)
+//! - `known_gaps`             — known analysis gaps for focus closures
 
 /// Current schema version.
-pub const CURRENT_SCHEMA_VERSION: i64 = 1;
+pub const CURRENT_SCHEMA_VERSION: i64 = 2;
 /// Complete DDL for a fresh database.
 pub const SCHEMA_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -438,6 +443,109 @@ CREATE INDEX IF NOT EXISTS idx_fpa_source
 CREATE INDEX IF NOT EXISTS idx_fpa_target
     ON function_pointer_annotations(target_symbol);
 
+-- ===== Focus tables (Schema v2) =====
+
+-- Focus closure generation tracking.
+-- Each closure is identified by a unique closure_id.
+-- committed_generation atomically gates visibility for MCP queries.
+CREATE TABLE IF NOT EXISTS closure_generations (
+    closure_id            TEXT PRIMARY KEY NOT NULL,
+    committed_generation  INTEGER NOT NULL DEFAULT 0,
+    state                 TEXT NOT NULL DEFAULT 'building',
+    committed_at          TEXT,
+    created_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Maps closures to the files they cover, with per-generation visibility.
+CREATE TABLE IF NOT EXISTS closure_coverage (
+    closure_id       TEXT NOT NULL REFERENCES closure_generations(closure_id),
+    file_id          BLOB NOT NULL,
+    source           TEXT NOT NULL,
+    visibility_state TEXT NOT NULL DEFAULT 'staged',
+    generation       INTEGER NOT NULL,
+    content_hash     TEXT,
+    precision_tier   TEXT NOT NULL,
+    extracted_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (closure_id, file_id, generation)
+);
+
+-- Scoped reference resolutions for focus closures.
+CREATE TABLE IF NOT EXISTS reference_resolutions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    reference_id        BLOB NOT NULL,
+    closure_id          TEXT NOT NULL REFERENCES closure_generations(closure_id),
+    generation          INTEGER NOT NULL,
+    resolution_scope    TEXT NOT NULL,
+    target_symbol_id    BLOB,
+    coverage_tier       TEXT NOT NULL,
+    semantic_confidence TEXT NOT NULL,
+    resolution_strategy TEXT NOT NULL,
+    provenance          TEXT,
+    is_visible          INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ref_res_cl_vis
+    ON reference_resolutions(closure_id, generation, is_visible);
+
+-- Candidate graph edges (Medium/Low confidence).
+CREATE TABLE IF NOT EXISTS symbol_edge_candidates (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    source              BLOB NOT NULL,
+    target              BLOB,
+    kind                TEXT NOT NULL,
+    coverage_tier       TEXT NOT NULL,
+    semantic_confidence TEXT NOT NULL,
+    candidate_count     INTEGER,
+    closure_id          TEXT NOT NULL REFERENCES closure_generations(closure_id),
+    generation          INTEGER NOT NULL,
+    is_visible          INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Known gaps in analysis completeness for focus closures.
+CREATE TABLE IF NOT EXISTS known_gaps (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    closure_id  TEXT NOT NULL REFERENCES closure_generations(closure_id),
+    gap_kind    TEXT NOT NULL,
+    details     TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- File inventory for lightweight first-time discovery (Tier 0 bootstrap).
+-- Populated on first `atlas open` with cheap stat() data.
+-- No content_hash until fingerprinting (Tier 0.5).
+CREATE TABLE IF NOT EXISTS file_inventory (
+    file_id BLOB PRIMARY KEY,
+    path TEXT NOT NULL,
+    language TEXT NOT NULL,
+    mtime INTEGER NOT NULL,
+    size INTEGER NOT NULL,
+    inode INTEGER NOT NULL,
+    dev INTEGER NOT NULL,
+    discovered_at TIMESTAMP DEFAULT (datetime('now')),
+    content_hash TEXT,
+    last_fingerprinted_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_inventory_path
+    ON file_inventory(path);
+
+-- Symbol hint index for fast lookup (Tier 1 bootstrap).
+-- These are hints, not definitive truth. Missing from hints != not found.
+CREATE TABLE IF NOT EXISTS symbol_hints (
+    name TEXT NOT NULL,
+    file_id BLOB NOT NULL,
+    kind TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.9,
+    source TEXT NOT NULL DEFAULT 'manifest',
+    freshness TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (name, file_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_symbol_hints_name ON symbol_hints(name);
+
 -- --- Indexes ---
 
 CREATE INDEX IF NOT EXISTS idx_files_path
@@ -532,6 +640,14 @@ CREATE INDEX IF NOT EXISTS idx_cfg_edges_kind
 CREATE INDEX IF NOT EXISTS idx_symbols_name
     ON symbols(name);
 
+-- --- Schema v2 migration: add closure tracking to extraction_jobs ---
+
+ALTER TABLE extraction_jobs ADD COLUMN closure_id TEXT;
+ALTER TABLE extraction_jobs ADD COLUMN generation INTEGER;
+
+CREATE INDEX IF NOT EXISTS idx_extraction_jobs_closure
+    ON extraction_jobs(closure_id, generation);
+
 -- --- FTS Triggers ---
 
 CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
@@ -606,5 +722,14 @@ mod tests {
         assert!(tables.contains(&"summary_param_reaches".to_string()));
         assert!(tables.contains(&"summary_return_sources".to_string()));
         assert!(tables.contains(&"summary_call_arg_sources".to_string()));
+        // Focus tables (Schema v2)
+        assert!(tables.contains(&"closure_generations".to_string()));
+        assert!(tables.contains(&"closure_coverage".to_string()));
+        assert!(tables.contains(&"reference_resolutions".to_string()));
+        assert!(tables.contains(&"symbol_edge_candidates".to_string()));
+        assert!(tables.contains(&"known_gaps".to_string()));
+        // Bootstrap tables (Tier 0 + Tier 1)
+        assert!(tables.contains(&"file_inventory".to_string()));
+        assert!(tables.contains(&"symbol_hints".to_string()));
     }
 }

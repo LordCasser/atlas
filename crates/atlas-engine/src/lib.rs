@@ -25,7 +25,7 @@
 //! disabled by opting out of default features (e.g. `--no-default-features`).
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 // lazy crate (aliased to avoid name conflict with types::lazy module)
 use ::lazy as lazy_crate;
@@ -36,6 +36,10 @@ pub use lazy_crate::LazyDataflowService;
 // ── Internal modules ──────────────────────────────────────────────────────
 
 mod closure_planner;
+/// Precision migration adapter: new Precision model → legacy PrecisionTier.
+pub mod compat;
+/// Focus-driven incremental analysis types: FocusSeed, FocusWindow, FocusClosure.
+pub mod focus;
 mod index_precision;
 /// Investigation context: MCP-session-scoped analysis focus for lazy job prioritization.
 pub mod investigation;
@@ -113,6 +117,15 @@ pub use source_extractor::SourceExtractor;
 
 /// Investigation context types: focus, related symbols/files, desired capabilities.
 pub use investigation::{Investigation, InvestigationFocus};
+
+/// Focus-driven incremental analysis: core types.
+pub use focus::types::{ClosureStrategy, FocusClosure, FocusSeed, FocusWindow, WindowBudget};
+/// Focus-driven incremental analysis: closure engine.
+pub use focus::engine::ClosureEngine;
+/// Focus-driven incremental analysis: priority scheduler.
+pub use focus::scheduler::{FocusPriority, FocusScheduler};
+/// Focus-driven incremental analysis: visibility filter registry.
+pub use focus::visibility_filter::VisibilityFilterRegistry;
 
 /// Closure planner: include-root for dependency-closure extraction.
 pub use closure_planner::IncludeRoot;
@@ -231,6 +244,8 @@ pub struct Engine {
     lazy_service: lazy_crate::LazyDataflowService,
     lazy_structural: LazyStructuralService,
     trace: analysis::trace::TraceEngine,
+    /// Optional focus runtime — initialized via [`Engine::init_focus`].
+    focus_scheduler: Option<Arc<Mutex<FocusScheduler>>>,
 }
 
 impl Engine {
@@ -257,6 +272,7 @@ impl Engine {
             lazy_service,
             lazy_structural,
             trace,
+            focus_scheduler: None,
         })
     }
 
@@ -278,6 +294,7 @@ impl Engine {
             lazy_service,
             lazy_structural,
             trace,
+            focus_scheduler: None,
         })
     }
 
@@ -294,6 +311,7 @@ impl Engine {
             lazy_service,
             lazy_structural,
             trace,
+            focus_scheduler: None,
         })
     }
 
@@ -320,6 +338,7 @@ impl Engine {
             lazy_service,
             lazy_structural,
             trace,
+            focus_scheduler: None,
         }
     }
 
@@ -336,6 +355,47 @@ impl Engine {
     /// Access the lazy structural service for on-demand extraction.
     pub fn lazy_structural(&self) -> &LazyStructuralService {
         &self.lazy_structural
+    }
+
+    // ── Focus ───────────────────────────────────────────────────────────
+
+    /// Initialize the focus runtime. Requires atlas open (not in-memory).
+    ///
+    /// Constructs a [`ClosureEngine`] and [`FocusScheduler`] wired to the
+    /// Engine's store and lazy structural service.  Once initialized, the
+    /// scheduler can be used for background focus closure building via
+    /// [`FocusScheduler::enqueue`] and [`FocusScheduler::start_background`].
+    pub fn init_focus(
+        &mut self,
+        project_root: &Path,
+        include_roots: Vec<IncludeRoot>,
+    ) -> anyhow::Result<()> {
+        // Construct a LazyStructuralService for the ClosureEngine.
+        // We create a new instance rather than cloning self.lazy_structural
+        // because LazyStructuralService is not Clone (it owns a Box<dyn CandidateProvider>).
+        let lazy_structural = LazyStructuralService::new(
+            self.store.clone(),
+            Some(project_root.to_path_buf()),
+        );
+        let engine = ClosureEngine::new(
+            self.store.clone(),
+            lazy_structural,
+            Some(project_root.to_path_buf()),
+            include_roots,
+        );
+        let scheduler = FocusScheduler::new(self.store.clone()).with_engine(engine);
+        self.focus_scheduler = Some(Arc::new(Mutex::new(scheduler)));
+        Ok(())
+    }
+
+    /// Get the focus scheduler (if initialized via [`init_focus`]).
+    pub fn focus_scheduler(&self) -> Option<&Arc<Mutex<FocusScheduler>>> {
+        self.focus_scheduler.as_ref()
+    }
+
+    /// Check if the focus runtime is active.
+    pub fn has_focus(&self) -> bool {
+        self.focus_scheduler.is_some()
     }
 
     // ── Extraction ─────────────────────────────────────────────────────

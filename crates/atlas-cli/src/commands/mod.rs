@@ -2,6 +2,7 @@
 
 pub mod doctor;
 pub mod files;
+pub mod focus;
 pub mod index;
 #[cfg(feature = "mcp")]
 pub mod mcp;
