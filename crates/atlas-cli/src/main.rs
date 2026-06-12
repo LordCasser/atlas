@@ -76,10 +76,6 @@ fn main() -> anyhow::Result<()> {
             let _span = tracing::info_span!("mcp", project = %project).entered();
             atlas_cli::commands::mcp::run(&project)?;
         }
-        Commands::Focus { ref command } => {
-            let _span = tracing::info_span!("focus").entered();
-            command.run()?;
-        }
     }
 
     Ok(())

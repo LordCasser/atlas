@@ -122,9 +122,4 @@ pub enum Commands {
         #[arg(short, long, default_value = ".")]
         project: String,
     },
-    /// Manage focus analysis state
-    Focus {
-        #[command(subcommand)]
-        command: commands::focus::FocusCommand,
-    },
 }
