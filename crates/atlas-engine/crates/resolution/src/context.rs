@@ -94,6 +94,57 @@ impl GlobalSymbolIndex {
             .unwrap_or_default()
     }
 
+    /// Resolve an exact project-wide name match without cloning/sorting the
+    /// candidate list. Exact-case matches win over case-insensitive matches;
+    /// within the same confidence class, directory proximity breaks ties.
+    pub fn find_exact_name_target(
+        &self,
+        name: &str,
+        file_id: Option<FileId>,
+    ) -> Option<ResolvedTarget> {
+        let candidates = self.by_name.get(&name.to_lowercase())?;
+        let ref_parent = file_id.and_then(|fid| self.file_parent_dir.get(&fid));
+        let mut best_exact: Option<(usize, usize, &SymbolDef)> = None;
+        let mut best_case_insensitive: Option<(usize, usize, &SymbolDef)> = None;
+
+        for (order, sym) in candidates.iter().enumerate() {
+            let tier = match file_id {
+                Some(_) => proximity_tier(ref_parent, self.file_parent_dir.get(&sym.file_id)),
+                None => 0,
+            };
+
+            if sym.name == name {
+                if best_exact.is_none_or(|(best_tier, best_order, _)| {
+                    tier < best_tier || (tier == best_tier && order < best_order)
+                }) {
+                    best_exact = Some((tier, order, sym));
+                }
+            } else if sym.name.eq_ignore_ascii_case(name)
+                && best_case_insensitive.is_none_or(|(best_tier, best_order, _)| {
+                    tier < best_tier || (tier == best_tier && order < best_order)
+                })
+            {
+                best_case_insensitive = Some((tier, order, sym));
+            }
+        }
+
+        if let Some((_tier, _order, sym)) = best_exact {
+            return Some(ResolvedTarget {
+                symbol_id: sym.id,
+                confidence: Confidence::certain(),
+                strategy: ResolutionStrategy::NameOnly,
+                provenance: Provenance::Heuristic,
+            });
+        }
+
+        best_case_insensitive.map(|(_tier, _order, sym)| ResolvedTarget {
+            symbol_id: sym.id,
+            confidence: Confidence::new(0.9),
+            strategy: ResolutionStrategy::NameOnly,
+            provenance: Provenance::Heuristic,
+        })
+    }
+
     /// Find symbols by exact name, sorted by directory proximity to the
     /// reference's file. Candidates from the same directory tree as `file_id`
     /// are placed first. This reduces cross-module false matches in
@@ -477,5 +528,119 @@ impl ResolutionContext {
     /// Exact qualified-name lookup in indexes.
     pub fn find_by_qname(&self, qname: &str) -> Option<&SymbolDef> {
         self.symbols_by_qname.get(qname).map(|v| &**v)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_symbol(name: &str, file_path: &str) -> SymbolDef {
+        let file_id = FileId::generate(file_path);
+        let range = TextRange {
+            start_byte: 0,
+            end_byte: name.len() as u32,
+            start_line: 1,
+            start_column: 0,
+            end_line: 1,
+            end_column: name.len() as u32,
+        };
+        SymbolDef {
+            id: SymbolId::generate(
+                &file_id,
+                Language::TypeScript.as_str(),
+                name,
+                SymbolKind::Function.as_str(),
+                None,
+            ),
+            kind: SymbolKind::Function,
+            name: name.to_string(),
+            qualified_name: name.to_string(),
+            symbol_path: vec![name.to_string()],
+            file_id,
+            language: Language::TypeScript,
+            range,
+            name_range: range,
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: Vec::new(),
+            layer: types::layer::STRUCTURAL.to_string(),
+        }
+    }
+
+    fn test_index(
+        symbols: Vec<SymbolDef>,
+        file_parent_dir: impl IntoIterator<Item = (FileId, &'static str)>,
+    ) -> GlobalSymbolIndex {
+        let mut by_name: HashMap<String, Vec<SymbolDef>> = HashMap::new();
+        let mut by_id: HashMap<SymbolId, SymbolDef> = HashMap::new();
+        let mut lower_names = Vec::with_capacity(symbols.len());
+        let file_parent_dir = file_parent_dir
+            .into_iter()
+            .map(|(file_id, parent)| (file_id, parent.to_string()))
+            .collect();
+
+        for sym in &symbols {
+            by_id.insert(sym.id, sym.clone());
+            let key = sym.name.to_lowercase();
+            lower_names.push(key.clone());
+            by_name.entry(key).or_default().push(sym.clone());
+        }
+
+        GlobalSymbolIndex {
+            symbols,
+            lower_names,
+            by_name,
+            by_id,
+            file_parent_dir,
+            fuzzy_cache: Mutex::new(HashMap::new()),
+            proximity_cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    #[test]
+    fn exact_name_target_prefers_exact_case_before_proximity() {
+        let far_exact = test_symbol("run", "packages/a/src/run.ts");
+        let near_case_insensitive = test_symbol("Run", "packages/b/src/run.ts");
+        let ref_file = FileId::generate("packages/b/src/caller.ts");
+        let index = test_index(
+            vec![far_exact.clone(), near_case_insensitive.clone()],
+            [
+                (far_exact.file_id, "packages/a/src"),
+                (near_case_insensitive.file_id, "packages/b/src"),
+                (ref_file, "packages/b/src"),
+            ],
+        );
+
+        let matched = index.find_exact_name_target("run", Some(ref_file)).unwrap();
+
+        assert_eq!(matched.symbol_id, far_exact.id);
+        assert_eq!(matched.confidence, Confidence::certain());
+    }
+
+    #[test]
+    fn exact_name_target_uses_proximity_within_same_confidence() {
+        let far = test_symbol("run", "packages/a/src/run.ts");
+        let near = test_symbol("run", "packages/b/src/run.ts");
+        let ref_file = FileId::generate("packages/b/src/caller.ts");
+        let index = test_index(
+            vec![far.clone(), near.clone()],
+            [
+                (far.file_id, "packages/a/src"),
+                (near.file_id, "packages/b/src"),
+                (ref_file, "packages/b/src"),
+            ],
+        );
+
+        let matched = index.find_exact_name_target("run", Some(ref_file)).unwrap();
+
+        assert_eq!(matched.symbol_id, near.id);
+        assert_eq!(matched.confidence, Confidence::certain());
     }
 }

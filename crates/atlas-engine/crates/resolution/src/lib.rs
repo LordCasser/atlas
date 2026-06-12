@@ -12,10 +12,11 @@
 //! their `resolved` field in place but leaves the record intact.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
+use std::time::Duration;
 
 use db::Store;
 use rayon::prelude::*;
@@ -212,23 +213,10 @@ fn resolve_one_core(
     {
         let _timer = StrategyTimer::new(&S6_TIME_NS);
         if let Some(idx) = global_index {
-            let candidates = match proximity_file_id {
-                Some(fid) => idx.find_by_name_proximity(&reference.name, fid),
-                None => idx.find_by_name(&reference.name),
-            };
-            if !candidates.is_empty() {
-                if let Some(matched) =
-                    name_matcher.best_match(&candidates, &reference.name, Confidence::new(0.6))
-                {
-                    S6_COUNT.fetch_add(1, Ordering::Relaxed);
-                    S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
-                    return Some(ResolvedTarget {
-                        symbol_id: matched.symbol_id,
-                        confidence: matched.confidence,
-                        strategy: matched.strategy,
-                        provenance: matched.provenance,
-                    });
-                }
+            if let Some(matched) = idx.find_exact_name_target(&reference.name, proximity_file_id) {
+                S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
+                return Some(matched);
             }
             if !should_run_fuzzy_fallback(&reference.name) {
                 return None;
@@ -418,21 +406,10 @@ impl ResolutionSession {
         }
 
         // Strategy 6: Project-wide name search + fuzzy fallback
-        let candidates = self.global_index.find_by_name(&reference.name);
-        if !candidates.is_empty() {
-            if let Some(matched) =
-                self.name_matcher
-                    .best_match(&candidates, &reference.name, Confidence::new(0.6))
-            {
-                S6_COUNT.fetch_add(1, Ordering::Relaxed);
-                S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
-                return Some(ResolvedTarget {
-                    symbol_id: matched.symbol_id,
-                    confidence: matched.confidence,
-                    strategy: matched.strategy,
-                    provenance: matched.provenance,
-                });
-            }
+        if let Some(matched) = self.global_index.find_exact_name_target(&reference.name, None) {
+            S6_COUNT.fetch_add(1, Ordering::Relaxed);
+            S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
+            return Some(matched);
         }
         if should_run_fuzzy_fallback(&reference.name) {
             let fuzzy = self.global_index.fuzzy_search(&reference.name, 2);
@@ -669,9 +646,15 @@ impl ReferenceResolver {
         // writes them to the DB, and updates progress.  Also collects the full
         // all_resolved Vec for the caller (graph builder needs it).
         let matched_counter = Arc::new(AtomicU64::new(0));
+        let scanned_counter = Arc::new(AtomicU64::new(0));
+        let writer_processed_counter = Arc::new(AtomicU64::new(0));
+        let writer_batch_counter = Arc::new(AtomicU64::new(0));
+        let dirty_files_done_counter = Arc::new(AtomicU64::new(0));
+        let clean_files_done_counter = Arc::new(AtomicU64::new(0));
         let session = &session;
 
-        let progress_atomic = progress_mutex.map(|a| Arc::clone(&a.lock().unwrap_or_else(|e| e.into_inner()).atomic_current));
+        let progress_atomic = progress_mutex
+            .map(|a| Arc::clone(&a.lock().unwrap_or_else(|e| e.into_inner()).atomic_current));
 
         // Step A: build contexts for dirty files only
         let step_a_span = tracing::info_span!(target: "atlas_resolve", "resolution.step_a",
@@ -714,8 +697,9 @@ impl ReferenceResolver {
 
         // Spawn Phase 2 writer thread that also collects all_resolved.
         let writer_store = store.clone();
-        let writer_progress = progress_mutex.map(Arc::clone);
         let writer_matched = Arc::clone(&matched_counter);
+        let writer_processed_progress = Arc::clone(&writer_processed_counter);
+        let writer_batch_progress = Arc::clone(&writer_batch_counter);
         let writer_handle = std::thread::spawn(
             move || -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats, WriterTelemetry)> {
                 let _phase2_span = tracing::info_span!(target: "atlas_resolve", "resolution.phase2").entered();
@@ -764,10 +748,9 @@ impl ReferenceResolver {
                             slow_batches += 1;
                         }
                         batch_id += 1;
+                        writer_batch_progress.store(batch_id, Ordering::Relaxed);
+                        writer_processed_progress.store(processed, Ordering::Relaxed);
                         pending.clear();
-                        if let Some(ref ps) = writer_progress {
-                            let _ = ps.lock().map(|mut p| p.set_current(processed));
-                        }
                     }
                 }
                 if !pending.is_empty() {
@@ -794,9 +777,8 @@ impl ReferenceResolver {
                         slow_batches += 1;
                     }
                     batch_id += 1;
-                    if let Some(ref ps) = writer_progress {
-                        let _ = ps.lock().map(|mut p| p.set_current(processed));
-                    }
+                    writer_batch_progress.store(batch_id, Ordering::Relaxed);
+                    writer_processed_progress.store(processed, Ordering::Relaxed);
                 }
                 stats.unresolved = total_refs as usize - stats.resolved;
                 let writer_elapsed = writer_start.elapsed();
@@ -822,26 +804,120 @@ impl ReferenceResolver {
             let _ = ps.lock().map(|mut p| p.enter_phase2(total_refs));
         }
 
+        let monitor_scanned = Arc::clone(&scanned_counter);
+        let monitor_matched = Arc::clone(&matched_counter);
+        let monitor_writer_processed = Arc::clone(&writer_processed_counter);
+        let monitor_writer_batches = Arc::clone(&writer_batch_counter);
+        let monitor_dirty_done = Arc::clone(&dirty_files_done_counter);
+        let monitor_clean_done = Arc::clone(&clean_files_done_counter);
+        let monitor_total_refs = total_refs;
+        let monitor_dirty_files = file_groups.len() as u64;
+        let monitor_clean_files = clean_file_refs.len() as u64;
+        let (monitor_stop_tx, monitor_stop_rx) = mpsc::channel::<()>();
+        let monitor_handle = std::thread::spawn(move || {
+            let started = Instant::now();
+            let mut last_tick = Instant::now();
+            let mut last_scanned = 0u64;
+            let mut last_written = 0u64;
+
+            while monitor_stop_rx.recv_timeout(Duration::from_secs(10)).is_err() {
+                let now = Instant::now();
+                let interval_s = now.duration_since(last_tick).as_secs_f64();
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                let scanned = monitor_scanned.load(Ordering::Relaxed);
+                let matched = monitor_matched.load(Ordering::Relaxed);
+                let written = monitor_writer_processed.load(Ordering::Relaxed);
+                let batches = monitor_writer_batches.load(Ordering::Relaxed);
+                let dirty_done = monitor_dirty_done.load(Ordering::Relaxed);
+                let clean_done = monitor_clean_done.load(Ordering::Relaxed);
+                let scanned_delta = scanned.saturating_sub(last_scanned);
+                let written_delta = written.saturating_sub(last_written);
+                let scan_refs_per_sec = if interval_s > 0.0 {
+                    scanned_delta as f64 / interval_s
+                } else {
+                    0.0
+                };
+                let write_refs_per_sec = if interval_s > 0.0 {
+                    written_delta as f64 / interval_s
+                } else {
+                    0.0
+                };
+                let queued_resolved = matched.saturating_sub(written);
+                let match_rate_pct = if scanned > 0 {
+                    100.0 * matched as f64 / scanned as f64
+                } else {
+                    0.0
+                };
+                let s5_count = S5_COUNT.load(Ordering::Relaxed);
+                let s6_count = S6_COUNT.load(Ordering::Relaxed);
+                let s6_exact = S6_EXACT_COUNT.load(Ordering::Relaxed);
+                let s6_fuzzy_prox = S6_FUZZY_PROX_COUNT.load(Ordering::Relaxed);
+                let s6_fuzzy_global = S6_FUZZY_GLOBAL_COUNT.load(Ordering::Relaxed);
+                let miss_count = MISS_COUNT.load(Ordering::Relaxed);
+                let s5_time_s = S5_TIME_NS.load(Ordering::Relaxed) as f64 / 1e9;
+                let s6_time_s = S6_TIME_NS.load(Ordering::Relaxed) as f64 / 1e9;
+
+                tracing::info!(
+                    target: "atlas_resolve",
+                    elapsed_ms = elapsed_ms,
+                    scanned_refs = scanned,
+                    total_refs = monitor_total_refs,
+                    matched_refs = matched,
+                    match_rate_pct = match_rate_pct,
+                    writer_rows_written = written,
+                    writer_batches = batches,
+                    queued_resolved = queued_resolved,
+                    dirty_files_done = dirty_done,
+                    dirty_files_total = monitor_dirty_files,
+                    clean_files_done = clean_done,
+                    clean_files_total = monitor_clean_files,
+                    scan_refs_per_sec = scan_refs_per_sec,
+                    write_refs_per_sec = write_refs_per_sec,
+                    s5_count = s5_count,
+                    s5_time_s = s5_time_s,
+                    s6_count = s6_count,
+                    s6_exact = s6_exact,
+                    s6_fuzzy_prox = s6_fuzzy_prox,
+                    s6_fuzzy_global = s6_fuzzy_global,
+                    s6_time_s = s6_time_s,
+                    miss_count = miss_count,
+                    "resolution.progress"
+                );
+
+                last_tick = now;
+                last_scanned = scanned;
+                last_written = written;
+            }
+        });
+
         // Step B: pure-memory parallel resolution — send results to channel.
-        let step_b_span =
-            tracing::info_span!(target: "atlas_resolve", "resolution.step_b", dirty_file_count = file_groups.len());
+        let step_b_span = tracing::info_span!(
+            target: "atlas_resolve",
+            "resolution.step_b",
+            dirty_file_count = file_groups.len()
+        );
         let _step_b = step_b_span.enter();
         let mc = &matched_counter;
+        let scanned = &scanned_counter;
+        let dirty_done = &dirty_files_done_counter;
 
         // Resolve dirty files' refs with full context (6 strategies)
         let t_dirty = Instant::now();
         file_groups.par_iter().for_each(|(_fid, refs, ctx)| {
             let results = session.resolve_refs_in_ctx(refs, ctx);
             let count = results.len() as u64;
-            let total = mc.fetch_add(count, Ordering::Relaxed) + count;
+            mc.fetch_add(count, Ordering::Relaxed);
+            let scanned_total =
+                scanned.fetch_add(refs.len() as u64, Ordering::Relaxed) + refs.len() as u64;
             if let Some(ref ac) = progress_atomic {
-                ac.store(total, Ordering::Relaxed);
+                ac.store(scanned_total, Ordering::Relaxed);
             }
             for r in results {
                 if tx.send(r).is_err() {
                     break;
                 }
             }
+            dirty_done.fetch_add(1, Ordering::Relaxed);
         });
         telemetry.resolve_dirty_ms = t_dirty.elapsed().as_millis() as u64;
 
@@ -859,6 +935,8 @@ impl ReferenceResolver {
             let _clean_step = clean_step_span.enter();
             let tx_ref = &tx;
             let mc_ref = mc;
+            let scanned_ref = scanned;
+            let clean_done_ref = &clean_files_done_counter;
             let progress_atomic_ref = progress_atomic.as_ref();
 
             for (_fid, lang, refs) in &clean_file_refs {
@@ -871,15 +949,18 @@ impl ReferenceResolver {
                     })
                     .collect();
                 let count = clean_results.len() as u64;
-                let total = mc_ref.fetch_add(count, Ordering::Relaxed) + count;
+                mc_ref.fetch_add(count, Ordering::Relaxed);
+                let scanned_total =
+                    scanned_ref.fetch_add(refs.len() as u64, Ordering::Relaxed) + refs.len() as u64;
                 if let Some(ac) = progress_atomic_ref {
-                    ac.store(total, Ordering::Relaxed);
+                    ac.store(scanned_total, Ordering::Relaxed);
                 }
                 for r in clean_results {
                     if tx_ref.send(r).is_err() {
                         break;
                     }
                 }
+                clean_done_ref.fetch_add(1, Ordering::Relaxed);
             }
             drop(_clean_step);
             telemetry.resolve_clean_ms = t_clean.elapsed().as_millis() as u64;
@@ -888,7 +969,11 @@ impl ReferenceResolver {
         drop(tx);
         drop(_step_b);
 
-        match writer_handle.join() {
+        let writer_result = writer_handle.join();
+        let _ = monitor_stop_tx.send(());
+        let _ = monitor_handle.join();
+
+        match writer_result {
             Ok(Ok((all_resolved, stats, w))) => {
                 telemetry.writer_total_ms = w.total_ms;
                 telemetry.writer_batches = w.batches;
@@ -1177,8 +1262,8 @@ mod tests {
     use extraction::create_frontend;
     use extraction::extract_file;
     use graph::{GraphBuilder, GraphEngine};
-    use types::FileFacts;
     use std::path::PathBuf;
+    use types::FileFacts;
 
     #[test]
     fn short_names_skip_edit_distance_fuzzy_fallback() {
