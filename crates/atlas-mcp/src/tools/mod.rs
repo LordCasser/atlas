@@ -294,14 +294,6 @@ impl ToolRouter {
         matches!(name, "symbol" | "calls" | "path" | "explore" | "impact")
     }
 
-    /// Return whether this concrete tool call needs the graph before dispatch.
-    ///
-    /// Background-capable tools must not perform expensive graph construction in
-    /// the foreground before returning their `task_id`.
-    pub(crate) fn tool_call_requires_graph(name: &str, _arguments: &Value) -> bool {
-        Self::tool_requires_graph(name)
-    }
-
     /// Build the graph engine on first use.
     /// This is called only for graph-backed tool calls after the MCP handshake
     /// completes, so the client doesn't timeout waiting for a startup response.
@@ -556,9 +548,8 @@ impl ToolRouter {
         //
         // Graph-backed tools need the graph snapshot initialized and
         // refreshed before dispatch.  Doing this inside call_tool() means the
-        // contract itself determines what resources are needed, removing the
-        // need for the MCP server layer to pre-check tool_call_requires_graph().
-        if Self::tool_call_requires_graph(name, arguments) {
+        // contract itself determines what resources are needed.
+        if matches!(&contract, ToolContract::SemanticGraphQuery(_)) {
             if let Err(e) = self.ensure_graph_initialized() {
                 return CallToolResult {
                     content: vec![ContentBlock::text(format!(

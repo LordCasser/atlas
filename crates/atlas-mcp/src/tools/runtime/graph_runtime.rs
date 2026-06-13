@@ -9,9 +9,8 @@
 //!
 //! # Public API
 //! - `ensure_initialized()`: build graph snapshot from DB (idempotent)
-//! - `search_engine()` / `context_builder()`: access graph engines
 //! - `precision_info()`: return GraphPrecision { mode, symbol_count, edge_count }
-//! - `provider()`: return &dyn GraphProvider for the underlying backend
+//! - `provider()`: return &dyn GraphProvider — sole entry point for graph queries
 //! - `is_graph_stale()` / `mark_graph_fresh()`: generation-based staleness tracking
 //!
 //! # Usage pattern
@@ -29,7 +28,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use atlas_engine::{ContextBuilder, SearchEngine, SourceExtractor, Store};
+use atlas_engine::{SearchEngine, SourceExtractor, Store};
 
 use super::graph_state::GraphState;
 use super::invalidation::RuntimeInvalidation;
@@ -124,21 +123,9 @@ impl GraphRuntime {
             let store = self.store.clone();
             self.detect_and_set_mode(&store);
         }
-        self.state.search_engine().map_err(|e| anyhow::anyhow!("{e}"))
-    }
-
-    /// Access the context builder (requires initialization).
-    pub fn context_builder(&self) -> anyhow::Result<&ContextBuilder> {
-        self.state
-            .context_builder()
-            .map_err(|e| anyhow::anyhow!("{e}"))
-    }
-
-    /// Access the search engine (requires initialization).
-    pub fn search_engine(&self) -> anyhow::Result<&SearchEngine> {
         self.state
             .search_engine()
-            .map_err(|e| anyhow::anyhow!("{e}"))
+            .ok_or_else(|| anyhow::anyhow!("graph not initialized"))
     }
 
     /// Try to apply a background-built graph or spawn a rebuild.
@@ -250,8 +237,8 @@ mod tests {
         let mut gr = create_test_graph_runtime();
         let result = gr.ensure_initialized();
         assert!(result.is_ok(), "ensure_initialized should succeed");
-        let se_result = gr.search_engine();
-        assert!(se_result.is_ok(), "search_engine should be accessible after init");
+        let se_opt = gr.provider().search_engine();
+        assert!(se_opt.is_some(), "search_engine should be accessible after init");
     }
 
     #[test]

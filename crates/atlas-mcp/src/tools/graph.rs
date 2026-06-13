@@ -1863,6 +1863,7 @@ mod tests {
         let before = router
             .active_mut()
             .graph_runtime
+            .provider()
             .context_builder()
             .unwrap()
             .graph_snapshot()
@@ -1885,6 +1886,7 @@ mod tests {
         let after = router
             .active_mut()
             .graph_runtime
+            .provider()
             .context_builder()
             .unwrap()
             .graph_snapshot()

@@ -3,7 +3,6 @@
 //! Extracted from [`super::ToolRouter`] to reduce the God-object footprint.
 //! Owns `SearchEngine`, `ContextBuilder`, and background-rebuild machinery.
 
-use std::fmt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -11,17 +10,6 @@ use atlas_engine::{ContextBuilder, FileId, GraphEngine, SearchEngine, SourceExtr
 
 use crate::tools::lazy_refresh;
 use crate::tools::runtime::graph_provider::GraphProvider;
-
-/// Error returned when a graph-backed component is accessed before
-/// [`GraphState::ensure_initialized`] has been called.
-#[derive(Debug)]
-pub(crate) struct GraphNotInitializedError;
-
-impl fmt::Display for GraphNotInitializedError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("graph not initialized; call ensure_initialized() before accessing graph-backed tools")
-    }
-}
 
 /// Graph snapshot lifecycle: lazy initialization, incremental refresh,
 /// and background full-rebuild coordination.
@@ -80,16 +68,6 @@ impl GraphState {
         self.graph_initialized = true;
         tracing::info!("Graph snapshot ready.");
         Ok(())
-    }
-
-    /// Access the search engine.
-    pub(crate) fn search_engine(&self) -> Result<&SearchEngine, GraphNotInitializedError> {
-        self.search.as_ref().ok_or(GraphNotInitializedError)
-    }
-
-    /// Access the context builder.
-    pub(crate) fn context_builder(&self) -> Result<&ContextBuilder, GraphNotInitializedError> {
-        self.context.as_ref().ok_or(GraphNotInitializedError)
     }
 
     /// Return the number of edges in the current graph snapshot (0 if not init).
