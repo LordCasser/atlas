@@ -80,6 +80,29 @@ impl QueryRuntime {
             .as_ref()
             .map(|fr| fr.lock().unwrap().detect_index_mode())
     }
+
+    /// Check whether the project has a full (non-manifest) index.
+    ///
+    /// Delegates to [`CacheState::has_manual_full_index`].
+    pub fn has_full_index(&self, store: &Store) -> bool {
+        self.cache.has_manual_full_index(store)
+    }
+
+    /// Check whether the project has a full index — cached-only path.
+    ///
+    /// Reads the last-known state from the session cache without
+    /// accessing the store.  Useful for tests that need to bypass
+    /// `&Store`.
+    #[cfg(test)]
+    pub fn has_full_index_cached(&self) -> bool {
+        self.cache
+            .cached_manual_full_index
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|(_, v)| *v)
+            .unwrap_or(false)
+    }
 }
 
 #[cfg(test)]
@@ -139,5 +162,24 @@ mod tests {
         let (result, warnings) = qr.prepare(&intent, &store);
         assert!(result.is_none());
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn has_full_index_returns_false_for_fresh_store() {
+        let qr = create_test_query_runtime();
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        assert!(!qr.has_full_index(&store));
+    }
+
+    #[test]
+    fn has_full_index_returns_true_when_cached() {
+        let qr = create_test_query_runtime();
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        // Warm the cache
+        let sig = store.index_signature().unwrap_or_default();
+        *qr.cache.cached_manual_full_index.write().unwrap() = Some((sig, true));
+        assert!(qr.has_full_index(&store));
     }
 }

@@ -344,7 +344,7 @@ impl ToolRouter {
                 resp["resolution"] = rm;
             }
         }
-        if !self.active.query_runtime.cache.has_manual_full_index(&self.active.store) {
+        if !self.active.query_runtime.has_full_index(&self.active.store) {
             resp["note"] = json!(
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
@@ -436,7 +436,7 @@ impl ToolRouter {
                 resp["resolution"] = rm;
             }
         }
-        if !self.active.query_runtime.cache.has_manual_full_index(&self.active.store) {
+        if !self.active.query_runtime.has_full_index(&self.active.store) {
             resp["note"] = json!(
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
@@ -640,7 +640,7 @@ impl ToolRouter {
                 resp["resolution"] = rm;
             }
         }
-        if !self.active.query_runtime.cache.has_manual_full_index(&self.active.store) {
+        if !self.active.query_runtime.has_full_index(&self.active.store) {
             resp["note"] = json!(
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
@@ -746,7 +746,7 @@ impl ToolRouter {
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
         let lazy_warnings = focus_warnings;
         // Cache for no-path diagnostics below (used in user-facing messages).
-        let is_manual_full = self.active.query_runtime.cache.has_manual_full_index(&self.active.store);
+        let is_manual_full = self.active.query_runtime.has_full_index(&self.active.store);
 
         let cb = match self.context_builder() {
             Ok(cb) => cb,
@@ -1731,7 +1731,7 @@ impl ToolRouter {
                 "domain_rules_applied": domain_rules.is_some(),
             });
         }
-        if !self.active.query_runtime.cache.has_manual_full_index(&self.active.store) {
+        if !self.active.query_runtime.has_full_index(&self.active.store) {
             resp["capability_note"] = json!(
                 "manifest-only: structural data incomplete. Run 'atlas index' for full results."
             );

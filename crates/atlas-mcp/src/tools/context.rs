@@ -425,20 +425,17 @@ impl ToolRouter {
         }
 
         // ── Tier 3: try lazy structural, then re-query ──
-        let is_manual_full = self.active.query_runtime.cache.has_manual_full_index(&self.active.store);
-        if !is_manual_full {
-            ctx.send_progress(0.5, "Extracting structural data...");
-            let (focus_result, focus_warnings) = self.prepare_focus_query(
-                Some(atlas_engine::QueryIntent::Context {
-                    symbol_name: qname.to_string(),
-                    file_id: None,
-                    symbol_id: None,
-                }),
-            );
-            warnings.extend(focus_warnings);
-            if focus_result_acc.is_none() {
-                focus_result_acc = focus_result;
-            }
+        ctx.send_progress(0.5, "Extracting structural data...");
+        let (focus_result, focus_warnings) = self.prepare_focus_query(
+            Some(atlas_engine::QueryIntent::Context {
+                symbol_name: qname.to_string(),
+                file_id: None,
+                symbol_id: None,
+            }),
+        );
+        warnings.extend(focus_warnings);
+        if focus_result_acc.is_none() {
+            focus_result_acc = focus_result;
         }
 
         // Re-query after lazy extraction using engine SymbolSelector

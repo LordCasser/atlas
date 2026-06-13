@@ -71,7 +71,7 @@ impl ToolRouter {
         // When a manual full structural index exists (built via CLI `atlas index`),
         // scope restrictions are lifted and lazy structural is disabled — all
         // files already have complete structural facts.
-        let is_manual_full = self.active.query_runtime.cache.has_manual_full_index(&self.active.store);
+        let is_manual_full = self.active.query_runtime.has_full_index(&self.active.store);
 
         let scope = match scope {
             Some(s) => s.to_string(),

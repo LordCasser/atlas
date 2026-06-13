@@ -334,7 +334,7 @@ impl ToolRouter {
         intent: Option<atlas_engine::QueryIntent>,
     ) -> (Option<atlas_engine::focus::runtime::FocusResult>, Vec<String>) {
         // 1. Full index already exists — no focus needed.
-        if self.active.query_runtime.cache.has_manual_full_index(&self.active.store) {
+        if self.active.query_runtime.has_full_index(&self.active.store) {
             return (None, vec![]);
         }
 
@@ -1678,7 +1678,7 @@ impl ToolRouter {
         let mut _coverage = "full";
         let mut _reason: Option<&str> = None;
 
-        if !self.active.query_runtime.cache.has_manual_full_index(&self.active.store) {
+        if !self.active.query_runtime.has_full_index(&self.active.store) {
             let max_files = get_u64(args, "max_structural_files")
                 .or_else(|| get_u64(args, "limit"))
                 .unwrap_or(50) as usize;
