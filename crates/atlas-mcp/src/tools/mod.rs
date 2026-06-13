@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 use crate::tools::analysis_response::{WorkItem, WorkProgress, precision_to_view};
 use crate::tools::async_state::AsyncState;
 use crate::tools::cache_state::CacheState;
-use crate::tools::lazy_response::{CapabilityStats, SnapshotStore};
+use crate::tools::lazy_response::{CapabilityStats, LazyResponse, SnapshotStore};
 use symbol_selector::{parse_symbol_input, SymbolInput};
 use crate::tools::query_snapshot::{InvestigationState, QuerySnapshot};
 use crate::tools::graph_state::GraphState;
@@ -397,7 +397,7 @@ impl ToolRouter {
     }
 
     /// Initialize the focus runtime for focus-driven lazy analysis.
-    pub(crate) fn init_focus(&mut self) {
+    pub fn init_focus(&mut self) {
         let store = self.store.clone();
         let project_root = Some(self.project_root.clone());
         let runtime = atlas_engine::FocusRuntime::new(store, project_root);
@@ -408,7 +408,7 @@ impl ToolRouter {
     ///
     /// Returns `(Some(FocusResult), warnings)` when focus analysis completed,
     /// or `(None, warnings)` when focus is not needed or unavailable.
-    pub(crate) fn prepare_focus_query(
+    pub fn prepare_focus_query(
         &mut self,
         intent: Option<atlas_engine::QueryIntent>,
     ) -> (Option<atlas_engine::focus::runtime::FocusResult>, Vec<String>) {
@@ -1655,9 +1655,9 @@ impl ToolRouter {
         // ── structural mode ─────────────────────────────────────────────
         let mut lazy_warnings = Vec::new();
         let mut built_file_count = 0usize;
-        let mut capability_mask = atlas_engine::structs::CapabilityMask::default();
-        let mut coverage = "full";
-        let mut reason: Option<&str> = None;
+        let mut _capability_mask = atlas_engine::structs::CapabilityMask::default();
+        let mut _coverage = "full";
+        let mut _reason: Option<&str> = None;
 
         if !self.cache.has_manual_full_index(&self.store) {
             let max_files = get_u64(args, "max_structural_files")
@@ -1670,8 +1670,8 @@ impl ToolRouter {
                     let mut result = vec![file_id];
                     result.extend(candidates);
                     if truncated {
-                        coverage = "partial";
-                        reason = Some("candidate_limit_exceeded");
+                        _coverage = "partial";
+                        _reason = Some("candidate_limit_exceeded");
                     }
                     result
                 }
@@ -1681,7 +1681,7 @@ impl ToolRouter {
             lazy_warnings = focus_warnings;
             built_file_count = focus_result.as_ref().map(|r| r.built_files.len()).unwrap_or(0);
         } else {
-            capability_mask = self.store.derive_capability_for_files(&[file_id]);
+            _capability_mask = self.store.derive_capability_for_files(&[file_id]);
         }
 
         let file_id_hex = file_id.to_hex();
@@ -1695,52 +1695,59 @@ impl ToolRouter {
         match direction {
             "incoming" => {
                 let (out, err) = self.handle_dependents(&mapped_args);
-                (
-                    add_dependency_analysis_contract(
-                        out,
-                        built_file_count,
-                        lazy_warnings,
-                        coverage,
-                        reason,
-                        capability_mask,
-                    ),
-                    err,
-                )
+                let body = serde_json::from_str::<Value>(&out).unwrap_or_default();
+                let summary = if built_file_count > 0 {
+                    format!("Lazy-built {} files (structural mode)", built_file_count)
+                } else {
+                    "Full index available".into()
+                };
+                LazyResponse::new("file_dependencies", args)
+                    .with_lazy_warnings(lazy_warnings)
+                    .with_is_error(err)
+                    .with_analysis_state("ready".into())
+                    .with_analysis_scope("structural".into())
+                    .with_analysis_summary(summary)
+                    .with_analysis_next_action("use_result".into())
+                    .build(body, self)
             }
             "outgoing" | "" => {
                 let (out, err) = self.handle_dependencies(&mapped_args);
-                (
-                    add_dependency_analysis_contract(
-                        out,
-                        built_file_count,
-                        lazy_warnings,
-                        coverage,
-                        reason,
-                        capability_mask,
-                    ),
-                    err,
-                )
+                let body = serde_json::from_str::<Value>(&out).unwrap_or_default();
+                let summary = if built_file_count > 0 {
+                    format!("Lazy-built {} files (structural mode)", built_file_count)
+                } else {
+                    "Full index available".into()
+                };
+                LazyResponse::new("file_dependencies", args)
+                    .with_lazy_warnings(lazy_warnings)
+                    .with_is_error(err)
+                    .with_analysis_state("ready".into())
+                    .with_analysis_scope("structural".into())
+                    .with_analysis_summary(summary)
+                    .with_analysis_next_action("use_result".into())
+                    .build(body, self)
             }
             "both" => {
                 let (out_str, out_err) = self.handle_dependencies(&mapped_args);
                 let (in_str, in_err) = self.handle_dependents(&mapped_args);
-                let result = json!({
+                let body = json!({
                     "outgoing": serde_json::from_str::<Value>(&out_str).unwrap_or_default(),
                     "incoming": serde_json::from_str::<Value>(&in_str).unwrap_or_default(),
-                    "analysis": {
-                        "lazy_built_files": built_file_count,
-                        "warnings": lazy_warnings,
-                    },
-                    "analysis_contract": {
-                        "coverage": coverage,
-                        "reason": reason,
-                        "capability_mask": capability_mask,
-                    },
                 });
-                (
-                    serde_json::to_string_pretty(&result).unwrap_or_default(),
-                    out_err || in_err,
-                )
+                let summary = if built_file_count > 0 {
+                    format!("Lazy-built {} files (structural mode)", built_file_count)
+                } else {
+                    "Full index available".into()
+                };
+                let err = out_err || in_err;
+                LazyResponse::new("file_dependencies", args)
+                    .with_lazy_warnings(lazy_warnings)
+                    .with_is_error(err)
+                    .with_analysis_state("ready".into())
+                    .with_analysis_scope("structural".into())
+                    .with_analysis_summary(summary)
+                    .with_analysis_next_action("use_result".into())
+                    .build(body, self)
             }
             _ => unreachable!("direction was validated above"),
         }
@@ -2138,35 +2145,6 @@ impl ToolRouter {
 // -------------------------------------------------------------------
 // Shared arg-parsing helpers
 // -------------------------------------------------------------------
-
-fn add_dependency_analysis_contract(
-    response: String,
-    built_file_count: usize,
-    warnings: Vec<String>,
-    coverage: &str,
-    reason: Option<&str>,
-    capability_mask: atlas_engine::structs::CapabilityMask,
-) -> String {
-    let mut value = serde_json::from_str::<Value>(&response).unwrap_or_else(|_| json!({}));
-    if let Some(obj) = value.as_object_mut() {
-        obj.insert(
-            "analysis".into(),
-            json!({
-                "lazy_built_files": built_file_count,
-                "warnings": warnings,
-            }),
-        );
-        obj.insert(
-            "analysis_contract".into(),
-            json!({
-                "coverage": coverage,
-                "reason": reason,
-                "capability_mask": capability_mask,
-            }),
-        );
-    }
-    serde_json::to_string_pretty(&value).unwrap_or(response)
-}
 
 /// Add a minimal analysis_contract for manifest-mode responses.
 fn add_analysis_contract_manifest(response: String) -> String {
@@ -2988,20 +2966,17 @@ mod tests {
         assert!(!is_error, "Expected success, got: {resp_str}");
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
-        // analysis_contract must be present
-        let contract = &resp["analysis_contract"];
+        // analysis block must be present (unified envelope)
+        let analysis = &resp["analysis"];
         assert!(
-            contract.get("coverage").is_some(),
-            "analysis_contract missing coverage field: {resp_str}"
+            analysis.get("state").is_some(),
+            "analysis block missing state field: {resp_str}"
         );
-        // structural mode should have coverage and capability_mask
+        assert_eq!(analysis["state"], "ready");
+        assert_eq!(analysis["scope"], "structural");
         assert!(
-            contract.get("coverage").is_some(),
-            "analysis_contract missing coverage field: {resp_str}"
-        );
-        assert!(
-            contract.get("capability_mask").is_some(),
-            "analysis_contract missing capability_mask: {resp_str}"
+            analysis.get("summary").is_some(),
+            "analysis block missing summary field: {resp_str}"
         );
     }
 
@@ -4088,3 +4063,7 @@ mod tests {
 
 
 }
+
+#[cfg(test)]
+#[path = "integration_tests.rs"]
+mod integration_tests;

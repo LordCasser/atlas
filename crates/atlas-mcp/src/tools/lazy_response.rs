@@ -53,6 +53,17 @@ pub(crate) struct CapabilityStats {
     pub files_with_cfg: usize,
 }
 
+/// Snapshot of project-level index statistics for the analysis envelope.
+/// Carries index tier, file/symbol/edge counts available from the project.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ProjectStats {
+    /// Index analysis mode: "manifest", "structural", or "full".
+    pub index_mode: Option<String>,
+    pub total_files: usize,
+    pub total_symbols: usize,
+    pub total_edges: usize,
+}
+
 /// Derive an actual capability mask from DB-sourced file counts.
 /// Only sets bits that have at least one verified file.
 #[cfg(test)]
@@ -242,6 +253,10 @@ pub(crate) struct LazyResponse {
     analysis_next_action: Option<String>,
     /// Explicitly set work items (from focus path).
     work_items: Option<Vec<WorkItem>>,
+    /// Project-level index statistics for non-focus full-index responses.
+    capability_stats: Option<CapabilityStats>,
+    /// Project-level index snapshot (file/symbol/edge counts, index mode).
+    project_stats: Option<ProjectStats>,
 }
 
 impl LazyResponse {
@@ -267,6 +282,8 @@ impl LazyResponse {
             analysis_summary: None,
             analysis_next_action: None,
             work_items: None,
+            capability_stats: None,
+            project_stats: None,
         }
     }
 
@@ -349,6 +366,18 @@ impl LazyResponse {
         self
     }
 
+    /// Set capability statistics (for non-focus full-index analysis block).
+    pub fn with_capability_stats(mut self, stats: CapabilityStats) -> Self {
+        self.capability_stats = Some(stats);
+        self
+    }
+
+    /// Set project-level index snapshot (file/symbol/edge counts, index mode).
+    pub fn with_project_stats(mut self, stats: ProjectStats) -> Self {
+        self.project_stats = Some(stats);
+        self
+    }
+
     /// Build the final response: merge envelope fields into `body`, store a
     /// [`QuerySnapshot`] (using `tool_args` for stored args), and return
     /// `(json_string, is_error)`.
@@ -389,7 +418,9 @@ impl LazyResponse {
         // 2. Inject query_id
         body["query_id"] = json!(self.query_id);
 
-        // 3. Analysis block (only when explicitly set by focus/ensure path)
+        // 3. Analysis block — always present.
+        //    When focus analysis state is set, use focus fields.
+        //    Otherwise compute from project stats / capability stats.
         if self.analysis_state.is_some() {
             let analysis_state = self.analysis_state.clone().unwrap_or_default();
             let analysis_scope = self.analysis_scope.clone().unwrap_or_default();
@@ -402,6 +433,33 @@ impl LazyResponse {
                 "summary": analysis_summary,
                 "next_action": analysis_next_action,
             });
+        } else {
+            // Non-focus: compute analysis block from project / capability stats.
+            let ps = self.project_stats.as_ref();
+            let cs = self.capability_stats.as_ref();
+            let have_any = ps.is_some() || cs.is_some();
+
+            if have_any {
+                let index_mode = ps.and_then(|p| p.index_mode.as_deref()).unwrap_or("unknown");
+                let total_files = ps.map(|p| p.total_files).unwrap_or(0usize);
+                let total_symbols = ps.map(|p| p.total_symbols).unwrap_or(0usize);
+                let total_edges = ps.map(|p| p.total_edges).unwrap_or(0usize);
+
+                let dataflow = cs.map(|c| c.files_with_dataflow).unwrap_or(0);
+                let structural = cs.map(|c| c.files_structural_only).unwrap_or(0);
+                let manifest = cs.map(|c| c.files_manifest_only).unwrap_or(0);
+
+                let summary = format!(
+                    "Indexed ({index_mode}): {total_files} files ({dataflow} dataflow, {structural} structural, {manifest} manifest), {total_symbols} symbols, {total_edges} edges"
+                );
+
+                body["analysis"] = json!({
+                    "state": "ready",
+                    "scope": "full",
+                    "summary": summary,
+                    "next_action": "use_result",
+                });
+            }
         }
 
         // 4. Work block (only when relevant to this response)
