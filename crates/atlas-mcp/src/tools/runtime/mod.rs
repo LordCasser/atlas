@@ -10,9 +10,91 @@
 //! | `analysis_runtime` | On-demand CFG/dataflow extraction | LazyDataflowService |
 //! | `overlay_runtime` | User annotations (fp_dispatches, domain_rules) | Store (mutation path), generation counter |
 //! | `store_query_runtime` | Direct store queries + source extraction | Store (read path), SourceExtractor |
-//! | `job_runtime` | Background task orchestration | TaskManager, InvestigationState |
+//! | `job_runtime` | Background task orchestration | TaskManager, InvestigationState, QuerySnapshot map |
 //! | `cache_state` | Index-signature and manual-full-index caching | (data-only) |
 //! | `graph_provider` | Trait contract for graph backends | (trait definition) |
+//!
+//! # Request Flow
+//!
+//! ```
+//!   MCP Client
+//!       │
+//!       ▼
+//!   AtlasMcpService (lib.rs)
+//!       │  lock_router()
+//!       ▼
+//!   ToolRouter.call_tool(ctx, name, args)
+//!       │
+//!       ├─ contract_for(name, args) → ToolContract
+//!       │
+//!       ├─ [SemanticGraphQuery/TraceQuery]:
+//!       │    ensure_graph_initialized()  ───►  graph_runtime
+//!       │    maybe_refresh_graph()      ───►  graph_runtime + query_runtime.cache
+//!       │
+//!       ├─ match ToolContract → sub-dispatcher
+//!       │
+//!       ├─ Handler (graph.rs, search.rs, …)
+//!       │    │
+//!       │    ├─ prepare_focus_query(intent) ──► query_runtime.prepare()
+//!       │    │       │                           │
+//!       │    │       │                           ├─ cache_state.has_full_index()
+//!       │    │       │                           ├─ focus_runtime.lock().detect_index_mode()
+//!       │    │       │                           └─ focus_runtime.lock().prepare(intent)
+//!       │    │       │
+//!       │    │       └─ Post: lazy_refresh_queue.record_writes()
+//!       │    │                 maybe_refresh_graph()
+//!       │    │
+//!       │    ├─ context_builder()  ──►  graph_runtime → GraphSnapshot
+//!       │    ├─ search_engine()    ──►  graph_runtime → GraphSnapshot
+//!       │    ├─ resolve_file_path() ──►  store_query_runtime
+//!       │    ├─ read_symbol_source()──►  store_query_runtime
+//!       │    └─ engine.lock()      ──►  active.engine (trace only)
+//!       │
+//!       ▼
+//!   CallToolResult (JSON)
+//! ```
+//!
+//! # Contract → Runtime Mapping
+//!
+//! | Contract | Runtimes Involved |
+//! |----------|-------------------|
+//! | `ProjectLifecycle` | job_runtime, graph_runtime (reset) |
+//! | `StatusRead` | store_query_runtime (stats queries) |
+//! | `ExplicitIndexBuild` | job_runtime (background), query_runtime.cache (invalidation) |
+//! | `SemanticGraphQuery` | graph_runtime (snapshot), query_runtime (focus), store_query_runtime (source) |
+//! | `TraceQuery` | engine (direct, not graph_runtime), query_runtime (focus), store_query_runtime |
+//! | `StoreFactQuery` | query_runtime (focus, +graph for symbol context), store_query_runtime |
+//! | `SemanticAnalysis` | analysis_runtime (CFG/dataflow), store_query_runtime |
+//! | `OverlayMutation` | overlay_runtime (mutation + generation counter) |
+//! | `OverlayRead` | store_query_runtime (read-only) |
+//! | `TaskControl` | job_runtime (task_manager) |
+//!
+//! # Concurrency Model
+//!
+//! - **ToolRouter** is protected by a single `Mutex<ToolRouter>` held by `AtlasMcpService`.
+//!   Only one request executes at a time per MCP session.
+//! - **engine** (`Mutex<Engine>`) is only accessed from trace handlers — held briefly.
+//! - **focus_runtime** (`Mutex<FocusRuntime>`) is accessed from `query_runtime.prepare()`
+//!   and the background scheduler (independent thread, separate lock).
+//! - **graph_runtime.state** holds a `RwLock<Arc<GraphEngine>>` — readers share the snapshot.
+//! - **overlay_runtime.generation** (`AtomicU64`) is lock-free for fast-path invalidation.
+//! - **Background tasks** (index, graph rebuild, focus scheduler) use `std::thread::spawn`
+//!   with cloned `Arc<Store>` — they never access ToolRouter directly.
+//!
+//! # Anti-Patterns
+//!
+//! When adding new tools or modifying handlers, **avoid**:
+//!
+//! - **Direct `cache.has_manual_full_index()`** — use `query_runtime.has_full_index()` instead.
+//! - **Direct `focus_runtime.lock()`** — use `query_runtime.prepare()` instead.
+//! - **Direct `lazy_service.ensure_for_function()`** — use `analysis_runtime.ensure_dataflow_for_function()` instead.
+//! - **Direct `store.upsert_fp_annotation()`** — use `overlay_runtime.upsert_fp_annotation()` to bump generation.
+//! - **Direct `store.upsert_domain_rule()`** — use `overlay_runtime.upsert_domain_rule()` to bump generation.
+//! - **Direct `graph_state.ensure_initialized()`** — use `graph_runtime.ensure_initialized()` (detects mode).
+//! - **Direct `store.resolve_file_path()`** — use `store_query_runtime.resolve_file_path()` instead.
+//! - **Adding fields to ToolRouter** — add to the appropriate runtime module instead.
+//!
+//! These patterns ensure all future changes respect the v6.0 boundary model.
 
 pub(crate) mod cache_state;
 pub(crate) mod graph_provider;
