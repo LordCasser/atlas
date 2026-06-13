@@ -15,8 +15,11 @@
 //!
 //! - [`ClosureStrategy::ImportNeighborhood`] delegates to [`ClosurePlanner`].
 //! - [`ClosureStrategy::SameDirectory`] uses [`Store::list_file_ids_in_scope`].
-//! - [`ClosureStrategy::CallGraph`] and [`ClosureStrategy::TypeGraph`] are
-//!   stubs for this phase.
+//! - [`ClosureStrategy::CallGraph`] expands via scoped reference resolutions
+//!   from the DB (calls/inbound calls), limited to depth=1 per iteration with
+//!   multi-hop handled by fixed-point re-query.
+//! - [`ClosureStrategy::TypeGraph`] expands via pre-computed type-reference
+//!   traversal using type symbol kinds (Struct/Class/Enum/Interface/Trait).
 //!
 //! # Visibility
 //!
@@ -418,6 +421,10 @@ impl ClosureEngine {
         // the fixed-point loop (each iteration re-queries with newly extracted
         // symbols).
         if depth != 1 {
+            tracing::warn!(
+                "Non-default depth requested: {}, focus analysis only supports depth=1",
+                depth
+            );
             return Ok(Vec::new());
         }
 

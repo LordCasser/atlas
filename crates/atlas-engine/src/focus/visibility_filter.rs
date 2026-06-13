@@ -260,14 +260,21 @@ impl VisibilityFilterRegistry {
         Self { filters }
     }
 
-    /// Get the filter for a language. Never fails — every language has an entry.
+    /// Get the filter for a language. Falls back to permissive default if the
+    /// language is not registered (e.g., when Language enum is extended without
+    /// adding a corresponding entry to LanguageExt::all()).
     pub fn get(&self, language: Language) -> &dyn VisibilityFilter {
         self.filters
             .get(&language)
             .map(|b| b.as_ref())
             .unwrap_or_else(|| {
-                // Safety: registry is pre-populated for all languages.
-                unreachable!("VisibilityFilterRegistry: language {:?} not registered", language)
+                tracing::warn!(
+                    "VisibilityFilterRegistry: language {:?} not registered, using permissive fallback",
+                    language
+                );
+                self.filters.get(&Language::TypeScript)
+                    .map(|b| b.as_ref())
+                    .expect("TypeScript filter must always be registered")
             })
     }
 
