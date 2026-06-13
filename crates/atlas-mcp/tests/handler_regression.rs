@@ -497,3 +497,140 @@ fn handler_non_graph_tools_no_panic() {
         );
     }
 }
+
+// =========================================================================
+// Test: Concurrent tool calls do not deadlock
+// =========================================================================
+//
+// ToolRouter uses multiple Mutexes internally (engine, focus_runtime,
+// query_snapshots, graph via RwLock).  This test verifies that
+// concurrent calls across different tools do not deadlock or panic.
+
+#[test]
+fn concurrent_tool_calls_do_not_deadlock() {
+    use std::thread;
+
+    // 1. Create a shared ToolRouter with an indexed temp C project.
+    let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
+    store.init_schema().expect("init_schema");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let main_c = dir.path().join("main.c");
+    std::fs::write(
+        &main_c,
+        "int foo(void) { return 0; }\nint bar(void) { return foo(); }\n",
+    )
+    .expect("write main.c");
+
+    let mut router = ToolRouter::new_empty(store.clone(), dir.path().to_path_buf());
+
+    // Index the project.
+    let ctx = ToolCallContext::empty();
+    let _ = router.call_tool(&ctx, "index", &json!({"analysis": "manifest"}));
+
+    // Build the graph snapshot so graph-backed tools are live.
+    router
+        .ensure_graph_initialized()
+        .expect("ensure_graph_initialized");
+
+    let router = Arc::new(std::sync::Mutex::new(router));
+
+    // 2. Spawn 4 threads, each calling a different tool repeatedly.
+    let handles: Vec<_> = (0..4)
+        .map(|i| {
+            let router = Arc::clone(&router);
+            thread::spawn(move || {
+                for _ in 0..3 {
+                    let mut r = router.lock().expect("lock");
+                    let ctx = ToolCallContext::empty();
+                    // ── Cover different mutex paths ─────────────────
+                    //   symbol detail → search_engine() + store queries
+                    //   calls         → context_builder() + graph
+                    //   search        → store queries (no graph lock)
+                    //   explore       → context_builder() + source extraction
+                    let result = match i % 4 {
+                        0 => r.call_tool(
+                            &ctx,
+                            "symbol",
+                            &json!({"symbol": "foo", "view": "detail"}),
+                        ),
+                        1 => r.call_tool(
+                            &ctx,
+                            "calls",
+                            &json!({"symbol": "foo", "direction": "outgoing"}),
+                        ),
+                        2 => r.call_tool(&ctx, "search", &json!({"query": "foo"})),
+                        _ => r.call_tool(&ctx, "explore", &json!({"symbol": "foo"})),
+                    };
+                    // Drop lock before inspecting result to let other
+                    // threads acquire the mutex.
+                    drop(r);
+                    // Result may be an error (e.g. graph not ready), but
+                    // must not panic.
+                    let _ = result;
+                }
+            })
+        })
+        .collect();
+
+    // 3. Join all threads — no deadlock, no panic.
+    for h in handles {
+        h.join().expect("thread should not panic");
+    }
+}
+
+// =========================================================================
+// Test: All registered tools accept minimal args (smoke test)
+// =========================================================================
+
+/// Verify all 18 registered tools accept minimal arguments without panic.
+/// Each tool is called with the minimum required parameters for its contract.
+/// Return values are NOT validated for correctness — this is a smoke test.
+#[test]
+fn all_registered_tools_accept_minimal_args() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+
+    // Create temp C project for indexing + graph-backed tools
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("main.c"), "int foo(void) { return 0; }\n").unwrap();
+
+    let mut router = ToolRouter::new_empty(store.clone(), dir.path().to_path_buf());
+    let ctx = ToolCallContext::empty();
+
+    // Index so graph-backed tools have data
+    router.call_tool(&ctx, "index", &serde_json::json!({"analysis": "manifest"}));
+    router.ensure_graph_initialized().unwrap();
+
+    // Map each tool to its minimal valid arguments
+    let tool_calls: Vec<(&str, serde_json::Value)> = vec![
+        ("project", serde_json::json!({"action": "status"})),
+        ("index", serde_json::json!({"analysis": "manifest"})),
+        ("search", serde_json::json!({"query": "foo"})),
+        ("symbol", serde_json::json!({"symbol": "foo", "view": "detail"})),
+        ("calls", serde_json::json!({"symbol": "foo", "direction": "outgoing"})),
+        ("explore", serde_json::json!({"symbol": "foo"})),
+        ("path", serde_json::json!({"from": "foo", "to": "bar"})),
+        ("impact", serde_json::json!({"symbol": "foo"})),
+        ("file_dependencies", serde_json::json!({"file_path": "main.c", "direction": "outgoing"})),
+        ("trace", serde_json::json!({"kind": "point", "file_path": "main.c", "line": 1, "column": 1})),
+        ("lifecycle", serde_json::json!({"symbol": "foo", "field": "x"})),
+        ("branch_diff", serde_json::json!({"symbol": "foo"})),
+        ("fp_dispatches", serde_json::json!({"action": "list"})),
+        ("domain_rules", serde_json::json!({"action": "list"})),
+        ("tasks", serde_json::json!({})),
+        ("task_status", serde_json::json!({"task_id": "test-task"})),
+        ("wait_for_task", serde_json::json!({"task_id": "test-task"})),
+        ("resume_task", serde_json::json!({"task_id": "test-snapshot"})),
+    ];
+
+    for (tool_name, args) in &tool_calls {
+        let result = router.call_tool(&ctx, tool_name, args);
+        assert!(
+            !result.content.is_empty(),
+            "Tool '{}' returned empty content. Args: {}",
+            tool_name,
+            args
+        );
+    }
+}

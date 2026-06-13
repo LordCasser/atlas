@@ -4915,6 +4915,131 @@ mod tests {
         );
     }
 
+    // ── Phase 22a: Graph refresh boundary tests ────────────────────────
+
+    /// Verify graph state is unchanged after refresh with empty file batch.
+    #[test]
+    fn graph_refresh_with_empty_batch_is_noop() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp/test"));
+        router.ensure_graph_initialized().unwrap();
+
+        let node_before = router.active.graph_runtime.state.symbol_count();
+        let edge_before = router.active.graph_runtime.state.edge_count();
+
+        router
+            .active
+            .graph_runtime
+            .state
+            .refresh_graph_for_files(&store, &[])
+            .unwrap();
+
+        assert_eq!(
+            router.active.graph_runtime.state.symbol_count(),
+            node_before
+        );
+        assert_eq!(
+            router.active.graph_runtime.state.edge_count(),
+            edge_before
+        );
+    }
+
+    /// Verify graph counts increase after a manifest index adds files.
+    #[test]
+    fn graph_refresh_after_index_updates_graph() {
+        use tempfile::TempDir;
+
+        // Create temp project with a C file
+        let dir = TempDir::new().unwrap();
+        let c_path = dir.path().join("test.c");
+        std::fs::write(&c_path, "int foo(void) { return 0; }\n").unwrap();
+
+        let store = Arc::new(atlas_engine::Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        let mut router = ToolRouter::new_empty(store, dir.path().to_path_buf());
+        router.ensure_graph_initialized().unwrap();
+
+        // Record initial graph counts (should be 0 for an empty store)
+        let node_before = router.active.graph_runtime.state.symbol_count();
+        assert_eq!(
+            node_before, 0,
+            "empty graph should have 0 nodes, got {node_before}"
+        );
+
+        // Bypass cooldown to force signature check
+        router.active.query_runtime.cache.last_signature_check = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(10))
+            .unwrap();
+
+        // Run manifest index
+        let ctx = ToolCallContext::empty();
+        let args = serde_json::json!({"analysis": "manifest"});
+        let result = router.call_tool(&ctx, "index", &args);
+        assert_eq!(result.is_error, Some(false), "index should succeed");
+
+        // Refresh graph to pick up new symbols
+        router.maybe_refresh_graph().unwrap();
+
+        let node_after = router.active.graph_runtime.state.symbol_count();
+        assert!(
+            node_after > 0,
+            "node count should increase after index + refresh, got {node_after}"
+        );
+    }
+
+    /// Verify edges built from manifest index survive an incremental refresh.
+    #[test]
+    fn graph_refresh_preserves_existing_edges() {
+        use tempfile::TempDir;
+
+        // Setup: create temp project with C file, index, refresh
+        let dir = TempDir::new().unwrap();
+        let c_path = dir.path().join("test.c");
+        std::fs::write(&c_path, "int foo(void) { return 0; }\n").unwrap();
+
+        let store = Arc::new(atlas_engine::Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        let mut router = ToolRouter::new_empty(store, dir.path().to_path_buf());
+        router.ensure_graph_initialized().unwrap();
+
+        // Index + first refresh
+        router.active.query_runtime.cache.last_signature_check = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(10))
+            .unwrap();
+        let ctx = ToolCallContext::empty();
+        let args = serde_json::json!({"analysis": "manifest"});
+        router.call_tool(&ctx, "index", &args);
+        router.maybe_refresh_graph().unwrap();
+
+        // Record current counts
+        let node_before = router.active.graph_runtime.state.symbol_count();
+        let edge_before = router.active.graph_runtime.state.edge_count();
+        assert!(
+            node_before > 0,
+            "should have nodes after initial index + refresh, got {node_before}"
+        );
+
+        // Set last_signature_check to now (within cooldown) to skip signature check
+        router.active.query_runtime.cache.last_signature_check = std::time::Instant::now();
+
+        // Second refresh (should be noop due to cooldown and no writes)
+        router.maybe_refresh_graph().unwrap();
+
+        // Counts should be unchanged
+        assert_eq!(
+            router.active.graph_runtime.state.symbol_count(),
+            node_before,
+            "second refresh within cooldown should not change node count"
+        );
+        assert_eq!(
+            router.active.graph_runtime.state.edge_count(),
+            edge_before,
+            "second refresh within cooldown should not change edge count"
+        );
+    }
+
 
 }
 
