@@ -11,11 +11,10 @@ use atlas_engine::InvestigationFocus;
 use atlas_engine::ScopedSearchRequest;
 use atlas_engine::ScopedSearchService;
 use atlas_engine::SearchAnalysis;
-use atlas_engine::SearchCoverage;
 use atlas_engine::SearchResult;
 use atlas_engine::SymbolKind;
 
-use super::lazy_response::{LazyDiagnostics, LazyResponse};
+use super::lazy_response::LazyResponse;
 use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy, ScoredCandidate, parse_symbol_input};
 use super::{MAX_QUERY_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64};
 
@@ -118,7 +117,9 @@ impl ToolRouter {
         );
         // ScopedSearchService writes directly to the shared Store;
         // refresh the graph if the store signature changed.
-        let _ = self.maybe_refresh_graph();
+        if let Err(e) = self.maybe_refresh_graph() {
+            tracing::warn!("Graph refresh after scoped search failed: {e:#}");
+        }
         (result_str, is_err)
     }
 
@@ -213,19 +214,8 @@ impl ToolRouter {
             "scope": scope,
             "results": hits,
             "total": engine_resp.total,
-            "triggered_lazy": engine_resp.triggered_lazy,
-            "analysis_contract": Self::coverage_to_json(&engine_resp.coverage),
             "scope_file_count": engine_resp.scope_file_count,
         });
-
-        // Backward-compat fields for existing MCP consumers.
-        if engine_resp.triggered_lazy {
-            response["parse_level"] = json!("structural");
-            response["precise"] = json!(true);
-        } else {
-            response["parse_level"] = json!("manifest");
-            response["precise"] = json!(false);
-        }
 
         ctx.send_progress(1.0, &format!("Search complete ({} results)", hits.len()));
 
@@ -308,19 +298,9 @@ impl ToolRouter {
                 "results": hits,
                 "total": engine_resp.total,
                 "warnings": all_warnings,
-                "precision_tier": engine_resp.precision_tier,
-                "triggered_lazy": engine_resp.triggered_lazy,
-                "analysis_contract": ToolRouter::coverage_to_json(&engine_resp.coverage),
             });
 
             response["scope_file_count"] = json!(engine_resp.scope_file_count);
-            if engine_resp.triggered_lazy {
-                response["parse_level"] = json!("structural");
-                response["precise"] = json!(true);
-            } else {
-                response["parse_level"] = json!("manifest");
-                response["precise"] = json!(false);
-            }
 
             task_manager.complete_task(&tid, response);
         });
@@ -401,47 +381,36 @@ impl ToolRouter {
             .get("includeCode")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let (include_roots, root_warnings) = self.include_roots_from_args(args);
+        let (_, root_warnings) = self.include_roots_from_args(args);
         for w in &root_warnings {
             tracing::warn!("include_roots: {}", w);
         }
 
-        let lr = LazyResponse::new("symbol", args);
-        let query_id = lr.query_id().to_string();
+        let mut lr = LazyResponse::new("symbol", args);
         let resolution = self.resolve_symbol_input(
             &symbol_input,
             SymbolResolutionPolicy::UniqueOrCandidates,
         );
         let sym;
         let lazy_warnings;
-        let mut lazy_diag: Option<LazyDiagnostics> = None;
         match resolution {
             Ok(SymbolResolution::Single { symbol_id, .. }) => {
                 // Found a unique symbol on the first try
                 if let Ok(Some(s)) = self.store.find_symbol_by_id(&symbol_id) {
                     self.update_investigation(InvestigationFocus::Symbol(s.id));
-                    let investigation = self.investigation_state.active_investigation.clone();
                     // Ensure structural data so caller/callee results
                     // include fresh edges from lazy extraction.
-                    let outcome = self.ensure_structural_for_files(
-                        [s.file_id],
-                        include_roots.clone(),
-                        investigation.as_ref(),
-                        Some(&query_id),
+                    let (focus_result, focus_warnings) = self.prepare_focus_query(
                         Some(atlas_engine::QueryIntent::Context {
                             symbol_name: qname.to_string(),
                             file_id: Some(s.file_id),
                             symbol_id: None,
                         }),
                     );
-                    lazy_warnings = outcome.warnings;
-                    if let Some(ref lo) = outcome.lazy_outcome {
-                        let stats = self.get_capability_stats();
-                        lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
-                            lo,
-                            stats.as_ref(),
-                        ));
+                    if let Some(ref result) = focus_result {
+                        lr = crate::tools::apply_focus_result_to_lr(lr, result);
                     }
+                    lazy_warnings = focus_warnings;
                     // Re-query after lazy — structural replace may have
                     // updated symbol metadata or source ranges.
                     sym = match self.resolve_symbol_input(
@@ -476,25 +445,17 @@ impl ToolRouter {
             }
             Ok(SymbolResolution::NotFound { .. }) => {
                 // Not found in manifest — trigger lazy structural extraction
-                let outcome = self.ensure_structural_for_symbol_name(
-                    &qname,
-                    include_roots.clone(),
-                    None,
-                    Some(&query_id),
+                let (focus_result, focus_warnings) = self.prepare_focus_query(
                     Some(atlas_engine::QueryIntent::Context {
                         symbol_name: qname.to_string(),
                         file_id: None,
                         symbol_id: None,
                     }),
                 );
-                lazy_warnings = outcome.warnings;
-                if let Some(ref lo) = outcome.lazy_outcome {
-                    let stats = self.get_capability_stats();
-                    lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
-                        lo,
-                        stats.as_ref(),
-                    ));
+                if let Some(ref result) = focus_result {
+                    lr = crate::tools::apply_focus_result_to_lr(lr, result);
                 }
+                lazy_warnings = focus_warnings;
                 match self.resolve_symbol_input(
                     &symbol_input,
                     SymbolResolutionPolicy::UniqueOrCandidates,
@@ -574,20 +535,11 @@ impl ToolRouter {
 
         lr.with_root_warnings(Vec::new()) // already merged via add_json_warnings above
             .with_lazy_warnings(Vec::new()) // already merged via add_json_warnings above
-            .with_analysis_contract(false) // symbol detail does not include analysis_contract
             .with_is_error(false)
             .build_with_args(result, &stored_args, self)
     }
 
     // ── helpers ───────────────────────────────────────────────────────────
-
-    /// Serialize [`SearchCoverage`] to JSON (the type does not derive Serialize).
-    fn coverage_to_json(coverage: &SearchCoverage) -> serde_json::Value {
-        match coverage {
-            SearchCoverage::Full => json!({"level": "full"}),
-            SearchCoverage::Partial { reason } => json!({"level": "partial", "reason": reason}),
-        }
-    }
 
     /// Convert an engine [`SearchResult`] into an MCP
     /// JSON-serializable [`SearchHit`].

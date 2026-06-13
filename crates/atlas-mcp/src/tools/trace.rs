@@ -4,7 +4,7 @@
 
 use atlas_engine::{InvestigationFocus, TraceQueryResponse};
 
-use super::lazy_response::{LazyDiagnostics, LazyLayerDiagnostics, LazyResponse};
+use super::lazy_response::LazyResponse;
 use super::{
     MAX_FILE_PATH_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str_opt, get_u64,
     resolve_file_id, warnings_to_trace_diagnostics,
@@ -41,7 +41,7 @@ impl ToolRouter {
         }
 
         // Parse include_roots
-        let (include_roots, root_warnings) = self.include_roots_from_args(args);
+        let (_, root_warnings) = self.include_roots_from_args(args);
 
         let file_id = match resolve_file_id(&self.store, &self.project_root, file_hex, file_path) {
             Ok(Some(fid)) => fid,
@@ -90,23 +90,20 @@ impl ToolRouter {
             line,
             col: column,
         });
-        let investigation = self.investigation_state.active_investigation.clone();
-        let lr = LazyResponse::new("trace", args);
-        let query_id = lr.query_id().to_string();
+        let mut lr = LazyResponse::new("trace", args);
 
         // Ensure structural before tracing
-        let outcome = self.ensure_structural_for_files(
-            [file_id],
-            include_roots,
-            investigation.as_ref(),
-            Some(&query_id),
+        let (focus_result, focus_warnings) = self.prepare_focus_query(
             Some(atlas_engine::QueryIntent::TracePoint { file_id, line, column }),
         );
+        if let Some(ref result) = focus_result {
+            lr = super::apply_focus_result_to_lr(lr, result);
+        }
         ctx.send_progress(0.8, "Running trace point...");
         let mut resp = self
             .engine
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .trace_point(&file_id, line, column);
         ctx.send_progress(1.0, "Trace complete");
 
@@ -114,9 +111,9 @@ impl ToolRouter {
             root_warnings,
             "include_roots_warning",
         ));
-        let lazy_partial = !outcome.warnings.is_empty();
+        let lazy_partial = !focus_warnings.is_empty();
         resp.diagnostics.extend(warnings_to_trace_diagnostics(
-            outcome.warnings,
+            focus_warnings,
             "lazy_structural_warning",
         ));
         resp.partial_result = resp.partial_result || lazy_partial;
@@ -154,7 +151,7 @@ impl ToolRouter {
         }
 
         // Parse include_roots
-        let (include_roots, root_warnings) = self.include_roots_from_args(args);
+        let (_, root_warnings) = self.include_roots_from_args(args);
 
         let file_id = match resolve_file_id(&self.store, &self.project_root, file_hex, file_path) {
             Ok(Some(fid)) => fid,
@@ -204,36 +201,33 @@ impl ToolRouter {
             line,
             col: column,
         });
-        let investigation = self.investigation_state.active_investigation.clone();
-        let lr = LazyResponse::new("trace", args);
-        let query_id = lr.query_id().to_string();
+        let mut lr = LazyResponse::new("trace", args);
 
         // Ensure structural before tracing
-        let outcome = self.ensure_structural_for_files(
-            [file_id],
-            include_roots,
-            investigation.as_ref(),
-            Some(&query_id),
+        let (focus_result, focus_warnings) = self.prepare_focus_query(
             Some(atlas_engine::QueryIntent::TraceVariable { file_id, line, column }),
         );
+        if let Some(ref result) = focus_result {
+            lr = crate::tools::apply_focus_result_to_lr(lr, result);
+        }
         // Engine::trace_variable handles lazy dataflow orchestration + trace
         // in a single call.  The response already carries lazy_summary,
         // diagnostics, and partial_result from the dataflow layer.
         let mut resp = self
             .engine
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .trace_variable(&file_id, line, column, max_depth);
 
         // Merge structural-partial flag into Engine's dataflow partial_result.
-        let lazy_partial = !outcome.warnings.is_empty();
+        let lazy_partial = !focus_warnings.is_empty();
         resp.partial_result = resp.partial_result || lazy_partial;
         resp.diagnostics.extend(warnings_to_trace_diagnostics(
             root_warnings,
             "include_roots_warning",
         ));
         resp.diagnostics.extend(warnings_to_trace_diagnostics(
-            outcome.warnings,
+            focus_warnings,
             "lazy_structural_warning",
         ));
         let is_error = !resp.ok;
@@ -247,7 +241,7 @@ impl ToolRouter {
 
     pub(crate) fn handle_trace_caller_path(&mut self, args: &serde_json::Value) -> (String, bool) {
         let max_depth = args["max_depth"].as_u64().unwrap_or(20) as usize;
-        let (include_roots, root_warnings) = self.include_roots_from_args(args);
+        let (_, root_warnings) = self.include_roots_from_args(args);
 
         // Parse symbol parameter as unified SymbolInput (string or structured selector).
         let input: SymbolInput = match parse_symbol_input(args, "symbol") {
@@ -293,10 +287,8 @@ impl ToolRouter {
             tracing::warn!("include_roots: {}", w);
         }
         let mut lazy_warnings = Vec::new();
-        let mut lazy_diag: Option<LazyDiagnostics> = None;
 
-        let lr = LazyResponse::new("trace", args);
-        let query_id = lr.query_id().to_string();
+        let mut lr = LazyResponse::new("trace", args);
 
         // Unified symbol resolution — BestEffortSingle always picks one symbol.
         let resolution = match self
@@ -349,33 +341,24 @@ impl ToolRouter {
 
         // Update investigation with the target symbol
         self.update_investigation(InvestigationFocus::Symbol(target_id));
-        let investigation = self.investigation_state.active_investigation.clone();
         // Ensure structural data for this symbol's file
         if let Ok(Some(sym)) = self.store.find_symbol_by_id(&target_id) {
-            let outcome = self.ensure_structural_for_files(
-                [sym.file_id],
-                include_roots.clone(),
-                investigation.as_ref(),
-                Some(&query_id),
+            let (focus_result, focus_warnings) = self.prepare_focus_query(
                 Some(atlas_engine::QueryIntent::Calls {
                     symbol_name: sym.name.clone(),
                     file_id: Some(sym.file_id),
                     symbol_id: None,
                 }),
             );
-            lazy_warnings = outcome.warnings;
-            if let Some(ref lo) = outcome.lazy_outcome {
-                let stats = self.get_capability_stats();
-                lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
-                    lo,
-                    stats.as_ref(),
-                ));
+            if let Some(ref result) = focus_result {
+                lr = crate::tools::apply_focus_result_to_lr(lr, result);
             }
+            lazy_warnings = focus_warnings;
         }
         let resp = self
             .engine
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .trace_callers(&target_id, max_depth);
         let mut resp = resp;
         let is_error = !resp.ok;
@@ -408,7 +391,7 @@ impl ToolRouter {
 
     pub(crate) fn handle_trace_forward(&mut self, args: &serde_json::Value) -> (String, bool) {
         let max_depth = args["max_depth"].as_u64().unwrap_or(10) as usize;
-        let (include_roots, root_warnings) = self.include_roots_from_args(args);
+        let (_, root_warnings) = self.include_roots_from_args(args);
 
         // Parse 'from' parameter as unified SymbolInput.
         let from_input: SymbolInput = match parse_symbol_input(args, "from") {
@@ -484,10 +467,7 @@ impl ToolRouter {
             tracing::warn!("include_roots: {}", w);
         }
         
-        let mut lazy_diag: Option<LazyDiagnostics> = None;
-
-        let lr = LazyResponse::new("trace", args);
-        let query_id = lr.query_id().to_string();
+        let mut lr = LazyResponse::new("trace", args);
 
         // -- Resolve 'from' symbol --
         let from_resolution = match self
@@ -567,16 +547,8 @@ impl ToolRouter {
 
         // Update investigation with the from symbol
         self.update_investigation(InvestigationFocus::Symbol(from_id));
-        let investigation = self.investigation_state.active_investigation.clone();
 
-        // Ensure structural for endpoint files
-        let mut file_set: std::collections::HashSet<atlas_engine::FileId> =
-            std::collections::HashSet::new();
-        for id in [&from_id, &to_id] {
-            if let Ok(Some(sym)) = self.store.find_symbol_by_id(id) {
-                file_set.insert(sym.file_id);
-            }
-        }
+        // Ensure structural for endpoint files via focus query
         let intent = self
             .store
             .find_symbol_by_id(&from_id)
@@ -587,26 +559,15 @@ impl ToolRouter {
                 file_id: Some(sym.file_id),
                 symbol_id: None,
             });
-        let outcome = self.ensure_structural_for_files(
-            file_set,
-            include_roots,
-            investigation.as_ref(),
-            Some(&query_id),
-            intent,
-        );
-        let lazy_warnings = outcome.warnings;
-        if let Some(ref lo) = outcome.lazy_outcome {
-            let stats = self.get_capability_stats();
-            lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
-                lo,
-                stats.as_ref(),
-            ));
+        let (focus_result, lazy_warnings) = self.prepare_focus_query(intent);
+        if let Some(ref result) = focus_result {
+            lr = crate::tools::apply_focus_result_to_lr(lr, result);
         }
 
         let mut resp = self
             .engine
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .trace_forward(&from_id, &to_id, max_depth);
         let is_error = !resp.ok;
         resp.diagnostics.extend(warnings_to_trace_diagnostics(

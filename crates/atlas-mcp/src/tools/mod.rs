@@ -154,52 +154,31 @@ pub(crate) mod trace;
 pub(crate) mod usages;
 pub(crate) mod wait_for;
 
-// -------------------------------------------------------------------
-// StructuralEnsureOutcome
-// -------------------------------------------------------------------
+/// Apply focus-aware envelope fields from a [`FocusResult`] to the LazyResponse.
+///
+/// Takes `&FocusResult` directly and merges precision, coverage, gaps,
+/// and pending work items into the builder.
+pub(crate) fn apply_focus_result_to_lr(
+    lr: lazy_response::LazyResponse,
+    result: &atlas_engine::focus::runtime::FocusResult,
+) -> lazy_response::LazyResponse {
+    let mut lr = lr;
 
-/// Result of lazy structural extraction triggered via
-/// [`ensure_structural_for_files`] or [`ensure_structural_for_symbol_name`].
-pub(crate) struct StructuralEnsureOutcome {
-    pub warnings: Vec<String>,
-    pub built_file_ids: Vec<atlas_engine::FileId>,
-    /// Full lazy outcome when extraction actually ran (None if skipped,
-    /// e.g., when a manual full index already exists).
-    pub lazy_outcome: Option<atlas_engine::LazyOutcome>,
-    /// Focus-aware precision from FocusRuntime (None when focus path
-    /// wasn't taken or focus is inactive).
-    pub focus_precision: Option<atlas_engine::structs::Precision>,
-    /// Distribution of results by coverage tier (from focus path).
-    pub focus_coverage_counts: Option<HashMap<String, usize>>,
-    /// Known gaps in analysis completeness (from focus path).
-    pub focus_gaps: Option<Vec<atlas_engine::structs::KnownGap>>,
-    /// Pending background closure IDs (from focus path).
-    pub focus_pending: Option<Vec<String>>,
-}
-
-impl StructuralEnsureOutcome {
-    /// Apply focus-aware envelope fields from this outcome to the LazyResponse.
-    /// Merges focus_precision, focus_gaps, and focus_pending into the builder.
-    /// Idempotent — if the outcome has no focus fields, this is a no-op.
-    /// Takes &self so it can be called on multiple outcomes (e.g. files + name).
-    pub(crate) fn apply_focus_to_lr(&self, lr: lazy_response::LazyResponse) -> lazy_response::LazyResponse {
-        let mut lr = lr;
-
-        // ── Precision / coverage / gaps (keep existing) ──
-        if let Some(ref precision) = self.focus_precision {
+    if result.mode == atlas_engine::focus::runtime::IndexMode::Focus {
+        // ── Raw data ──
+        if let Some(ref precision) = result.precision {
             lr = lr.with_precision(precision.clone());
         }
-        if let Some(ref counts) = self.focus_coverage_counts {
+        if let Some(ref counts) = result.coverage_counts {
             lr = lr.with_coverage_counts(counts.clone());
         }
-        if let Some(ref gaps) = self.focus_gaps {
-            lr = lr.with_gaps(gaps.clone());
+        if !result.gaps.is_empty() {
+            lr = lr.with_gaps(result.gaps.clone());
         }
 
-        // ── New analysis envelope (focus-aware) ──
-        if let Some(ref precision) = self.focus_precision {
+        // ── Analysis envelope ──
+        if let Some(ref precision) = result.precision {
             let view = precision_to_view(precision);
-            // analysis state: if we have focus precision with high confidence, we're ready
             let state = if precision.confidence == SemanticConfidence::Certain {
                 "ready"
             } else if precision.confidence == SemanticConfidence::High {
@@ -214,37 +193,38 @@ impl StructuralEnsureOutcome {
                 view.coverage, view.confidence
             ));
             lr = lr.with_analysis_next_action("use_result".to_string());
-        } else if let Some(ref counts) = self.focus_coverage_counts {
-            // Coverage counts without precision — partial focus data
+        } else if let Some(ref counts) = result.coverage_counts {
             lr = lr.with_analysis_state("building".to_string());
             lr = lr.with_analysis_scope("local".to_string());
             let total: usize = counts.values().sum();
-            lr = lr.with_analysis_summary(format!("focus partial: {total} items across {} tiers", counts.len()));
+            lr = lr.with_analysis_summary(format!(
+                "focus partial: {total} items across {} tiers",
+                counts.len()
+            ));
             lr = lr.with_analysis_next_action("use_result_or_wait_for_refinement".to_string());
         }
-
-        // ── Work items from pending closures ──
-        if let Some(ref pending) = self.focus_pending {
-            if !pending.is_empty() {
-                let items: Vec<WorkItem> = pending
-                    .iter()
-                    .map(|id| WorkItem {
-                        id: id.clone(),
-                        kind: "extraction".to_string(),
-                        state: "building".to_string(),
-                        scope: "local".to_string(),
-                        reason: "focus_closure".to_string(),
-                        progress: Some(WorkProgress { percent: 0 }),
-                        waitable: true,
-                        retry_after_ms: None,
-                    })
-                    .collect();
-                lr = lr.with_work_items(items);
-            }
-        }
-
-        lr
     }
+
+    // ── Work items from pending closures ──
+    if !result.pending_closure_ids.is_empty() {
+        let items: Vec<WorkItem> = result
+            .pending_closure_ids
+            .iter()
+            .map(|id| WorkItem {
+                id: id.clone(),
+                kind: "extraction".to_string(),
+                state: "building".to_string(),
+                scope: "local".to_string(),
+                reason: "focus_closure".to_string(),
+                progress: Some(WorkProgress { percent: 0 }),
+                waitable: true,
+                retry_after_ms: None,
+            })
+            .collect();
+        lr = lr.with_work_items(items);
+    }
+
+    lr
 }
 
 // -------------------------------------------------------------------
@@ -274,7 +254,7 @@ pub struct ToolRouter {
     pub(crate) async_state: AsyncState,
     /// Investigation state (MCP session scoped) for lazy job prioritization.
     pub(crate) investigation_state: InvestigationState,
-    /// Focus runtime for focus-driven lazy analysis (None = use LazyOrchestrator).
+    /// Focus runtime for focus-driven lazy analysis.
     pub(crate) focus_runtime: Option<Mutex<atlas_engine::FocusRuntime>>,
 }
 
@@ -417,16 +397,89 @@ impl ToolRouter {
     }
 
     /// Initialize the focus runtime for focus-driven lazy analysis.
-    ///
-    /// After this call, [`ensure_structural_for_files`] and
-    /// [`ensure_structural_for_symbol_name`] will route through
-    /// [`FocusRuntime::prepare`] instead of [`LazyOrchestrator`]
-    /// when no full index exists.
     pub(crate) fn init_focus(&mut self) {
         let store = self.store.clone();
         let project_root = Some(self.project_root.clone());
         let runtime = atlas_engine::FocusRuntime::new(store, project_root);
         self.focus_runtime = Some(Mutex::new(runtime));
+    }
+
+    /// Unified focus query preparation for focus-driven lazy analysis.
+    ///
+    /// Returns `(Some(FocusResult), warnings)` when focus analysis completed,
+    /// or `(None, warnings)` when focus is not needed or unavailable.
+    pub(crate) fn prepare_focus_query(
+        &mut self,
+        intent: Option<atlas_engine::QueryIntent>,
+    ) -> (Option<atlas_engine::focus::runtime::FocusResult>, Vec<String>) {
+        // 1. Full index already exists — no focus needed.
+        if self.cache.has_manual_full_index(&self.store) {
+            return (None, vec![]);
+        }
+
+        // 2. No intent — nothing to prepare.
+        let intent = match intent {
+            Some(i) => i,
+            None => return (None, vec![]),
+        };
+
+        // 3. No focus runtime — warn caller.
+        let fr = match &self.focus_runtime {
+            Some(fr) => fr,
+            None => {
+                return (
+                    None,
+                    vec![
+                        "No full index and FocusRuntime not initialized. Run 'atlas index --full' or call 'init_focus()' on ToolRouter."
+                            .into(),
+                    ],
+                );
+            }
+        };
+
+        // 4. Lock and detect index mode; prepare if in Focus mode.
+        let prep_result = {
+            let mut runtime = fr.lock().unwrap_or_else(|e| e.into_inner());
+            match runtime.detect_index_mode() {
+                atlas_engine::focus::runtime::IndexMode::FullIndex => None,
+                atlas_engine::focus::runtime::IndexMode::Focus => {
+                    Some(runtime.prepare(&intent))
+                }
+            }
+        }; // MutexGuard dropped here
+
+        // 5. Process preparation result.
+        match prep_result {
+            Some(Ok(result)) => {
+                let mut warnings: Vec<String> = result
+                    .gaps
+                    .iter()
+                    .map(|g| format!("{:?}", g))
+                    .collect();
+
+                if !result.built_files.is_empty() {
+                    // Predictive pre-warming: notify focus scheduler of file reads.
+                    if let Some(ref fr) = self.focus_runtime {
+                        if let Ok(rt) = fr.lock() {
+                            for file_id in &result.built_files {
+                                rt.on_file_read(*file_id);
+                            }
+                        }
+                    }
+
+                    self.lazy_refresh_queue
+                        .record_lazy_writes(&result.built_files);
+                    if let Err(e) = self.maybe_refresh_graph() {
+                        warnings
+                            .push(format!("Graph refresh failed after focus: {e:#}"));
+                    }
+                }
+
+                (Some(result), warnings)
+            }
+            Some(Err(e)) => (None, vec![format!("Focus preparation failed: {e:#}")]),
+            None => (None, vec![]), // FullIndex detected inside the lock
+        }
     }
 
     /// Query the DB for real capability file counts.
@@ -532,10 +585,9 @@ impl ToolRouter {
 
     /// Ensure the in-memory call-graph reflects any newly extracted structural data.
     ///
-    /// **Refresh responsibility**: this method is already called internally by
-    /// [`ensure_structural_for_files`] and [`ensure_structural_for_symbol_name`]
-    /// whenever they actually built new files.  Callers that use those helpers
-    /// do **not** need to call `maybe_refresh_graph` separately.
+    /// **Refresh responsibility**: this method is called internally by
+    /// `prepare_focus_query` whenever new files were built. Callers that
+    /// use that helper do **not** need to call `maybe_refresh_graph` separately.
     ///
     /// Callers that modify the store independently (e.g. through a full re-index
     /// signal) may still need to call this to pick up changes.
@@ -766,271 +818,7 @@ impl ToolRouter {
         (roots, warnings)
     }
 
-    // -------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------
 
-    /// Ensure structural data for the given files, with optional
-    /// include_roots for C/C++ angle-bracket resolution.
-    /// Returns outcome with warnings and built file IDs (the caller should
-    /// surface warnings in the MCP response).
-    ///
-    /// No-op when a manual full index already exists.
-    ///
-    /// When `investigation` is provided, files related to the investigation
-    /// are prioritized before unrelated files.
-    /// When `query_id` is provided, it is threaded into extraction job records
-    /// so `atlas_jobs` can filter by query.
-    /// After this returns, the in-memory graph is guaranteed to be refreshed
-    /// if any new files were built. Callers do not need to call
-    /// `maybe_refresh_graph()` separately.
-    pub(crate) fn ensure_structural_for_files(
-        &mut self,
-        file_ids: impl IntoIterator<Item = FileId>,
-        include_roots: Vec<atlas_engine::IncludeRoot>,
-        investigation: Option<&atlas_engine::Investigation>,
-        query_id: Option<&str>,
-        query_intent: Option<atlas_engine::QueryIntent>,
-    ) -> StructuralEnsureOutcome {
-        let mut warnings = Vec::new();
-        let mut built_file_ids = Vec::new();
-        if self.cache.has_manual_full_index(&self.store) {
-            return StructuralEnsureOutcome {
-                warnings,
-                built_file_ids,
-                lazy_outcome: None,
-                focus_precision: None,
-                focus_coverage_counts: None,
-                focus_gaps: None,
-                focus_pending: None,
-            };
-        }
-        // Deduplicate
-        let file_set: HashSet<_> = file_ids.into_iter().collect();
-        if file_set.is_empty() {
-            return StructuralEnsureOutcome {
-                warnings,
-                built_file_ids,
-                lazy_outcome: None,
-                focus_precision: None,
-                focus_coverage_counts: None,
-                focus_gaps: None,
-                focus_pending: None,
-            };
-        }
-        let file_vec: Vec<FileId> = file_set.into_iter().collect();
-
-        // ── Focus path: route through FocusRuntime when available ──────
-        if let Some(ref fr) = self.focus_runtime {
-            let focus_outcome = {
-                let mut runtime = fr.lock().unwrap_or_else(|e| e.into_inner());
-                if runtime.detect_index_mode() == atlas_engine::focus::runtime::IndexMode::Focus {
-                    let intent = query_intent.unwrap_or_else(|| {
-                        atlas_engine::QueryIntent::Calls {
-                            symbol_name: String::new(),
-                            file_id: file_vec.first().copied(),
-                            symbol_id: None,
-                        }
-                    });
-                    Some(runtime.prepare(&intent))
-                } else {
-                    None
-                }
-            }; // MutexGuard dropped here
-
-            if let Some(prep_result) = focus_outcome {
-                return match prep_result {
-                    Ok(result) => {
-                        let focus_gaps = result.gaps.clone();
-                        let focus_pending = result.pending_closure_ids.clone();
-                        let focus_precision = result.precision.clone();
-                        let mut focus_warnings: Vec<String> = result
-                            .gaps
-                            .iter()
-                            .map(|g| format!("{:?}", g))
-                            .collect();
-                        let built_file_ids = result.built_files;
-
-                        // Notify focus scheduler of file reads for predictive
-                        // pre-warming of import neighborhoods.
-                        if !built_file_ids.is_empty() {
-                            if let Some(ref fr) = self.focus_runtime {
-                                if let Ok(rt) = fr.lock() {
-                                    for file_id in &built_file_ids {
-                                        rt.on_file_read(*file_id);
-                                    }
-                                }
-                            }
-                        }
-
-                        if !built_file_ids.is_empty() {
-                            self.lazy_refresh_queue.record_lazy_writes(&built_file_ids);
-                            if let Err(e) = self.maybe_refresh_graph() {
-                                focus_warnings
-                                    .push(format!("Graph refresh failed after focus: {e:#}"));
-                            }
-                        }
-
-                        StructuralEnsureOutcome {
-                            warnings: focus_warnings,
-                            built_file_ids,
-                            lazy_outcome: None,
-                            focus_precision,
-                            focus_coverage_counts: result.coverage_counts.clone(),
-                            focus_gaps: Some(focus_gaps),
-                            focus_pending: Some(focus_pending),
-                        }
-                    }
-                    Err(e) => StructuralEnsureOutcome {
-                        warnings: vec![format!("Focus preparation failed: {e:#}")],
-                        built_file_ids: Vec::new(),
-                        lazy_outcome: None,
-                        focus_precision: None,
-                        focus_coverage_counts: None,
-                        focus_gaps: None,
-                        focus_pending: None,
-                    },
-                };
-            }
-        }
-
-        // Neither FocusRuntime nor full index available — warn caller.
-        warnings.push(
-            "No full index and FocusRuntime not initialized. ".into(),
-        );
-        warnings.push(
-            "Run 'atlas index --full' or call 'init_focus()' on ToolRouter.".into(),
-        );
-        StructuralEnsureOutcome {
-            warnings,
-            built_file_ids: Vec::new(),
-            lazy_outcome: None,
-            focus_precision: None,
-            focus_coverage_counts: None,
-            focus_gaps: None,
-            focus_pending: None,
-        }
-    }
-
-    /// Ensure structural data for files containing a symbol name,
-    /// with optional include_roots.  Useful for name-based lookups
-    /// where the file_id is not yet known.
-    /// When `query_id` is provided, it is threaded into extraction job records.
-    /// After this returns, the in-memory graph is guaranteed to be refreshed
-    /// if any new files were built. Callers do not need to call
-    /// `maybe_refresh_graph()` separately.
-    pub(crate) fn ensure_structural_for_symbol_name(
-        &mut self,
-        symbol_name: &str,
-        include_roots: Vec<atlas_engine::IncludeRoot>,
-        investigation: Option<&atlas_engine::Investigation>,
-        query_id: Option<&str>,
-        query_intent: Option<atlas_engine::QueryIntent>,
-    ) -> StructuralEnsureOutcome {
-        let mut warnings = Vec::new();
-        let mut built_file_ids = Vec::new();
-        if self.cache.has_manual_full_index(&self.store) {
-            return StructuralEnsureOutcome {
-                warnings,
-                built_file_ids,
-                lazy_outcome: None,
-                focus_precision: None,
-                focus_coverage_counts: None,
-                focus_gaps: None,
-                focus_pending: None,
-            };
-        }
-
-        // ── Focus path: route through FocusRuntime when available ──────
-        if let Some(ref fr) = self.focus_runtime {
-            let focus_outcome = {
-                let mut runtime = fr.lock().unwrap_or_else(|e| e.into_inner());
-                if runtime.detect_index_mode() == atlas_engine::focus::runtime::IndexMode::Focus {
-                    let intent = query_intent.unwrap_or_else(|| {
-                        atlas_engine::QueryIntent::Calls {
-                            symbol_name: symbol_name.to_string(),
-                            file_id: None,
-                            symbol_id: None,
-                        }
-                    });
-                    Some(runtime.prepare(&intent))
-                } else {
-                    None
-                }
-            }; // MutexGuard dropped here
-
-            if let Some(prep_result) = focus_outcome {
-                return match prep_result {
-                    Ok(result) => {
-                        let focus_gaps = result.gaps.clone();
-                        let focus_pending = result.pending_closure_ids.clone();
-                        let focus_precision = result.precision.clone();
-                        let mut focus_warnings: Vec<String> = result
-                            .gaps
-                            .iter()
-                            .map(|g| format!("{:?}", g))
-                            .collect();
-                        let built_file_ids = result.built_files;
-
-                        // Notify focus scheduler of file reads for predictive
-                        // pre-warming of import neighborhoods.
-                        if !built_file_ids.is_empty() {
-                            if let Some(ref fr) = self.focus_runtime {
-                                if let Ok(rt) = fr.lock() {
-                                    for file_id in &built_file_ids {
-                                        rt.on_file_read(*file_id);
-                                    }
-                                }
-                            }
-                        }
-
-                        if !built_file_ids.is_empty() {
-                            self.lazy_refresh_queue.record_lazy_writes(&built_file_ids);
-                            if let Err(e) = self.maybe_refresh_graph() {
-                                focus_warnings
-                                    .push(format!("Graph refresh failed after focus: {e:#}"));
-                            }
-                        }
-
-                        StructuralEnsureOutcome {
-                            warnings: focus_warnings,
-                            built_file_ids,
-                            lazy_outcome: None,
-                            focus_precision,
-                            focus_coverage_counts: result.coverage_counts.clone(),
-                            focus_gaps: Some(focus_gaps),
-                            focus_pending: Some(focus_pending),
-                        }
-                    }
-                    Err(e) => StructuralEnsureOutcome {
-                        warnings: vec![format!(
-                            "Focus preparation failed for '{symbol_name}': {e:#}"
-                        )],
-                        built_file_ids: Vec::new(),
-                        lazy_outcome: None,
-                        focus_precision: None,
-                        focus_coverage_counts: None,
-                        focus_gaps: None,
-                        focus_pending: None,
-                    },
-                };
-            }
-        }
-
-        // Neither FocusRuntime nor full index available — warn caller.
-        warnings.push(
-            "No full index and FocusRuntime not initialized. Run 'atlas index --full' or call 'init_focus()'.".into(),
-        );
-        StructuralEnsureOutcome {
-            warnings,
-            built_file_ids: Vec::new(),
-            lazy_outcome: None,
-            focus_precision: None,
-            focus_coverage_counts: None,
-            focus_gaps: None,
-            focus_pending: None,
-        }
-    }
 
     // -------------------------------------------------------------------
     // Query snapshot + investigation helpers
@@ -1875,7 +1663,7 @@ impl ToolRouter {
             let max_files = get_u64(args, "max_structural_files")
                 .or_else(|| get_u64(args, "limit"))
                 .unwrap_or(50) as usize;
-            let file_ids = match direction {
+            let _file_ids = match direction {
                 "incoming" | "both" => {
                     let (candidates, truncated) =
                         self.collect_edge_dependent_file_ids(&[file_id], max_files);
@@ -1889,21 +1677,9 @@ impl ToolRouter {
                 }
                 _ => vec![file_id],
             };
-            let outcome = self.ensure_structural_for_files(file_ids, vec![], None, None, None);
-            lazy_warnings = outcome.warnings;
-            built_file_count = outcome.built_file_ids.len();
-
-            if let Some(ref lo) = outcome.lazy_outcome {
-                capability_mask = lo.capability_mask;
-                if lo.budget_exceeded {
-                    coverage = "partial";
-                    reason = Some("budget_exceeded");
-                } else if lo.precision_tier
-                    != atlas_engine::structs::precision::PrecisionTier::Exact
-                {
-                    coverage = "partial";
-                }
-            }
+            let (focus_result, focus_warnings) = self.prepare_focus_query(None);
+            lazy_warnings = focus_warnings;
+            built_file_count = focus_result.as_ref().map(|r| r.built_files.len()).unwrap_or(0);
         } else {
             capability_mask = self.store.derive_capability_for_files(&[file_id]);
         }
@@ -2553,18 +2329,10 @@ impl ToolRouter {
         }
 
         // Ensure structural layer is available for this file
-        let (include_roots, root_warnings) = self.include_roots_from_args(args);
-        let investigation = self.investigation_state.active_investigation.clone();
-        let query_id = Self::generate_query_id();
-        let outcome = self.ensure_structural_for_files(
-            std::collections::HashSet::from([file_id]),
-            include_roots,
-            investigation.as_ref(),
-            Some(&query_id),
-            None,
-        );
+        let (_include_roots, root_warnings) = self.include_roots_from_args(args);
+        let (_focus_result, focus_warnings) = self.prepare_focus_query(None);
         let mut warnings: Vec<String> = root_warnings;
-        warnings.extend(outcome.warnings);
+        warnings.extend(focus_warnings);
 
         // Find all symbols in the file
         let symbols = match self.store.find_symbols_by_file(&file_id) {
@@ -2794,20 +2562,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn structural_ensure_outcome_default() {
-        let outcome = StructuralEnsureOutcome {
-            warnings: vec![],
-            built_file_ids: vec![],
-            lazy_outcome: None,
-            focus_precision: None,
-            focus_coverage_counts: None,
-            focus_gaps: None,
-            focus_pending: None,
-        };
-        assert!(outcome.warnings.is_empty());
-        assert!(outcome.built_file_ids.is_empty());
-    }
+
 
     #[test]
     fn warnings_to_trace_diagnostics_converts() {
@@ -4331,215 +4086,5 @@ mod tests {
         );
     }
 
-    #[test]
-    fn ensure_structural_for_files_without_focus_uses_lazy_orchestrator() {
-        let store = test_store();
-        let file_id = register_test_file(&store, "test.ts");
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        // focus_runtime is None — should fall through to LazyOrchestrator path
-        let outcome = router.ensure_structural_for_files(
-            vec![file_id],
-            vec![],
-            None,
-            None,
-            None,
-        );
-        // Without a full index and without focus, the lazy orchestrator runs.
-        // It may succeed or fail depending on extraction capability, but it
-        // should NOT panic.
-        assert!(
-            outcome.built_file_ids.is_empty() || !outcome.built_file_ids.is_empty(),
-            "should not panic"
-        );
-    }
-
-    #[test]
-    fn ensure_structural_for_symbol_name_without_focus_uses_lazy_orchestrator() {
-        let store = test_store();
-
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        let outcome = router.ensure_structural_for_symbol_name(
-            "nonexistent_symbol",
-            vec![],
-            None,
-            None,
-            None,
-        );
-        // Without a full index and without focus, the lazy orchestrator runs.
-        assert!(
-            outcome.built_file_ids.is_empty() || !outcome.built_file_ids.is_empty(),
-            "should not panic"
-        );
-    }
-
-    #[test]
-    fn ensure_structural_for_files_empty_inputs_no_panic() {
-        let store = test_store();
-
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        let outcome = router.ensure_structural_for_files(
-            Vec::<FileId>::new(),
-            vec![],
-            None,
-            None,
-            None,
-        );
-        assert!(outcome.built_file_ids.is_empty());
-        assert!(outcome.warnings.is_empty());
-        assert!(outcome.lazy_outcome.is_none());
-    }
-
-    #[test]
-    fn structural_ensure_coverage_counts_flows_to_lazy_response() {
-        use crate::tools::lazy_response::{LazyResponse, SnapshotStore};
-        use atlas_engine::structs::precision::PrecisionTier;
-
-        // Local MockStore for SnapshotStore trait
-        struct MockStore;
-        impl MockStore {
-            fn new() -> Self { MockStore }
-        }
-        impl SnapshotStore for MockStore {
-            fn store_query_snapshot(
-                &mut self,
-                _snapshot: crate::tools::query_snapshot::QuerySnapshot,
-            ) {}
-        }
-
-        let mut coverage_counts = HashMap::new();
-        coverage_counts.insert("local_complete".to_string(), 3usize);
-        coverage_counts.insert("basic".to_string(), 1usize);
-
-        let outcome = StructuralEnsureOutcome {
-            warnings: vec![],
-            built_file_ids: vec![],
-            lazy_outcome: None,
-            focus_precision: None,
-            focus_coverage_counts: Some(coverage_counts),
-            focus_gaps: None,
-            focus_pending: None,
-        };
-
-        let args = json!({"symbol": "test"});
-        let lr = LazyResponse::new("test", &args)
-            .with_is_error(false);
-        let lr = outcome.apply_focus_to_lr(lr);
-
-        // Build with a mock store to verify coverage_counts appear in output
-        let mut store = MockStore::new();
-        let body = json!({"ok": true});
-        let (json_str, is_err) = lr.build(body, &mut store);
-        assert!(!is_err, "should succeed with coverage_counts");
-        assert!(
-            json_str.contains("coverage_counts"),
-            "coverage_counts should be present in response when focus provides them"
-        );
-        assert!(
-            json_str.contains("local_complete"),
-            "coverage_counts should include tier names"
-        );
-        // Parse JSON to verify analysis block
-        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert!(
-            v.get("analysis").is_some(),
-            "analysis block should be present when focus provides coverage_counts"
-        );
-        // With focus_coverage_counts but no focus_precision, state should be "building"
-        assert_eq!(
-            v["analysis"]["state"], "building",
-            "analysis state should be building when focus has coverage_counts but no precision"
-        );
-    }
-
-    #[test]
-    fn structural_ensure_focus_precision_flows_to_analysis_block() {
-        use crate::tools::lazy_response::{LazyResponse, SnapshotStore};
-        use atlas_engine::structs::precision::PrecisionTier;
-        use atlas_engine::structs::{CoverageTier, Precision, SemanticConfidence};
-
-        struct MockStore;
-        impl MockStore {
-            fn new() -> Self { MockStore }
-        }
-        impl SnapshotStore for MockStore {
-            fn store_query_snapshot(
-                &mut self,
-                _snapshot: crate::tools::query_snapshot::QuerySnapshot,
-            ) {}
-        }
-
-        let precision = Precision {
-            coverage: CoverageTier::ClosureComplete {
-                closure_id: "cl_test".into(),
-            },
-            confidence: SemanticConfidence::High,
-        };
-
-        let outcome = StructuralEnsureOutcome {
-            warnings: vec![],
-            built_file_ids: vec![],
-            lazy_outcome: None,
-            focus_precision: Some(precision),
-            focus_coverage_counts: None,
-            focus_gaps: None,
-            focus_pending: None,
-        };
-
-        let args = json!({"symbol": "test"});
-        let lr = LazyResponse::new("test", &args)
-            .with_is_error(false);
-        let lr = outcome.apply_focus_to_lr(lr);
-
-        let mut store = MockStore::new();
-        let body = json!({"ok": true});
-        let (json_str, is_err) = lr.build(body, &mut store);
-        assert!(!is_err);
-        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(v["analysis"]["state"], "usable_partial");
-        assert!(v["analysis"]["summary"].as_str().unwrap().contains("focus analysis"));
-    }
-
-    #[test]
-    fn structural_ensure_focus_pending_sets_work_items() {
-        use crate::tools::lazy_response::{LazyResponse, SnapshotStore};
-        use atlas_engine::structs::precision::PrecisionTier;
-
-        struct MockStore;
-        impl MockStore {
-            fn new() -> Self { MockStore }
-        }
-        impl SnapshotStore for MockStore {
-            fn store_query_snapshot(
-                &mut self,
-                _snapshot: crate::tools::query_snapshot::QuerySnapshot,
-            ) {}
-        }
-
-        let outcome = StructuralEnsureOutcome {
-            warnings: vec![],
-            built_file_ids: vec![],
-            lazy_outcome: None,
-            focus_precision: None,
-            focus_coverage_counts: None,
-            focus_gaps: None,
-            focus_pending: Some(vec!["cl_a".into(), "cl_b".into()]),
-        };
-
-        let args = json!({"symbol": "test"});
-        let lr = LazyResponse::new("test", &args)
-            .with_is_error(false);
-        let lr = outcome.apply_focus_to_lr(lr);
-
-        let mut store = MockStore::new();
-        let body = json!({"ok": true});
-        let (json_str, is_err) = lr.build(body, &mut store);
-        assert!(!is_err);
-        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(v["work"]["relevant"], true);
-        assert_eq!(v["work"]["status"], "running");
-        assert_eq!(v["work"]["items"].as_array().unwrap().len(), 2);
-        assert_eq!(v["work"]["items"][0]["id"], "cl_a");
-        assert_eq!(v["work"]["items"][1]["id"], "cl_b");
-    }
 }

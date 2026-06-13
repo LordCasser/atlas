@@ -6,7 +6,7 @@
 //! newly parsed edges — closing the MCP call-flow gap where graph init
 //! happened before the handler's own structural extraction.
 
-use super::lazy_response::{LazyDiagnostics, LazyResponse};
+use super::lazy_response::LazyResponse;
 use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter};
 use super::symbol_selector::{
     parse_symbol_input, ResolvedSymbol, ScoredCandidate, SymbolInput, SymbolResolution,
@@ -14,7 +14,6 @@ use super::symbol_selector::{
 };
 
 use atlas_engine::InvestigationFocus;
-use atlas_engine::structs::precision::PrecisionTier;
 use serde_json::json;
 
 /// Result of [`ToolRouter::resolve_context_symbol`].
@@ -23,8 +22,6 @@ enum ContextResolution {
     Found(
         atlas_engine::SymbolId,
         Vec<String>,
-        PrecisionTier,
-        Option<LazyDiagnostics>,
         /// Resolution metadata from the engine (present for Tier 1 resolution).
         Option<ResolvedSymbol>,
     ),
@@ -86,7 +83,7 @@ impl ToolRouter {
         }
         let investigation = self.investigation_state.active_investigation.clone();
 
-        let resolution = match self.resolve_context_symbol(
+        let (resolution, focus_result) = match self.resolve_context_symbol(
             ctx,
             &input,
             include_roots,
@@ -97,8 +94,15 @@ impl ToolRouter {
             Err(err) => return (err, true),
         };
 
+        // Apply focus-aware envelope fields if focus extraction occurred
+        let lr = if let Some(ref result) = focus_result {
+            crate::tools::apply_focus_result_to_lr(lr, result)
+        } else {
+            lr
+        };
+
         match resolution {
-            ContextResolution::Found(sid, lazy_warnings, tier, lazy_diag, resolved) => {
+            ContextResolution::Found(sid, lazy_warnings, resolved) => {
                 // Update investigation with the actually resolved symbol
                 self.update_investigation(InvestigationFocus::Symbol(sid));
 
@@ -117,7 +121,7 @@ impl ToolRouter {
                         ctx.send_progress(0.8, "Context complete");
                         self.build_context_response(
                             &view, qname, include_code, &sid,
-                            root_warnings, lazy_warnings, tier, lazy_diag,
+                            root_warnings, lazy_warnings,
                             resolved, lr, args,
                         )
                     }
@@ -149,8 +153,6 @@ impl ToolRouter {
         sid: &atlas_engine::SymbolId,
         root_warnings: Vec<String>,
         lazy_warnings: Vec<String>,
-        tier: PrecisionTier,
-        lazy_diag: Option<LazyDiagnostics>,
         resolved: Option<ResolvedSymbol>,
         lr: LazyResponse,
         args: &serde_json::Value,
@@ -287,19 +289,20 @@ impl ToolRouter {
     ///         then picks the highest-scored unambiguous match
     /// Tier 3: lazy structural extraction + re-query
     /// Tier 4: name match with multiple candidates → return candidates
+    ///
+    /// Returns `(ContextResolution, Option<FocusResult>)` — the focus result
+    /// from any lazy structural extraction that occurred during resolution.
     fn resolve_context_symbol(
         &mut self,
         ctx: &super::ToolCallContext,
         input: &SymbolInput,
-        include_roots: Vec<atlas_engine::IncludeRoot>,
-        investigation: Option<&atlas_engine::Investigation>,
-        query_id: Option<&str>,
-    ) -> Result<ContextResolution, String> {
-        use std::cmp;
+        _include_roots: Vec<atlas_engine::IncludeRoot>,
+        _investigation: Option<&atlas_engine::Investigation>,
+        _query_id: Option<&str>,
+    ) -> Result<(ContextResolution, Option<atlas_engine::focus::runtime::FocusResult>), String> {
 
         let mut warnings = Vec::new();
-        let mut worst_tier = PrecisionTier::Exact;
-        let mut lazy_diag: Option<LazyDiagnostics> = None;
+        let mut focus_result_acc: Option<atlas_engine::focus::runtime::FocusResult> = None;
 
         // Extract qname for diagnostics and tier-2 name search
         let qname = match input {
@@ -315,37 +318,27 @@ impl ToolRouter {
             } => {
                 // Look up symbol info for file_id
                 if let Ok(Some(sym)) = self.store.find_symbol_by_id(&symbol_id) {
-                    let outcome = self.ensure_structural_for_files(
-                        [sym.file_id],
-                        include_roots,
-                        investigation,
-                        query_id,
+                    let (focus_result, focus_warnings) = self.prepare_focus_query(
                         Some(atlas_engine::QueryIntent::Context {
                             symbol_name: qname.to_string(),
                             file_id: Some(sym.file_id),
                             symbol_id: None,
                         }),
                     );
-                    warnings.extend(outcome.warnings);
-                    if let Some(ref lo) = outcome.lazy_outcome {
-                        let stats = self.get_capability_stats();
-                        lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
-                            lo,
-                            stats.as_ref(),
-                        ));
+                    warnings.extend(focus_warnings);
+                    if focus_result_acc.is_none() {
+                        focus_result_acc = focus_result;
                     }
-                    return Ok(ContextResolution::Found(
+                    return Ok((ContextResolution::Found(
                         symbol_id,
                         warnings,
-                        worst_tier,
-                        lazy_diag,
                         Some(resolved),
-                    ));
+                    ), focus_result_acc));
                 }
                 // Symbol ID not in store — fall through
             }
             SymbolResolution::Ambiguous { candidates, .. } => {
-                return Ok(ContextResolution::Ambiguous(candidates));
+                return Ok((ContextResolution::Ambiguous(candidates), focus_result_acc));
             }
             SymbolResolution::NotFound { .. } => {
                 // Fall through to Tier 2 name-based search
@@ -359,32 +352,22 @@ impl ToolRouter {
         });
         if name_matches.len() == 1 {
             // Unambiguous — use it directly
-            let outcome = self.ensure_structural_for_files(
-                [name_matches[0].file_id],
-                include_roots,
-                investigation,
-                query_id,
+            let (focus_result, focus_warnings) = self.prepare_focus_query(
                 Some(atlas_engine::QueryIntent::Context {
                     symbol_name: qname.to_string(),
                     file_id: Some(name_matches[0].file_id),
                     symbol_id: None,
                 }),
             );
-            warnings.extend(outcome.warnings);
-            if let Some(ref lo) = outcome.lazy_outcome {
-                let stats = self.get_capability_stats();
-                lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
-                    lo,
-                    stats.as_ref(),
-                ));
+            warnings.extend(focus_warnings);
+            if focus_result_acc.is_none() {
+                focus_result_acc = focus_result;
             }
-            return Ok(ContextResolution::Found(
+            return Ok((ContextResolution::Found(
                 name_matches[0].id,
                 warnings,
-                worst_tier,
-                lazy_diag,
                 None,
-            ));
+            ), focus_result_acc));
         }
         if name_matches.len() > 1 {
             // Multiple matches — try case-insensitive qualified-name substring
@@ -394,32 +377,22 @@ impl ToolRouter {
                 .filter(|s| s.qualified_name.to_lowercase().contains(&q_lower))
                 .collect();
             if matching_qnames.len() == 1 {
-                let outcome = self.ensure_structural_for_files(
-                    [matching_qnames[0].file_id],
-                    include_roots,
-                    investigation,
-                    query_id,
+                let (focus_result, focus_warnings) = self.prepare_focus_query(
                     Some(atlas_engine::QueryIntent::Context {
                         symbol_name: qname.to_string(),
                         file_id: Some(matching_qnames[0].file_id),
                         symbol_id: None,
                     }),
                 );
-                warnings.extend(outcome.warnings);
-                if let Some(ref lo) = outcome.lazy_outcome {
-                    let stats = self.get_capability_stats();
-                    lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
-                        lo,
-                        stats.as_ref(),
-                    ));
+                warnings.extend(focus_warnings);
+                if focus_result_acc.is_none() {
+                    focus_result_acc = focus_result;
                 }
-                return Ok(ContextResolution::Found(
+                return Ok((ContextResolution::Found(
                     matching_qnames[0].id,
                     warnings,
-                    worst_tier,
-                    lazy_diag,
                     None,
-                ));
+                ), focus_result_acc));
             }
             if matching_qnames.len() > 1 {
                 let candidates: Vec<ScoredCandidate> = matching_qnames
@@ -447,7 +420,7 @@ impl ToolRouter {
                         }
                     })
                     .collect();
-                return Ok(ContextResolution::Ambiguous(candidates));
+                return Ok((ContextResolution::Ambiguous(candidates), focus_result_acc));
             }
         }
 
@@ -455,24 +428,16 @@ impl ToolRouter {
         let is_manual_full = self.cache.has_manual_full_index(&self.store);
         if !is_manual_full {
             ctx.send_progress(0.5, "Extracting structural data...");
-            let outcome = self.ensure_structural_for_symbol_name(
-                qname,
-                include_roots.clone(),
-                investigation,
-                query_id,
+            let (focus_result, focus_warnings) = self.prepare_focus_query(
                 Some(atlas_engine::QueryIntent::Context {
                     symbol_name: qname.to_string(),
                     file_id: None,
                     symbol_id: None,
                 }),
             );
-            warnings.extend(outcome.warnings);
-            if let Some(ref lo) = outcome.lazy_outcome {
-                let stats = self.get_capability_stats();
-                lazy_diag = Some(LazyDiagnostics::from_structural_with_stats(
-                    lo,
-                    stats.as_ref(),
-                ));
+            warnings.extend(focus_warnings);
+            if focus_result_acc.is_none() {
+                focus_result_acc = focus_result;
             }
         }
 
@@ -480,16 +445,14 @@ impl ToolRouter {
         let re_input = SymbolInput::Name(qname.to_string());
         match self.resolve_symbol_input(&re_input, SymbolResolutionPolicy::UniqueOrCandidates)? {
             SymbolResolution::Single { symbol_id, .. } => {
-                return Ok(ContextResolution::Found(
+                return Ok((ContextResolution::Found(
                     symbol_id,
                     warnings,
-                    worst_tier,
-                    lazy_diag,
                     None,
-                ));
+                ), focus_result_acc));
             }
             SymbolResolution::Ambiguous { candidates, .. } => {
-                return Ok(ContextResolution::Ambiguous(candidates));
+                return Ok((ContextResolution::Ambiguous(candidates), focus_result_acc));
             }
             SymbolResolution::NotFound { .. } => {
                 // Still not found — fall through to Tier 4
@@ -502,13 +465,11 @@ impl ToolRouter {
             Default::default()
         });
         if fresh_matches.len() == 1 {
-            return Ok(ContextResolution::Found(
+            return Ok((ContextResolution::Found(
                 fresh_matches[0].id,
                 warnings,
-                worst_tier,
-                lazy_diag,
                 None,
-            ));
+            ), focus_result_acc));
         }
         if fresh_matches.len() > 1 {
             let candidates: Vec<ScoredCandidate> = fresh_matches
@@ -536,7 +497,7 @@ impl ToolRouter {
                     }
                 })
                 .collect();
-            return Ok(ContextResolution::Ambiguous(candidates));
+            return Ok((ContextResolution::Ambiguous(candidates), focus_result_acc));
         }
 
         // ── Tier 4: nothing found ──
@@ -544,7 +505,7 @@ impl ToolRouter {
             "Symbol '{qname}' not found by qualified name or simple name. Try 'search' first to discover the correct qualified_name for this symbol."
         );
         err.push_str(self.index_not_run_guidance());
-        Ok(ContextResolution::NotFound(err))
+        Ok((ContextResolution::NotFound(err), focus_result_acc))
     }
 }
 

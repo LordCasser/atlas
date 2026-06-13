@@ -64,18 +64,16 @@ impl ToolRouter {
 
         // Ensure structural data is available
         if let Ok(Some(sym)) = self.store.find_symbol_by_id(&sid) {
-            let (roots, _warnings) = self.include_roots_from_args(args);
-            let _ = self.ensure_structural_for_files(
-                [sym.file_id],
-                roots,
-                None,
-                Some(&query_id),
+            let (_, focus_warnings) = self.prepare_focus_query(
                 Some(atlas_engine::QueryIntent::Calls {
                     symbol_name: sym.name.clone(),
                     file_id: Some(sym.file_id),
                     symbol_id: None,
                 }),
             );
+            for w in focus_warnings {
+                tracing::warn!("Focus pre-warm warning (branch_diff): {w}");
+            }
         }
 
         // Load CFG nodes for this function, with lazy CFG fallback

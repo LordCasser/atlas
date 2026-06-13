@@ -302,36 +302,14 @@ impl ToolRouter {
 
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let investigation = self.investigation_state.active_investigation.clone();
         let lr = LazyResponse::new("calls", args);
-        let query_id = lr.query_id().to_string();
 
-        // Lazy structural: ensure graph edges exist before querying
-        let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
-        for &id in &symbol_ids {
-            if let Some(sym) = self.store.find_symbol_by_id(&id).ok().flatten() {
-                file_ids_set.insert(sym.file_id);
-            }
-        }
         let intent = Some(atlas_engine::QueryIntent::Calls {
             symbol_name: qname.to_string(),
-            file_id: file_ids_set.iter().next().copied(),
+            file_id: None,
             symbol_id: None,
         });
-        let outcome_files = self.ensure_structural_for_files(
-            file_ids_set,
-            vec![],
-            investigation.as_ref(),
-            Some(&query_id),
-            intent.clone(),
-        );
-        let outcome_name = self.ensure_structural_for_symbol_name(
-            qname,
-            vec![],
-            investigation.as_ref(),
-            Some(&query_id),
-            intent,
-        );
+        let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 
         let cb = match self.context_builder() {
             Ok(cb) => cb,
@@ -371,13 +349,13 @@ impl ToolRouter {
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
         }
-        // Lazy structural response — merge warnings from both outcomes
-        let mut lazy_warnings: Vec<String> = outcome_files.warnings.clone();
-        lazy_warnings.extend(outcome_name.warnings.clone());
-
-        let lr = lr.with_lazy_warnings(lazy_warnings);
-        let lr = outcome_files.apply_focus_to_lr(lr);
-        let lr = outcome_name.apply_focus_to_lr(lr);
+        // Lazy structural response with focus-aware envelope
+        let lr = lr.with_lazy_warnings(focus_warnings);
+        let lr = if let Some(ref result) = focus_result {
+            crate::tools::apply_focus_result_to_lr(lr, result)
+        } else {
+            lr
+        };
         lr.build_with_args(resp, args, self)
     }
 
@@ -408,11 +386,9 @@ impl ToolRouter {
 
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let investigation = self.investigation_state.active_investigation.clone();
         let lr = LazyResponse::new("calls", args);
-        let query_id = lr.query_id().to_string();
 
-        // Lazy structural: ensure graph edges exist before querying
+        // Lazy structural: prepare focus query for graph edges
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
         for &id in &symbol_ids {
             if let Some(sym) = self.store.find_symbol_by_id(&id).ok().flatten() {
@@ -424,20 +400,7 @@ impl ToolRouter {
             file_id: file_ids_set.iter().next().copied(),
             symbol_id: None,
         });
-        let outcome_files = self.ensure_structural_for_files(
-            file_ids_set,
-            vec![],
-            investigation.as_ref(),
-            Some(&query_id),
-            intent.clone(),
-        );
-        let outcome_name = self.ensure_structural_for_symbol_name(
-            qname,
-            vec![],
-            investigation.as_ref(),
-            Some(&query_id),
-            intent,
-        );
+        let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 
         let cb = match self.context_builder() {
             Ok(cb) => cb,
@@ -477,13 +440,13 @@ impl ToolRouter {
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
         }
-        // Lazy structural response — merge warnings from both outcomes
-        let mut lazy_warnings: Vec<String> = outcome_files.warnings.clone();
-        lazy_warnings.extend(outcome_name.warnings.clone());
-
-        let lr = lr.with_lazy_warnings(lazy_warnings);
-        let lr = outcome_files.apply_focus_to_lr(lr);
-        let lr = outcome_name.apply_focus_to_lr(lr);
+        // Lazy structural response with focus-aware envelope
+        let lr = lr.with_lazy_warnings(focus_warnings);
+        let lr = if let Some(ref result) = focus_result {
+            crate::tools::apply_focus_result_to_lr(lr, result)
+        } else {
+            lr
+        };
         lr.build_with_args(resp, args, self)
     }
 
@@ -521,9 +484,7 @@ impl ToolRouter {
 
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let investigation = self.investigation_state.active_investigation.clone();
         let lr = LazyResponse::new("calls", args);
-        let query_id = lr.query_id().to_string();
 
         // Lazy structural: ensure graph edges exist before querying.
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
@@ -537,37 +498,8 @@ impl ToolRouter {
             file_id: file_ids_set.iter().next().copied(),
             symbol_id: None,
         });
-        let outcome_files = self.ensure_structural_for_files(
-            file_ids_set.clone(),
-            vec![],
-            investigation.as_ref(),
-            Some(&query_id),
-            intent.clone(),
-        );
-        let outcome_name = self.ensure_structural_for_symbol_name(
-            qname,
-            vec![],
-            investigation.as_ref(),
-            Some(&query_id),
-            intent,
-        );
-
-        let (lazy_warnings, _lazy_outcome) = match direction {
-            "incoming" => {
-                let mut w = outcome_files.warnings.clone();
-                w.extend(outcome_name.warnings.clone());
-                (w, outcome_files.lazy_outcome.clone())
-            }
-            "outgoing" => {
-                (outcome_files.warnings.clone(), outcome_files.lazy_outcome.clone())
-            }
-            // "both" or default — need both directions
-            _ => {
-                let mut w = outcome_files.warnings.clone();
-                w.extend(outcome_name.warnings.clone());
-                (w, outcome_files.lazy_outcome.clone())
-            }
-        };
+        let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
+        let lazy_warnings = focus_warnings;
 
         let cb = match self.context_builder() {
             Ok(cb) => cb,
@@ -713,8 +645,11 @@ impl ToolRouter {
         }
 
         let lr = lr.with_lazy_warnings(lazy_warnings);
-        let lr = outcome_files.apply_focus_to_lr(lr);
-        let lr = outcome_name.apply_focus_to_lr(lr);
+        let lr = if let Some(ref result) = focus_result {
+            crate::tools::apply_focus_result_to_lr(lr, result)
+        } else {
+            lr
+        };
         lr.build_with_args(resp, args, self)
     }
 
@@ -785,15 +720,13 @@ impl ToolRouter {
         if let Some(&first_from) = from_ids.first() {
             self.update_investigation(InvestigationFocus::Symbol(first_from));
         }
-        let investigation = self.investigation_state.active_investigation.clone();
         let lr = LazyResponse::new("path", args);
-        let query_id = lr.query_id().to_string();
 
         // Transparent lazy structural: ensure both endpoint files have full
         // structural data before path finding.  A manifest-only index (MCP
         // default) may lack the intra-file call edges that BFS needs to
         // discover a path.
-        let (roots, root_warnings) = self.include_roots_from_args(args);
+        let (_roots, root_warnings) = self.include_roots_from_args(args);
         for w in &root_warnings {
             tracing::warn!("include_roots: {}", w);
         }
@@ -808,14 +741,8 @@ impl ToolRouter {
             file_id: file_ids_set.iter().next().copied(),
             symbol_id: None,
         });
-        let outcome = self.ensure_structural_for_files(
-            file_ids_set,
-            roots,
-            investigation.as_ref(),
-            Some(&query_id),
-            intent,
-        );
-        let lazy_warnings = outcome.warnings.clone();
+        let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
+        let lazy_warnings = focus_warnings;
         // Cache for no-path diagnostics below (used in user-facing messages).
         let is_manual_full = self.cache.has_manual_full_index(&self.store);
 
@@ -1107,7 +1034,11 @@ impl ToolRouter {
             let lr = lr.with_root_warnings(root_warnings)
                 .with_lazy_warnings(lazy_warnings)
                 .with_partial_result(false);
-            let lr = outcome.apply_focus_to_lr(lr);
+            let lr = if let Some(ref result) = focus_result {
+                crate::tools::apply_focus_result_to_lr(lr, result)
+            } else {
+                lr
+            };
             lr.build(resp, self)
         } else {
             // No path found — diagnostic frontier.
@@ -1221,7 +1152,11 @@ impl ToolRouter {
             let lr = lr.with_root_warnings(root_warnings)
                 .with_lazy_warnings(lazy_warnings)
                 .with_partial_result(false);
-            let lr = outcome.apply_focus_to_lr(lr);
+            let lr = if let Some(ref result) = focus_result {
+                crate::tools::apply_focus_result_to_lr(lr, result)
+            } else {
+                lr
+            };
             lr.build(resp, self)
         }
     }
@@ -1373,31 +1308,14 @@ impl ToolRouter {
         let file_path = self.resolve_file_path(&sym.file_id);
 
         self.update_investigation(InvestigationFocus::Symbol(sym.id));
-        let investigation = self.investigation_state.active_investigation.clone();
-        let query_id = lr.query_id().to_string();
 
-        // Lazy structural: ensure graph edges exist before querying
-        let file_ids: Vec<atlas_engine::FileId> =
-            std::iter::once(sym.file_id).collect();
+        // Lazy structural: prepare focus query for graph edges
         let intent = Some(atlas_engine::QueryIntent::Explore {
             symbol_name: qname.to_string(),
             file_id: Some(sym.file_id),
             symbol_id: None,
         });
-        let outcome_files = self.ensure_structural_for_files(
-            file_ids,
-            vec![],
-            investigation.as_ref(),
-            Some(&query_id),
-            intent.clone(),
-        );
-        let outcome_name = self.ensure_structural_for_symbol_name(
-            qname,
-            vec![],
-            investigation.as_ref(),
-            Some(&query_id),
-            intent,
-        );
+        let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 
         let sym_repo = atlas_engine::dossier::SymbolRepo::new(self.store());
         let source_repo = atlas_engine::dossier::SourceRepo::new(
@@ -1444,10 +1362,8 @@ impl ToolRouter {
 
         source_repo.clear_cache();
 
-        // Merge lazy warnings into dossier warnings
-        let mut lazy_warnings: Vec<String> = outcome_files.warnings.clone();
-        lazy_warnings.extend(outcome_name.warnings.clone());
-        dossier.warnings.extend(lazy_warnings);
+        // Merge focus warnings into dossier warnings
+        dossier.warnings.extend(focus_warnings);
 
         let mut resp_value = serde_json::to_value(&dossier)
             .unwrap_or_else(|e| json!({"error": e.to_string()}));
@@ -1461,8 +1377,11 @@ impl ToolRouter {
         }
 
         let lr = lr.with_lazy_warnings(dossier.warnings);
-        let lr = outcome_files.apply_focus_to_lr(lr);
-        let lr = outcome_name.apply_focus_to_lr(lr);
+        let lr = if let Some(ref result) = focus_result {
+            crate::tools::apply_focus_result_to_lr(lr, result)
+        } else {
+            lr
+        };
         lr.build_with_args(resp_value, args, self)
     }
 
@@ -1550,30 +1469,21 @@ impl ToolRouter {
         let sid = symbol_ids[0];
 
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let investigation = self.investigation_state.active_investigation.clone();
         let lr = LazyResponse::new("impact", args);
-        let query_id = lr.query_id().to_string();
 
-        // Lazy structural: ensure graph edges exist before impact analysis
+        // Lazy structural: prepare focus query for impact analysis
         let file_id = self
             .store
             .find_symbol_by_id(&sid)
             .ok()
             .flatten()
             .map(|s| s.file_id);
-        let file_ids: Vec<atlas_engine::FileId> = file_id.into_iter().collect();
         let intent = Some(atlas_engine::QueryIntent::Explore {
             symbol_name: qname.to_string(),
-            file_id: file_ids.first().copied(),
+            file_id,
             symbol_id: None,
         });
-        let outcome = self.ensure_structural_for_files(
-            file_ids,
-            vec![],
-            investigation.as_ref(),
-            Some(&query_id),
-            intent,
-        );
+        let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 
         let cb = match self.context_builder() {
             Ok(cb) => cb,
@@ -1838,11 +1748,13 @@ impl ToolRouter {
             );
         }
 
-        let lazy_warnings = outcome.warnings.clone();
-
         let lr = lr.with_root_warnings(Vec::new())
-            .with_lazy_warnings(lazy_warnings);
-        let lr = outcome.apply_focus_to_lr(lr);
+            .with_lazy_warnings(focus_warnings);
+        let lr = if let Some(ref result) = focus_result {
+            crate::tools::apply_focus_result_to_lr(lr, result)
+        } else {
+            lr
+        };
         lr.build(resp, self)
     }
 }
@@ -2947,23 +2859,25 @@ mod tests {
 
     #[test]
     fn apply_focus_to_lr_is_noop_with_no_focus_data() {
-        use crate::tools::StructuralEnsureOutcome;
+        use atlas_engine::focus::runtime::{FocusResult, IndexMode};
         use crate::tools::lazy_response::LazyResponse;
 
-        let outcome = StructuralEnsureOutcome {
-            warnings: vec![],
-            built_file_ids: vec![],
-            lazy_outcome: None,
-            focus_precision: None,
-            focus_coverage_counts: None,
-            focus_gaps: None,
-            focus_pending: None,
+        let result = FocusResult {
+            mode: IndexMode::FullIndex,
+            precision: None,
+            gaps: vec![],
+            pending_closure_ids: vec![],
+            closure_id: None,
+            seed_symbol_id: None,
+            seed_file_id: None,
+            built_files: vec![],
+            coverage_counts: None,
         };
 
         let args = json!({"symbol": "test"});
         let lr = LazyResponse::new("test", &args)
             .with_is_error(false);
-        let lr = outcome.apply_focus_to_lr(lr);
+        let lr = crate::tools::apply_focus_result_to_lr(lr, &result);
 
         // Build with a mock store to verify no crash
         let mut store = MockStore::new();

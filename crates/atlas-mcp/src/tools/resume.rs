@@ -46,10 +46,6 @@ impl ToolRouter {
         // Re-run lazy extraction for the snapshot's window to pick up newly
         // cached data. The extraction services skip already-cached units.
         if let Some(ref window) = snapshot.lazy_window {
-            let include_roots = self.include_roots_from_args(&snapshot.tool_args).0;
-            let file_ids: Vec<atlas_engine::FileId> =
-                window.units.iter().map(|u| u.file_id).collect();
-            let investigation = self.investigation_state.active_investigation.clone();
             let intent = window
                 .seed_unit
                 .symbol_id
@@ -59,14 +55,9 @@ impl ToolRouter {
                     file_id: Some(sym.file_id),
                     symbol_id: None,
                 });
-            if !file_ids.is_empty() {
-                let _ = self.ensure_structural_for_files(
-                    file_ids,
-                    include_roots,
-                    investigation.as_ref(),
-                    None,
-                    intent,
-                );
+            let (_, focus_warnings) = self.prepare_focus_query(intent);
+            for w in focus_warnings {
+                tracing::warn!("Focus pre-warm warning (resume): {w}");
             }
 
             // Re-trigger dataflow extraction for each function-scoped unit
@@ -76,13 +67,17 @@ impl ToolRouter {
             // function-level dataflow via `ensure_for_function`.
             for unit in &window.units {
                 if let Some(ref sid) = unit.symbol_id {
-                    let _ = self.lazy_service.ensure_for_function(sid, None);
+                    if let Err(e) = self.lazy_service.ensure_for_function(sid, None) {
+                        tracing::warn!("Lazy dataflow re-trigger failed for {:?}: {e:#}", sid);
+                    }
                 }
             }
         }
 
         // Trigger graph refresh so re-dispatched handler sees fresh data.
-        let _ = self.maybe_refresh_graph();
+        if let Err(e) = self.maybe_refresh_graph() {
+            tracing::warn!("Graph refresh in resume handler failed: {e:#}");
+        }
 
         // Copy query_id before snapshot moves
         let original_query_id = query_id.to_string();
