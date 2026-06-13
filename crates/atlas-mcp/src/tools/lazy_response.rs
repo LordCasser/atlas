@@ -16,7 +16,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::query_snapshot::{QuerySnapshot, QueryStatus};
-use super::analysis_response::{WorkItem, WorkProgress};
+use super::analysis_response::{WorkItem, WorkProgress, precision_to_view};
 
 // ── Analysis Contract ───────────────────────────────────────────────────
 
@@ -455,7 +455,7 @@ impl LazyResponse {
 
                 body["analysis"] = json!({
                     "state": "ready",
-                    "scope": "full",
+                    "scope": "repo",
                     "summary": summary,
                     "next_action": "use_result",
                 });
@@ -474,7 +474,8 @@ impl LazyResponse {
 
         // 5. Inject focus-aware precision (new type system)
         if let Some(ref p) = self.precision {
-            body["precision"] = serde_json::to_value(p).unwrap_or(json!(null));
+            let view = precision_to_view(p);
+            body["precision"] = serde_json::to_value(view).unwrap_or(json!(null));
         }
 
         // 6. Inject coverage distribution counts
@@ -484,7 +485,7 @@ impl LazyResponse {
 
         // 7. Inject known gaps
         if let Some(ref gaps) = self.known_gaps {
-            body["known_gaps"] = serde_json::to_value(gaps).unwrap_or(json!([]));
+            body["gaps"] = serde_json::to_value(gaps).unwrap_or(json!([]));
         }
 
         // 8. Store snapshot
@@ -800,9 +801,23 @@ mod tests {
 
         assert!(!is_err);
         assert!(json_str.contains("\"precision\""), "should contain precision field");
+        // PrecisionView uses public labels: coverage=local_complete, confidence=high
         assert!(
-            json_str.contains("ClosureComplete") || json_str.contains("\"c1\""),
-            "should contain closure precision info"
+            json_str.contains("local_complete"),
+            "ClosureComplete should map to public label 'local_complete'"
+        );
+        assert!(
+            json_str.contains("high"),
+            "confidence should be serialized as 'high'"
+        );
+        // closure_id MUST NOT leak
+        assert!(
+            !json_str.contains("\"closure_id\""),
+            "closure_id must not leak into MCP response"
+        );
+        assert!(
+            !json_str.contains("\"c1\""),
+            "internal closure_id value must not leak"
         );
     }
 
@@ -847,7 +862,7 @@ mod tests {
         let (json_str, is_err) = lr.build(body, &mut MockStore::new());
 
         assert!(!is_err);
-        assert!(json_str.contains("known_gaps"), "should contain known_gaps field");
+        assert!(json_str.contains("\"gaps\""), "should contain gaps field");
         assert!(
             json_str.contains("UnresolvedImport"),
             "should contain the gap variant"
@@ -959,7 +974,7 @@ mod tests {
         assert!(!is_err);
         assert!(json_str.contains("precision"), "should contain precision");
         assert!(json_str.contains("coverage_counts"), "should contain coverage_counts");
-        assert!(json_str.contains("known_gaps"), "should contain known_gaps");
+        assert!(json_str.contains("gaps"), "should contain gaps");
         assert!(json_str.contains("query_id"), "should contain query_id");
     }
 

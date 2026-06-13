@@ -11,7 +11,7 @@ impl ToolRouter {
     /// by query_id.
     pub(crate) fn handle_atlas_jobs(&self, args: &Value) -> (String, bool) {
         let query_id = crate::tools::get_str_opt(args, "query_id");
-        let jobs = match self.store.list_extraction_jobs(query_id) {
+        let jobs = match self.active.store.list_extraction_jobs(query_id) {
             Ok(j) => j,
             Err(e) => {
                 return (
@@ -40,7 +40,7 @@ impl ToolRouter {
 
         // Compute progress when filtering by query_id
         let (progress, pending_jobs, message) = if let Some(qid) = query_id {
-            match self.store.get_job_counts_by_trigger_query(qid) {
+            match self.active.store.get_job_counts_by_trigger_query(qid) {
                 Ok(prog) => {
                     let pending = prog.queued + prog.building;
                     let msg = if pending > 0 {

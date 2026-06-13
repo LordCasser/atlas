@@ -63,7 +63,7 @@ impl ToolRouter {
         };
 
         // Ensure structural data is available
-        if let Ok(Some(sym)) = self.store.find_symbol_by_id(&sid) {
+        if let Ok(Some(sym)) = self.active.store.find_symbol_by_id(&sid) {
             let (_, focus_warnings) = self.prepare_focus_query(
                 Some(atlas_engine::QueryIntent::Calls {
                     symbol_name: sym.name.clone(),
@@ -77,20 +77,17 @@ impl ToolRouter {
         }
 
         // Load CFG nodes for this function, with lazy CFG fallback
-        let mut cfg_nodes = match self.store.find_cfg_nodes_by_function(&sid) {
+        let mut cfg_nodes = match self.active.store.find_cfg_nodes_by_function(&sid) {
             Ok(nodes) => nodes,
             Err(e) => return (format!("Failed to load CFG nodes: {e}"), true),
         };
 
-        let mut lazy_window: Option<atlas_engine::LazyWindow> = None;
-
         if cfg_nodes.is_empty() {
             // Trigger lazy CFG extraction via the dataflow service
-            match self.lazy_service.ensure_for_function(&sid, Some(&query_id)) {
-                Ok(window) => {
-                    lazy_window = Some(window);
+            match self.active.analysis_runtime.ensure_dataflow_for_function(&sid, Some(&query_id)) {
+                Ok(()) => {
                     // Re-query CFG after lazy extraction
-                    cfg_nodes = match self.store.find_cfg_nodes_by_function(&sid) {
+                    cfg_nodes = match self.active.store.find_cfg_nodes_by_function(&sid) {
                         Ok(nodes) => nodes,
                         Err(e) => {
                             return (
@@ -127,7 +124,7 @@ impl ToolRouter {
         // --- CFG is available — run branch diff analysis ---
 
         let qname = self
-            .store
+            .active.store
             .find_symbol_by_id(&sid)
             .ok()
             .flatten()
@@ -135,7 +132,7 @@ impl ToolRouter {
             .unwrap_or_else(|| symbol.to_string());
 
         let cfg_edges = self
-            .store
+            .active.store
             .find_cfg_edges_by_function(&sid)
             .unwrap_or_default();
 
@@ -148,7 +145,7 @@ impl ToolRouter {
         let diffs = if use_semantic {
             // ── SEMANTIC PATH: compose_effects + diff_branches_semantic ──
             let lang = self
-                .store
+                .active.store
                 .find_symbol_by_id(&sid)
                 .ok()
                 .flatten()
@@ -158,14 +155,14 @@ impl ToolRouter {
 
             // Load DataFlow nodes and edges
             let data_nodes = self
-                .store
+                .active.store
                 .find_data_nodes_by_function(&sid)
                 .unwrap_or_default();
             let dataflow_edges = if data_nodes.is_empty() {
                 vec![]
             } else {
                 let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
-                self.store
+                self.active.store
                     .find_dataflow_edges_by_sources(&all_ids)
                     .unwrap_or_default()
             };

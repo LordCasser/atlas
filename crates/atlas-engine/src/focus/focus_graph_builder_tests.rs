@@ -519,3 +519,42 @@ fn test_build_for_closure_edge_kind_instantiates() {
     builder.build_for_closure("cl_inst", 1).unwrap();
     assert_canonical_edge_exists(&store, &caller.id, &target.id, EdgeKind::Instantiates);
 }
+
+// ── T11: Pipeline consistency — resolution crate writes snake_case ──────────
+
+#[test]
+fn test_build_for_closure_resolution_pipeline_consistency() {
+    // This test verifies that when the resolution crate writes
+    // coverage_tier info and the graph builder reads it, the
+    // case matches correctly.
+    let store = test_store();
+    let file_id = test_file_id();
+
+    let caller = test_symbol(file_id, "caller", SymbolKind::Function);
+    let target = test_symbol(file_id, "targetFunc", SymbolKind::Function);
+    insert_symbols(&store, &[caller.clone(), target.clone()]);
+    insert_closures(&store, &["cl_pipe"]);
+
+    let ref_id = insert_reference(&store, caller.id, "targetFunc", ReferenceKind::Call);
+
+    // Simulate what the resolution crate writes — must be snake_case
+    insert_visible_resolution(
+        &store,
+        "cl_pipe",
+        1,
+        &ref_id,
+        &target.id,
+        "closure_complete", // <-- must be snake_case (what resolution writes)
+        "certain",
+        "closure_reachable",
+    );
+
+    let builder = FocusGraphBuilder::new(store.clone());
+    let result = builder.build_for_closure("cl_pipe", 1).unwrap();
+
+    assert!(result.stats.edges_built > 0, "should build edges");
+    assert_eq!(
+        result.stats.edges_built, result.stats.edges_written,
+        "ClosureComplete+Certain should produce canonical edges"
+    );
+}

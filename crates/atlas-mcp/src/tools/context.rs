@@ -74,14 +74,14 @@ impl ToolRouter {
 
         // Try to find symbol by qname before resolution for initial investigation
         let initial_sid = self
-            .store
+            .active.store
             .find_symbols_by_qname(qname)
             .ok()
             .and_then(|v| if v.len() == 1 { Some(v[0].id) } else { None });
         if let Some(sid) = initial_sid {
             self.update_investigation(InvestigationFocus::Symbol(sid));
         }
-        let investigation = self.investigation_state.active_investigation.clone();
+        let investigation = self.active.job_runtime.investigation_state.active_investigation.clone();
 
         let (resolution, focus_result) = match self.resolve_context_symbol(
             ctx,
@@ -271,6 +271,9 @@ impl ToolRouter {
             result["resolved"] = rj;
         }
 
+        // Inject graph edge provenance when operating in FocusPartial mode.
+        self.inject_graph_precision(&mut result);
+
         let mut stored_args = args.clone();
         if let Some(obj) = stored_args.as_object_mut() {
             obj.insert("view".into(), serde_json::Value::String("context".into()));
@@ -317,7 +320,7 @@ impl ToolRouter {
                 resolved,
             } => {
                 // Look up symbol info for file_id
-                if let Ok(Some(sym)) = self.store.find_symbol_by_id(&symbol_id) {
+                if let Ok(Some(sym)) = self.active.store.find_symbol_by_id(&symbol_id) {
                     let (focus_result, focus_warnings) = self.prepare_focus_query(
                         Some(atlas_engine::QueryIntent::Context {
                             symbol_name: qname.to_string(),
@@ -346,7 +349,7 @@ impl ToolRouter {
         }
 
         // ── Tier 2: name-based search (look for symbol by simple name) ──
-        let name_matches = self.store.find_symbols_by_name(qname).unwrap_or_else(|e| {
+        let name_matches = self.active.store.find_symbols_by_name(qname).unwrap_or_else(|e| {
             tracing::warn!("DB error on find_symbols_by_name: {}", e);
             Default::default()
         });
@@ -425,7 +428,7 @@ impl ToolRouter {
         }
 
         // ── Tier 3: try lazy structural, then re-query ──
-        let is_manual_full = self.cache.has_manual_full_index(&self.store);
+        let is_manual_full = self.active.query_runtime.cache.has_manual_full_index(&self.active.store);
         if !is_manual_full {
             ctx.send_progress(0.5, "Extracting structural data...");
             let (focus_result, focus_warnings) = self.prepare_focus_query(
@@ -460,7 +463,7 @@ impl ToolRouter {
         }
 
         // Re-check name after lazy extraction
-        let fresh_matches = self.store.find_symbols_by_name(qname).unwrap_or_else(|e| {
+        let fresh_matches = self.active.store.find_symbols_by_name(qname).unwrap_or_else(|e| {
             tracing::warn!("DB error on retry find_symbols_by_name: {}", e);
             Default::default()
         });

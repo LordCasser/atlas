@@ -289,20 +289,20 @@ fn is_valid_identifier(name: &str) -> bool {
 
 /// Map a resolved target's strategy to resolution scope and coverage tier.
 ///
-/// Strategies 1-5 (local scope) → ClosureComplete
-/// Strategy 6 (project-wide name search) → Boundary
+/// Strategies 1-5 (local scope) → closure_complete
+/// Strategy 6 (project-wide name search) → boundary
 fn scope_and_tier(target: &ResolvedTarget) -> (&'static str, &'static str) {
     match target.strategy {
         ResolutionStrategy::ExactMatch | ResolutionStrategy::ImportResolved => {
-            ("ClosureComplete", "ClosureComplete")
+            ("closure_complete", "closure_complete")
         }
         ResolutionStrategy::NameOnly
         | ResolutionStrategy::FuzzyMatch
         | ResolutionStrategy::Heuristic => {
-            ("Boundary", "Boundary")
+            ("boundary", "boundary")
         }
         ResolutionStrategy::Builtin | ResolutionStrategy::DataflowPointer => {
-            ("Boundary", "Boundary")
+            ("boundary", "boundary")
         }
     }
 }
@@ -1634,6 +1634,70 @@ mod tests {
         assert!(should_run_fuzzy_fallback("_private"));
         assert!(should_run_fuzzy_fallback("$event"));
         assert!(!should_run_fuzzy_fallback("7zip")); // starts with digit
+    }
+
+    /// Verify that `scope_and_tier` returns snake_case strings that match
+    /// what `build_incoming_precision` in the focus graph builder expects.
+    #[test]
+    fn test_scope_and_tier_returns_snake_case() {
+        let dummy_symbol_id =
+            SymbolId::generate(&FileId::generate("test.ts"), "typescript", "test", "function", None);
+        let confidence = Confidence::new(0.95);
+
+        // ExactMatch → closure_complete
+        let exact = ResolvedTarget {
+            symbol_id: dummy_symbol_id,
+            confidence,
+            strategy: ResolutionStrategy::ExactMatch,
+            provenance: Provenance::TreeSitter,
+        };
+        let (scope, tier) = scope_and_tier(&exact);
+        assert_eq!(scope, "closure_complete", "ExactMatch scope should be snake_case");
+        assert_eq!(tier, "closure_complete", "ExactMatch tier should be snake_case");
+
+        // ImportResolved → closure_complete
+        let import = ResolvedTarget {
+            symbol_id: dummy_symbol_id,
+            confidence,
+            strategy: ResolutionStrategy::ImportResolved,
+            provenance: Provenance::TreeSitter,
+        };
+        let (scope, tier) = scope_and_tier(&import);
+        assert_eq!(scope, "closure_complete");
+        assert_eq!(tier, "closure_complete");
+
+        // NameOnly → boundary
+        let name_only = ResolvedTarget {
+            symbol_id: dummy_symbol_id,
+            confidence,
+            strategy: ResolutionStrategy::NameOnly,
+            provenance: Provenance::TreeSitter,
+        };
+        let (scope, tier) = scope_and_tier(&name_only);
+        assert_eq!(scope, "boundary");
+        assert_eq!(tier, "boundary");
+
+        // FuzzyMatch → boundary
+        let fuzzy = ResolvedTarget {
+            symbol_id: dummy_symbol_id,
+            confidence,
+            strategy: ResolutionStrategy::FuzzyMatch,
+            provenance: Provenance::TreeSitter,
+        };
+        let (scope, tier) = scope_and_tier(&fuzzy);
+        assert_eq!(scope, "boundary");
+        assert_eq!(tier, "boundary");
+
+        // Heuristic → boundary
+        let heuristic = ResolvedTarget {
+            symbol_id: dummy_symbol_id,
+            confidence,
+            strategy: ResolutionStrategy::Heuristic,
+            provenance: Provenance::Heuristic,
+        };
+        let (scope, tier) = scope_and_tier(&heuristic);
+        assert_eq!(scope, "boundary");
+        assert_eq!(tier, "boundary");
     }
 
     /// Verifies that cross-file import → call creates a structural Calls edge

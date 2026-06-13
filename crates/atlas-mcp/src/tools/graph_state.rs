@@ -33,6 +33,20 @@ pub(crate) struct GraphState {
 }
 
 impl GraphState {
+    /// Initialize graph state with pre-built search and context engines.
+    ///
+    /// Used by `ToolRouter::new()` when the caller already has pre-built
+    /// `SearchEngine` and `ContextBuilder` (e.g. integration tests).
+    pub(crate) fn init_with(
+        &mut self,
+        search: SearchEngine,
+        context: ContextBuilder,
+    ) {
+        self.search = Some(search);
+        self.context = Some(context);
+        self.graph_initialized = true;
+    }
+
     /// Build the graph engines on first use.
     ///
     /// Called only for graph-backed tool calls after the MCP handshake
@@ -75,6 +89,22 @@ impl GraphState {
     /// Access the context builder.
     pub(crate) fn context_builder(&self) -> Result<&ContextBuilder, GraphNotInitializedError> {
         self.context.as_ref().ok_or(GraphNotInitializedError)
+    }
+
+    /// Return the number of edges in the current graph snapshot (0 if not init).
+    pub(crate) fn edge_count(&self) -> usize {
+        self.search
+            .as_ref()
+            .map(|s| s.graph_snapshot().edge_count())
+            .unwrap_or(0)
+    }
+
+    /// Return the number of symbols in the current graph snapshot (0 if not init).
+    pub(crate) fn symbol_count(&self) -> usize {
+        self.search
+            .as_ref()
+            .map(|s| s.graph_snapshot().node_count())
+            .unwrap_or(0)
     }
 
     /// Atomically swap in a pre-built graph, updating both search and context engines.

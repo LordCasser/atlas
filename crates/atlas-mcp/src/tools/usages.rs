@@ -33,11 +33,11 @@ impl ToolRouter {
         };
 
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let _investigation = self.investigation_state.active_investigation.clone();
+        let _investigation = self.active.job_runtime.investigation_state.active_investigation.clone();
 
         let lr = LazyResponse::new("symbol", args);
 
-        let refs = match self.store.find_references_by_symbol(&sid) {
+        let refs = match self.active.store.find_references_by_symbol(&sid) {
             Ok(r) => r,
             Err(e) => return (format!("Failed to query usages: {e}"), true),
         };
@@ -46,7 +46,7 @@ impl ToolRouter {
         let usages: Vec<_> = shown
             .map(|r| {
                 let mask = self
-                    .store
+                    .active.store
                     .get_capability_mask(&r.file_id)
                     .unwrap_or_default();
                 json!({

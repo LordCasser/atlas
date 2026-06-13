@@ -126,7 +126,7 @@ impl ToolRouter {
         // C and C++. Other languages use dynamic dispatch (virtual tables,
         // reflection, prototype chains) that the engine detects through
         // static analysis.
-        let field_sym = self.store.find_symbol_by_id(&field_id).ok().flatten();
+        let field_sym = self.active.store.find_symbol_by_id(&field_id).ok().flatten();
         if let Some(sym) = &field_sym {
             if !matches!(sym.language, Language::C | Language::Cpp) {
                 let lang_name = sym.language.as_str();
@@ -179,7 +179,7 @@ impl ToolRouter {
         }
 
         // ── Target must be a Function or Method ────────────────────
-        let target_sym = self.store.find_symbol_by_id(&target_id).ok().flatten();
+        let target_sym = self.active.store.find_symbol_by_id(&target_id).ok().flatten();
         if let Some(sym) = &target_sym {
             if !matches!(
                 sym.kind,
@@ -224,10 +224,10 @@ impl ToolRouter {
             confidence,
         };
 
-        match self.store.upsert_fp_annotation(&annotation) {
+        match self.active.overlay_runtime.upsert_fp_annotation(&annotation) {
             Ok(()) => {
                 // Materialize the edge immediately
-                if let Err(e) = atlas_engine::materialize_annotations(&self.store) {
+                if let Err(e) = atlas_engine::materialize_annotations(&self.active.store) {
                     return (
                         json!({
                             "error": format!("Annotation stored but edge materialization failed: {}", e),
@@ -265,7 +265,7 @@ impl ToolRouter {
 
     /// Handle `list_fp_annotations` — list all dispatch annotations.
     pub(crate) fn handle_list_fp_annotations(&self) -> (String, bool) {
-        match self.store.get_all_fp_annotations() {
+        match self.active.store.get_all_fp_annotations() {
             Ok(annotations) => {
                 // Batch-lookup all source + target symbols to avoid N+1 queries.
                 let mut symbol_ids = std::collections::HashSet::new();
@@ -277,7 +277,7 @@ impl ToolRouter {
                     std::collections::HashMap::new();
                 for id in symbol_ids {
                     let qname = self
-                        .store
+                        .active.store
                         .find_symbol_by_id(&id)
                         .ok()
                         .flatten()
@@ -332,7 +332,8 @@ impl ToolRouter {
 
         let (deleted, deleted_annotation_id) = if !annotation_id.is_empty() {
             (
-                self.store
+                self.active
+                    .overlay_runtime
                     .delete_fp_annotation(annotation_id)
                     .map_err(|e| format!("Failed to delete annotation: {e}")),
                 annotation_id.to_string(),
@@ -374,7 +375,7 @@ impl ToolRouter {
                 .unwrap_or(field_qname);
             // Look up annotation to get its ID for the response
             let annotation_id = self
-                .store
+                .active.store
                 .find_fp_annotation_by_field(&field_id, field_name)
                 .map_err(|e| format!("Lookup error: {e}"));
             let ann_id = match annotation_id {
@@ -389,7 +390,8 @@ impl ToolRouter {
                 Err(e) => return (json!({"error": e}).to_string(), true),
             };
             (
-                self.store
+                self.active
+                    .overlay_runtime
                     .delete_fp_annotation(&ann_id)
                     .map_err(|e| format!("Failed to delete annotation: {e}")),
                 ann_id,

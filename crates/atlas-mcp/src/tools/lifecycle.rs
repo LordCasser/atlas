@@ -68,7 +68,7 @@ impl ToolRouter {
         };
 
         // Ensure structural data is available (may trigger lazy extraction)
-        if let Ok(Some(sym)) = self.store.find_symbol_by_id(&sid) {
+        if let Ok(Some(sym)) = self.active.store.find_symbol_by_id(&sid) {
             let (_, focus_warnings) = self.prepare_focus_query(
                 Some(atlas_engine::QueryIntent::Calls {
                     symbol_name: sym.name.clone(),
@@ -82,24 +82,21 @@ impl ToolRouter {
         }
 
         // Load CFG nodes for this function, with lazy CFG fallback
-        let mut cfg_nodes = match self.store.find_cfg_nodes_by_function(&sid) {
+        let mut cfg_nodes = match self.active.store.find_cfg_nodes_by_function(&sid) {
             Ok(nodes) => nodes,
             Err(e) => return (format!("Failed to load CFG nodes: {e}"), true),
         };
         let mut cfg_edges = self
-            .store
+            .active.store
             .find_cfg_edges_by_function(&sid)
             .unwrap_or_default();
 
-        let mut lazy_window: Option<atlas_engine::LazyWindow> = None;
-
         if cfg_nodes.is_empty() {
             // Trigger lazy CFG extraction via the dataflow service
-            match self.lazy_service.ensure_for_function(&sid, Some(&query_id)) {
-                Ok(window) => {
-                    lazy_window = Some(window);
+            match self.active.analysis_runtime.ensure_dataflow_for_function(&sid, Some(&query_id)) {
+                Ok(()) => {
                     // Re-query CFG after lazy extraction
-                    cfg_nodes = match self.store.find_cfg_nodes_by_function(&sid) {
+                    cfg_nodes = match self.active.store.find_cfg_nodes_by_function(&sid) {
                         Ok(nodes) => nodes,
                         Err(e) => {
                             return (
@@ -109,7 +106,7 @@ impl ToolRouter {
                         }
                     };
                     cfg_edges = self
-                        .store
+                        .active.store
                         .find_cfg_edges_by_function(&sid)
                         .unwrap_or_default();
                 }
@@ -143,7 +140,7 @@ impl ToolRouter {
 
         // Lifecycle analysis only supports C/C++ — gate on language
         let sym_info = self
-            .store
+            .active.store
             .find_symbol_by_id(&sid)
             .ok()
             .flatten()
@@ -172,7 +169,7 @@ impl ToolRouter {
         };
 
         // Load domain rules from DB for this symbol's language
-        let cpp_rules = atlas_engine::analysis::CppOwnershipRules::load_for(&self.store, lang_str);
+        let cpp_rules = atlas_engine::analysis::CppOwnershipRules::load_for(&self.active.store, lang_str);
         let has_any_rules = cpp_rules.has_any_rules();
         let has_user_rules = cpp_rules.has_user_rules();
         let ownership_rules = atlas_engine::analysis::OwnershipRules::default();

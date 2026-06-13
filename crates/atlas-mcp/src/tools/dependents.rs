@@ -13,7 +13,7 @@ impl ToolRouter {
             Err(_) => return (format!("Invalid file_id: {file_id_hex}"), true),
         };
 
-        let deps = match self.store.find_dependents_by_file(&fid) {
+        let deps = match self.active.store.find_dependents_by_file(&fid) {
             Ok(d) => d,
             Err(e) => return (format!("Failed to query dependents: {e}"), true),
         };

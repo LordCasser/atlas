@@ -42,13 +42,6 @@ use super::types::{
     ClosureStrategy, FocusSeed, FocusWindow, WindowBudget,
 };
 
-// ── Metadata keys for full-index detection ──────────────────────────────────
-
-/// Key set when a full resolution pass has completed.
-const KEY_RESOLUTION_GENERATION: &str = "resolution_generation_version";
-/// Key set with the config hash after resolution.
-const KEY_RESOLUTION_CONFIG_HASH: &str = "resolution_config_hash";
-
 // ── IndexMode ───────────────────────────────────────────────────────────────
 
 /// Whether the project has a full index or needs focus-driven analysis.
@@ -105,6 +98,9 @@ pub struct FocusRuntime {
     started: AtomicBool,
     /// Join handle for the background worker thread (if spawned).
     bg_handle: Option<JoinHandle<()>>,
+    /// Index mode override for testing. When `Some`, `detect_index_mode()`
+    /// returns this value instead of calling `Store::read_index_mode()`.
+    detect_index_mode_override: Option<IndexMode>,
 }
 
 impl FocusRuntime {
@@ -120,38 +116,24 @@ impl FocusRuntime {
             closure_engine: None,
             started: AtomicBool::new(false),
             bg_handle: None,
+            detect_index_mode_override: None,
         }
     }
 
     // ── Index mode detection ─────────────────────────────────────────────
 
-    /// Detect whether a full index exists.
+    /// Detect whether the project has a full structural/full index
+    /// or operates in incremental Focus mode.
     ///
-    /// A full index is detected by checking `project_metadata` for:
-    /// - `resolution_config_hash` — set after resolution completes.
-    /// - `resolution_generation_version` with a non-zero value — set after
-    ///   at least one full resolution pass.
-    ///
-    /// A schema with `resolution_generation_version = '0'` (default after
-    /// `init_schema`) is treated as Focus mode.
+    /// Uses `Store::read_index_mode()` which counts **fresh** extraction
+    /// state rows — this correctly handles degraded/downgraded DBs where
+    /// metadata keys may exist but extraction data is stale.
     pub fn detect_index_mode(&self) -> IndexMode {
-        let has_config_hash = self.store
-            .get_metadata(KEY_RESOLUTION_CONFIG_HASH)
-            .ok()
-            .flatten()
-            .is_some();
-
-        if has_config_hash {
-            return IndexMode::FullIndex;
+        if let Some(mode) = self.detect_index_mode_override {
+            return mode;
         }
-
-        let generation = self.store
-            .get_metadata(KEY_RESOLUTION_GENERATION)
-            .ok()
-            .flatten();
-
-        match generation {
-            Some(ref v) if v != "0" => IndexMode::FullIndex,
+        match self.store.read_index_mode() {
+            Ok(mode) if crate::is_rich_index_mode(&mode) => IndexMode::FullIndex,
             _ => IndexMode::Focus,
         }
     }

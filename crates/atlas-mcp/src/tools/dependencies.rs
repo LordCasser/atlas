@@ -13,7 +13,7 @@ impl ToolRouter {
             Err(_) => return (format!("Invalid file_id: {file_id_hex}"), true),
         };
 
-        let imports = match self.store.find_imports_by_file(&fid) {
+        let imports = match self.active.store.find_imports_by_file(&fid) {
             Ok(i) => i,
             Err(e) => return (format!("Failed to query imports: {e}"), true),
         };

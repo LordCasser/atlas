@@ -8,18 +8,18 @@ use serde_json::json;
 
 impl ToolRouter {
     pub(crate) fn handle_status(&self) -> (String, bool) {
-        let stats = match self.store.get_stats() {
+        let stats = match self.active.store.get_stats() {
             Ok(s) => s,
             Err(e) => return (format!("Error getting stats: {e}"), true),
         };
         let layer_counts = self
-            .store
+            .active.store
             .count_fresh_file_extraction_state()
             .unwrap_or_default();
-        let active_jobs = self.store.list_active_extraction_jobs().unwrap_or_default();
+        let active_jobs = self.active.store.list_active_extraction_jobs().unwrap_or_default();
 
         let index_mode = self
-            .store
+            .active.store
             .read_index_mode()
             .unwrap_or_else(|_| "unknown".to_string());
 
@@ -64,9 +64,9 @@ impl ToolRouter {
 
         // Build lazy_dataflow block
         let lazy_dataflow = {
-            let df_stats = self.store.get_lazy_dataflow_stats().ok();
+            let df_stats = self.active.store.get_lazy_dataflow_stats().ok();
             let (files_with_dataflow, _structural, _manifest, files_with_cfg) = self
-                .store
+                .active.store
                 .get_capability_counts()
                 .unwrap_or((0, 0, 0, 0));
 
@@ -97,7 +97,7 @@ impl ToolRouter {
         };
 
         // Determine storage mode from db_path
-        let db_path = self.store.db_path().to_string_lossy().to_string();
+        let db_path = self.active.store.db_path().to_string_lossy().to_string();
         let storage = if db_path == ":memory:" {
             "memory"
         } else {
@@ -107,7 +107,7 @@ impl ToolRouter {
         (
             serde_json::to_string_pretty(&json!({
                 "project": {
-                    "active_project": self.project_root.to_string_lossy(),
+                    "active_project": self.active.root.to_string_lossy(),
                     "db_path": db_path,
                     "storage": storage,
                 },
@@ -146,7 +146,7 @@ impl ToolRouter {
     }
 
     pub(crate) fn handle_jobs(&self) -> (String, bool) {
-        match self.store.list_active_extraction_jobs() {
+        match self.active.store.list_active_extraction_jobs() {
             Ok(jobs) => (
                 serde_json::to_string_pretty(&json!({
                     "active_jobs": jobs.iter().map(|job| json!({
@@ -171,7 +171,7 @@ impl ToolRouter {
         let limit = super::get_u64(args, "limit").map(|v| v as usize);
         let language = super::get_str(args, "language");
         let path_prefix = super::get_str(args, "path_prefix");
-        match self.store.list_files() {
+        match self.active.store.list_files() {
             Ok(files) => {
                 let mut filtered: Vec<_> = files
                     .iter()

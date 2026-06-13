@@ -90,14 +90,29 @@ fn insert_symbol(
     sym_id
 }
 
+/// Create a FocusRuntime with index mode overridden to Focus.
+///
+/// Used by tests that pre-populate structural extraction state (so closure
+/// building can use cached results) but need `detect_index_mode()` to return
+/// `IndexMode::Focus` for exercising the Focus code path.
+fn test_runtime_focus_mode(store: Arc<Store>) -> FocusRuntime {
+    let mut rt = FocusRuntime::new(store, None);
+    rt.detect_index_mode_override = Some(IndexMode::Focus);
+    rt
+}
+
 // ── Tests: index mode detection ─────────────────────────────────────────────
 
 #[test]
-fn test_detect_full_index_when_metadata_present() {
+fn test_detect_focus_when_metadata_present_but_no_extraction() {
+    // Metadata keys that the old buggy code used to check — they must
+    // NOT fool the new detection into returning FullIndex.
     let store = test_store();
     store.set_metadata("resolution_generation_version", "1").unwrap();
+    store.set_metadata("resolution_config_hash", "abc123").unwrap();
     let rt = FocusRuntime::new(store, None);
-    assert_eq!(rt.detect_index_mode(), IndexMode::FullIndex);
+    assert_eq!(rt.detect_index_mode(), IndexMode::Focus,
+        "metadata keys should not fool detection; must check fresh extraction state");
 }
 
 #[test]
@@ -108,11 +123,53 @@ fn test_detect_focus_when_no_metadata() {
 }
 
 #[test]
-fn test_detect_full_index_with_config_hash() {
+fn test_detect_full_index_with_structural_extraction() {
+    // A file with fresh complete structural extraction should make
+    // read_index_mode() return a rich mode, triggering FullIndex.
+    let store = test_store();
+    insert_file_structural_complete(&store, "src/main.c");
+    let rt = FocusRuntime::new(store, None);
+    assert_eq!(rt.detect_index_mode(), IndexMode::FullIndex,
+        "fresh structural extraction should be detected as FullIndex");
+}
+
+#[test]
+fn test_detect_focus_with_only_manifest_extraction() {
+    // Manifest extraction alone is not rich — should return Focus.
+    let store = test_store();
+    let file_id = insert_file_structural_complete(&store, "src/a.c");
+    // Remove the structural layer to leave only manifest-like state
+    store.delete_file_extraction_state(&file_id).unwrap();
+    // Insert only manifest
+    store
+        .upsert_file_extraction_state(
+            &file_id,
+            &types::layer::MANIFEST,
+            "abc123",
+            &types::status::COMPLETE,
+            CapabilityMask::default(),
+        )
+        .unwrap();
+    let rt = FocusRuntime::new(store, None);
+    assert_eq!(rt.detect_index_mode(), IndexMode::Focus,
+        "manifest-only extraction should not be detected as FullIndex");
+}
+
+#[test]
+fn test_detect_index_mode_respects_stale_metadata() {
+    // Simulate a degraded DB: metadata keys suggest full index,
+    // but extraction state is stale (no structural/dataflow rows).
+    // detect_index_mode() MUST return Focus because read_index_mode()
+    // only counts fresh extraction state rows.
     let store = test_store();
     store.set_metadata("resolution_config_hash", "abc123").unwrap();
+    store.set_metadata("resolution_generation_version", "5").unwrap();
+    // No extraction state rows — simulates a DB where the index was
+    // downgraded or files were changed, making old metadata irrelevant.
     let rt = FocusRuntime::new(store, None);
-    assert_eq!(rt.detect_index_mode(), IndexMode::FullIndex);
+    let mode = rt.detect_index_mode();
+    assert_eq!(mode, IndexMode::Focus,
+        "stale metadata keys should not fool detection; must check fresh extraction state");
 }
 
 // ── Tests: bootstrap lifecycle ──────────────────────────────────────────────
@@ -150,7 +207,8 @@ fn test_is_ready_true_after_bootstrap() {
 #[test]
 fn test_prepare_full_index_returns_immediately() {
     let store = test_store();
-    store.set_metadata("resolution_generation_version", "1").unwrap();
+    // Fresh structural extraction triggers FullIndex via read_index_mode()
+    insert_file_structural_complete(&store, "src/main.c");
     let mut rt = FocusRuntime::new(store, None);
     let intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),
@@ -170,7 +228,7 @@ fn test_prepare_full_index_returns_immediately() {
 fn test_prepare_focus_with_calls_file_id() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "src/main.c");
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime_focus_mode(store);
     let intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),
         file_id: Some(file_id),
@@ -192,7 +250,7 @@ fn test_prepare_focus_with_calls_symbol_name() {
     let file_id = insert_file_structural_complete(&store, "src/main.c");
     // Also insert a symbol so FTS5 candidate provider finds it
     insert_symbol(&store, file_id, "main", types::enums::SymbolKind::Function);
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime_focus_mode(store);
     let intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),
         file_id: None,
@@ -211,7 +269,7 @@ fn test_prepare_focus_with_calls_symbol_id() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "src/main.c");
     let sym_id = insert_symbol(&store, file_id, "main", types::enums::SymbolKind::Function);
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime_focus_mode(store);
     let intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),
         file_id: None,
@@ -231,7 +289,7 @@ fn test_prepare_focus_with_calls_symbol_id() {
 fn test_prepare_focus_returns_precision_and_closure_id() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "src/main.c");
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime_focus_mode(store);
     let intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),
         file_id: Some(file_id),
@@ -252,7 +310,7 @@ fn test_prepare_focus_returns_precision_and_closure_id() {
 fn test_prepare_focus_enqueues_background() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "src/main.c");
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime_focus_mode(store);
     let intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),
         file_id: Some(file_id),
@@ -271,7 +329,7 @@ fn test_prepare_focus_enqueues_background() {
 fn test_prepare_focus_with_trace_point() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "src/main.c");
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime_focus_mode(store);
     let intent = QueryIntent::TracePoint {
         file_id,
         line: 10,
@@ -325,7 +383,8 @@ fn test_bootstrap_manager_ensure_minimum_ready() {
 #[test]
 fn test_prepare_full_index_returns_no_coverage_counts() {
     let store = test_store();
-    store.set_metadata("resolution_generation_version", "1").unwrap();
+    // Fresh structural extraction triggers FullIndex via read_index_mode()
+    insert_file_structural_complete(&store, "src/main.c");
     let mut rt = FocusRuntime::new(store, None);
     let intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),
@@ -344,7 +403,7 @@ fn test_prepare_full_index_returns_no_coverage_counts() {
 fn test_prepare_focus_populates_coverage_counts() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "src/main.c");
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime_focus_mode(store);
     let intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),
         file_id: Some(file_id),
@@ -371,7 +430,7 @@ fn test_prepare_focus_coverage_counts_with_symbol_id() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "src/main.c");
     let sym_id = insert_symbol(&store, file_id, "main", types::enums::SymbolKind::Function);
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime_focus_mode(store);
     let intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),
         file_id: None,
@@ -391,7 +450,7 @@ fn test_prepare_focus_coverage_counts_with_symbol_id() {
 fn test_prewarm_called_after_prepare() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "src/main.c");
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime_focus_mode(store);
     let intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),
         file_id: Some(file_id),
@@ -436,7 +495,7 @@ fn test_on_file_read_queues_recent_job() {
 fn test_prepare_explore_intent() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "src/main.c");
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime_focus_mode(store);
     let intent = QueryIntent::Explore {
         symbol_name: "main".to_string(),
         file_id: Some(file_id),
@@ -455,7 +514,7 @@ fn test_prepare_explore_intent() {
 fn test_prepare_context_intent() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "src/main.c");
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime_focus_mode(store);
     let intent = QueryIntent::Context {
         symbol_name: "main".to_string(),
         file_id: Some(file_id),
@@ -472,7 +531,7 @@ fn test_prepare_context_intent() {
 fn test_prepare_trace_variable_intent() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "src/main.c");
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime_focus_mode(store);
     let intent = QueryIntent::TraceVariable {
         file_id,
         line: 10,
@@ -490,7 +549,7 @@ fn test_prepare_trace_variable_intent() {
 fn test_prepare_search_intent() {
     let store = test_store();
     let _file_id = insert_file_structural_complete(&store, "src/main.c");
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime_focus_mode(store);
     let intent = QueryIntent::Search {
         query: "foo".to_string(),
         scope: None,
@@ -506,11 +565,11 @@ fn test_prepare_search_intent() {
 #[test]
 fn test_prepare_full_index_all_intents() {
     let store = test_store();
-    store.set_metadata("resolution_generation_version", "1").unwrap();
+    // Fresh structural extraction triggers FullIndex via read_index_mode()
     let file_id = insert_file_structural_complete(&store, "src/main.c");
     let mut rt = FocusRuntime::new(store, None);
 
-    // Test all 6 variants return FullIndex when metadata present
+    // Test all 6 variants return FullIndex when structural extraction exists
     let intents: Vec<QueryIntent> = vec![
         QueryIntent::Calls {
             symbol_name: "test".into(),
@@ -546,7 +605,7 @@ fn test_prepare_full_index_all_intents() {
     for intent in &intents {
         let result = rt.prepare(intent).unwrap();
         assert_eq!(result.mode, IndexMode::FullIndex,
-            "all intents should return FullIndex when metadata present");
+            "all intents should return FullIndex when structural extraction exists");
         assert!(result.precision.is_none(),
             "FullIndex mode should have no precision");
     }
@@ -558,7 +617,7 @@ fn test_prepare_full_index_all_intents() {
 fn test_locate_seed_explore_vs_calls_same_behavior() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "src/main.c");
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime_focus_mode(store);
 
     let calls_intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),

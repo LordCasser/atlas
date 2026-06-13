@@ -344,11 +344,15 @@ impl ToolRouter {
                 resp["resolution"] = rm;
             }
         }
-        if !self.cache.has_manual_full_index(&self.store) {
+        if !self.active.query_runtime.cache.has_manual_full_index(&self.active.store) {
             resp["note"] = json!(
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
         }
+
+        // Inject graph edge provenance when operating in FocusPartial mode.
+        self.inject_graph_precision(&mut resp);
+
         // Lazy structural response with focus-aware envelope
         let lr = lr.with_lazy_warnings(focus_warnings);
         let lr = if let Some(ref result) = focus_result {
@@ -391,7 +395,7 @@ impl ToolRouter {
         // Lazy structural: prepare focus query for graph edges
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
         for &id in &symbol_ids {
-            if let Some(sym) = self.store.find_symbol_by_id(&id).ok().flatten() {
+            if let Some(sym) = self.active.store.find_symbol_by_id(&id).ok().flatten() {
                 file_ids_set.insert(sym.file_id);
             }
         }
@@ -435,11 +439,15 @@ impl ToolRouter {
                 resp["resolution"] = rm;
             }
         }
-        if !self.cache.has_manual_full_index(&self.store) {
+        if !self.active.query_runtime.cache.has_manual_full_index(&self.active.store) {
             resp["note"] = json!(
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
         }
+
+        // Inject graph edge provenance when operating in FocusPartial mode.
+        self.inject_graph_precision(&mut resp);
+
         // Lazy structural response with focus-aware envelope
         let lr = lr.with_lazy_warnings(focus_warnings);
         let lr = if let Some(ref result) = focus_result {
@@ -489,7 +497,7 @@ impl ToolRouter {
         // Lazy structural: ensure graph edges exist before querying.
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
         for &id in &symbol_ids {
-            if let Some(sym) = self.store.find_symbol_by_id(&id).ok().flatten() {
+            if let Some(sym) = self.active.store.find_symbol_by_id(&id).ok().flatten() {
                 file_ids_set.insert(sym.file_id);
             }
         }
@@ -638,11 +646,14 @@ impl ToolRouter {
                 resp["resolution"] = rm;
             }
         }
-        if !self.cache.has_manual_full_index(&self.store) {
+        if !self.active.query_runtime.cache.has_manual_full_index(&self.active.store) {
             resp["note"] = json!(
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
         }
+
+        // Inject graph edge provenance when operating in FocusPartial mode.
+        self.inject_graph_precision(&mut resp);
 
         let lr = lr.with_lazy_warnings(lazy_warnings);
         let lr = if let Some(ref result) = focus_result {
@@ -732,7 +743,7 @@ impl ToolRouter {
         }
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
         for id in from_ids.iter().chain(to_ids.iter()) {
-            if let Some(sym) = self.store.find_symbol_by_id(id).ok().flatten() {
+            if let Some(sym) = self.active.store.find_symbol_by_id(id).ok().flatten() {
                 file_ids_set.insert(sym.file_id);
             }
         }
@@ -744,7 +755,7 @@ impl ToolRouter {
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
         let lazy_warnings = focus_warnings;
         // Cache for no-path diagnostics below (used in user-facing messages).
-        let is_manual_full = self.cache.has_manual_full_index(&self.store);
+        let is_manual_full = self.active.query_runtime.cache.has_manual_full_index(&self.active.store);
 
         let cb = match self.context_builder() {
             Ok(cb) => cb,
@@ -901,7 +912,7 @@ impl ToolRouter {
                 let mut ambiguity = json!({});
                 if from_ids.len() > 1 {
                     if let Some(ref wid) = winning_from {
-                        ambiguity["matched_from"] = json!(symbol_label(&self.store, wid));
+                        ambiguity["matched_from"] = json!(symbol_label(&self.active.store, wid));
                     }
                     ambiguity["from_count"] = json!(from_ids.len());
                     // Add from_candidates list (truncated to MAX_AMBIGUOUS_CANDIDATES)
@@ -910,7 +921,7 @@ impl ToolRouter {
                         .take(MAX_AMBIGUOUS_CANDIDATES)
                         .map(|id| {
                             candidate_json(
-                                &self.store,
+                                &self.active.store,
                                 id,
                                 Some(id) == winning_from.as_ref(),
                             )
@@ -922,7 +933,7 @@ impl ToolRouter {
                 }
                 if to_ids.len() > 1 {
                     if let Some(ref wid) = winning_to {
-                        ambiguity["matched_to"] = json!(symbol_label(&self.store, wid));
+                        ambiguity["matched_to"] = json!(symbol_label(&self.active.store, wid));
                     }
                     ambiguity["to_count"] = json!(to_ids.len());
                     // Add to_candidates list (truncated to MAX_AMBIGUOUS_CANDIDATES)
@@ -931,7 +942,7 @@ impl ToolRouter {
                         .take(MAX_AMBIGUOUS_CANDIDATES)
                         .map(|id| {
                             candidate_json(
-                                &self.store,
+                                &self.active.store,
                                 id,
                                 Some(id) == winning_to.as_ref(),
                             )
@@ -1030,6 +1041,9 @@ impl ToolRouter {
             }
 
             resp["path_quality"] = insight;
+
+            // Inject graph edge provenance when operating in FocusPartial mode.
+            self.inject_graph_precision(&mut resp);
 
             let lr = lr.with_root_warnings(root_warnings)
                 .with_lazy_warnings(lazy_warnings)
@@ -1130,7 +1144,7 @@ impl ToolRouter {
                     let from_candidates: Vec<serde_json::Value> = from_ids
                         .iter()
                         .take(MAX_AMBIGUOUS_CANDIDATES)
-                        .map(|id| candidate_json(&self.store, id, false))
+                        .map(|id| candidate_json(&self.active.store, id, false))
                         .collect();
                     if !from_candidates.is_empty() {
                         resp["from_candidates"] = json!(from_candidates);
@@ -1140,7 +1154,7 @@ impl ToolRouter {
                     let to_candidates: Vec<serde_json::Value> = to_ids
                         .iter()
                         .take(MAX_AMBIGUOUS_CANDIDATES)
-                        .map(|id| candidate_json(&self.store, id, false))
+                        .map(|id| candidate_json(&self.active.store, id, false))
                         .collect();
                     if !to_candidates.is_empty() {
                         resp["to_candidates"] = json!(to_candidates);
@@ -1148,6 +1162,9 @@ impl ToolRouter {
                 }
                 resp["hint"] = json!("Use a SymbolSelector object (e.g. {\"qualified_name\": \"...\", \"file_path\": \"...\"}) to disambiguate. symbol_ref from search/symbol results can be reused directly.");
             }
+
+            // Inject graph edge provenance when operating in FocusPartial mode.
+            self.inject_graph_precision(&mut resp);
 
             let lr = lr.with_root_warnings(root_warnings)
                 .with_lazy_warnings(lazy_warnings)
@@ -1291,7 +1308,7 @@ impl ToolRouter {
             }
         };
 
-        let sym = match self.store.find_symbol_by_id(&sym_id) {
+        let sym = match self.active.store.find_symbol_by_id(&sym_id) {
             Ok(Some(s)) => s,
             Ok(None) => {
                 let mut err = format!("Symbol not found in store: {qname}");
@@ -1317,20 +1334,20 @@ impl ToolRouter {
         });
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 
-        let sym_repo = atlas_engine::dossier::SymbolRepo::new(self.store());
+        let sym_repo = atlas_engine::dossier::SymbolRepo::new(self.active.store.clone());
         let source_repo = atlas_engine::dossier::SourceRepo::new(
-            self.store(),
-            self.project_root.clone(),
+            self.active.store.clone(),
+            self.active.root.clone(),
         );
         let cb = match self.context_builder() {
             Ok(cb) => cb,
             Err(e) => return (format!("Internal error: {e}"), true),
         };
         let relation_repo = atlas_engine::dossier::RelationRepo::new(
-            self.store(),
+            self.active.store.clone(),
             cb.graph_snapshot(),
         );
-        let file_repo = atlas_engine::dossier::FileFactsRepo::new(self.store());
+        let file_repo = atlas_engine::dossier::FileFactsRepo::new(self.active.store.clone());
 
         let request = atlas_engine::dossier::types::ExploreRequest {
             symbol: qname.to_string(),
@@ -1375,6 +1392,9 @@ impl ToolRouter {
                 "resolved": resolved,
             });
         }
+
+        // Inject graph edge provenance when operating in FocusPartial mode.
+        self.inject_graph_precision(&mut resp_value);
 
         let lr = lr.with_lazy_warnings(dossier.warnings);
         let lr = if let Some(ref result) = focus_result {
@@ -1473,7 +1493,7 @@ impl ToolRouter {
 
         // Lazy structural: prepare focus query for impact analysis
         let file_id = self
-            .store
+            .active.store
             .find_symbol_by_id(&sid)
             .ok()
             .flatten()
@@ -1539,16 +1559,16 @@ impl ToolRouter {
         let mut invariants: Vec<serde_json::Value> = Vec::new();
         let mut lifecycle_paths: Vec<serde_json::Value> = Vec::new();
         let domain_rules = if semantic {
-            match self.store.list_domain_rules(None, None) {
+            match self.active.store.list_domain_rules(None, None) {
                 Ok(_rows) => {
                     let lang_str = self
-                        .store
+                        .active.store
                         .find_symbol_by_id(&sid)
                         .ok()
                         .flatten()
                         .map(|s| s.language.as_str())
                         .unwrap_or("c");
-                    Some(analysis::CppOwnershipRules::load_for(&self.store, lang_str))
+                    Some(analysis::CppOwnershipRules::load_for(&self.active.store, lang_str))
                 }
                 Err(e) => {
                     tracing::warn!("Failed to load domain rules: {e}");
@@ -1568,7 +1588,7 @@ impl ToolRouter {
                 }
 
                 // Load CFG for this function
-                let cfg_nodes = match self.store.find_cfg_nodes_by_function(&node.symbol_id) {
+                let cfg_nodes = match self.active.store.find_cfg_nodes_by_function(&node.symbol_id) {
                     Ok(nodes) => nodes,
                     Err(_) => continue,
                 };
@@ -1578,12 +1598,12 @@ impl ToolRouter {
 
                 // Run branch diff analysis
                 let cfg_edges = self
-                    .store
+                    .active.store
                     .find_cfg_edges_by_function(&node.symbol_id)
                     .unwrap_or_default();
                 // ── Semantic branch diff with dataflow composition ──
                 let lang = self
-                    .store
+                    .active.store
                     .find_symbol_by_id(&node.symbol_id)
                     .ok()
                     .flatten()
@@ -1593,14 +1613,14 @@ impl ToolRouter {
 
                 // Load DataFlow nodes and edges
                 let data_nodes = self
-                    .store
+                    .active.store
                     .find_data_nodes_by_function(&node.symbol_id)
                     .unwrap_or_default();
                 let dataflow_edges = if data_nodes.is_empty() {
                     vec![]
                 } else {
                     let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
-                    self.store
+                    self.active.store
                         .find_dataflow_edges_by_sources(&all_ids)
                         .unwrap_or_default()
                 };
@@ -1729,7 +1749,7 @@ impl ToolRouter {
                 "domain_rules_applied": domain_rules.is_some(),
             });
         }
-        if !self.cache.has_manual_full_index(&self.store) {
+        if !self.active.query_runtime.cache.has_manual_full_index(&self.active.store) {
             resp["capability_note"] = json!(
                 "manifest-only: structural data incomplete. Run 'atlas index' for full results."
             );
@@ -1747,6 +1767,9 @@ impl ToolRouter {
                 "Bidirectional traversal with imports/includes may include unrelated consumer modules. Consider direction='outgoing' for narrower impact radius."
             );
         }
+
+        // Inject graph edge provenance when operating in FocusPartial mode.
+        self.inject_graph_precision(&mut resp);
 
         let lr = lr.with_root_warnings(Vec::new())
             .with_lazy_warnings(focus_warnings);
@@ -2101,14 +2124,24 @@ mod tests {
         assert!(!is_error, "expected success, got error: {resp_str}");
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
-        // When neither full index nor FocusRuntime is available, the fallback
-        // path now produces a diagnostic warning about the missing index/runtime.
+        // After the fix (#2 HIGH), FocusRuntime is always initialized by the
+        // constructor and activate_project.  The "No full index and FocusRuntime
+        // not initialized" warning no longer appears.  Warnings may still be
+        // present for other reasons (focus gaps, etc.), but they are not
+        // guaranteed to be non-empty.
         let warnings = resp.get("warnings");
         if let Some(w) = warnings {
             assert!(w.is_array(), "warnings should be an array");
-            // Warning expected: "No full index and FocusRuntime not initialized."
-            assert!(!w.as_array().unwrap().is_empty(),
-                "warnings should be non-empty when no index or FocusRuntime is configured");
+            // The "FocusRuntime not initialized" warning must NOT appear.
+            let arr = w.as_array().unwrap();
+            for entry in arr {
+                if let Some(s) = entry.as_str() {
+                    assert!(
+                        !s.contains("FocusRuntime not initialized"),
+                        "FocusRuntime initialization warning should not appear, got: {s}"
+                    );
+                }
+            }
         }
     }
 
@@ -2779,15 +2812,16 @@ mod tests {
             })
             .unwrap();
         let mut router = test_router(store);
-        // Before init_focus, focus_runtime should be None
+        // After construction via new_empty, focus_runtime is already initialized.
         assert!(
-            router.focus_runtime.is_none(),
-            "focus_runtime should be None before init_focus"
+            router.active.query_runtime.focus_runtime.is_some(),
+            "focus_runtime should be Some after new_empty (init_focus called in constructor)"
         );
+        // init_focus is idempotent.
         router.init_focus();
         assert!(
-            router.focus_runtime.is_some(),
-            "focus_runtime should be Some after init_focus"
+            router.active.query_runtime.focus_runtime.is_some(),
+            "focus_runtime should remain Some after init_focus"
         );
     }
 
@@ -2834,6 +2868,10 @@ mod tests {
         store.insert_symbols(&[sym]).unwrap();
 
         let mut router = test_router(store);
+        // Explicitly clear focus_runtime to test the "without focus" code path.
+        // After fix #2 HIGH, new_empty() initializes focus_runtime by default;
+        // this test validates that the focus-less path still works correctly.
+        router.active.query_runtime.focus_runtime = None;
         router.ensure_graph_initialized().unwrap();
         // focus_runtime is NOT initialized — focus fields should NOT appear
         let (resp_str, is_error) =
@@ -2848,8 +2886,8 @@ mod tests {
             "coverage_counts should NOT appear when focus is not initialized"
         );
         assert!(
-            resp.get("known_gaps").is_none(),
-            "known_gaps should NOT appear when focus is not initialized"
+            resp.get("gaps").is_none(),
+            "gaps should NOT appear when focus is not initialized"
         );
         assert!(
             resp.get("pending_closures").is_none(),
@@ -2890,8 +2928,8 @@ mod tests {
             "coverage_counts should not be present when focus data is None"
         );
         assert!(
-            !json_str.contains("known_gaps"),
-            "known_gaps should not be present when focus data is None"
+            !json_str.contains("gaps"),
+            "gaps should not be present when focus data is None"
         );
         assert!(
             !json_str.contains("pending_closures"),

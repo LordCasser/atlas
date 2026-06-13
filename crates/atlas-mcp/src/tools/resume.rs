@@ -23,9 +23,9 @@ impl ToolRouter {
         }
 
         // Prune expired snapshots before lookup
-        self.async_state.prune_expired_snapshots();
+        self.active.job_runtime.prune_expired_snapshots();
 
-        let snapshot = match self.async_state.query_snapshots.lock().unwrap_or_else(|e| e.into_inner()).get(query_id).cloned() {
+        let snapshot = match self.active.job_runtime.query_snapshots.lock().unwrap_or_else(|e| e.into_inner()).get(query_id).cloned() {
             Some(s) => s,
             None => {
                 return (
@@ -39,7 +39,7 @@ impl ToolRouter {
         };
 
         // Update snapshot status
-        if let Some(s) = self.async_state.query_snapshots.lock().unwrap_or_else(|e| e.into_inner()).get_mut(query_id) {
+        if let Some(s) = self.active.job_runtime.query_snapshots.lock().unwrap_or_else(|e| e.into_inner()).get_mut(query_id) {
             s.status = QueryStatus::Refining;
         }
 
@@ -49,7 +49,7 @@ impl ToolRouter {
             let intent = window
                 .seed_unit
                 .symbol_id
-                .and_then(|sid| self.store.find_symbol_by_id(&sid).ok().flatten())
+                .and_then(|sid| self.active.store.find_symbol_by_id(&sid).ok().flatten())
                 .map(|sym| atlas_engine::QueryIntent::Calls {
                     symbol_name: sym.name.clone(),
                     file_id: Some(sym.file_id),
@@ -67,7 +67,7 @@ impl ToolRouter {
             // function-level dataflow via `ensure_for_function`.
             for unit in &window.units {
                 if let Some(ref sid) = unit.symbol_id {
-                    if let Err(e) = self.lazy_service.ensure_for_function(sid, None) {
+                    if let Err(e) = self.active.analysis_runtime.ensure_dataflow_for_function(sid, None) {
                         tracing::warn!("Lazy dataflow re-trigger failed for {:?}: {e:#}", sid);
                     }
                 }
@@ -154,7 +154,7 @@ impl ToolRouter {
 
         // Mark as Ready if the re-run completed successfully
         if let Some(s) = self
-            .async_state.query_snapshots
+            .active.job_runtime.query_snapshots
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get_mut(&original_query_id)
