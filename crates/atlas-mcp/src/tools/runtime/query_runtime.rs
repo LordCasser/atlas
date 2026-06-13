@@ -161,6 +161,8 @@ mod tests {
             symbol_name: "test".into(),
             file_id: None,
             symbol_id: None,
+            direction: None,
+            depth: None,
         };
         // FocusRuntime is initialized — prepare should attempt focus analysis.
         let (result, warnings) = qr.prepare(&intent, &store);
@@ -188,6 +190,8 @@ mod tests {
             symbol_name: "test".into(),
             file_id: None,
             symbol_id: None,
+            direction: None,
+            depth: None,
         };
         let (result, warnings) = qr.prepare(&intent, &store);
         assert!(result.is_none());

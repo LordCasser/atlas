@@ -245,6 +245,8 @@ fn focus_calls_query_intent_works() {
         symbol_name: "helper_foo".into(),
         file_id: None,
         symbol_id: None,
+        direction: None,
+        depth: None,
     };
     let (focus_opt, warnings) = router.prepare_focus_query(Some(intent));
 

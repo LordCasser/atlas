@@ -340,6 +340,8 @@ fn e2e_focus_runtime_python_example() {
         symbol_name: "WikipediaSpider".into(),
         file_id: None,
         symbol_id: None,
+        direction: None,
+        depth: None,
     };
     let (focus_opt, _warnings) = router.prepare_focus_query(Some(intent));
 

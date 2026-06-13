@@ -69,6 +69,8 @@ impl ToolRouter {
                     symbol_name: sym.name.clone(),
                     file_id: Some(sym.file_id),
                     symbol_id: None,
+                    direction: None,
+                    depth: None,
                 }),
             );
             for w in focus_warnings {

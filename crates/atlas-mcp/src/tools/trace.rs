@@ -354,6 +354,8 @@ impl ToolRouter {
                     symbol_name: sym.name.clone(),
                     file_id: Some(sym.file_id),
                     symbol_id: None,
+                    direction: None,
+                    depth: None,
                 }),
             );
             if let Some(ref result) = focus_result {
@@ -564,6 +566,8 @@ impl ToolRouter {
                 symbol_name: sym.name.clone(),
                 file_id: Some(sym.file_id),
                 symbol_id: None,
+                direction: None,
+                depth: None,
             });
         let (focus_result, lazy_warnings) = self.prepare_focus_query(intent);
         if let Some(ref result) = focus_result {

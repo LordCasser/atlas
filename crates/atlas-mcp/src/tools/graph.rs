@@ -308,6 +308,8 @@ impl ToolRouter {
             symbol_name: qname.to_string(),
             file_id: None,
             symbol_id: None,
+            direction: Some("incoming".to_string()),
+            depth: None,
         });
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 
@@ -404,6 +406,8 @@ impl ToolRouter {
             symbol_name: qname.to_string(),
             file_id: file_ids_set.iter().next().copied(),
             symbol_id: None,
+            direction: Some("outgoing".to_string()),
+            depth: None,
         });
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 
@@ -507,6 +511,11 @@ impl ToolRouter {
             symbol_name: qname.to_string(),
             file_id: file_ids_set.iter().next().copied(),
             symbol_id: None,
+            direction: {
+                let d = get_str(args, "direction");
+                if d.is_empty() { None } else { Some(d.to_string()) }
+            },
+            depth: Some(depth),
         });
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
         let lazy_warnings = focus_warnings;
@@ -749,10 +758,10 @@ impl ToolRouter {
                 file_ids_set.insert(sym.file_id);
             }
         }
-        let intent = Some(atlas_engine::QueryIntent::Calls {
-            symbol_name: from_qname.to_string(),
-            file_id: file_ids_set.iter().next().copied(),
-            symbol_id: None,
+        let intent = Some(atlas_engine::QueryIntent::Path {
+            from_name: from_qname.to_string(),
+            to_name: to_qname.to_string(),
+            max_depth: Some(max_depth),
         });
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
         let lazy_warnings = focus_warnings;
@@ -1492,16 +1501,9 @@ impl ToolRouter {
         let lr = LazyResponse::new("impact", args);
 
         // Lazy structural: prepare focus query for impact analysis
-        let file_id = self
-            .active_mut().store
-            .find_symbol_by_id(&sid)
-            .ok()
-            .flatten()
-            .map(|s| s.file_id);
-        let intent = Some(atlas_engine::QueryIntent::Explore {
+        let intent = Some(atlas_engine::QueryIntent::Impact {
             symbol_name: qname.to_string(),
-            file_id,
-            symbol_id: None,
+            depth: Some(depth),
         });
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 

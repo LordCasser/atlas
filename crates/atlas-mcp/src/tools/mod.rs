@@ -4156,6 +4156,8 @@ mod tests {
             symbol_name: "test".into(),
             file_id: None,
             symbol_id: None,
+            direction: None,
+            depth: None,
         });
         let (_result, warnings) = router.prepare_focus_query(intent);
         // Should not crash; shared dataflow service is used internally

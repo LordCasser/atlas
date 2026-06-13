@@ -199,6 +199,12 @@ impl FocusRuntime {
                 QueryIntent::Calls { .. } | QueryIntent::Explore { .. } => vec![
                     ClosureStrategy::ImportNeighborhood { depth: 1 },
                 ],
+                QueryIntent::Path { .. } => vec![
+                    ClosureStrategy::ImportNeighborhood { depth: 2 },
+                ],
+                QueryIntent::Impact { .. } => vec![
+                    ClosureStrategy::ImportNeighborhood { depth: 2 },
+                ],
                 QueryIntent::Search { .. } => vec![
                     ClosureStrategy::ImportNeighborhood { depth: 1 },
                     ClosureStrategy::SameDirectory,
@@ -251,6 +257,12 @@ impl FocusRuntime {
             strategies: match intent {
                 QueryIntent::Calls { .. } | QueryIntent::Explore { .. } | QueryIntent::Context { .. } => vec![
                     ClosureStrategy::ImportNeighborhood { depth: 2 },
+                ],
+                QueryIntent::Path { .. } => vec![
+                    ClosureStrategy::ImportNeighborhood { depth: 3 },
+                ],
+                QueryIntent::Impact { .. } => vec![
+                    ClosureStrategy::ImportNeighborhood { depth: 3 },
                 ],
                 QueryIntent::Search { .. } => vec![
                     ClosureStrategy::ImportNeighborhood { depth: 2 },
@@ -412,8 +424,16 @@ impl FocusRuntime {
         intent: &QueryIntent,
     ) -> Result<(FocusSeed, Option<FileId>, Option<SymbolId>, Language)> {
         match intent {
-            QueryIntent::Calls { symbol_name, file_id, symbol_id } => {
+            QueryIntent::Calls { symbol_name, file_id, symbol_id, .. } => {
                 self.locate_calls_seed(symbol_name, file_id, symbol_id)
+            }
+            QueryIntent::Path { from_name, .. } => {
+                // Use the "from" symbol as the seed for path queries.
+                self.locate_calls_seed(from_name, &None, &None)
+            }
+            QueryIntent::Impact { symbol_name, .. } => {
+                // Use the symbol name as the seed for impact analysis.
+                self.locate_calls_seed(symbol_name, &None, &None)
             }
             QueryIntent::Explore { symbol_name, file_id, symbol_id } => {
                 // Explore uses the same symbol-based seed location as Calls

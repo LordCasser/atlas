@@ -214,6 +214,8 @@ fn test_prepare_full_index_returns_immediately() {
         symbol_name: "main".to_string(),
         file_id: None,
         symbol_id: None,
+        direction: None,
+        depth: None,
     };
     let result = rt.prepare(&intent).unwrap();
     assert_eq!(result.mode, IndexMode::FullIndex);
@@ -233,6 +235,8 @@ fn test_prepare_focus_with_calls_file_id() {
         symbol_name: "main".to_string(),
         file_id: Some(file_id),
         symbol_id: None,
+        direction: None,
+        depth: None,
     };
     let result = rt.prepare(&intent).unwrap();
     assert_eq!(result.mode, IndexMode::Focus);
@@ -255,6 +259,8 @@ fn test_prepare_focus_with_calls_symbol_name() {
         symbol_name: "main".to_string(),
         file_id: None,
         symbol_id: None,
+        direction: None,
+        depth: None,
     };
     let result = rt.prepare(&intent).unwrap();
     assert_eq!(result.mode, IndexMode::Focus);
@@ -274,6 +280,8 @@ fn test_prepare_focus_with_calls_symbol_id() {
         symbol_name: "main".to_string(),
         file_id: None,
         symbol_id: Some(sym_id),
+        direction: None,
+        depth: None,
     };
     let result = rt.prepare(&intent).unwrap();
     assert_eq!(result.mode, IndexMode::Focus);
@@ -294,6 +302,8 @@ fn test_prepare_focus_returns_precision_and_closure_id() {
         symbol_name: "main".to_string(),
         file_id: Some(file_id),
         symbol_id: None,
+        direction: None,
+        depth: None,
     };
     let result = rt.prepare(&intent).unwrap();
     assert_eq!(result.mode, IndexMode::Focus);
@@ -315,6 +325,8 @@ fn test_prepare_focus_enqueues_background() {
         symbol_name: "main".to_string(),
         file_id: Some(file_id),
         symbol_id: None,
+        direction: None,
+        depth: None,
     };
     let _result = rt.prepare(&intent).unwrap();
     // After prepare, the scheduler should have at least one pending job
@@ -390,6 +402,8 @@ fn test_prepare_full_index_returns_no_coverage_counts() {
         symbol_name: "main".to_string(),
         file_id: None,
         symbol_id: None,
+        direction: None,
+        depth: None,
     };
     let result = rt.prepare(&intent).unwrap();
     assert_eq!(result.mode, IndexMode::FullIndex);
@@ -408,6 +422,8 @@ fn test_prepare_focus_populates_coverage_counts() {
         symbol_name: "main".to_string(),
         file_id: Some(file_id),
         symbol_id: None,
+        direction: None,
+        depth: None,
     };
     let result = rt.prepare(&intent).unwrap();
     assert_eq!(result.mode, IndexMode::Focus);
@@ -435,6 +451,8 @@ fn test_prepare_focus_coverage_counts_with_symbol_id() {
         symbol_name: "main".to_string(),
         file_id: None,
         symbol_id: Some(sym_id),
+        direction: None,
+        depth: None,
     };
     let result = rt.prepare(&intent).unwrap();
     assert_eq!(result.mode, IndexMode::Focus);
@@ -455,6 +473,8 @@ fn test_prewarm_called_after_prepare() {
         symbol_name: "main".to_string(),
         file_id: Some(file_id),
         symbol_id: None,
+        direction: None,
+        depth: None,
     };
     let _result = rt.prepare(&intent).unwrap();
 
@@ -569,12 +589,23 @@ fn test_prepare_full_index_all_intents() {
     let file_id = insert_file_structural_complete(&store, "src/main.c");
     let mut rt = FocusRuntime::new(store, None);
 
-    // Test all 6 variants return FullIndex when structural extraction exists
+    // Test all 8 variants return FullIndex when structural extraction exists
     let intents: Vec<QueryIntent> = vec![
         QueryIntent::Calls {
             symbol_name: "test".into(),
             file_id: Some(file_id),
             symbol_id: None,
+            direction: None,
+            depth: None,
+        },
+        QueryIntent::Path {
+            from_name: "test".into(),
+            to_name: "other".into(),
+            max_depth: None,
+        },
+        QueryIntent::Impact {
+            symbol_name: "test".into(),
+            depth: None,
         },
         QueryIntent::Explore {
             symbol_name: "test".into(),
@@ -623,6 +654,8 @@ fn test_locate_seed_explore_vs_calls_same_behavior() {
         symbol_name: "main".to_string(),
         file_id: Some(file_id),
         symbol_id: None,
+        direction: None,
+        depth: None,
     };
     let explore_intent = QueryIntent::Explore {
         symbol_name: "main".to_string(),

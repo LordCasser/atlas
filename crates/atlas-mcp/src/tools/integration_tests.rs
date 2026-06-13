@@ -253,6 +253,8 @@ mod focus_tests {
             symbol_name: "WikipediaSpider".into(),
             file_id: None,
             symbol_id: None,
+            direction: None,
+            depth: None,
         };
 
         let (focus_opt, warnings) = router.prepare_focus_query(Some(intent));
@@ -294,9 +296,11 @@ mod focus_tests {
         router.init_focus();
 
         let intent = atlas_engine::QueryIntent::Calls {
-            symbol_name: "start_process".into(),
+            symbol_name: "WikipediaSpider".into(),
             file_id: None,
             symbol_id: None,
+            direction: None,
+            depth: None,
         };
         // Focus may return None if the DB qualifies as full-index — that's OK
         let (_focus_opt, _warnings) = router.prepare_focus_query(Some(intent));
@@ -513,6 +517,8 @@ mod focus_tests {
             symbol_name: symbol_name.clone(),
             file_id: Some(seed_file_id),
             symbol_id: None,
+            direction: None,
+            depth: None,
         };
 
         let (focus_opt, warnings) = focus_router.prepare_focus_query(Some(intent));
@@ -735,6 +741,8 @@ mod focus_tests {
             symbol_name: "WikipediaSpider".into(),
             file_id: None,
             symbol_id: None,
+            direction: None,
+            depth: None,
         };
         let (_result, _w) = router.prepare_focus_query(Some(intent));
 
@@ -907,6 +915,8 @@ public class ElasticsearchException extends RuntimeException {
             symbol_name: primary_qname.to_string(),
             file_id: Some(file_id),
             symbol_id: None,
+            direction: None,
+            depth: None,
         };
 
         let (focus_opt, warnings) = router.prepare_focus_query(Some(intent));
