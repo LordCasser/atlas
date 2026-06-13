@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 
 use crate::tools::analysis_response::{WorkItem, WorkProgress, precision_to_view};
 use crate::tools::lazy_response::{CapabilityStats, LazyResponse, SnapshotStore};
+use crate::tools::runtime::cache_state::SIGNATURE_CHECK_COOLDOWN_MS;
 use crate::tools::runtime::graph_runtime::GraphMode;
 use symbol_selector::{parse_symbol_input, SymbolInput};
 use crate::tools::query_snapshot::QuerySnapshot;
@@ -456,7 +457,8 @@ impl ToolRouter {
         let batch = self.active.query_runtime.lazy_refresh_queue.take_incremental_batch(500);
         self.active.graph_runtime.state.refresh_graph_for_files(&self.active.store, &batch)?;
         // Cache invalidation: new store data may have changed layer distribution.
-        if !batch.is_empty() {
+        let had_writes = !batch.is_empty();
+        if had_writes {
             *self.active.query_runtime.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) = None;
         }
 
@@ -467,8 +469,15 @@ impl ToolRouter {
             Arc::clone(&self.active.query_runtime.lazy_refresh_queue),
         );
 
-        // Step 3: Always check the store signature. A full index may change
-        // extraction layers and graph facts without going through this router.
+        // Step 3: Signature check with cooldown.
+        // Skip if no writes were flushed AND last check was within the cooldown window.
+        if !had_writes {
+            let elapsed = self.active.query_runtime.cache.last_signature_check.elapsed();
+            let cooldown = std::time::Duration::from_millis(SIGNATURE_CHECK_COOLDOWN_MS);
+            if elapsed < cooldown {
+                return Ok(());
+            }
+        }
         self.active.query_runtime.cache.last_signature_check = std::time::Instant::now();
         self.rebuild_if_signature_changed("Index signature changed, refreshing graph")
     }
@@ -4841,6 +4850,69 @@ mod tests {
                 "should NOT inject graph precision for FullCanonical, got: {text}"
             );
         }
+    }
+
+    // ── Phase 21a: maybe_refresh_graph cooldown ────────────────────────
+
+    #[test]
+    fn maybe_refresh_respects_cooldown() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        // Force last_signature_check far in the past so first call triggers check.
+        router.active.query_runtime.cache.last_signature_check =
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(10))
+                .unwrap();
+        let ts_before_first = router.active.query_runtime.cache.last_signature_check;
+
+        // First call → elapsed > cooldown → must update last_signature_check.
+        router.maybe_refresh_graph().unwrap();
+        let ts_after_first = router.active.query_runtime.cache.last_signature_check;
+        assert!(
+            ts_after_first > ts_before_first,
+            "first call should update last_signature_check"
+        );
+
+        // Second call immediately → within cooldown → should NOT update.
+        let ts_before_second = router.active.query_runtime.cache.last_signature_check;
+        router.maybe_refresh_graph().unwrap();
+        let ts_after_second = router.active.query_runtime.cache.last_signature_check;
+        assert_eq!(
+            ts_after_second, ts_before_second,
+            "second call within cooldown should NOT update last_signature_check"
+        );
+    }
+
+    #[test]
+    fn maybe_refresh_bypasses_cooldown_after_writes() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "test.ts");
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        // Pre-populate lazy_refresh_queue with a dummy file_id.
+        router
+            .active
+            .query_runtime
+            .lazy_refresh_queue
+            .record_lazy_writes(&[file_id]);
+
+        // Set last_signature_check to now (within cooldown).
+        router.active.query_runtime.cache.last_signature_check = std::time::Instant::now();
+        let ts_before = router.active.query_runtime.cache.last_signature_check;
+
+        // Call maybe_refresh_graph → batch is non-empty → MUST do signature check
+        // despite cooldown.
+        router.maybe_refresh_graph().unwrap();
+        let ts_after = router.active.query_runtime.cache.last_signature_check;
+
+        // last_signature_check should be updated (bypass cooldown due to writes).
+        assert!(
+            ts_after > ts_before,
+            "writes should bypass cooldown and update last_signature_check"
+        );
     }
 
 
