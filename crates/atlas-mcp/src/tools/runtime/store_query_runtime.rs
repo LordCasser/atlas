@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use atlas_engine::{FileId, SourceExtractor, Store, SymbolId};
 
+use crate::tools::lazy_response::CapabilityStats;
+
 /// Direct store-fact queries (symbols, files, usages) that don't
 /// require the full in-memory graph or focus-driven extraction.
 pub struct StoreQueryRuntime {
@@ -58,6 +60,21 @@ impl StoreQueryRuntime {
         } else {
             ""
         }
+    }
+
+    /// Query the DB for real capability file counts.
+    /// Returns None if the query fails (graceful degradation).
+    /// Reserved for future status/capabilities reporting endpoints.
+    #[allow(dead_code)]
+    pub fn get_capability_stats(&self) -> Option<CapabilityStats> {
+        let (files_with_dataflow, files_structural_only, files_manifest_only, files_with_cfg) =
+            self.store.get_capability_counts().ok()?;
+        Some(CapabilityStats {
+            files_with_dataflow,
+            files_structural_only,
+            files_manifest_only,
+            files_with_cfg,
+        })
     }
 }
 

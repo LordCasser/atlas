@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, atomic::AtomicBool};
 use std::time::Instant;
 
+use atlas_engine::InvestigationFocus;
+
 use crate::task_manager::TaskManager;
 use crate::tools::PendingProjectActivation;
 use crate::tools::query_snapshot::{QUERY_SNAPSHOT_TTL_SECS, InvestigationState, QuerySnapshot};
@@ -43,6 +45,23 @@ impl JobRuntime {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|_, s| s.created_at > cutoff);
+    }
+
+    /// Store a query snapshot, pruning expired entries first.
+    ///
+    /// Recovers from a poisoned lock (e.g. after a panic in another handler)
+    /// rather than panicking — consistent with `AtlasMcpService::lock_router()`.
+    pub fn store_snapshot(&self, snapshot: QuerySnapshot) {
+        self.prune_expired_snapshots();
+        self.query_snapshots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(snapshot.query_id.clone(), snapshot);
+    }
+
+    /// Update or create investigation based on a tool call focus.
+    pub fn update_investigation(&mut self, focus: InvestigationFocus) {
+        self.investigation_state.update(focus);
     }
 }
 

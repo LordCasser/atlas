@@ -365,14 +365,7 @@ impl ToolRouter {
     /// Reserved for future status/capabilities reporting endpoints.
     #[allow(dead_code)]
     pub(crate) fn get_capability_stats(&self) -> Option<CapabilityStats> {
-        let (files_with_dataflow, files_structural_only, files_manifest_only, files_with_cfg) =
-            self.active.store.get_capability_counts().ok()?;
-        Some(CapabilityStats {
-            files_with_dataflow,
-            files_structural_only,
-            files_manifest_only,
-            files_with_cfg,
-        })
+        self.active.store_query_runtime.get_capability_stats()
     }
 
     /// Inject graph edge provenance into the response JSON when the graph
@@ -849,16 +842,12 @@ impl ToolRouter {
     /// Recovers from a poisoned lock (e.g. after a panic in another handler)
     /// rather than panicking — consistent with `AtlasMcpService::lock_router()`.
     pub(crate) fn store_snapshot(&mut self, snapshot: QuerySnapshot) {
-        self.active.job_runtime.prune_expired_snapshots();
-        self.active.job_runtime.query_snapshots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(snapshot.query_id.clone(), snapshot);
+        self.active.job_runtime.store_snapshot(snapshot);
     }
 
     /// Update or create investigation based on a tool call focus.
     pub(crate) fn update_investigation(&mut self, focus: atlas_engine::InvestigationFocus) {
-        self.active.job_runtime.investigation_state.update(focus);
+        self.active.job_runtime.update_investigation(focus);
     }
 }
 
