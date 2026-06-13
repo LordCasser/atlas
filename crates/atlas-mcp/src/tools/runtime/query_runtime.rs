@@ -4,7 +4,7 @@ use atlas_engine::focus::runtime::{FocusResult, FocusRuntime, IndexMode};
 use atlas_engine::focus::query::QueryIntent;
 use atlas_engine::Store;
 
-use crate::tools::cache_state::CacheState;
+use super::cache_state::CacheState;
 use crate::tools::lazy_refresh::LazyRefreshQueue;
 
 /// Controls focus-driven lazy extraction for queries.
@@ -62,19 +62,20 @@ impl QueryRuntime {
             }
         };
 
-        // 3. Lock FocusRuntime, detect mode, prepare
-        let mut runtime = fr.lock().unwrap();
-        let mode = runtime.detect_index_mode();
-        if mode == IndexMode::FullIndex {
+        // 3. Detect index mode via QueryRuntime wrapper (unlocks after check)
+        let mode = self.detect_index_mode();
+        if mode == Some(IndexMode::FullIndex) {
             return (None, vec![]);
         }
+
+        // 4. Lock FocusRuntime and prepare
+        let mut runtime = fr.lock().unwrap();
         match runtime.prepare(intent) {
             Ok(result) => (Some(result), vec![]),
             Err(e) => (None, vec![format!("Focus preparation failed: {e}")]),
         }
     }
 
-    #[allow(dead_code)]
     pub fn detect_index_mode(&self) -> Option<IndexMode> {
         self.focus_runtime
             .as_ref()

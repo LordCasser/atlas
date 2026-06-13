@@ -14,6 +14,7 @@
 //! | StoreQueryRuntime | Direct store facts (symbols, files)|
 //! | JobRuntime        | Background tasks + investigation  |
 
+pub(crate) mod cache_state;
 pub mod query_runtime;
 pub mod graph_runtime;
 pub mod analysis_runtime;

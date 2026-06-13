@@ -19,6 +19,9 @@ rmcp = { version = "=1.7.0", default-features = false, features = ["server", "tr
 tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread"] }
 tracing = "0.1"
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 default = ["typescript", "javascript", "python", "java", "c", "cpp", "arkts", "cangjie", "go", "csharp", "rust", "php", "ruby", "kotlin"]
 typescript = ["atlas-engine/typescript"]
