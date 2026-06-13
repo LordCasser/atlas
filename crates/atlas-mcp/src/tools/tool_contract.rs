@@ -68,8 +68,10 @@ pub enum QueryNeeds {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnalysisNeeds {
     /// Control flow graph nodes and edges only.
+    #[allow(dead_code)]
     Cfg,
     /// CFG + dataflow nodes and edges.
+    #[allow(dead_code)]
     CfgAndDataflow,
     /// CFG + dataflow + composed effects.
     CfgDataflowEffects,

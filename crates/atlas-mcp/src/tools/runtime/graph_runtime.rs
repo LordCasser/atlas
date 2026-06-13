@@ -167,6 +167,7 @@ impl GraphRuntime {
     }
 
     /// Returns the underlying graph backend implementing [`GraphProvider`].
+    #[allow(dead_code)] // Integrated when ClosureGraphProvider is added
     pub(crate) fn provider(&self) -> &dyn GraphProvider {
         &self.state
     }
