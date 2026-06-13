@@ -25,7 +25,7 @@ use crate::tools::analysis_response::{WorkItem, WorkProgress, precision_to_view}
 use crate::tools::lazy_response::{CapabilityStats, LazyResponse, SnapshotStore};
 use crate::tools::runtime::graph_runtime::GraphMode;
 use symbol_selector::{parse_symbol_input, SymbolInput};
-use crate::tools::query_snapshot::{InvestigationState, QuerySnapshot};
+use crate::tools::query_snapshot::QuerySnapshot;
 
 use crate::tools::active_project::ActiveProject;
 use crate::tools::tool_contract::{contract_for, ToolContract};
@@ -400,6 +400,8 @@ impl ToolRouter {
 
     /// Query the DB for real capability file counts.
     /// Returns None if the query fails (graceful degradation).
+    /// Reserved for future status/capabilities reporting endpoints.
+    #[allow(dead_code)]
     pub(crate) fn get_capability_stats(&self) -> Option<CapabilityStats> {
         let (files_with_dataflow, files_structural_only, files_manifest_only, files_with_cfg) =
             self.active.store.get_capability_counts().ok()?;
@@ -549,9 +551,10 @@ impl ToolRouter {
 
     /// Handle tools/call — dispatch by tool name.
     ///
-    /// Graph initialization and signature-refresh are handled by the MCP
-    /// server layer ([`AtlasMcpService::call_tool`]) before this method is
-    /// called. The dispatcher itself only routes to handlers.
+    /// Graph initialization and signature-refresh are performed here as
+    /// resource preparation *before* the contract dispatch, so the
+    /// contract determines what resources are needed.  The MCP server layer
+    /// ([`AtlasMcpService::call_tool`]) delegates entirely to this method.
     pub fn call_tool(
         &mut self,
         ctx: &ToolCallContext,
@@ -561,6 +564,31 @@ impl ToolRouter {
         // Each handler returns (result_text, is_error).
         // is_error=true only for genuine failures (lookup errors, I/O errors, unknown tool).
         let contract = contract_for(name, arguments);
+
+        // Phase 7a: Resource preparation based on contract.
+        //
+        // Graph-backed tools need the graph snapshot initialized and
+        // refreshed before dispatch.  Doing this inside call_tool() means the
+        // contract itself determines what resources are needed, removing the
+        // need for the MCP server layer to pre-check tool_call_requires_graph().
+        if Self::tool_call_requires_graph(name, arguments) {
+            if let Err(e) = self.ensure_graph_initialized() {
+                return CallToolResult {
+                    content: vec![ContentBlock::text(format!(
+                        "Failed to initialize graph snapshot: {e:#}"
+                    ))],
+                    is_error: Some(true),
+                };
+            }
+            if let Err(e) = self.maybe_refresh_graph() {
+                return CallToolResult {
+                    content: vec![ContentBlock::text(format!(
+                        "Failed to refresh graph snapshot: {e:#}"
+                    ))],
+                    is_error: Some(true),
+                };
+            }
+        }
 
         let (result, is_error) = match contract {
             ToolContract::ProjectLifecycle => self.handle_project(arguments),
@@ -2531,6 +2559,53 @@ mod tests {
             router.active.graph_runtime.mode,
             GraphMode::FullCanonical,
             "store with structural extraction should produce FullCanonical mode"
+        );
+    }
+
+    // ── Phase 7a: resource preparation inside call_tool ────────────────
+
+    /// A graph tool call on a store without schema should fail inside
+    /// call_tool() with is_error=true and a descriptive message.
+    #[test]
+    fn graph_init_error_propagates_in_call_tool() {
+        // Store without schema → GraphEngine::from_store will fail
+        let store = Store::open_in_memory().unwrap();
+        let mut router = ToolRouter::new_empty(Arc::new(store), PathBuf::from("/tmp"));
+        let ctx = ToolCallContext::empty();
+        let args = serde_json::json!({"symbol": "foo.bar"});
+        let result = router.call_tool(&ctx, "calls", &args);
+
+        assert_eq!(result.is_error, Some(true), "should be an error");
+        let body = &result.content[0];
+        let text = match body {
+            ContentBlock::Text { text } => text,
+        };
+        assert!(
+            text.contains("Failed to initialize graph snapshot"),
+            "error text should mention graph init failure, got: {text}",
+        );
+    }
+
+    /// A non-graph tool call should NOT trigger graph initialization,
+    /// even if the store has no schema (which would cause graph init to
+    /// fail were it attempted).
+    #[test]
+    fn call_tool_without_graph_init_for_non_graph_tool() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        assert!(
+            !router.active.graph_runtime.state.graph_initialized,
+            "graph should not be initialized yet",
+        );
+
+        let ctx = ToolCallContext::empty();
+        // "domain_rules" with no action → OverlayRead → non-graph tool
+        let args = serde_json::json!({});
+        let _result = router.call_tool(&ctx, "domain_rules", &args);
+
+        assert!(
+            !router.active.graph_runtime.state.graph_initialized,
+            "graph should still NOT be initialized after a non-graph tool call",
         );
     }
 

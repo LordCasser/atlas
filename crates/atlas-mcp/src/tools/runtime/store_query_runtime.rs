@@ -8,6 +8,8 @@ use atlas_engine::{FileId, SourceExtractor, Store, SymbolId};
 pub struct StoreQueryRuntime {
     pub store: Arc<Store>,
     pub source_extractor: SourceExtractor,
+    /// Root directory of the project. Stored for future path-resolution helpers.
+    #[allow(dead_code)]
     pub project_root: PathBuf,
 }
 
@@ -68,5 +70,13 @@ mod tests {
         // Should fall back to the hex representation of the blake3 hash.
         assert!(!result.is_empty());
         assert_eq!(result.len(), 64);
+    }
+
+    #[test]
+    fn project_root_is_accessible() {
+        let sqr = create_test_store_query_runtime();
+        // Prove the project_root field is wired correctly — reserved for
+        // future path-resolution helpers.
+        assert_eq!(sqr.project_root, PathBuf::from("/test/project"));
     }
 }

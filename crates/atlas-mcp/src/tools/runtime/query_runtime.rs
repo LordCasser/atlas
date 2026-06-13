@@ -43,6 +43,7 @@ impl QueryRuntime {
     /// Prepare for a query. Delegates to FocusRuntime.
     /// Returns None if FullIndex mode, no intent, or focus_runtime not initialized.
     /// MIRRORS: ToolRouter::prepare_focus_query() in mod.rs
+    #[allow(dead_code)]
     pub fn prepare(&self, intent: &QueryIntent) -> (Option<FocusResult>, Vec<String>) {
         let fr = match &self.focus_runtime {
             Some(fr) => fr,
@@ -59,6 +60,7 @@ impl QueryRuntime {
         }
     }
 
+    #[allow(dead_code)]
     pub fn detect_index_mode(&self) -> Option<IndexMode> {
         self.focus_runtime
             .as_ref()
@@ -90,5 +92,18 @@ mod tests {
     fn detect_index_mode_returns_none_when_focus_not_initialized() {
         let qr = create_test_query_runtime();
         assert!(qr.detect_index_mode().is_none());
+    }
+
+    #[test]
+    fn prepare_returns_none_when_focus_not_initialized() {
+        let qr = create_test_query_runtime();
+        let intent = QueryIntent::Calls {
+            symbol_name: "test".into(),
+            file_id: None,
+            symbol_id: None,
+        };
+        let (result, warnings) = qr.prepare(&intent);
+        assert!(result.is_none());
+        assert!(warnings.is_empty());
     }
 }

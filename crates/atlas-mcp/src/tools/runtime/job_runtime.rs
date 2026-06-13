@@ -19,6 +19,8 @@ pub struct JobRuntime {
     pub pending_project_activations: Arc<Mutex<HashMap<String, PendingProjectActivation>>>,
     /// Per-store prewarm guard: at most one background dataflow prewarm
     /// thread per store, shared across all concurrent MCP requests.
+    /// Reserved for future dataflow prewarm orchestration.
+    #[allow(dead_code)]
     pub prewarm_running: Arc<AtomicBool>,
 }
 
@@ -41,5 +43,29 @@ impl JobRuntime {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|_, s| s.created_at > cutoff);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_job_runtime() -> JobRuntime {
+        let task_manager = Arc::new(TaskManager::new());
+        JobRuntime::new(task_manager)
+    }
+
+    #[test]
+    fn prewarm_running_starts_false() {
+        let jr = create_test_job_runtime();
+        // Prove the prewarm_running flag is wired correctly — reserved for
+        // future dataflow prewarm orchestration.
+        assert!(!jr.prewarm_running.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn investigation_state_starts_default() {
+        let jr = create_test_job_runtime();
+        assert!(jr.investigation_state.active_investigation.is_none());
     }
 }

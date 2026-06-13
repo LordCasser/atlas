@@ -264,23 +264,11 @@ impl ServerHandler for AtlasMcpService {
             }
 
             // ── Standard tool dispatch ────────────────────────────────────
+            // Resource preparation (graph init / refresh) is now handled
+            // inside call_tool() based on the ToolContract.  The server
+            // layer only locks the router and delegates.
             let result = {
                 self.lock_router().and_then(|mut router| {
-                    if ToolRouter::tool_call_requires_graph(&tool_name, &args) {
-                        router.ensure_graph_initialized().map_err(|err| {
-                            rmcp::ErrorData::internal_error(
-                                format!("Failed to initialize graph snapshot: {err:#}"),
-                                None,
-                            )
-                        })?;
-                        router.maybe_refresh_graph().map_err(|err| {
-                            rmcp::ErrorData::internal_error(
-                                format!("Failed to refresh graph snapshot: {err:#}"),
-                                None,
-                            )
-                        })?;
-                    }
-
                     let tool_result = router.call_tool(&ctx, &tool_name, &args);
                     let tool_error = tool_result.is_error.unwrap_or(false);
                     let duration_ms = start.elapsed().as_millis() as u64;

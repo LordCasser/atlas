@@ -9,6 +9,8 @@ use atlas_engine::{LazyDataflowService, Store, SymbolId};
 /// lazy dataflow extraction, replacing the current ad-hoc pattern where
 /// handlers call `lazy_service.ensure_for_function()` directly.
 pub struct AnalysisRuntime {
+    /// Store reference reserved for future validation/caching logic.
+    #[allow(dead_code)]
     pub store: Arc<Store>,
     pub lazy_service: LazyDataflowService,
 }
@@ -52,5 +54,13 @@ mod tests {
         let symbol_id = SymbolId::default();
         let result = ar.ensure_dataflow_for_function(&symbol_id, None);
         assert!(result.is_err(), "unknown SymbolId should return error, not Ok");
+    }
+
+    #[test]
+    fn store_field_is_accessible() {
+        let ar = create_test_analysis_runtime();
+        // Prove the store field is wired correctly — reserved for future
+        // validation/caching logic.
+        let _: &Store = &ar.store;
     }
 }

@@ -31,6 +31,8 @@ impl OverlayRuntime {
     }
 
     /// Get the current generation (for cache comparison).
+    /// Currently exercised only in tests; reserved for future cache invalidation logic.
+    #[allow(dead_code)]
     pub fn current_generation(&self) -> u64 {
         self.generation.load(std::sync::atomic::Ordering::SeqCst)
     }

@@ -28,6 +28,8 @@ pub struct GraphPrecision {
     /// Total edge count in the current snapshot (approximate).
     pub edge_count: usize,
     /// Approximate symbol count in the current snapshot.
+    /// Reserved for future MCP response enrichment (e.g. `symbol_count` in status output).
+    #[allow(dead_code)]
     pub symbol_count: usize,
 }
 
@@ -100,6 +102,7 @@ impl GraphRuntime {
     }
 
     /// Try to apply a background-built graph or spawn a rebuild.
+    #[allow(dead_code)]
     pub fn maybe_refresh(
         &mut self,
         lazy_refresh_queue: Arc<LazyRefreshQueue>,
@@ -110,6 +113,7 @@ impl GraphRuntime {
     }
 
     /// Refresh the graph snapshot after lazy extraction for specific files.
+    #[allow(dead_code)]
     pub fn refresh_for_files(&mut self, file_ids: &[atlas_engine::FileId]) -> anyhow::Result<()> {
         self.state.refresh_graph_for_files(&self.store, file_ids)
     }
@@ -189,5 +193,29 @@ mod tests {
         assert!(result.is_ok(), "ensure_initialized should succeed");
         let se_result = gr.search_engine();
         assert!(se_result.is_ok(), "search_engine should be accessible after init");
+    }
+
+    #[test]
+    fn precision_info_includes_symbol_count() {
+        let gr = create_test_graph_runtime();
+        let info = gr.precision_info();
+        // symbol_count field is reserved for future MCP response enrichment;
+        // verify it is initialized and accessible.
+        assert_eq!(info.symbol_count, 0);
+    }
+
+    #[test]
+    fn maybe_refresh_does_not_panic_on_uninitialized_graph() {
+        let mut gr = create_test_graph_runtime();
+        let lrq = LazyRefreshQueue::new();
+        let result = gr.maybe_refresh(lrq);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn refresh_for_files_handles_empty_list() {
+        let mut gr = create_test_graph_runtime();
+        let result = gr.refresh_for_files(&[]);
+        assert!(result.is_ok());
     }
 }
