@@ -98,9 +98,9 @@
 
 pub(crate) mod cache_state;
 pub(crate) mod graph_provider;
-pub mod query_runtime;
-pub mod graph_runtime;
-pub mod analysis_runtime;
-pub mod overlay_runtime;
-pub mod store_query_runtime;
-pub mod job_runtime;
+pub(crate) mod query_runtime;
+pub(crate) mod graph_runtime;
+pub(crate) mod analysis_runtime;
+pub(crate) mod overlay_runtime;
+pub(crate) mod store_query_runtime;
+pub(crate) mod job_runtime;

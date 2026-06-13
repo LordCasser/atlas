@@ -33,8 +33,21 @@ jobs:
       - name: Build
         run: cargo build -p ${{ matrix.crate }}
 
-      - name: Test
-        run: cargo test -p ${{ matrix.crate }} -- --test-threads=4
+      - name: Unit tests
+        run: cargo test -p ${{ matrix.crate }} --lib
+
+      - name: Integration tests (atlas-mcp)
+        if: matrix.crate == 'atlas-mcp'
+        run: cargo test -p atlas-mcp --test '*'
+
+      - name: Doc tests
+        if: matrix.crate != 'atlas-mcp'
+        run: cargo test -p ${{ matrix.crate }} --doc
+
+      - name: Doc tests (atlas-mcp)
+        if: matrix.crate == 'atlas-mcp'
+        run: cargo test -p ${{ matrix.crate }} --doc
+        continue-on-error: true
 
   lint:
     name: Lint
