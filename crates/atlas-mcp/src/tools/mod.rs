@@ -285,7 +285,7 @@ impl ToolRouter {
     ///
     /// Background-capable tools must not perform expensive graph construction in
     /// the foreground before returning their `task_id`.
-    pub fn tool_call_requires_graph(name: &str, _arguments: &Value) -> bool {
+    pub(crate) fn tool_call_requires_graph(name: &str, _arguments: &Value) -> bool {
         Self::tool_requires_graph(name)
     }
 
