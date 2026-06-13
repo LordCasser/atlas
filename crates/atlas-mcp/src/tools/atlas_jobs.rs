@@ -27,7 +27,7 @@ impl ToolRouter {
             .map(|j| {
                 json!({
                     "job_id": j.job_id,
-                    "file": self.resolve_file_path(&j.file_id),
+                    "file": self.active.store_query_runtime.resolve_file_path(&j.file_id),
                     "layer": j.layer,
                     "status": j.status,
                     "capability": j.layer,

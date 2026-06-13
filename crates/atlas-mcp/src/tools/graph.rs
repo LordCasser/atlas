@@ -330,9 +330,10 @@ impl ToolRouter {
                 }
             }
         }
+        // ── callers ────────────────────────────────────────────────────
         let total_callers = all_callers.len();
         let shown = all_callers.iter().take(limit);
-        let nodes: Vec<_> = shown.map(|ix| self.node_json(snap, *ix, None)).collect();
+        let nodes: Vec<_> = shown.map(|ix| super::node_json(&self.active.store_query_runtime, snap, *ix, None)).collect();
 
         let mut resp = json!({
             "symbol": qname,
@@ -422,9 +423,10 @@ impl ToolRouter {
                 }
             }
         }
+        // ── callees ────────────────────────────────────────────────────
         let total_callees = all_callees.len();
         let shown = all_callees.iter().take(limit);
-        let nodes: Vec<_> = shown.map(|ix| self.node_json(snap, *ix, None)).collect();
+        let nodes: Vec<_> = shown.map(|ix| super::node_json(&self.active.store_query_runtime, snap, *ix, None)).collect();
 
         let mut resp = json!({
             "symbol": qname,
@@ -520,7 +522,7 @@ impl ToolRouter {
         let mut frontier: Vec<SymbolId> = Vec::new();
         for &root_id in &symbol_ids {
             if let Some(ix) = snap.id_to_idx.get(&root_id).copied() {
-                root_nodes.push(self.node_json(snap, ix, None));
+                root_nodes.push(super::node_json(&self.active.store_query_runtime, snap, ix, None));
                 visited.insert(root_id);
                 frontier.push(root_id);
                 total_nodes += 1;
@@ -582,7 +584,7 @@ impl ToolRouter {
                             "qualified_name": snap.node(neighbor_ix).qualified_name,
                             "kind": snap.node(neighbor_ix).kind.as_str(),
                             "edge": edge_kind.as_str(),
-                            "file": self.resolve_file_path(&snap.node(neighbor_ix).file_id),
+                            "file": self.active.store_query_runtime.resolve_file_path(&snap.node(neighbor_ix).file_id),
                             "line": snap.node(neighbor_ix).start_line,
                         }));
                     }
@@ -604,7 +606,7 @@ impl ToolRouter {
                             "qualified_name": snap.node(neighbor_ix).qualified_name,
                             "kind": snap.node(neighbor_ix).kind.as_str(),
                             "edge": edge_kind.as_str(),
-                            "file": self.resolve_file_path(&snap.node(neighbor_ix).file_id),
+                            "file": self.active.store_query_runtime.resolve_file_path(&snap.node(neighbor_ix).file_id),
                             "line": snap.node(neighbor_ix).start_line,
                         }));
                     }
@@ -821,7 +823,7 @@ impl ToolRouter {
 
         /// Build JSON hops for a single path.
         fn build_hops(
-            tool: &ToolRouter,
+            store_query: &crate::tools::runtime::store_query_runtime::StoreQueryRuntime,
             snap: &atlas_engine::GraphSnapshot,
             path: &atlas_engine::GraphPath,
             include_code: bool,
@@ -829,10 +831,10 @@ impl ToolRouter {
             let mut hops: Vec<serde_json::Value> =
                 Vec::with_capacity(path.node_indices.len() + path.edge_indices.len());
             for i in 0..path.node_indices.len() {
-                let mut node_json = tool.node_json(snap, path.node_indices[i], None);
+                let mut node_json = super::node_json(store_query, snap, path.node_indices[i], None);
                 if include_code {
                     let node = snap.node(path.node_indices[i]);
-                    if let Some(src) = tool.read_symbol_source(&node.symbol_id) {
+                    if let Some(src) = store_query.read_symbol_source(&node.symbol_id) {
                         node_json["source"] = json!(src);
                     }
                 }
@@ -854,7 +856,7 @@ impl ToolRouter {
 
             // Primary path (rank 0) gets the full treatment.
             let primary = &ranked[0];
-            let hops = build_hops(self, snap, &primary.path, include_code);
+            let hops = build_hops(&self.active.store_query_runtime, snap, &primary.path, include_code);
             let breakpoints: Vec<serde_json::Value> = primary.path.breakpoints.iter().map(|bp| {
                 json!({ "kind": bp.kind.as_str(), "edge_index": bp.edge_index, "message": bp.message })
             }).collect();
@@ -882,7 +884,7 @@ impl ToolRouter {
                 let alternatives: Vec<serde_json::Value> = ranked[1..]
                     .iter()
                     .map(|r| {
-                        let alt_hops = build_hops(self, snap, &r.path, false);
+                        let alt_hops = build_hops(&self.active.store_query_runtime, snap, &r.path, false);
                         json!({
                             "path": alt_hops,
                             "total_weight": r.path.total_weight,
@@ -1288,7 +1290,7 @@ impl ToolRouter {
                 if !suggestions.is_empty() {
                     err.push_str(&format!(". Did you mean: {}?", suggestions.join(", ")));
                 }
-                err.push_str(self.index_not_run_guidance());
+                err.push_str(self.active.store_query_runtime.not_indexed_guidance());
                 return (err, true);
             }
         };
@@ -1297,17 +1299,17 @@ impl ToolRouter {
             Ok(Some(s)) => s,
             Ok(None) => {
                 let mut err = format!("Symbol not found in store: {qname}");
-                err.push_str(self.index_not_run_guidance());
+                err.push_str(self.active.store_query_runtime.not_indexed_guidance());
                 return (err, true);
             }
             Err(e) => {
                 let mut err = format!("Lookup error: {e}");
-                err.push_str(self.index_not_run_guidance());
+                err.push_str(self.active.store_query_runtime.not_indexed_guidance());
                 return (err, true);
             }
         };
 
-        let file_path = self.resolve_file_path(&sym.file_id);
+        let file_path = self.active.store_query_runtime.resolve_file_path(&sym.file_id);
 
         self.update_investigation(InvestigationFocus::Symbol(sym.id));
 
@@ -1531,7 +1533,7 @@ impl ToolRouter {
             .into_iter()
             .map(|(fid, symbols)| {
                 json!({
-                    "file": self.resolve_file_path(&fid),
+                    "file": self.active.store_query_runtime.resolve_file_path(&fid),
                     "symbols": symbols,
                 })
             })

@@ -165,7 +165,7 @@ impl ToolRouter {
 
         // ── subject_source ─────────────────────────────────────────────
         let subject_source = if include_code {
-            if let Some(src) = self.read_symbol_source(sid) {
+            if let Some(src) = self.active.store_query_runtime.read_symbol_source(sid) {
                 let lines: Vec<String> = src.lines().map(|l| l.to_string()).collect();
                 let total = lines.len() as u32;
                 Some(json!({
@@ -400,7 +400,7 @@ impl ToolRouter {
                     .take(MAX_AGGREGATION_CANDIDATES)
                     .map(|s| {
                         let line = s.range.start_line.saturating_add(1);
-                        let file_path = self.resolve_file_path(&s.file_id);
+                        let file_path = self.active.store_query_runtime.resolve_file_path(&s.file_id);
                         ScoredCandidate {
                             qualified_name: s.qualified_name.clone(),
                             file_path: file_path.clone(),
@@ -474,7 +474,7 @@ impl ToolRouter {
                 .take(MAX_AGGREGATION_CANDIDATES)
                 .map(|s| {
                     let line = s.range.start_line.saturating_add(1);
-                    let file_path = self.resolve_file_path(&s.file_id);
+                    let file_path = self.active.store_query_runtime.resolve_file_path(&s.file_id);
                     ScoredCandidate {
                         qualified_name: s.qualified_name.clone(),
                         file_path: file_path.clone(),
@@ -501,7 +501,7 @@ impl ToolRouter {
         let mut err = format!(
             "Symbol '{qname}' not found by qualified name or simple name. Try 'search' first to discover the correct qualified_name for this symbol."
         );
-        err.push_str(self.index_not_run_guidance());
+        err.push_str(self.active.store_query_runtime.not_indexed_guidance());
         Ok((ContextResolution::NotFound(err), focus_result_acc))
     }
 }

@@ -706,7 +706,7 @@ mod focus_tests {
             let focus_files: Vec<String> = focus_result
                 .built_files
                 .iter()
-                .map(|f| focus_router.resolve_file_path(f))
+                .map(|f| focus_router.active.store_query_runtime.resolve_file_path(f))
                 .collect();
             let found = focus_files.iter().any(|f| {
                 f == &gt.file || f.ends_with(&format!("/{}", gt.file))

@@ -52,7 +52,7 @@ impl ToolRouter {
                 json!({
                     "text": r.text,
                     "kind": r.kind.as_str(),
-                    "file": self.resolve_file_path(&r.file_id),
+                    "file": self.active.store_query_runtime.resolve_file_path(&r.file_id),
                     "line": r.range.start_line + 1,
                     "column": r.range.start_column + 1,
                     "evidence_level": mask.best_capability_name(),

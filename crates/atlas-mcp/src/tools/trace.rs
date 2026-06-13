@@ -47,7 +47,7 @@ impl ToolRouter {
             Ok(Some(fid)) => fid,
             Ok(None) => {
                 let msg = if file_hex.is_some() || file_path.is_some() {
-                    if !self.has_indexed_files() {
+                    if self.active.store.count_files().unwrap_or(0) == 0 {
                         "No files indexed yet. Please run the 'index' tool first to build the code index, then retry this query."
                     } else {
                         "File not found in index. Check that the file_id or file_path is correct and belongs to the indexed project."
@@ -63,7 +63,7 @@ impl ToolRouter {
             }
             Err(e) => {
                 let mut err_msg = format!("Error resolving file: {e}");
-                err_msg.push_str(self.index_not_run_guidance());
+                err_msg.push_str(self.active.store_query_runtime.not_indexed_guidance());
                 let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_point", &err_msg);
                 return (
                     serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
@@ -157,7 +157,7 @@ impl ToolRouter {
             Ok(Some(fid)) => fid,
             Ok(None) => {
                 let msg = if file_hex.is_some() || file_path.is_some() {
-                    if !self.has_indexed_files() {
+                    if self.active.store.count_files().unwrap_or(0) == 0 {
                         "No files indexed yet. Please run the 'index' tool first to build the code index, then retry this query."
                     } else {
                         "File not found in index. Check that the file_id or file_path is correct and belongs to the indexed project."
@@ -173,7 +173,7 @@ impl ToolRouter {
             }
             Err(e) => {
                 let mut err_msg = format!("Error resolving file: {e}");
-                err_msg.push_str(self.index_not_run_guidance());
+                err_msg.push_str(self.active.store_query_runtime.not_indexed_guidance());
                 let resp: TraceQueryResponse<()> =
                     TraceQueryResponse::err("trace_variable", &err_msg);
                 return (

@@ -61,7 +61,7 @@ impl ToolRouter {
             }
             Ok(SymbolResolution::NotFound { .. }) => {
                 let mut err = format!("Symbol not found: {symbol}");
-                err.push_str(self.index_not_run_guidance());
+                err.push_str(self.active.store_query_runtime.not_indexed_guidance());
                 return (err, true);
             }
             Err(e) => return (e, true),

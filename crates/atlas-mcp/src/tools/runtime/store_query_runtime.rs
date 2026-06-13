@@ -47,6 +47,18 @@ impl StoreQueryRuntime {
     pub fn read_symbol_source(&self, symbol_id: &SymbolId) -> Option<String> {
         self.source_extractor.extract_source(symbol_id)
     }
+
+    /// Return a guidance hint when the project has no indexed files.
+    ///
+    /// Returns a user-facing guidance string suggesting the `index` tool
+    /// when the store has no indexed files, or an empty string otherwise.
+    pub fn not_indexed_guidance(&self) -> &'static str {
+        if self.store.count_files().unwrap_or(0) == 0 {
+            "\nHint: The project has not been indexed yet. Please run the 'index' tool first (fast manifest indexing) to build the code index, then retry this query."
+        } else {
+            ""
+        }
+    }
 }
 
 #[cfg(test)]

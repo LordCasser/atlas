@@ -140,7 +140,7 @@ impl ToolRouter {
     ) -> (String, bool) {
         ctx.send_progress(0.1, &format!("Searching for '{query}' in {scope}..."));
 
-        if !self.has_indexed_files() {
+        if self.active.store.count_files().unwrap_or(0) == 0 {
             return (
                 serde_json::to_string_pretty(&json!({
                     "ok": false,
@@ -197,7 +197,7 @@ impl ToolRouter {
             Ok(r) => r,
             Err(err) => {
                 let mut s = format!("Search error: {err}");
-                s.push_str(self.index_not_run_guidance());
+                s.push_str(self.active.store_query_runtime.not_indexed_guidance());
                 return (s, true);
             }
         };
@@ -433,7 +433,7 @@ impl ToolRouter {
                     };
                 } else {
                     let mut err = format!("Symbol not found: {qname}");
-                    err.push_str(self.index_not_run_guidance());
+                    err.push_str(self.active.store_query_runtime.not_indexed_guidance());
                     return (err, true);
                 }
             }
@@ -466,7 +466,7 @@ impl ToolRouter {
                             sym = s;
                         } else {
                             let mut err = format!("Symbol not found: {qname}");
-                            err.push_str(self.index_not_run_guidance());
+                            err.push_str(self.active.store_query_runtime.not_indexed_guidance());
                             return (err, true);
                         }
                     }
@@ -479,7 +479,7 @@ impl ToolRouter {
                     }
                     Ok(SymbolResolution::NotFound { .. }) => {
                         let mut err = format!("Symbol not found: {qname}");
-                        err.push_str(self.index_not_run_guidance());
+                        err.push_str(self.active.store_query_runtime.not_indexed_guidance());
                         return (err, true);
                     }
                     Err(err) => {
@@ -501,26 +501,26 @@ impl ToolRouter {
             .callers(&sym.id)
             .callers
             .iter()
-            .map(|&ix| self.node_json(snap, ix, None))
+            .map(|&ix| super::node_json(&self.active.store_query_runtime, snap, ix, None))
             .collect();
         let callee_nodes: Vec<_> = graph
             .callees(&sym.id)
             .callees
             .iter()
-            .map(|&ix| self.node_json(snap, ix, None))
+            .map(|&ix| super::node_json(&self.active.store_query_runtime, snap, ix, None))
             .collect();
 
         let mut result = json!({
             "name": sym.name, "qualified_name": sym.qualified_name,
             "kind": sym.kind.as_str(), "language": sym.language.as_str(),
             "visibility": sym.visibility.as_ref().map(|v| v.as_str()), "signature": sym.signature,
-            "file": self.resolve_file_path(&sym.file_id),
+            "file": self.active.store_query_runtime.resolve_file_path(&sym.file_id),
             "range": { "line": sym.range.start_line, "column": sym.range.start_column },
             "caller_count": caller_nodes.len(), "callee_count": callee_nodes.len(),
             "callers": caller_nodes, "callees": callee_nodes,
         });
         if include_code {
-            if let Some(src) = self.read_symbol_source(&sym.id) {
+            if let Some(src) = self.active.store_query_runtime.read_symbol_source(&sym.id) {
                 result["source"] = json!(src);
             }
         }

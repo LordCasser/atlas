@@ -84,7 +84,7 @@ impl ToolRouter {
             }
             Ok(SymbolResolution::NotFound { .. }) => {
                 let mut err = format!("Symbol not found: {field_qname}");
-                err.push_str(self.index_not_run_guidance());
+                err.push_str(self.active.store_query_runtime.not_indexed_guidance());
                 return (json!({"error": err}).to_string(), true);
             }
             Err(e) => return (json!({"error": e}).to_string(), true),
@@ -115,7 +115,7 @@ impl ToolRouter {
             }
             Ok(SymbolResolution::NotFound { .. }) => {
                 let mut err = format!("Symbol not found: {target_qname}");
-                err.push_str(self.index_not_run_guidance());
+                err.push_str(self.active.store_query_runtime.not_indexed_guidance());
                 return (json!({"error": err}).to_string(), true);
             }
             Err(e) => return (json!({"error": e}).to_string(), true),
@@ -363,7 +363,7 @@ impl ToolRouter {
                 }
                 Ok(SymbolResolution::NotFound { .. }) => {
                     let mut err = format!("Symbol not found: {field_qname}");
-                    err.push_str(self.index_not_run_guidance());
+                    err.push_str(self.active.store_query_runtime.not_indexed_guidance());
                     return (json!({"error": err}).to_string(), true);
                 }
                 Err(e) => return (json!({"error": e}).to_string(), true),

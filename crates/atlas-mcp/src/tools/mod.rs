@@ -306,11 +306,6 @@ impl ToolRouter {
         self.active.graph_runtime.context_builder()
     }
 
-    /// Check if the store has any indexed files (fast COUNT query).
-    pub(crate) fn has_indexed_files(&self) -> bool {
-        self.active.store.count_files().unwrap_or(0) > 0
-    }
-
     /// Initialize the focus runtime for focus-driven lazy analysis.
     pub fn init_focus(&mut self) {
         let store = self.active.store.clone();
@@ -380,15 +375,6 @@ impl ToolRouter {
         })
     }
 
-    /// Return a guidance string when the project has not been indexed yet.
-    pub(crate) fn index_not_run_guidance(&self) -> &'static str {
-        if !self.has_indexed_files() {
-            "\nHint: The project has not been indexed yet. Please run the 'index' tool first (fast manifest indexing) to build the code index, then retry this query."
-        } else {
-            ""
-        }
-    }
-
     /// Inject graph edge provenance into the response JSON when the graph
     /// was built from a partial/closure-based index (FocusPartial mode).
     ///
@@ -432,12 +418,6 @@ impl ToolRouter {
         }
         self.active.query_runtime.cache.cached_signature = current;
         Ok(())
-    }
-
-    /// Resolve a [`FileId`] to its human-readable file path.
-    /// Delegates to [`StoreQueryRuntime::resolve_file_path`].
-    pub(crate) fn resolve_file_path(&self, file_id: &FileId) -> String {
-        self.active.store_query_runtime.resolve_file_path(file_id)
     }
 
     /// Switch the active project to a new store+root, clearing graph/cache state.
@@ -880,40 +860,6 @@ impl ToolRouter {
     pub(crate) fn update_investigation(&mut self, focus: atlas_engine::InvestigationFocus) {
         self.active.job_runtime.investigation_state.update(focus);
     }
-
-    // -------------------------------------------------------------------
-    // Render helpers
-    // -------------------------------------------------------------------
-    pub(crate) fn node_json(
-        &self,
-        snap: &atlas_engine::GraphSnapshot,
-        ix: atlas_engine::NodeIx,
-        edge_kind: Option<&str>,
-    ) -> Value {
-        let n = snap.node(ix);
-        let mut obj = json!({
-            "name": n.name,
-            "qualified_name": n.qualified_name,
-            "kind": n.kind.as_str(),
-            "file": self.resolve_file_path(&n.file_id),
-            "line": n.start_line,
-        });
-        if let Some(ek) = edge_kind {
-            obj["edge"] = json!(ek);
-        }
-        obj
-    }
-
-    /// Read source code for a symbol using AST-aware extraction.
-    ///
-    /// Delegates to [`StoreQueryRuntime::read_symbol_source`].
-    ///
-    /// Returns `None` if the file cannot be found, is outside the project
-    /// root, or the symbol range is invalid.  Callers should silently omit
-    /// the `source` field when this returns `None`.
-    pub(crate) fn read_symbol_source(&self, symbol_id: &SymbolId) -> Option<String> {
-        self.active.store_query_runtime.read_symbol_source(symbol_id)
-    }
 }
 
 // Implement SnapshotStore for ToolRouter so LazyResponse::build() can store
@@ -927,6 +873,29 @@ impl SnapshotStore for ToolRouter {
 // -------------------------------------------------------------------
 // Shared helper functions (module-level, not on ToolRouter)
 // -------------------------------------------------------------------
+
+/// Render a graph node as a JSON object.
+///
+/// Requires a [`StoreQueryRuntime`] to resolve `file_id → path`.
+pub(crate) fn node_json(
+    store_query: &crate::tools::runtime::store_query_runtime::StoreQueryRuntime,
+    snap: &atlas_engine::GraphSnapshot,
+    ix: atlas_engine::NodeIx,
+    edge_kind: Option<&str>,
+) -> Value {
+    let n = snap.node(ix);
+    let mut obj = json!({
+        "name": n.name,
+        "qualified_name": n.qualified_name,
+        "kind": n.kind.as_str(),
+        "file": store_query.resolve_file_path(&n.file_id),
+        "line": n.start_line,
+    });
+    if let Some(ek) = edge_kind {
+        obj["edge"] = json!(ek);
+    }
+    obj
+}
 
 /// Merge root validation warnings and lazy structural warnings into a JSON
 /// response's `"warnings"` array. Only adds the key when non-empty.
@@ -1984,7 +1953,7 @@ impl ToolRouter {
             if file_paths.len() >= max_results {
                 break;
             }
-            let path = self.resolve_file_path(&sym.file_id);
+            let path = self.active.store_query_runtime.resolve_file_path(&sym.file_id);
             if file_paths.insert(path.clone()) {
                 results.push(json!({
                     "file": path,
@@ -2039,7 +2008,7 @@ impl ToolRouter {
             if file_paths.len() >= max_results {
                 break;
             }
-            let path = self.resolve_file_path(&sym.file_id);
+            let path = self.active.store_query_runtime.resolve_file_path(&sym.file_id);
             if file_paths.insert(path.clone()) {
                 results.push(json!({
                     "module": path,
