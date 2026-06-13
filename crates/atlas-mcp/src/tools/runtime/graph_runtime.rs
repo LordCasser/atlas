@@ -1,3 +1,27 @@
+//! Graph runtime — in-memory call-graph snapshot lifecycle.
+//!
+//! # Responsibilities
+//! - Lazy graph initialization on first graph-backed tool call
+//! - Precision mode detection (FullCanonical vs FocusPartial)
+//! - Incremental graph refresh after lazy extraction writes
+//! - Exposes SearchEngine (BFS/DFS/path) and ContextBuilder (callers/callees/source)
+//!
+//! # Public API
+//! - `ensure_initialized()`: build graph snapshot from DB (idempotent)
+//! - `search_engine()` / `context_builder()`: access graph engines
+//! - `precision_info()`: return GraphPrecision { mode, symbol_count, edge_count }
+//! - `provider()`: return &dyn GraphProvider for the underlying backend
+//!
+//! # Usage pattern
+//! ```ignore
+//! self.active.graph_runtime.ensure_initialized()?;
+//! let cb = self.active.graph_runtime.context_builder()?;
+//! ```
+//!
+//! # Dependencies
+//! - `atlas_engine::{GraphEngine, SearchEngine, ContextBuilder, GraphSnapshot}`
+//! - `super::graph_provider::GraphProvider`
+
 use std::path::PathBuf;
 use std::sync::Arc;
 

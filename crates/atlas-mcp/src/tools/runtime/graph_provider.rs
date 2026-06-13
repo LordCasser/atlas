@@ -1,8 +1,14 @@
 //! Graph provider trait — the contract between GraphRuntime and its graph backend.
 //!
-//! Implementors:
-//! - `GraphState` (production): full in-memory call graph from the DB.
-//! - (future) `ClosureGraphState`: closure-scoped graph from focus extraction.
+//! # Implementors
+//! - `GraphState` (production): full in-memory graph from SQLite DB
+//! - (future) `ClosureGraphProvider`: closure-scoped graph from focus extraction
+//!
+//! # Why a trait?
+//! The trait separates the graph *query* interface from the graph *lifecycle*
+//! management. GraphRuntime handles lifecycle (init, refresh, mode detection);
+//! GraphProvider handles queries (search, context, counts). When closure-scoped
+//! graphs are implemented, switching backends is a one-line change in GraphRuntime.
 
 use atlas_engine::{ContextBuilder, SearchEngine};
 

@@ -1,3 +1,17 @@
+//! Analysis runtime — on-demand CFG/dataflow extraction.
+//!
+//! # Responsibilities
+//! - Single entry point (`ensure_dataflow_for_function`) for lazy CFG extraction
+//! - Wraps LazyDataflowService — no other module calls it directly
+//!
+//! # Usage pattern
+//! ```ignore
+//! self.active.analysis_runtime.ensure_dataflow_for_function(&symbol_id, Some(&query_id))?;
+//! ```
+//!
+//! # Dependencies
+//! - `atlas_engine::LazyDataflowService`
+
 use std::path::PathBuf;
 use std::sync::Arc;
 

@@ -1,3 +1,20 @@
+//! Query runtime — focus-driven lazy extraction coordinator.
+//!
+//! # Responsibilities
+//! - Owns FocusRuntime, CacheState, and LazyRefreshQueue
+//! - `prepare()`: single entry point for focus-driven lazy analysis
+//! - `has_full_index()`: check whether project has a complete index
+//! - `detect_index_mode()`: inspect FocusRuntime's index mode
+//!
+//! # Usage pattern
+//! ```ignore
+//! let (focus_result, warnings) = self.active.query_runtime.prepare(&intent, &store);
+//! ```
+//!
+//! # Dependencies
+//! - `atlas_engine::focus::runtime::{FocusRuntime, FocusResult, IndexMode}`
+//! - `super::cache_state::CacheState`
+
 use std::sync::{Arc, Mutex, RwLock};
 
 use atlas_engine::focus::runtime::{FocusResult, FocusRuntime, IndexMode};

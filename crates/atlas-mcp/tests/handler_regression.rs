@@ -413,6 +413,54 @@ fn handler_symbol_detail_returns_source() {
 }
 
 // =========================================================================
+// Test: Graph-backed tools on empty store return graceful errors
+// =========================================================================
+
+#[test]
+fn graph_tools_on_empty_store_return_errors() {
+    let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
+    store.init_schema().expect("init_schema");
+    let mut router = ToolRouter::new_empty(store, PathBuf::from("."));
+    let ctx = ToolCallContext::empty();
+
+    // These should fail because symbol doesn't exist — but must NOT panic.
+    let tools = ["calls", "explore", "path", "impact"];
+    for tool in &tools {
+        let result = router.call_tool(&ctx, tool, &json!({"symbol": "nonexistent"}));
+        // Should return error, NOT panic
+        let text = extract_text(&result);
+        assert!(
+            result.is_error == Some(true) || text.contains("error") || text.contains("not found"),
+            "Tool '{tool}' should return error on empty store, got: {text}"
+        );
+    }
+}
+
+// =========================================================================
+// Test: fp_dispatches with unknown field returns error
+// =========================================================================
+
+#[test]
+fn fp_dispatches_unknown_field_returns_error() {
+    let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
+    store.init_schema().expect("init_schema");
+    let mut router = ToolRouter::new_empty(store, PathBuf::from("."));
+    let ctx = ToolCallContext::empty();
+
+    let result = router.call_tool(&ctx, "fp_dispatches", &json!({
+        "action": "add",
+        "field_qname": "nonexistent_struct.nonexistent_field",
+        "target_qname": "nonexistent_function"
+    }));
+    // Should return error about unresolved symbols
+    let text = extract_text(&result);
+    assert!(
+        result.is_error == Some(true) || text.contains("error") || text.contains("not found"),
+        "fp_dispatches with unknown field should return error, got: {text}"
+    );
+}
+
+// =========================================================================
 // Bonus: All non-graph tools survive minimal args without panic
 // =========================================================================
 //

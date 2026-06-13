@@ -1,3 +1,20 @@
+//! Store query runtime — direct store reads + source extraction.
+//!
+//! # Responsibilities
+//! - File path resolution from FileId
+//! - Source code extraction via tree-sitter AST
+//! - Capability statistics querying
+//! - Not-indexed guidance message
+//!
+//! # Usage pattern
+//! ```ignore
+//! let path = self.active.store_query_runtime.resolve_file_path(&file_id);
+//! let source = self.active.store_query_runtime.read_symbol_source(&symbol_id);
+//! ```
+//!
+//! # Dependencies
+//! - `atlas_engine::{Store, SourceExtractor, FileId, SymbolId}`
+
 use std::path::PathBuf;
 use std::sync::Arc;
 

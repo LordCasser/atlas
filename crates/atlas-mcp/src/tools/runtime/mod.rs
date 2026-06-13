@@ -1,18 +1,18 @@
-//! Atlas v6.0 Runtime Architecture
+//! Runtime modules — the v6.0 architecture backbone.
 //!
-//! ActiveProject aggregates six focused runtimes that each own
-//! a clearly scoped responsibility. This replaces the v5.0 ToolRouter
-//! God-object pattern.
+//! Each runtime module wraps a specific concern that was previously
+//! crammed into the 15-field ToolRouter god object:
 //!
-//! ## Runtime Map
-//! | Runtime           | Responsibility                    |
-//! |-------------------|-----------------------------------|
-//! | QueryRuntime      | Focus-driven lazy extraction      |
-//! | GraphRuntime      | In-memory call graph lifecycle    |
-//! | AnalysisRuntime   | CFG/dataflow + lifecycle/branch   |
-//! | OverlayRuntime    | fp_dispatches + domain_rules      |
-//! | StoreQueryRuntime | Direct store facts (symbols, files)|
-//! | JobRuntime        | Background tasks + investigation  |
+//! | Module | Concern | Owns |
+//! |--------|---------|------|
+//! | `query_runtime` | Focus-driven lazy extraction | FocusRuntime, CacheState, LazyRefreshQueue |
+//! | `graph_runtime` | In-memory call-graph snapshot | GraphState, SearchEngine, ContextBuilder, GraphProvider |
+//! | `analysis_runtime` | On-demand CFG/dataflow extraction | LazyDataflowService |
+//! | `overlay_runtime` | User annotations (fp_dispatches, domain_rules) | Store (mutation path), generation counter |
+//! | `store_query_runtime` | Direct store queries + source extraction | Store (read path), SourceExtractor |
+//! | `job_runtime` | Background task orchestration | TaskManager, InvestigationState |
+//! | `cache_state` | Index-signature and manual-full-index caching | (data-only) |
+//! | `graph_provider` | Trait contract for graph backends | (trait definition) |
 
 pub(crate) mod cache_state;
 pub(crate) mod graph_provider;

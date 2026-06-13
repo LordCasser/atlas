@@ -4731,6 +4731,93 @@ mod tests {
         );
     }
 
+    // ── Phase 20: Error-path & boundary tests ──────────────────────────────
+
+    /// Contract dispatch returns error for graph tools without symbol.
+    #[test]
+    fn graph_tool_missing_symbol_returns_error() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("."));
+        let ctx = ToolCallContext::empty();
+        let result = router.call_tool(&ctx, "calls", &serde_json::json!({}));
+        assert!(
+            result.is_error == Some(true) || result.content.iter().any(|b| {
+                if let ContentBlock::Text { text } = b {
+                    text.contains("error") || text.contains("missing") || text.contains("symbol")
+                } else {
+                    false
+                }
+            }),
+            "calls without symbol should return error"
+        );
+    }
+
+    /// Contract dispatch returns error for lifecycle without field.
+    #[test]
+    fn lifecycle_missing_field_returns_error() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("."));
+        let ctx = ToolCallContext::empty();
+        let result = router.call_tool(&ctx, "lifecycle", &serde_json::json!({"symbol": "malloc"}));
+        let text = extract_text(&result);
+        assert!(
+            result.is_error == Some(true) || text.contains("field") || text.contains("error") || text.contains("not found"),
+            "lifecycle without field should return error, got: {text}"
+        );
+    }
+
+    /// Contract dispatch returns error for branch_diff without symbol.
+    #[test]
+    fn branch_diff_missing_symbol_returns_error() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("."));
+        let ctx = ToolCallContext::empty();
+        let result = router.call_tool(&ctx, "branch_diff", &serde_json::json!({}));
+        assert!(
+            result.is_error == Some(true) || result.content.iter().any(|b| {
+                if let ContentBlock::Text { text } = b {
+                    text.contains("error") || text.contains("symbol") || text.contains("missing")
+                } else {
+                    false
+                }
+            }),
+            "branch_diff without symbol should return error"
+        );
+    }
+
+    /// Symbol tool handles all view modes through correct contracts.
+    #[test]
+    fn symbol_tool_routes_all_views_correctly() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("."));
+        let _ = router.ensure_graph_initialized();
+        let ctx = ToolCallContext::empty();
+
+        // view=detail → StoreFactQuery (no graph needed)
+        let r1 = router.call_tool(&ctx, "symbol", &serde_json::json!({"symbol": "main", "view": "detail"}));
+        let t1 = extract_text(&r1);
+        assert!(
+            r1.is_error == Some(true) || t1.contains("not found") || t1.contains("error"),
+            "symbol view=detail should not panic, got: {t1}"
+        );
+
+        // view=context → SemanticGraphQuery (needs graph)
+        let r2 = router.call_tool(&ctx, "symbol", &serde_json::json!({"symbol": "main", "view": "context"}));
+        let t2 = extract_text(&r2);
+        assert!(
+            r2.is_error == Some(true) || t2.contains("not found") || t2.contains("error"),
+            "symbol view=context should not panic, got: {t2}"
+        );
+
+        // view=usages → StoreFactQuery
+        let r3 = router.call_tool(&ctx, "symbol", &serde_json::json!({"symbol": "main", "view": "usages"}));
+        let t3 = extract_text(&r3);
+        assert!(
+            r3.is_error == Some(true) || t3.contains("not found") || t3.contains("error"),
+            "symbol view=usages should not panic, got: {t3}"
+        );
+    }
+
     #[test]
     fn does_not_inject_precision_when_full_canonical() {
         let store = test_store();

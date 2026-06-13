@@ -1,3 +1,24 @@
+//! Overlay runtime — user annotation management with generation tracking.
+//!
+//! # Responsibilities
+//! - Centralized mutation for fp_dispatches and domain_rules
+//! - Atomic generation counter for cache invalidation
+//! - All mutation methods bump generation on success
+//!
+//! # Public API
+//! - `upsert_fp_annotation()` / `delete_fp_annotation()`: FP dispatch CRUD
+//! - `upsert_domain_rule()` / `delete_domain_rule()`: domain rule CRUD
+//! - `current_generation()`: read generation counter (for cache comparison)
+//!
+//! # Usage pattern
+//! ```ignore
+//! let ok = self.active.overlay_runtime.upsert_fp_annotation(&annotation)?;
+//! ```
+//!
+//! # Dependencies
+//! - `atlas_engine::Store` (mutation path)
+//! - `std::sync::atomic::AtomicU64`
+
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 

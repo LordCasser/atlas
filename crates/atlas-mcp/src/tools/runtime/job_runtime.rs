@@ -1,3 +1,21 @@
+//! Job runtime — background task orchestration and investigation state.
+//!
+//! # Responsibilities
+//! - TaskManager: create, poll, and complete background jobs
+//! - InvestigationState: MCP-session-scoped lazy extraction prioritization
+//! - Query snapshots: store and retrieve query results for resume_task
+//! - Pending project activations: background project open lifecycle
+//!
+//! # Usage pattern
+//! ```ignore
+//! self.active.job_runtime.store_snapshot(snapshot);
+//! self.active.job_runtime.update_investigation(focus);
+//! ```
+//!
+//! # Dependencies
+//! - `crate::task_manager::TaskManager`
+//! - `atlas_engine::InvestigationFocus`
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, atomic::AtomicBool};
 use std::time::Instant;

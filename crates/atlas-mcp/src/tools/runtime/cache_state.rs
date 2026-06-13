@@ -1,7 +1,10 @@
-//! Index-signature and manual-full-index cache state.
+//! Cache state — index signature and manual-full-index detection cache.
 //!
-//! Extracted from [`super::ToolRouter`] to reduce the God-object footprint.
-//! Owns cached signature, cooldown timer, and manual-full-index flag.
+//! Owned by QueryRuntime. Provides:
+//! - `has_manual_full_index(store)`: cached check for full index existence
+//! - `cached_signature`: current index signature for change detection
+//! - `last_signature_check`: timestamp of last signature comparison
+//! - `invalidate_manual_full_index_cache()`: called after re-index
 
 use std::sync::RwLock;
 use std::time::Instant;
