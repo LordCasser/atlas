@@ -407,7 +407,7 @@ impl GraphSnapshot {
                 target: edge.target,
                 kind: edge.kind,
                 confidence: edge.confidence,
-                provenance: edge.provenance,
+                provenance: edge.provenance.clone(),
                 source_ix: new_src,
                 target_ix: new_tgt,
             });

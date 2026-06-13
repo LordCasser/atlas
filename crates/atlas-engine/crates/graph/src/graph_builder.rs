@@ -286,7 +286,7 @@ impl GraphBuilder {
                                 symbol_id: resolved,
                                 confidence: Confidence::certain() * 0.9f32, // penalty for indirect resolution
                                 strategy: ResolutionStrategy::DataflowPointer,
-                                provenance: target.provenance,
+                                provenance: target.provenance.clone(),
                             };
                             let mut pointer_edges = self.create_edges_for_reference(
                                 reference,
@@ -322,7 +322,7 @@ impl GraphBuilder {
             target.symbol_id,
             edge_kind,
             target.confidence,
-            target.provenance,
+            target.provenance.clone(),
         );
         edge.ref_id = Some(reference.id);
         edge.resolved_by = Some(target.strategy);

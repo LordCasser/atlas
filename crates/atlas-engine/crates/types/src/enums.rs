@@ -729,7 +729,7 @@ impl ResolutionStrategy {
 // ---------------------------------------------------------------------------
 
 /// How a fact was derived.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Provenance {
     #[default]
@@ -740,16 +740,19 @@ pub enum Provenance {
     CallbackPattern,
     /// User-declared annotation (e.g., function-pointer dispatch).
     UserAnnotation,
+    /// Edge produced by a focus closure (carries closure identity).
+    FocusClosure(String),
 }
 
 impl Provenance {
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::TreeSitter => "tree_sitter",
             Self::Scip => "scip",
             Self::Heuristic => "heuristic",
             Self::CallbackPattern => "callback_pattern",
             Self::UserAnnotation => "user_annotation",
+            Self::FocusClosure(_) => "focus_closure",
         }
     }
 
@@ -761,6 +764,7 @@ impl Provenance {
             "heuristic" => Some(Self::Heuristic),
             "callback_pattern" => Some(Self::CallbackPattern),
             "user_annotation" => Some(Self::UserAnnotation),
+            "focus_closure" => Some(Self::FocusClosure(String::new())),
             _ => None,
         }
     }

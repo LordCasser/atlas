@@ -359,13 +359,13 @@ fn semantic_confidence_to_f32(sc: &SemanticConfidence) -> f32 {
 
 /// Build a provenance value for a focus closure edge.
 ///
-/// Uses [`Provenance::Heuristic`] since the enum has no FocusClosure variant.
-/// Closure identity is preserved via the edge's `ref_id` (reference ID) and
-/// `resolved_by` (strategy) fields.
+/// Constructs a [`Provenance::FocusClosure`] carrying the closure identity
+/// so that downstream consumers can distinguish focus-built edges from
+/// full-index (RepoComplete) edges.
 fn build_focus_provenance(
-    _closure_id: &str,
+    closure_id: &str,
     _generation: i64,
     _res: &ClosureResolution,
 ) -> Provenance {
-    Provenance::Heuristic
+    Provenance::FocusClosure(closure_id.to_string())
 }
