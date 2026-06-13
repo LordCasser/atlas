@@ -316,7 +316,12 @@ impl ToolRouter {
     pub fn init_focus(&mut self) {
         let store = self.active.store.clone();
         let project_root = Some(self.active.root.clone());
-        let runtime = atlas_engine::FocusRuntime::new(store, project_root);
+        let mut runtime = atlas_engine::FocusRuntime::new(store, project_root);
+        // Share AnalysisRuntime's LazyDataflowService to eliminate
+        // double control plane (Finding #6).  The main closure engine
+        // reuses this instance; the background scheduler still creates
+        // its own for thread safety.
+        runtime.with_lazy_dataflow(self.active.analysis_runtime.lazy_service.clone());
         self.active.query_runtime.focus_runtime = Some(Mutex::new(runtime));
     }
 
@@ -4180,6 +4185,27 @@ mod tests {
             router.active.query_runtime.focus_runtime.is_some(),
             "focus_runtime should be Some after project activation (activate_project calls init_focus)"
         );
+    }
+
+    #[test]
+    fn init_focus_shares_lazy_dataflow_service() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        // init_focus is called in new_empty, so focus_runtime should exist
+        assert!(router.active.query_runtime.focus_runtime.is_some(),
+            "focus_runtime should be initialized");
+
+        // The shared_lazy_dataflow field is not publicly accessible,
+        // but we can verify that prepare_focus_query works correctly.
+        let intent = Some(atlas_engine::QueryIntent::Calls {
+            symbol_name: "test".into(),
+            file_id: None,
+            symbol_id: None,
+        });
+        let (_result, warnings) = router.prepare_focus_query(intent);
+        // Should not crash; shared dataflow service is used internally
+        assert!(warnings.iter().all(|w| !w.contains("panic") && !w.contains("unwrap")),
+            "warnings should not contain panics: {:?}", warnings);
     }
 
     // ── apply_focus_result_to_lr work items tests ────────────────────

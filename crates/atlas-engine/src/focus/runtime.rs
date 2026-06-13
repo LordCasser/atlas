@@ -101,6 +101,11 @@ pub struct FocusRuntime {
     /// Index mode override for testing. When `Some`, `detect_index_mode()`
     /// returns this value instead of calling `Store::read_index_mode()`.
     detect_index_mode_override: Option<IndexMode>,
+    /// Optional shared dataflow service from the MCP analysis runtime.
+    /// When set, ensure_closure_engine() uses this instead of creating
+    /// a duplicate instance.  The scheduler background engine still
+    /// creates its own instance (independent thread safety boundary).
+    shared_lazy_dataflow: Option<LazyDataflowService>,
 }
 
 impl FocusRuntime {
@@ -117,7 +122,18 @@ impl FocusRuntime {
             started: AtomicBool::new(false),
             bg_handle: None,
             detect_index_mode_override: None,
+            shared_lazy_dataflow: None,
         }
+    }
+
+    /// Share an external [`LazyDataflowService`] with the focus runtime.
+    ///
+    /// When set, `ensure_closure_engine()` uses this instance for the main
+    /// closure engine instead of creating a duplicate.  The scheduler's
+    /// background engine still gets its own copy for thread safety.
+    pub fn with_lazy_dataflow(&mut self, svc: LazyDataflowService) -> &mut Self {
+        self.shared_lazy_dataflow = Some(svc);
+        self
     }
 
     // ── Index mode detection ─────────────────────────────────────────────
@@ -511,10 +527,12 @@ impl FocusRuntime {
             self.store.clone(),
             self.project_root.clone(),
         );
-        let lazy_dataflow = LazyDataflowService::new(
-            self.store.clone(),
-            self.project_root.clone(),
-        );
+        let lazy_dataflow = self
+            .shared_lazy_dataflow
+            .clone()
+            .unwrap_or_else(|| {
+                LazyDataflowService::new(self.store.clone(), self.project_root.clone())
+            });
         let engine = ClosureEngine::new(
             self.store.clone(),
             lazy_structural,

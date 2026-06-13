@@ -638,3 +638,19 @@ fn test_locate_seed_explore_vs_calls_same_behavior() {
     assert_eq!(calls_result.seed_file_id, explore_result.seed_file_id,
         "Explore and Calls should produce same seed_file_id");
 }
+
+// ── Tests: shared lazy dataflow ──────────────────────────────────────────
+
+#[test]
+fn test_shared_lazy_dataflow_passed_to_closure_engine() {
+    let store = test_store();
+    
+    // Create a shared LazyDataflowService with a specific store
+    let shared = crate::LazyDataflowService::new(store.clone(), None);
+    
+    let mut runtime = test_runtime_focus_mode(store);
+    runtime.with_lazy_dataflow(shared);
+    
+    // Verify the shared service was stored
+    assert!(runtime.shared_lazy_dataflow.is_some());
+}

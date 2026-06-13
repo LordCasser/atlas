@@ -26,6 +26,7 @@ use types::structs::{CapabilityMask, precision};
 /// Wraps planner + loader behind a single `ensure_for_position` /
 /// `ensure_for_function` API.  The facade calls this before delegating
 /// to `analysis::TraceEngine`.
+#[derive(Clone)]
 pub struct LazyDataflowService {
     store: Arc<Store>,
     project_root: Option<PathBuf>,
