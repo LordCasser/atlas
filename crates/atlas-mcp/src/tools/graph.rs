@@ -333,7 +333,7 @@ impl ToolRouter {
         // ── callers ────────────────────────────────────────────────────
         let total_callers = all_callers.len();
         let shown = all_callers.iter().take(limit);
-        let nodes: Vec<_> = shown.map(|ix| super::node_json(&self.active.store_query_runtime, snap, *ix, None)).collect();
+        let nodes: Vec<_> = shown.map(|ix| super::node_json(&self.active_mut().store_query_runtime, snap, *ix, None)).collect();
 
         let mut resp = json!({
             "symbol": qname,
@@ -345,10 +345,13 @@ impl ToolRouter {
                 resp["resolution"] = rm;
             }
         }
-        if !self.active.query_runtime.has_full_index(&self.active.store) {
-            resp["note"] = json!(
-                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
-            );
+        {
+            let active = self.active_mut();
+            if !active.query_runtime.has_full_index(&active.store) {
+                resp["note"] = json!(
+                    "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
+                );
+            }
         }
 
         // Lazy structural response with focus-aware envelope
@@ -393,7 +396,7 @@ impl ToolRouter {
         // Lazy structural: prepare focus query for graph edges
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
         for &id in &symbol_ids {
-            if let Some(sym) = self.active.store.find_symbol_by_id(&id).ok().flatten() {
+            if let Some(sym) = self.active_mut().store.find_symbol_by_id(&id).ok().flatten() {
                 file_ids_set.insert(sym.file_id);
             }
         }
@@ -426,7 +429,7 @@ impl ToolRouter {
         // ── callees ────────────────────────────────────────────────────
         let total_callees = all_callees.len();
         let shown = all_callees.iter().take(limit);
-        let nodes: Vec<_> = shown.map(|ix| super::node_json(&self.active.store_query_runtime, snap, *ix, None)).collect();
+        let nodes: Vec<_> = shown.map(|ix| super::node_json(&self.active_mut().store_query_runtime, snap, *ix, None)).collect();
 
         let mut resp = json!({
             "symbol": qname,
@@ -438,10 +441,13 @@ impl ToolRouter {
                 resp["resolution"] = rm;
             }
         }
-        if !self.active.query_runtime.has_full_index(&self.active.store) {
-            resp["note"] = json!(
-                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
-            );
+        {
+            let active = self.active_mut();
+            if !active.query_runtime.has_full_index(&active.store) {
+                resp["note"] = json!(
+                    "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
+                );
+            }
         }
 
         // Lazy structural response with focus-aware envelope
@@ -493,7 +499,7 @@ impl ToolRouter {
         // Lazy structural: ensure graph edges exist before querying.
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
         for &id in &symbol_ids {
-            if let Some(sym) = self.active.store.find_symbol_by_id(&id).ok().flatten() {
+            if let Some(sym) = self.active_mut().store.find_symbol_by_id(&id).ok().flatten() {
                 file_ids_set.insert(sym.file_id);
             }
         }
@@ -522,7 +528,7 @@ impl ToolRouter {
         let mut frontier: Vec<SymbolId> = Vec::new();
         for &root_id in &symbol_ids {
             if let Some(ix) = snap.id_to_idx.get(&root_id).copied() {
-                root_nodes.push(super::node_json(&self.active.store_query_runtime, snap, ix, None));
+                root_nodes.push(super::node_json(&self.active_mut().store_query_runtime, snap, ix, None));
                 visited.insert(root_id);
                 frontier.push(root_id);
                 total_nodes += 1;
@@ -584,7 +590,7 @@ impl ToolRouter {
                             "qualified_name": snap.node(neighbor_ix).qualified_name,
                             "kind": snap.node(neighbor_ix).kind.as_str(),
                             "edge": edge_kind.as_str(),
-                            "file": self.active.store_query_runtime.resolve_file_path(&snap.node(neighbor_ix).file_id),
+                            "file": self.active_mut().store_query_runtime.resolve_file_path(&snap.node(neighbor_ix).file_id),
                             "line": snap.node(neighbor_ix).start_line,
                         }));
                     }
@@ -606,7 +612,7 @@ impl ToolRouter {
                             "qualified_name": snap.node(neighbor_ix).qualified_name,
                             "kind": snap.node(neighbor_ix).kind.as_str(),
                             "edge": edge_kind.as_str(),
-                            "file": self.active.store_query_runtime.resolve_file_path(&snap.node(neighbor_ix).file_id),
+                            "file": self.active_mut().store_query_runtime.resolve_file_path(&snap.node(neighbor_ix).file_id),
                             "line": snap.node(neighbor_ix).start_line,
                         }));
                     }
@@ -642,10 +648,13 @@ impl ToolRouter {
                 resp["resolution"] = rm;
             }
         }
-        if !self.active.query_runtime.has_full_index(&self.active.store) {
-            resp["note"] = json!(
-                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
-            );
+        {
+            let active = self.active_mut();
+            if !active.query_runtime.has_full_index(&active.store) {
+                resp["note"] = json!(
+                    "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
+                );
+            }
         }
 
         let lr = lr.with_lazy_warnings(lazy_warnings);
@@ -736,7 +745,7 @@ impl ToolRouter {
         }
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
         for id in from_ids.iter().chain(to_ids.iter()) {
-            if let Some(sym) = self.active.store.find_symbol_by_id(id).ok().flatten() {
+            if let Some(sym) = self.active_mut().store.find_symbol_by_id(id).ok().flatten() {
                 file_ids_set.insert(sym.file_id);
             }
         }
@@ -748,7 +757,10 @@ impl ToolRouter {
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
         let lazy_warnings = focus_warnings;
         // Cache for no-path diagnostics below (used in user-facing messages).
-        let is_manual_full = self.active.query_runtime.has_full_index(&self.active.store);
+        let is_manual_full = {
+            let active = self.active_mut();
+            active.query_runtime.has_full_index(&active.store)
+        };
 
         let cb = match self.context_builder() {
             Ok(cb) => cb,
@@ -856,7 +868,7 @@ impl ToolRouter {
 
             // Primary path (rank 0) gets the full treatment.
             let primary = &ranked[0];
-            let hops = build_hops(&self.active.store_query_runtime, snap, &primary.path, include_code);
+            let hops = build_hops(&self.active_mut().store_query_runtime, snap, &primary.path, include_code);
             let breakpoints: Vec<serde_json::Value> = primary.path.breakpoints.iter().map(|bp| {
                 json!({ "kind": bp.kind.as_str(), "edge_index": bp.edge_index, "message": bp.message })
             }).collect();
@@ -884,7 +896,7 @@ impl ToolRouter {
                 let alternatives: Vec<serde_json::Value> = ranked[1..]
                     .iter()
                     .map(|r| {
-                        let alt_hops = build_hops(&self.active.store_query_runtime, snap, &r.path, false);
+                        let alt_hops = build_hops(&self.active_mut().store_query_runtime, snap, &r.path, false);
                         json!({
                             "path": alt_hops,
                             "total_weight": r.path.total_weight,
@@ -905,7 +917,7 @@ impl ToolRouter {
                 let mut ambiguity = json!({});
                 if from_ids.len() > 1 {
                     if let Some(ref wid) = winning_from {
-                        ambiguity["matched_from"] = json!(symbol_label(&self.active.store, wid));
+                        ambiguity["matched_from"] = json!(symbol_label(&self.active_mut().store, wid));
                     }
                     ambiguity["from_count"] = json!(from_ids.len());
                     // Add from_candidates list (truncated to MAX_AMBIGUOUS_CANDIDATES)
@@ -914,7 +926,7 @@ impl ToolRouter {
                         .take(MAX_AMBIGUOUS_CANDIDATES)
                         .map(|id| {
                             candidate_json(
-                                &self.active.store,
+                                &self.active_mut().store,
                                 id,
                                 Some(id) == winning_from.as_ref(),
                             )
@@ -926,7 +938,7 @@ impl ToolRouter {
                 }
                 if to_ids.len() > 1 {
                     if let Some(ref wid) = winning_to {
-                        ambiguity["matched_to"] = json!(symbol_label(&self.active.store, wid));
+                        ambiguity["matched_to"] = json!(symbol_label(&self.active_mut().store, wid));
                     }
                     ambiguity["to_count"] = json!(to_ids.len());
                     // Add to_candidates list (truncated to MAX_AMBIGUOUS_CANDIDATES)
@@ -935,7 +947,7 @@ impl ToolRouter {
                         .take(MAX_AMBIGUOUS_CANDIDATES)
                         .map(|id| {
                             candidate_json(
-                                &self.active.store,
+                                &self.active_mut().store,
                                 id,
                                 Some(id) == winning_to.as_ref(),
                             )
@@ -1134,7 +1146,7 @@ impl ToolRouter {
                     let from_candidates: Vec<serde_json::Value> = from_ids
                         .iter()
                         .take(MAX_AMBIGUOUS_CANDIDATES)
-                        .map(|id| candidate_json(&self.active.store, id, false))
+                        .map(|id| candidate_json(&self.active_mut().store, id, false))
                         .collect();
                     if !from_candidates.is_empty() {
                         resp["from_candidates"] = json!(from_candidates);
@@ -1144,7 +1156,7 @@ impl ToolRouter {
                     let to_candidates: Vec<serde_json::Value> = to_ids
                         .iter()
                         .take(MAX_AMBIGUOUS_CANDIDATES)
-                        .map(|id| candidate_json(&self.active.store, id, false))
+                        .map(|id| candidate_json(&self.active_mut().store, id, false))
                         .collect();
                     if !to_candidates.is_empty() {
                         resp["to_candidates"] = json!(to_candidates);
@@ -1290,26 +1302,26 @@ impl ToolRouter {
                 if !suggestions.is_empty() {
                     err.push_str(&format!(". Did you mean: {}?", suggestions.join(", ")));
                 }
-                err.push_str(self.active.store_query_runtime.not_indexed_guidance());
+                err.push_str(self.active_mut().store_query_runtime.not_indexed_guidance());
                 return (err, true);
             }
         };
 
-        let sym = match self.active.store.find_symbol_by_id(&sym_id) {
+        let sym = match self.active_mut().store.find_symbol_by_id(&sym_id) {
             Ok(Some(s)) => s,
             Ok(None) => {
                 let mut err = format!("Symbol not found in store: {qname}");
-                err.push_str(self.active.store_query_runtime.not_indexed_guidance());
+                err.push_str(self.active_mut().store_query_runtime.not_indexed_guidance());
                 return (err, true);
             }
             Err(e) => {
                 let mut err = format!("Lookup error: {e}");
-                err.push_str(self.active.store_query_runtime.not_indexed_guidance());
+                err.push_str(self.active_mut().store_query_runtime.not_indexed_guidance());
                 return (err, true);
             }
         };
 
-        let file_path = self.active.store_query_runtime.resolve_file_path(&sym.file_id);
+        let file_path = self.active_mut().store_query_runtime.resolve_file_path(&sym.file_id);
 
         self.update_investigation(InvestigationFocus::Symbol(sym.id));
 
@@ -1321,20 +1333,24 @@ impl ToolRouter {
         });
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 
-        let sym_repo = atlas_engine::dossier::SymbolRepo::new(self.active.store.clone());
+        let (store_clone, root_clone) = {
+            let active = self.active_mut();
+            (active.store.clone(), active.root.clone())
+        };
+        let sym_repo = atlas_engine::dossier::SymbolRepo::new(store_clone.clone());
         let source_repo = atlas_engine::dossier::SourceRepo::new(
-            self.active.store.clone(),
-            self.active.root.clone(),
+            store_clone.clone(),
+            root_clone,
         );
         let cb = match self.context_builder() {
             Ok(cb) => cb,
             Err(e) => return (format!("Internal error: {e}"), true),
         };
         let relation_repo = atlas_engine::dossier::RelationRepo::new(
-            self.active.store.clone(),
+            store_clone.clone(),
             cb.graph_snapshot(),
         );
-        let file_repo = atlas_engine::dossier::FileFactsRepo::new(self.active.store.clone());
+        let file_repo = atlas_engine::dossier::FileFactsRepo::new(store_clone);
 
         let request = atlas_engine::dossier::types::ExploreRequest {
             symbol: qname.to_string(),
@@ -1477,7 +1493,7 @@ impl ToolRouter {
 
         // Lazy structural: prepare focus query for impact analysis
         let file_id = self
-            .active.store
+            .active_mut().store
             .find_symbol_by_id(&sid)
             .ok()
             .flatten()
@@ -1533,7 +1549,7 @@ impl ToolRouter {
             .into_iter()
             .map(|(fid, symbols)| {
                 json!({
-                    "file": self.active.store_query_runtime.resolve_file_path(&fid),
+                    "file": self.active_mut().store_query_runtime.resolve_file_path(&fid),
                     "symbols": symbols,
                 })
             })
@@ -1543,16 +1559,16 @@ impl ToolRouter {
         let mut invariants: Vec<serde_json::Value> = Vec::new();
         let mut lifecycle_paths: Vec<serde_json::Value> = Vec::new();
         let domain_rules = if semantic {
-            match self.active.store.list_domain_rules(None, None) {
+            match self.active_mut().store.list_domain_rules(None, None) {
                 Ok(_rows) => {
                     let lang_str = self
-                        .active.store
+                        .active_mut().store
                         .find_symbol_by_id(&sid)
                         .ok()
                         .flatten()
                         .map(|s| s.language.as_str())
                         .unwrap_or("c");
-                    Some(analysis::CppOwnershipRules::load_for(&self.active.store, lang_str))
+                    Some(analysis::CppOwnershipRules::load_for(&self.active_mut().store, lang_str))
                 }
                 Err(e) => {
                     tracing::warn!("Failed to load domain rules: {e}");
@@ -1572,7 +1588,7 @@ impl ToolRouter {
                 }
 
                 // Load CFG for this function
-                let cfg_nodes = match self.active.store.find_cfg_nodes_by_function(&node.symbol_id) {
+                let cfg_nodes = match self.active_mut().store.find_cfg_nodes_by_function(&node.symbol_id) {
                     Ok(nodes) => nodes,
                     Err(_) => continue,
                 };
@@ -1582,12 +1598,12 @@ impl ToolRouter {
 
                 // Run branch diff analysis
                 let cfg_edges = self
-                    .active.store
+                    .active_mut().store
                     .find_cfg_edges_by_function(&node.symbol_id)
                     .unwrap_or_default();
                 // ── Semantic branch diff with dataflow composition ──
                 let lang = self
-                    .active.store
+                    .active_mut().store
                     .find_symbol_by_id(&node.symbol_id)
                     .ok()
                     .flatten()
@@ -1597,14 +1613,14 @@ impl ToolRouter {
 
                 // Load DataFlow nodes and edges
                 let data_nodes = self
-                    .active.store
+                    .active_mut().store
                     .find_data_nodes_by_function(&node.symbol_id)
                     .unwrap_or_default();
                 let dataflow_edges = if data_nodes.is_empty() {
                     vec![]
                 } else {
                     let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
-                    self.active.store
+                    self.active_mut().store
                         .find_dataflow_edges_by_sources(&all_ids)
                         .unwrap_or_default()
                 };
@@ -1733,13 +1749,16 @@ impl ToolRouter {
                 "domain_rules_applied": domain_rules.is_some(),
             });
         }
-        if !self.active.query_runtime.has_full_index(&self.active.store) {
-            resp["capability_note"] = json!(
-                "manifest-only: structural data incomplete. Run 'atlas index' for full results."
-            );
-            resp["note"] = json!(
-                "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
-            );
+        {
+            let active = self.active_mut();
+            if !active.query_runtime.has_full_index(&active.store) {
+                resp["capability_note"] = json!(
+                    "manifest-only: structural data incomplete. Run 'atlas index' for full results."
+                );
+                resp["note"] = json!(
+                    "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
+                );
+            }
         }
 
         if direction == TraversalDirection::Both
@@ -1858,7 +1877,7 @@ mod tests {
         // Bump graph_generation to signal that the store has changed (external
         // store mutation that bypasses the overlay runtime). This replaces the
         // old TTL + signature-check cooldown bypass.
-        router.active.graph_runtime.invalidation.graph_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        router.active_mut().graph_runtime.invalidation.graph_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         router.maybe_refresh_graph().unwrap();
         let after = router
@@ -2798,11 +2817,11 @@ mod tests {
             .unwrap();
         let mut router = test_router(store);
         // After construction, focus_runtime is always present (no Option wrapper).
-        let mode = router.active.query_runtime.detect_index_mode();
+        let mode = router.active_mut().query_runtime.detect_index_mode();
         assert_eq!(mode, atlas_engine::focus::runtime::IndexMode::Focus);
         // init_focus is idempotent.
         router.init_focus();
-        let mode2 = router.active.query_runtime.detect_index_mode();
+        let mode2 = router.active_mut().query_runtime.detect_index_mode();
         assert_eq!(mode2, atlas_engine::focus::runtime::IndexMode::Focus);
     }
 
@@ -2851,8 +2870,8 @@ mod tests {
         let mut router = test_router(store);
         // Simulate a full index so prepare_focus_query returns early
         // without focus data — the equivalent of the old "no focus" path.
-        let signature = router.active.store.index_signature().unwrap_or_default();
-        *router.active.query_runtime.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) =
+        let signature = router.active_mut().store.index_signature().unwrap_or_default();
+        *router.active_mut().query_runtime.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) =
             Some((signature, true));
         router.ensure_graph_initialized().unwrap();
         // focus is NOT active for this query — focus fields should NOT appear

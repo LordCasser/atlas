@@ -21,7 +21,7 @@ impl ToolRouter {
         input: &SymbolInput,
         policy: SymbolResolutionPolicy,
     ) -> Result<SymbolResolution, String> {
-        atlas_engine::symbol_selector::resolve_symbol_input(&self.active.store, input, policy)
+        atlas_engine::symbol_selector::resolve_symbol_input(&self.active().store, input, policy)
     }
 
 }

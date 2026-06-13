@@ -74,14 +74,14 @@ impl ToolRouter {
 
         // Try to find symbol by qname before resolution for initial investigation
         let initial_sid = self
-            .active.store
+            .active_mut().store
             .find_symbols_by_qname(qname)
             .ok()
             .and_then(|v| if v.len() == 1 { Some(v[0].id) } else { None });
         if let Some(sid) = initial_sid {
             self.update_investigation(InvestigationFocus::Symbol(sid));
         }
-        let investigation = self.active.job_runtime.investigation_state.active_investigation.clone();
+        let investigation = self.active_mut().job_runtime.investigation_state.active_investigation.clone();
 
         let (resolution, focus_result) = match self.resolve_context_symbol(
             ctx,
@@ -165,7 +165,7 @@ impl ToolRouter {
 
         // ── subject_source ─────────────────────────────────────────────
         let subject_source = if include_code {
-            if let Some(src) = self.active.store_query_runtime.read_symbol_source(sid) {
+            if let Some(src) = self.active_mut().store_query_runtime.read_symbol_source(sid) {
                 let lines: Vec<String> = src.lines().map(|l| l.to_string()).collect();
                 let total = lines.len() as u32;
                 Some(json!({
@@ -317,7 +317,7 @@ impl ToolRouter {
                 resolved,
             } => {
                 // Look up symbol info for file_id
-                if let Ok(Some(sym)) = self.active.store.find_symbol_by_id(&symbol_id) {
+                if let Ok(Some(sym)) = self.active_mut().store.find_symbol_by_id(&symbol_id) {
                     let (focus_result, focus_warnings) = self.prepare_focus_query(
                         Some(atlas_engine::QueryIntent::Context {
                             symbol_name: qname.to_string(),
@@ -346,7 +346,7 @@ impl ToolRouter {
         }
 
         // ── Tier 2: name-based search (look for symbol by simple name) ──
-        let name_matches = self.active.store.find_symbols_by_name(qname).unwrap_or_else(|e| {
+        let name_matches = self.active_mut().store.find_symbols_by_name(qname).unwrap_or_else(|e| {
             tracing::warn!("DB error on find_symbols_by_name: {}", e);
             Default::default()
         });
@@ -400,7 +400,7 @@ impl ToolRouter {
                     .take(MAX_AGGREGATION_CANDIDATES)
                     .map(|s| {
                         let line = s.range.start_line.saturating_add(1);
-                        let file_path = self.active.store_query_runtime.resolve_file_path(&s.file_id);
+                        let file_path = self.active_mut().store_query_runtime.resolve_file_path(&s.file_id);
                         ScoredCandidate {
                             qualified_name: s.qualified_name.clone(),
                             file_path: file_path.clone(),
@@ -457,7 +457,7 @@ impl ToolRouter {
         }
 
         // Re-check name after lazy extraction
-        let fresh_matches = self.active.store.find_symbols_by_name(qname).unwrap_or_else(|e| {
+        let fresh_matches = self.active_mut().store.find_symbols_by_name(qname).unwrap_or_else(|e| {
             tracing::warn!("DB error on retry find_symbols_by_name: {}", e);
             Default::default()
         });
@@ -474,7 +474,7 @@ impl ToolRouter {
                 .take(MAX_AGGREGATION_CANDIDATES)
                 .map(|s| {
                     let line = s.range.start_line.saturating_add(1);
-                    let file_path = self.active.store_query_runtime.resolve_file_path(&s.file_id);
+                    let file_path = self.active_mut().store_query_runtime.resolve_file_path(&s.file_id);
                     ScoredCandidate {
                         qualified_name: s.qualified_name.clone(),
                         file_path: file_path.clone(),
@@ -501,7 +501,7 @@ impl ToolRouter {
         let mut err = format!(
             "Symbol '{qname}' not found by qualified name or simple name. Try 'search' first to discover the correct qualified_name for this symbol."
         );
-        err.push_str(self.active.store_query_runtime.not_indexed_guidance());
+        err.push_str(self.active_mut().store_query_runtime.not_indexed_guidance());
         Ok((ContextResolution::NotFound(err), focus_result_acc))
     }
 }

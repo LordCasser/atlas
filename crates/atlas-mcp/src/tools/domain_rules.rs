@@ -31,7 +31,7 @@ impl ToolRouter {
             );
         }
 
-        match self.active.overlay_runtime.upsert_domain_rule(
+        match self.active_mut().overlay_runtime.upsert_domain_rule(
             language, rule_kind, pattern, "exact", "user", "enabled", confidence, None,
         ) {
             Ok(id) => {
@@ -65,7 +65,7 @@ impl ToolRouter {
                 if rule_id.is_empty() {
                     return ("Missing rule_id for delete action".to_string(), true);
                 }
-                match self.active.overlay_runtime.delete_domain_rule(rule_id) {
+                match self.active_mut().overlay_runtime.delete_domain_rule(rule_id) {
                     Ok(true) => {
                         let resp = json!({"ok": true, "deleted": rule_id});
                         (
@@ -89,7 +89,7 @@ impl ToolRouter {
                 } else {
                     Some(status)
                 };
-                match self.active.store.list_domain_rules(lang_filter, status_filter) {
+                match self.active_mut().store.list_domain_rules(lang_filter, status_filter) {
                     Ok(rules) => {
                         let items: Vec<_> = rules
                             .iter()
@@ -136,7 +136,7 @@ impl ToolRouter {
         use atlas_engine::rule_engine::learning::RuleLearningStrategy;
 
         let learner = CLearningStrategy;
-        match learner.discover_candidates(&self.active.store) {
+        match learner.discover_candidates(&self.active_mut().store) {
             Ok(candidates) => {
                 let filtered: Vec<_> = candidates
                     .iter()

@@ -43,32 +43,35 @@ impl ToolRouter {
         // Parse include_roots
         let (_, root_warnings) = self.include_roots_from_args(args);
 
-        let file_id = match resolve_file_id(&self.active.store, &self.active.root, file_hex, file_path) {
-            Ok(Some(fid)) => fid,
-            Ok(None) => {
-                let msg = if file_hex.is_some() || file_path.is_some() {
-                    if self.active.store.count_files().unwrap_or(0) == 0 {
-                        "No files indexed yet. Please run the 'index' tool first to build the code index, then retry this query."
+        let file_id = {
+            let active = self.active_mut();
+            match resolve_file_id(&active.store, &active.root, file_hex, file_path) {
+                Ok(Some(fid)) => fid,
+                Ok(None) => {
+                    let msg = if file_hex.is_some() || file_path.is_some() {
+                        if active.store.count_files().unwrap_or(0) == 0 {
+                            "No files indexed yet. Please run the 'index' tool first to build the code index, then retry this query."
+                        } else {
+                            "File not found in index. Check that the file_id or file_path is correct and belongs to the indexed project."
+                        }
                     } else {
-                        "File not found in index. Check that the file_id or file_path is correct and belongs to the indexed project."
-                    }
-                } else {
-                    "Missing file_id or file_path"
-                };
-                let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_point", msg);
-                return (
-                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                    true,
-                );
-            }
-            Err(e) => {
-                let mut err_msg = format!("Error resolving file: {e}");
-                err_msg.push_str(self.active.store_query_runtime.not_indexed_guidance());
-                let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_point", &err_msg);
-                return (
-                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                    true,
-                );
+                        "Missing file_id or file_path"
+                    };
+                    let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_point", msg);
+                    return (
+                        serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                        true,
+                    );
+                }
+                Err(e) => {
+                    let mut err_msg = format!("Error resolving file: {e}");
+                    err_msg.push_str(active.store_query_runtime.not_indexed_guidance());
+                    let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_point", &err_msg);
+                    return (
+                        serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                        true,
+                    );
+                }
             }
         };
 
@@ -101,7 +104,7 @@ impl ToolRouter {
         }
         ctx.send_progress(0.8, "Running trace point...");
         let mut resp = self
-            .active.engine
+            .active_mut().engine
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .trace_point(&file_id, line, column);
@@ -153,33 +156,36 @@ impl ToolRouter {
         // Parse include_roots
         let (_, root_warnings) = self.include_roots_from_args(args);
 
-        let file_id = match resolve_file_id(&self.active.store, &self.active.root, file_hex, file_path) {
-            Ok(Some(fid)) => fid,
-            Ok(None) => {
-                let msg = if file_hex.is_some() || file_path.is_some() {
-                    if self.active.store.count_files().unwrap_or(0) == 0 {
-                        "No files indexed yet. Please run the 'index' tool first to build the code index, then retry this query."
+        let file_id = {
+            let active = self.active_mut();
+            match resolve_file_id(&active.store, &active.root, file_hex, file_path) {
+                Ok(Some(fid)) => fid,
+                Ok(None) => {
+                    let msg = if file_hex.is_some() || file_path.is_some() {
+                        if active.store.count_files().unwrap_or(0) == 0 {
+                            "No files indexed yet. Please run the 'index' tool first to build the code index, then retry this query."
+                        } else {
+                            "File not found in index. Check that the file_id or file_path is correct and belongs to the indexed project."
+                        }
                     } else {
-                        "File not found in index. Check that the file_id or file_path is correct and belongs to the indexed project."
-                    }
-                } else {
-                    "Missing file_id or file_path"
-                };
-                let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_variable", msg);
-                return (
-                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                    true,
-                );
-            }
-            Err(e) => {
-                let mut err_msg = format!("Error resolving file: {e}");
-                err_msg.push_str(self.active.store_query_runtime.not_indexed_guidance());
-                let resp: TraceQueryResponse<()> =
-                    TraceQueryResponse::err("trace_variable", &err_msg);
-                return (
-                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                    true,
-                );
+                        "Missing file_id or file_path"
+                    };
+                    let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_variable", msg);
+                    return (
+                        serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                        true,
+                    );
+                }
+                Err(e) => {
+                    let mut err_msg = format!("Error resolving file: {e}");
+                    err_msg.push_str(active.store_query_runtime.not_indexed_guidance());
+                    let resp: TraceQueryResponse<()> =
+                        TraceQueryResponse::err("trace_variable", &err_msg);
+                    return (
+                        serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                        true,
+                    );
+                }
             }
         };
 
@@ -214,7 +220,7 @@ impl ToolRouter {
         // in a single call.  The response already carries lazy_summary,
         // diagnostics, and partial_result from the dataflow layer.
         let mut resp = self
-            .active.engine
+            .active_mut().engine
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .trace_variable(&file_id, line, column, max_depth);
@@ -309,7 +315,7 @@ impl ToolRouter {
                 // ties.  Pick the first candidate and look up its SymbolId
                 // from the store so we can proceed with tracing.
                 let first = &candidates[0];
-                let sid = match self.active.store.find_symbols_by_qname(&first.qualified_name) {
+                let sid = match self.active_mut().store.find_symbols_by_qname(&first.qualified_name) {
                     Ok(symbols) => match symbols.first() {
                         Some(s) => s.id,
                         None => {
@@ -342,7 +348,7 @@ impl ToolRouter {
         // Update investigation with the target symbol
         self.update_investigation(InvestigationFocus::Symbol(target_id));
         // Ensure structural data for this symbol's file
-        if let Ok(Some(sym)) = self.active.store.find_symbol_by_id(&target_id) {
+        if let Ok(Some(sym)) = self.active_mut().store.find_symbol_by_id(&target_id) {
             let (focus_result, focus_warnings) = self.prepare_focus_query(
                 Some(atlas_engine::QueryIntent::Calls {
                     symbol_name: sym.name.clone(),
@@ -356,7 +362,7 @@ impl ToolRouter {
             lazy_warnings = focus_warnings;
         }
         let resp = self
-            .active.engine
+            .active_mut().engine
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .trace_callers(&target_id, max_depth);
@@ -485,7 +491,7 @@ impl ToolRouter {
             } => (symbol_id, Some(resolved)),
             SymbolResolution::Ambiguous { candidates, .. } => {
                 let first = &candidates[0];
-                let sid = match self.active.store.find_symbols_by_qname(&first.qualified_name) {
+                let sid = match self.active_mut().store.find_symbols_by_qname(&first.qualified_name) {
                     Ok(symbols) => match symbols.first() {
                         Some(s) => s.id,
                         None => {
@@ -523,7 +529,7 @@ impl ToolRouter {
             } => (symbol_id, Some(resolved)),
             SymbolResolution::Ambiguous { candidates, .. } => {
                 let first = &candidates[0];
-                let sid = match self.active.store.find_symbols_by_qname(&first.qualified_name) {
+                let sid = match self.active_mut().store.find_symbols_by_qname(&first.qualified_name) {
                     Ok(symbols) => match symbols.first() {
                         Some(s) => s.id,
                         None => {
@@ -550,7 +556,7 @@ impl ToolRouter {
 
         // Ensure structural for endpoint files via focus query
         let intent = self
-            .active.store
+            .active_mut().store
             .find_symbol_by_id(&from_id)
             .ok()
             .flatten()
@@ -565,7 +571,7 @@ impl ToolRouter {
         }
 
         let mut resp = self
-            .active.engine
+            .active_mut().engine
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .trace_forward(&from_id, &to_id, max_depth);

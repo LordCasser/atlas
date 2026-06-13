@@ -13,7 +13,7 @@ impl ToolRouter {
             Err(_) => return (format!("Invalid file_id: {file_id_hex}"), true),
         };
 
-        let imports = match self.active.store.find_imports_by_file(&fid) {
+        let imports = match self.active().store.find_imports_by_file(&fid) {
             Ok(i) => i,
             Err(e) => return (format!("Failed to query imports: {e}"), true),
         };
@@ -31,7 +31,7 @@ impl ToolRouter {
 
         (
             serde_json::to_string_pretty(&json!({
-                "file": self.active.store_query_runtime.resolve_file_path(&fid),
+                "file": self.active().store_query_runtime.resolve_file_path(&fid),
                 "total_dependencies": imports.len(),
                 "dependencies": deps,
             }))

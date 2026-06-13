@@ -71,7 +71,7 @@ impl ToolRouter {
         // When a manual full structural index exists (built via CLI `atlas index`),
         // scope restrictions are lifted and lazy structural is disabled — all
         // files already have complete structural facts.
-        let is_manual_full = self.active.query_runtime.has_full_index(&self.active.store);
+        let is_manual_full = self.active().query_runtime.has_full_index(&self.active().store);
 
         let scope = match scope {
             Some(s) => s.to_string(),
@@ -140,7 +140,7 @@ impl ToolRouter {
     ) -> (String, bool) {
         ctx.send_progress(0.1, &format!("Searching for '{query}' in {scope}..."));
 
-        if self.active.store.count_files().unwrap_or(0) == 0 {
+        if self.active().store.count_files().unwrap_or(0) == 0 {
             return (
                 serde_json::to_string_pretty(&json!({
                     "ok": false,
@@ -188,16 +188,16 @@ impl ToolRouter {
         // Engine::from_store is a lightweight constructor — all inner services
         // share the same Arc<Store>.
         let engine: Arc<Engine> = Arc::new(Engine::from_store(
-            self.active.store.clone(),
-            Some(&self.active.root),
+            self.active().store.clone(),
+            Some(&self.active().root),
         ));
-        let svc = ScopedSearchService::new(self.active.store.clone(), engine);
+        let svc = ScopedSearchService::new(self.active().store.clone(), engine);
 
         let engine_resp = match svc.execute(req) {
             Ok(r) => r,
             Err(err) => {
                 let mut s = format!("Search error: {err}");
-                s.push_str(self.active.store_query_runtime.not_indexed_guidance());
+                s.push_str(self.active().store_query_runtime.not_indexed_guidance());
                 return (s, true);
             }
         };
@@ -239,11 +239,11 @@ impl ToolRouter {
         include_roots: Vec<atlas_engine::IncludeRoot>,
         root_warnings: Vec<String>,
     ) -> (String, bool) {
-        let task_id = self.active.job_runtime.task_manager.create_task("search", "search");
+        let task_id = self.active().job_runtime.task_manager.create_task("search", "search");
         let tid = task_id.clone();
-        let store = self.active.store.clone();
-        let project_root = self.active.root.clone();
-        let task_manager = self.active.job_runtime.task_manager.clone();
+        let store = self.active().store.clone();
+        let project_root = self.active().root.clone();
+        let task_manager = self.active().job_runtime.task_manager.clone();
         let q = query.to_string();
         let k = kind.map(|s| s.to_string());
         let sc = scope.to_string();
@@ -337,7 +337,7 @@ impl ToolRouter {
                         return None;
                     }
                     let file_id = FileId::generate(normalized);
-                    if self.active.store.get_file(&file_id).ok().flatten().is_none() {
+                    if self.active().store.get_file(&file_id).ok().flatten().is_none() {
                         return Some(format!(
                             "file_path '{fp}' does not match any file in the project"
                         ));
@@ -396,7 +396,7 @@ impl ToolRouter {
         match resolution {
             Ok(SymbolResolution::Single { symbol_id, .. }) => {
                 // Found a unique symbol on the first try
-                if let Ok(Some(s)) = self.active.store.find_symbol_by_id(&symbol_id) {
+                if let Ok(Some(s)) = self.active().store.find_symbol_by_id(&symbol_id) {
                     self.update_investigation(InvestigationFocus::Symbol(s.id));
                     // Ensure structural data so caller/callee results
                     // include fresh edges from lazy extraction.
@@ -418,7 +418,7 @@ impl ToolRouter {
                         SymbolResolutionPolicy::UniqueOrCandidates,
                     ) {
                         Ok(SymbolResolution::Single { symbol_id: new_id, .. }) => self
-                            .active.store
+                            .active().store
                             .find_symbol_by_id(&new_id)
                             .unwrap_or_default()
                             .unwrap_or(s),
@@ -433,7 +433,7 @@ impl ToolRouter {
                     };
                 } else {
                     let mut err = format!("Symbol not found: {qname}");
-                    err.push_str(self.active.store_query_runtime.not_indexed_guidance());
+                    err.push_str(self.active().store_query_runtime.not_indexed_guidance());
                     return (err, true);
                 }
             }
@@ -461,12 +461,12 @@ impl ToolRouter {
                     SymbolResolutionPolicy::UniqueOrCandidates,
                 ) {
                     Ok(SymbolResolution::Single { symbol_id, .. }) => {
-                        if let Ok(Some(s)) = self.active.store.find_symbol_by_id(&symbol_id) {
+                        if let Ok(Some(s)) = self.active().store.find_symbol_by_id(&symbol_id) {
                             self.update_investigation(InvestigationFocus::Symbol(s.id));
                             sym = s;
                         } else {
                             let mut err = format!("Symbol not found: {qname}");
-                            err.push_str(self.active.store_query_runtime.not_indexed_guidance());
+                            err.push_str(self.active().store_query_runtime.not_indexed_guidance());
                             return (err, true);
                         }
                     }
@@ -479,7 +479,7 @@ impl ToolRouter {
                     }
                     Ok(SymbolResolution::NotFound { .. }) => {
                         let mut err = format!("Symbol not found: {qname}");
-                        err.push_str(self.active.store_query_runtime.not_indexed_guidance());
+                        err.push_str(self.active().store_query_runtime.not_indexed_guidance());
                         return (err, true);
                     }
                     Err(err) => {
@@ -501,26 +501,26 @@ impl ToolRouter {
             .callers(&sym.id)
             .callers
             .iter()
-            .map(|&ix| super::node_json(&self.active.store_query_runtime, snap, ix, None))
+            .map(|&ix| super::node_json(&self.active().store_query_runtime, snap, ix, None))
             .collect();
         let callee_nodes: Vec<_> = graph
             .callees(&sym.id)
             .callees
             .iter()
-            .map(|&ix| super::node_json(&self.active.store_query_runtime, snap, ix, None))
+            .map(|&ix| super::node_json(&self.active().store_query_runtime, snap, ix, None))
             .collect();
 
         let mut result = json!({
             "name": sym.name, "qualified_name": sym.qualified_name,
             "kind": sym.kind.as_str(), "language": sym.language.as_str(),
             "visibility": sym.visibility.as_ref().map(|v| v.as_str()), "signature": sym.signature,
-            "file": self.active.store_query_runtime.resolve_file_path(&sym.file_id),
+            "file": self.active().store_query_runtime.resolve_file_path(&sym.file_id),
             "range": { "line": sym.range.start_line, "column": sym.range.start_column },
             "caller_count": caller_nodes.len(), "callee_count": callee_nodes.len(),
             "callers": caller_nodes, "callees": callee_nodes,
         });
         if include_code {
-            if let Some(src) = self.active.store_query_runtime.read_symbol_source(&sym.id) {
+            if let Some(src) = self.active().store_query_runtime.read_symbol_source(&sym.id) {
                 result["source"] = json!(src);
             }
         }

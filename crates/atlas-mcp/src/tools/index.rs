@@ -114,12 +114,12 @@ impl ToolRouter {
             .unwrap_or(false);
         if background {
             if let Err(err) =
-                guard_against_precision_downgrade(&self.active.store, &mode, force_reindex, "MCP index")
+                guard_against_precision_downgrade(&self.active().store, &mode, force_reindex, "MCP index")
                     .map_err(|e| e.to_string())
             {
                 return (index_error_result(err), true);
             }
-            self.active.query_runtime.cache.invalidate_manual_full_index_cache();
+            self.active().query_runtime.cache.invalidate_manual_full_index_cache();
             return self.handle_index_background(args, mode, force_reindex);
         }
 
@@ -144,9 +144,9 @@ impl ToolRouter {
 
         // Acquire FileLock for persistent stores to prevent races with CLI
         // or other MCP processes writing the same .atlas/atlas.db.
-        let is_persistent = self.active.store.db_path() != std::path::Path::new(":memory:");
+        let is_persistent = self.active().store.db_path() != std::path::Path::new(":memory:");
         let _lock_guard = if is_persistent {
-            match FileLock::acquire(&self.active.store) {
+            match FileLock::acquire(&self.active().store) {
                 Ok(g) => Some(g),
                 Err(e) => {
                     result.errors.push(format!(
@@ -160,7 +160,7 @@ impl ToolRouter {
             None
         };
         if let Err(err) =
-            guard_against_precision_downgrade(&self.active.store, &mode, force_reindex, "MCP index")
+            guard_against_precision_downgrade(&self.active().store, &mode, force_reindex, "MCP index")
                 .map_err(|e| e.to_string())
         {
             result.errors.push(err);
@@ -175,8 +175,8 @@ impl ToolRouter {
             task_id: None,
         };
         match run_mcp_index(
-            &self.active.store,
-            &self.active.root,
+            &self.active().store,
+            &self.active().root,
             mode,
             include_patterns,
             exclude_patterns,
@@ -190,9 +190,9 @@ impl ToolRouter {
                 result.symbols_found = stats.symbols;
                 result.references_resolved = stats.resolved;
                 // Re-check layer distribution after any explicit MCP index.
-                self.active.query_runtime.cache.invalidate_manual_full_index_cache();
+                self.active().query_runtime.cache.invalidate_manual_full_index_cache();
                 // Bump graph_generation so maybe_refresh_graph detects the new data.
-                self.active.graph_runtime.invalidation.graph_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.active().graph_runtime.invalidation.graph_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             Err(e) => {
                 result.errors.push(format!("Index failed: {e:#}"));
@@ -226,15 +226,15 @@ impl ToolRouter {
         mode: ExtractionMode,
         force_reindex: bool,
     ) -> (String, bool) {
-        let task_id = self.active.job_runtime.task_manager.create_task("index", "index");
+        let task_id = self.active().job_runtime.task_manager.create_task("index", "index");
         let auto_background = args
             .get("_auto_background")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let tid = task_id.clone();
-        let task_manager = self.active.job_runtime.task_manager.clone();
-        let store = self.active.store.clone();
-        let project_root = self.active.root.clone();
+        let task_manager = self.active().job_runtime.task_manager.clone();
+        let store = self.active().store.clone();
+        let project_root = self.active().root.clone();
 
         let (include_patterns, exclude_patterns) = match parse_include_exclude_patterns(args) {
             Ok(patterns) => patterns,

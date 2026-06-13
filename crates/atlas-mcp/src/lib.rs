@@ -223,10 +223,10 @@ impl ServerHandler for AtlasMcpService {
             // ── wait_for_task: async poll loop (must not hold std Mutex) ──
             if tool_name == "wait_for_task" {
                 let tm = {
-                    let router = self.lock_router().map_err(|_| {
+                    let mut router = self.lock_router().map_err(|_| {
                         rmcp::ErrorData::internal_error("Atlas MCP router lock poisoned", None)
                     })?;
-                    Arc::clone(&router.active.job_runtime.task_manager)
+                    Arc::clone(&router.project.require_mut().unwrap().job_runtime.task_manager)
                 };
 
                 let wfr = tools::wait_for::handle_wait_for_task(&tm, &args).await;

@@ -28,6 +28,7 @@ use symbol_selector::{parse_symbol_input, SymbolInput};
 use crate::tools::query_snapshot::QuerySnapshot;
 
 use crate::tools::active_project::ActiveProject;
+use crate::tools::project_slot::ProjectSlot;
 use crate::tools::tool_contract::{contract_for, ToolContract};
 
 /// Progress report tuple: (progress, total, message)
@@ -126,6 +127,7 @@ pub(crate) const MAX_ANNOTATION_QNAME_LENGTH: usize = 512;
 pub(crate) const MAX_FILE_PATH_LENGTH: usize = 4096;
 
 pub(crate) mod active_project;
+pub(crate) mod project_slot;
 pub(crate) mod analysis_response;
 pub(crate) mod annotations;
 pub(crate) mod atlas_jobs;
@@ -230,7 +232,7 @@ pub(crate) fn apply_focus_result_to_lr(
 
 /// Dispatches tools/list and tools/call.
 pub struct ToolRouter {
-    pub(crate) active: ActiveProject,
+    pub(crate) project: ProjectSlot,
     tools: Vec<Tool>,
 }
 
@@ -250,7 +252,7 @@ impl ToolRouter {
             .expect("Failed to construct ActiveProject");
         // Initialize graph state with pre-built search and context engines.
         active.graph_runtime.state.init_with(search, context);
-        let mut router = Self { active, tools: make_all_tools() };
+        let mut router = Self { project: ProjectSlot::new(Some(active)), tools: make_all_tools() };
         router.init_focus();
         router
     }
@@ -260,14 +262,27 @@ impl ToolRouter {
     pub fn new_empty(store: Arc<Store>, project_root: std::path::PathBuf) -> Self {
         let active = ActiveProject::new(store, project_root)
             .expect("Failed to construct ActiveProject");
-        let mut router = Self { active, tools: make_all_tools() };
+        let mut router = Self { project: ProjectSlot::new(Some(active)), tools: make_all_tools() };
         router.init_focus();
         router
     }
 
+    /// Access the active project (mutable). Panics if no project is active.
+    /// Callers are protected by the gate in `call_tool()`.
+    fn active_mut(&mut self) -> &mut ActiveProject {
+        self.project.require_mut()
+            .expect("call_tool gate ensures project is active")
+    }
+
+    /// Access the active project (immutable). Panics if no project is active.
+    fn active(&self) -> &ActiveProject {
+        self.project.require()
+            .expect("call_tool gate ensures project is active")
+    }
+
     /// Return the backing store.
     pub fn store(&self) -> Arc<Store> {
-        self.active.store.clone()
+        self.active().store.clone()
     }
 
     /// Return whether a tool needs the in-memory graph/search/context snapshot.
@@ -291,18 +306,18 @@ impl ToolRouter {
     /// This is called only for graph-backed tool calls after the MCP handshake
     /// completes, so the client doesn't timeout waiting for a startup response.
     pub fn ensure_graph_initialized(&mut self) -> anyhow::Result<()> {
-        self.active.graph_runtime.ensure_initialized()?;
+        self.active_mut().graph_runtime.ensure_initialized()?;
         Ok(())
     }
 
     /// Access the search engine.
     pub(crate) fn search_engine(&self) -> anyhow::Result<&SearchEngine> {
-        self.active.graph_runtime.search_engine()
+        self.active().graph_runtime.search_engine()
     }
 
     /// Access the context builder.
     pub(crate) fn context_builder(&self) -> anyhow::Result<&ContextBuilder> {
-        self.active.graph_runtime.context_builder()
+        self.active().graph_runtime.context_builder()
     }
 
     /// Configure the focus runtime to share the AnalysisRuntime's LazyDataflowService.
@@ -312,8 +327,9 @@ impl ToolRouter {
     /// (Finding #6). The main closure engine reuses this instance; the background
     /// scheduler still creates its own for thread safety.
     pub fn init_focus(&mut self) {
-        let mut fr = self.active.query_runtime.focus_runtime.lock().unwrap();
-        fr.with_lazy_dataflow(self.active.analysis_runtime.lazy_service.clone());
+        let active = self.active_mut();
+        let mut fr = active.query_runtime.focus_runtime.lock().unwrap();
+        fr.with_lazy_dataflow(active.analysis_runtime.lazy_service.clone());
     }
 
     /// Unified focus query preparation for focus-driven lazy analysis.
@@ -324,8 +340,9 @@ impl ToolRouter {
         &mut self,
         intent: Option<atlas_engine::QueryIntent>,
     ) -> (Option<atlas_engine::focus::runtime::FocusResult>, Vec<String>) {
+        let active = self.active_mut();
         // 1. Full index already exists — no focus needed.
-        if self.active.query_runtime.has_full_index(&self.active.store) {
+        if active.query_runtime.has_full_index(&active.store) {
             return (None, vec![]);
         }
 
@@ -337,12 +354,12 @@ impl ToolRouter {
 
         // 3. Delegate FocusRuntime interaction to QueryRuntime.
         let (focus_result, warnings) =
-            self.active.query_runtime.prepare(&intent, &self.active.store);
+            active.query_runtime.prepare(&intent, &active.store);
 
         // 4. Post-processing: record lazy writes and refresh graph.
         if let Some(ref result) = focus_result {
             if !result.built_files.is_empty() {
-                self.active
+                active
                     .query_runtime
                     .lazy_refresh_queue
                     .record_lazy_writes(&result.built_files);
@@ -362,7 +379,7 @@ impl ToolRouter {
     /// Reserved for future status/capabilities reporting endpoints.
     #[allow(dead_code)]
     pub(crate) fn get_capability_stats(&self) -> Option<CapabilityStats> {
-        self.active.store_query_runtime.get_capability_stats()
+        self.active().store_query_runtime.get_capability_stats()
     }
 
     /// Inject graph edge provenance into the response JSON when the graph
@@ -371,7 +388,7 @@ impl ToolRouter {
     /// Focus precision from lazy extraction takes priority when present
     /// (LazyResponse may overwrite this with per-query coverage data).
     pub(crate) fn inject_graph_precision(&self, resp: &mut serde_json::Value) {
-        let precision = self.active.graph_runtime.precision_info();
+        let precision = self.active().graph_runtime.precision_info();
         if precision.mode == GraphMode::FocusPartial {
             // Only inject graph-level precision if no per-query (focus) precision
             // is already present. Focus precision provides richer per-query
@@ -389,24 +406,24 @@ impl ToolRouter {
     /// Rebuild the graph snapshot from the store if the index signature changed.
     fn rebuild_if_signature_changed(&mut self, reason: &str) -> anyhow::Result<()> {
         let current = self
-            .active.store
+            .active_mut().store
             .index_signature()
-            .unwrap_or_else(|_| self.active.query_runtime.cache.cached_signature.clone());
-        if current != self.active.graph_runtime.state.last_graph_signature {
+            .unwrap_or_else(|_| self.active_mut().query_runtime.cache.cached_signature.clone());
+        if current != self.active_mut().graph_runtime.state.last_graph_signature {
             tracing::info!("{reason}");
-            let graph = Arc::new(atlas_engine::GraphEngine::from_store(&self.active.store, 0.3)?);
-            if let Some(ref mut s) = self.active.graph_runtime.state.search {
+            let graph = Arc::new(atlas_engine::GraphEngine::from_store(&self.active_mut().store, 0.3)?);
+            if let Some(ref mut s) = self.active_mut().graph_runtime.state.search {
                 s.refresh_graph(Arc::clone(&graph));
             }
-            if let Some(ref mut c) = self.active.graph_runtime.state.context {
+            if let Some(ref mut c) = self.active_mut().graph_runtime.state.context {
                 c.refresh_graph(graph);
             }
-            self.active.graph_runtime.state.last_graph_signature = current.clone();
+            self.active_mut().graph_runtime.state.last_graph_signature = current.clone();
             // Re-check whether a manual full index now exists (layer distribution
             // may have changed after external index/sync or lazy structural).
-            *self.active.query_runtime.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) = None;
+            *self.active_mut().query_runtime.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) = None;
         }
-        self.active.query_runtime.cache.cached_signature = current;
+        self.active_mut().query_runtime.cache.cached_signature = current;
         Ok(())
     }
 
@@ -416,15 +433,15 @@ impl ToolRouter {
     /// After activation, the next graph-backed tool call will lazily rebuild the
     /// snapshot from the new store.
     pub(crate) fn activate_project(&mut self, project_root: std::path::PathBuf, store: Arc<Store>) {
-        self.active = ActiveProject::new(store, project_root)
-            .expect("Failed to construct ActiveProject during project activation");
+        self.project.replace(ActiveProject::new(store, project_root)
+            .expect("Failed to construct ActiveProject during project activation"));
         self.init_focus();
     }
 
     /// Activate a prepared background `open_project` result, if one exists.
     pub(crate) fn activate_pending_project_for_task(&mut self, task_id: &str) -> Option<String> {
         let pending = self
-            .active.job_runtime.pending_project_activations
+            .active_mut().job_runtime.pending_project_activations
             .lock()
             .ok()
             .and_then(|mut pending| pending.remove(task_id));
@@ -444,49 +461,50 @@ impl ToolRouter {
     /// Callers that modify the store independently (e.g. through a full re-index
     /// signal) may still need to call this to pick up changes.
     pub fn maybe_refresh_graph(&mut self) -> anyhow::Result<()> {
-        if !self.active.graph_runtime.state.graph_initialized {
+        let active = self.active_mut();
+        if !active.graph_runtime.state.graph_initialized {
             return Ok(());
         }
 
         // Step 1: Always flush pending incremental writes (no cooldown).
         // This ensures lazy writes from THIS request are visible before graph queries.
-        let batch = self.active.query_runtime.lazy_refresh_queue.take_incremental_batch(500);
-        self.active.graph_runtime.state.refresh_graph_for_files(&self.active.store, &batch)?;
+        let batch = active.query_runtime.lazy_refresh_queue.take_incremental_batch(500);
+        active.graph_runtime.state.refresh_graph_for_files(&active.store, &batch)?;
         // Cache invalidation: new store data may have changed layer distribution.
         // Lazy writes affect the graph — bump generation so the next check triggers rebuild.
         if !batch.is_empty() {
-            *self.active.query_runtime.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) = None;
-            self.active.graph_runtime.invalidation.graph_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            *active.query_runtime.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) = None;
+            active.graph_runtime.invalidation.graph_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
 
         // Step 2: Deferred full rebuild — try to apply a background-built graph,
         // or spawn the rebuild thread. NEVER blocks the current request.
-        self.active.graph_runtime.state.try_apply_or_spawn_rebuild(
-            Arc::clone(&self.active.store),
-            Arc::clone(&self.active.query_runtime.lazy_refresh_queue),
+        active.graph_runtime.state.try_apply_or_spawn_rebuild(
+            Arc::clone(&active.store),
+            Arc::clone(&active.query_runtime.lazy_refresh_queue),
         );
 
         // Step 3: Generation-based staleness check.
         // Replaces the old signature+TTL check. If graph_generation has been bumped
         // since the last refresh (e.g. by overlay mutations or lazy writes), trigger
         // a full rebuild unconditionally without checking the store signature.
-        if self.active.graph_runtime.is_graph_stale() {
+        if active.graph_runtime.is_graph_stale() {
             tracing::info!("Graph generation changed, triggering full rebuild");
-            let graph = Arc::new(atlas_engine::GraphEngine::from_store(&self.active.store, 0.3)?);
-            if let Some(ref mut s) = self.active.graph_runtime.state.search {
+            let graph = Arc::new(atlas_engine::GraphEngine::from_store(&active.store, 0.3)?);
+            if let Some(ref mut s) = active.graph_runtime.state.search {
                 s.refresh_graph(Arc::clone(&graph));
             }
-            if let Some(ref mut c) = self.active.graph_runtime.state.context {
+            if let Some(ref mut c) = active.graph_runtime.state.context {
                 c.refresh_graph(graph);
             }
-            let current = self
-                .active.store
+            let current = active
+                .store
                 .index_signature()
-                .unwrap_or_else(|_| self.active.query_runtime.cache.cached_signature.clone());
-            self.active.graph_runtime.state.last_graph_signature = current.clone();
-            self.active.query_runtime.cache.cached_signature = current;
-            *self.active.query_runtime.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) = None;
-            self.active.graph_runtime.mark_graph_fresh();
+                .unwrap_or_else(|_| active.query_runtime.cache.cached_signature.clone());
+            active.graph_runtime.state.last_graph_signature = current.clone();
+            active.query_runtime.cache.cached_signature = current;
+            *active.query_runtime.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) = None;
+            active.graph_runtime.mark_graph_fresh();
         }
 
         Ok(())
@@ -499,10 +517,10 @@ impl ToolRouter {
     /// in-memory graph includes the newly parsed edges before graph-backed
     /// tools run their queries.
     pub(crate) fn force_refresh_graph(&mut self) -> anyhow::Result<()> {
-        if !self.active.graph_runtime.state.graph_initialized {
+        if !self.active_mut().graph_runtime.state.graph_initialized {
             return Ok(());
         }
-        self.active.query_runtime.cache.last_signature_check = std::time::Instant::now();
+        self.active_mut().query_runtime.cache.last_signature_check = std::time::Instant::now();
         self.rebuild_if_signature_changed("Force-refreshing graph after lazy structural extraction")
     }
 
@@ -528,6 +546,21 @@ impl ToolRouter {
         // Each handler returns (result_text, is_error).
         // is_error=true only for genuine failures (lookup errors, I/O errors, unknown tool).
         let contract = contract_for(name, arguments);
+
+        // Gate: only project lifecycle and project status tools are allowed
+        // without an active project. All other tools require an active project.
+        match &contract {
+            ToolContract::ProjectLifecycle => {}
+            ToolContract::StatusRead if name == "project" => {}
+            _ => {
+                if let Err(msg) = self.project.require_mut().map(|_| ()) {
+                    return CallToolResult {
+                        content: vec![ContentBlock::text(msg)],
+                        is_error: Some(true),
+                    };
+                }
+            }
+        }
 
         // Phase 7a: Resource preparation based on contract.
         //
@@ -708,7 +741,7 @@ impl ToolRouter {
         if task_id.is_empty() {
             return ("Missing task_id parameter".to_string(), true);
         }
-        match self.active.job_runtime.task_manager.get_task(task_id) {
+        match self.active_mut().job_runtime.task_manager.get_task(task_id) {
             Some(info) => {
                 let status_str = match info.status {
                     crate::task_manager::TaskStatus::Running => "running",
@@ -817,7 +850,7 @@ impl ToolRouter {
             }
 
             // Warn if directory doesn't exist (non-fatal)
-            if !self.active.root.join(&normalized).is_dir() {
+            if !self.active().root.join(&normalized).is_dir() {
                 warnings.push(format!(
                     "include_roots: directory not found (used anyway): {normalized}"
                 ));
@@ -861,12 +894,12 @@ impl ToolRouter {
     /// Recovers from a poisoned lock (e.g. after a panic in another handler)
     /// rather than panicking — consistent with `AtlasMcpService::lock_router()`.
     pub(crate) fn store_snapshot(&mut self, snapshot: QuerySnapshot) {
-        self.active.job_runtime.store_snapshot(snapshot);
+        self.active_mut().job_runtime.store_snapshot(snapshot);
     }
 
     /// Update or create investigation based on a tool call focus.
     pub(crate) fn update_investigation(&mut self, focus: atlas_engine::InvestigationFocus) {
-        self.active.job_runtime.update_investigation(focus);
+        self.active_mut().job_runtime.update_investigation(focus);
     }
 }
 
@@ -1637,10 +1670,13 @@ impl ToolRouter {
 
         // Resolve file_path to file_id for sub-handlers
         let clean = file_path.trim_start_matches("./").trim_start_matches('/');
-        let file_id = match self.active.store.resolve_file_id(&self.active.root, clean) {
-            Ok(Some(id)) => id,
-            Ok(None) => return (format!("File not found: {file_path}"), true),
-            Err(e) => return (format!("Failed to resolve file: {e}"), true),
+        let file_id = {
+            let active = self.active_mut();
+            match active.store.resolve_file_id(&active.root, clean) {
+                Ok(Some(id)) => id,
+                Ok(None) => return (format!("File not found: {file_path}"), true),
+                Err(e) => return (format!("Failed to resolve file: {e}"), true),
+            }
         };
 
         if is_manifest {
@@ -1654,7 +1690,11 @@ impl ToolRouter {
         let mut _coverage = "full";
         let mut _reason: Option<&str> = None;
 
-        if !self.active.query_runtime.has_full_index(&self.active.store) {
+        let has_full_index = {
+            let active = self.active_mut();
+            active.query_runtime.has_full_index(&active.store)
+        };
+        if !has_full_index {
             let max_files = get_u64(args, "max_structural_files")
                 .or_else(|| get_u64(args, "limit"))
                 .unwrap_or(50) as usize;
@@ -1676,7 +1716,7 @@ impl ToolRouter {
             lazy_warnings = focus_warnings;
             built_file_count = focus_result.as_ref().map(|r| r.built_files.len()).unwrap_or(0);
         } else {
-            _capability_mask = self.active.store.derive_capability_for_files(&[file_id]);
+            _capability_mask = self.active_mut().store.derive_capability_for_files(&[file_id]);
         }
 
         let file_id_hex = file_id.to_hex();
@@ -1868,7 +1908,7 @@ impl ToolRouter {
         // Gather all symbols in the target file(s).
         let mut our_ids: HashSet<SymbolId> = HashSet::new();
         for fid in target_file_ids {
-            let syms = match self.active.store.find_symbols_by_file(fid) {
+            let syms = match self.active().store.find_symbols_by_file(fid) {
                 Ok(s) => s,
                 Err(_) => continue,
             };
@@ -1882,7 +1922,7 @@ impl ToolRouter {
 
         // Edges whose target is in `our_ids` and whose source is NOT → that
         // source's file is a candidate dependent.
-        let edges = match self.active.store.find_edges_for_files(target_file_ids) {
+        let edges = match self.active().store.find_edges_for_files(target_file_ids) {
             Ok(e) => e,
             Err(_) => return (Vec::new(), false),
         };
@@ -1899,7 +1939,7 @@ impl ToolRouter {
         }
 
         let ids_vec: Vec<SymbolId> = source_ids.into_iter().collect();
-        let symbols = match self.active.store.find_symbols_by_ids(&ids_vec) {
+        let symbols = match self.active().store.find_symbols_by_ids(&ids_vec) {
             Ok(s) => s,
             Err(_) => return (Vec::new(), false),
         };
@@ -1923,7 +1963,7 @@ impl ToolRouter {
         if max_results == 0 {
             return json!([]);
         }
-        let our_symbols = match self.active.store.find_symbols_by_file(file_id) {
+        let our_symbols = match self.active().store.find_symbols_by_file(file_id) {
             Ok(s) => s,
             Err(_) => return json!([]),
         };
@@ -1934,7 +1974,7 @@ impl ToolRouter {
         let our_ids: Vec<SymbolId> = our_symbols.iter().map(|s| s.id).collect();
         let our_set: HashSet<SymbolId> = our_ids.iter().copied().collect();
 
-        let edges = match self.active.store.find_edges_for_files(&[*file_id]) {
+        let edges = match self.active().store.find_edges_for_files(&[*file_id]) {
             Ok(e) => e,
             Err(_) => return json!([]),
         };
@@ -1951,7 +1991,7 @@ impl ToolRouter {
             return json!([]);
         }
         let ids_vec: Vec<SymbolId> = source_ids.into_iter().collect();
-        let symbols = match self.active.store.find_symbols_by_ids(&ids_vec) {
+        let symbols = match self.active().store.find_symbols_by_ids(&ids_vec) {
             Ok(s) => s,
             Err(_) => return json!([]),
         };
@@ -1961,7 +2001,7 @@ impl ToolRouter {
             if file_paths.len() >= max_results {
                 break;
             }
-            let path = self.active.store_query_runtime.resolve_file_path(&sym.file_id);
+            let path = self.active().store_query_runtime.resolve_file_path(&sym.file_id);
             if file_paths.insert(path.clone()) {
                 results.push(json!({
                     "file": path,
@@ -1978,7 +2018,7 @@ impl ToolRouter {
         if max_results == 0 {
             return json!([]);
         }
-        let our_symbols = match self.active.store.find_symbols_by_file(file_id) {
+        let our_symbols = match self.active().store.find_symbols_by_file(file_id) {
             Ok(s) => s,
             Err(_) => return json!([]),
         };
@@ -1989,7 +2029,7 @@ impl ToolRouter {
         let our_ids: Vec<SymbolId> = our_symbols.iter().map(|s| s.id).collect();
         let our_set: HashSet<SymbolId> = our_ids.iter().copied().collect();
 
-        let edges = match self.active.store.find_edges_for_files(&[*file_id]) {
+        let edges = match self.active().store.find_edges_for_files(&[*file_id]) {
             Ok(e) => e,
             Err(_) => return json!([]),
         };
@@ -2006,7 +2046,7 @@ impl ToolRouter {
             return json!([]);
         }
         let ids_vec: Vec<SymbolId> = target_ids.into_iter().collect();
-        let symbols = match self.active.store.find_symbols_by_ids(&ids_vec) {
+        let symbols = match self.active().store.find_symbols_by_ids(&ids_vec) {
             Ok(s) => s,
             Err(_) => return json!([]),
         };
@@ -2016,7 +2056,7 @@ impl ToolRouter {
             if file_paths.len() >= max_results {
                 break;
             }
-            let path = self.active.store_query_runtime.resolve_file_path(&sym.file_id);
+            let path = self.active().store_query_runtime.resolve_file_path(&sym.file_id);
             if file_paths.insert(path.clone()) {
                 results.push(json!({
                     "module": path,
@@ -2093,7 +2133,7 @@ impl ToolRouter {
     /// the runtime. This path exists for tests and embedded callers that invoke
     /// `ToolRouter::call_tool` directly.
     pub(crate) fn handle_wait_for_task_sync(&mut self, args: &Value) -> (String, bool) {
-        let wfr = wait_for::handle_wait_for_task_sync(&self.active.job_runtime.task_manager, args);
+        let wfr = wait_for::handle_wait_for_task_sync(&self.active_mut().job_runtime.task_manager, args);
         if !wfr.task_is_project_completed {
             return (wfr.json_text, wfr.is_error);
         }
@@ -2263,7 +2303,7 @@ impl ToolRouter {
             }
         };
         let file_id = FileId::generate(&normalized);
-        if self.active.store.get_file(&file_id).ok().flatten().is_none() {
+        if self.active_mut().store.get_file(&file_id).ok().flatten().is_none() {
             return (
                 serde_json::to_string_pretty(&serde_json::json!({
                     "ok": false,
@@ -2284,7 +2324,7 @@ impl ToolRouter {
         warnings.extend(focus_warnings);
 
         // Find all symbols in the file
-        let symbols = match self.active.store.find_symbols_by_file(&file_id) {
+        let symbols = match self.active_mut().store.find_symbols_by_file(&file_id) {
             Ok(syms) => syms,
             Err(e) => {
                 let mut err = serde_json::json!({
@@ -2485,7 +2525,7 @@ mod tests {
         router.ensure_graph_initialized().unwrap();
 
         assert_eq!(
-            router.active.graph_runtime.mode,
+            router.active_mut().graph_runtime.mode,
             GraphMode::FocusPartial,
             "fresh in-memory store should produce FocusPartial mode"
         );
@@ -2511,7 +2551,7 @@ mod tests {
         router.ensure_graph_initialized().unwrap();
 
         assert_eq!(
-            router.active.graph_runtime.mode,
+            router.active_mut().graph_runtime.mode,
             GraphMode::FullCanonical,
             "store with structural extraction should produce FullCanonical mode"
         );
@@ -2549,7 +2589,7 @@ mod tests {
         let store = test_store();
         let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
         assert!(
-            !router.active.graph_runtime.state.graph_initialized,
+            !router.active_mut().graph_runtime.state.graph_initialized,
             "graph should not be initialized yet",
         );
 
@@ -2559,7 +2599,7 @@ mod tests {
         let _result = router.call_tool(&ctx, "domain_rules", &args);
 
         assert!(
-            !router.active.graph_runtime.state.graph_initialized,
+            !router.active_mut().graph_runtime.state.graph_initialized,
             "graph should still NOT be initialized after a non-graph tool call",
         );
     }
@@ -4098,14 +4138,14 @@ mod tests {
         let store = test_store();
         let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         // After construction, focus_runtime is always present (no Option wrapper).
-        let mode = router.active.query_runtime.detect_index_mode();
+        let mode = router.active_mut().query_runtime.detect_index_mode();
         // In an empty store, detect_index_mode should return Focus.
         assert_eq!(mode, atlas_engine::focus::runtime::IndexMode::Focus);
 
         // Calling init_focus again is idempotent — it just re-applies the
         // lazy dataflow service configuration.
         router.init_focus();
-        let mode2 = router.active.query_runtime.detect_index_mode();
+        let mode2 = router.active_mut().query_runtime.detect_index_mode();
         assert_eq!(mode2, atlas_engine::focus::runtime::IndexMode::Focus);
     }
 
@@ -4114,13 +4154,13 @@ mod tests {
         let store = test_store();
         let store2 = test_store();
         let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        let mode_before = router.active.query_runtime.detect_index_mode();
+        let mode_before = router.active_mut().query_runtime.detect_index_mode();
         assert_eq!(mode_before, atlas_engine::focus::runtime::IndexMode::Focus);
 
         // Simulate project switch — activate_project creates a fresh ActiveProject
         // and then calls init_focus(), so focus_runtime is re-initialized.
         router.activate_project(PathBuf::from("/other"), store2);
-        let mode_after = router.active.query_runtime.detect_index_mode();
+        let mode_after = router.active_mut().query_runtime.detect_index_mode();
         assert_eq!(mode_after, atlas_engine::focus::runtime::IndexMode::Focus);
     }
 
@@ -4840,7 +4880,7 @@ mod tests {
         let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
         let _ = router.ensure_graph_initialized();
         // Override mode to FullCanonical — graph precision injection should skip.
-        router.active.graph_runtime.mode = GraphMode::FullCanonical;
+        router.active_mut().graph_runtime.mode = GraphMode::FullCanonical;
         let ctx = ToolCallContext::empty();
         let args = serde_json::json!({"symbol": "test_func.test_func"});
         let result = router.call_tool(&ctx, "calls", &args);
@@ -4866,13 +4906,13 @@ mod tests {
         router.ensure_graph_initialized().unwrap();
 
         // Record initial generation — graph is fresh after construction.
-        let gen_before = router.active.graph_runtime.last_graph_generation;
-        assert!(!router.active.graph_runtime.is_graph_stale());
+        let gen_before = router.active_mut().graph_runtime.last_graph_generation;
+        assert!(!router.active_mut().graph_runtime.is_graph_stale());
 
         // Call maybe_refresh_graph — no lazy writes, no generation bump → no rebuild.
         router.maybe_refresh_graph().unwrap();
-        assert!(!router.active.graph_runtime.is_graph_stale());
-        assert_eq!(router.active.graph_runtime.last_graph_generation, gen_before);
+        assert!(!router.active_mut().graph_runtime.is_graph_stale());
+        assert_eq!(router.active_mut().graph_runtime.last_graph_generation, gen_before);
     }
 
     #[test]
@@ -4884,21 +4924,21 @@ mod tests {
 
         // Pre-populate lazy_refresh_queue with a dummy file_id.
         router
-            .active
+            .active_mut()
             .query_runtime
             .lazy_refresh_queue
             .record_lazy_writes(&[file_id]);
 
-        let gen_before = router.active.graph_runtime.last_graph_generation;
+        let gen_before = router.active_mut().graph_runtime.last_graph_generation;
 
         // Call maybe_refresh_graph → batch is non-empty → must bump graph_generation
         // and trigger rebuild.
         router.maybe_refresh_graph().unwrap();
 
         // After lazy writes flushed, graph should be marked fresh (rebuilt).
-        assert!(!router.active.graph_runtime.is_graph_stale());
+        assert!(!router.active_mut().graph_runtime.is_graph_stale());
         assert!(
-            router.active.graph_runtime.last_graph_generation > gen_before,
+            router.active_mut().graph_runtime.last_graph_generation > gen_before,
             "lazy writes should bump graph_generation"
         );
     }
@@ -4912,22 +4952,22 @@ mod tests {
         let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp/test"));
         router.ensure_graph_initialized().unwrap();
 
-        let node_before = router.active.graph_runtime.state.symbol_count();
-        let edge_before = router.active.graph_runtime.state.edge_count();
+        let node_before = router.active_mut().graph_runtime.state.symbol_count();
+        let edge_before = router.active_mut().graph_runtime.state.edge_count();
 
         router
-            .active
+            .active_mut()
             .graph_runtime
             .state
             .refresh_graph_for_files(&store, &[])
             .unwrap();
 
         assert_eq!(
-            router.active.graph_runtime.state.symbol_count(),
+            router.active_mut().graph_runtime.state.symbol_count(),
             node_before
         );
         assert_eq!(
-            router.active.graph_runtime.state.edge_count(),
+            router.active_mut().graph_runtime.state.edge_count(),
             edge_before
         );
     }
@@ -4949,7 +4989,7 @@ mod tests {
         router.ensure_graph_initialized().unwrap();
 
         // Record initial graph counts (should be 0 for an empty store)
-        let node_before = router.active.graph_runtime.state.symbol_count();
+        let node_before = router.active_mut().graph_runtime.state.symbol_count();
         assert_eq!(
             node_before, 0,
             "empty graph should have 0 nodes, got {node_before}"
@@ -4962,12 +5002,12 @@ mod tests {
         assert_eq!(result.is_error, Some(false), "index should succeed");
 
         // Index handler bumped graph_generation → generation-based refresh detects stale graph.
-        assert!(router.active.graph_runtime.is_graph_stale());
+        assert!(router.active_mut().graph_runtime.is_graph_stale());
 
         // Refresh graph to pick up new symbols
         router.maybe_refresh_graph().unwrap();
 
-        let node_after = router.active.graph_runtime.state.symbol_count();
+        let node_after = router.active_mut().graph_runtime.state.symbol_count();
         assert!(
             node_after > 0,
             "node count should increase after index + refresh, got {node_after}"
@@ -4997,8 +5037,8 @@ mod tests {
         router.maybe_refresh_graph().unwrap();
 
         // Record current counts
-        let node_before = router.active.graph_runtime.state.symbol_count();
-        let edge_before = router.active.graph_runtime.state.edge_count();
+        let node_before = router.active_mut().graph_runtime.state.symbol_count();
+        let edge_before = router.active_mut().graph_runtime.state.edge_count();
         assert!(
             node_before > 0,
             "should have nodes after initial index + refresh, got {node_before}"
@@ -5009,12 +5049,12 @@ mod tests {
 
         // Counts should be unchanged
         assert_eq!(
-            router.active.graph_runtime.state.symbol_count(),
+            router.active_mut().graph_runtime.state.symbol_count(),
             node_before,
             "second refresh within cooldown should not change node count"
         );
         assert_eq!(
-            router.active.graph_runtime.state.edge_count(),
+            router.active_mut().graph_runtime.state.edge_count(),
             edge_before,
             "second refresh within cooldown should not change edge count"
         );
