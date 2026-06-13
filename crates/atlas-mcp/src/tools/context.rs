@@ -271,9 +271,6 @@ impl ToolRouter {
             result["resolved"] = rj;
         }
 
-        // Inject graph edge provenance when operating in FocusPartial mode.
-        self.inject_graph_precision(&mut result);
-
         let mut stored_args = args.clone();
         if let Some(obj) = stored_args.as_object_mut() {
             obj.insert("view".into(), serde_json::Value::String("context".into()));

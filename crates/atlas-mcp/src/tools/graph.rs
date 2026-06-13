@@ -350,9 +350,6 @@ impl ToolRouter {
             );
         }
 
-        // Inject graph edge provenance when operating in FocusPartial mode.
-        self.inject_graph_precision(&mut resp);
-
         // Lazy structural response with focus-aware envelope
         let lr = lr.with_lazy_warnings(focus_warnings);
         let lr = if let Some(ref result) = focus_result {
@@ -444,9 +441,6 @@ impl ToolRouter {
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
         }
-
-        // Inject graph edge provenance when operating in FocusPartial mode.
-        self.inject_graph_precision(&mut resp);
 
         // Lazy structural response with focus-aware envelope
         let lr = lr.with_lazy_warnings(focus_warnings);
@@ -651,9 +645,6 @@ impl ToolRouter {
                 "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
             );
         }
-
-        // Inject graph edge provenance when operating in FocusPartial mode.
-        self.inject_graph_precision(&mut resp);
 
         let lr = lr.with_lazy_warnings(lazy_warnings);
         let lr = if let Some(ref result) = focus_result {
@@ -1042,9 +1033,6 @@ impl ToolRouter {
 
             resp["path_quality"] = insight;
 
-            // Inject graph edge provenance when operating in FocusPartial mode.
-            self.inject_graph_precision(&mut resp);
-
             let lr = lr.with_root_warnings(root_warnings)
                 .with_lazy_warnings(lazy_warnings)
                 .with_partial_result(false);
@@ -1162,9 +1150,6 @@ impl ToolRouter {
                 }
                 resp["hint"] = json!("Use a SymbolSelector object (e.g. {\"qualified_name\": \"...\", \"file_path\": \"...\"}) to disambiguate. symbol_ref from search/symbol results can be reused directly.");
             }
-
-            // Inject graph edge provenance when operating in FocusPartial mode.
-            self.inject_graph_precision(&mut resp);
 
             let lr = lr.with_root_warnings(root_warnings)
                 .with_lazy_warnings(lazy_warnings)
@@ -1392,9 +1377,6 @@ impl ToolRouter {
                 "resolved": resolved,
             });
         }
-
-        // Inject graph edge provenance when operating in FocusPartial mode.
-        self.inject_graph_precision(&mut resp_value);
 
         let lr = lr.with_lazy_warnings(dossier.warnings);
         let lr = if let Some(ref result) = focus_result {
@@ -1767,9 +1749,6 @@ impl ToolRouter {
                 "Bidirectional traversal with imports/includes may include unrelated consumer modules. Consider direction='outgoing' for narrower impact radius."
             );
         }
-
-        // Inject graph edge provenance when operating in FocusPartial mode.
-        self.inject_graph_precision(&mut resp);
 
         let lr = lr.with_root_warnings(Vec::new())
             .with_lazy_warnings(focus_warnings);
