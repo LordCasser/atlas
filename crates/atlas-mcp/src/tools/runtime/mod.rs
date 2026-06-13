@@ -74,8 +74,9 @@
 //! - **ToolRouter** is protected by a single `Mutex<ToolRouter>` held by `AtlasMcpService`.
 //!   Only one request executes at a time per MCP session.
 //! - **engine** (`Mutex<Engine>`) is only accessed from trace handlers — held briefly.
-//! - **focus_runtime** (`Mutex<FocusRuntime>`) is accessed from `query_runtime.prepare()`
-//!   and the background scheduler (independent thread, separate lock).
+//! - **focus_runtime** (`Mutex<FocusRuntime>`) is owned by `query_runtime` and
+//!   accessed from `query_runtime.prepare()` and the background scheduler
+//!   (independent thread, separate lock).
 //! - **graph_runtime.state** holds a `RwLock<Arc<GraphEngine>>` — readers share the snapshot.
 //! - **overlay_runtime.generation** (`AtomicU64`) is lock-free for fast-path invalidation.
 //! - **Background tasks** (index, graph rebuild, focus scheduler) use `std::thread::spawn`
@@ -86,7 +87,7 @@
 //! When adding new tools or modifying handlers, **avoid**:
 //!
 //! - **Direct `cache.has_manual_full_index()`** — use `query_runtime.has_full_index()` instead.
-//! - **Direct `focus_runtime.lock()`** — use `query_runtime.prepare()` instead.
+//! - **Direct `focus_runtime.lock()`** — use `query_runtime.prepare()` or `query_runtime.detect_index_mode()` instead.
 //! - **Direct `lazy_service.ensure_for_function()`** — use `analysis_runtime.ensure_dataflow_for_function()` instead.
 //! - **Direct `store.upsert_fp_annotation()`** — use `overlay_runtime.upsert_fp_annotation()` to bump generation.
 //! - **Direct `store.upsert_domain_rule()`** — use `overlay_runtime.upsert_domain_rule()` to bump generation.

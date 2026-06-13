@@ -46,6 +46,7 @@ impl ActiveProject {
 
         let query_runtime = QueryRuntime::new(
             store.clone(),
+            Some(root.clone()),
             lazy_refresh_queue.clone(),
         );
 

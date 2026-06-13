@@ -15,6 +15,7 @@
 //! - `atlas_engine::focus::runtime::{FocusRuntime, FocusResult, IndexMode}`
 //! - `super::cache_state::CacheState`
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use atlas_engine::focus::runtime::{FocusResult, FocusRuntime, IndexMode};
@@ -30,9 +31,9 @@ use crate::tools::lazy_refresh::LazyRefreshQueue;
 /// orchestrates bootstrap, seed location, closure building, and
 /// background expansion through the underlying FocusRuntime.
 pub struct QueryRuntime {
-    /// Focus runtime, initialized lazily via `init_focus()`.
-    /// None until explicitly initialized (preserves old ToolRouter behavior).
-    pub focus_runtime: Option<Mutex<FocusRuntime>>,
+    /// Focus runtime, always present. Created during construction and
+    /// configured with `init_focus()` to share the lazy dataflow service.
+    pub focus_runtime: Mutex<FocusRuntime>,
     pub cache: CacheState,
     pub lazy_refresh_queue: Arc<LazyRefreshQueue>,
 }
@@ -40,6 +41,7 @@ pub struct QueryRuntime {
 impl QueryRuntime {
     pub fn new(
         store: Arc<Store>,
+        project_root: Option<PathBuf>,
         lazy_refresh_queue: Arc<LazyRefreshQueue>,
     ) -> Self {
         let signature = store.index_signature().unwrap_or_default();
@@ -48,10 +50,9 @@ impl QueryRuntime {
             last_signature_check: std::time::Instant::now(),
             cached_manual_full_index: RwLock::new(None),
         };
+        let focus_runtime = Mutex::new(FocusRuntime::new(store, project_root));
         Self {
-            // focus_runtime starts as None — same as old ToolRouter::new_empty/new.
-            // init_focus() must be called to activate focus-driven extraction.
-            focus_runtime: None,
+            focus_runtime,
             cache,
             lazy_refresh_queue,
         }
@@ -59,44 +60,30 @@ impl QueryRuntime {
 
     /// Prepare focus-driven lazy extraction for a query intent.
     ///
-    /// Returns `(None, vec![])` when the project has a full index or
-    /// FocusRuntime is not initialized.  Returns `(Some(FocusResult), warnings)`
-    /// when focus analysis completes.
+    /// Returns `(None, vec![])` when the project has a full index.
+    /// Returns `(Some(FocusResult), warnings)` when focus analysis completes.
     pub fn prepare(&self, intent: &QueryIntent, store: &Store) -> (Option<FocusResult>, Vec<String>) {
         // 1. Cache check: skip if manual full index exists
         if self.cache.has_manual_full_index(store) {
             return (None, vec![]);
         }
 
-        // 2. Check focus_runtime initialized
-        let fr = match &self.focus_runtime {
-            Some(fr) => fr,
-            None => {
-                return (
-                    None,
-                    vec!["No full index and FocusRuntime not initialized.".to_string()],
-                );
-            }
-        };
-
-        // 3. Detect index mode via QueryRuntime wrapper (unlocks after check)
+        // 2. Detect index mode (unlocks after check)
         let mode = self.detect_index_mode();
-        if mode == Some(IndexMode::FullIndex) {
+        if mode == IndexMode::FullIndex {
             return (None, vec![]);
         }
 
-        // 4. Lock FocusRuntime and prepare
-        let mut runtime = fr.lock().unwrap();
+        // 3. Lock FocusRuntime and prepare
+        let mut runtime = self.focus_runtime.lock().unwrap();
         match runtime.prepare(intent) {
             Ok(result) => (Some(result), vec![]),
             Err(e) => (None, vec![format!("Focus preparation failed: {e}")]),
         }
     }
 
-    pub fn detect_index_mode(&self) -> Option<IndexMode> {
-        self.focus_runtime
-            .as_ref()
-            .map(|fr| fr.lock().unwrap().detect_index_mode())
+    pub fn detect_index_mode(&self) -> IndexMode {
+        self.focus_runtime.lock().unwrap().detect_index_mode()
     }
 
     /// Check whether the project has a full (non-manifest) index.
@@ -134,23 +121,21 @@ mod tests {
         let store = Arc::new(Store::open_in_memory().unwrap());
         store.init_schema().unwrap();
         let lazy_refresh_queue = LazyRefreshQueue::new();
-        QueryRuntime::new(store, lazy_refresh_queue)
+        QueryRuntime::new(store, None, lazy_refresh_queue)
     }
 
     #[test]
-    fn focus_runtime_starts_none() {
+    fn focus_runtime_is_always_present() {
         let qr = create_test_query_runtime();
-        assert!(qr.focus_runtime.is_none());
+        // FocusRuntime is always present — no Option wrapper.
+        let mode = qr.detect_index_mode();
+        // For an empty in-memory store with no full index, detect_index_mode
+        // should return IndexMode::Focus (lazy extraction is possible).
+        assert_eq!(mode, IndexMode::Focus);
     }
 
     #[test]
-    fn detect_index_mode_returns_none_when_focus_not_initialized() {
-        let qr = create_test_query_runtime();
-        assert!(qr.detect_index_mode().is_none());
-    }
-
-    #[test]
-    fn prepare_returns_none_when_focus_not_initialized() {
+    fn prepare_returns_result_on_focus_mode() {
         let qr = create_test_query_runtime();
         let store = Store::open_in_memory().unwrap();
         store.init_schema().unwrap();
@@ -159,8 +144,17 @@ mod tests {
             file_id: None,
             symbol_id: None,
         };
-        let (result, _warnings) = qr.prepare(&intent, &store);
-        assert!(result.is_none());
+        // FocusRuntime is initialized — prepare should attempt focus analysis.
+        let (result, warnings) = qr.prepare(&intent, &store);
+        // In an empty store, focus preparation may return None with warnings
+        // (seed not found) or Some with a result. Either way, it should not
+        // return the "not initialized" error path.
+        for w in &warnings {
+            assert!(
+                !w.contains("not initialized"),
+                "should not contain 'not initialized': {w}"
+            );
+        }
     }
 
     #[test]

@@ -8,7 +8,7 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use atlas_engine::ContextBuilder;
 use atlas_engine::FileId;
 use atlas_engine::SearchEngine;
@@ -306,17 +306,15 @@ impl ToolRouter {
         self.active.graph_runtime.context_builder()
     }
 
-    /// Initialize the focus runtime for focus-driven lazy analysis.
+    /// Configure the focus runtime to share the AnalysisRuntime's LazyDataflowService.
+    ///
+    /// FocusRuntime is created inside QueryRuntime::new(). This method configures
+    /// it with a shared lazy dataflow service to eliminate double control plane
+    /// (Finding #6). The main closure engine reuses this instance; the background
+    /// scheduler still creates its own for thread safety.
     pub fn init_focus(&mut self) {
-        let store = self.active.store.clone();
-        let project_root = Some(self.active.root.clone());
-        let mut runtime = atlas_engine::FocusRuntime::new(store, project_root);
-        // Share AnalysisRuntime's LazyDataflowService to eliminate
-        // double control plane (Finding #6).  The main closure engine
-        // reuses this instance; the background scheduler still creates
-        // its own for thread safety.
-        runtime.with_lazy_dataflow(self.active.analysis_runtime.lazy_service.clone());
-        self.active.query_runtime.focus_runtime = Some(Mutex::new(runtime));
+        let mut fr = self.active.query_runtime.focus_runtime.lock().unwrap();
+        fr.with_lazy_dataflow(self.active.analysis_runtime.lazy_service.clone());
     }
 
     /// Unified focus query preparation for focus-driven lazy analysis.
@@ -4086,16 +4084,16 @@ mod tests {
     fn init_focus_sets_up_runtime() {
         let store = test_store();
         let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        // After construction, focus_runtime is already initialized
-        // (new_empty calls init_focus).
-        assert!(router.active.query_runtime.focus_runtime.is_some(), "focus_runtime should be Some after construction");
+        // After construction, focus_runtime is always present (no Option wrapper).
+        let mode = router.active.query_runtime.detect_index_mode();
+        // In an empty store, detect_index_mode should return Focus.
+        assert_eq!(mode, atlas_engine::focus::runtime::IndexMode::Focus);
 
-        // Calling init_focus again is idempotent.
+        // Calling init_focus again is idempotent — it just re-applies the
+        // lazy dataflow service configuration.
         router.init_focus();
-        assert!(
-            router.active.query_runtime.focus_runtime.is_some(),
-            "focus_runtime should remain Some after init_focus()"
-        );
+        let mode2 = router.active.query_runtime.detect_index_mode();
+        assert_eq!(mode2, atlas_engine::focus::runtime::IndexMode::Focus);
     }
 
     #[test]
@@ -4103,26 +4101,21 @@ mod tests {
         let store = test_store();
         let store2 = test_store();
         let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        // Before activation, focus_runtime is Some (initialized by new_empty).
-        assert!(router.active.query_runtime.focus_runtime.is_some());
+        let mode_before = router.active.query_runtime.detect_index_mode();
+        assert_eq!(mode_before, atlas_engine::focus::runtime::IndexMode::Focus);
 
         // Simulate project switch — activate_project creates a fresh ActiveProject
         // and then calls init_focus(), so focus_runtime is re-initialized.
         router.activate_project(PathBuf::from("/other"), store2);
-        assert!(
-            router.active.query_runtime.focus_runtime.is_some(),
-            "focus_runtime should be Some after project activation (activate_project calls init_focus)"
-        );
+        let mode_after = router.active.query_runtime.detect_index_mode();
+        assert_eq!(mode_after, atlas_engine::focus::runtime::IndexMode::Focus);
     }
 
     #[test]
     fn init_focus_shares_lazy_dataflow_service() {
         let store = test_store();
         let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        // init_focus is called in new_empty, so focus_runtime should exist
-        assert!(router.active.query_runtime.focus_runtime.is_some(),
-            "focus_runtime should be initialized");
-
+        // FocusRuntime is always present (no Option wrapper).
         // The shared_lazy_dataflow field is not publicly accessible,
         // but we can verify that prepare_focus_query works correctly.
         let intent = Some(atlas_engine::QueryIntent::Calls {

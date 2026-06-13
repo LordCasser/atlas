@@ -2114,15 +2114,14 @@ mod tests {
         assert!(!is_error, "expected success, got error: {resp_str}");
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
-        // After the fix (#2 HIGH), FocusRuntime is always initialized by the
-        // constructor and activate_project.  The "No full index and FocusRuntime
-        // not initialized" warning no longer appears.  Warnings may still be
-        // present for other reasons (focus gaps, etc.), but they are not
-        // guaranteed to be non-empty.
+        // FocusRuntime is always present (created in QueryRuntime::new).
+        // The "FocusRuntime not initialized" warning/error path has been
+        // removed. Warnings may still be present for other reasons
+        // (focus gaps, etc.).
         let warnings = resp.get("warnings");
         if let Some(w) = warnings {
             assert!(w.is_array(), "warnings should be an array");
-            // The "FocusRuntime not initialized" warning must NOT appear.
+            // The removed "FocusRuntime not initialized" warning must NOT appear.
             let arr = w.as_array().unwrap();
             for entry in arr {
                 if let Some(s) = entry.as_str() {
@@ -2802,17 +2801,13 @@ mod tests {
             })
             .unwrap();
         let mut router = test_router(store);
-        // After construction via new_empty, focus_runtime is already initialized.
-        assert!(
-            router.active.query_runtime.focus_runtime.is_some(),
-            "focus_runtime should be Some after new_empty (init_focus called in constructor)"
-        );
+        // After construction, focus_runtime is always present (no Option wrapper).
+        let mode = router.active.query_runtime.detect_index_mode();
+        assert_eq!(mode, atlas_engine::focus::runtime::IndexMode::Focus);
         // init_focus is idempotent.
         router.init_focus();
-        assert!(
-            router.active.query_runtime.focus_runtime.is_some(),
-            "focus_runtime should remain Some after init_focus"
-        );
+        let mode2 = router.active.query_runtime.detect_index_mode();
+        assert_eq!(mode2, atlas_engine::focus::runtime::IndexMode::Focus);
     }
 
     #[test]
@@ -2858,12 +2853,13 @@ mod tests {
         store.insert_symbols(&[sym]).unwrap();
 
         let mut router = test_router(store);
-        // Explicitly clear focus_runtime to test the "without focus" code path.
-        // After fix #2 HIGH, new_empty() initializes focus_runtime by default;
-        // this test validates that the focus-less path still works correctly.
-        router.active.query_runtime.focus_runtime = None;
+        // Simulate a full index so prepare_focus_query returns early
+        // without focus data — the equivalent of the old "no focus" path.
+        let signature = router.active.store.index_signature().unwrap_or_default();
+        *router.active.query_runtime.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) =
+            Some((signature, true));
         router.ensure_graph_initialized().unwrap();
-        // focus_runtime is NOT initialized — focus fields should NOT appear
+        // focus is NOT active for this query — focus fields should NOT appear
         let (resp_str, is_error) =
             router.handle_impact(&json!({"symbol": "focus_test_fn"}));
         assert!(!is_error, "expected success, got: {resp_str}");
@@ -2873,15 +2869,15 @@ mod tests {
         // Backward compat: focus-specific fields must NOT appear when focus is not active
         assert!(
             resp.get("coverage_counts").is_none(),
-            "coverage_counts should NOT appear when focus is not initialized"
+            "coverage_counts should NOT appear when focus is not active"
         );
         assert!(
             resp.get("gaps").is_none(),
-            "gaps should NOT appear when focus is not initialized"
+            "gaps should NOT appear when focus is not active"
         );
         assert!(
             resp.get("pending_closures").is_none(),
-            "pending_closures should NOT appear when focus is not initialized"
+            "pending_closures should NOT appear when focus is not active"
         );
     }
 
