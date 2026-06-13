@@ -25,7 +25,7 @@
 //! disabled by opting out of default features (e.g. `--no-default-features`).
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 // lazy crate (aliased to avoid name conflict with types::lazy module)
 use ::lazy as lazy_crate;
@@ -244,8 +244,7 @@ pub struct Engine {
     lazy_service: lazy_crate::LazyDataflowService,
     lazy_structural: LazyStructuralService,
     trace: analysis::trace::TraceEngine,
-    /// Optional focus runtime — initialized via [`Engine::init_focus`].
-    focus_scheduler: Option<Arc<Mutex<FocusScheduler>>>,
+
 }
 
 impl Engine {
@@ -272,7 +271,6 @@ impl Engine {
             lazy_service,
             lazy_structural,
             trace,
-            focus_scheduler: None,
         })
     }
 
@@ -294,7 +292,6 @@ impl Engine {
             lazy_service,
             lazy_structural,
             trace,
-            focus_scheduler: None,
         })
     }
 
@@ -311,7 +308,6 @@ impl Engine {
             lazy_service,
             lazy_structural,
             trace,
-            focus_scheduler: None,
         })
     }
 
@@ -338,7 +334,6 @@ impl Engine {
             lazy_service,
             lazy_structural,
             trace,
-            focus_scheduler: None,
         }
     }
 
@@ -355,52 +350,6 @@ impl Engine {
     /// Access the lazy structural service for on-demand extraction.
     pub fn lazy_structural(&self) -> &LazyStructuralService {
         &self.lazy_structural
-    }
-
-    // ── Focus ───────────────────────────────────────────────────────────
-
-    /// Initialize the focus runtime. Requires atlas open (not in-memory).
-    ///
-    /// Constructs a [`ClosureEngine`] and [`FocusScheduler`] wired to the
-    /// Engine's store and lazy structural service.  Once initialized, the
-    /// scheduler can be used for background focus closure building via
-    /// [`FocusScheduler::enqueue`] and [`FocusScheduler::start_background`].
-    pub fn init_focus(
-        &mut self,
-        project_root: &Path,
-        include_roots: Vec<IncludeRoot>,
-    ) -> anyhow::Result<()> {
-        // Construct a LazyStructuralService for the ClosureEngine.
-        // We create a new instance rather than cloning self.lazy_structural
-        // because LazyStructuralService is not Clone (it owns a Box<dyn CandidateProvider>).
-        let lazy_structural = LazyStructuralService::new(
-            self.store.clone(),
-            Some(project_root.to_path_buf()),
-        );
-        let lazy_dataflow = LazyDataflowService::new(
-            self.store.clone(),
-            Some(project_root.to_path_buf()),
-        );
-        let engine = ClosureEngine::new(
-            self.store.clone(),
-            lazy_structural,
-            lazy_dataflow,
-            Some(project_root.to_path_buf()),
-            include_roots,
-        );
-        let scheduler = FocusScheduler::new(self.store.clone()).with_engine(engine);
-        self.focus_scheduler = Some(Arc::new(Mutex::new(scheduler)));
-        Ok(())
-    }
-
-    /// Get the focus scheduler (if initialized via [`init_focus`]).
-    pub fn focus_scheduler(&self) -> Option<&Arc<Mutex<FocusScheduler>>> {
-        self.focus_scheduler.as_ref()
-    }
-
-    /// Check if the focus runtime is active.
-    pub fn has_focus(&self) -> bool {
-        self.focus_scheduler.is_some()
     }
 
     // ── Extraction ─────────────────────────────────────────────────────
