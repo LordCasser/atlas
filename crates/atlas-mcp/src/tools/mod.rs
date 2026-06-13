@@ -447,7 +447,7 @@ impl ToolRouter {
     ///
     /// Callers that modify the store independently (e.g. through a full re-index
     /// signal) may still need to call this to pick up changes.
-    pub(crate) fn maybe_refresh_graph(&mut self) -> anyhow::Result<()> {
+    pub fn maybe_refresh_graph(&mut self) -> anyhow::Result<()> {
         if !self.active.graph_runtime.state.graph_initialized {
             return Ok(());
         }
@@ -1416,7 +1416,7 @@ fn merge_edge_deps(
 }
 
 // ===================================================================
-// Facade handlers — dispatch merged tools to legacy handlers
+// Facade handlers — dispatch merged tools to internal sub-handlers
 // ===================================================================
 
 impl ToolRouter {
@@ -1443,7 +1443,7 @@ impl ToolRouter {
 
     // ── symbol (facade) ──────────────────────────────────────────────
 
-    /// Handle `symbol` tool — dispatch by `view` to legacy handlers.
+    /// Handle `symbol` tool — dispatch by `view` to sub-handlers.
     /// Remaps `symbol` → `qualified_name` (detail) or passes through as `symbol` (context/usages).
     pub(crate) fn handle_symbol(&mut self, ctx: &ToolCallContext, args: &Value) -> (String, bool) {
         // Position-based lookup: file_path + line as alternative to 'symbol'
@@ -1625,7 +1625,7 @@ impl ToolRouter {
             );
         }
 
-        // Resolve file_path to file_id for legacy handlers
+        // Resolve file_path to file_id for sub-handlers
         let clean = file_path.trim_start_matches("./").trim_start_matches('/');
         let file_id = match self.active.store.resolve_file_id(&self.active.root, clean) {
             Ok(Some(id)) => id,

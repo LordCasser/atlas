@@ -21,6 +21,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [features]
 default = ["typescript", "javascript", "python", "java", "c", "cpp", "arkts", "cangjie", "go", "csharp", "rust", "php", "ruby", "kotlin"]
@@ -38,3 +39,11 @@ rust = ["atlas-engine/rust"]
 php = ["atlas-engine/php"]
 ruby = ["atlas-engine/ruby"]
 kotlin = ["atlas-engine/kotlin"]
+
+[[bench]]
+name = "dispatch"
+harness = false
+
+[[bench]]
+name = "graph_ops"
+harness = false
